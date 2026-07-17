@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
-import type { TrackerItemType } from '@nimbalyst/runtime';
-import { trackerItemCountByTypeAtom, trackerDataLoadedAtom, trackerItemsArrayAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import type { TrackerIdentity, TrackerItemType } from '@nimbalyst/runtime';
+import { trackerDataLoadedAtom, trackerItemsArrayAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import type { TrackerDataModel } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { generateKeyBetween } from '@nimbalyst/runtime/utils/fractionalIndex';
 import type { TrackerNavigationEntry, TrackerNavigationFolder, TrackerTypePlacement } from '@nimbalyst/runtime/sync';
@@ -14,6 +14,7 @@ import { AlphaBadge } from '../common/AlphaBadge';
 import { FloatingPortal, useFloatingMenu, virtualElement } from '../../hooks/useFloatingMenu';
 import { buildTrackerNavigationTree } from './trackerNavigationTree';
 import { trackerSyncConnectionAtom } from '../../store/atoms/trackerSync';
+import { countFilteredTrackerItemsByTypes } from './trackerSavedViews';
 
 interface TrackerSidebarProps {
   workspacePath?: string;
@@ -22,6 +23,14 @@ interface TrackerSidebarProps {
   navigationEntries: TrackerNavigationEntry[];
   selectedType: string | 'all';
   activeFilters: TrackerFilterChip[];
+  tagFilter: string[];
+  sourceFilter: string[];
+  currentIdentity: TrackerIdentity | null;
+  favoriteItemIds: ReadonlySet<string>;
+  viewedAtByItemId: ReadonlyMap<string, number>;
+  personalStateHydrated: boolean;
+  recentlyViewedDays: 7 | 30 | 90 | null;
+  onRecentlyViewedDaysChange: (days: 7 | 30 | 90 | null) => void;
   viewMode: ViewMode;
   onSelectType: (type: string | 'all') => void;
   onToggleFilter: (filter: TrackerFilterChip) => void;
@@ -42,30 +51,73 @@ const FILTER_CHIPS: { id: TrackerFilterChip; label: string; icon: string }[] = [
   { id: 'mine', label: 'Mine', icon: 'person' },
   { id: 'unassigned', label: 'Unassigned', icon: 'person_off' },
   { id: 'high-priority', label: 'High Priority', icon: 'priority_high' },
+  { id: 'favorites', label: 'Favorites', icon: 'star' },
+  { id: 'recently-viewed', label: 'Recently Viewed', icon: 'visibility' },
+  { id: 'recently-edited-by-others', label: 'Edited by Others', icon: 'group' },
   { id: 'recently-updated', label: 'Recent', icon: 'schedule' },
   { id: 'archived', label: 'Archived', icon: 'archive' },
 ];
 
-/** Small component so each sidebar row subscribes to its own atom */
-function SidebarTypeCount({ type }: { type: TrackerItemType }) {
+interface SidebarCountProps {
+  activeFilters: TrackerFilterChip[];
+  tagFilter: string[];
+  sourceFilter: string[];
+  currentIdentity: TrackerIdentity | null;
+  favoriteItemIds: ReadonlySet<string>;
+  viewedAtByItemId: ReadonlyMap<string, number>;
+  personalStateHydrated: boolean;
+  recentlyViewedDays: 7 | 30 | 90 | null;
+}
+
+/** Small component so each sidebar row subscribes to the tracker item store. */
+function SidebarTypeCount({
+  type,
+  activeFilters,
+  tagFilter,
+  sourceFilter,
+  currentIdentity,
+  favoriteItemIds,
+  viewedAtByItemId,
+  personalStateHydrated,
+  recentlyViewedDays,
+}: SidebarCountProps & { type: TrackerItemType }) {
   const loaded = useAtomValue(trackerDataLoadedAtom);
-  const count = useAtomValue(trackerItemCountByTypeAtom(type));
+  const items = useAtomValue(trackerItemsArrayAtom);
+  const count = useMemo(() => countFilteredTrackerItemsByTypes(
+    items,
+    [type],
+    { activeFilters, tagFilter, sourceFilter, recentlyViewedDays },
+    { identity: currentIdentity, favoriteItemIds, viewedAtByItemId },
+  ), [items, type, activeFilters, tagFilter, sourceFilter, currentIdentity, favoriteItemIds, viewedAtByItemId, recentlyViewedDays]);
   // NIM-631: before the tracker atoms finish hydrating, the count map is empty,
   // so populated types would flash "0" during a sync reconnect + renderer
   // reload. Suppress the badge until hydration completes rather than showing a
   // misleading zero.
-  if (!loaded) return null;
+  if (!loaded || (!personalStateHydrated && activeFilters.some((filter) => filter === 'favorites' || filter === 'recently-viewed'))) return null;
   return <>{count}</>;
 }
 
-function SidebarFolderCount({ types }: { types: string[] }) {
+function SidebarFolderCount({
+  types,
+  activeFilters,
+  tagFilter,
+  sourceFilter,
+  currentIdentity,
+  favoriteItemIds,
+  viewedAtByItemId,
+  personalStateHydrated,
+  recentlyViewedDays,
+}: SidebarCountProps & { types: string[] }) {
   const loaded = useAtomValue(trackerDataLoadedAtom);
   const items = useAtomValue(trackerItemsArrayAtom);
-  if (!loaded) return null;
-  const wanted = new Set(types);
-  return <>{items.filter((item) =>
-    wanted.has(item.primaryType) || item.typeTags.some((type) => wanted.has(type)),
-  ).length}</>;
+  const count = useMemo(() => countFilteredTrackerItemsByTypes(
+    items,
+    types,
+    { activeFilters, tagFilter, sourceFilter, recentlyViewedDays },
+    { identity: currentIdentity, favoriteItemIds, viewedAtByItemId },
+  ), [items, types, activeFilters, tagFilter, sourceFilter, currentIdentity, favoriteItemIds, viewedAtByItemId, recentlyViewedDays]);
+  if (!loaded || (!personalStateHydrated && activeFilters.some((filter) => filter === 'favorites' || filter === 'recently-viewed'))) return null;
+  return <>{count}</>;
 }
 
 export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
@@ -75,6 +127,14 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
   navigationEntries,
   selectedType,
   activeFilters,
+  tagFilter,
+  sourceFilter,
+  currentIdentity,
+  favoriteItemIds,
+  viewedAtByItemId,
+  personalStateHydrated,
+  recentlyViewedDays,
+  onRecentlyViewedDaysChange,
   viewMode,
   onSelectType,
   onToggleFilter,
@@ -228,7 +288,17 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
       </span>
       <span className="flex-1 text-left truncate">{tracker.displayNamePlural}</span>
       <span className="text-[10px] font-semibold text-nim-faint min-w-[20px] text-right">
-        <SidebarTypeCount type={tracker.type as TrackerItemType} />
+        <SidebarTypeCount
+          type={tracker.type as TrackerItemType}
+          activeFilters={activeFilters}
+          tagFilter={tagFilter}
+          sourceFilter={sourceFilter}
+          currentIdentity={currentIdentity}
+          favoriteItemIds={favoriteItemIds}
+          viewedAtByItemId={viewedAtByItemId}
+          personalStateHydrated={personalStateHydrated}
+          recentlyViewedDays={recentlyViewedDays}
+        />
       </span>
     </button>
   );
@@ -315,6 +385,22 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
           <div className="text-[10px] font-semibold text-nim-faint uppercase tracking-wider px-1 mb-1.5">
             Filters
           </div>
+          {activeFilters.includes('recently-viewed') && (
+            <div className="mt-1.5 flex items-center gap-1" data-testid="tracker-recently-viewed-days">
+              {([7, 30, 90, null] as const).map((days) => (
+                <button
+                  key={days ?? 'any'}
+                  type="button"
+                  onClick={() => onRecentlyViewedDaysChange(days)}
+                  className={recentlyViewedDays === days
+                    ? 'px-1.5 py-0.5 rounded text-[10px] bg-nim-active text-nim'
+                    : 'px-1.5 py-0.5 rounded text-[10px] text-nim-faint hover:text-nim'}
+                >
+                  {days === null ? 'Any' : `${days}d`}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex flex-wrap gap-1">
             {FILTER_CHIPS.map((chip) => {
               const isActive = activeFilters.includes(chip.id);
@@ -579,7 +665,17 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
                     </button>
                   )}
                   <span className="text-[10px] font-semibold text-nim-faint min-w-[20px] text-right">
-                    <SidebarFolderCount types={folderTypes.map((row) => row.tracker.type)} />
+                    <SidebarFolderCount
+                      types={folderTypes.map((row) => row.tracker.type)}
+                      activeFilters={activeFilters}
+                      tagFilter={tagFilter}
+                      sourceFilter={sourceFilter}
+                      currentIdentity={currentIdentity}
+                      favoriteItemIds={favoriteItemIds}
+                      viewedAtByItemId={viewedAtByItemId}
+                      personalStateHydrated={personalStateHydrated}
+                      recentlyViewedDays={recentlyViewedDays}
+                    />
                   </span>
                   <button
                     className="opacity-0 group-hover:opacity-100 text-nim-faint hover:text-nim"

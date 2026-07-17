@@ -134,7 +134,9 @@ struct NimbalystAppMain: App {
                 with: pairingData.seed,
                 serverUrl: pairingData.serverUrl,
                 userId: pairingData.userId,
-                analyticsId: pairingData.analyticsId
+                analyticsId: pairingData.analyticsId,
+                personalOrgId: pairingData.personalOrgId,
+                personalUserId: pairingData.personalUserId
             )
             NSLog("[DeepLink] pair: pairing successful")
         } catch {

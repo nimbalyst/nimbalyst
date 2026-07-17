@@ -96,11 +96,11 @@ describe('getToolBudgetSnapshot', () => {
     expect(byKey.get('my-remote')!.estTokens).toBeNull();
     expect(byKey.get('my-disabled')!.enabled).toBe(false);
 
-    // Eager floor is core's ALWAYS-LOAD subset only — display_to_user and
-    // capture_editor_screenshot stay on core but defer, so the floor must be
-    // strictly below the full core cost.
+    // Every core tool (including display_to_user / capture_editor_screenshot,
+    // eager again per NIM-1766) is always-load, so the eager floor equals the
+    // full core cost — no core tool defers.
     expect(core!.alwaysLoadEstTokens).toBeGreaterThan(0);
-    expect(core!.alwaysLoadEstTokens!).toBeLessThan(core!.estTokens!);
+    expect(core!.alwaysLoadEstTokens!).toBe(core!.estTokens!);
     expect(snapshot.eagerEstTokens).toBe(core!.alwaysLoadEstTokens);
   });
 

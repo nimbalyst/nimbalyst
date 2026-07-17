@@ -80,6 +80,17 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
             )}
             <span>{selectedOption.label}</span>
           </span>
+        ) : value ? (
+          // The stored value isn't in the current options (an override removed/
+          // renamed it, or a peer set it on a different schema). Render it neutrally
+          // so the value stays visible and editable instead of silently vanishing.
+          <span
+            className="custom-select-value custom-select-value-unknown flex items-center gap-1.5 flex-1 text-[var(--nim-text-secondary)]"
+            title={`Unrecognized option: ${value}`}
+          >
+            <MaterialSymbol icon="help_outline" size={16} />
+            <span>{String(value)}</span>
+          </span>
         ) : (
           <span className="custom-select-placeholder text-[var(--nim-text-faint)]">{placeholder}</span>
         )}

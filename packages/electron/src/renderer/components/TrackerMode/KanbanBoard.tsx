@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useCallback, useRef, useState } from 'react'
 import { useFloating, offset, flip, shift, FloatingPortal } from '@floating-ui/react';
 import { MaterialSymbol, TrackerUnreadDot } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
-import type { TrackerItemType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import { TrackerFavoriteStar, type TrackerItemType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordSortOrder, getRecordExternalKey, getFieldByRole, buildKanbanStatusColumns, resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { generateKeyBetween } from '@nimbalyst/runtime/utils/fractionalIndex';
@@ -79,6 +79,8 @@ interface KanbanBoardProps {
    *  exactly one item is selected. Callers omit this when the workspace
    *  has no team configured. */
   onCopyDeepLink?: (itemId: string) => void;
+  favoriteItemIds?: ReadonlySet<string>;
+  onToggleFavorite?: (itemId: string) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -117,6 +119,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   onArchiveItems,
   onDeleteItems,
   onCopyDeepLink,
+  favoriteItemIds = new Set<string>(),
+  onToggleFavorite,
 }) => {
   // Items always come from the caller (TrackerMainView passes atom-sourced items).
   // KanbanBoard no longer loads its own data -- single source of truth via Jotai atoms.
@@ -601,9 +605,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                   {dragOverColumn === col.value && dropIndex === cardIndex && dragItemId !== item.id && (
                     <div className="h-[2px] bg-[var(--nim-primary)] rounded-full mx-1 my-0.5" />
                   )}
-                <button
+                <div
                   data-testid="tracker-kanban-card"
                   data-item-id={item.id}
+                  role="button"
+                  tabIndex={0}
                   draggable
                   onDragStart={(e) => handleDragStart(e, item)}
                   onDragEnd={handleDragEnd}
@@ -615,6 +621,12 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                       : 'border-nim'
                   }`}
                   onClick={(e) => handleCardSelect(e, item)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      handleCardSelect(event as unknown as React.MouseEvent, item);
+                    }
+                  }}
                   onContextMenu={(e) => handleCardContextMenu(e, item)}
                 >
                   <div className="flex items-start gap-2">
@@ -624,6 +636,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                       style={{ backgroundColor: PRIORITY_COLORS[getRecordPriority(item) || 'medium'] || '#6b7280' }}
                     />
                     <TrackerUnreadDot itemId={item.id} className="mt-1" />
+                    <TrackerFavoriteStar itemId={item.id} isFavorite={favoriteItemIds.has(item.id)} onToggle={onToggleFavorite} />
                     <div className="flex-1 min-w-0">
                       {(() => {
                         // externalKey role (e.g. a PR number) rides next to the
@@ -691,7 +704,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                       </div>
                     </div>
                   </div>
-                </button>
+                </div>
                 </React.Fragment>
               ))}
               {/* Drop indicator after last card */}

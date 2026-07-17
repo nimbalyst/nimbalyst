@@ -37,6 +37,7 @@ import { UserAvatar } from './UserAvatar';
 import { TrackerUnreadDot } from '../../../readReceipts/TrackerUnreadDot';
 import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { useTrackerRows } from './useTrackerRows';
+import { TrackerFavoriteStar } from './TrackerFavoriteStar';
 
 export type SortColumn = 'title' | 'type' | 'status' | 'priority' | 'progress' | 'module' | 'lastIndexed' | (string & {});
 export type SortDirection = 'asc' | 'desc';
@@ -74,6 +75,9 @@ interface TrackerTableProps {
   columnConfig?: import('./trackerColumns').TypeColumnConfig;
   /** Callback when column config changes (from display options panel) */
   onColumnConfigChange?: (config: import('./trackerColumns').TypeColumnConfig) => void;
+  favoriteItemIds?: ReadonlySet<string>;
+  onToggleFavorite?: (itemId: string) => void;
+  preserveItemOrder?: boolean;
 }
 
 /**
@@ -756,6 +760,9 @@ export function TrackerTable({
   onClearFilters,
   columnConfig: externalColumnConfig,
   onColumnConfigChange,
+  favoriteItemIds = new Set<string>(),
+  onToggleFavorite,
+  preserveItemOrder = false,
 }: TrackerTableProps): JSX.Element {
   // Type filter: use prop filterType when hideTypeTabs is true, otherwise use internal state
   const [internalTypeFilter, setInternalTypeFilter] = useState<TrackerItemType | 'all'>('all');
@@ -806,6 +813,8 @@ export function TrackerTable({
   const [error, setError] = useState<string | null>(null);
   const [currentSortBy, setCurrentSortBy] = useState<SortColumn>(sortBy);
   const [currentSortDirection, setCurrentSortDirection] = useState<SortDirection>(sortDirection);
+  useEffect(() => setCurrentSortBy(sortBy), [sortBy]);
+  useEffect(() => setCurrentSortDirection(sortDirection), [sortDirection]);
   const [internalSearchTerm, setInternalSearchTerm] = useState('');
   // Use external search query from parent when provided, otherwise use internal state
   const searchTerm = externalSearchQuery ?? internalSearchTerm;
@@ -937,7 +946,7 @@ export function TrackerTable({
     });
 
   // console.log('[TrackerTable] Render - items:', items.length, 'filtered:', filteredItems.length, 'typeFilter:', typeFilter);
-  const sortedItems = sortItems(filteredItems, currentSortBy, currentSortDirection);
+  const sortedItems = preserveItemOrder ? filteredItems : sortItems(filteredItems, currentSortBy, currentSortDirection);
 
   // Row interaction model -- shared with TrackerTableGrid via useTrackerRows.
   const rows = useTrackerRows({
@@ -1335,6 +1344,11 @@ export function TrackerTable({
               >
                 {/* Unread dot (nothing when read) */}
                 <TrackerUnreadDot itemId={item.id} className="w-2" />
+                <TrackerFavoriteStar
+                  itemId={item.id}
+                  isFavorite={favoriteItemIds.has(item.id)}
+                  onToggle={onToggleFavorite}
+                />
 
                 {/* Type icon - fixed width for alignment */}
                 <span className="shrink-0 w-5 flex items-center justify-center" style={{ color: getTypeColor(item.primaryType), opacity: 0.7 }}>

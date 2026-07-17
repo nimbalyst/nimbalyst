@@ -172,6 +172,8 @@ export async function processDescriptor(
         teammateName: desc.teammateName,
         teamName: desc.teamName,
         teammateMode: desc.teammateMode,
+        model: desc.model,
+        reasoningEffort: desc.reasoningEffort,
         isBackground: desc.isBackground,
         prompt: desc.prompt,
         createdAt: desc.createdAt,
@@ -188,6 +190,8 @@ export async function processDescriptor(
       await writer.updateSubagent(eventId, {
         status: desc.status,
         resultSummary: desc.resultSummary,
+        model: desc.model,
+        reasoningEffort: desc.reasoningEffort,
       });
       return store.getEventById(eventId);
     }

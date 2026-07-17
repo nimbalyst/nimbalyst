@@ -174,6 +174,57 @@ describe('UnifiedQuickOpen — Projects tab', () => {
     expect(screen.getByText('aurora')).toBeTruthy();
   });
 
+  it('finds a shared file in the Files tab and opens it collaboratively', async () => {
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+    const store = createStore();
+    const onClose = vi.fn();
+    const onFileSelect = vi.fn();
+    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    store.set(workspaceHasTeamAtom, true);
+    store.set(sharedDocumentsAtom, [
+      {
+        documentId: 'doc-roadmap',
+        title: 'Planning/Product Roadmap',
+        documentType: 'markdown',
+        createdBy: 'user-1',
+        createdAt: 100,
+        updatedAt: 200,
+      },
+    ]);
+
+    render(
+      <JotaiProvider store={store}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={onClose}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="files"
+          onFileSelect={onFileSelect}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
+      target: { value: 'roadmap' },
+    });
+
+    const sharedResult = await screen.findByTestId('shared-file-quick-open-doc-roadmap');
+    expect(sharedResult.textContent).toContain('Product Roadmap');
+    expect(sharedResult.textContent).toContain('Shared');
+
+    fireEvent.click(sharedResult);
+
+    expect(onFileSelect).not.toHaveBeenCalled();
+    expect(store.get(pendingCollabDocumentAtom)).toEqual({
+      documentId: 'doc-roadmap',
+      documentType: 'markdown',
+    });
+    expect(store.get(windowModeAtom)).toBe('collab');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it('passes the file mask to file-name search before result truncation', async () => {
     const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
     const store = createStore();

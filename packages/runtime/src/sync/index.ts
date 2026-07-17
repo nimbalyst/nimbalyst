@@ -51,9 +51,12 @@ export type {
   SessionControlMessage,
   SyncedSettings,
   SyncedAvailableModel,
+  SyncedTrackerPersonalStateChange,
+  EncryptedTrackerPersonalStatePayload,
 } from './types';
 
 export { createCollabV3Sync } from './CollabV3Sync';
+export { deriveTrackerPersonalStateKey } from './trackerPersonalStateKey';
 
 export {
   setSyncClientInfo,

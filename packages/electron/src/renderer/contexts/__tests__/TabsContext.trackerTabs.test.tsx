@@ -50,6 +50,55 @@ describe('isTrackerTabPath', () => {
 });
 
 describe('TabsContext tracker tabs', () => {
+  it('creates a collaborative tab with its display name atomically', () => {
+    const { result } = renderHook(() => useTabs(), { wrapper });
+
+    act(() => {
+      result.current.addTab(
+        'collab://org:org-a:doc:1af74157-fe92-481b-9be3-4ed7cc6f5625',
+        '',
+        true,
+        'Architecture Plan',
+      );
+    });
+
+    expect(result.current.tabs).toHaveLength(1);
+    expect(result.current.tabs[0].fileName).toBe('Architecture Plan');
+    expect(result.current.tabs[0].fileName).not.toContain('1af74157');
+  });
+
+  it('uses a neutral collaborative placeholder when no title has resolved', () => {
+    const { result } = renderHook(() => useTabs(), { wrapper });
+
+    act(() => {
+      result.current.addTab(
+        'collab://org:org-a:doc:1af74157-fe92-481b-9be3-4ed7cc6f5625',
+      );
+    });
+
+    expect(result.current.tabs[0].fileName).toBe('Shared document');
+  });
+
+  it('reopens a collaborative tab with its last-known title, never its id', async () => {
+    const { result } = renderHook(() => useTabs(), { wrapper });
+    let tabId: string | null = null;
+
+    act(() => {
+      tabId = result.current.addTab(
+        'collab://org:org-a:doc:1af74157-fe92-481b-9be3-4ed7cc6f5625',
+        '',
+        true,
+        'Architecture Plan',
+      );
+    });
+    act(() => result.current.removeTab(tabId!));
+    await act(async () => {
+      await result.current.reopenLastClosedTab(async () => {});
+    });
+
+    expect(result.current.tabs[0].fileName).toBe('Architecture Plan');
+  });
+
   it('adds a tracker tab with kind/trackerItemId and does NOT watch it as a file', () => {
     const { result } = renderHook(() => useTabs(), { wrapper });
 

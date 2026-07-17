@@ -1,7 +1,7 @@
 /**
  * TrackerReferenceChip — inline chip rendered by `TrackerReferenceNode`.
  *
- * Shows the reference key + a colored status dot + the item's LIVE title,
+ * Shows the reference key + a visible status badge + the item's LIVE title,
  * resolved from the canonical runtime tracker store. Clicking opens a hover-card
  * preview popover (floating-ui) with a "Go to item" action.
  *
@@ -37,46 +37,8 @@ import {
   getTypeIcon,
 } from '../TrackerPlugin/components/trackerColumns';
 
-// Status palette mirrors the tracker-mode board (KanbanBoard / TrackerItemDetail).
-// Kept inline here because the chip lives in the platform-agnostic runtime and
-// must not import renderer components.
-const STATUS_COLORS: Record<string, string> = {
-  'to-do': '#6b7280',
-  'in-progress': '#eab308',
-  'in-review': '#8b5cf6',
-  done: '#22c55e',
-  completed: '#22c55e',
-  implemented: '#22c55e',
-  decided: '#22c55e',
-  blocked: '#ef4444',
-  rejected: '#ef4444',
-  superseded: '#6b7280',
-  proposed: '#60a5fa',
-  'in-discussion': '#60a5fa',
-  "won't-fix": '#6b7280',
-  'wont-fix': '#6b7280',
-};
-
-const UNRESOLVED_COLOR = 'var(--nim-text-faint)';
-
-// These statuses represent successfully finished work across the built-in
-// tracker types. Other terminal states (rejected, superseded, won't-fix) keep
-// their own status color without presenting the item as completed.
-const COMPLETED_STATUSES = new Set([
-  'done',
-  'completed',
-  'implemented',
-  'decided',
-]);
-
 function normalizeStatus(status: string | undefined): string | undefined {
   return status?.trim().toLowerCase();
-}
-
-function statusColor(status: string | undefined): string {
-  const normalizedStatus = normalizeStatus(status);
-  if (!normalizedStatus) return UNRESOLVED_COLOR;
-  return STATUS_COLORS[normalizedStatus] ?? 'var(--nim-text-muted)';
 }
 
 function displayLabel(value: string): string {
@@ -85,6 +47,104 @@ function displayLabel(value: string): string {
     .filter(Boolean)
     .map(part => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+type StatusTone =
+  | 'to-do'
+  | 'in-progress'
+  | 'in-review'
+  | 'completed'
+  | 'blocked'
+  | 'informational'
+  | 'neutral';
+
+interface StatusPresentation {
+  color: string;
+  background: string;
+  border: string;
+  icon: string;
+  label: string;
+  tone: StatusTone;
+}
+
+const STATUS_TONES: Record<
+  StatusTone,
+  Omit<StatusPresentation, 'label' | 'tone'>
+> = {
+  'to-do': {
+    color: 'var(--nim-text-muted)',
+    background: 'var(--nim-bg-tertiary)',
+    border: 'var(--nim-border)',
+    icon: 'radio_button_unchecked',
+  },
+  'in-progress': {
+    color: 'var(--nim-warning)',
+    background: 'color-mix(in srgb, var(--nim-warning) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--nim-warning) 40%, var(--nim-border))',
+    icon: 'donut_small',
+  },
+  'in-review': {
+    color: 'var(--nim-info)',
+    background: 'color-mix(in srgb, var(--nim-info) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--nim-info) 40%, var(--nim-border))',
+    icon: 'rate_review',
+  },
+  completed: {
+    color: 'var(--nim-success)',
+    background: 'color-mix(in srgb, var(--nim-success) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--nim-success) 40%, var(--nim-border))',
+    icon: 'check',
+  },
+  blocked: {
+    color: 'var(--nim-error)',
+    background: 'color-mix(in srgb, var(--nim-error) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--nim-error) 40%, var(--nim-border))',
+    icon: 'block',
+  },
+  informational: {
+    color: 'var(--nim-info)',
+    background: 'color-mix(in srgb, var(--nim-info) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--nim-info) 40%, var(--nim-border))',
+    icon: 'info',
+  },
+  neutral: {
+    color: 'var(--nim-text-muted)',
+    background: 'var(--nim-bg-tertiary)',
+    border: 'var(--nim-border)',
+    icon: 'label',
+  },
+};
+
+const STATUS_TONE_BY_VALUE: Record<string, StatusTone> = {
+  'to-do': 'to-do',
+  draft: 'to-do',
+  'ready-for-development': 'to-do',
+  'in-progress': 'in-progress',
+  'in-development': 'in-progress',
+  'in-review': 'in-review',
+  done: 'completed',
+  completed: 'completed',
+  implemented: 'completed',
+  decided: 'completed',
+  blocked: 'blocked',
+  rejected: 'blocked',
+  proposed: 'informational',
+  'in-discussion': 'informational',
+  superseded: 'neutral',
+  "won't-fix": 'neutral',
+  'wont-fix': 'neutral',
+};
+
+function getStatusPresentation(
+  normalizedStatus: string | undefined,
+): StatusPresentation | null {
+  if (!normalizedStatus) return null;
+  const tone = STATUS_TONE_BY_VALUE[normalizedStatus] ?? 'neutral';
+  return {
+    ...STATUS_TONES[tone],
+    label: displayLabel(normalizedStatus),
+    tone,
+  };
 }
 
 interface MetadataBadgeProps {
@@ -175,11 +235,9 @@ export function TrackerReferenceChip({
     role,
   ]);
 
-  const color = statusColor(resolved?.status);
   const normalizedStatus = normalizeStatus(resolved?.status);
-  const isCompleted = normalizedStatus
-    ? COMPLETED_STATUSES.has(normalizedStatus)
-    : false;
+  const statusPresentation = getStatusPresentation(normalizedStatus);
+  const isCompleted = statusPresentation?.tone === 'completed';
   const label = resolved?.issueKey ?? referenceKey;
   const title = resolved?.title;
   const tooltip = resolved
@@ -197,6 +255,7 @@ export function TrackerReferenceChip({
         data-issue-key={referenceKey}
         data-resolved={resolved ? 'true' : 'false'}
         data-status={normalizedStatus}
+        data-status-tone={statusPresentation?.tone}
         data-completed={isCompleted ? 'true' : 'false'}
         title={tooltip}
         style={{
@@ -215,24 +274,35 @@ export function TrackerReferenceChip({
           userSelect: 'none',
         }}
       >
-        <span
-          className="tracker-reference-chip-dot"
-          aria-hidden="true"
-          style={{
-            width: isCompleted ? '13px' : '7px',
-            height: isCompleted ? '13px' : '7px',
-            borderRadius: '50%',
-            background: color,
-            flexShrink: 0,
-            color: '#fff',
-            fontSize: '10px',
-            fontWeight: 700,
-            lineHeight: isCompleted ? '13px' : '7px',
-            textAlign: 'center',
-          }}
-        >
-          {isCompleted ? '✓' : null}
-        </span>
+        {statusPresentation ? (
+          <span
+            className="tracker-reference-chip-status"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '2px',
+              flexShrink: 0,
+              padding: '0 4px',
+              borderRadius: '999px',
+              border: `1px solid ${statusPresentation.border}`,
+              background: statusPresentation.background,
+              color: statusPresentation.color,
+              fontSize: '10px',
+              fontWeight: 600,
+              lineHeight: '14px',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span
+              className="material-symbols-outlined tracker-reference-chip-status-icon"
+              aria-hidden="true"
+              style={{ fontSize: '11px', lineHeight: 1 }}
+            >
+              {statusPresentation.icon}
+            </span>
+            {statusPresentation.label}
+          </span>
+        ) : null}
         <span
           className="tracker-reference-chip-key"
           style={{

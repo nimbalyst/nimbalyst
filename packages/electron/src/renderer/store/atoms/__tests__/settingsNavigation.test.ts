@@ -32,12 +32,12 @@ describe('navigateSettingsInPlaceAtom', () => {
     expect(store.get(settingsDestinationAtom)).toBeDefined();
 
     const keyBefore = store.get(settingsKeyAtom);
-    // Now the user asks for Personal settings in-place.
-    store.set(navigateSettingsInPlaceAtom, { scope: 'personal', category: 'personal-accounts' });
+    // Now the user asks for Account settings in-place.
+    store.set(navigateSettingsInPlaceAtom, { scope: 'account', category: 'account' });
 
     expect(store.get(settingsDestinationAtom)).toBeUndefined();
-    expect(store.get(settingsInitialScopeAtom)).toBe('personal');
-    expect(store.get(settingsInitialCategoryAtom)).toBe('personal-accounts');
+    expect(store.get(settingsInitialScopeAtom)).toBe('account');
+    expect(store.get(settingsInitialCategoryAtom)).toBe('account');
     expect(store.get(settingsKeyAtom)).toBe(keyBefore + 1);
   });
 

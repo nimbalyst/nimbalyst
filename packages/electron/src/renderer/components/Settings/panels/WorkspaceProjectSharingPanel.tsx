@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { useDialogState } from '../../../contexts/DialogContext';
 import { DIALOG_IDS } from '../../../dialogs/registry';
@@ -9,29 +8,20 @@ import { SecurityEncryptionSection } from './H2EncryptionMigration';
 import { MoveProjectWizard } from './MoveProjectWizard';
 import { MergeOrgWizard } from './MergeOrgWizard';
 import { ProjectAccessEditor } from './ProjectAccessEditor';
-import { openSettingsCommandAtom } from '../../../store/atoms/settingsNavigation';
-import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
 
 // ============================================================================
 // Types
 // ============================================================================
-
-type TrustStatus = 'verified' | 'pending' | 'unverified' | 'fingerprint-changed';
 
 interface TeamMember {
   id: string;
   name: string;
   email: string;
   role: 'admin' | 'member';
-  trustStatus: TrustStatus;
+  status: 'pending' | 'active';
   avatarColor: string;
   isYou?: boolean;
   invitedAt?: string;
-}
-
-interface MemberFingerprint {
-  fingerprint: string;
-  trustStatus: 'verified' | 'fingerprint-changed' | 'unverified';
 }
 
 interface TeamData {
@@ -44,6 +34,8 @@ interface TeamData {
   members: TeamMember[];
   callerRole: string;
   membershipType?: string;
+  boundPersonalOrgId?: string;
+  boundAccountEmail?: string | null;
 }
 
 interface PendingInvite {
@@ -97,37 +89,6 @@ function MemberAvatar({ name, email, color, isPending }: {
     >
       {initial}
     </div>
-  );
-}
-
-function TrustStatusIcon({ status, onClick }: { status: TrustStatus; onClick?: () => void }) {
-  const clickProps = onClick ? { onClick, role: 'button' as const, tabIndex: 0, style: { cursor: 'pointer' } } : {};
-
-  if (status === 'verified') {
-    return (
-      <span className="flex items-center text-[var(--nim-success)]" title="Identity verified" {...clickProps}>
-        <MaterialSymbol icon="verified_user" size={14} fill />
-      </span>
-    );
-  }
-  if (status === 'pending') {
-    return (
-      <span className="flex items-center text-[var(--nim-warning)]" title="Pending">
-        <MaterialSymbol icon="schedule" size={14} />
-      </span>
-    );
-  }
-  if (status === 'fingerprint-changed') {
-    return (
-      <span className="flex items-center text-[var(--nim-error)]" title="Key changed since verification" {...clickProps}>
-        <MaterialSymbol icon="gpp_maybe" size={14} fill />
-      </span>
-    );
-  }
-  return (
-    <span className="flex items-center text-[#f97316]" title="Not verified" {...clickProps}>
-      <MaterialSymbol icon="shield" size={14} />
-    </span>
   );
 }
 
@@ -211,82 +172,6 @@ function ErrorBanner({ error, onDismiss }: { error: string; onDismiss: () => voi
       >
         <MaterialSymbol icon="close" size={14} />
       </button>
-    </div>
-  );
-}
-
-// ============================================================================
-// Member Fingerprint Detail (expandable row)
-// ============================================================================
-
-function MemberFingerprintDetail({ member, fingerprint, onVerify, onRevoke, onReshareKey, isAdmin }: {
-  member: TeamMember;
-  fingerprint: MemberFingerprint | null;
-  onVerify: () => void;
-  onRevoke: () => void;
-  onReshareKey?: () => void;
-  isAdmin?: boolean;
-}) {
-  if (!fingerprint) {
-    return (
-      <div className="px-3.5 py-2.5 bg-[var(--nim-bg)] text-[12px] text-[var(--nim-text-faint)]">
-        Loading fingerprint...
-      </div>
-    );
-  }
-
-  const shortFingerprint = fingerprint.fingerprint.split(':').slice(0, 16).join(':');
-
-  return (
-    <div className="px-3.5 py-3 bg-[var(--nim-bg)] border-b border-[var(--nim-bg-secondary)]">
-      {fingerprint.trustStatus === 'fingerprint-changed' && (
-        <div className="flex items-center gap-2 p-2 mb-2.5 bg-[rgba(239,68,68,0.1)] border border-[rgba(239,68,68,0.3)] rounded">
-          <MaterialSymbol icon="warning" size={14} className="text-[var(--nim-error)] shrink-0" />
-          <span className="text-[11px] text-[var(--nim-error)]">
-            This member's identity key has changed since you last verified it.
-            Verify their new fingerprint before trusting data from them.
-          </span>
-        </div>
-      )}
-
-      <div className="mb-2">
-        <div className="text-[11px] text-[var(--nim-text-faint)] mb-1">Identity Key Fingerprint</div>
-        <div className="px-2.5 py-2 bg-[var(--nim-bg-secondary)] rounded font-mono text-[11px] text-[var(--nim-text-muted)] leading-relaxed break-all select-text">
-          {shortFingerprint}
-        </div>
-      </div>
-
-      <p className="text-[11px] text-[var(--nim-text-faint)] leading-relaxed mb-2.5 m-0">
-        Compare this fingerprint with {member.name || member.email} out-of-band
-        (e.g., in person or via a secure channel) to verify their identity.
-      </p>
-
-      <div className="flex items-center gap-2">
-        {fingerprint.trustStatus === 'verified' ? (
-          <button
-            onClick={onRevoke}
-            className="px-2.5 py-1 text-[11px] bg-transparent border border-[rgba(239,68,68,0.4)] rounded text-[var(--nim-error)] cursor-pointer hover:bg-[rgba(239,68,68,0.1)]"
-          >
-            Revoke Trust
-          </button>
-        ) : (
-          <button
-            onClick={onVerify}
-            className="px-2.5 py-1 text-[11px] bg-[var(--nim-success)] border-none rounded text-white cursor-pointer hover:opacity-90"
-          >
-            Mark as Verified
-          </button>
-        )}
-        {isAdmin && onReshareKey && (
-          <button
-            onClick={onReshareKey}
-            className="px-2.5 py-1 text-[11px] bg-transparent border border-[var(--nim-border)] rounded text-[var(--nim-text-muted)] cursor-pointer hover:bg-[var(--nim-bg-hover)]"
-            title="Re-share the encryption key with this member (e.g., after they changed devices)"
-          >
-            Re-share Key
-          </button>
-        )}
-      </div>
     </div>
   );
 }
@@ -405,7 +290,9 @@ function NoTeamState({ gitRemote, onCreateTeam, loading, adminOrgs, onAddToOrg, 
 // Team Exists State
 // ============================================================================
 
-function ProjectScopedTeamExistsState({
+// Exported for testing (NIM-1779/C2 guard: the reachable team surface must not
+// present envelope-based trust badges or a "Re-share key" affordance).
+export function ProjectScopedTeamExistsState({
   team,
   projects,
   workspacePath,
@@ -424,22 +311,15 @@ function ProjectScopedTeamExistsState({
   onUnlinkProject: () => void;
   onProjectMoved: () => void;
 }) {
-  const openSettings = useSetAtom(openSettingsCommandAtom);
-  const selectOrganization = useSetAtom(selectedOrgIdAtom);
   const [moving, setMoving] = useState(false);
   const currentProject = team.teamProjectId
     ? projects.find((project) => project.teamProjectId === team.teamProjectId)
     : undefined;
   const isAdmin = team.callerRole === 'admin' || team.callerRole === 'owner';
   const destinationOrganizations = adminOrgs.filter((organization) => organization.orgId !== team.orgId);
-  const openOrganizationPage = (category: 'organization-members' | 'organization-projects' | 'organization-security') => {
-    selectOrganization(team.orgId);
-    openSettings({
-      category,
-      scope: 'organization',
-      destination: { scope: 'organization', category, orgId: team.orgId },
-      timestamp: Date.now(),
-    });
+  // Org administration opens in its own window (2026-07-17 decision-log correction).
+  const openTeamSurface = () => {
+    void (window as any).electronAPI?.team?.openManagementWindow({ orgId: team.orgId, workspacePath });
   };
 
   return (
@@ -449,10 +329,12 @@ function ProjectScopedTeamExistsState({
         <div className="mt-3 flex items-center gap-2 rounded bg-[var(--nim-bg)] px-3 py-2"><MaterialSymbol icon={team.gitRemoteHash ? 'link' : 'link_off'} size={15} /><span className="min-w-0 flex-1 truncate select-text font-mono text-xs text-[var(--nim-text-muted)]">{localGitRemote || 'No git remote linked'}</span>{isAdmin && (team.gitRemoteHash ? <button type="button" className="text-xs text-[var(--nim-text-muted)]" onClick={onUnlinkProject}>Unlink</button> : localGitRemote ? <button type="button" className="text-xs text-[var(--nim-link)]" onClick={onLinkProject}>Relink</button> : null)}</div>
       </div>
 
+      <div className="workspace-organization-account-chain mt-3 select-text rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-2 text-xs text-[var(--nim-text-muted)]" data-testid="workspace-organization-account-chain">
+        {workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? workspacePath} → {team.name} → {team.boundAccountEmail ?? team.boundPersonalOrgId ?? 'bound account'}
+      </div>
+
       <div className="project-organization-links my-4 flex flex-wrap gap-2" data-testid="project-organization-links">
-        <button type="button" className="rounded border border-[var(--nim-border)] px-3 py-1.5 text-xs hover:bg-[var(--nim-bg-hover)]" onClick={() => openOrganizationPage('organization-members')}>Organization members</button>
-        <button type="button" className="rounded border border-[var(--nim-border)] px-3 py-1.5 text-xs hover:bg-[var(--nim-bg-hover)]" onClick={() => openOrganizationPage('organization-projects')}>Organization projects</button>
-        <button type="button" className="rounded border border-[var(--nim-border)] px-3 py-1.5 text-xs hover:bg-[var(--nim-bg-hover)]" onClick={() => openOrganizationPage('organization-security')}>Encryption status</button>
+        <button type="button" className="rounded border border-[var(--nim-border)] px-3 py-1.5 text-xs hover:bg-[var(--nim-bg-hover)]" onClick={openTeamSurface}>Open Team</button>
       </div>
 
       {!currentProject ? (
@@ -465,377 +347,9 @@ function ProjectScopedTeamExistsState({
         <div className="project-scoped-actions mt-4 border-t border-[var(--nim-border)] pt-4"><button type="button" className="rounded border border-[var(--nim-border)] px-3 py-1.5 text-xs hover:bg-[var(--nim-bg-hover)]" data-testid="move-current-project" onClick={() => setMoving(true)}>Move project…</button></div>
       )}
       {moving && currentProject && (
-        <MoveProjectWizard srcOrgId={team.orgId} project={{ projectId: currentProject.projectId, name: currentProject.name || currentProject.slug || 'Untitled project' }} destCandidates={destinationOrganizations} onClose={() => setMoving(false)} onMoved={() => { setMoving(false); onProjectMoved(); }} onUpdateEncryption={() => openOrganizationPage('organization-security')} />
+        <MoveProjectWizard srcOrgId={team.orgId} project={{ projectId: currentProject.projectId, name: currentProject.name || currentProject.slug || 'Untitled project' }} destCandidates={destinationOrganizations} onClose={() => setMoving(false)} onMoved={() => { setMoving(false); onProjectMoved(); }} onUpdateEncryption={openTeamSurface} />
       )}
     </div>
-  );
-}
-
-function TeamExistsState({ team, projects, workspacePath, adminOrgs, onInvite, onRemoveMember, onDeleteTeam, onLinkProject, onUnlinkProject, onProjectMoved, isAdmin, localGitRemote, fingerprints, myFingerprint, onVerifyMember, onRevokeTrust, onReshareKey, onUpdateRole }: {
-  team: TeamData;
-  projects: OrgProjectSummary[];
-  workspacePath?: string;
-  adminOrgs: { orgId: string; name: string }[];
-  onInvite: (email: string) => void;
-  onRemoveMember: (memberId: string) => void;
-  onDeleteTeam: () => void;
-  onLinkProject: () => void;
-  onUnlinkProject: () => void;
-  onProjectMoved: () => void;
-  isAdmin: boolean;
-  localGitRemote: string;
-  fingerprints: Map<string, MemberFingerprint>;
-  myFingerprint: string | null;
-  onVerifyMember: (memberId: string, fingerprint: string) => void;
-  onRevokeTrust: (memberId: string) => void;
-  onReshareKey: (memberId: string) => void;
-  onUpdateRole: (memberId: string, newRole: 'admin' | 'member') => void;
-}) {
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
-  // Epic H3 P3: the project currently being moved (opens the move wizard).
-  const [movingProject, setMovingProject] = useState<{ projectId: string; name: string } | null>(null);
-  // Epic H3 P4: whether the merge-org wizard is open.
-  const [merging, setMerging] = useState(false);
-  // Epic H3 P5: target for the move wizard's "Update encryption" deep-link —
-  // the Security & Encryption (H2 custody) section lives in this same panel.
-  const encryptionSectionRef = useRef<HTMLDivElement>(null);
-  const hasOtherAdminOrg = adminOrgs.some(o => o.orgId !== team.orgId);
-  const canMoveProjects = isAdmin && hasOtherAdminOrg;
-
-  const handleInvite = () => {
-    if (inviteEmail.trim()) {
-      onInvite(inviteEmail.trim());
-      setInviteEmail('');
-    }
-  };
-
-  const handleInviteKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleInvite();
-    }
-  };
-
-  return (
-    <>
-      {/* Team Header Card */}
-      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-        <div className="flex items-center gap-3 p-3 bg-[var(--nim-bg-secondary)] rounded-lg">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#60a5fa] to-[#a78bfa] flex items-center justify-center shrink-0">
-            <MaterialSymbol icon="group" size={18} className="text-white" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-[14px] font-semibold text-[var(--nim-text)]">{team.name}</div>
-            <div className="text-[11px] text-[var(--nim-text-faint)] font-mono overflow-hidden text-ellipsis whitespace-nowrap">
-              {team.gitRemote || 'No project linked'}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Project Identity */}
-      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-        <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)]">
-          Project Identity
-        </h4>
-        <p className="text-[12px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
-          Teams are linked to a git remote. Members who open a clone of the same repo are automatically connected.
-        </p>
-        {team.gitRemoteHash ? (
-          <div className="flex items-center gap-2">
-            <div className="flex-1 flex items-center gap-2 px-3 py-2.5 bg-[var(--nim-bg-secondary)] rounded-md">
-              <MaterialSymbol icon="link" size={14} className="text-[var(--nim-success)] shrink-0" />
-              <span className="text-[12px] font-mono text-[var(--nim-text-muted)] overflow-hidden text-ellipsis whitespace-nowrap">
-                {localGitRemote || `${team.gitRemoteHash.slice(0, 12)}...`}
-              </span>
-            </div>
-            {isAdmin && (
-              <button
-                onClick={onUnlinkProject}
-                className="px-2.5 py-2 text-[11px] bg-transparent border border-[var(--nim-border)] rounded text-[var(--nim-text-faint)] cursor-pointer hover:bg-[var(--nim-bg-hover)] shrink-0"
-              >
-                Unlink
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--nim-bg-secondary)] rounded-md">
-            <MaterialSymbol icon="link_off" size={14} className="text-[var(--nim-text-faint)] shrink-0" />
-            <span className="flex-1 text-[12px] text-[var(--nim-text-faint)]">
-              No project linked
-            </span>
-            {isAdmin && localGitRemote && (
-              <button
-                onClick={onLinkProject}
-                className="px-2.5 py-1 text-[11px] bg-[var(--nim-primary)] border-none rounded text-white cursor-pointer"
-              >
-                Link This Project
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Projects Section (Epic H3 P0/A) -- every project in this org. An org
-          can hold multiple projects, each its own tracker space; this lists them
-          so it's clear which one this workspace is connected to. */}
-      {(projects.length > 1 || canMoveProjects) && (
-        <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-          <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)] flex items-center justify-between">
-            <span>Projects</span>
-            <span className="text-[11px] font-normal text-[var(--nim-text-faint)]">
-              {projects.length} {projects.length === 1 ? 'project' : 'projects'}
-            </span>
-          </h4>
-          {projects.length > 1 && (
-            <p className="text-[12px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
-              This organization has multiple projects. Each is its own tracker space; members share the org&apos;s roster and encryption.
-            </p>
-          )}
-          <div className="bg-[var(--nim-bg-secondary)] rounded-lg overflow-hidden">
-            {projects.map((p) => {
-              const isCurrent = !!team.teamProjectId && p.teamProjectId === team.teamProjectId;
-              return (
-                <div
-                  key={p.projectId}
-                  className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-[var(--nim-bg)] last:border-b-0"
-                >
-                  <MaterialSymbol
-                    icon="folder"
-                    size={16}
-                    className={isCurrent ? 'text-[var(--nim-primary)] shrink-0' : 'text-[var(--nim-text-faint)] shrink-0'}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-medium text-[var(--nim-text)] flex items-center gap-1.5">
-                      {p.name || p.slug || 'Untitled project'}
-                      {isCurrent && (
-                        <span className="text-[10px] text-[var(--nim-primary)] font-normal">(this workspace)</span>
-                      )}
-                    </div>
-                    {p.gitRemoteHash && (
-                      <div className="text-[11px] text-[var(--nim-text-faint)] font-mono overflow-hidden text-ellipsis whitespace-nowrap">
-                        {p.gitRemoteHash.slice(0, 12)}…
-                      </div>
-                    )}
-                  </div>
-                  {canMoveProjects && (
-                    <button
-                      className="text-[11px] px-2 py-1 rounded-md text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg)] hover:text-[var(--nim-text)] shrink-0 flex items-center gap-1"
-                      onClick={() => setMovingProject({ projectId: p.projectId, name: p.name || p.slug || 'Untitled project' })}
-                      data-testid={`move-project-trigger-${p.projectId}`}
-                      title="Move this project to another organization"
-                    >
-                      <MaterialSymbol icon="drive_file_move" size={14} />
-                      Move…
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {movingProject && (
-        <MoveProjectWizard
-          srcOrgId={team.orgId}
-          project={movingProject}
-          destCandidates={adminOrgs}
-          onClose={() => setMovingProject(null)}
-          onMoved={() => { onProjectMoved(); }}
-          onUpdateEncryption={() => {
-            // Reveal the H2 "update encryption" migration surface in this panel.
-            encryptionSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }}
-        />
-      )}
-
-      {/* Members Section */}
-      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-        <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)] flex items-center justify-between">
-          <span>Members</span>
-          <span className="text-[11px] font-normal text-[var(--nim-text-faint)]">
-            {team.members.length} {team.members.length === 1 ? 'member' : 'members'}
-          </span>
-        </h4>
-
-        <div className="bg-[var(--nim-bg-secondary)] rounded-lg overflow-hidden">
-          {team.members.map((member) => {
-            const fp = fingerprints.get(member.id);
-            // Use fingerprint-based trust for non-pending members
-            const displayTrustStatus: TrustStatus = member.trustStatus === 'pending'
-              ? 'pending'
-              : fp?.trustStatus === 'verified'
-                ? 'verified'
-                : fp?.trustStatus === 'fingerprint-changed'
-                  ? 'fingerprint-changed'
-                  : 'unverified';
-            const isExpanded = expandedMemberId === member.id;
-            const canExpand = member.trustStatus !== 'pending' && !member.isYou;
-
-            return (
-              <div key={member.id}>
-                <div
-                  className={`flex items-center gap-2.5 px-3.5 py-2.5 border-b border-[var(--nim-bg)] last:border-b-0 ${
-                    member.trustStatus === 'pending' ? 'opacity-70' : ''
-                  }`}
-                >
-                  <MemberAvatar
-                    name={member.name}
-                    email={member.email}
-                    color={member.avatarColor}
-                    isPending={member.trustStatus === 'pending'}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-medium text-[var(--nim-text)] flex items-center gap-1.5">
-                      {member.trustStatus === 'pending' ? member.email : (member.name || member.email)}
-                      {member.isYou && (
-                        <span className="text-[10px] text-[var(--nim-text-faint)] font-normal">(you)</span>
-                      )}
-                    </div>
-                    {member.trustStatus === 'pending' ? (
-                      <div className="text-[11px] text-[var(--nim-text-faint)]">
-                        Invited {member.invitedAt || 'recently'}
-                      </div>
-                    ) : (
-                      <div className="text-[11px] text-[var(--nim-text-faint)]">{member.email}</div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {member.trustStatus === 'pending' ? (
-                      <PendingBadge />
-                    ) : (
-                      <>
-                        <RoleBadge
-                          role={member.role}
-                          editable={isAdmin && !member.isYou}
-                          onChange={(newRole) => onUpdateRole(member.id, newRole)}
-                        />
-                        <TrustStatusIcon
-                          status={displayTrustStatus}
-                          onClick={canExpand ? () => setExpandedMemberId(isExpanded ? null : member.id) : undefined}
-                        />
-                      </>
-                    )}
-                  </div>
-                  {!member.isYou && isAdmin && (
-                    <div className="shrink-0">
-                      <button
-                        onClick={() => onRemoveMember(member.id)}
-                        className={`px-2.5 py-1 text-[11px] bg-transparent border rounded cursor-pointer ${
-                          member.trustStatus === 'pending'
-                            ? 'border-[var(--nim-border)] text-[var(--nim-text-disabled)] hover:bg-[var(--nim-bg-hover)]'
-                            : 'border-[rgba(239,68,68,0.4)] text-[var(--nim-error)] hover:bg-[rgba(239,68,68,0.1)]'
-                        }`}
-                      >
-                        {member.trustStatus === 'pending' ? 'Revoke' : 'Remove'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-                {isExpanded && canExpand && (
-                  <MemberFingerprintDetail
-                    member={member}
-                    fingerprint={fp || null}
-                    onVerify={() => {
-                      if (fp) onVerifyMember(member.id, fp.fingerprint);
-                    }}
-                    onRevoke={() => onRevokeTrust(member.id)}
-                    onReshareKey={() => onReshareKey(member.id)}
-                    isAdmin={isAdmin}
-                  />
-                )}
-              </div>
-            );
-          })}
-
-          {/* Invite Input Row (admin only) */}
-          {isAdmin && (
-            <div className="flex items-center gap-2 px-3.5 py-2 border-t border-[var(--nim-bg)] bg-[rgba(255,255,255,0.02)]">
-              <MaterialSymbol icon="add" size={14} className="text-[var(--nim-text-disabled)] shrink-0" />
-              <input
-                type="email"
-                value={inviteEmail}
-                onChange={(e) => setInviteEmail(e.target.value)}
-                onKeyDown={handleInviteKeyDown}
-                placeholder="Invite by email address..."
-                className="flex-1 py-1.5 px-2.5 border border-[var(--nim-border)] rounded bg-[var(--nim-bg)] text-[var(--nim-text)] text-[12px] outline-none placeholder:text-[var(--nim-text-disabled)]"
-              />
-              <button
-                onClick={handleInvite}
-                disabled={!inviteEmail.trim()}
-                className={`px-3 py-1.5 bg-[var(--nim-primary)] border-none rounded text-white text-[12px] font-medium whitespace-nowrap ${
-                  inviteEmail.trim()
-                    ? 'cursor-pointer opacity-100'
-                    : 'cursor-not-allowed opacity-50'
-                }`}
-              >
-                Invite
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Your Fingerprint */}
-      {myFingerprint && (
-        <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-          <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)]">
-            Your Fingerprint
-          </h4>
-          <p className="text-[12px] text-[var(--nim-text-muted)] mb-2 leading-relaxed">
-            Share this fingerprint with your team members so they can verify your identity.
-          </p>
-          <div className="px-2.5 py-2 bg-[var(--nim-bg-secondary)] rounded font-mono text-[11px] text-[var(--nim-text-muted)] leading-relaxed break-all select-text">
-            {myFingerprint.split(':').slice(0, 16).join(':')}
-          </div>
-        </div>
-      )}
-
-      {/* Security & encryption (Epic H2: key custody + migration) */}
-      <div ref={encryptionSectionRef} className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0" data-testid="team-panel-encryption-section">
-        <SecurityEncryptionSection orgId={team.orgId} workspacePath={workspacePath} isAdmin={isAdmin} />
-      </div>
-
-      {/* Danger Zone */}
-      {isAdmin && (
-        <div className="provider-panel-section py-4">
-          <h4 className="provider-panel-section-title text-[13px] font-semibold mb-2 text-[var(--nim-text-muted)]">
-            Danger Zone
-          </h4>
-          <div className="flex flex-wrap gap-2">
-            {hasOtherAdminOrg && (
-              <button
-                onClick={() => setMerging(true)}
-                className="px-3.5 py-1.5 text-[12px] bg-transparent border border-[rgba(239,68,68,0.4)] rounded-md text-[var(--nim-error)] cursor-pointer hover:bg-[rgba(239,68,68,0.1)] flex items-center gap-1"
-                data-testid="merge-org-trigger"
-                title="Move all of this org's projects into another org you administer"
-              >
-                <MaterialSymbol icon="merge" size={14} />
-                Merge into another org…
-              </button>
-            )}
-            <button
-              onClick={onDeleteTeam}
-              className="px-3.5 py-1.5 text-[12px] bg-transparent border border-[rgba(239,68,68,0.4)] rounded-md text-[var(--nim-error)] cursor-pointer hover:bg-[rgba(239,68,68,0.1)]"
-            >
-              Delete Team
-            </button>
-          </div>
-        </div>
-      )}
-
-      {merging && (
-        <MergeOrgWizard
-          drainedOrg={{ orgId: team.orgId, name: team.name }}
-          survivorCandidates={adminOrgs}
-          projectCount={projects.length}
-          memberCount={team.members.length}
-          onClose={() => setMerging(false)}
-          onMerged={() => { setMerging(false); onProjectMoved(); }}
-        />
-      )}
-    </>
   );
 }
 
@@ -911,8 +425,6 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
-  const [fingerprints, setFingerprints] = useState<Map<string, MemberFingerprint>>(new Map());
-  const [myFingerprint, setMyFingerprint] = useState<string | null>(null);
   // Epic H3 P0/A: projects in the active org, and the orgs the user can add
   // this workspace to as a NEW project (orgs where they are owner/admin).
   const [projects, setProjects] = useState<OrgProjectSummary[]>([]);
@@ -979,39 +491,27 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     loadAdminOrgs();
   }, [loadAdminOrgs]);
 
-  // Load team data for an orgId: fetch members, envelopes, and fingerprints
-  const loadTeamDetails = useCallback(async (orgId: string, teamName: string, teamGitRemoteHash: string | null, teamProjectId?: string | null) => {
+  // Load team data for an orgId: fetch members and projects. Team custody is
+  // server-managed, so there is no per-member key-envelope trust to compute
+  // (NIM-1779/C2: the envelope-based trust + re-share UI was removed).
+  const loadTeamDetails = useCallback(async (orgId: string, teamName: string, teamGitRemoteHash: string | null, teamProjectId?: string | null, boundPersonalOrgId?: string) => {
     const membersResult = await (window as any).electronAPI.team.listMembers(orgId);
     if (!membersResult.success) return;
 
     const currentUserId = membersResult.callerMemberId || '';
-
-    // Fetch key envelopes to determine trust status
-    let envelopeUserIds = new Set<string>();
-    try {
-      const envelopesResult = await (window as any).electronAPI.team.listKeyEnvelopes(orgId);
-      if (envelopesResult.success && envelopesResult.envelopes) {
-        envelopeUserIds = new Set(envelopesResult.envelopes.map((e: any) => e.targetUserId));
-      }
-    } catch {
-      // Envelope listing may fail if not admin -- that's OK
-    }
 
     const members: TeamMember[] = (membersResult.members || []).map((m: any, i: number) => ({
       id: m.memberId,
       name: m.name || '',
       email: m.email,
       role: m.role as 'admin' | 'member',
-      trustStatus: m.status === 'pending'
-        ? 'pending' as const
-        : envelopeUserIds.has(m.memberId)
-          ? 'verified' as const
-          : 'unverified' as const,
+      status: m.status === 'pending' ? 'pending' as const : 'active' as const,
       avatarColor: getAvatarColor(i),
       isYou: m.memberId === currentUserId,
       invitedAt: m.status === 'pending' ? 'recently' : undefined,
     }));
 
+    const accounts = await window.electronAPI.stytch.getAccounts();
     setTeam({
       orgId,
       name: teamName,
@@ -1020,10 +520,9 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       teamProjectId: teamProjectId ?? null,
       members,
       callerRole: membersResult.callerRole || 'member',
+      boundPersonalOrgId,
+      boundAccountEmail: accounts.find((account) => account.personalOrgId === boundPersonalOrgId)?.email ?? null,
     });
-
-    // Load fingerprints for non-pending members (fire-and-forget, doesn't block UI)
-    loadFingerprints(orgId, members, currentUserId);
 
     // Epic H3 P0/A: list every project in this org (fire-and-forget).
     (window as any).electronAPI.team.listProjects(orgId).then((res: any) => {
@@ -1059,7 +558,7 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
 
         // Active team match
         setPendingInvite(null);
-        await loadTeamDetails(matchedTeam.orgId, matchedTeam.name, matchedTeam.gitRemoteHash, matchedTeam.teamProjectId);
+        await loadTeamDetails(matchedTeam.orgId, matchedTeam.name, matchedTeam.gitRemoteHash, matchedTeam.teamProjectId, matchedTeam.boundPersonalOrgId);
         return;
       }
 
@@ -1100,89 +599,9 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     loadTeamData();
   }, [loadTeamData]);
 
-  // Load fingerprints for non-pending members (async, doesn't block team load)
-  const loadFingerprints = useCallback(async (orgId: string, members: TeamMember[], currentUserId: string) => {
-    const fpMap = new Map<string, MemberFingerprint>();
-
-    // Fetch fingerprints for each non-pending, non-self member
-    const fetchPromises = members
-      .filter(m => m.trustStatus !== 'pending' && m.id !== currentUserId)
-      .map(async (m) => {
-        try {
-          const result = await (window as any).electronAPI.team.getMemberFingerprint(orgId, m.id);
-          if (result.success) {
-            fpMap.set(m.id, {
-              fingerprint: result.fingerprint,
-              trustStatus: result.trustStatus,
-            });
-          }
-        } catch {
-          // Fingerprint fetch may fail if member hasn't uploaded key yet
-        }
-      });
-
-    await Promise.all(fetchPromises);
-    setFingerprints(fpMap);
-
-    // Fetch own fingerprint
-    try {
-      const myResult = await (window as any).electronAPI.team.getMyFingerprint(orgId);
-      if (myResult.success) {
-        setMyFingerprint(myResult.fingerprint);
-      }
-    } catch {
-      // Ignore -- own fingerprint is optional display
-    }
-  }, []);
-
-  const handleVerifyMember = async (memberId: string, fingerprint: string) => {
-    if (!team) return;
-    setError(null);
-    try {
-      const result = await (window as any).electronAPI.team.verifyMember(team.orgId, memberId, fingerprint);
-      if (result.success) {
-        // Update local fingerprint state
-        setFingerprints(prev => {
-          const next = new Map(prev);
-          const existing = next.get(memberId);
-          if (existing) {
-            next.set(memberId, { ...existing, trustStatus: 'verified' });
-          }
-          return next;
-        });
-      } else {
-        setError(result.error || 'Failed to verify member');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to verify member');
-    }
-  };
-
-  const handleRevokeTrust = async (memberId: string) => {
-    if (!team) return;
-    setError(null);
-    try {
-      const result = await (window as any).electronAPI.team.revokeMemberTrust(team.orgId, memberId);
-      if (result.success) {
-        setFingerprints(prev => {
-          const next = new Map(prev);
-          const existing = next.get(memberId);
-          if (existing) {
-            next.set(memberId, { ...existing, trustStatus: 'unverified' });
-          }
-          return next;
-        });
-      } else {
-        setError(result.error || 'Failed to revoke trust');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke trust');
-    }
-  };
-
   const handleCreateTeam = async () => {
     // Load accounts to show picker if multiple are signed in
-    let accounts: Array<{ personalOrgId: string; email: string | null; isPrimary: boolean }> = [];
+    let accounts: Array<{ personalOrgId: string; email: string | null; isSyncAccount: boolean }> = [];
     try {
       accounts = await (window as any).electronAPI.stytch.getAccounts() || [];
     } catch {
@@ -1251,7 +670,7 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
               name: '',
               email,
               role: 'member',
-              trustStatus: 'pending',
+              status: 'pending',
               avatarColor: getAvatarColor(team.members.length),
               invitedAt: 'just now',
             },
@@ -1271,7 +690,7 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     if (!team) return;
     const member = team.members.find((m) => m.id === memberId);
     const label = member?.email || member?.name || 'this member';
-    const isPending = member?.trustStatus === 'pending';
+    const isPending = member?.status === 'pending';
     const confirmed = window.confirm(
       isPending
         ? `Revoke the pending invite for ${label}?`
@@ -1345,22 +764,6 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to unlink project');
-    }
-  };
-
-  const handleReshareKey = async (memberId: string) => {
-    if (!team) return;
-    setError(null);
-    try {
-      const result = await (window as any).electronAPI.team.reshareKey(team.orgId, memberId);
-      if (result.success) {
-        // Reload team data to refresh envelope state
-        await loadTeamData();
-      } else {
-        setError(result.error || 'Failed to re-share key');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to re-share key');
     }
   };
 

@@ -1020,6 +1020,7 @@ export { StatusBar } from './components/StatusBar';
 export { TrackerTable, convertFullDocumentToTrackerItems, resolveTrackerFrontmatter, renderCell, ContextSubmenu } from './components/TrackerTable';
 export type { SortColumn, SortDirection } from './components/TrackerTable';
 export { TrackerTableGrid } from './components/TrackerTableGrid';
+export { TrackerFavoriteStar } from './components/TrackerFavoriteStar';
 export { useTrackerRows } from './components/useTrackerRows';
 export type { UseTrackerRowsOptions, UseTrackerRowsResult, EditingCellRef, EditingField } from './components/useTrackerRows';
 export { TrackerFieldEditor } from './components/TrackerFieldEditor';

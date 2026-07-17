@@ -175,6 +175,7 @@ export interface SubagentPayload {
   teamName: string | null;
   teammateMode: string | null;
   model: string | null;
+  reasoningEffort: string | null;
   color: string | null;
   isBackground: boolean;
   prompt: string;

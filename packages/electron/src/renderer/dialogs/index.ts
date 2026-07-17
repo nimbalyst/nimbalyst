@@ -10,6 +10,7 @@ import { registerSimpleDialogs as _registerSimpleDialogs } from './simpleDialogs
 import { registerDataDialogs as _registerDataDialogs } from './dataDialogs';
 import { registerOnboardingDialogs as _registerOnboardingDialogs } from './onboardingDialogs';
 import { registerTeamDialogs as _registerTeamDialogs } from './teamDialogs';
+import { registerAccountDialogs as _registerAccountDialogs } from './accountDialogs';
 
 export { DIALOG_IDS, type DialogId } from './registry';
 export {
@@ -44,6 +45,7 @@ export {
   type CreateTeamData,
   type ShareToTeamData,
 } from './teamDialogs';
+export { registerAccountDialogs, type AccountLoginData } from './accountDialogs';
 export { useNavigationDialogs, type UseNavigationDialogsReturn } from './useNavigationDialogs';
 export { dialogRef, dialogReadyAtom, hasActiveDialogsAtom } from '../contexts/DialogContext';
 
@@ -74,4 +76,5 @@ export function initializeDialogs() {
 
   // Register team/collaboration dialogs
   _registerTeamDialogs();
+  _registerAccountDialogs();
 }

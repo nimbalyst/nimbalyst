@@ -21,8 +21,16 @@ fi
 echo "[pre-push] Checking override/dep sync..."
 npm run check:override-sync
 
-echo "[pre-push] Running typecheck..."
-npm run typecheck
+echo "[pre-push] Building typecheck prerequisites and running the full typecheck..."
+npm run typecheck:prepush
 
-echo "[pre-push] Running non-provider unit tests..."
-npm run test:prepush
+echo "[pre-push] Verifying platform test-gate behavior..."
+npm run test:prepush-gate
+
+if [ "$(node scripts/prepush-test-gate.mjs)" = "run" ]; then
+  echo "[pre-push] Running non-provider unit tests..."
+  npm run test:prepush
+else
+  echo "[pre-push] Skipping the full Vitest suite on local Windows; CI and non-Windows pushes still require it."
+  echo "[pre-push] See docs/WINDOWS_PREPUSH_GATE.md for the tracked nonportable failures."
+fi

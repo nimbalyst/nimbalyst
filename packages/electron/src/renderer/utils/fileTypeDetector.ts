@@ -8,6 +8,100 @@
 export type EditorType = 'markdown' | 'code' | 'image' | 'custom';
 
 /**
+ * Textual suffixes understood by the built-in Monaco editor. Keep this as the
+ * single renderer source of truth for both language selection and the
+ * collaborative document-type catalog.
+ */
+export const MONACO_LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze({
+  // JavaScript/TypeScript
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.mjs': 'javascript',
+  '.cjs': 'javascript',
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.d.ts': 'typescript',
+
+  // Web
+  '.html': 'html',
+  '.htm': 'html',
+  '.css': 'css',
+  '.scss': 'scss',
+  '.sass': 'sass',
+  '.less': 'less',
+
+  // Data formats
+  '.json': 'json',
+  '.jsonc': 'json',
+  '.xml': 'xml',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+  '.toml': 'ini',
+
+  // Python
+  '.py': 'python',
+  '.pyw': 'python',
+  '.pyi': 'python',
+
+  // Shell
+  '.sh': 'shell',
+  '.bash': 'shell',
+  '.zsh': 'shell',
+  '.fish': 'shell',
+
+  // C/C++
+  '.c': 'c',
+  '.h': 'c',
+  '.cpp': 'cpp',
+  '.cc': 'cpp',
+  '.cxx': 'cpp',
+  '.hpp': 'cpp',
+  '.hxx': 'cpp',
+
+  // Other compiled languages
+  '.rs': 'rust',
+  '.go': 'go',
+  '.java': 'java',
+  '.kt': 'kotlin',
+  '.swift': 'swift',
+  '.cs': 'csharp',
+  '.dart': 'dart',
+
+  // Scripting
+  '.rb': 'ruby',
+  '.php': 'php',
+  '.pl': 'perl',
+  '.lua': 'lua',
+
+  // Functional
+  '.hs': 'haskell',
+  '.scala': 'scala',
+  '.clj': 'clojure',
+  '.fs': 'fsharp',
+  '.fsx': 'fsharp',
+
+  // Markup/config
+  '.md': 'markdown',
+  '.markdown': 'markdown',
+  '.mdc': 'markdown',
+  '.sql': 'sql',
+  '.graphql': 'graphql',
+  '.dockerfile': 'dockerfile',
+  '.dockerignore': 'plaintext',
+  '.gitignore': 'plaintext',
+  '.env': 'plaintext',
+
+  // Text
+  '.txt': 'plaintext',
+  '.log': 'plaintext',
+});
+
+/** Longest suffix first so compound types such as `.d.ts` win. */
+export const MONACO_TEXT_FILE_EXTENSIONS = Object.freeze(
+  Object.keys(MONACO_LANGUAGE_BY_EXTENSION).sort((a, b) => b.length - a.length || a.localeCompare(b)),
+);
+
+/**
  * Browser-compatible path utilities
  */
 function getExtname(filePath: string): string {
@@ -74,90 +168,6 @@ export function getFileType(
 export function getMonacoLanguage(filePath: string): string {
   const ext = getExtname(filePath).toLowerCase();
 
-  const languageMap: Record<string, string> = {
-    // JavaScript/TypeScript
-    '.js': 'javascript',
-    '.jsx': 'javascript',
-    '.mjs': 'javascript',
-    '.cjs': 'javascript',
-    '.ts': 'typescript',
-    '.tsx': 'typescript',
-    '.d.ts': 'typescript',
-
-    // Web
-    '.html': 'html',
-    '.htm': 'html',
-    '.css': 'css',
-    '.scss': 'scss',
-    '.sass': 'sass',
-    '.less': 'less',
-
-    // Data formats
-    '.json': 'json',
-    '.jsonc': 'json',
-    '.xml': 'xml',
-    '.yaml': 'yaml',
-    '.yml': 'yaml',
-    '.toml': 'ini', // Monaco doesn't have TOML, INI is closest
-
-    // Python
-    '.py': 'python',
-    '.pyw': 'python',
-    '.pyi': 'python',
-
-    // Shell
-    '.sh': 'shell',
-    '.bash': 'shell',
-    '.zsh': 'shell',
-    '.fish': 'shell',
-
-    // C/C++
-    '.c': 'c',
-    '.h': 'c',
-    '.cpp': 'cpp',
-    '.cc': 'cpp',
-    '.cxx': 'cpp',
-    '.hpp': 'cpp',
-    '.hxx': 'cpp',
-
-    // Other compiled languages
-    '.rs': 'rust',
-    '.go': 'go',
-    '.java': 'java',
-    '.kt': 'kotlin',
-    '.swift': 'swift',
-    '.cs': 'csharp',
-    '.dart': 'dart',
-
-    // Scripting
-    '.rb': 'ruby',
-    '.php': 'php',
-    '.pl': 'perl',
-    '.lua': 'lua',
-
-    // Functional
-    '.hs': 'haskell',
-    '.scala': 'scala',
-    '.clj': 'clojure',
-    '.fs': 'fsharp',
-    '.fsx': 'fsharp',
-
-    // Markup/Config
-    '.md': 'markdown',
-    '.markdown': 'markdown',
-    '.mdc': 'markdown',
-    '.sql': 'sql',
-    '.graphql': 'graphql',
-    '.dockerfile': 'dockerfile',
-    '.dockerignore': 'plaintext',
-    '.gitignore': 'plaintext',
-    '.env': 'plaintext',
-
-    // Text
-    '.txt': 'plaintext',
-    '.log': 'plaintext',
-  };
-
   // Special case: files without extensions
   if (!ext) {
     const basename = getBasename(filePath);
@@ -167,7 +177,11 @@ export function getMonacoLanguage(filePath: string): string {
     return 'plaintext';
   }
 
-  return languageMap[ext] || 'plaintext';
+  const lowerName = getBasename(filePath).toLowerCase();
+  const matchedSuffix = MONACO_TEXT_FILE_EXTENSIONS.find(suffix => lowerName.endsWith(suffix));
+  return (matchedSuffix && MONACO_LANGUAGE_BY_EXTENSION[matchedSuffix]) ||
+    MONACO_LANGUAGE_BY_EXTENSION[ext] ||
+    'plaintext';
 }
 
 /**

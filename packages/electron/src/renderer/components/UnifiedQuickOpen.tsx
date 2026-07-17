@@ -31,6 +31,7 @@ import { setTrackerModeLayoutAtom } from '../store/atoms/trackers';
 import {
   pendingCollabDocumentAtom,
   sharedDocumentsAtom,
+  sharedFoldersAtom,
   workspaceHasTeamAtom,
   type SharedDocument,
 } from '../store/atoms/collabDocuments';
@@ -39,7 +40,8 @@ import {
   collabFavoritesAtom,
   recentSharedDocsAtom,
 } from '../store/atoms/collabDiscovery';
-import { getCollabNodeName } from './CollabMode/collabTree';
+import { getCollabParentPath, getSharedDocumentDisplayName } from './CollabMode/collabTree';
+import { searchSharedDocuments } from '../utils/sharedDocumentSearch';
 import type { TypeaheadOption } from './Typeahead/GenericTypeahead';
 import type { SessionMeta as SessionItem } from '../store';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../shared/KeyboardShortcuts';
@@ -759,10 +761,6 @@ interface SharedDocsPaneProps {
   onClose: () => void;
 }
 
-function sharedDocDisplayName(doc: SharedDocument): string {
-  return getCollabNodeName(doc.title) || doc.title || doc.documentId;
-}
-
 const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
   isOpen,
   isActive,
@@ -770,6 +768,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
   onClose,
 }) => {
   const documents = useAtomValue(sharedDocumentsAtom);
+  const folders = useAtomValue(sharedFoldersAtom);
   const favorites = useAtomValue(collabFavoritesAtom);
   const changedDocIds = useAtomValue(changedDocIdsAtom);
   const recentDocuments = useAtomValue(recentSharedDocsAtom);
@@ -785,9 +784,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
     const normalizedQuery = query.trim().toLowerCase();
 
     if (normalizedQuery) {
-      return openable
-        .filter((doc) => sharedDocDisplayName(doc).toLowerCase().includes(normalizedQuery))
-        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+      return searchSharedDocuments(documents, folders, query).map(({ document }) => document);
     }
 
     const favoriteRank = new Map(favorites.map((id, index) => [id, index]));
@@ -812,7 +809,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
       }
       return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
     });
-  }, [documents, query, favorites, changedDocIds, recentDocuments]);
+  }, [documents, folders, query, favorites, changedDocIds, recentDocuments]);
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -916,7 +913,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
                 </span>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-nim truncate">
-                    {sharedDocDisplayName(doc)}
+                    {getSharedDocumentDisplayName(doc.title, doc.documentId)}
                   </div>
                   <div className="text-xs text-nim-faint mt-0.5">
                     {getRelativeTimeString(doc.updatedAt ?? doc.createdAt ?? Date.now())}
@@ -952,6 +949,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
 // =============================================================================
 
 interface FileItem {
+  source: 'local' | 'shared';
   path: string;
   name: string;
   type?: 'file' | 'directory';
@@ -959,6 +957,7 @@ interface FileItem {
   matches?: Array<{ line: number; text: string; start: number; end: number }>;
   isFileNameMatch?: boolean;
   isContentMatch?: boolean;
+  sharedDocument?: SharedDocument;
 }
 
 interface FilesPaneProps {
@@ -989,6 +988,10 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
 }) => {
   const posthog = usePostHog();
   const revealFolder = useSetAtom(revealFolderAtom);
+  const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const sharedFolders = useAtomValue(sharedFoldersAtom);
+  const setPendingCollabDocument = useSetAtom(pendingCollabDocumentAtom);
+  const setWindowMode = useSetAtom(setWindowModeAtom);
   const [results, setResults] = useState<FileItem[]>([]);
   const [recentFiles, setRecentFiles] = useState<string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -1039,6 +1042,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
         );
         if (Array.isArray(fileNameResults)) {
           const processed: FileItem[] = fileNameResults.map((r: any) => ({
+            source: 'local',
             path: r.path,
             name: getFileName(r.path),
             type: r.type,
@@ -1089,7 +1093,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
     () =>
       recentFiles
         .filter((p) => p !== currentFilePath)
-        .map((p) => ({ path: p, name: getFileName(p), isRecent: true })),
+        .map((p) => ({ source: 'local' as const, path: p, name: getFileName(p), isRecent: true })),
     [recentFiles, currentFilePath],
   );
 
@@ -1100,13 +1104,28 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
     [extFilter],
   );
   const displayFiles = useMemo(() => {
-    const base = query ? results : recentItems;
-    if (maskPatterns.length === 0) return base;
-    return base.filter((f) => {
+    const localFiles = query ? results : recentItems;
+    const filteredLocalFiles = maskPatterns.length === 0 ? localFiles : localFiles.filter((f) => {
       if (f.type === 'directory') return false;
       return matchesFileMask(f.path, maskPatterns);
     });
-  }, [query, results, recentItems, maskPatterns]);
+
+    if (!query.trim()) return filteredLocalFiles;
+
+    const sharedFiles = searchSharedDocuments(sharedDocuments, sharedFolders, query)
+      .filter(({ displayPath }) => (
+        maskPatterns.length === 0 || matchesFileMask(displayPath, maskPatterns)
+      ))
+      .map<FileItem>(({ document, displayName, displayPath }) => ({
+        source: 'shared',
+        path: displayPath,
+        name: displayName,
+        type: 'file',
+        sharedDocument: document,
+      }));
+
+    return [...sharedFiles, ...filteredLocalFiles];
+  }, [query, results, recentItems, maskPatterns, sharedDocuments, sharedFolders]);
 
   // Track mouse movement
   useEffect(() => {
@@ -1126,6 +1145,15 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
 
   const handleSelect = useCallback(
     (file: FileItem) => {
+      if (file.source === 'shared' && file.sharedDocument) {
+        setPendingCollabDocument({
+          documentId: file.sharedDocument.documentId,
+          documentType: file.sharedDocument.documentType,
+        });
+        setWindowMode('collab');
+        onClose();
+        return;
+      }
       if (file.type === 'directory') {
         onFolderSelect?.(file.path);
         revealFolder(file.path);
@@ -1135,7 +1163,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
       onFileSelect(file.path);
       onClose();
     },
-    [onFileSelect, onFolderSelect, onClose, revealFolder],
+    [onFileSelect, onFolderSelect, onClose, revealFolder, setPendingCollabDocument, setWindowMode],
   );
 
   // Keyboard navigation — only when this pane is active
@@ -1180,6 +1208,9 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
           {displayFiles.map((file, index) => (
             <li
               key={`${file.path}-${index}`}
+              data-testid={file.source === 'shared'
+                ? `shared-file-quick-open-${file.sharedDocument?.documentId}`
+                : undefined}
               className={`unified-quick-open-item relative group px-4 py-2.5 cursor-pointer border-l-[3px] transition-all duration-100 ${
                 index === selectedIndex
                   ? 'selected bg-nim-selected border-l-nim-primary'
@@ -1190,7 +1221,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
                 if (mouseHasMoved) setSelectedIndex(index);
               }}
             >
-              {onShowFileSessions && file.type !== 'directory' && (
+              {onShowFileSessions && file.source === 'local' && file.type !== 'directory' && (
                 <button
                   className={`absolute right-3 top-2.5 p-1 rounded border-none cursor-pointer bg-transparent text-nim-faint hover:text-[var(--nim-primary)] hover:bg-[var(--nim-accent-subtle)] ${
                     index === selectedIndex ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
@@ -1208,16 +1239,27 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
                 </button>
               )}
               <div className="text-sm font-medium flex items-center gap-2 text-nim">
-                {file.type === 'directory' && (
+                {file.source === 'shared' ? (
+                  <MaterialSymbol
+                    icon="groups"
+                    size={16}
+                    className="text-[var(--nim-primary)] shrink-0"
+                  />
+                ) : file.type === 'directory' && (
                   <MaterialSymbol icon="folder" size={16} className="text-nim-faint shrink-0" />
                 )}
                 {file.type === 'directory' ? file.name + '/' : file.name}
+                {file.source === 'shared' && (
+                  <span className="nim-badge-primary text-[10px]">Shared</span>
+                )}
                 {file.isRecent && !query && (
                   <span className="nim-badge-primary text-[10px]">Recent</span>
                 )}
               </div>
               <div className="text-xs mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap text-nim-faint">
-                {getRelativeDir(file.path, workspacePath)}
+                {file.source === 'shared'
+                  ? getCollabParentPath(file.path) || 'Team'
+                  : getRelativeDir(file.path, workspacePath)}
               </div>
             </li>
           ))}
@@ -1289,6 +1331,7 @@ const InFilesPane: React.FC<InFilesPaneProps> = memo(({
         const contentResults = await api.searchWorkspaceFileContent(workspacePath, query);
         if (Array.isArray(contentResults)) {
           const processed: FileItem[] = contentResults.map((r: any) => ({
+            source: 'local',
             path: r.path,
             name: getFileName(r.path),
             matches: r.matches || [],

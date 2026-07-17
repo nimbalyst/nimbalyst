@@ -6,7 +6,8 @@ export interface PersonalAccountSummary {
   personalUserId: string | null;
   email: string | null;
   userName?: string;
-  isPrimary: boolean;
+  isSyncAccount: boolean;
+  sessionStatus: 'active' | 'expired';
 }
 
 export interface PersonalSyncProfileSummary {
@@ -21,6 +22,7 @@ export interface OrganizationDirectoryEntry {
   role: string;
   membershipType?: string;
   sourcePersonalOrgId?: string;
+  owningPersonalOrgId?: string | null;
   sourceEmail?: string | null;
 }
 
@@ -34,4 +36,3 @@ export const projectSettingsContextAtom = atom<ProjectSettingsTarget | undefined
 export const usePersonalAccounts = () => useAtom(personalAccountsAtom);
 export const usePersonalSyncProfiles = () => useAtom(personalSyncProfilesAtom);
 export const useOrganizationDirectory = () => useAtom(organizationDirectoryAtom);
-

@@ -24,6 +24,8 @@ export type TeamClientMessage =
   | TeamDocIndexRegisterMessage
   | TeamDocIndexUpdateMessage
   | TeamDocIndexRemoveMessage
+  | TeamDocTrashMessage
+  | TeamDocRestoreMessage
   | TeamDocMoveMessage
   | TeamFolderIndexSyncRequestMessage
   | TeamFolderRegisterMessage
@@ -75,6 +77,12 @@ export interface TeamDocIndexRegisterMessage {
   encryptedTitle: string;
   titleIv: string;
   documentType: string;
+  /** Marks entries carrying explicit shared-document type metadata. */
+  metadataVersion?: 2;
+  /** Exact normalized suffix, including its leading dot. */
+  fileExtension?: string;
+  /** Stable id of the editor that owns this document type. */
+  editorId?: string;
   /**
    * Epic H3 P0: the project this document belongs to (the tracker-room routing
    * `teamProjectId`). Optional for backward compatibility — when omitted the
@@ -103,6 +111,22 @@ export interface TeamDocIndexUpdateMessage {
 /** Remove a document from the index. See `TeamDocIndexRegisterMessage` for `orgKeyFingerprint`. */
 export interface TeamDocIndexRemoveMessage {
   type: 'docIndexRemove';
+  documentId: string;
+  orgKeyFingerprint?: string | null;
+}
+
+/** Move a document into recoverable Trash without changing its folder. */
+export interface TeamDocTrashMessage {
+  type: 'docTrash';
+  documentId: string;
+  /** Millisecond epoch used to calculate the retention deadline. */
+  trashedAt: number;
+  orgKeyFingerprint?: string | null;
+}
+
+/** Restore a trashed document to its unchanged parent folder. */
+export interface TeamDocRestoreMessage {
+  type: 'docRestore';
   documentId: string;
   orgKeyFingerprint?: string | null;
 }
@@ -331,6 +355,12 @@ export interface EncryptedDocIndexEntry {
   encryptedTitle: string;
   titleIv: string;
   documentType: string;
+  /** Marks entries carrying explicit shared-document type metadata. */
+  metadataVersion?: 2;
+  /** Exact normalized suffix, including its leading dot. */
+  fileExtension?: string;
+  /** Stable id of the editor that owns this document type. */
+  editorId?: string;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
@@ -352,6 +382,8 @@ export interface EncryptedDocIndexEntry {
    * during the dual-write transition).
    */
   parentFolderId?: string | null;
+  /** Millisecond epoch when moved to Trash; null/undefined means active. */
+  trashedAt?: number | null;
 }
 
 /**
@@ -418,7 +450,8 @@ export interface MemberInfo {
   /**
    * The member's personal org id, used to address their PersonalIndexRoom
    * (`org:{personalOrgId}:user:{userId}:index`) for inbox-event fanout.
-   * Null until the member's client announces it via `announcePersonalOrg`.
+   * Recorded authoritatively at team create/invite acceptance. Older members
+   * may be repaired once by `announcePersonalOrg` when this value is null.
    */
   personalOrgId?: string | null;
 }

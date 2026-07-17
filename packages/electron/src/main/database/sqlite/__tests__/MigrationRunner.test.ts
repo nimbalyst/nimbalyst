@@ -81,6 +81,8 @@ describe('runMigrations', () => {
     fs.writeFileSync(path.join(tmp, '0021_collab_replica_quarantine_observability.sql'), '-- noop\n');
     fs.writeFileSync(path.join(tmp, '0022_collab_document_assets.sql'), '-- noop\n');
     fs.writeFileSync(path.join(tmp, '0023_collab_asset_retry_schedule.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0024_tracker_personal_state.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0025_account_org_bindings.sql'), '-- noop\n');
 
     const db = new FakeDb();
     // Hack: inject our own migration list via reflection-equivalent. Re-using
@@ -94,13 +96,13 @@ describe('runMigrations', () => {
     // a stand-in implementation; for now, test the file-backed path with the
     // bundled migrations.
     const result = runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
-    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
+    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
     expect(result.skipped).toEqual([]);
 
     // Second invocation: nothing to apply, all skipped.
     const result2 = runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(result2.applied).toEqual([]);
-    expect(result2.skipped).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
+    expect(result2.skipped).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
 
     // Anti-flake: unused locals lint silencer.
     void customs;
@@ -197,6 +199,14 @@ describe('runMigrations', () => {
     );
     fs.writeFileSync(
       path.join(tmp, '0023_collab_asset_retry_schedule.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0024_tracker_personal_state.sql'),
+      '-- noop\n',
+    );
+    fs.writeFileSync(
+      path.join(tmp, '0025_account_org_bindings.sql'),
       '-- noop\n',
     );
     const db = new FakeDb();

@@ -464,13 +464,16 @@ export interface WorkspaceState {
   workstreamStates?: Record<string, unknown>;
   // Agent mode file scope mode (shared across all sessions in workspace)
   agentFileScopeMode?: AgentFileScopeMode;
-  // Collab mode tree state (expanded folders and local placeholder folders)
+  // Collab mode tree state.
   collabTree?: {
     expandedFolders: string[];
+    /** @deprecated Legacy local-only path folders. */
     customFolders: string[];
     // Folder path most recently used as the destination for "Share to Team".
-    // Pre-selected on next share so users don't re-pick the same folder.
+    // Retained for compatibility with clients predating first-class folders.
     lastSharedFolder?: string;
+    // Stable first-class folder id most recently used. Null means Team root.
+    lastSharedFolderId?: string | null;
   };
   collabPendingUpdates?: Record<string, {
     mergedUpdateBase64: string;
@@ -486,7 +489,7 @@ export interface WorkspaceState {
   issueKeyPrefix?: string;
   // Account identity bound to this workspace (personalOrgId).
   // Set once when the workspace is first synced. Different workspaces can use different accounts.
-  // Defaults to the primary account if not set.
+  // Defaults to the account selected for personal sync if not set.
   accountId?: string;
   // Hidden gutter buttons (navigation sidebar)
   hiddenGutterButtons?: string[];

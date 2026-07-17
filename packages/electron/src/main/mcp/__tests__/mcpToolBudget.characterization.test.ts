@@ -58,8 +58,9 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
       (byServer[server] ??= []).push(tool);
     }
 
-    // Per-tool eagerness: only CORE_ALWAYS_LOAD_TOOLS are charged eagerly
-    // (display_to_user / capture_editor_screenshot stay on core but defer).
+    // Per-tool eagerness: only CORE_ALWAYS_LOAD_TOOLS are charged eagerly.
+    // display_to_user / capture_editor_screenshot are eager because the prompt
+    // instructs the model to use them and it needs their schemas (NIM-1766).
     const report = buildToolBudgetReport(byServer, MCP_EAGER_CONFIG_KEYS, CORE_ALWAYS_LOAD_TOOLS);
 
     // Visible in test output for before/after comparison across phases.
@@ -70,12 +71,12 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
     );
 
     expect(report.totalToolCount).toBeGreaterThan(0);
-    // The always-load core subset is the fixed tool floor every session pays;
-    // trimmed schemas + per-tool deferral landed it ~1.5K (2026-07-07).
-    // Ceiling leaves headroom for description churn but catches a fat schema
-    // creeping back in.
+    // The always-load core subset is the fixed tool floor every session pays.
+    // ~2.4K after display_to_user / capture_editor_screenshot rejoined the eager
+    // set (NIM-1766); the visual-tool schemas are the bulk. Ceiling leaves
+    // headroom for description churn but catches a fat schema creeping back in.
     expect(report.eagerEstTokens).toBeGreaterThan(0);
-    expect(report.eagerEstTokens).toBeLessThan(2500);
+    expect(report.eagerEstTokens).toBeLessThan(3200);
   });
 
   it('maps every current first-party tool to a topology server (except known IPC-only names)', () => {

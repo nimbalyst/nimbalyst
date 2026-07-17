@@ -1,6 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }));
+const { fetchMock, fsFiles } = vi.hoisted(() => ({
+  fetchMock: vi.fn(),
+  // In-memory backing store for OrgKeyService's encrypted-file persistence so
+  // tests can seed a locally cached org key (legacy-e2e evidence) without disk.
+  fsFiles: new Map<string, string>(),
+}));
+
+vi.mock('fs', () => ({
+  existsSync: (p: string) => fsFiles.has(p),
+  readFileSync: (p: string) => {
+    const v = fsFiles.get(p);
+    if (v === undefined) throw new Error(`ENOENT: ${p}`);
+    return Buffer.from(v, 'utf8');
+  },
+  writeFileSync: (p: string, data: string | Buffer) => {
+    fsFiles.set(p, typeof data === 'string' ? data : data.toString('utf8'));
+  },
+}));
 
 vi.mock('electron', () => ({
   safeStorage: { isEncryptionAvailable: vi.fn(() => false) },
@@ -40,7 +57,15 @@ vi.mock('@nimbalyst/runtime/sync', () => ({
   },
 }));
 
-import { fetchTeamKeyStatus, invalidateTeamKeyStatusCache, setTeamKeyCustodyMode } from '../OrgKeyService';
+// Seed a locally cached org key for `org-legacy-e2e` (legacy-e2e evidence).
+// OrgKeyService loads this once, lazily, on first `hasOrgKey`; seed it before
+// any test runs so the load sees it. Value is the legacy plain-base64 form.
+fsFiles.set(
+  '/mock/user-data/org-encryption-keys.enc',
+  JSON.stringify([['org-legacy-e2e', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']])
+);
+
+import { clearLastKnownTeamKeyStatus, fetchTeamKeyStatus, getLastKnownTeamKeyStatus, invalidateTeamKeyStatusCache, setTeamKeyCustodyMode } from '../OrgKeyService';
 
 function jsonResponse(body: unknown) {
   return { ok: true, json: async () => body };
@@ -53,6 +78,7 @@ function keyStatusCallCount(): number {
 describe('OrgKeyService key-status cache (RC2)', () => {
   beforeEach(() => {
     invalidateTeamKeyStatusCache();
+    clearLastKnownTeamKeyStatus();
     fetchMock.mockReset();
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes('/key-status')) {
@@ -114,5 +140,101 @@ describe('OrgKeyService key-status cache (RC2)', () => {
     const status = await fetchTeamKeyStatus('org-1', 'jwt');
     expect(keyStatusCallCount()).toBe(2);
     expect(status.mode).toBe('server-managed');
+  });
+});
+
+describe('OrgKeyService key-status offline fallback (NIM-1778)', () => {
+  beforeEach(() => {
+    invalidateTeamKeyStatusCache();
+    clearLastKnownTeamKeyStatus();
+    fetchMock.mockReset();
+  });
+
+  afterEach(() => {
+    invalidateTeamKeyStatusCache();
+    clearLastKnownTeamKeyStatus();
+  });
+
+  function mockKeyStatusResponse(body: unknown) {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/key-status')) return jsonResponse(body);
+      return jsonResponse({});
+    });
+  }
+
+  function mockNetworkDown() {
+    fetchMock.mockImplementation(async () => {
+      throw new Error('net::ERR_INTERNET_DISCONNECTED');
+    });
+  }
+
+  it('falls back to the last-known mode when the fetch fails, not legacy-e2e', async () => {
+    mockKeyStatusResponse({ mode: 'server-managed', dekEpoch: 2, dekFingerprint: 'fp2' });
+    await fetchTeamKeyStatus('org-sm', 'jwt');
+
+    invalidateTeamKeyStatusCache('org-sm');
+    mockNetworkDown();
+
+    const status = await fetchTeamKeyStatus('org-sm', 'jwt');
+    expect(status).toEqual({ mode: 'server-managed', dekEpoch: 2, dekFingerprint: 'fp2' });
+  });
+
+  // NIM-1779/C1: with no last-known status AND no local legacy evidence, an
+  // unresolved status must NOT drop a server-managed team into the legacy
+  // AES-decrypt lane (which renders docs locked + throws in the outbox drain).
+  // The safe default is server-managed; SilentTeamEncryptionMigration converges
+  // any surviving legacy team anyway.
+  it('defaults to server-managed (not legacy-e2e) on fetch failure with no last-known status and no local org key', async () => {
+    mockNetworkDown();
+
+    const status = await fetchTeamKeyStatus('org-unknown', 'jwt');
+    expect(status.mode).not.toBe('legacy-e2e');
+    expect(status).toEqual({ mode: 'server-managed', dekEpoch: null, dekFingerprint: null });
+  });
+
+  // A locally cached org key is evidence this org was joined as legacy-e2e
+  // (server-managed teams never store an org key locally). Honor that signal so
+  // a legacy team on a fresh offline launch is not misrouted the other way.
+  it('defaults to legacy-e2e on fetch failure when a local org key exists (legacy evidence)', async () => {
+    mockNetworkDown();
+
+    const status = await fetchTeamKeyStatus('org-legacy-e2e', 'jwt');
+    expect(status).toEqual({ mode: 'legacy-e2e', dekEpoch: null, dekFingerprint: null });
+  });
+
+  // The lane both callsites (DocumentSyncHandlers doc-decrypt / CollabOutbox-
+  // DrainerService) branch on is exactly `(await fetchTeamKeyStatus()).mode ===
+  // 'server-managed'`. Prove the unresolved-status default flips that branch to
+  // the server lane.
+  it('routes an unresolved server-managed team onto the server lane', async () => {
+    mockNetworkDown();
+
+    const serverManaged = (await fetchTeamKeyStatus('org-unknown', 'jwt')).mode === 'server-managed';
+    expect(serverManaged).toBe(true);
+  });
+
+  it('does not pin the fallback: the next call refetches once the network returns', async () => {
+    mockKeyStatusResponse({ mode: 'server-managed', dekEpoch: 1, dekFingerprint: 'fp1' });
+    await fetchTeamKeyStatus('org-recover', 'jwt');
+
+    invalidateTeamKeyStatusCache('org-recover');
+    mockNetworkDown();
+    await fetchTeamKeyStatus('org-recover', 'jwt');
+
+    mockKeyStatusResponse({ mode: 'server-managed', dekEpoch: 3, dekFingerprint: 'fp3' });
+    const status = await fetchTeamKeyStatus('org-recover', 'jwt');
+    expect(status).toEqual({ mode: 'server-managed', dekEpoch: 3, dekFingerprint: 'fp3' });
+  });
+
+  it('exposes the last-known status to callsites whose JWT mint fails before the fetch', async () => {
+    expect(getLastKnownTeamKeyStatus('org-jwtless')).toBeNull();
+
+    mockKeyStatusResponse({ mode: 'server-managed', dekEpoch: 5, dekFingerprint: 'fp5' });
+    await fetchTeamKeyStatus('org-jwtless', 'jwt');
+
+    expect(getLastKnownTeamKeyStatus('org-jwtless')).toEqual({ mode: 'server-managed', dekEpoch: 5, dekFingerprint: 'fp5' });
+
+    clearLastKnownTeamKeyStatus('org-jwtless');
+    expect(getLastKnownTeamKeyStatus('org-jwtless')).toBeNull();
   });
 });

@@ -33,6 +33,12 @@ export interface SharedDocument {
   documentId: string;
   title: string;
   documentType: string;
+  /** Optional V2 type metadata; legacy rows are inferred at read time. */
+  metadataVersion?: 2;
+  /** Exact normalized suffix, including the leading dot. */
+  fileExtension?: string;
+  /** Stable owning editor id (built-in or extension id). */
+  editorId?: string;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
@@ -46,6 +52,8 @@ export interface SharedDocument {
    * The tree is built from this + folder nodes, not from splitting the title.
    */
   parentFolderId?: string | null;
+  /** Millisecond epoch when moved to recoverable Trash; null means active. */
+  trashedAt?: number | null;
   /**
    * True when the doc index entry's encrypted title could not be decrypted.
    * Rendered as a locked placeholder in the sidebar; not openable.
@@ -81,6 +89,95 @@ function mapFolderNode(f: FolderNode): SharedFolder {
     updatedAt: f.updatedAt,
     decryptFailed: f.decryptFailed,
   };
+}
+
+/**
+ * NIM-1638: reconcile a full-sync ("loaded") snapshot against the rows we
+ * already have WITHOUT dropping anything the snapshot happens to omit.
+ *
+ * A `docIndexSync` / `folderIndexSync` response is fired on every (re)connect
+ * and was previously used to wholesale-REPLACE the index. When such a response
+ * arrives empty or partial (transient server state, a project-partition race,
+ * a decrypt-to-empty pass), the wholesale replace blanked real rows out of the
+ * sidebar tree — shared docs like "latest meeting" would simply vanish.
+ *
+ * Instead we merge by id: the incoming snapshot WINS for any row it contains
+ * (fresh titles, moved parents), and any locally-known row the snapshot omits
+ * is RESTORED rather than left missing. Genuine removals still flow through the
+ * explicit remove callbacks (`onDocumentRemoved` / `onFoldersRemoved`), which
+ * are the only paths that shrink the set. Incoming order is preserved, with any
+ * surviving local-only rows appended.
+ */
+function reconcileById<T>(
+  existing: T[],
+  incoming: T[],
+  getId: (row: T) => string,
+  merge: (existingRow: T, incomingRow: T) => T = (_existingRow, incomingRow) => incomingRow,
+): T[] {
+  const existingById = new Map(existing.map(row => [getId(row), row]));
+  const incomingIds = new Set(incoming.map(getId));
+  // Incoming wins, but merge against the row we already have so a blank/locked
+  // field never clobbers a known-good one (NIM-1636).
+  const reconciledIncoming = incoming.map(row => {
+    const prev = existingById.get(getId(row));
+    return prev ? merge(prev, row) : row;
+  });
+  const survivors = existing.filter(row => !incomingIds.has(getId(row)));
+  return [...reconciledIncoming, ...survivors];
+}
+
+/** True for a displayable (non-blank, decrypted) title/name. */
+function hasVisibleName(name: string | null | undefined): boolean {
+  return typeof name === 'string' && name.trim().length > 0;
+}
+
+/**
+ * NIM-1636: merge a fresh document row over the one we already have so a
+ * transient blank name never wins. A raw teamSync pass (before keys arrive) and
+ * a broadcast during key transition both surface `title: ''` + `decryptFailed`
+ * for a doc we had already decrypted — the row stays but its name goes blank.
+ * Incoming wins for every field EXCEPT: when its title is blank/locked, keep the
+ * previously-decrypted title (and clear the transient `decryptFailed`). A
+ * genuine rename (non-blank incoming) always wins, so the name fills in as soon
+ * as a real one arrives.
+ */
+export function mergeSharedDocument(existing: SharedDocument, incoming: SharedDocument): SharedDocument {
+  const mergedMetadata: SharedDocument = {
+    ...incoming,
+    metadataVersion: incoming.metadataVersion ?? existing.metadataVersion,
+    fileExtension: incoming.fileExtension ?? existing.fileExtension,
+    editorId: incoming.editorId ?? existing.editorId,
+  };
+  if (hasVisibleName(incoming.title)) return mergedMetadata;
+  if (hasVisibleName(existing.title)) {
+    return { ...mergedMetadata, title: existing.title, decryptFailed: false };
+  }
+  return mergedMetadata;
+}
+
+/** NIM-1636: folder counterpart to {@link mergeSharedDocument} (preserves `name`). */
+export function mergeSharedFolder(existing: SharedFolder, incoming: SharedFolder): SharedFolder {
+  if (hasVisibleName(incoming.name)) return incoming;
+  if (hasVisibleName(existing.name)) {
+    return { ...incoming, name: existing.name, decryptFailed: false };
+  }
+  return incoming;
+}
+
+/** Reconcile a full-sync document snapshot without dropping known rows or names (NIM-1638/NIM-1636). */
+export function reconcileSharedDocuments(
+  existing: SharedDocument[],
+  incoming: SharedDocument[],
+): SharedDocument[] {
+  return reconcileById(existing, incoming, d => d.documentId, mergeSharedDocument);
+}
+
+/** Reconcile a full-sync folder snapshot without dropping known rows or names (NIM-1638/NIM-1636). */
+export function reconcileSharedFolders(
+  existing: SharedFolder[],
+  incoming: SharedFolder[],
+): SharedFolder[] {
+  return reconcileById(existing, incoming, f => f.folderId, mergeSharedFolder);
 }
 
 // ============================================================
@@ -131,7 +228,7 @@ export const activeTeamUserIdAtom = atom<string | null>((get) => {
  * List of shared collaborative documents for the active workspace.
  * Populated from TeamRoom on connect, updated via broadcasts.
  */
-export const sharedDocumentsAtom = atom<SharedDocument[], [SharedDocument[] | ((current: SharedDocument[]) => SharedDocument[])], void>(
+export const allSharedDocumentsAtom = atom<SharedDocument[], [SharedDocument[] | ((current: SharedDocument[]) => SharedDocument[])], void>(
   (get) => {
     const path = get(activeWorkspacePathAtom);
     if (!path) return [];
@@ -147,6 +244,27 @@ export const sharedDocumentsAtom = atom<SharedDocument[], [SharedDocument[] | ((
       set(target, valueOrUpdater);
     }
   }
+);
+
+/** Active shared documents. Trash rows remain in the raw index atom above. */
+export const sharedDocumentsAtom = atom<SharedDocument[], [SharedDocument[] | ((current: SharedDocument[]) => SharedDocument[])], void>(
+  (get) => get(allSharedDocumentsAtom).filter(document => document.trashedAt == null),
+  (get, set, valueOrUpdater) => {
+    // Writers operate on the complete index so an optimistic active-doc update
+    // never discards Trash rows hidden from the public read projection.
+    if (typeof valueOrUpdater === 'function') {
+      set(allSharedDocumentsAtom, valueOrUpdater(get(allSharedDocumentsAtom)));
+    } else {
+      set(allSharedDocumentsAtom, valueOrUpdater);
+    }
+  },
+);
+
+/** Documents currently in recoverable Trash, newest first. */
+export const trashedSharedDocumentsAtom = atom<SharedDocument[]>((get) =>
+  get(allSharedDocumentsAtom)
+    .filter(document => document.trashedAt != null)
+    .sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0)),
 );
 
 /**
@@ -263,6 +381,10 @@ export interface PendingCollabDocument {
    * so the recipient can route to the right editor on first open.
    */
   documentType?: string;
+  /** Explicit V2 metadata for first-open and restart-safe editor routing. */
+  metadataVersion?: 2;
+  fileExtension?: string;
+  editorId?: string;
 }
 export const pendingCollabDocumentAtom = atom<PendingCollabDocument | null>(null);
 
@@ -290,6 +412,19 @@ export function getTeamSyncProvider(workspacePath?: string): TeamSyncProviderTyp
   const path = workspacePath ?? store.get(activeWorkspacePathAtom);
   if (!path) return null;
   return providersByPath.get(path) ?? null;
+}
+
+/**
+ * Ask the active TeamRoom for its current first-class folder index. The
+ * provider's onFoldersLoaded callback reconciles the response into the
+ * workspace-scoped atom before this promise resolves.
+ */
+export async function refreshSharedFolders(workspacePath?: string): Promise<boolean> {
+  const provider = getTeamSyncProvider(workspacePath);
+  if (!provider) return false;
+  const status = provider.getStatus();
+  if (status === 'disconnected' || status === 'error') provider.reconnectNow();
+  return (await provider.refreshFolders()) !== null;
 }
 
 // ============================================================
@@ -322,7 +457,9 @@ export const addSharedDocumentAtom = atom(
 export async function registerDocumentInIndex(
   documentId: string,
   title: string,
-  documentType: string = 'markdown'
+  documentType: string = 'markdown',
+  parentFolderId: string | null = null,
+  metadata?: { metadataVersion: 2; fileExtension: string; editorId: string },
 ): Promise<void> {
   const now = Date.now();
   store.set(sharedDocumentsAtom, (current) => {
@@ -331,9 +468,11 @@ export async function registerDocumentInIndex(
       documentId,
       title,
       documentType,
+      ...metadata,
       createdBy: '',
       createdAt: now,
       updatedAt: now,
+      parentFolderId,
     }, ...filtered];
   });
 
@@ -341,13 +480,19 @@ export async function registerDocumentInIndex(
   const workspacePath = store.get(activeWorkspacePathAtom);
   if (provider) {
     try {
-      await provider.registerDocument(documentId, title, documentType);
+      await provider.registerDocument(documentId, title, documentType, parentFolderId, metadata);
     } catch (err) {
       // NIM-1565: a failed send used to vanish (fire-and-forget). Queue it so
       // the next provider connect retries, instead of orphaning the doc.
       console.error('[collabDocuments] Failed to register in index:', err);
       if (workspacePath) {
-        pendingDocRegistrations.enqueue(workspacePath, { documentId, title, documentType });
+        pendingDocRegistrations.enqueue(workspacePath, {
+          documentId,
+          title,
+          documentType,
+          parentFolderId,
+          ...metadata,
+        });
       }
     }
   } else if (workspacePath) {
@@ -355,7 +500,13 @@ export async function registerDocumentInIndex(
     // initSharedDocuments connected). Queue the registration for flush on
     // connect rather than silently dropping it — otherwise the doc has content
     // but never a doc-index entry, so it never appears in the Shared Items tree.
-    pendingDocRegistrations.enqueue(workspacePath, { documentId, title, documentType });
+    pendingDocRegistrations.enqueue(workspacePath, {
+      documentId,
+      title,
+      documentType,
+      parentFolderId,
+      ...metadata,
+    });
   }
 }
 
@@ -414,6 +565,53 @@ export function removeSharedDocument(documentId: string): void {
       console.error('[collabDocuments] Failed to remove document from index:', err);
     }
   }
+}
+
+/** Move a shared document to recoverable Trash without changing its folder. */
+export function trashSharedDocument(documentId: string): void {
+  const trashedAt = Date.now();
+  store.set(allSharedDocumentsAtom, (current) =>
+    current.map(document => document.documentId === documentId
+      ? { ...document, trashedAt, updatedAt: trashedAt }
+      : document)
+  );
+
+  const provider = getTeamSyncProvider();
+  if (provider) {
+    try {
+      provider.trashDocument(documentId, trashedAt);
+    } catch (err) {
+      console.error('[collabDocuments] Failed to move document to Trash:', err);
+    }
+  }
+}
+
+/** Restore a trashed document to its unchanged original folder. */
+export function restoreSharedDocument(documentId: string): void {
+  const now = Date.now();
+  store.set(allSharedDocumentsAtom, (current) =>
+    current.map(document => document.documentId === documentId
+      ? { ...document, trashedAt: null, updatedAt: now }
+      : document)
+  );
+
+  const provider = getTeamSyncProvider();
+  if (provider) {
+    try {
+      provider.restoreDocument(documentId);
+    } catch (err) {
+      console.error('[collabDocuments] Failed to restore document from Trash:', err);
+    }
+  }
+}
+
+/** Permanently remove every document currently in Trash. */
+export function emptySharedDocumentTrash(): number {
+  const trashed = store.get(trashedSharedDocumentsAtom);
+  for (const document of trashed) {
+    removeSharedDocument(document.documentId);
+  }
+  return trashed.length;
 }
 
 /**
@@ -873,52 +1071,83 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
 
       onTeamStateLoaded: (state) => {
         if (state.documents.length > 0) {
-          store.set(sharedDocumentsAtomFamily(workspacePath), state.documents.map(d => ({
+          const incoming = state.documents.map(d => ({
             documentId: d.documentId,
             title: d.title,
             documentType: d.documentType,
+            metadataVersion: d.metadataVersion,
+            fileExtension: d.fileExtension,
+            editorId: d.editorId,
             createdBy: d.createdBy,
             createdAt: d.createdAt,
             updatedAt: d.updatedAt,
             lastWriterUserId: d.lastWriterUserId,
             parentFolderId: d.parentFolderId,
+            trashedAt: d.trashedAt,
             decryptFailed: d.decryptFailed,
-          })));
+          }));
+          // NIM-1638: reconcile rather than replace so a partial teamSync
+          // snapshot never blanks known rows.
+          store.set(sharedDocumentsAtomFamily(workspacePath), (current) =>
+            reconcileSharedDocuments(current, incoming)
+          );
         }
-        store.set(sharedFoldersAtomFamily(workspacePath), state.folders.map(mapFolderNode));
+        const incomingFolders = state.folders.map(mapFolderNode);
+        store.set(sharedFoldersAtomFamily(workspacePath), (current) =>
+          reconcileSharedFolders(current, incomingFolders)
+        );
       },
 
       onDocumentsLoaded: (documents) => {
-        store.set(sharedDocumentsAtomFamily(workspacePath), documents.map(d => ({
+        const incoming = documents.map(d => ({
           documentId: d.documentId,
           title: d.title,
           documentType: d.documentType,
+          metadataVersion: d.metadataVersion,
+          fileExtension: d.fileExtension,
+          editorId: d.editorId,
           createdBy: d.createdBy,
           createdAt: d.createdAt,
           updatedAt: d.updatedAt,
           lastWriterUserId: d.lastWriterUserId,
           parentFolderId: d.parentFolderId,
+          trashedAt: d.trashedAt,
           decryptFailed: d.decryptFailed,
-        })));
+        }));
+        // NIM-1638: a docIndexSync response fires on every (re)connect and used
+        // to wholesale-replace the list; an empty/partial one blanked the tree.
+        // Reconcile so briefly-dropped docs are restored, never left missing.
+        store.set(sharedDocumentsAtomFamily(workspacePath), (current) =>
+          reconcileSharedDocuments(current, incoming)
+        );
         // One-time client-driven migration of legacy path-in-title folders into
         // first-class folder rows (idempotent, dual-write; no-op once migrated).
         void migrateVirtualFolders(workspacePath, orgId);
       },
 
       onDocumentChanged: (document) => {
+        const incoming: SharedDocument = {
+          documentId: document.documentId,
+          title: document.title,
+          documentType: document.documentType,
+          metadataVersion: document.metadataVersion,
+          fileExtension: document.fileExtension,
+          editorId: document.editorId,
+          createdBy: document.createdBy,
+          createdAt: document.createdAt,
+          updatedAt: document.updatedAt,
+          lastWriterUserId: document.lastWriterUserId,
+          parentFolderId: document.parentFolderId,
+          trashedAt: document.trashedAt,
+          decryptFailed: document.decryptFailed,
+        };
         store.set(sharedDocumentsAtomFamily(workspacePath), (current) => {
-          const filtered = current.filter(d => d.documentId !== document.documentId);
-          return [{
-            documentId: document.documentId,
-            title: document.title,
-            documentType: document.documentType,
-            createdBy: document.createdBy,
-            createdAt: document.createdAt,
-            updatedAt: document.updatedAt,
-            lastWriterUserId: document.lastWriterUserId,
-            parentFolderId: document.parentFolderId,
-            decryptFailed: document.decryptFailed,
-          }, ...filtered];
+          // NIM-1636: a broadcast during key transition can arrive with a
+          // blank/locked title — merge so it never blanks a name we already have.
+          const existing = current.find(d => d.documentId === incoming.documentId);
+          const merged = existing ? mergeSharedDocument(existing, incoming) : incoming;
+          const filtered = current.filter(d => d.documentId !== incoming.documentId);
+          return [merged, ...filtered];
         });
       },
 
@@ -929,13 +1158,22 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       },
 
       onFoldersLoaded: (folders) => {
-        store.set(sharedFoldersAtomFamily(workspacePath), folders.map(mapFolderNode));
+        const incoming = folders.map(mapFolderNode);
+        // NIM-1638: reconcile rather than replace so an empty/partial
+        // folderIndexSync (fired on every reconnect) never wipes the tree.
+        store.set(sharedFoldersAtomFamily(workspacePath), (current) =>
+          reconcileSharedFolders(current, incoming)
+        );
       },
 
       onFolderChanged: (folder) => {
+        const incoming = mapFolderNode(folder);
         store.set(sharedFoldersAtomFamily(workspacePath), (current) => {
-          const filtered = current.filter(f => f.folderId !== folder.folderId);
-          return [...filtered, mapFolderNode(folder)];
+          // NIM-1636: keep a known folder name if this broadcast decrypts to empty.
+          const existing = current.find(f => f.folderId === incoming.folderId);
+          const merged = existing ? mergeSharedFolder(existing, incoming) : incoming;
+          const filtered = current.filter(f => f.folderId !== incoming.folderId);
+          return [...filtered, merged];
         });
       },
 

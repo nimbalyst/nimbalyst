@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   appendLocalUpdateMock,
@@ -7,6 +7,7 @@ const {
   estimateLocalAppendBytesMock,
   fetchTeamKeyStatusMock,
   findTeamForWorkspaceMock,
+  getLastKnownTeamKeyStatusMock,
   handlers,
   listPendingOutboxesMock,
   prepareForAppendMock,
@@ -16,6 +17,7 @@ const {
   return {
     appendLocalUpdateMock: vi.fn(),
     browserWindowsMock: vi.fn(),
+    getLastKnownTeamKeyStatusMock: vi.fn(),
     drainCoordinatorMock: {
       getAttachedSenderIds: vi.fn(),
       isProviderAttached: vi.fn(),
@@ -82,6 +84,7 @@ vi.mock('../../services/OrgKeyService', () => ({
   fetchAndUnwrapOrgKey: vi.fn(async () => null),
   clearOrgKey: vi.fn(),
   fetchTeamKeyStatus: fetchTeamKeyStatusMock,
+  getLastKnownTeamKeyStatus: getLastKnownTeamKeyStatusMock,
   getArchivedOrgKeys: vi.fn(() => []),
 }));
 
@@ -111,6 +114,7 @@ vi.mock('../../services/CollabOutboxDrainerService', () => ({
 }));
 
 import { registerDocumentSyncHandlers } from '../DocumentSyncHandlers';
+import { getOrgScopedJwt } from '../../services/TeamService';
 
 describe('document-sync:resolve-index-config single-flight (RC4)', () => {
   beforeEach(() => {
@@ -181,6 +185,49 @@ describe('document-sync:resolve-index-config single-flight (RC4)', () => {
     await handler(null, { workspacePath: '/workspace/one' });
 
     expect(findTeamForWorkspaceMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('document-sync:resolve-index-config offline custody fallback (NIM-1778)', () => {
+  beforeEach(() => {
+    handlers.clear();
+    findTeamForWorkspaceMock.mockReset();
+    findTeamForWorkspaceMock.mockResolvedValue({ orgId: 'org-1', teamProjectId: null });
+    fetchTeamKeyStatusMock.mockReset();
+    getLastKnownTeamKeyStatusMock.mockReset();
+    getLastKnownTeamKeyStatusMock.mockReturnValue(null);
+    vi.mocked(getOrgScopedJwt).mockReset();
+    registerDocumentSyncHandlers();
+  });
+
+  afterEach(() => {
+    vi.mocked(getOrgScopedJwt).mockReset();
+    vi.mocked(getOrgScopedJwt).mockImplementation(async () => 'org-jwt' as Awaited<ReturnType<typeof getOrgScopedJwt>>);
+  });
+
+  it('uses the last-known custody mode when the org JWT cannot be minted offline', async () => {
+    vi.mocked(getOrgScopedJwt).mockRejectedValue(new Error('Failed to get JWT: net::ERR_INTERNET_DISCONNECTED'));
+    getLastKnownTeamKeyStatusMock.mockReturnValue({ mode: 'server-managed', dekEpoch: 1, dekFingerprint: 'fp' });
+
+    const handler = handlers.get('document-sync:resolve-index-config')!;
+    const result = await handler(null, { workspacePath: '/workspace/one' });
+
+    expect(result.success).toBe(true);
+    expect(result.config.keyCustody).toBe('server-managed');
+    expect(getLastKnownTeamKeyStatusMock).toHaveBeenCalledWith('org-1');
+  });
+
+  it('still lands on the legacy lane offline when the org has never been resolved', async () => {
+    vi.mocked(getOrgScopedJwt).mockRejectedValue(new Error('Failed to get JWT: net::ERR_INTERNET_DISCONNECTED'));
+    getLastKnownTeamKeyStatusMock.mockReturnValue(null);
+
+    const handler = handlers.get('document-sync:resolve-index-config')!;
+    const result = await handler(null, { workspacePath: '/workspace/one' });
+
+    // Legacy lane with no obtainable org key fails closed rather than
+    // resolving a server-managed config it has no evidence for.
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('No encryption key available');
   });
 });
 

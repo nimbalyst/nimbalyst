@@ -44,6 +44,7 @@ export type ClientMessage =
   | ProjectConfigUpdateMessage
   | SettingsSyncMessage
   | ReadReceiptSyncMessage
+  | TrackerPersonalStateSyncMessage
   | InboxSyncRequestMessage
   | MarkInboxReadMessage
   | PingMessage;
@@ -340,6 +341,23 @@ export interface EncryptedReadReceiptPayload {
   timestamp: number;
 }
 
+/** Sync an opaque tracker favorite/open mutation over the personal lane. */
+export interface TrackerPersonalStateSyncMessage {
+  type: 'trackerPersonalState';
+  state: EncryptedTrackerPersonalStatePayload;
+}
+
+/** Server-visible envelope; scope, item id, and value remain encrypted. */
+export interface EncryptedTrackerPersonalStatePayload {
+  /** Hash of scope|itemId|field-kind, enabling independent LWW merges. */
+  stateKey: string;
+  encryptedState: string;
+  stateIv: string;
+  deviceId: string;
+  version: number;
+  timestamp: number;
+}
+
 /** Encrypted settings payload for wire transmission */
 export interface EncryptedSettingsPayload {
   /** Encrypted JSON blob containing settings (base64) */
@@ -380,6 +398,7 @@ export type ServerMessage =
   | SessionControlBroadcastMessage
   | SettingsSyncBroadcastMessage
   | ReadReceiptSyncBroadcastMessage
+  | TrackerPersonalStateSyncBroadcastMessage
   | InboxSyncResponseMessage
   | InboxEventBroadcastMessage
   | MarkInboxReadResponseMessage
@@ -533,6 +552,13 @@ export interface SettingsSyncBroadcastMessage {
 export interface ReadReceiptSyncBroadcastMessage {
   type: 'readReceiptBroadcast';
   receipt: EncryptedReadReceiptPayload;
+  fromConnectionId?: string;
+}
+
+/** Broadcast/replay of an encrypted tracker personal-state mutation. */
+export interface TrackerPersonalStateSyncBroadcastMessage {
+  type: 'trackerPersonalStateBroadcast';
+  state: EncryptedTrackerPersonalStatePayload;
   fromConnectionId?: string;
 }
 

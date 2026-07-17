@@ -10,7 +10,7 @@ import {
 describe('settings route registry', () => {
   it('declares every route in exactly one scope', () => {
     const seen = new Map<string, string>();
-    for (const scope of ['application', 'personal', 'organization', 'project'] as const) {
+    for (const scope of ['application', 'account', 'project'] as const) {
       for (const route of getSettingsRoutesForScope(scope, { developerMode: true })) {
         expect(seen.has(route.id)).toBe(false);
         seen.set(route.id, scope);
@@ -19,10 +19,9 @@ describe('settings route registry', () => {
     }
   });
 
-  it('uses deterministic defaults for all four scopes', () => {
+  it('exposes exactly the three approved settings scopes with deterministic defaults', () => {
     expect(getDefaultSettingsCategory('application')).toBe('notifications');
-    expect(getDefaultSettingsCategory('personal')).toBe('personal-accounts');
-    expect(getDefaultSettingsCategory('organization')).toBe('organization-members');
+    expect(getDefaultSettingsCategory('account')).toBe('account');
     expect(getDefaultSettingsCategory('project')).toBe('project-sharing');
   });
 
@@ -47,12 +46,7 @@ describe('settings route registry', () => {
     });
   });
 
-  it('requires explicit organization and project context', () => {
-    expect(validateSettingsDestination({
-      scope: 'organization',
-      category: 'organization-security',
-      orgId: '',
-    })).toBe(false);
+  it('requires explicit project context', () => {
     expect(validateSettingsDestination({
       scope: 'project',
       category: 'project-sharing',
@@ -67,14 +61,10 @@ describe('settings route registry', () => {
 
   it('translates legacy deep links without crossing identity lanes', () => {
     expect(normalizeSettingsDestination({ category: 'sync', scope: 'user' })).toEqual({
-      scope: 'personal',
-      category: 'personal-mobile',
+      scope: 'account',
+      category: 'account',
     });
-    expect(normalizeSettingsDestination({ category: 'org', scope: 'organization', orgId: 'org-1' })).toEqual({
-      scope: 'organization',
-      category: 'organization-members',
-      orgId: 'org-1',
-    });
+    expect(normalizeSettingsDestination({ category: 'org', scope: 'organization', orgId: 'org-1' })).toBeNull();
     expect(normalizeSettingsDestination({
       category: 'team',
       scope: 'project',

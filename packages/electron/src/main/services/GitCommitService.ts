@@ -1,6 +1,6 @@
 import log from 'electron-log/main';
-import { existsSync } from 'fs';
-import { isAbsolute, join, relative } from 'path';
+import { copyFileSync, existsSync, rmSync } from 'fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import simpleGit, { SimpleGit } from 'simple-git';
 import { gitOperationLock } from './GitOperationLock';
 import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
@@ -43,6 +43,94 @@ function getGitCommitErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+/**
+ * Convert a proposal path to a literal path inside the session's repository.
+ *
+ * MCP commit proposals are deliberately scoped to their session worktree. Do
+ * not let an absolute path, `..`, or Git pathspec magic widen that scope. The
+ * returned path is always repository-relative and is passed to Git with its
+ * literal-pathspec mode enabled below.
+ */
+function toRepositoryRelativePath(workspacePath: string, filePath: string): string {
+  if (!filePath || filePath.includes('\0')) {
+    throw new Error('Invalid file path in commit proposal');
+  }
+
+  const resolvedPath = resolve(workspacePath, filePath);
+  const relativePath = relative(workspacePath, resolvedPath);
+  const escapesWorkspace =
+    relativePath === '..' ||
+    relativePath.startsWith(`..${sep}`) ||
+    isAbsolute(relativePath);
+
+  if (escapesWorkspace || relativePath.length === 0) {
+    throw new Error('Commit proposal file is outside the session workspace');
+  }
+
+  // Git interprets a leading ':' as pathspec magic, even after '--'. The
+  // proposal contract is a list of concrete files, not a Git query language.
+  if (relativePath.startsWith(':')) {
+    throw new Error('Commit proposal file must be a literal path');
+  }
+
+  return relativePath.replace(/\\/g, '/');
+}
+
+interface GitIndexBackup {
+  hadIndex: boolean;
+  restore(): boolean;
+  dispose(): void;
+}
+
+/**
+ * `executeGitCommit` deliberately changes the index to commit an approved
+ * subset. Keep a byte-for-byte backup so every rejected or failed proposal can
+ * restore the caller's original staged state, including partial hunks.
+ */
+async function backupGitIndex(git: SimpleGit, workspacePath: string): Promise<GitIndexBackup | null> {
+  const rawIndexPath = (await git.raw(['rev-parse', '--git-path', 'index'])).trim();
+  if (!rawIndexPath) return null;
+
+  const indexPath = isAbsolute(rawIndexPath)
+    ? rawIndexPath
+    : resolve(workspacePath, rawIndexPath);
+  if (!existsSync(indexPath)) {
+    // A new repository may not have an index yet. On a failed proposal, remove
+    // the index created by staging so its pre-proposal state is restored.
+    return {
+      hadIndex: false,
+      restore: () => {
+        try {
+          rmSync(indexPath, { force: true });
+          return !existsSync(indexPath);
+        } catch {
+          return false;
+        }
+      },
+      dispose: () => {},
+    };
+  }
+
+  const backupPath = join(
+    dirname(indexPath),
+    `.nimbalyst-index-backup-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  copyFileSync(indexPath, backupPath);
+
+  return {
+    hadIndex: true,
+    restore: () => {
+      try {
+        copyFileSync(backupPath, indexPath);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    dispose: () => rmSync(backupPath, { force: true }),
+  };
 }
 
 /**
@@ -113,6 +201,17 @@ export async function executeGitCommit(
         );
         await delay(backoffMs);
       }
+      let indexBackup: GitIndexBackup | null = null;
+      let indexMutated = false;
+      let successfulCommit: { hash: string; date?: string } | null = null;
+      const restoreOriginalIndex = (): boolean => {
+        if (!indexMutated || !indexBackup) return true;
+        const restored = indexBackup.restore();
+        if (!restored) {
+          log.error(`${logContext} Failed to restore the original staging area; preserving recovery backup`);
+        }
+        return restored;
+      };
       try {
         const git: SimpleGit = options?.env
           ? simpleGit(workspacePath, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(options.env)
@@ -126,58 +225,62 @@ export async function executeGitCommit(
         const repoHasCommits = await hasCommits(git);
         // log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
 
-        const toGitPath = (f: string) => {
-          const rel = isAbsolute(f) ? relative(workspacePath, f) : f;
-          return rel.replace(/\\/g, '/');
-        };
+        const toGitPath = (f: string) => toRepositoryRelativePath(workspacePath, f);
 
         if (!filesToStage || filesToStage.length === 0) {
-          const preStatus = await git.status();
-          const stagedCount = preStatus.staged.length + preStatus.created.length;
-          if (stagedCount === 0) {
-            return {
-              success: false,
-              error: 'No files are staged for commit.',
-            };
-          }
-          log.info(`${logContext} Index-as-is mode: committing ${stagedCount} staged files`);
-
-          const result = await git.commit(message);
-          if (!result.commit) {
-            return {
-              success: false,
-              error: 'No changes were committed.',
-            };
-          }
-
-          // log.info(`${logContext} Successfully committed: ${result.commit}`);
-          let commitDate: string | undefined;
-          try {
-            const showResult = await git.show([result.commit, '--no-patch', '--format=%aI']);
-            commitDate = showResult.trim();
-          } catch {
-            // Non-critical
-          }
-
-          return { success: true, commitHash: result.commit, commitDate };
+          return {
+            success: false,
+            error: 'At least one selected file is required for a commit proposal.',
+          };
         }
+
+        // Validate every submitted path before resetting the index. A rejected
+        // proposal must not be able to disturb the caller's existing staging
+        // state.
+        const filesToStageRelative = filesToStage.map(toGitPath);
 
         const initialStatus = await git.status();
         const originallyStaged = new Set([...initialStatus.staged, ...initialStatus.created]);
         // log.info(`${logContext} Originally staged files: ${originallyStaged.size}`);
 
+        try {
+          indexBackup = await backupGitIndex(git, workspacePath);
+        } catch (backupError) {
+          return {
+            success: false,
+            error: `Could not protect the existing staging area: ${getGitCommitErrorMessage(backupError)}`,
+          };
+        }
+        if (!indexBackup) {
+          return {
+            success: false,
+            error: 'Could not protect the existing staging area: Git did not resolve an index path.',
+          };
+        }
+        const failAfterIndexMutation = (error: string): GitCommitExecutionResult => {
+          const restored = restoreOriginalIndex();
+          if (restored) indexBackup?.dispose();
+          return {
+            success: false,
+            error: restored ? error : `${error} Original staging could not be restored; recovery backup was retained.`,
+          };
+        };
+
         // log.info(`${logContext} Resetting staging area before staging selected files`);
+        indexMutated = true;
         if (repoHasCommits) {
           await git.reset(['HEAD']);
         } else if (originallyStaged.size > 0) {
           await git.raw(['rm', '--cached', '-r', '.']);
         }
 
-        const filesToStageRelative = filesToStage.map(toGitPath);
         // log.info(`${logContext} Staging files (raw): ${filesToStage.join(', ')}`);
         // log.info(`${logContext} Staging files (git-relative): ${filesToStageRelative.join(', ')}`);
 
-        await git.add(['--all', '--', ...filesToStage]);
+        // `--literal-pathspecs` stops Git from interpreting globs or pathspec
+        // magic in a proposal. Keep it before the command: it is a global Git
+        // option, not an `add` option.
+        await git.raw(['--literal-pathspecs', 'add', '--all', '--', ...filesToStageRelative]);
 
         const status = await git.status();
         const stagedFiles = new Set([...status.staged, ...status.created]);
@@ -185,13 +288,7 @@ export async function executeGitCommit(
 
         if (stagedFiles.size === 0) {
           log.warn(`${logContext} No files were staged despite add() succeeding. Requested: [${filesToStage.join(', ')}], git-relative: [${filesToStageRelative.join(', ')}]`);
-          if (originallyStaged.size > 0) {
-            await git.add(Array.from(originallyStaged));
-          }
-          return {
-            success: false,
-            error: 'No files were staged. The files may not exist or have no changes.',
-          };
+          return failAfterIndexMutation('No files were staged. The files may not exist or have no changes.');
         }
 
         const filesToStageRelSet = new Set(filesToStageRelative);
@@ -200,22 +297,12 @@ export async function executeGitCommit(
 
         if (unexpectedFiles.length > 0) {
           log.error(`${logContext} Unexpected files staged: ${unexpectedFiles.join(', ')}`);
-          if (repoHasCommits) {
-            await git.reset(['HEAD']);
-          } else {
-            await git.raw(['rm', '--cached', '-r', '.']);
-          }
-          if (originallyStaged.size > 0) {
-            await git.add(Array.from(originallyStaged));
-          }
-          return {
-            success: false,
-            error: `Unexpected files were staged: ${unexpectedFiles.join(', ')}. Commit aborted.`,
-          };
+          return failAfterIndexMutation(`Unexpected files were staged: ${unexpectedFiles.join(', ')}. Commit aborted.`);
         }
 
         if (missingFiles.length > 0) {
           log.warn(`${logContext} Some selected files were not staged: ${missingFiles.join(', ')}`);
+          return failAfterIndexMutation(`Some selected files were not staged: ${missingFiles.join(', ')}. Commit aborted.`);
         }
 
         const result = await git.commit(message);
@@ -223,20 +310,31 @@ export async function executeGitCommit(
 
         if (!result.commit) {
           log.warn(`${logContext} Commit returned empty hash - nothing was committed`);
-          if (originallyStaged.size > 0) {
-            await git.add(Array.from(originallyStaged));
-          }
-          return {
-            success: false,
-            error: 'No changes were committed. Files may not have been staged correctly.',
-          };
+          return failAfterIndexMutation('No changes were committed. Files may not have been staged correctly.');
         }
 
-        const committedFilesSet = new Set((filesToStage || []).map(toGitPath));
-        const filesToRestage = Array.from(originallyStaged).filter((f) => !committedFilesSet.has(f));
-        if (filesToRestage.length > 0) {
-          log.info(`${logContext} Restoring ${filesToRestage.length} originally staged files`);
-          await git.add(filesToRestage);
+        // From here on, the commit is durable. Post-commit bookkeeping must
+        // never restore the old index or retry the commit.
+        successfulCommit = { hash: result.commit };
+
+        // Restore the old index byte-for-byte so unrelated partial hunks stay
+        // staged exactly as they were, then set committed files to their new
+        // HEAD entries.
+        if (indexBackup?.hadIndex) {
+          if (indexBackup.restore()) {
+            try {
+              await git.raw(['--literal-pathspecs', 'reset', 'HEAD', '--', ...filesToStageRelative]);
+              indexBackup.dispose();
+            } catch (recoveryError) {
+              // The commit is durable. Preserve the byte-exact recovery copy
+              // rather than risk a second mutation or a duplicate commit.
+              log.error(`${logContext} Commit succeeded but staging recovery is incomplete; backup retained:`, recoveryError);
+            }
+          } else {
+            log.error(`${logContext} Commit succeeded but the original staging area could not be restored; backup retained`);
+          }
+        } else {
+          indexBackup?.dispose();
         }
 
         // log.info(`${logContext} Successfully committed: ${result.commit}`);
@@ -245,6 +343,7 @@ export async function executeGitCommit(
         try {
           const showResult = await git.show([result.commit, '--no-patch', '--format=%aI']);
           commitDate = showResult.trim();
+          successfulCommit.date = commitDate;
         } catch {
           // Non-critical
         }
@@ -255,6 +354,29 @@ export async function executeGitCommit(
           commitDate,
         };
       } catch (error) {
+        if (successfulCommit) {
+          // A durable commit is never rolled back or retried. Post-commit
+          // bookkeeping may be incomplete, but returning failure here would
+          // invite a duplicate commit.
+          // Leave any recovery backup in place. A durable commit must never be
+          // retried or have its post-commit index reconstruction overwritten.
+          log.warn(`${logContext} Commit succeeded but post-commit bookkeeping failed:`, error);
+          return {
+            success: true,
+            commitHash: successfulCommit.hash,
+            commitDate: successfulCommit.date,
+          };
+        }
+        // The catch also covers hook failures after staging. Restore the exact
+        // pre-proposal index before returning or retrying a lock collision.
+        const restored = restoreOriginalIndex();
+        if (restored) indexBackup?.dispose();
+        if (!restored) {
+          return {
+            success: false,
+            error: `${getGitCommitErrorMessage(error)} Original staging could not be restored; recovery backup was retained.`,
+          };
+        }
         if (isIndexLockError(error)) {
           lastLockError = error;
           if (attempt < maxLockRetries) {

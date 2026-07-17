@@ -496,8 +496,9 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   // does not churn.
   useImperativeHandle(ref, () => ({
     createNewSession: (initialDraft?: string) => dispatchCreateNewSession(initialDraft),
-    createNewWorktreeSession: (options?: { baseBranch?: string; name?: string }) =>
-      dispatchCreateNewWorktreeSession(options),
+    createNewWorktreeSession: async (options?: { baseBranch?: string; name?: string }) => {
+      await dispatchCreateNewWorktreeSession(options);
+    },
     openSessionInTab: (sessionId: string) => dispatchOpenSessionInTab(sessionId),
     closeActiveTab: () => {
       // Route to workstream panel - it will only close editor tabs if they have focus

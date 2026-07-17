@@ -39,7 +39,6 @@ import {
   refreshPersonalSessionForAccount,
   onAuthStateChange,
   updateSessionToken,
-  getStytchUserId,
   getUserEmail,
   getPersonalOrgId,
   getPersonalUserId,
@@ -79,6 +78,7 @@ import {
   markMemberVerified,
   fingerprintIdentityKey,
   fetchTeamKeyStatus,
+  getLastKnownTeamKeyStatus,
   setTeamKeyCustodyMode,
 } from './OrgKeyService';
 import { performKeyRotation, cleanupOrphanedDocuments, reEncryptTrackerFromLocal } from './KeyRotationService';
@@ -94,6 +94,12 @@ import {
   runSilentTeamEncryptionMigrations,
 } from './SilentTeamEncryptionMigration';
 import { createTeamAuthBootstrap } from './TeamAuthBootstrap';
+import {
+  repairAccountOrgBindingFromEmail,
+  resolveTeamOrgAccountBinding,
+  upsertAccountOrgBinding,
+  type AccountOrgBindingSource,
+} from './AccountOrgBindingService';
 
 // ============================================================================
 // Server URL Helper
@@ -135,6 +141,14 @@ export interface TeamDetails {
   /** Personal account whose JWT discovered this membership. Public metadata only. */
   sourcePersonalOrgId?: string;
   sourceEmail?: string | null;
+  /** Explicit server-side account binding projected from the org TeamRoom. */
+  owningPersonalOrgId?: string | null;
+  /** The Stytch member id in this team org (different from the personal member id). */
+  teamMemberId?: string | null;
+  /** All explicit bindings when more than one signed-in account belongs to the same org. */
+  accountBindings?: Array<{ personalOrgId: string; teamMemberId: string }>;
+  /** Account selected from the explicit local binding for workspace operations. */
+  boundPersonalOrgId?: string | null;
 }
 
 /**
@@ -214,9 +228,21 @@ interface CachedOrgJwt {
 /** Cache of org-scoped JWTs. Key is orgId. */
 const orgJwtCache = new Map<string, CachedOrgJwt>();
 const orgJwtExchangeSingleFlight = createSingleFlight<string, TeamJwt>();
+const teamAccountBindingHints = new Map<string, string>();
 
 /** Buffer before JWT exp to refresh early (60 seconds). */
 const JWT_REFRESH_BUFFER_MS = 60 * 1000;
+
+function getProjectionDatabase(): ProjectionDb | null {
+  try {
+    return typeof getDatabase === 'function'
+      ? getDatabase() as ProjectionDb | null
+      : null;
+  } catch {
+    // Some isolated unit suites intentionally omit the database initializer.
+    return null;
+  }
+}
 
 /**
  * Get an org-scoped JWT via session exchange. Caches per-org.
@@ -238,14 +264,69 @@ export async function getOrgScopedJwt(
   accountOrgId?: string,
   forceRefresh = false,
 ): Promise<TeamJwt> {
+  let resolvedAccountOrgId = accountOrgId;
+  if (!resolvedAccountOrgId) {
+    const db = getProjectionDatabase();
+    const signedInAccounts = getAccounts();
+    const signedInAccountIds = signedInAccounts.map((account) => account.personalOrgId);
+    let binding = db
+      ? await resolveTeamOrgAccountBinding(db, orgId, signedInAccountIds)
+      : null;
+    const discoveryHint = teamAccountBindingHints.get(orgId);
+    resolvedAccountOrgId = binding?.personalOrgId
+      ?? (discoveryHint && signedInAccountIds.includes(discoveryHint) ? discoveryHint : undefined);
+
+    // Upgrade safety net: background collaboration can request an org JWT
+    // before listTeams has had a chance to persist or hint the A1 binding.
+    // Try the same logged, once-per-pair email repair as the access resolver
+    // before considering the single-account compatibility shortcut.
+    if (!resolvedAccountOrgId && db) {
+      for (const account of signedInAccounts) {
+        if (!account.email) continue;
+        await repairAccountOrgBindingFromEmail(
+          db,
+          account.personalOrgId,
+          orgId,
+          account.email,
+        );
+        binding = await resolveTeamOrgAccountBinding(db, orgId, signedInAccountIds);
+        if (binding) {
+          resolvedAccountOrgId = binding.personalOrgId;
+          break;
+        }
+      }
+    }
+
+    if (!resolvedAccountOrgId && signedInAccounts.length === 1) {
+      resolvedAccountOrgId = signedInAccounts[0].personalOrgId;
+      logger.main.warn('[TeamService] getOrgScopedJwt: using sole signed-in account without a persisted team binding', {
+        orgId,
+        personalOrgId: resolvedAccountOrgId,
+      });
+    }
+
+    if (!resolvedAccountOrgId) {
+      if (signedInAccounts.length > 1) {
+        logger.main.error('[TeamService] getOrgScopedJwt: ambiguous team account; refusing to use the sync account', {
+          orgId,
+          signedInPersonalOrgIds: signedInAccountIds,
+        });
+      }
+      throw new Error(`No signed-in account binding exists for team org ${orgId}`);
+    }
+  }
+
   // Check cache
   const cached = orgJwtCache.get(orgId);
   if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
     return cached.jwt;
   }
 
-  const exchangeKey = `${accountOrgId ?? 'primary'}:${orgId}`;
-  return orgJwtExchangeSingleFlight(exchangeKey, () => exchangeOrgScopedJwt(orgId, accountOrgId));
+  const exchangeKey = `${resolvedAccountOrgId}:${orgId}`;
+  return orgJwtExchangeSingleFlight(
+    exchangeKey,
+    () => exchangeOrgScopedJwt(orgId, resolvedAccountOrgId),
+  );
 }
 
 async function exchangeOrgScopedJwt(
@@ -322,6 +403,9 @@ async function exchangeOrgScopedJwt(
   const data = await response.json() as {
     sessionJwt: string;
     sessionToken: string;
+    teamMemberId?: string;
+    owningPersonalOrgId?: string;
+    bindingRecorded?: boolean;
   };
 
   if (!data.sessionJwt) {
@@ -344,10 +428,31 @@ async function exchangeOrgScopedJwt(
     throw err;
   }
 
+  const sourcePersonalOrgId = accountOrgId ?? getPersonalOrgId();
+  if (data.bindingRecorded && sourcePersonalOrgId && data.teamMemberId && data.owningPersonalOrgId) {
+    const db = getDatabase() as ProjectionDb | null;
+    if (db) {
+      await persistServerAccountOrgBinding(
+        db,
+        sourcePersonalOrgId,
+        orgId,
+        data.teamMemberId,
+        data.owningPersonalOrgId,
+        'server-exchange',
+      );
+    }
+  } else {
+    logger.main.warn('[TeamService] Org session exchange did not return a recorded account binding', {
+      orgId,
+      sourcePersonalOrgId,
+      bindingRecorded: data.bindingRecorded ?? false,
+    });
+  }
+
   // Stytch session exchange replaces the session token -- the old one is now
   // invalid. We MUST persist the new token so that refreshSession() and
   // getSessionToken() continue to work.
-  // BUT: only update the global token when operating under the primary account.
+  // Only update the singleton token when operating under the sync account.
   // Secondary account exchanges must NOT overwrite the primary's token.
   if (data.sessionToken && !accountOrgId) {
     updateSessionToken(data.sessionToken);
@@ -439,7 +544,7 @@ async function fetchTeamApi(path: string, method: string, body?: unknown, orgId?
   // Use org-scoped JWT if orgId provided, otherwise personal JWT
   // When accountOrgId is set, use that specific account's JWT
   let jwt = orgId
-    ? await getOrgScopedJwt(orgId)
+    ? await getOrgScopedJwt(orgId, accountOrgId)
     : accountOrgId
       ? getPersonalSessionJwtForAccount(accountOrgId)
       : getPersonalSessionJwt();
@@ -474,7 +579,7 @@ async function fetchTeamApi(path: string, method: string, body?: unknown, orgId?
   // On 401, retry once: refresh personal session or re-exchange org JWT
   if (response.status === 401) {
     if (accountOrgId && !orgId) {
-      // Refresh the account's PERSONAL lane. For the primary account the active
+      // Refresh the account's PERSONAL lane. For the sync account the active
       // Stytch session may currently be team-scoped, so a generic refresh is not
       // sufficient to replace an expired personalSessionJwt.
       logger.main.info(`[TeamService] Got 401 on account JWT for ${accountOrgId}, attempting refresh...`);
@@ -509,7 +614,7 @@ async function fetchTeamApi(path: string, method: string, body?: unknown, orgId?
       logger.main.info(`[TeamService] Got 401 on org-scoped JWT for ${orgId}, invalidating cache and re-exchanging...`);
       orgJwtCache.delete(orgId);
       try {
-        const freshOrgJwt = await getOrgScopedJwt(orgId);
+        const freshOrgJwt = await getOrgScopedJwt(orgId, accountOrgId, true);
         logger.main.info('[TeamService] Org JWT re-exchanged, retrying request...');
         response = await makeRequest(freshOrgJwt);
       } catch (exchangeErr) {
@@ -559,6 +664,32 @@ function getMemberIdFromJwt(jwt: string): string | null {
   }
 }
 
+async function persistServerAccountOrgBinding(
+  db: ProjectionDb,
+  expectedPersonalOrgId: string,
+  teamOrgId: string,
+  teamMemberId: string,
+  serverPersonalOrgId: string,
+  source: AccountOrgBindingSource,
+): Promise<boolean> {
+  if (serverPersonalOrgId !== expectedPersonalOrgId) {
+    logger.main.error('[TeamService] Refusing mismatched server account/org binding', {
+      expectedPersonalOrgId,
+      serverPersonalOrgId,
+      teamOrgId,
+      teamMemberId,
+    });
+    return false;
+  }
+  await upsertAccountOrgBinding(db, {
+    personalOrgId: expectedPersonalOrgId,
+    teamOrgId,
+    teamMemberId,
+    source,
+  });
+  return true;
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -580,6 +711,7 @@ const LIST_TEAMS_TTL_MS = 5 * 60_000;
 
 export function invalidateListTeamsCache(): void {
   listTeamsCache = null;
+  teamAccountBindingHints.clear();
 }
 
 async function listTeams(): Promise<TeamDetails[]> {
@@ -595,7 +727,7 @@ async function listTeams(): Promise<TeamDetails[]> {
 
   const promise = (async (): Promise<TeamDetails[]> => {
     const allAccounts = getAccounts();
-    const seenOrgIds = new Set<string>();
+    const teamsByOrgId = new Map<string, TeamDetails>();
     const allTeams: TeamDetails[] = [];
 
     // Query teams for each signed-in account in parallel
@@ -618,11 +750,58 @@ async function listTeams(): Promise<TeamDetails[]> {
     for (const result of results) {
       if (result.status === 'fulfilled') {
         for (const team of result.value) {
-          if (!seenOrgIds.has(team.orgId)) {
-            seenOrgIds.add(team.orgId);
+          if (team.sourcePersonalOrgId && team.owningPersonalOrgId
+              && team.owningPersonalOrgId !== team.sourcePersonalOrgId) {
+            logger.main.error('[TeamService] Ignoring mismatched discovered account/org binding', {
+              teamOrgId: team.orgId,
+              sourcePersonalOrgId: team.sourcePersonalOrgId,
+              owningPersonalOrgId: team.owningPersonalOrgId,
+            });
+          }
+          const binding = team.sourcePersonalOrgId && team.teamMemberId
+            && team.owningPersonalOrgId === team.sourcePersonalOrgId
+            ? { personalOrgId: team.sourcePersonalOrgId, teamMemberId: team.teamMemberId }
+            : null;
+          if (binding) {
+            const db = getProjectionDatabase();
+            if (db) {
+              await persistServerAccountOrgBinding(
+                db,
+                binding.personalOrgId,
+                team.orgId,
+                binding.teamMemberId,
+                binding.personalOrgId,
+                'server-sync',
+              );
+            }
+          }
+          const existing = teamsByOrgId.get(team.orgId);
+          if (!existing) {
+            if (binding) team.accountBindings = [binding];
+            teamsByOrgId.set(team.orgId, team);
             allTeams.push(team);
+          } else if (binding && !existing.accountBindings?.some((candidate) =>
+            candidate.personalOrgId === binding.personalOrgId
+            && candidate.teamMemberId === binding.teamMemberId)) {
+            existing.accountBindings = [...(existing.accountBindings ?? []), binding];
           }
         }
+      }
+    }
+
+    const db = getProjectionDatabase();
+    const signedInAccountIds = allAccounts.map((account) => account.personalOrgId);
+    for (const team of allTeams) {
+      const resolved = db
+        ? await resolveTeamOrgAccountBinding(db, team.orgId, signedInAccountIds)
+        : null;
+      team.boundPersonalOrgId = resolved?.personalOrgId
+        ?? [...(team.accountBindings ?? [])]
+          .sort((a, b) => a.personalOrgId.localeCompare(b.personalOrgId))[0]?.personalOrgId
+        ?? team.sourcePersonalOrgId
+        ?? null;
+      if (team.boundPersonalOrgId) {
+        teamAccountBindingHints.set(team.orgId, team.boundPersonalOrgId);
       }
     }
 
@@ -759,12 +938,38 @@ async function createTeam(name: string, workspacePath?: string, accountOrgId?: s
   }
 
   // Create team using the specified account's JWT (or primary if not specified)
+  const sourcePersonalOrgId = accountOrgId ?? getPersonalOrgId();
   const result = await fetchTeamApi('/api/teams', 'POST', {
     name,
     gitRemoteHash,
-  }, undefined, accountOrgId) as { orgId: string; name: string; creatorMemberId: string };
+  }, undefined, accountOrgId) as {
+    orgId: string;
+    name: string;
+    creatorMemberId: string;
+    teamMemberId?: string;
+    owningPersonalOrgId?: string;
+  };
 
   logger.main.info('[TeamService] Team created:', result.orgId, name);
+
+  if (sourcePersonalOrgId && result.teamMemberId && result.owningPersonalOrgId) {
+    const db = getDatabase() as ProjectionDb | null;
+    if (db) {
+      await persistServerAccountOrgBinding(
+        db,
+        sourcePersonalOrgId,
+        result.orgId,
+        result.teamMemberId,
+        result.owningPersonalOrgId,
+        'server-create',
+      );
+    }
+  } else {
+    logger.main.warn('[TeamService] Team create response omitted explicit account/org binding', {
+      orgId: result.orgId,
+      sourcePersonalOrgId,
+    });
+  }
 
   // Team collaboration is always server-managed. Never create a client-custodied
   // team key for a new org; the personal/mobile zero-knowledge lane is separate.
@@ -920,8 +1125,14 @@ async function mergeOrg(
  * in Stytch automatically), then sets up encryption keys.
  */
 async function acceptInvite(orgId: string): Promise<TeamDetails> {
+  const pendingTeam = (await listTeams()).find((team) => team.orgId === orgId);
+  const inviteAccountOrgId = pendingTeam?.boundPersonalOrgId
+    ?? pendingTeam?.sourcePersonalOrgId;
+  if (!inviteAccountOrgId) {
+    throw new Error(`No signed-in account owns the pending invite for ${orgId}`);
+  }
   // 1. Exchange session for the team org -- Stytch promotes pending -> active_member
-  const orgJwt = await getOrgScopedJwt(orgId);
+  const orgJwt = await getOrgScopedJwt(orgId, inviteAccountOrgId);
 
   // 2. Set up encryption: identity key + fetch org key
   try {
@@ -1294,7 +1505,14 @@ function startAutoWrapPolling(orgId: string): void {
         return;
       }
     } catch {
-      // Could not determine mode -- continue with legacy wrapping below.
+      // Could not determine mode (offline, NIM-1778) -- trust the last-known
+      // mode; only continue with legacy wrapping when we have never seen the
+      // org as server-managed.
+      if (getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed') {
+        clearInterval(interval);
+        autoWrapIntervals.delete(orgId);
+        return;
+      }
     }
 
     try {
@@ -1404,7 +1622,12 @@ export async function autoWrapForNewMembers(orgId: string): Promise<void> {
       return;
     }
   } catch {
-    // Could not determine custody mode -- fall through to legacy wrapping (safe default).
+    // Could not determine custody mode (offline, NIM-1778) -- trust the
+    // last-known mode; only fall through to legacy wrapping when the org has
+    // never been seen as server-managed.
+    if (getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed') {
+      return;
+    }
   }
 
   try {
@@ -1594,6 +1817,24 @@ export async function syncOrgProjectionFromServer(knownTeams?: TeamDetails[]): P
     }
 
     const counts = await backfillProjection(db, orgs);
+    for (const team of teams) {
+      const bindings = team.accountBindings ?? (
+        team.sourcePersonalOrgId && team.teamMemberId
+          && team.owningPersonalOrgId === team.sourcePersonalOrgId
+          ? [{ personalOrgId: team.sourcePersonalOrgId, teamMemberId: team.teamMemberId }]
+          : []
+      );
+      for (const binding of bindings) {
+        await persistServerAccountOrgBinding(
+          db,
+          binding.personalOrgId,
+          team.orgId,
+          binding.teamMemberId,
+          binding.personalOrgId,
+          'server-sync',
+        );
+      }
+    }
     // logger.main.info('[TeamService] org projection synced:', counts);
     return { success: true, counts };
   } catch (err) {
@@ -1615,31 +1856,55 @@ const runAuthenticatedTeamBootstrap = createTeamAuthBootstrap(async () => {
 });
 
 /**
- * Resolve the viewer's per-org member id (Stytch member ids are org-scoped) by
- * matching the current user's email against the local roster, then run the
- * `canAccess` resolver. Falls back to the current session's user id.
+ * Resolve the viewer's per-org member id from the team org's explicit account
+ * binding, independently of the sync-account selection. Legacy email matching
+ * remains isolated to the logged, one-time repair path.
  */
-async function canAccessForCurrentUser(input: CanAccessInput): Promise<{
+export async function canAccessForCurrentUser(input: CanAccessInput): Promise<{
   allowed: boolean; orgRole: string | null; projectRole: string | null; reason: string;
 }> {
   const db = getDatabase() as AccessDatabase | null;
   if (!db) return { allowed: false, orgRole: null, projectRole: null, reason: 'db-unavailable' };
 
-  let viewerUserId = getStytchUserId() ?? getPersonalUserId() ?? '';
-  const email = getUserEmail();
+  const signedInAccounts = getAccounts();
+  let viewerUserId = '';
 
-  // Resolve the org first (from projectId if needed), then map email -> member id.
+  // Resolve the org first (from projectId if needed), then resolve its bound
+  // signed-in account. The sync account is deliberately not consulted.
   let orgId = input.orgId ?? null;
   if (!orgId && input.projectId) {
     const pr = await db.query<{ org_id: string }>(`SELECT org_id FROM projects WHERE id = $1`, [input.projectId]);
     orgId = pr.rows[0]?.org_id ?? null;
   }
-  if (orgId && email) {
-    const r = await db.query<{ user_id: string }>(
-      `SELECT user_id FROM org_members WHERE org_id = $1 AND lower(email) = lower($2)`,
-      [orgId, email],
-    );
-    if (r.rows[0]?.user_id) viewerUserId = r.rows[0].user_id;
+  if (orgId) {
+    const personalAccount = signedInAccounts.find((account) => account.personalOrgId === orgId);
+    if (personalAccount) {
+      viewerUserId = personalAccount.personalUserId ?? '';
+    } else {
+      let binding = await resolveTeamOrgAccountBinding(
+        db,
+        orgId,
+        signedInAccounts.map((account) => account.personalOrgId),
+      );
+      if (!binding) {
+        for (const account of signedInAccounts) {
+          if (!account.email) continue;
+          await repairAccountOrgBindingFromEmail(
+            db,
+            account.personalOrgId,
+            orgId,
+            account.email,
+          );
+          binding = await resolveTeamOrgAccountBinding(
+            db,
+            orgId,
+            signedInAccounts.map((candidate) => candidate.personalOrgId),
+          );
+          if (binding) break;
+        }
+      }
+      viewerUserId = binding?.teamMemberId ?? '';
+    }
   }
 
   return canAccess(db, viewerUserId, input);

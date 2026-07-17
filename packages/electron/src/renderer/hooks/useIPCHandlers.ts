@@ -15,9 +15,8 @@ import { store } from '@nimbalyst/runtime/store';
 import { DocumentModelRegistry } from '../services/document-model/DocumentModelRegistry';
 import { aiApi } from '../services/aiApi';
 import { getFileName } from '../utils/pathUtils';
-import { isCollabUri, buildCollabUri } from '../utils/collabUri';
+import { isCollabUri } from '../utils/collabUri';
 import {
-  registerDocumentInIndex,
   updateSharedDocumentTitle,
   removeSharedDocument,
   moveSharedDocument,
@@ -27,8 +26,9 @@ import {
   removeSharedFolder,
   collectFolderSubtree,
   sharedFoldersAtom,
-  activeTeamOrgIdAtom,
 } from '../store/atoms/collabDocuments';
+import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
+import { createCollaborativeDocument } from '../services/collaborativeDocumentCreationOrchestrator';
 import type { ContentMode } from '../types/WindowModeTypes';
 import { dialogRef } from '../contexts/DialogContext';
 import { DIALOG_IDS } from '../dialogs';
@@ -667,29 +667,23 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
             ? await resolveSharedFolderPath(folderPath)
             : (parentFolderId ?? null);
 
-          const documentId = crypto.randomUUID();
-          await registerDocumentInIndex(documentId, title, documentType || 'markdown');
-          if (targetParentId) {
-            moveSharedDocument(documentId, targetParentId);
-          }
+          const requestedDocumentType = documentType || 'markdown';
+          const catalog = getCollaborativeDocumentTypeCatalog();
+          const fileExtension = catalog.inferFileExtension(requestedDocumentType, title);
+          const resolution = catalog.resolveMetadata(requestedDocumentType, fileExtension);
+          if (resolution.state !== 'ready') throw new Error(resolution.reason);
 
-          // Best-effort content seed: only possible when an editor for the doc is
-          // already mounted (a Y.Doc-backed CollaborativeTabEditor). A freshly
-          // created doc has none, so it is seeded when it is next opened.
-          if (initialContent) {
-            const orgId = store.get(activeTeamOrgIdAtom);
-            if (orgId) {
-              const collabUri = buildCollabUri(orgId, documentId);
-              if (editorRegistry.has(collabUri)) {
-                const streamId = `mcp-seed-${Date.now()}-${Math.random()}`;
-                editorRegistry.startStreaming(collabUri, { id: streamId, position: 'end', mode: 'append' });
-                editorRegistry.streamContent(collabUri, streamId, initialContent);
-                editorRegistry.endStreaming(collabUri, streamId);
-              }
-            }
-          }
+          const document = await createCollaborativeDocument({
+            descriptor: resolution.descriptor,
+            requestedName: title,
+            parentFolderId: targetParentId,
+            sourceContent: initialContent ?? '',
+          });
 
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true, documentId });
+          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
+            success: true,
+            documentId: document.documentId,
+          });
         } catch (error) {
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
             success: false,

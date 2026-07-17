@@ -9,6 +9,7 @@ import {
   MCP_EXTENSION_DEV,
   MCP_EAGER_CONFIG_KEYS,
   MCP_RETIRED_SERVER_CONFIG_KEYS,
+  CORE_ALWAYS_LOAD_TOOLS,
   FIRST_PARTY_TOOL_TO_SERVER,
   extensionServerConfigKey,
   extensionServerEndpointPath,
@@ -31,6 +32,15 @@ describe('Topology descriptor', () => {
     expect(isEagerServer(MCP_HOST)).toBe(false);
     expect(isEagerServer(MCP_TRACKERS)).toBe(false);
     expect(isEagerServer(MCP_SITUATIONAL)).toBe(false);
+  });
+
+  it('always-loads the visual tools the prompt tells the model to use (NIM-1766)', () => {
+    // The system prompt actively instructs the model to call these for inline
+    // charts/screenshots, so their schemas must be in context. Deferring them
+    // made the model guess the args and hit schema-validation errors instead of
+    // rendering. Keep them eager.
+    expect(CORE_ALWAYS_LOAD_TOOLS).toContain('display_to_user');
+    expect(CORE_ALWAYS_LOAD_TOOLS).toContain('capture_editor_screenshot');
   });
 
   it('gives every first-party server a unique config-key and endpoint path', () => {
@@ -119,9 +129,8 @@ describe('getMcpServersConfig consolidated topology', () => {
     expect(MCP_CORE).toBe('nimbalyst');
     expect(config[MCP_CORE]).toBeDefined();
     // Eagerness is per-tool (`_meta['anthropic/alwaysLoad']` on the core
-    // ListTools subset — applyCoreAlwaysLoadMeta), not server-level. A
-    // server-level flag would force display_to_user/capture_editor_screenshot
-    // eager too.
+    // ListTools subset — applyCoreAlwaysLoadMeta), not server-level, so the
+    // CORE_ALWAYS_LOAD_TOOLS subset (not every core tool) is charged eagerly.
     expect(config[MCP_CORE].alwaysLoad).toBeUndefined();
     expect(config[MCP_CORE].url).toContain('/mcp/core');
     // Carries the long timeout (git_commit_proposal / AskUserQuestion block on input).

@@ -16,7 +16,7 @@ import { getCollabSyncWsUrl, getCollabSyncHttpUrl } from '../utils/collabSyncUrl
 import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalOrgId, getPersonalUserId, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
 import { findTeamForWorkspace, getOrgScopedJwt } from '../services/TeamService';
 import { getOrgIdFromJwt, getJwtExp } from '../services/jwtOrg';
-import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey, fetchTeamKeyStatus, getArchivedOrgKeys } from '../services/OrgKeyService';
+import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey, fetchTeamKeyStatus, getLastKnownTeamKeyStatus, getArchivedOrgKeys } from '../services/OrgKeyService';
 import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
 import { createSingleFlight } from '../utils/asyncCache';
 import { getPersonalDocSyncConfig, isSyncEnabled } from '../services/SyncManager';
@@ -228,7 +228,10 @@ export function registerDocumentSyncHandlers(): void {
       const orgJwt = await getOrgScopedJwt(orgId);
       serverManaged = (await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed';
     } catch (err) {
-      logger.main.warn('[DocumentSyncHandlers] key-status fetch failed; assuming legacy-e2e:', err);
+      // Offline JWT mint failure (NIM-1778): fall back to the last-known mode
+      // instead of assuming legacy-e2e, which bricks a server-managed team.
+      serverManaged = getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed';
+      logger.main.warn('[DocumentSyncHandlers] key-status resolve failed; using last-known mode (serverManaged:', serverManaged, '):', err);
     }
 
     // Get org encryption key (legacy mode only).
@@ -1162,7 +1165,11 @@ export function registerDocumentSyncHandlers(): void {
       const orgJwt = await getOrgScopedJwt(orgId);
       serverManaged = (await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed';
     } catch (err) {
-      logger.main.warn('[DocumentSyncHandlers] index key-status fetch failed; assuming legacy-e2e:', err);
+      // Offline JWT mint failure (NIM-1778): fall back to the last-known mode
+      // instead of assuming legacy-e2e -- the wrong lane makes every doc-index
+      // title fail decrypt and surface as locked until restart.
+      serverManaged = getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed';
+      logger.main.warn('[DocumentSyncHandlers] index key-status resolve failed; using last-known mode (serverManaged:', serverManaged, '):', err);
     }
 
     let orgKeyBase64 = '';

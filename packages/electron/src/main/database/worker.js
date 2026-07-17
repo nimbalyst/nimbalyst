@@ -2458,6 +2458,38 @@ class PGLiteWorker {
       throw error;
     }
 
+    // Workstream A1: explicit personal-account -> team-member binding. The
+    // binding is projected from the org TeamRoom; the repair ledger ensures
+    // legacy email matching is attempted only once per account/team pair.
+    // Mirror of SQLite migration 0025_account_org_bindings.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS account_org_bindings (
+          personal_org_id TEXT NOT NULL,
+          team_org_id     TEXT NOT NULL,
+          team_member_id  TEXT NOT NULL,
+          source          TEXT NOT NULL,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (personal_org_id, team_org_id)
+        );
+        CREATE TABLE IF NOT EXISTS account_org_binding_repairs (
+          personal_org_id TEXT NOT NULL,
+          team_org_id     TEXT NOT NULL,
+          attempted_at    TIMESTAMPTZ NOT NULL,
+          outcome         TEXT NOT NULL,
+          matched_count   INTEGER NOT NULL,
+          PRIMARY KEY (personal_org_id, team_org_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_account_org_bindings_team
+          ON account_org_bindings (team_org_id, team_member_id);
+      `);
+      console.log('[PGLite Worker] account/org binding tables created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create account/org binding tables:', error);
+      throw error;
+    }
+
     // Migration: derived relationship index (Epic C Phase 2, schema version 14).
     // LOCAL-ONLY projection of relationship FIELD values (which themselves sync
     // on the metadata socket like labels). Rebuildable from item JSON; never on
@@ -2754,6 +2786,29 @@ class PGLiteWorker {
       console.log('[PGLite Worker] read_receipts table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create read_receipts table:', error);
+      throw error;
+    }
+
+    // Migration: identity-scoped tracker favorites and genuine-open recency
+    // (schema version 24). Mirror of SQLite 0024_tracker_personal_state.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_personal_state (
+          user_email          TEXT NOT NULL,
+          scope               TEXT NOT NULL,
+          item_id             TEXT NOT NULL,
+          is_favorite         BOOLEAN NOT NULL DEFAULT FALSE,
+          favorite_updated_at BIGINT NOT NULL DEFAULT 0,
+          last_opened_at      BIGINT,
+          updated_at          BIGINT NOT NULL,
+          PRIMARY KEY (user_email, scope, item_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracker_personal_state_scope
+          ON tracker_personal_state (user_email, scope);
+      `);
+      console.log('[PGLite Worker] tracker_personal_state table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_personal_state table:', error);
       throw error;
     }
 

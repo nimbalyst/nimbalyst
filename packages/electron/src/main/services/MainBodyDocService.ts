@@ -33,7 +33,7 @@ import { $getRoot } from 'lexical';
 import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
-import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey, fetchTeamKeyStatus } from './OrgKeyService';
+import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey, fetchTeamKeyStatus, getLastKnownTeamKeyStatus } from './OrgKeyService';
 import { getCollabBackupService } from './CollabBackupService';
 
 const IDLE_TTL_MS = 30_000;
@@ -73,14 +73,18 @@ async function resolveConfig(
   const team = await findTeamForWorkspace(workspacePath);
   if (!team) return null;
 
-  // Determine key custody (NIM-878). Default to legacy-e2e on ANY failure so a
-  // status hiccup can never cause us to send plaintext into a legacy room.
+  // Determine key custody (NIM-878). On failure, fall back to the LAST-KNOWN
+  // mode for the org (NIM-1778) -- hardcoding legacy-e2e misroutes a
+  // server-managed team into the legacy encrypt/decrypt lane. Only an org we
+  // have never successfully resolved defaults to legacy-e2e, so a status
+  // hiccup still can't cause us to send plaintext into a legacy room.
   let serverManaged = false;
   try {
     const orgJwt = await getOrgScopedJwt(team.orgId);
     serverManaged = (await fetchTeamKeyStatus(team.orgId, orgJwt)).mode === 'server-managed';
   } catch (err) {
-    logger.main.warn('[MainBodyDocService] key-status fetch failed; assuming legacy-e2e:', err);
+    serverManaged = getLastKnownTeamKeyStatus(team.orgId)?.mode === 'server-managed';
+    logger.main.warn('[MainBodyDocService] key-status resolve failed; using last-known mode (serverManaged:', serverManaged, '):', err);
   }
 
   let key = await getOrgKey(team.orgId);

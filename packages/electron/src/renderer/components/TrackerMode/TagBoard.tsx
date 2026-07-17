@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { MaterialSymbol, TrackerUnreadDot } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
-import type { TrackerItemType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import { TrackerFavoriteStar, type TrackerItemType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { getRecordTitle, getRecordPriority, getFieldByRole } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/UserAvatar';
 import { groupTrackerItemsByTag } from './trackerTagFilterUtils';
@@ -15,6 +15,8 @@ interface TagBoardProps {
   onItemSelect?: (itemId: string) => void;
   /** Currently selected item ID for card highlighting. */
   selectedItemId?: string | null;
+  favoriteItemIds?: ReadonlySet<string>;
+  onToggleFavorite?: (itemId: string) => void;
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -44,6 +46,8 @@ export const TagBoard: React.FC<TagBoardProps> = ({
   overrideItems,
   onItemSelect,
   selectedItemId,
+  favoriteItemIds = new Set<string>(),
+  onToggleFavorite,
 }) => {
   const allItems = useMemo(() => {
     const source = overrideItems ?? [];
@@ -113,16 +117,24 @@ export const TagBoard: React.FC<TagBoardProps> = ({
               {/* Column cards */}
               <div className="flex-1 overflow-y-auto p-1.5">
                 {col.items.map((item) => (
-                  <button
+                  <div
                     key={item.id}
                     data-testid="tracker-tag-board-card"
                     data-item-id={item.id}
+                    role="button"
+                    tabIndex={0}
                     className={`w-full text-left p-2.5 rounded-md bg-nim hover:bg-nim-tertiary border transition-colors cursor-pointer mb-1.5 ${
                       selectedItemId && item.id === selectedItemId
                         ? 'border-[var(--nim-primary)]'
                         : 'border-nim'
                     }`}
                     onClick={() => onItemSelect?.(item.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onItemSelect?.(item.id);
+                      }
+                    }}
                   >
                     <div className="flex items-start gap-2">
                       <span
@@ -130,6 +142,7 @@ export const TagBoard: React.FC<TagBoardProps> = ({
                         style={{ backgroundColor: PRIORITY_COLORS[getRecordPriority(item) || 'medium'] || '#6b7280' }}
                       />
                       <TrackerUnreadDot itemId={item.id} className="mt-1" />
+                      <TrackerFavoriteStar itemId={item.id} isFavorite={favoriteItemIds.has(item.id)} onToggle={onToggleFavorite} />
                       <div className="flex-1 min-w-0">
                         {item.issueKey && (
                           <div className="text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-nim-faint mb-0.5">
@@ -160,7 +173,7 @@ export const TagBoard: React.FC<TagBoardProps> = ({
                         </div>
                       </div>
                     </div>
-                  </button>
+                  </div>
                 ))}
                 {/* Spacer */}
                 <div className="min-h-[40px]" />

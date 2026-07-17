@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { usePostHog } from 'posthog-js/react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
@@ -31,8 +31,9 @@ import {
 } from '../../store/atoms/appSettings';
 import { workspaceHasTeamAtom } from '../../store/atoms/collabDocuments';
 import { stytchIsSignedInAtom } from '../../store/atoms/stytchAuth';
+import { personalAccountsAtom } from '../../store/atoms/settingsDomains';
 import { AlphaBadge } from '../common/AlphaBadge';
-import { UserMenuPopover } from './UserMenuPopover';
+import { AccountInspectorPopover } from '../Accounts/AccountInspectorPopover';
 import { GutterContextMenu } from './GutterContextMenu';
 import { CustomizeGutterPopover } from './CustomizeGutterPopover';
 import {
@@ -121,6 +122,23 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
   // `null` means "still loading" -- treated as signed-in for icon purposes so
   // we don't flash the logged-out look during startup.
   const isSignedIn = useAtomValue(stytchIsSignedInAtom);
+  const accounts = useAtomValue(personalAccountsAtom);
+
+  // Organization for the active project, resolved lazily when the account menu
+  // opens, so the popover's Organization row links to the right org window.
+  const [projectOrg, setProjectOrg] = useState<{ orgId: string; name: string } | null>(null);
+  useEffect(() => {
+    if (!userMenuOpen || !workspacePath) return;
+    let cancelled = false;
+    void window.electronAPI?.team?.findForWorkspace(workspacePath)
+      .then((result: any) => {
+        if (cancelled) return;
+        const found = result?.team ?? result;
+        setProjectOrg(found?.orgId ? { orgId: found.orgId, name: found.name } : null);
+      })
+      .catch(() => { if (!cancelled) setProjectOrg(null); });
+    return () => { cancelled = true; };
+  }, [userMenuOpen, workspacePath]);
 
   // Global gutter customization (visibility + per-section order).
   const hiddenItems = useAtomValue(hiddenGutterItemsAtom);
@@ -518,17 +536,30 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
         {/* User menu: always visible, never hideable, always last */}
         <div>
           {userMenuOpen && (
-            <UserMenuPopover
-              onNavigateSettings={handleNavigateSettings}
-              onClose={() => setUserMenuOpen(false)}
-              isProjectConnected={isProjectConnected}
+            <AccountInspectorPopover
+              accounts={accounts}
+              projectOrg={projectOrg}
               anchorEl={userMenuButtonRef.current}
+              onClose={() => setUserMenuOpen(false)}
+              onOpenAccount={() => {
+                setUserMenuOpen(false);
+                handleNavigateSettings('account', 'account');
+              }}
+              onManageOrganization={(orgId) => {
+                setUserMenuOpen(false);
+                // Org administration opens in its own window (2026-07-17
+                // decision-log correction), not a mode in the project window.
+                void window.electronAPI?.team?.openManagementWindow({
+                  orgId,
+                  workspacePath: workspacePath ?? undefined,
+                });
+              }}
             />
           )}
           <HelpTooltip testId="gutter-user-button" placement="right">
             <button
               ref={userMenuButtonRef}
-              className={`nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${userMenuOpen ? 'bg-nim-tertiary text-nim' : needsSignIn ? 'bg-transparent text-nim-warning hover:bg-nim-tertiary' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+              className={`account-inspector-trigger nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${userMenuOpen ? 'bg-nim-tertiary text-nim' : needsSignIn ? 'bg-transparent text-nim-warning hover:bg-nim-tertiary' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
               onClick={() => setUserMenuOpen(!userMenuOpen)}
               aria-label={needsSignIn ? 'User menu (signed out -- sync requires sign in)' : 'User menu'}
               aria-expanded={userMenuOpen}
@@ -536,7 +567,14 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
               data-needs-sign-in={needsSignIn || undefined}
               data-testid="gutter-user-button"
             >
-              <MaterialSymbol icon={needsSignIn ? 'no_accounts' : 'person'} size={20} />
+              {accounts.length > 0 ? (
+                <>
+                  <span className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold text-white ${needsSignIn ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-warning)]' : 'bg-[var(--nim-primary)]'}`}>
+                    {(accounts.find((account) => account.isSyncAccount)?.email?.[0] ?? accounts[0]?.email?.[0] ?? '?').toUpperCase()}
+                  </span>
+                  {accounts.length > 1 && <span className="absolute -bottom-0.5 -right-0.5 rounded-full border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] px-1 text-[8px] font-semibold leading-3">{accounts.length}</span>}
+                </>
+              ) : <MaterialSymbol icon={needsSignIn ? 'no_accounts' : 'person'} size={20} />}
             </button>
           </HelpTooltip>
         </div>

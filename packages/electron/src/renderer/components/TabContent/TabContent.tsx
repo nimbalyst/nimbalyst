@@ -29,7 +29,7 @@ import {
   removeCollabConfig,
   resolveCollabConfigForUri,
 } from '../../utils/collabDocumentOpener';
-import { getPersistedCollabDocType } from '../../utils/collabOpenDocsPersistence';
+import { getPersistedCollabDocMetadata } from '../../utils/collabOpenDocsPersistence';
 import { store, editorDirtyAtom, editorHasUnacceptedChangesAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { clearMockupAnnotationsForFile, getMockupFilePath } from '../UnifiedAI/MockupAnnotationIndicator';
 
@@ -151,7 +151,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
           // sharedDocumentsAtom hasn't synced yet. Without it, the open
           // routes a shared .excalidraw / .mockup.html Y.Doc through the
           // markdown editor and the canvas comes back blank.
-          const documentType = await getPersistedCollabDocType(
+          const persistedMetadata = await getPersistedCollabDocMetadata(
             propsRef.current.workspaceId,
             documentId,
           );
@@ -160,7 +160,18 @@ const TabContentComponent: React.FC<TabContentProps> = ({
             filePath,
             documentId,
             title,
-            documentType,
+            persistedMetadata?.documentType,
+            {
+              metadata: persistedMetadata?.metadataVersion === 2
+                && persistedMetadata.fileExtension
+                && persistedMetadata.editorId
+                ? {
+                    metadataVersion: 2,
+                    fileExtension: persistedMetadata.fileExtension,
+                    editorId: persistedMetadata.editorId,
+                  }
+                : undefined,
+            },
           );
         } catch (error) {
           logger.ui.error('[TabContent] Failed to resolve collab config:', error);

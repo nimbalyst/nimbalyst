@@ -13,6 +13,8 @@ import { store } from '@nimbalyst/runtime/store';
 import { mergeReceipt, trackerReceiptsAtom } from '@nimbalyst/runtime';
 import type { ReadReceipt, SyncedReadReceipt } from '@nimbalyst/runtime';
 import { docReceiptsAtom } from '../atoms/docUnread';
+import { applyTrackerPersonalStateRowAtom } from '../atoms/trackerPersonalState';
+import type { TrackerPersonalStateDto } from '../../services/RendererTrackerPersonalStateService';
 
 export function initReadReceiptListeners(): () => void {
   const cleanups: Array<() => void> = [];
@@ -37,6 +39,12 @@ export function initReadReceiptListeners(): () => void {
     },
   );
   if (typeof unsubscribe === 'function') cleanups.push(unsubscribe);
+
+  const unsubscribeTrackerPersonalState = window.electronAPI?.on?.(
+    'tracker-personal-state:remote-updated',
+    (row: TrackerPersonalStateDto) => store.set(applyTrackerPersonalStateRowAtom, row),
+  );
+  if (typeof unsubscribeTrackerPersonalState === 'function') cleanups.push(unsubscribeTrackerPersonalState);
 
   return () => {
     cleanups.forEach((cleanup) => cleanup());

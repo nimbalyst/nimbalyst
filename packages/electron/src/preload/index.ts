@@ -295,16 +295,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('export:sessionToClipboard', options) as Promise<{ success: boolean; error?: string }>,
 
   // Share operations
-  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number }) =>
-    ipcRenderer.invoke('share:sessionAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>,
+  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number; personalOrgId?: string }) =>
+    ipcRenderer.invoke('share:sessionAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>,
+  getShareAccountOptions: (options: { contentType: 'session' | 'file'; sessionId?: string; filePath?: string }) =>
+    ipcRenderer.invoke('share:get-account-options', options) as Promise<{ success: boolean; accounts?: Array<{ personalOrgId: string; email: string; isSyncAccount: boolean; sessionStatus: 'active' | 'expired' }>; defaultPersonalOrgId?: string; defaultSource?: 'workspace-binding' | 'sync-account' | 'only-account'; error?: string }>,
   listShares: () =>
-    ipcRenderer.invoke('share:list') as Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number }>; error?: string }>,
-  deleteShare: (options: { shareId: string; sessionId?: string }) =>
+    ipcRenderer.invoke('share:list') as Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number; owningPersonalOrgId: string }>; error?: string }>,
+  deleteShare: (options: { shareId: string; sessionId?: string; owningPersonalOrgId?: string }) =>
     ipcRenderer.invoke('share:delete', options) as Promise<{ success: boolean; error?: string }>,
   getShareKeys: () =>
     ipcRenderer.invoke('share:getKeys') as Promise<Record<string, string>>,
-  shareFileAsLink: (options: { filePath: string; expirationDays?: number }) =>
-    ipcRenderer.invoke('share:fileAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>,
+  shareFileAsLink: (options: { filePath: string; expirationDays?: number; personalOrgId?: string }) =>
+    ipcRenderer.invoke('share:fileAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>,
   getShareExpirationPreference: () =>
     ipcRenderer.invoke('share:getExpirationPreference') as Promise<number>,
   setShareExpirationPreference: (days: number) =>
@@ -1503,6 +1505,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stytch: {
     getAuthState: () => ipcRenderer.invoke('stytch:get-auth-state'),
     getAccounts: () => ipcRenderer.invoke('stytch:get-accounts'),
+    getSyncAccount: () => ipcRenderer.invoke('stytch:get-sync-account'),
+    setSyncAccount: (personalOrgId: string) =>
+      ipcRenderer.invoke('stytch:set-sync-account', personalOrgId),
     isAuthenticated: () => ipcRenderer.invoke('stytch:is-authenticated'),
     signInWithGoogle: () => ipcRenderer.invoke('stytch:sign-in-google'),
     sendMagicLink: (email: string) =>
@@ -1529,6 +1534,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Team Management (all member ops take explicit orgId -- per-workspace, not global)
   team: {
     list: () => ipcRenderer.invoke('team:list'),
+    /** Open (or focus + retarget) the dedicated org-management window. */
+    openManagementWindow: (target?: { orgId?: string; workspacePath?: string }) =>
+      ipcRenderer.invoke('team-window:open', target),
     findForWorkspace: (workspacePath: string) => ipcRenderer.invoke('team:find-for-workspace', workspacePath),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
     create: (name: string, workspacePath?: string, accountOrgId?: string) => ipcRenderer.invoke('team:create', name, workspacePath, accountOrgId),

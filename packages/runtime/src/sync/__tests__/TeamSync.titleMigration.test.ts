@@ -74,6 +74,25 @@ describe('TeamSync doc-index title server-managed migration read path', () => {
     provider.destroy();
   });
 
+  it('passes optional V2 document-type metadata through the decrypted read projection', async () => {
+    const provider = serverManagedProvider();
+    const wire = {
+      ...encEntry('doc-v2', 'Types', ''),
+      documentType: 'code',
+      metadataVersion: 2 as const,
+      fileExtension: '.d.ts',
+      editorId: 'builtin.monaco',
+    };
+    const entry = await (provider as any).decryptEntry(wire);
+    expect(entry).toMatchObject({
+      documentType: 'code',
+      metadataVersion: 2,
+      fileExtension: '.d.ts',
+      editorId: 'builtin.monaco',
+    });
+    provider.destroy();
+  });
+
   it('decrypts a legacy title by trying each org-key epoch (rotation support)', async () => {
     const wrongKey = await createAesKey();
     const rightKey = await createAesKey();

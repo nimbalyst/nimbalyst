@@ -16,6 +16,7 @@ import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import {
   isEntityUnread,
+  mergeReceipt,
   type ReadReceipt,
   type UnreadEntitySnapshot,
 } from '@nimbalyst/runtime/readReceipts/readReceipts';
@@ -113,7 +114,7 @@ export const applyDocReceiptAtom = atom(
   ) => {
     const { documentId, orgId, receipt } = payload;
     const next = new Map(get(docReceiptsAtom));
-    next.set(documentId, receipt);
+    next.set(documentId, mergeReceipt(next.get(documentId), receipt));
     set(docReceiptsAtom, next);
     set(setDocUnreadAtom, { documentId, orgId, unread: false });
   },

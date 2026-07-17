@@ -2,13 +2,18 @@ type: idea
 displayName: Idea
 displayNamePlural: Ideas
 icon: lightbulb
-color: "#eab308"
+color: "#ca8a04"
 
 modes:
   inline: true
   fullDocument: false
 
-idPrefix: ida
+sync:
+  mode: local
+  scope: project
+
+idPrefix: id
+idFormat: ulid
 
 fields:
   - name: title
@@ -17,22 +22,29 @@ fields:
 
   - name: status
     type: select
-    default: proposed
+    default: new
     options:
-      - value: proposed
-        label: Proposed
-        icon: lightbulb
-      - value: evaluating
-        label: Evaluating
+      - value: new
+        label: New
+        icon: fiber_new
+      - value: considering
+        label: Considering
         icon: psychology
       - value: accepted
         label: Accepted
-        icon: check_circle
+        icon: thumb_up
       - value: rejected
         label: Rejected
-        icon: cancel
+        icon: thumb_down
 
-  - name: owner
-    type: string
+  - name: tags
+    type: array
+    itemType: string
+    displayInline: false
 
 inlineTemplate: "{icon} {title} {status}"
+
+roles:
+  title: title
+  workflowStatus: status
+  tags: tags

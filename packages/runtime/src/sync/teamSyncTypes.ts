@@ -224,6 +224,12 @@ export interface DocIndexEntry {
   documentId: string;
   title: string;
   documentType: string;
+  /** Optional V2 type metadata; absent on legacy rows. */
+  metadataVersion?: 2;
+  /** Exact normalized suffix, including the leading dot. */
+  fileExtension?: string;
+  /** Stable owning editor id (built-in or extension id). */
+  editorId?: string;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
@@ -238,6 +244,8 @@ export interface DocIndexEntry {
    * root level (also legacy rows, whose path still lives in the title).
    */
   parentFolderId?: string | null;
+  /** Millisecond epoch when moved to Trash; null/undefined means active. */
+  trashedAt?: number | null;
   /**
    * True when the server returned a doc index entry whose encrypted title
    * could not be decrypted with the current org key. Preserved in the list
@@ -245,6 +253,15 @@ export interface DocIndexEntry {
    * silently; the UI should render it as locked / non-interactive.
    */
   decryptFailed?: boolean;
+}
+
+/** Explicit type metadata written by V2 shared-document creators. */
+export interface SharedDocumentTypeMetadataV2 {
+  metadataVersion: 2;
+  /** Exact normalized suffix, including the leading dot. */
+  fileExtension: string;
+  /** Stable owning editor id (built-in or extension id). */
+  editorId: string;
 }
 
 /** Decrypted folder node for UI consumption (first-class folders). */

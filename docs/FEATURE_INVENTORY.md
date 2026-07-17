@@ -264,8 +264,9 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Team invite / join / role management
 - Personal org + team org separation
 - Multiple projects per organization — add another workspace to an existing org as its own tracker space (sharing the org's roster and encryption)
-- Four-scope Settings information architecture (Application | Personal | Organizations | Project) with typed deep links, role-aware read-only organization pages, and explicit remote-project access targets
-- Organization administration without an open workspace — invitation inbox, account attribution, members/roles, projects, server-managed encryption status, billing placeholder, and role-gated lifecycle controls
+- Three-scope Settings information architecture (Application | Account | Project) with typed deep links; organization administration lives in a dedicated organization window
+- Dedicated organization-management window (opened from the organization switcher or the account inspector) with read-only roster, teammate invitations, project sharing, workspace → organization → bound-account identity, an interim administration area, and a web-console deep-link
+- Global multi-account inspector in the navigation footer with per-account organization ownership, sync-account selection, add/sign-out/reconnect actions, and visible expired-session recovery
 - Per-personal-account mobile-sync profiles — project and document selections are retained when switching the active zero-knowledge sync account, independently of team organization selection
 - Move a project to another organization — relocates its trackers, documents, history, and schemas into the destination, transfers member access by email (auto-invite for members not yet in the destination, with a per-person opt-out and seat-delta preview), and redirects the old location (server-managed orgs only)
 - Merge one organization into another — consolidates every project, unions the rosters (higher role wins), and optionally deletes the drained org
@@ -303,7 +304,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Share markdown files as E2E encrypted links
 - Share AI sessions as encrypted links
 - Expiration options: 1/7/30 days
-- Shared links management panel in settings
+- Account-attributed shared links management in Account settings, plus an explicit create-share account picker defaulted from the workspace binding
 
 ## Automations
 
@@ -381,12 +382,11 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 ## Settings
 
 - Application: theme, AI providers, MCP servers, notifications, advanced, beta features, and extensions
-- Personal: signed-in accounts, active zero-knowledge mobile-sync profile, paired devices, and shared links
-- Organizations: invitation inbox, members and roles, projects, server-managed encryption status, billing placeholder, and danger-zone actions
+- Account: signed-in accounts, sync-account selection, active zero-knowledge mobile-sync profile, paired devices, and account-attributed shared links
 - Project: sharing/organization attachment, project access, AI provider overrides, agent permissions, tracker config, GitHub, and extensions
 - Tools & Token Cost panel: per-tool-group estimated context-token cost and load policy (eager / on-demand / conditional) across built-in, extension, and user MCP servers; trackers toggle inline; reachable from the AI panel's token meter ("Manage tools")
 - Claude Code: custom executable path, environment variables, effort slider, plan mode, auto-commit, extended context
-- Multi-account support (add/remove accounts, per-project binding)
+- Multi-account support (add/remove/reconnect accounts, per-project binding, explicit share/team account defaults)
 - Release channel selection (stable / beta / alpha)
 - Document history retention
 - Auto-save interval

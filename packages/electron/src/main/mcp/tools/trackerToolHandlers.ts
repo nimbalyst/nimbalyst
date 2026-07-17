@@ -8,9 +8,12 @@ import {
   getAllTrackerSchemas,
   getTrackerRoleField,
   isBuiltinTrackerSchema,
+  resetWorkspaceTrackerSchemaOverride,
   TrackerTypeExistsError,
   upsertWorkspaceTrackerSchema,
+  upsertWorkspaceTrackerSchemaPatch,
 } from '../../services/TrackerSchemaService';
+import type { TrackerSchemaPatch } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import {
   getEffectiveTrackerSyncPolicy,
   getInitialTrackerSyncStatus,
@@ -19,6 +22,7 @@ import {
 import { isTrackerSyncActive, syncTrackerItem } from '../../services/TrackerSyncManager';
 import { applyHeadlessBodyMarkdown } from '../../services/MainBodyDocService';
 import { applyRelationshipFieldWrites } from '../../services/tracker/relationshipFieldWrite';
+import { appendActivity } from '../../services/tracker/trackerActivity';
 import { extractItemCustomFields } from '../../services/tracker/trackerRowCustomFields';
 import { nestRelationshipFieldsIntoCustomFields, readStoredFieldValue } from '../../services/tracker/relationshipFieldStorage';
 import { isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
@@ -167,31 +171,6 @@ function buildTrackerSchemaValidationError(
 //   - The NIM-436 guard is intentionally absent: the cost-benefit landed in
 //     favor of MCP being able to author descriptions in any sync mode, and
 //     the BodyDocCache will eventually mediate writes through the Y.Doc.
-
-/** Append an activity entry to a tracker item's data.activity array */
-function appendActivity(
-  data: Record<string, any>,
-  authorIdentity: any,
-  action: string,
-  details?: { field?: string; oldValue?: string; newValue?: string }
-): void {
-  const activity = data.activity || [];
-  activity.push({
-    id: `activity_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    authorIdentity,
-    action,
-    field: details?.field,
-    oldValue: details?.oldValue,
-    newValue: details?.newValue,
-    timestamp: Date.now(),
-  });
-  // Keep activity log bounded (last 100 entries)
-  if (activity.length > 100) {
-    data.activity = activity.slice(-100);
-  } else {
-    data.activity = activity;
-  }
-}
 
 /**
  * Read linkedTrackerItemIds from a raw ai_sessions.metadata column value.
@@ -839,36 +818,44 @@ export const trackerToolSchemas = [
   {
     name: "tracker_define_type",
     description:
-      "Define or update a custom tracker type schema in the current workspace. The schema is persisted to .nimbalyst/trackers and becomes available in the tracker UI and MCP validation.",
+      "Define or update a tracker type schema in the current workspace. Two modes: (1) pass `schema` to define/replace a CUSTOM type (full schema object). (2) pass `patch` to override a BUILT-IN type (feature, bug, task, plan, decision, idea, automation) with a small delta — add/rename/remove status options, tweak labels/icons/colors, add fields — without redeclaring the whole schema. Patches resolve against the live built-in at load, so upstream improvements still flow through. Persisted to .nimbalyst/trackers.",
     inputSchema: {
       type: "object" as const,
       properties: {
         schema: {
           type: "object",
-          description: "Full tracker type schema object to persist.",
+          description: "Full custom tracker type schema object to persist. Cannot target a built-in type — use `patch` for those.",
+        },
+        patch: {
+          type: "object",
+          description:
+            "Delta override for a tracker type (required: `type`). Merge semantics: `fields[]` by name (`{name, set?, options?, remove?}`); select options by value (`options: {set?: [{value,label,icon?,color?}], remove?: [value], order?: [value]}`); scalars (displayName, icon, color, inlineTemplate) last-writer; `sync`/`roles` shallow-merged. Example — add a status: {\"type\":\"feature\",\"fields\":[{\"name\":\"status\",\"options\":{\"set\":[{\"value\":\"wont-do\",\"label\":\"Won't Do\",\"icon\":\"do_not_disturb_on\",\"color\":\"#64748b\"}]}}]}.",
         },
         fileName: {
           type: "string",
-          description: "Optional YAML filename to use within .nimbalyst/trackers.",
+          description: "Optional YAML filename to use within .nimbalyst/trackers (full-schema mode only).",
         },
         overwrite: {
           type: "boolean",
-          description: "Replace an existing custom type of the same name. Defaults to false, which refuses to clobber. When true, the existing YAML is backed up first.",
+          description: "Full-schema mode: replace an existing custom type of the same name. Defaults to false, which refuses to clobber. When true, the existing YAML is backed up first. (Patch mode always backs up and refines the existing patch.)",
         },
       },
-      required: ["schema"],
     },
   },
   {
     name: "tracker_delete_type",
     description:
-      "Delete a custom tracker type schema from the current workspace. Built-in types cannot be deleted.",
+      "Delete a custom tracker type schema, or reset a built-in type's override back to its shipped default. Pass `resetOverride: true` with a built-in `type` to remove its .patch.yaml/override and restore the default.",
     inputSchema: {
       type: "object" as const,
       properties: {
         type: {
           type: "string",
-          description: "The tracker type key to delete.",
+          description: "The tracker type key to delete (custom) or reset (built-in with resetOverride).",
+        },
+        resetOverride: {
+          type: "boolean",
+          description: "When true and `type` is a built-in, remove its workspace override (patch or full snapshot) and restore the shipped default instead of refusing.",
         },
       },
       required: ["type"],
@@ -1281,13 +1268,62 @@ export async function handleTrackerDefineType(
     // an agent doesn't think the type is missing (NIM-760).
     ensureWorkspaceTrackerSchemasLoaded(workspacePath);
 
-    const schema = buildTrackerSchemaFromArgs(args);
-    if (typeof schema.type === 'string' && isBuiltinTrackerSchema(schema.type)) {
+    // Patch mode: a delta override, the sanctioned path for customizing a
+    // built-in (or refining a custom type) without redeclaring the whole schema.
+    if (args?.patch && typeof args.patch === 'object' && !Array.isArray(args.patch)) {
+      const patch = args.patch as TrackerSchemaPatch;
+      if (typeof patch.type !== 'string' || patch.type.trim().length === 0) {
+        return {
+          content: [{ type: "text", text: "Error: patch requires a string 'type'." }],
+          isError: true,
+        };
+      }
+      const { model, filePath, backupPath } = await upsertWorkspaceTrackerSchemaPatch(
+        workspacePath,
+        patch,
+        { overwrite: args?.overwrite !== false },
+      );
+      // Mirror the RESOLVED model so offline consumers (the `nim` CLI) and the
+      // schema-sync rail carry the full resolved snapshot. Best-effort.
+      await materializeTrackerTypeDef(workspacePath, model, 'cli');
+
+      const backupNote = backupPath
+        ? ` Previous override backed up to ${path.basename(backupPath)}.`
+        : '';
       return {
         content: [
           {
             type: "text",
-            text: `Cannot redefine built-in tracker type '${schema.type}'. Use a new custom type instead.`,
+            text: JSON.stringify({
+              structured: {
+                action: "defined-type" as const,
+                type: model.type,
+                model,
+                fileName: path.basename(filePath),
+                backupFileName: backupPath ? path.basename(backupPath) : undefined,
+                mode: "patch" as const,
+              },
+              summary: `Applied override patch to tracker type '${model.type}' (.nimbalyst/trackers/${path.basename(filePath)}).${backupNote}`,
+            }),
+          },
+        ],
+        isError: false,
+      };
+    }
+
+    const schema = buildTrackerSchemaFromArgs(args);
+    if (typeof schema.type !== 'string' || schema.type.trim().length === 0) {
+      return {
+        content: [{ type: "text", text: "Error: tracker_define_type requires a `schema` (custom type) or a `patch` (override)." }],
+        isError: true,
+      };
+    }
+    if (isBuiltinTrackerSchema(schema.type)) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Cannot replace built-in tracker type '${schema.type}' with a full schema. Pass a \`patch\` to override it (add/rename status options, tweak fields), or define a new custom type instead.`,
           },
         ],
         isError: true,
@@ -1362,8 +1398,37 @@ export async function handleTrackerDeleteType(
     }
 
     if (isBuiltinTrackerSchema(args.type)) {
+      // Built-ins can't be deleted, but their workspace override can be reset back
+      // to the shipped default (removes the .patch.yaml / full-snapshot override).
+      if (args?.resetOverride === true) {
+        // resetWorkspaceTrackerSchemaOverride restores the builtin in the registry
+        // AND tombstones the mirror row (which propagates the reset to the team).
+        const reset = await resetWorkspaceTrackerSchemaOverride(workspacePath, args.type);
+        if (!reset.reset) {
+          return {
+            content: [{ type: "text", text: `Built-in tracker type '${args.type}' has no workspace override to reset.` }],
+            isError: true,
+          };
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                structured: {
+                  action: "reset-override" as const,
+                  type: args.type,
+                  fileName: reset.filePath ? path.basename(reset.filePath) : undefined,
+                },
+                summary: `Reset built-in tracker type '${args.type}' to its shipped default.`,
+              }),
+            },
+          ],
+          isError: false,
+        };
+      }
       return {
-        content: [{ type: "text", text: `Cannot delete built-in tracker type '${args.type}'.` }],
+        content: [{ type: "text", text: `Cannot delete built-in tracker type '${args.type}'. Pass resetOverride: true to restore its shipped default instead.` }],
         isError: true,
       };
     }

@@ -24,11 +24,6 @@ interface SettingsSidebarProps {
   onSelectCategory: (category: SettingsCategory | string) => void;
   providerStatus?: Record<string, { enabled: boolean; testStatus?: string }>;
   scope?: SettingsScope;
-  orgChoices?: { orgId: string; name: string }[];
-  selectedOrgId?: string | null;
-  onSelectOrg?: (orgId: string) => void;
-  pendingInviteCount?: number;
-  onNewOrganization?: () => void;
 }
 
 const GROUP_DESCRIPTIONS: Record<string, string> = {
@@ -49,11 +44,6 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   onSelectCategory,
   providerStatus = {},
   scope = 'application',
-  orgChoices = [],
-  selectedOrgId = null,
-  onSelectOrg,
-  pendingInviteCount = 0,
-  onNewOrganization,
 }) => {
   const developerMode = useAtomValue(developerModeAtom);
   const [extAgentProviders, setExtAgentProviders] = useState<
@@ -100,48 +90,6 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
       data-component="SettingsSidebar"
     >
       <div className="settings-sidebar-content p-3">
-        {scope === 'organization' && (
-          <div className="settings-sidebar-org-picker mb-4" data-testid="settings-org-picker">
-            <label className="block px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--nim-text-muted)]">
-              Organization
-            </label>
-            {orgChoices.length > 0 ? (
-              <select
-                value={selectedOrgId ?? ''}
-                onChange={(event) => onSelectOrg?.(event.target.value)}
-                className="settings-org-select w-full text-[13px] bg-[var(--nim-bg-tertiary)] border border-[var(--nim-border)] rounded-md px-2 py-1.5 text-[var(--nim-text)] cursor-pointer"
-                data-testid="settings-org-select"
-              >
-                {orgChoices.map((organization) => (
-                  <option key={organization.orgId} value={organization.orgId}>{organization.name}</option>
-                ))}
-              </select>
-            ) : (
-              <p className="m-0 px-2 text-xs text-[var(--nim-text-muted)]">No active organizations</p>
-            )}
-            <div className="mt-2 flex flex-col gap-1">
-              {pendingInviteCount > 0 && (
-                <button
-                  type="button"
-                  className="settings-pending-invites-button rounded px-2 py-1.5 text-left text-xs text-[var(--nim-link)] hover:bg-[var(--nim-bg-hover)]"
-                  data-testid="settings-pending-invites-button"
-                  onClick={() => onSelectCategory('organization-members')}
-                >
-                  {pendingInviteCount} pending invitation{pendingInviteCount === 1 ? '' : 's'}
-                </button>
-              )}
-              <button
-                type="button"
-                className="settings-new-organization-button rounded px-2 py-1.5 text-left text-xs text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
-                data-testid="settings-new-organization-button"
-                onClick={onNewOrganization}
-              >
-                New organization
-              </button>
-            </div>
-          </div>
-        )}
-
         {groups.map(([group, routes]) => (
           <section key={group} className="settings-sidebar-group mb-4" data-testid={`settings-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}>
             <div className="settings-sidebar-group-title flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--nim-text-muted)]">

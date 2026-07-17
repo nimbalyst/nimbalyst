@@ -48,6 +48,7 @@ export const DIALOG_IDS = {
 
   // Share group
   SHARE: 'share',
+  ACCOUNT_LOGIN: 'account-login',
 
   // Collaboration group
   CREATE_TEAM: 'create-team',

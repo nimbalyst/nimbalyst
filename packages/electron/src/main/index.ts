@@ -15,6 +15,7 @@ import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
 import { getRestartSignalPath } from './utils/appPaths';
 import { createWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
+import { setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { showSplashScreen, closeSplashScreen } from './window/SplashScreen';
 import { registerFileHandlers } from './ipc/FileHandlers';
 import { registerWorkspaceHandlers } from './ipc/WorkspaceHandlers.ts';
@@ -43,6 +44,7 @@ import { registerUsageAnalyticsHandlers } from './ipc/UsageAnalyticsHandlers';
 import { registerWorktreeHandlers } from './ipc/WorktreeHandlers';
 import { registerPullRequestHandlers, stopPullRequestPollScheduler } from './ipc/PullRequestHandlers';
 import { registerReadReceiptHandlers } from './ipc/ReadReceiptHandlers';
+import { registerTrackerPersonalStateHandlers } from './ipc/TrackerPersonalStateHandlers';
 import { registerWakeupHandlers } from './ipc/WakeupHandlers';
 import { registerBlitzHandlers } from './ipc/BlitzHandlers';
 import { registerProjectMigrationHandlers } from './ipc/ProjectMigrationHandlers';
@@ -1563,6 +1565,7 @@ app.whenReady().then(async () => {
     await registerSessionStateHandlers();
     await registerThemeHandlers();
     setupWorkspaceManagerHandlers();
+    setupTeamManagementHandlers();
     setupSessionFileHandlers();
     registerSlashCommandHandlers();
     registerActionPromptHandlers();
@@ -1588,6 +1591,7 @@ app.whenReady().then(async () => {
     registerWorktreeHandlers();
     registerPullRequestHandlers();
     registerReadReceiptHandlers();
+    registerTrackerPersonalStateHandlers();
     registerWakeupHandlers();
     registerBlitzHandlers();
     registerProjectMigrationHandlers();
@@ -2172,10 +2176,10 @@ app.whenReady().then(async () => {
     // re-sent on next launch (NIM-615).
     try {
       const { getQueuedPromptsStore } = await import('./services/RepositoryManager');
-      const { completed, rolledBack } = await getQueuedPromptsStore().sweepExecutingOnBoot();
-      if (completed > 0 || rolledBack > 0) {
+      const { completed, failed, rolledBack } = await getQueuedPromptsStore().sweepExecutingOnBoot();
+      if (completed > 0 || failed > 0 || rolledBack > 0) {
         logger.main.info(
-          `[Main] Boot sweep: ${completed} delivered prompt(s) marked completed, ${rolledBack} undelivered prompt(s) rolled back to pending`
+          `[Main] Boot sweep: ${completed} answered prompt(s) marked completed, ${failed} delivered-but-unanswered prompt(s) marked failed, ${rolledBack} undelivered prompt(s) rolled back to pending`
         );
       }
     } catch (sweepErr) {

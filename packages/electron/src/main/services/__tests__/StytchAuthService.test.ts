@@ -51,10 +51,15 @@ vi.mock('../SilentTeamEncryptionMigration', () => ({
 }));
 
 import {
+  getAccounts,
   getPersonalSessionJwt,
+  getSyncAccount,
   handleAuthCallback,
+  initializeStytchAuth,
   refreshPersonalSession,
   refreshSession,
+  setSyncAccount,
+  signOut,
 } from '../StytchAuthService';
 
 function createJwt(payload: Record<string, unknown>): string {
@@ -66,7 +71,8 @@ function createJwt(payload: Record<string, unknown>): string {
 }
 
 describe('StytchAuthService personal JWT refresh', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await signOut();
     files.clear();
     fetchMock.mockReset();
   });
@@ -177,5 +183,64 @@ describe('StytchAuthService personal JWT refresh', () => {
 
     await expect(refreshPersonalSession('https://sync.example')).resolves.toBe(true);
     expect(getPersonalSessionJwt()).toBe(freshPersonalJwt);
+  });
+});
+
+describe('StytchAuthService sync-account persistence', () => {
+  beforeEach(async () => {
+    await signOut();
+    files.clear();
+    fetchMock.mockReset();
+  });
+
+  it('loads the legacy primaryAccountId key as the sync account and rewrites the renamed key', () => {
+    const future = Date.now() + 60_000;
+    const accountA = {
+      sessionToken: 'token-a',
+      sessionJwt: createJwt({ sub: 'member-a' }),
+      userId: 'member-a',
+      email: 'a@example.com',
+      expiresAt: future,
+      orgId: 'personal-a',
+      personalOrgId: 'personal-a',
+      personalUserId: 'member-a',
+    };
+    const accountB = {
+      sessionToken: 'token-b',
+      sessionJwt: createJwt({ sub: 'member-b' }),
+      userId: 'member-b',
+      email: 'b@example.com',
+      expiresAt: future,
+      orgId: 'personal-b',
+      personalOrgId: 'personal-b',
+      personalUserId: 'member-b',
+    };
+    files.set(
+      '/mock/user-data/stytch-accounts.enc',
+      Buffer.from(JSON.stringify({
+        version: 2,
+        primaryAccountId: 'personal-b',
+        accounts: [accountA, accountB],
+      })),
+    );
+
+    initializeStytchAuth({
+      projectId: 'test',
+      publicToken: 'test',
+      apiBase: 'https://test.invalid',
+    });
+
+    expect(getSyncAccount()?.personalOrgId).toBe('personal-b');
+    expect(getAccounts().find((account) => account.personalOrgId === 'personal-b'))
+      .toMatchObject({ isSyncAccount: true });
+
+    expect(setSyncAccount('personal-a')).toBe(true);
+    expect(getSyncAccount()?.personalOrgId).toBe('personal-a');
+
+    const persisted = JSON.parse(
+      files.get('/mock/user-data/stytch-accounts.enc')!.toString('utf8'),
+    ) as Record<string, unknown>;
+    expect(persisted).toMatchObject({ version: 3, syncAccountId: 'personal-a' });
+    expect(persisted).not.toHaveProperty('primaryAccountId');
   });
 });

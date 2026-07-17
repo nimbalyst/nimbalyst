@@ -4,6 +4,8 @@ const {
   mockQuery,
   mockGetEngine,
   mockUpsertWorkspaceTrackerSchema,
+  mockUpsertWorkspaceTrackerSchemaPatch,
+  mockResetWorkspaceTrackerSchemaOverride,
   mockDeleteWorkspaceTrackerSchema,
   mockGetAllTrackerSchemas,
   mockIsBuiltinTrackerSchema,
@@ -15,6 +17,8 @@ const {
   mockQuery: vi.fn(),
   mockGetEngine: vi.fn(() => 'pglite'),
   mockUpsertWorkspaceTrackerSchema: vi.fn(),
+  mockUpsertWorkspaceTrackerSchemaPatch: vi.fn(),
+  mockResetWorkspaceTrackerSchemaOverride: vi.fn(),
   mockDeleteWorkspaceTrackerSchema: vi.fn(),
   mockGetAllTrackerSchemas: vi.fn((): any[] => []),
   mockIsBuiltinTrackerSchema: vi.fn(() => false),
@@ -69,6 +73,8 @@ vi.mock('../../../services/TrackerSchemaService', () => {
     getTrackerRoleField: vi.fn(() => null),
     ensureWorkspaceTrackerSchemasLoaded: vi.fn(),
     upsertWorkspaceTrackerSchema: mockUpsertWorkspaceTrackerSchema,
+    upsertWorkspaceTrackerSchemaPatch: mockUpsertWorkspaceTrackerSchemaPatch,
+    resetWorkspaceTrackerSchemaOverride: mockResetWorkspaceTrackerSchemaOverride,
     deleteWorkspaceTrackerSchema: mockDeleteWorkspaceTrackerSchema,
     getAllTrackerSchemas: mockGetAllTrackerSchemas,
     isBuiltinTrackerSchema: mockIsBuiltinTrackerSchema,
@@ -362,6 +368,73 @@ describe('tracker schema tools', () => {
     expect(usageSql).toContain('json_each(type_tags)');
     expect(usageSql).not.toContain('ANY(type_tags)');
     expect(usageSql).not.toContain('::int');
+  });
+
+  it('overrides a built-in via patch instead of refusing', async () => {
+    mockIsBuiltinTrackerSchema.mockReturnValue(true); // 'feature' is a builtin
+    mockUpsertWorkspaceTrackerSchemaPatch.mockResolvedValue({
+      model: { type: 'feature', fields: [] },
+      filePath: '/tmp/ws/.nimbalyst/trackers/feature.patch.yaml',
+    });
+
+    const patch = {
+      type: 'feature',
+      fields: [{ name: 'status', options: { set: [{ value: 'wont-do', label: "Won't Do" }] } }],
+    };
+    const result = await handleTrackerDefineType({ patch }, '/tmp/ws');
+
+    expect(result.isError).toBe(false);
+    expect(mockUpsertWorkspaceTrackerSchemaPatch).toHaveBeenCalledWith(
+      '/tmp/ws',
+      expect.objectContaining({ type: 'feature' }),
+      { overwrite: true },
+    );
+    const payload = JSON.parse(result.content[0].text as string);
+    expect(payload.structured.mode).toBe('patch');
+  });
+
+  it('still refuses a FULL-schema redefine of a built-in and points to patch', async () => {
+    mockIsBuiltinTrackerSchema.mockReturnValue(true);
+
+    const result = await handleTrackerDefineType(
+      { schema: { type: 'bug', displayName: 'Bug', fields: [] } },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('patch');
+    expect(mockUpsertWorkspaceTrackerSchema).not.toHaveBeenCalled();
+  });
+
+  it('resets a built-in override back to default via resetOverride', async () => {
+    mockIsBuiltinTrackerSchema.mockReturnValue(true);
+    mockResetWorkspaceTrackerSchemaOverride.mockResolvedValue({
+      reset: true,
+      filePath: '/tmp/ws/.nimbalyst/trackers/feature.patch.yaml',
+    });
+
+    const result = await handleTrackerDeleteType(
+      { type: 'feature', resetOverride: true },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(false);
+    expect(mockResetWorkspaceTrackerSchemaOverride).toHaveBeenCalledWith('/tmp/ws', 'feature');
+    const payload = JSON.parse(result.content[0].text as string);
+    expect(payload.structured.action).toBe('reset-override');
+  });
+
+  it('refuses to reset a built-in that has no override', async () => {
+    mockIsBuiltinTrackerSchema.mockReturnValue(true);
+    mockResetWorkspaceTrackerSchemaOverride.mockResolvedValue({ reset: false });
+
+    const result = await handleTrackerDeleteType(
+      { type: 'feature', resetOverride: true },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('no workspace override');
   });
 });
 

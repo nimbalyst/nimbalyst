@@ -18,18 +18,34 @@ import { TabContent } from '../TabContent/TabContent';
 import { ChatSidebar } from '../ChatSidebar';
 import { useEditorMaximize } from '../../hooks/useEditorMaximize';
 import { useResizeDragShield } from '../../hooks/useResizeDragShield';
-import { openCollabDocumentViaIPC } from '../../utils/collabDocumentOpener';
+import {
+  getCollabConfig,
+  openCollabDocumentViaIPC,
+  updateCollabConfigDisplayMetadata,
+} from '../../utils/collabDocumentOpener';
 import {
   loadOpenCollabDocs,
   persistOpenCollabDocs,
   type PersistedCollabEntry,
 } from '../../utils/collabOpenDocsPersistence';
-import { initSharedDocuments, pendingCollabDocumentAtom, sharedDocumentsAtom, type SharedDocument } from '../../store/atoms/collabDocuments';
+import {
+  initSharedDocuments,
+  pendingCollabDocumentAtom,
+  sharedDocumentsAtom,
+  sharedFoldersAtom,
+  type SharedDocument,
+} from '../../store/atoms/collabDocuments';
 import { hydrateCollabDiscovery } from '../../store/atoms/collabDiscovery';
 import { SharedDocsHome } from './SharedDocsHome';
 import { isCollabUri, parseCollabUri } from '../../utils/collabUri';
 import { MaterialSymbol } from '@nimbalyst/runtime';
-import { getCollabNodeName } from './collabTree';
+import {
+  getCollabNodeName,
+  getSharedDocumentDisplayName,
+  getSharedDocumentDisplayPath,
+  getSharedDocumentDisplayPathWithFallback,
+  reconcileSharedDocumentDisplayName,
+} from './collabTree';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import type { SerializableDocumentContext } from '../../hooks/useDocumentContext';
 
@@ -149,6 +165,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
   useTabNavigationShortcuts(isActive);
   const pendingDoc = useAtomValue(pendingCollabDocumentAtom);
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const sharedFolders = useAtomValue(sharedFoldersAtom);
   const [restored, setRestored] = useState(false);
 
   // --- Resizable / collapsible panel state ---
@@ -356,7 +373,11 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
     });
     if (existingTab) {
       tabsActions.switchTab(existingTab.id);
-      const nextName = getCollabNodeName(doc.title || doc.documentId);
+      const nextName = reconcileSharedDocumentDisplayName(
+        existingTab.fileName,
+        doc.title,
+        doc.documentId,
+      );
       if (existingTab.fileName !== nextName) {
         tabsActions.updateTab(existingTab.id, { fileName: nextName });
       }
@@ -369,11 +390,18 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         workspacePath,
         documentId: doc.documentId,
         title: doc.title,
+        displayPath: getSharedDocumentDisplayPath(doc, sharedFolders),
         documentType: doc.documentType,
+        metadataVersion: doc.metadataVersion,
+        fileExtension: doc.fileExtension,
+        editorId: doc.editorId,
         initialContent,
         addTab: tabsActions.addTab,
       });
-      tabsActions.updateTab(tabId, { fileName: getCollabNodeName(doc.title || doc.documentId) });
+      const nextName = getSharedDocumentDisplayName(doc.title, doc.documentId);
+      if (tabsActions.getTabState(tabId)?.fileName !== nextName) {
+        tabsActions.updateTab(tabId, { fileName: nextName });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[CollabMode] Failed to open shared document:', {
@@ -387,7 +415,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         { details: doc.title || doc.documentId }
       );
     }
-  }, [workspacePath, tabs, tabsActions]);
+  }, [workspacePath, tabs, tabsActions, sharedFolders]);
 
   const activeCollabDocumentId = useMemo(() => {
     if (!activeTabId) return null;
@@ -415,12 +443,24 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
       const document = sharedDocuments.find(doc => doc.documentId === documentId);
       if (!document) continue;
 
-      const nextName = getCollabNodeName(document.title || document.documentId);
+      const nextName = reconcileSharedDocumentDisplayName(
+        tab.fileName,
+        document.title,
+        document.documentId,
+      );
+      updateCollabConfigDisplayMetadata(tab.filePath, {
+        title: document.title,
+        displayPath: getSharedDocumentDisplayPathWithFallback(
+          document,
+          sharedFolders,
+          getCollabConfig(tab.filePath)?.displayPath || tab.fileName,
+        ),
+      });
       if (tab.fileName !== nextName) {
         tabsActions.updateTab(tab.id, { fileName: nextName });
       }
     }
-  }, [sharedDocuments, tabs, tabsActions]);
+  }, [sharedDocuments, sharedFolders, tabs, tabsActions]);
 
   // Persist open document entries (id + documentType) whenever tabs change.
   // documentType is required at restore time so the right editor is mounted;
@@ -433,12 +473,25 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
 
     const entries: PersistedCollabEntry[] = tabs
       .filter((t) => isCollabUri(t.filePath))
-      .map((t) => {
+      .map<PersistedCollabEntry | null>((t) => {
         try {
           const { documentId } = parseCollabUri(t.filePath);
+          const document = docsById.get(documentId);
+          const registeredPath = getCollabConfig(t.filePath)?.displayPath;
+          const displayPath = document
+            ? getSharedDocumentDisplayPathWithFallback(
+                document,
+                sharedFolders,
+                registeredPath || t.fileName,
+              )
+            : registeredPath || t.fileName;
           return {
             documentId,
-            documentType: docsById.get(documentId)?.documentType ?? 'markdown',
+            documentType: document?.documentType ?? 'markdown',
+            metadataVersion: document?.metadataVersion,
+            fileExtension: document?.fileExtension,
+            editorId: document?.editorId,
+            displayPath,
           };
         } catch {
           return null;
@@ -446,7 +499,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
       })
       .filter((entry): entry is PersistedCollabEntry => entry !== null);
     persistOpenCollabDocs(workspacePath, entries);
-  }, [tabs, sharedDocuments, workspacePath, restored]);
+  }, [tabs, sharedDocuments, sharedFolders, workspacePath, restored]);
 
   // Restore previously open collab documents on mount
   useEffect(() => {
@@ -460,16 +513,20 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
 
       // Open each saved document. We don't need to wait for sharedDocumentsAtom
       // because openCollabDocumentViaIPC resolves auth/keys via IPC directly.
-      // Use the documentId as both documentId and title (title is only for display);
-      // the title atom gets repopulated from the shared-docs sync afterwards.
+      // Use the last-known logical path as a warm display fallback. Legacy
+      // entries have no path and render a neutral placeholder until index sync.
       for (const entry of savedEntries) {
         if (cancelled) break;
         try {
           await openCollabDocumentViaIPC({
             workspacePath,
             documentId: entry.documentId,
-            title: entry.documentId,
+            title: entry.displayPath ? getCollabNodeName(entry.displayPath) : undefined,
+            displayPath: entry.displayPath,
             documentType: entry.documentType,
+            metadataVersion: entry.metadataVersion,
+            fileExtension: entry.fileExtension,
+            editorId: entry.editorId,
             addTab: tabsActions.addTab,
           });
         } catch (err) {
@@ -495,11 +552,22 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
     // Prefer the synced doc (it has the canonical title), but fall back to
     // a synthetic doc so cold-start deep links still open immediately.
     const docToOpen: SharedDocument = found
-      ? (pendingDoc.documentType ? { ...found, documentType: pendingDoc.documentType } : found)
+      ? {
+          ...found,
+          ...(pendingDoc.documentType ? { documentType: pendingDoc.documentType } : {}),
+          ...(pendingDoc.metadataVersion === 2 ? {
+            metadataVersion: 2 as const,
+            fileExtension: pendingDoc.fileExtension,
+            editorId: pendingDoc.editorId,
+          } : {}),
+        }
       : {
           documentId: pendingDoc.documentId,
-          title: pendingDoc.documentId,
+          title: '',
           documentType: pendingDoc.documentType ?? 'markdown',
+          metadataVersion: pendingDoc.metadataVersion,
+          fileExtension: pendingDoc.fileExtension,
+          editorId: pendingDoc.editorId,
           createdBy: '',
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -594,14 +662,14 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
                       Back to editor
                     </button>
                   </div>
-                  <SharedDocsHome onDocumentSelect={handleDocumentSelect} />
+                  <SharedDocsHome workspacePath={workspacePath} onDocumentSelect={handleDocumentSelect} />
                 </div>
               )}
             </>
           </TabManager>
         ) : (
           /* No tabs open: the discovery hub is the full-bleed empty state */
-          <SharedDocsHome onDocumentSelect={handleDocumentSelect} />
+          <SharedDocsHome workspacePath={workspacePath} onDocumentSelect={handleDocumentSelect} />
         )}
       </div>
 

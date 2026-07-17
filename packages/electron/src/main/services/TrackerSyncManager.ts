@@ -48,7 +48,7 @@ import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { isAuthenticated } from './StytchAuthService';
 import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
-import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey, fetchTeamKeyStatus, setTeamKeyCustodyMode } from './OrgKeyService';
+import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey, fetchTeamKeyStatus, getLastKnownTeamKeyStatus, setTeamKeyCustodyMode } from './OrgKeyService';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { getDatabase } from '../database/initialize';
 import { TrackerPGLiteStore } from './tracker/TrackerPGLiteStore';
@@ -271,7 +271,10 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     const orgJwt = await getOrgScopedJwt(team.orgId);
     keyStatusMode = (await fetchTeamKeyStatus(team.orgId, orgJwt)).mode;
   } catch (err) {
-    logger.main.warn('[TrackerSyncManager] key-status fetch failed; assuming legacy-e2e:', err);
+    // Offline JWT mint failure (NIM-1778): fall back to the last-known mode
+    // instead of assuming legacy-e2e, which poisons the tracker sync lane.
+    keyStatusMode = getLastKnownTeamKeyStatus(team.orgId)?.mode ?? 'legacy-e2e';
+    logger.main.warn('[TrackerSyncManager] key-status resolve failed; using last-known mode', keyStatusMode, ':', err);
   }
   const serverManaged = keyStatusMode === 'server-managed';
 

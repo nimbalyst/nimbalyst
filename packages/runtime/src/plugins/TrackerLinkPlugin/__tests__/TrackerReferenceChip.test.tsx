@@ -1,10 +1,13 @@
 import * as React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { Provider, createStore } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { TrackerRecord } from '../../../core/TrackerRecord';
-import { trackerItemsMapAtom } from '../../TrackerPlugin/trackerDataAtoms';
+import {
+  trackerItemsMapAtom,
+  upsertTrackerItemAtom,
+} from '../../TrackerPlugin/trackerDataAtoms';
 import { TrackerReferenceChip } from '../TrackerReferenceChip';
 
 const trackerRecord: TrackerRecord = {
@@ -117,6 +120,7 @@ describe('TrackerReferenceChip', () => {
 
     expect(container.querySelector('.tracker-reference-chip-key')?.textContent).toBe('NIM-1');
     expect(container.querySelector('.tracker-reference-chip-title')).toBeNull();
+    expect(container.querySelector('.tracker-reference-chip-status')?.textContent).toContain('In Progress');
     expect(container.querySelector('.tracker-reference-chip')?.getAttribute('data-resolved')).toBe('true');
   });
 
@@ -147,10 +151,15 @@ describe('TrackerReferenceChip', () => {
         '.tracker-reference-chip',
       );
       expect(chip?.getAttribute('data-status')).toBe(status);
+      expect(chip?.getAttribute('data-status-tone')).toBe('completed');
       expect(chip?.getAttribute('data-completed')).toBe('true');
       expect(
-        container.querySelector('.tracker-reference-chip-dot')?.textContent,
-      ).toBe('✓');
+        container.querySelector<HTMLElement>('.tracker-reference-chip-status')
+          ?.style.color,
+      ).toBe('var(--nim-success)');
+      expect(
+        container.querySelector('.tracker-reference-chip-status')?.textContent,
+      ).toContain(status.charAt(0).toUpperCase() + status.slice(1));
       expect(
         container.querySelector<HTMLElement>('.tracker-reference-chip-key')
           ?.style.textDecoration,
@@ -188,11 +197,110 @@ describe('TrackerReferenceChip', () => {
     );
     expect(chip?.getAttribute('data-completed')).toBe('false');
     expect(
-      container.querySelector('.tracker-reference-chip-dot')?.textContent,
-    ).toBe('');
+      container.querySelector<HTMLElement>('.tracker-reference-chip-status')
+        ?.style.color,
+    ).toBe('var(--nim-error)');
     expect(
       container.querySelector<HTMLElement>('.tracker-reference-chip-title')
         ?.style.textDecoration,
     ).toBe('');
+  });
+
+  it.each([
+    ['to-do', 'to-do', 'To Do', 'var(--nim-text-muted)'],
+    ['in-progress', 'in-progress', 'In Progress', 'var(--nim-warning)'],
+    ['in-review', 'in-review', 'In Review', 'var(--nim-info)'],
+    ['blocked', 'blocked', 'Blocked', 'var(--nim-error)'],
+    ['custom-status', 'neutral', 'Custom Status', 'var(--nim-text-muted)'],
+  ])(
+    'makes the %s state readable without relying on color alone',
+    (status, tone, label, color) => {
+      const store = createStore();
+      store.set(
+        trackerItemsMapAtom,
+        new Map([
+          [
+            trackerRecord.id,
+            {
+              ...trackerRecord,
+              fields: { ...trackerRecord.fields, status },
+            },
+          ],
+        ]),
+      );
+
+      const { container } = render(
+        <Provider store={store}>
+          <TrackerReferenceChip referenceKey="NIM-1" />
+        </Provider>,
+      );
+
+      const chip = container.querySelector<HTMLElement>(
+        '.tracker-reference-chip',
+      );
+      const statusBadge = container.querySelector<HTMLElement>(
+        '.tracker-reference-chip-status',
+      );
+      expect(chip?.getAttribute('data-status-tone')).toBe(tone);
+      expect(statusBadge?.textContent).toContain(label);
+      expect(statusBadge?.style.color).toBe(color);
+    },
+  );
+
+  it('updates the visible state treatment when the live tracker record changes', () => {
+    const store = createStore();
+    store.set(
+      trackerItemsMapAtom,
+      new Map([
+        [
+          trackerRecord.id,
+          {
+            ...trackerRecord,
+            fields: { ...trackerRecord.fields, status: 'to-do' },
+          },
+        ],
+      ]),
+    );
+
+    const { container } = render(
+      <Provider store={store}>
+        <TrackerReferenceChip referenceKey="NIM-1" />
+      </Provider>,
+    );
+
+    const chip = container.querySelector<HTMLElement>(
+      '.tracker-reference-chip',
+    );
+    expect(chip?.getAttribute('data-status')).toBe('to-do');
+    expect(
+      container.querySelector('.tracker-reference-chip-status')?.textContent,
+    ).toContain('To Do');
+
+    act(() => {
+      store.set(upsertTrackerItemAtom, {
+        ...trackerRecord,
+        fields: { ...trackerRecord.fields, status: 'in-progress' },
+      });
+    });
+
+    expect(chip?.getAttribute('data-status')).toBe('in-progress');
+    expect(chip?.getAttribute('data-status-tone')).toBe('in-progress');
+    expect(
+      container.querySelector('.tracker-reference-chip-status')?.textContent,
+    ).toContain('In Progress');
+
+    act(() => {
+      store.set(upsertTrackerItemAtom, {
+        ...trackerRecord,
+        fields: { ...trackerRecord.fields, status: 'done' },
+      });
+    });
+
+    expect(chip?.getAttribute('data-status')).toBe('done');
+    expect(chip?.getAttribute('data-completed')).toBe('true');
+    expect(
+      container.querySelector<HTMLElement>('.tracker-reference-chip-title')
+        ?.style.textDecoration,
+    ).toBe('line-through');
   });
 });

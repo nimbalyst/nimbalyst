@@ -714,16 +714,67 @@ export interface TeamKeyStatus {
 }
 
 async function fetchTeamKeyStatusUncached(orgId: string, orgScopedJwt: string): Promise<TeamKeyStatus> {
+  const data = await fetchApi(`/api/teams/${orgId}/key-status`, 'GET', undefined, orgScopedJwt) as {
+    mode?: string; dekEpoch?: number | null; dekFingerprint?: string | null;
+  };
+  const mode: TeamKeyCustodyMode = data.mode === 'server-managed' ? 'server-managed' : 'legacy-e2e';
+  return { mode, dekEpoch: data.dekEpoch ?? null, dekFingerprint: data.dekFingerprint ?? null };
+}
+
+// Last-known key status per org, persisted across restarts. NIM-1778: when the
+// key-status GET fails (laptop wake on a new network, captive portal, server
+// blip), falling back to a hardcoded 'legacy-e2e' poisons the sync lane of a
+// server-managed team -- every doc title/folder name then runs legacy AES
+// decrypt against server-managed plaintext wire data and surfaces as "locked"
+// until app restart. Answering with the mode we last saw for the org is always
+// safer: custody mode only changes on an explicit migration cutover.
+const TEAM_KEY_STATUS_FILE = 'team-key-status.enc';
+let lastKnownKeyStatusCache: Map<string, TeamKeyStatus> = new Map();
+let lastKnownKeyStatusLoaded = false;
+
+function loadLastKnownKeyStatusFromDisk(): void {
+  if (lastKnownKeyStatusLoaded) return;
+  lastKnownKeyStatusLoaded = true;
+  const saved = loadEncrypted(TEAM_KEY_STATUS_FILE);
+  if (!saved) return;
   try {
-    const data = await fetchApi(`/api/teams/${orgId}/key-status`, 'GET', undefined, orgScopedJwt) as {
-      mode?: string; dekEpoch?: number | null; dekFingerprint?: string | null;
-    };
-    const mode: TeamKeyCustodyMode = data.mode === 'server-managed' ? 'server-managed' : 'legacy-e2e';
-    return { mode, dekEpoch: data.dekEpoch ?? null, dekFingerprint: data.dekFingerprint ?? null };
-  } catch (err) {
-    logger.main.warn('[OrgKeyService] fetchTeamKeyStatus failed for', orgId, '-- defaulting to legacy-e2e:', err);
-    return { mode: 'legacy-e2e', dekEpoch: null, dekFingerprint: null };
+    lastKnownKeyStatusCache = new Map(JSON.parse(saved));
+  } catch {
+    lastKnownKeyStatusCache = new Map();
   }
+}
+
+function rememberTeamKeyStatus(orgId: string, status: TeamKeyStatus): void {
+  loadLastKnownKeyStatusFromDisk();
+  const prev = lastKnownKeyStatusCache.get(orgId);
+  if (prev && prev.mode === status.mode && prev.dekEpoch === status.dekEpoch && prev.dekFingerprint === status.dekFingerprint) {
+    return;
+  }
+  lastKnownKeyStatusCache.set(orgId, status);
+  try {
+    saveEncrypted(TEAM_KEY_STATUS_FILE, JSON.stringify(Array.from(lastKnownKeyStatusCache.entries())));
+  } catch (err) {
+    logger.main.warn('[OrgKeyService] Failed to persist last-known team key status:', err);
+  }
+}
+
+/** Drop the last-known key status for an org (or all orgs). Exposed for tests and team removal. */
+export function clearLastKnownTeamKeyStatus(orgId?: string): void {
+  loadLastKnownKeyStatusFromDisk();
+  if (orgId) lastKnownKeyStatusCache.delete(orgId);
+  else lastKnownKeyStatusCache.clear();
+}
+
+/**
+ * Last-known key status for an org, or null if never fetched successfully.
+ * For callsites whose custody resolution can fail BEFORE fetchTeamKeyStatus
+ * runs (typically `getOrgScopedJwt` throwing while offline): consult this in
+ * the catch instead of hardcoding 'legacy-e2e', which misroutes a
+ * server-managed team into the legacy decrypt lane (NIM-1778).
+ */
+export function getLastKnownTeamKeyStatus(orgId: string): TeamKeyStatus | null {
+  loadLastKnownKeyStatusFromDisk();
+  return lastKnownKeyStatusCache.get(orgId) ?? null;
 }
 
 // Per-org TTL cache + single-flight for the key-status GET, mirroring the
@@ -742,18 +793,50 @@ export function invalidateTeamKeyStatusCache(orgId?: string): void {
 /**
  * Fetch a team's key-custody status (Epic H2). The sync managers call this on
  * team-room open to pick their sync lane: `server-managed` skips the ECDH
- * unwrap entirely. Falls back to `legacy-e2e` on any error so a transient
- * failure never silently downgrades a legacy team's encryption.
+ * unwrap entirely. On fetch failure, answers with the last-known persisted
+ * status for the org (NIM-1778); when the org has never been seen it defaults
+ * to `server-managed` (NIM-1779/C1) unless a locally cached org key marks it as
+ * legacy-e2e, so a transient failure never misroutes a server-managed team into
+ * the legacy decrypt lane (docs locked, outbox drain throws) NOR silently
+ * downgrades a legacy team that has local key evidence.
  *
  * Cached per org for 60s (see `teamKeyStatusCache` above) -- the mode/epoch
  * change only on an explicit migration cutover (`setTeamKeyCustodyMode`,
  * which invalidates this cache), never as a side effect of a normal open.
+ * A failed fetch is NOT cached (the TTL cache evicts rejected promises), so
+ * the first call after connectivity returns re-resolves the real status.
  *
  * TEAM lane only — never call this for personal/mobile rooms (those stay
  * zero-knowledge and have no team DEK).
  */
 export async function fetchTeamKeyStatus(orgId: string, orgScopedJwt: string): Promise<TeamKeyStatus> {
-  return teamKeyStatusCache.get(orgId, () => fetchTeamKeyStatusUncached(orgId, orgScopedJwt));
+  try {
+    const status = await teamKeyStatusCache.get(orgId, () => fetchTeamKeyStatusUncached(orgId, orgScopedJwt));
+    rememberTeamKeyStatus(orgId, status);
+    return status;
+  } catch (err) {
+    loadLastKnownKeyStatusFromDisk();
+    const lastKnown = lastKnownKeyStatusCache.get(orgId);
+    if (lastKnown) {
+      logger.main.warn('[OrgKeyService] fetchTeamKeyStatus failed for', orgId, '-- using last-known mode', lastKnown.mode, ':', err);
+      return lastKnown;
+    }
+    // NIM-1779/C1: no last-known status. Team E2E is deprecated in favor of
+    // server-managed custody, so the safe default is server-managed -- the old
+    // hardcoded 'legacy-e2e' default misrouted a server-managed team into the
+    // AES-decrypt lane (docs render locked, durable outbox drain throws). A
+    // locally cached org key is the one reliable offline signal that this org
+    // was joined as legacy-e2e (server-managed teams never store an org key
+    // locally); honor it so a surviving legacy team on a fresh offline launch
+    // isn't misrouted the other way. SilentTeamEncryptionMigration converges
+    // any surviving legacy team anyway. Log loudly whenever we guess.
+    if (hasOrgKey(orgId)) {
+      logger.main.warn('[OrgKeyService] fetchTeamKeyStatus failed for', orgId, '-- no last-known status, but a locally cached org key exists; defaulting to legacy-e2e:', err);
+      return { mode: 'legacy-e2e', dekEpoch: null, dekFingerprint: null };
+    }
+    logger.main.warn('[OrgKeyService] fetchTeamKeyStatus failed for', orgId, '-- no last-known status and no local org key; defaulting to server-managed (NIM-1779/C1):', err);
+    return { mode: 'server-managed', dekEpoch: null, dekFingerprint: null };
+  }
 }
 
 /**

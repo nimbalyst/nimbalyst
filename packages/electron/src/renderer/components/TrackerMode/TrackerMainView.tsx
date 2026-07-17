@@ -4,7 +4,6 @@ import { FloatingPortal } from '@floating-ui/react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
-import { getRecordTitle, getRecordPriority, getRecordStatus, getRecordFieldStr, getFieldByRole, isMyRecord } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import {
   TrackerTable,
   TrackerTableGrid,
@@ -36,20 +35,25 @@ import { setSelectedWorkstreamAtom, sessionRegistryAtom, refreshSessionListAtom,
 import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { workstreamStateAtom } from '../../store/atoms/workstreamState';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
-import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
+import { defaultAgentModelAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { store } from '../../store';
 import { useFloatingMenu } from '../../hooks/useFloatingMenu';
-import { buildTrackerTagOptions, filterTrackerItemsByTags } from './trackerTagFilterUtils';
+import { buildTrackerTagOptions } from './trackerTagFilterUtils';
+import { filterTrackerItems, recordSourceKey } from './trackerSavedViews';
 import { useTrackerUnread } from '../../hooks/useTrackerUnread';
+import {
+  createNewWorktreeSessionActionAtom,
+  isGitRepoAtom,
+} from '../../store/actions/sessionHistoryActions';
+import { setTrackerFavoriteAtom } from '../../store/atoms/trackerPersonalState';
+import { WorktreeBaseBranchPicker } from '../AgenticCoding/WorktreeBaseBranchPicker';
+import {
+  buildTrackerLaunchContext,
+  type TrackerLaunchContext,
+} from './trackerSessionLaunch';
 
 export type ViewMode = 'list' | 'table' | 'kanban' | 'tag-board';
-
-/** Provenance key for a record: the importer provider id, or 'native'. */
-function recordSourceKey(record: TrackerRecord): string {
-  const origin = record.system.origin;
-  return origin?.kind === 'external' ? origin.external.providerId : 'native';
-}
 
 /** Human label for a source key without probing the importer (avoids backend start). */
 function sourceKeyLabel(key: string): string {
@@ -75,6 +79,14 @@ interface TrackerMainViewProps {
   workspacePath?: string;
   trackerTypes: TrackerDataModel[];
   onClearSidebarFilters: () => void;
+  tagFilter: string[];
+  setTagFilter: React.Dispatch<React.SetStateAction<string[]>>;
+  sourceFilter: string[];
+  setSourceFilter: React.Dispatch<React.SetStateAction<string[]>>;
+  currentIdentity: TrackerIdentity | null;
+  favoriteItemIds: ReadonlySet<string>;
+  viewedAtByItemId: ReadonlyMap<string, number>;
+  personalStateHydrated: boolean;
 }
 
 export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
@@ -86,17 +98,21 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   workspacePath,
   trackerTypes,
   onClearSidebarFilters,
+  tagFilter,
+  setTagFilter,
+  sourceFilter,
+  setSourceFilter,
+  currentIdentity,
+  favoriteItemIds,
+  viewedAtByItemId,
+  personalStateHydrated,
 }) => {
-  const [sortBy, setSortBy] = useState<TrackerSortColumn>('lastIndexed');
-  const [sortDirection, setSortDirection] = useState<TrackerSortDirection>('desc');
   const [searchQuery, setSearchQuery] = useState('');
-  const [tagFilter, setTagFilter] = useState<string[]>([]);
-  // Source filter: provider ids (e.g. 'github-issues') plus 'native'.
-  const [sourceFilter, setSourceFilter] = useState<string[]>([]);
   const [quickAddType, setQuickAddType] = useState<string | null>(null);
   const [showTagDropdown, setShowTagDropdown] = useState(false);
   const [tagQuery, setTagQuery] = useState('');
   const [highlightedTagIndex, setHighlightedTagIndex] = useState(0);
+  const [pendingWorktreeLaunch, setPendingWorktreeLaunch] = useState<TrackerLaunchContext | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   // User's selected default model. Used by handleLaunchSession so the new
@@ -104,19 +120,13 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   // falling back to claude-code (which fails for Codex-only installs).
   // See nimbalyst#176.
   const defaultModel = useAtomValue(defaultAgentModelAtom);
+  const isWorktreesFeatureAvailable = useAtomValue(worktreesFeatureAvailableAtom);
+  const isGitRepo = useAtomValue(isGitRepoAtom(workspacePath || ''));
 
   useEffect(() => {
     if (!workspacePath) return;
     void initSessionList(workspacePath);
   }, [workspacePath]);
-
-  // Current user identity for "mine" filter
-  const [currentIdentity, setCurrentIdentity] = useState<TrackerIdentity | null>(null);
-  useEffect(() => {
-    window.electronAPI.invoke('document-service:get-current-identity').then((result: any) => {
-      if (result?.success) setCurrentIdentity(result.identity);
-    });
-  }, []);
 
   // Drive the per-item "unread" dots from the local read-receipt store.
   useTrackerUnread(workspacePath, currentIdentity?.email ?? null);
@@ -124,8 +134,11 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   // Selected item for detail panel
   const modeLayout = useAtomValue(trackerModeLayoutAtom);
   const setModeLayout = useSetAtom(setTrackerModeLayoutAtom);
+  const setFavorite = useSetAtom(setTrackerFavoriteAtom);
   const selectedItemId = modeLayout.selectedItemId;
   const detailPanelWidth = modeLayout.detailPanelWidth;
+  const sortBy = modeLayout.sortBy as TrackerSortColumn;
+  const sortDirection = modeLayout.sortDirection as TrackerSortDirection;
 
   // Column config for the current type (persisted per-type)
   const columnConfigKey = filterType === 'all' ? 'all' : filterType;
@@ -162,6 +175,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   const setSelectedWorkstream = useSetAtom(setSelectedWorkstreamAtom);
   const setWindowMode = useSetAtom(setWindowModeAtom);
   const refreshSessionList = useSetAtom(refreshSessionListAtom);
+  const createNewWorktreeSession = useSetAtom(createNewWorktreeSessionActionAtom);
 
   /** Navigate to Agent mode and activate a linked session */
   const handleSwitchToAgentMode = useCallback((sessionId: string) => {
@@ -198,6 +212,12 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   /** Launch a new AI session linked to a tracker item */
   const handleLaunchSession = useCallback(async (trackerItemId: string) => {
     try {
+      const itemsMap = store.get(trackerItemsMapAtom);
+      const trackerContext = buildTrackerLaunchContext(
+        trackerItemId,
+        itemsMap.get(trackerItemId),
+      );
+
       // Derive provider from the user's default model rather than hardcoding
       // 'claude-code'. Mirrors AgentMode.createNewSession so a Codex-only
       // workspace launches a Codex session, not a failed claude-code one.
@@ -215,60 +235,16 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
         workspaceId: workspacePath,
       });
       if (result?.success && result?.id) {
-        // Look up the tracker item to build a context-aware draft prompt
-        const itemsMap = store.get(trackerItemsMapAtom);
-        const trackerItem = itemsMap.get(trackerItemId);
-
-        if (trackerItem?.system?.documentPath) {
-          // File-backed item: link via file path and pre-fill draft with item context
-          await window.electronAPI.invoke('tracker:link-session', {
-            trackerId: `file:${trackerItem.system.documentPath}`,
-            sessionId: result.id,
-          });
-          // Build a context-rich prompt with the specific item's details
-          const title = getRecordTitle(trackerItem);
-          const status = getRecordStatus(trackerItem);
-          const priority = getRecordPriority(trackerItem);
-          const description = getRecordFieldStr(trackerItem, 'description');
-          const itemId = trackerItem.issueKey || trackerItemId;
-          const lines: string[] = [];
-          lines.push(`implement tracker item ${itemId}: ${title}`);
-          const meta: string[] = [];
-          if (trackerItem.primaryType) meta.push(`type: ${trackerItem.primaryType}`);
-          if (status) meta.push(`status: ${status}`);
-          if (priority) meta.push(`priority: ${priority}`);
-          if (meta.length > 0) lines.push(meta.join(', '));
-          if (description) lines.push(`\n${description}`);
-          lines.push(`\nSource: @${trackerItem.system.documentPath}`);
-          lines.push(`\nUpdate this tracker item's status when done using tracker_update with id "${itemId}".`);
-          await window.electronAPI.invoke('ai:saveDraftInput', result.id,
-            lines.join('\n'), workspacePath);
-        } else {
-          // Native DB item: link by ID
-          await window.electronAPI.invoke('tracker:link-session', {
-            trackerId: trackerItemId,
-            sessionId: result.id,
-          });
-          // Pre-fill draft with item context
-          const title = trackerItem ? getRecordTitle(trackerItem) : trackerItemId;
-          const itemId = trackerItem?.issueKey || trackerItemId;
-          const lines: string[] = [];
-          lines.push(`implement tracker item ${itemId}: ${title}`);
-          if (trackerItem) {
-            const status = getRecordStatus(trackerItem);
-            const priority = getRecordPriority(trackerItem);
-            const description = getRecordFieldStr(trackerItem, 'description');
-            const meta: string[] = [];
-            if (trackerItem.primaryType) meta.push(`type: ${trackerItem.primaryType}`);
-            if (status) meta.push(`status: ${status}`);
-            if (priority) meta.push(`priority: ${priority}`);
-            if (meta.length > 0) lines.push(meta.join(', '));
-            if (description) lines.push(`\n${description}`);
-          }
-          lines.push(`\nUpdate this tracker item's status when done using tracker_update with id "${itemId}".`);
-          await window.electronAPI.invoke('ai:saveDraftInput', result.id,
-            lines.join('\n'), workspacePath);
-        }
+        await window.electronAPI.invoke('tracker:link-session', {
+          trackerId: trackerContext.trackerLinkId,
+          sessionId: result.id,
+        });
+        await window.electronAPI.invoke(
+          'ai:saveDraftInput',
+          result.id,
+          trackerContext.draftInput,
+          workspacePath,
+        );
 
         // Refresh session list to pick up the new session, then navigate
         await refreshSessionList();
@@ -283,6 +259,40 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     }
   }, [workspacePath, refreshSessionList, setSelectedWorkstream, setWindowMode, defaultModel]);
 
+  /** Launch a new isolated worktree session linked to a tracker item. */
+  const handleLaunchWorktree = useCallback((trackerItemId: string) => {
+    const itemsMap = store.get(trackerItemsMapAtom);
+    setPendingWorktreeLaunch(buildTrackerLaunchContext(
+      trackerItemId,
+      itemsMap.get(trackerItemId),
+    ));
+  }, []);
+
+  const handleCreateTrackerWorktree = useCallback(async (
+    options: { baseBranch: string; name?: string },
+  ) => {
+    if (!pendingWorktreeLaunch) return;
+
+    try {
+      const sessionId = await createNewWorktreeSession({
+        ...options,
+        initialDraft: pendingWorktreeLaunch.draftInput,
+      });
+      if (!sessionId) throw new Error('Worktree session was not created');
+
+      await window.electronAPI.invoke('tracker:link-session', {
+        trackerId: pendingWorktreeLaunch.trackerLinkId,
+        sessionId,
+      });
+      await refreshSessionList();
+      handleSwitchToAgentMode(sessionId);
+      setPendingWorktreeLaunch(null);
+    } catch (err) {
+      console.error('[TrackerMainView] Failed to launch worktree:', err);
+      throw err;
+    }
+  }, [createNewWorktreeSession, handleSwitchToAgentMode, pendingWorktreeLaunch, refreshSessionList]);
+
   // Base item sets from atoms
   const activeItems = useAtomValue(trackerItemsByTypeAtom(filterType));
   const archivedItems = useAtomValue(archivedTrackerItemsAtom(filterType));
@@ -290,45 +300,12 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   // Apply multi-select filters as intersection
   const baseFilteredItems = useMemo(() => {
     const showArchived = activeFilters.includes('archived');
-    let items = showArchived ? archivedItems : activeItems;
-
-    if (activeFilters.includes('mine') && currentIdentity) {
-      items = items.filter(record => isMyRecord(record, currentIdentity));
-    }
-
-    // "Unassigned" filter: show items with no assignee
-    if (activeFilters.includes('unassigned')) {
-      items = items.filter(record => {
-        const assignee = getFieldByRole(record, 'assignee') as string | undefined;
-        return !assignee;
-      });
-    }
-
-    if (activeFilters.includes('high-priority')) {
-      items = items.filter(record => {
-        const priority = getRecordPriority(record);
-        return priority === 'critical' || priority === 'high';
-      });
-    }
-
-    if (activeFilters.includes('recently-updated')) {
-      // NIM-1559: sort by the item's logical `updatedAt` (real change time),
-      // NOT `lastIndexed` (the re-scan/re-index timestamp). lastIndexed bumps
-      // on every cold-open scan, so sorting by it reshuffled the whole list
-      // on every restart and made "recently updated" meaningless. Mirror the
-      // table's own updatedAt || createdAt || lastIndexed precedence.
-      const recencyTime = (r: TrackerRecord): number => {
-        const src = r.system.updatedAt || r.system.createdAt || r.system.lastIndexed;
-        const t = src ? new Date(src).getTime() : 0;
-        return Number.isNaN(t) ? 0 : t;
-      };
-      items = [...items]
-        .sort((a, b) => recencyTime(b) - recencyTime(a))
-        .slice(0, 50);
-    }
-
-    return items;
-  }, [activeItems, archivedItems, activeFilters, currentIdentity]);
+    return filterTrackerItems(
+      showArchived ? archivedItems : activeItems,
+      { activeFilters, tagFilter: [], recentlyViewedDays: modeLayout.recentlyViewedDays },
+      { identity: currentIdentity, favoriteItemIds, viewedAtByItemId },
+    );
+  }, [activeItems, archivedItems, activeFilters, currentIdentity, favoriteItemIds, viewedAtByItemId, modeLayout.recentlyViewedDays]);
 
   const allTags = useMemo(() => buildTrackerTagOptions(baseFilteredItems), [baseFilteredItems]);
 
@@ -351,11 +328,21 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   const showSourceFilter = sourceOptions.some((k) => k !== 'native');
 
   const filteredItems = useMemo(() => {
-    const byTags = filterTrackerItemsByTags(baseFilteredItems, tagFilter);
-    if (sourceFilter.length === 0) return byTags;
-    const set = new Set(sourceFilter);
-    return byTags.filter((r) => set.has(recordSourceKey(r)));
-  }, [baseFilteredItems, tagFilter, sourceFilter]);
+    const showArchived = activeFilters.includes('archived');
+    return filterTrackerItems(showArchived ? archivedItems : activeItems, {
+      activeFilters,
+      tagFilter,
+      sourceFilter,
+      recentlyViewedDays: modeLayout.recentlyViewedDays,
+    }, { identity: currentIdentity, favoriteItemIds, viewedAtByItemId });
+  }, [activeItems, archivedItems, activeFilters, tagFilter, sourceFilter, modeLayout.recentlyViewedDays, currentIdentity, favoriteItemIds, viewedAtByItemId]);
+
+  const personalStateRequired = activeFilters.includes('favorites') || activeFilters.includes('recently-viewed');
+  const recencyOrderActive = activeFilters.some((filter) => filter === 'recently-updated'
+    || filter === 'recently-viewed' || filter === 'recently-edited-by-others');
+  const handleToggleFavorite = useCallback((itemId: string) => {
+    void setFavorite({ itemId, isFavorite: !favoriteItemIds.has(itemId) });
+  }, [favoriteItemIds, setFavorite]);
 
   const toggleSource = useCallback((key: string) => {
     setSourceFilter((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
@@ -926,16 +913,22 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       <div className="flex-1 flex flex-row overflow-hidden min-h-0">
         {/* Table/Kanban (flex-1, shrinks when detail is open) */}
         <div className="flex-1 overflow-hidden min-h-0 min-w-0 relative">
-          {viewMode === 'list' ? (
+          {personalStateRequired && !personalStateHydrated ? (
+            <div className="h-full flex items-center justify-center text-sm text-nim-muted" data-testid="tracker-personal-state-loading">
+              Loading personal tracker state...
+            </div>
+          ) : viewMode === 'list' ? (
             <TrackerTable
               filterType={filterType}
               sortBy={sortBy}
               sortDirection={sortDirection}
               hideTypeTabs={true}
               onSortChange={(column, direction) => {
-                setSortBy(column);
-                setSortDirection(direction);
+                setModeLayout({ sortBy: column, sortDirection: direction });
               }}
+              preserveItemOrder={recencyOrderActive}
+              favoriteItemIds={favoriteItemIds}
+              onToggleFavorite={handleToggleFavorite}
               onSwitchToFilesMode={onSwitchToFilesMode}
               onNewItem={handleNewItem}
               onItemSelect={handleItemSelect}
@@ -957,9 +950,11 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               sortDirection={sortDirection}
               hideTypeTabs={true}
               onSortChange={(column, direction) => {
-                setSortBy(column);
-                setSortDirection(direction);
+                setModeLayout({ sortBy: column, sortDirection: direction });
               }}
+              preserveItemOrder={recencyOrderActive}
+              favoriteItemIds={favoriteItemIds}
+              onToggleFavorite={handleToggleFavorite}
               onSwitchToFilesMode={onSwitchToFilesMode}
               onNewItem={handleNewItem}
               onItemSelect={handleItemSelect}
@@ -981,6 +976,8 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onItemSelect={handleItemSelect}
               selectedItemId={selectedItemId}
               overrideItems={filteredItems}
+              favoriteItemIds={favoriteItemIds}
+              onToggleFavorite={handleToggleFavorite}
             />
           ) : (
             <KanbanBoard
@@ -993,6 +990,8 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onArchiveItems={handleArchiveItems}
               onDeleteItems={handleDeleteItems}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
+              favoriteItemIds={favoriteItemIds}
+              onToggleFavorite={handleToggleFavorite}
             />
           )}
 
@@ -1020,6 +1019,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onSwitchToFilesMode={onSwitchToFilesMode}
               onSwitchToAgentMode={handleSwitchToAgentMode}
               onLaunchSession={handleLaunchSession}
+              onLaunchWorktree={isWorktreesFeatureAvailable && isGitRepo ? handleLaunchWorktree : undefined}
               onArchive={handleArchiveItem}
               onDelete={handleDeleteItem}
               onOpenItem={handleItemSelect}
@@ -1042,6 +1042,15 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               setTimeout(() => setImportStatus(null), 4000);
             }
           }}
+        />
+      )}
+      {workspacePath && pendingWorktreeLaunch && (
+        <WorktreeBaseBranchPicker
+          isOpen
+          workspacePath={workspacePath}
+          initialName={pendingWorktreeLaunch.worktreeName}
+          onCreate={handleCreateTrackerWorktree}
+          onCancel={() => setPendingWorktreeLaunch(null)}
         />
       )}
     </div>

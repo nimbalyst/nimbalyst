@@ -8,6 +8,7 @@ public struct ProjectListView: View {
     @EnvironmentObject var appState: AppState
     @State private var projects: [Project] = []
     @State private var cancellable: AnyDatabaseCancellable?
+    @State private var accountSwitchError: String?
 
     public init() {}
 
@@ -63,6 +64,9 @@ public struct ProjectListView: View {
             ToolbarItem(placement: .primaryAction) {
                 connectionIndicator
             }
+            ToolbarItem(placement: .primaryAction) {
+                accountSwitcher
+            }
             #if os(iOS)
             ToolbarItem(placement: .topBarLeading) {
                 NavigationLink(value: "settings") {
@@ -81,6 +85,14 @@ public struct ProjectListView: View {
             if value == "settings" {
                 SettingsView()
             }
+        }
+        .alert("Could Not Switch Accounts", isPresented: Binding(
+            get: { accountSwitchError != nil },
+            set: { if !$0 { accountSwitchError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(accountSwitchError ?? "")
         }
         .onAppear {
             startObserving()
@@ -149,6 +161,30 @@ public struct ProjectListView: View {
             Circle()
                 .fill(isDesktopConnected ? Color.green : (appState.isConnected ? Color.orange : Color.gray))
                 .frame(width: 8, height: 8)
+        }
+    }
+
+    private var accountSwitcher: some View {
+        Menu {
+            ForEach(appState.accounts) { account in
+                Button {
+                    do {
+                        try appState.switchAccount(to: account.id)
+                    } catch {
+                        accountSwitchError = error.localizedDescription
+                    }
+                } label: {
+                    if account.id == appState.activeAccountId {
+                        Label(account.email, systemImage: "checkmark")
+                    } else {
+                        Text(account.email)
+                    }
+                }
+                .disabled(account.id == appState.activeAccountId)
+            }
+        } label: {
+            Image(systemName: "person.crop.circle")
+                .accessibilityLabel("Switch account")
         }
     }
 

@@ -10,7 +10,7 @@
 import { useEffect } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { store } from '@nimbalyst/runtime/store';
-import type { ReadReceipt } from '@nimbalyst/runtime';
+import { mergeReceipt, type ReadReceipt } from '@nimbalyst/runtime';
 import {
   activeTeamOrgIdAtom,
   activeTeamUserIdAtom,
@@ -37,18 +37,24 @@ export function useDocUnread(): void {
   useEffect(() => {
     if (!orgId) return;
     let cancelled = false;
+    // Receipts are scoped to one org. Clear the previous scope immediately,
+    // then merge the async load advance-only so a mark-read that lands while
+    // this request is in flight cannot be overwritten by the older snapshot.
+    setReceipts(new Map());
     readReceiptService
       .getForScope('doc', orgId, workspacePath ?? undefined)
       .then((rows) => {
         if (cancelled) return;
-        const map = new Map<string, ReadReceipt>();
-        for (const r of rows) {
-          map.set(r.entityId, {
-            lastSeenVersion: r.lastSeenVersion,
-            lastViewedAt: r.lastViewedAt,
-          });
-        }
-        setReceipts(map);
+        setReceipts((current) => {
+          const next = new Map(current);
+          for (const r of rows) {
+            next.set(r.entityId, mergeReceipt(next.get(r.entityId), {
+              lastSeenVersion: r.lastSeenVersion,
+              lastViewedAt: r.lastViewedAt,
+            }));
+          }
+          return next;
+        });
       })
       .catch(() => {
         /* best-effort */
@@ -75,7 +81,11 @@ export async function markDocViewed(
   orgId: string,
   lastUpdatedAt: number | null,
 ): Promise<void> {
-  const watermark = lastUpdatedAt && lastUpdatedAt > 0 ? lastUpdatedAt : Date.now();
+  // A read action means "seen through the time of this click", not merely
+  // through the last index timestamp currently loaded. A delayed broadcast
+  // authored before the click must not resurrect the dot when it arrives.
+  // Keep the known server timestamp too in case its clock is ahead locally.
+  const watermark = Math.max(Date.now(), lastUpdatedAt ?? 0);
   const receipt: ReadReceipt = { lastSeenVersion: null, lastViewedAt: watermark };
   try {
     await readReceiptService.markViewed({
@@ -84,6 +94,7 @@ export async function markDocViewed(
       scope: orgId,
       lastViewedAt: watermark,
       lastSeenVersion: null,
+      workspacePath: store.get(activeWorkspacePathAtom) ?? undefined,
     });
     store.set(applyDocReceiptAtom, { documentId, orgId, receipt });
   } catch {

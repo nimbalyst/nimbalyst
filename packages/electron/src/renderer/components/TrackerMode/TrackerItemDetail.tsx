@@ -34,6 +34,7 @@ import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { useTrackerContentCollab } from '../../hooks/useTrackerContentCollab';
 import { useColdPaintFallback } from '../../hooks/useColdPaintFallback';
 import { useMarkTrackerViewed } from '../../hooks/useTrackerUnread';
+import { useRecordTrackerOpened } from '../../hooks/useRecordTrackerOpened';
 import { reconcileExternalFieldChanges } from './trackerDetailFieldSync';
 
 interface TrackerItemDetailProps {
@@ -43,6 +44,7 @@ interface TrackerItemDetailProps {
   onSwitchToFilesMode?: () => void;
   onSwitchToAgentMode?: (sessionId: string) => void;
   onLaunchSession?: (trackerItemId: string) => void;
+  onLaunchWorktree?: (trackerItemId: string) => void;
   onArchive?: (itemId: string, archive: boolean) => void;
   onDelete?: (itemId: string) => void;
   /** Open another tracker item (relationship pill / backlink click). */
@@ -199,6 +201,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   onSwitchToFilesMode,
   onSwitchToAgentMode,
   onLaunchSession,
+  onLaunchWorktree,
   onArchive,
   onDelete,
   onOpenItem,
@@ -235,6 +238,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // Mark this item read while it is open (debounced; refires when a newer
   // version arrives). Clears its unread dot in the list/board views.
   useMarkTrackerViewed(item, workspacePath);
+  useRecordTrackerOpened(item?.id, workspacePath);
 
   // Detect whether this workspace has a team. The team check feeds the
   // content editor mode (collab vs local); the member list feeds the
@@ -1408,7 +1412,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         {!focusActive && (
         <>
         {/* Linked Sessions -- kept at the top so they're visible without scrolling */}
-        {(linkedSessions.length > 0 || onLaunchSession || canLinkExistingSession || isLinkingExistingSession) && (
+        {(linkedSessions.length > 0 || onLaunchSession || onLaunchWorktree || canLinkExistingSession || isLinkingExistingSession) && (
           <div className="tracker-sessions-section">
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px]">
@@ -1438,6 +1442,16 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                   >
                     <MaterialSymbol icon="add" size={14} />
                     Launch Session
+                  </button>
+                )}
+                {onLaunchWorktree && (
+                  <button
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
+                    onClick={() => onLaunchWorktree(item.id)}
+                    title="Launch a new isolated worktree session for this item"
+                  >
+                    <MaterialSymbol icon="account_tree" size={14} />
+                    Launch Worktree
                   </button>
                 )}
               </div>

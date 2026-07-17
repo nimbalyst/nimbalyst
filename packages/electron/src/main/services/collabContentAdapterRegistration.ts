@@ -31,6 +31,7 @@ import {
   MockupHtmlCollabContentAdapter,
   MockupProjectCollabContentAdapter,
 } from '@nimbalyst/mockuplm/collab-adapters';
+import { CodeCollabContentAdapter } from '../../renderer/utils/CodeCollabContentAdapter';
 import { logger } from '../utils/logger';
 
 let registered = false;
@@ -40,12 +41,13 @@ export function registerBuiltinCollabContentAdapters(): void {
   registered = true;
   try {
     registerCollabContentAdapter(MarkdownCollabContentAdapter);
+    registerCollabContentAdapter(CodeCollabContentAdapter);
     registerCollabContentAdapter(CsvCollabContentAdapter);
     registerCollabContentAdapter(ExcalidrawCollabContentAdapter);
     registerCollabContentAdapter(DataModelCollabContentAdapter);
     registerCollabContentAdapter(MockupHtmlCollabContentAdapter);
     registerCollabContentAdapter(MockupProjectCollabContentAdapter);
-    logger.main.info('[CollabContentAdapters] Registered built-in adapters: markdown, csv, excalidraw, datamodel, mockup.html, mockupproject');
+    logger.main.info('[CollabContentAdapters] Registered built-in adapters: markdown, code, csv, excalidraw, datamodel, mockup.html, mockupproject');
   } catch (error) {
     logger.main.error('[CollabContentAdapters] Failed to register built-in adapters:', error);
   }

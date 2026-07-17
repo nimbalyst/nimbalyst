@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }));
+const { fetchMock, accountState } = vi.hoisted(() => ({
+  fetchMock: vi.fn(),
+  accountState: { includeBound: false },
+}));
 
 vi.mock('electron', () => ({
   safeStorage: { isEncryptionAvailable: vi.fn(() => false) },
@@ -23,16 +26,55 @@ vi.mock('../../services/analytics/AnalyticsService', () => ({
   AnalyticsService: { getInstance: () => ({ sendEvent: vi.fn() }) },
 }));
 
+vi.mock('@nimbalyst/runtime', () => ({
+  AISessionsRepository: { get: vi.fn(async () => null) },
+}));
+
+vi.mock('../../services/SessionHtmlExporter', () => ({
+  exportSessionToHtml: vi.fn(async () => '<html></html>'),
+}));
+
+vi.mock('../../utils/transcriptHelpers', () => ({
+  loadViewMessages: vi.fn(async () => ({ success: true, messages: [] })),
+}));
+
+vi.mock('../../services/FileHtmlExporter', () => ({
+  exportFileToHtml: vi.fn(() => '<html></html>'),
+}));
+
 vi.mock('../../services/StytchAuthService', () => ({
+  getAccounts: vi.fn(() => [
+    { personalOrgId: 'personal-sync', email: 'sync@example.com', isSyncAccount: true },
+    ...(accountState.includeBound
+      ? [{ personalOrgId: 'personal-bound', email: 'bound@example.com', isSyncAccount: false }]
+      : []),
+  ]),
+  getSyncAccount: vi.fn(() => ({
+    personalOrgId: 'personal-sync', email: 'sync@example.com', isSyncAccount: true,
+  })),
+  getPersonalSessionJwtForAccount: vi.fn(() => 'personal-jwt'),
+  refreshPersonalSessionForAccount: vi.fn(async () => 'personal-jwt'),
   getSessionJwt: vi.fn(() => 'session-jwt'),
   refreshSession: vi.fn(async () => true),
+}));
+
+vi.mock('../../services/TeamService', () => ({
+  findTeamForWorkspace: vi.fn(async (workspacePath: string) => (
+    workspacePath === '/workspace/team'
+      ? { orgId: 'team-org', boundPersonalOrgId: 'personal-bound' }
+      : null
+  )),
 }));
 
 vi.mock('../../utils/store', () => ({
   store: { get: vi.fn(() => undefined), set: vi.fn() },
 }));
 
-import { getShareList, invalidateShareListCache } from '../ShareHandlers';
+import {
+  getShareList,
+  invalidateShareListCache,
+  resolveDefaultShareAccount,
+} from '../ShareHandlers';
 
 function jsonResponse(body: unknown) {
   return { ok: true, json: async () => body, text: async () => '' };
@@ -44,6 +86,7 @@ function shareListCallCount(): number {
 
 describe('ShareHandlers share:list dedup', () => {
   beforeEach(() => {
+    accountState.includeBound = false;
     invalidateShareListCache();
     fetchMock.mockReset();
     fetchMock.mockImplementation(async () => jsonResponse({ shares: [] }));
@@ -81,5 +124,22 @@ describe('ShareHandlers share:list dedup', () => {
     await getShareList();
 
     expect(shareListCallCount()).toBe(2);
+  });
+});
+
+describe('ShareHandlers account resolution', () => {
+  it('defaults a team-workspace share to the account bound to its org', async () => {
+    accountState.includeBound = true;
+    await expect(resolveDefaultShareAccount('/workspace/team')).resolves.toMatchObject({
+      personalOrgId: 'personal-bound',
+      source: 'workspace-binding',
+    });
+  });
+
+  it('defaults a personal share to the sync account', async () => {
+    await expect(resolveDefaultShareAccount('/workspace/personal')).resolves.toMatchObject({
+      personalOrgId: 'personal-sync',
+      source: 'sync-account',
+    });
   });
 });

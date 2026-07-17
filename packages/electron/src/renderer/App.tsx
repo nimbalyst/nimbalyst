@@ -25,6 +25,7 @@ import { useOnboarding } from './hooks/useOnboarding';
 // NOTE: useDocumentContext removed - we build documentContext manually now
 import { handleWorkspaceFileSelect as handleWorkspaceFileSelectUtil } from './utils/workspaceFileOperations';
 import { createInitialFileContent } from './utils/fileUtils';
+import { resolveHistoryDocumentPath } from './utils/historyDocumentResolver';
 import { aiToolService } from './services/AIToolService';
 import { editorRegistry } from '@nimbalyst/runtime/ai/EditorRegistry';
 import { WorkspaceWelcome } from './components/WorkspaceWelcome.tsx';
@@ -132,8 +133,11 @@ import { initWakeupListeners } from './store/listeners/wakeupListener';
 import { TrackerMode } from './components/TrackerMode';
 import { PullRequestMode } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
+import { TeamManagementApp } from './components/TeamMode';
 import { TerminalBottomPanel } from './components/TerminalBottomPanel';
 import { ProjectRail } from './components/ProjectRail';
+import { AccountExpiryBanner } from './components/Accounts/AccountExpiryBanner';
+import { organizationDirectoryAtom, personalAccountsAtom } from './store/atoms/settingsDomains';
 import {
   activeWorkspacePathAtom,
   multiProjectModeAtom,
@@ -455,6 +459,12 @@ export default function App() {
     return <DeveloperDashboard />;
   }
 
+  // Org management is a dedicated window, not a mode inside the project window
+  // (2026-07-17 decision-log correction). TeamManagementApp sets its own title.
+  if (windowMode === 'team-management') {
+    return <TeamManagementApp />;
+  }
+
   // IMPORTANT: These are refs, not state, to prevent re-renders when the active file changes.
   // Window title and other side effects are updated imperatively via editorModeRef.
   const currentFilePathRef = useRef<string | null>(null);
@@ -528,6 +538,8 @@ export default function App() {
   // Window mode - which view is active (files, agent, settings)
   const activeMode = useAtomValue(windowModeAtom);
   const developerMode = useAtomValue(developerModeAtom);
+  const personalAccounts = useAtomValue(personalAccountsAtom);
+  const organizationDirectory = useAtomValue(organizationDirectoryAtom);
   const setActiveMode = useSetAtom(setWindowModeAtom);
   const toggleAgentCollapsed = useSetAtom(toggleSessionHistoryCollapsedAtom);
   const updateDeveloperSettings = useSetAtom(setDeveloperFeatureSettingsAtom);
@@ -600,7 +612,7 @@ export default function App() {
           navigateSettingsInPlace({ category: 'project-agent-permissions', scope: 'project' });
           setTimeout(() => setActiveMode('settings'), 0);
         },
-        openSettings: (category?: any, scope?: 'application' | 'personal' | 'organization' | 'project') => {
+        openSettings: (category?: any, scope?: 'application' | 'account' | 'project') => {
           navigateSettingsInPlace({ category, scope });
           setTimeout(() => setActiveMode('settings'), 0);
         },
@@ -854,6 +866,21 @@ export default function App() {
   const editorModeRef = useRef<EditorModeRef>(null);
   const collabModeRef = useRef<CollabModeRef | null>(null);
 
+  const openHistoryForCurrentDocument = useCallback(() => {
+    const mode = activeModeStateRef.current;
+    const documentPath = resolveHistoryDocumentPath({
+      activeMode: mode,
+      localDocumentPath: (window as unknown as { __currentDocumentPath?: string | null }).__currentDocumentPath,
+      collabDocumentPath: mode === 'collab'
+        ? collabModeRef.current?.getActiveDocumentPath() ?? null
+        : null,
+    });
+
+    if (documentPath) {
+      store.set(historyDialogFileAtom, documentPath);
+    }
+  }, []);
+
   // NOTE: autoSaveIntervalRef and autoSaveCancellationRef removed - EditorContainer handles autosave now
   const activeSavesRef = useRef<Set<string>>(new Set());
   const lastSavePathRef = useRef<string | null>(null);
@@ -1104,7 +1131,11 @@ export default function App() {
         // any stale deep-link destination so restored scope/category holds.
         navigateSettingsInPlace({
           category: state.category as any,
-          scope: state.scope === 'user' ? 'application' : state.scope,
+          scope: state.scope === 'user' || state.scope === 'organization'
+            ? 'application'
+            : state.scope === 'personal'
+              ? 'account'
+              : state.scope,
         });
       },
     });
@@ -1437,6 +1468,7 @@ export default function App() {
     editorModeRef,
     agentModeRef,
     toggleAgentCollapsed,
+    openHistoryForCurrentDocument,
     isFullscreenPanelActive,
     exitFullscreenPanel: () => setActiveExtensionPanel(null),
   });
@@ -1974,18 +2006,12 @@ export default function App() {
   // view-history IPC fires when the user picks Edit > View Local History (Cmd+Y).
   // On macOS, the menu accelerator preempts the renderer keydown event, so the
   // IPC path is the canonical one. Open the global history dialog for whichever
-  // file is currently active (FilesMode or AgentMode -- both modes maintain
-  // window.__currentDocumentPath as the active file).
-  const setHistoryDialogFile = useSetAtom(historyDialogFileAtom);
+  // document is currently active. Shared Documents resolves its active
+  // collab:// URI through CollabMode instead of the filesystem-path global.
   useEffect(() => {
     if (!window.electronAPI?.onViewHistory) return undefined;
-    return window.electronAPI.onViewHistory(() => {
-      const activeFilePath = (window as unknown as { __currentDocumentPath?: string | null }).__currentDocumentPath;
-      if (activeFilePath) {
-        setHistoryDialogFile(activeFilePath);
-      }
-    });
-  }, [setHistoryDialogFile]);
+    return window.electronAPI.onViewHistory(openHistoryForCurrentDocument);
+  }, [openHistoryForCurrentDocument]);
 
   // Intercept external link clicks and open in default browser
   useEffect(() => {
@@ -2133,6 +2159,11 @@ export default function App() {
 
       {/* Right: Main content area + Bottom Panel */}
       <div data-layout="main-column-container" className="flex-1 flex flex-col overflow-hidden">
+        <AccountExpiryBanner
+          accounts={personalAccounts}
+          organizations={organizationDirectory}
+          onReconnect={(account) => dialogRef.current?.open(DIALOG_IDS.ACCOUNT_LOGIN, { mode: 'reauth', account })}
+        />
         {/* Top: Main content (sidebar + editor/agent + AI chat) */}
         <div data-layout="top-content-row" className="flex-1 flex flex-row min-h-0">
           {/* Center: Editor/Agent/Settings area */}

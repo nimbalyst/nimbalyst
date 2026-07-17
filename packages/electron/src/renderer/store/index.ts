@@ -126,6 +126,7 @@ export {
   sessionWorktreePathAtom,
   sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
+  sessionThinkingModeRawAtom,
   sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,

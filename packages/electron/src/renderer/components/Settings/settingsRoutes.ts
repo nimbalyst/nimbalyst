@@ -1,4 +1,4 @@
-export type SettingsScope = 'application' | 'personal' | 'organization' | 'project';
+export type SettingsScope = 'application' | 'account' | 'project';
 
 export type ApplicationSettingsCategory =
   | 'notifications'
@@ -22,12 +22,16 @@ export type ApplicationSettingsCategory =
   | 'mcp-servers'
   | 'tools-mcp';
 
+export type AccountSettingsCategory = 'account';
+
+/** Old personal routes remain accepted only so persisted links can migrate. */
 export type PersonalSettingsCategory =
   | 'personal-accounts'
   | 'personal-mobile'
   | 'personal-devices'
   | 'personal-shared-links';
 
+/** Organization administration moved to the in-app Team surface. */
 export type OrganizationSettingsCategory =
   | 'organization-members'
   | 'organization-projects'
@@ -46,11 +50,12 @@ export type ProjectSettingsCategory =
 
 export type RegisteredSettingsCategory =
   | ApplicationSettingsCategory
-  | PersonalSettingsCategory
-  | OrganizationSettingsCategory
+  | AccountSettingsCategory
   | ProjectSettingsCategory;
 
 export type LegacySettingsCategory =
+  | PersonalSettingsCategory
+  | OrganizationSettingsCategory
   | 'sync'
   | 'shared-links'
   | 'team'
@@ -65,8 +70,7 @@ export type SettingsCategory = RegisteredSettingsCategory | LegacySettingsCatego
 
 export type SettingsDestination =
   | { scope: 'application'; category: ApplicationSettingsCategory }
-  | { scope: 'personal'; category: PersonalSettingsCategory }
-  | { scope: 'organization'; category: OrganizationSettingsCategory; orgId: string }
+  | { scope: 'account'; category: AccountSettingsCategory }
   | {
       scope: 'project';
       category: ProjectSettingsCategory;
@@ -113,16 +117,7 @@ export const settingsRoutes: readonly SettingsRoute[] = [
   { id: 'mcp-servers', scope: 'application', group: 'Extensions', label: 'MCP Servers', icon: 'dns' },
   { id: 'tools-mcp', scope: 'application', group: 'Extensions', label: 'Tools & Token Cost', icon: 'data_usage' },
 
-  { id: 'personal-accounts', scope: 'personal', group: 'Personal', label: 'Accounts', icon: 'account_circle' },
-  { id: 'personal-mobile', scope: 'personal', group: 'Personal', label: 'Mobile App', icon: 'phone_iphone' },
-  { id: 'personal-devices', scope: 'personal', group: 'Personal', label: 'Devices', icon: 'devices' },
-  { id: 'personal-shared-links', scope: 'personal', group: 'Personal', label: 'Shared Links', icon: 'link' },
-
-  { id: 'organization-members', scope: 'organization', group: 'Organization', label: 'Members & Roles', icon: 'groups' },
-  { id: 'organization-projects', scope: 'organization', group: 'Organization', label: 'Projects', icon: 'folder_shared' },
-  { id: 'organization-security', scope: 'organization', group: 'Organization', label: 'Security', icon: 'verified_user' },
-  { id: 'organization-billing', scope: 'organization', group: 'Organization', label: 'Billing', icon: 'credit_card' },
-  { id: 'organization-danger', scope: 'organization', group: 'Organization', label: 'Danger Zone', icon: 'warning' },
+  { id: 'account', scope: 'account', group: 'Account', label: 'Account', icon: 'account_circle' },
 
   { id: 'project-sharing', scope: 'project', group: 'Project', label: 'Sharing', icon: 'group' },
   { id: 'project-agent-permissions', scope: 'project', group: 'Project', label: 'Agent Permissions', icon: 'shield' },
@@ -135,8 +130,7 @@ export const settingsRoutes: readonly SettingsRoute[] = [
 
 const defaults: Record<SettingsScope, RegisteredSettingsCategory> = {
   application: 'notifications',
-  personal: 'personal-accounts',
-  organization: 'organization-members',
+  account: 'account',
   project: 'project-sharing',
 };
 
@@ -159,7 +153,6 @@ export function isSettingsCategory(value: string): value is RegisteredSettingsCa
 export function validateSettingsDestination(destination: SettingsDestination): boolean {
   const route = settingsRoutes.find((candidate) => candidate.id === destination.category);
   if (!route || route.scope !== destination.scope) return false;
-  if (destination.scope === 'organization') return destination.orgId.trim().length > 0;
   if (destination.scope === 'project') {
     return destination.target.kind === 'workspace'
       ? destination.target.workspacePath.trim().length > 0
@@ -168,7 +161,13 @@ export function validateSettingsDestination(destination: SettingsDestination): b
   return true;
 }
 
-export type LegacySettingsScope = 'user' | 'application' | 'personal' | 'organization' | 'project';
+export type LegacySettingsScope =
+  | 'user'
+  | 'application'
+  | 'account'
+  | 'personal'
+  | 'organization'
+  | 'project';
 
 export interface LegacySettingsLink {
   category?: string;
@@ -179,21 +178,21 @@ export interface LegacySettingsLink {
 }
 
 export function normalizeSettingsDestination(link: LegacySettingsLink): SettingsDestination | null {
-  const scope = link.scope === 'user' || !link.scope ? 'application' : link.scope;
   const legacyCategory = link.category;
+  const rawScope = link.scope ?? 'application';
 
-  if (legacyCategory === 'sync') return { scope: 'personal', category: 'personal-mobile' };
-  if (legacyCategory === 'shared-links') return { scope: 'personal', category: 'personal-shared-links' };
-  if (scope === 'organization') {
-    if (!link.orgId) return null;
-    const category: OrganizationSettingsCategory = legacyCategory === 'team'
-      ? 'organization-security'
-      : legacyCategory === 'organization-projects'
-        ? 'organization-projects'
-        : 'organization-members';
-    return { scope, category, orgId: link.orgId };
+  if (rawScope === 'organization') return null;
+  if (
+    rawScope === 'personal'
+    || rawScope === 'account'
+    || legacyCategory === 'sync'
+    || legacyCategory === 'shared-links'
+    || legacyCategory?.startsWith('personal-')
+  ) {
+    return { scope: 'account', category: 'account' };
   }
-  if (scope === 'project') {
+
+  if (rawScope === 'project') {
     const target = link.projectId && link.orgId
       ? { kind: 'organizationProject' as const, orgId: link.orgId, projectId: link.projectId }
       : link.workspacePath
@@ -209,17 +208,11 @@ export function normalizeSettingsDestination(link: LegacySettingsLink): Settings
           : legacyCategory === 'github'
             ? 'project-github'
             : 'project-sharing';
-    return { scope, category, target };
+    return { scope: 'project', category, target };
   }
-  if (scope === 'personal') {
-    const category = isSettingsCategory(legacyCategory ?? '') &&
-      settingsRoutes.some((route) => route.id === legacyCategory && route.scope === 'personal')
-      ? legacyCategory as PersonalSettingsCategory
-      : 'personal-accounts';
-    return { scope, category };
-  }
-  const category = isSettingsCategory(legacyCategory ?? '') &&
-    settingsRoutes.some((route) => route.id === legacyCategory && route.scope === 'application')
+
+  const category = isSettingsCategory(legacyCategory ?? '')
+    && settingsRoutes.some((route) => route.id === legacyCategory && route.scope === 'application')
     ? legacyCategory as ApplicationSettingsCategory
     : getDefaultSettingsCategory('application') as ApplicationSettingsCategory;
   return { scope: 'application', category };

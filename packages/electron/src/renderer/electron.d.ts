@@ -267,11 +267,12 @@ interface ElectronAPI {
   exportSessionToClipboard: (options: { sessionId: string }) => Promise<{ success: boolean; error?: string }>;
 
   // Share operations
-  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>;
-  listShares: () => Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number }>; error?: string }>;
-  deleteShare: (options: { shareId: string; sessionId?: string }) => Promise<{ success: boolean; error?: string }>;
+  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number; personalOrgId?: string }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>;
+  getShareAccountOptions: (options: { contentType: 'session' | 'file'; sessionId?: string; filePath?: string }) => Promise<{ success: boolean; accounts?: Array<{ personalOrgId: string; email: string; isSyncAccount: boolean; sessionStatus: 'active' | 'expired' }>; defaultPersonalOrgId?: string; defaultSource?: 'workspace-binding' | 'sync-account' | 'only-account'; error?: string }>;
+  listShares: () => Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number; owningPersonalOrgId: string }>; error?: string }>;
+  deleteShare: (options: { shareId: string; sessionId?: string; owningPersonalOrgId?: string }) => Promise<{ success: boolean; error?: string }>;
   getShareKeys: () => Promise<Record<string, string>>;
-  shareFileAsLink: (options: { filePath: string; expirationDays?: number }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>;
+  shareFileAsLink: (options: { filePath: string; expirationDays?: number; personalOrgId?: string }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>;
   getShareExpirationPreference: () => Promise<number>;
   setShareExpirationPreference: (days: number) => Promise<void>;
 
@@ -653,8 +654,18 @@ interface ElectronAPI {
       personalUserId: string | null;
       email: string | null;
       userName?: string;
-      isPrimary: boolean;
+      isSyncAccount: boolean;
+      sessionStatus: 'active' | 'expired';
     }>>;
+    getSyncAccount: () => Promise<{
+      personalOrgId: string;
+      personalUserId: string | null;
+      email: string | null;
+      userName?: string;
+      isSyncAccount: boolean;
+      sessionStatus: 'active' | 'expired';
+    } | null>;
+    setSyncAccount: (personalOrgId: string) => Promise<{ success: boolean }>;
     addAccount: () => Promise<{ success: boolean; error?: string }>;
     removeAccount: (personalOrgId: string, forceOfflinePurge?: boolean) => Promise<{
       success: boolean;

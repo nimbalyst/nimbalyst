@@ -313,6 +313,12 @@ export interface SyncProvider {
    */
   onReadReceipt?(callback: (receipt: SyncedReadReceipt) => void): () => void;
 
+  /** Push a tracker favorite/open change over the personal sync channel. */
+  syncTrackerPersonalState?(change: SyncedTrackerPersonalStateChange): Promise<void>;
+
+  /** Subscribe to tracker favorite/open changes from the user's other devices. */
+  onTrackerPersonalState?(callback: (change: SyncedTrackerPersonalStateChange) => void): () => void;
+
   /**
    * Attempt to reconnect the index connection.
    * Called when network connectivity is restored after being offline.
@@ -784,5 +790,33 @@ export interface EncryptedReadReceiptPayload {
   /** Advance-only LWW version — the receipt's `lastViewedAt` (epoch ms). */
   version: number;
   /** Timestamp of the sync (epoch ms). */
+  timestamp: number;
+}
+
+/** One independently mergeable field change from tracker_personal_state. */
+export type SyncedTrackerPersonalStateChange =
+  | {
+      kind: 'favorite';
+      scope: string;
+      itemId: string;
+      isFavorite: boolean;
+      favoriteUpdatedAt: number;
+      updatedAt: number;
+    }
+  | {
+      kind: 'opened';
+      scope: string;
+      itemId: string;
+      lastOpenedAt: number;
+      updatedAt: number;
+    };
+
+/** Opaque E2E-encrypted tracker personal-state mutation for the index room. */
+export interface EncryptedTrackerPersonalStatePayload {
+  stateKey: string;
+  encryptedState: string;
+  stateIv: string;
+  deviceId: string;
+  version: number;
   timestamp: number;
 }

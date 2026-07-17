@@ -39,6 +39,7 @@ import type {
   EncryptedFolderNode,
   FolderNode,
   ServerTeamState,
+  SharedDocumentTypeMetadataV2,
 } from './teamSyncTypes';
 import type {
   InboxEventKind,
@@ -149,6 +150,9 @@ export class TeamSyncProvider {
    */
   private resyncWaiters: Array<(docs: EncryptedDocIndexEntry[]) => void> = [];
 
+  /** Resolvers waiting for the next decrypted folder-index snapshot. */
+  private folderResyncWaiters: Array<(folders: FolderNode[] | null) => void> = [];
+
   /**
    * Pending doc index messages queued while disconnected.
    * Unlike DocumentSync (which queues CRDT updates), TeamSync was silently
@@ -236,6 +240,9 @@ export class TeamSyncProvider {
     this.teamState = null;
     this.localEntries.clear();
     this.pendingDocIndexMessages = [];
+    const folderWaiters = this.folderResyncWaiters;
+    this.folderResyncWaiters = [];
+    for (const waiter of folderWaiters) waiter(null);
   }
 
   getStatus(): TeamSyncStatus {
@@ -297,13 +304,21 @@ export class TeamSyncProvider {
     return encryptTitle(title, this.config.encryptionKey!);
   }
 
-  async registerDocument(documentId: string, title: string, documentType: string): Promise<void> {
+  async registerDocument(
+    documentId: string,
+    title: string,
+    documentType: string,
+    parentFolderId: string | null = null,
+    metadata?: SharedDocumentTypeMetadataV2,
+  ): Promise<void> {
     const { encryptedTitle, titleIv } = await this.encodeTitleForWire(title);
     this.send({
       type: 'docIndexRegister', documentId, encryptedTitle, titleIv, documentType,
+      ...metadata,
       // Epic H3 P0/A: attribute the doc to the active project so the server's
       // project-partitioned doc index (and a future move) can scope it.
       projectId: this.config.teamProjectId ?? null,
+      parentFolderId,
       orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
   }
@@ -320,6 +335,30 @@ export class TeamSyncProvider {
     this.localEntries.delete(documentId);
     this.send({
       type: 'docIndexRemove', documentId,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  /** Move a document into recoverable Trash without changing its folder. */
+  trashDocument(documentId: string, trashedAt = Date.now()): void {
+    const existing = this.localEntries.get(documentId);
+    if (existing) {
+      this.localEntries.set(documentId, { ...existing, trashedAt });
+    }
+    this.send({
+      type: 'docTrash', documentId, trashedAt,
+      orgKeyFingerprint: this.wireOrgKeyFingerprint,
+    });
+  }
+
+  /** Restore a document to the same folder it occupied before Trash. */
+  restoreDocument(documentId: string): void {
+    const existing = this.localEntries.get(documentId);
+    if (existing) {
+      this.localEntries.set(documentId, { ...existing, trashedAt: null });
+    }
+    this.send({
+      type: 'docRestore', documentId,
       orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
   }
@@ -381,6 +420,29 @@ export class TeamSyncProvider {
   /** Snapshot of the current decrypted folder nodes. */
   getFolders(): FolderNode[] {
     return Array.from(this.folderEntries.values());
+  }
+
+  /**
+   * Request the current first-class folder index from TeamRoom. The promise
+   * resolves only after the matching server snapshot has been decrypted and
+   * applied locally; null means the request timed out.
+   */
+  refreshFolders(timeoutMs = 6000): Promise<FolderNode[] | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const done = (folders: FolderNode[] | null) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.folderResyncWaiters = this.folderResyncWaiters.filter(waiting => waiting !== waiter);
+        resolve(folders);
+      };
+      const waiter = (folders: FolderNode[] | null) => done(folders);
+      this.folderResyncWaiters.push(waiter);
+      timer = setTimeout(() => done(null), timeoutMs);
+      this.send({ type: 'folderIndexSync' });
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -671,11 +733,15 @@ export class TeamSyncProvider {
         documentId: msg.document.documentId,
         title: '',
         documentType: msg.document.documentType,
+        metadataVersion: msg.document.metadataVersion,
+        fileExtension: msg.document.fileExtension,
+        editorId: msg.document.editorId,
         createdBy: msg.document.createdBy,
         createdAt: msg.document.createdAt,
         updatedAt: msg.document.updatedAt,
         lastWriterUserId: msg.document.lastWriterUserId ?? null,
         parentFolderId: msg.document.parentFolderId ?? null,
+        trashedAt: msg.document.trashedAt ?? null,
         decryptFailed: true,
       };
     }
@@ -721,6 +787,9 @@ export class TeamSyncProvider {
     if (this.teamState) {
       this.teamState.folders = folders;
     }
+    const waiters = this.folderResyncWaiters;
+    this.folderResyncWaiters = [];
+    for (const waiter of waiters) waiter(folders);
     this.config.onFoldersLoaded?.(folders);
   }
 
@@ -838,11 +907,15 @@ export class TeamSyncProvider {
           documentId: e.documentId,
           title: '',
           documentType: e.documentType,
+          metadataVersion: e.metadataVersion,
+          fileExtension: e.fileExtension,
+          editorId: e.editorId,
           createdBy: e.createdBy,
           createdAt: e.createdAt,
           updatedAt: e.updatedAt,
           lastWriterUserId: e.lastWriterUserId ?? null,
           parentFolderId: e.parentFolderId ?? null,
+          trashedAt: e.trashedAt ?? null,
           decryptFailed: true,
         });
       }
@@ -865,11 +938,15 @@ export class TeamSyncProvider {
       documentId: encrypted.documentId,
       title,
       documentType: encrypted.documentType,
+      metadataVersion: encrypted.metadataVersion,
+      fileExtension: encrypted.fileExtension,
+      editorId: encrypted.editorId,
       createdBy: encrypted.createdBy,
       createdAt: encrypted.createdAt,
       updatedAt: encrypted.updatedAt,
       lastWriterUserId: encrypted.lastWriterUserId ?? null,
       parentFolderId: encrypted.parentFolderId ?? null,
+      trashedAt: encrypted.trashedAt ?? null,
     };
   }
 
@@ -1037,7 +1114,7 @@ export class TeamSyncProvider {
 
   private isDocIndexMessage(msg: TeamClientMessage): boolean {
     return msg.type === 'docIndexRegister' || msg.type === 'docIndexUpdate' || msg.type === 'docIndexRemove'
-      || msg.type === 'docMove'
+      || msg.type === 'docTrash' || msg.type === 'docRestore' || msg.type === 'docMove'
       || msg.type === 'folderRegister' || msg.type === 'folderRename'
       || msg.type === 'folderMove' || msg.type === 'folderRemove';
   }

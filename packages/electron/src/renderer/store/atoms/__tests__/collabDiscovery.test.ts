@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isEntityUnread } from '@nimbalyst/runtime/readReceipts/readReceipts';
 import type { ReadReceipt } from '@nimbalyst/runtime/readReceipts/readReceipts';
 
@@ -25,6 +25,7 @@ import { docSnapshot, docReceiptsAtom } from '../docUnread';
 import { sharedDocumentsAtom } from '../collabDocuments';
 import { activeWorkspacePathAtom } from '../openProjects';
 import type { SharedDocument } from '../collabDocuments';
+import { markDocViewed } from '../../../hooks/useDocUnread';
 
 const ME = 'member-me';
 const TEAMMATE = 'member-teammate';
@@ -132,6 +133,10 @@ describe('markAllSharedDocsViewed', () => {
     vi.stubGlobal('window', { electronAPI: { invoke: vi.fn(async () => ({ success: true })) } });
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('clears unread without adding docs to recently-opened', async () => {
     freshWorkspace();
     const docs = [doc('a', 1000), doc('b', 2000)];
@@ -147,6 +152,31 @@ describe('markAllSharedDocsViewed', () => {
     expect(store.get(changedSharedDocsAtom)).toEqual([]);
     // …but the user never OPENED these docs, so they must not appear as recent.
     expect(store.get(recentSharedDocsAtom)).toEqual([]);
+  });
+
+  it('keeps all docs read when a delayed pre-click sync has a newer updatedAt', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(3000);
+    freshWorkspace();
+    store.set(sharedDocumentsAtom, [doc('a', 1000)]);
+
+    await markAllSharedDocsViewed('org-1');
+
+    // This update arrived after the click, but it was authored before the click.
+    store.set(sharedDocumentsAtom, [doc('a', 2000)]);
+
+    expect(store.get(changedSharedDocsAtom)).toEqual([]);
+  });
+
+  it('keeps a single doc read when a delayed pre-click sync has a newer updatedAt', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(3000);
+    freshWorkspace();
+    store.set(sharedDocumentsAtom, [doc('a', 1000)]);
+
+    await markDocViewed('a', 'org-1', 1000);
+
+    store.set(sharedDocumentsAtom, [doc('a', 2000)]);
+
+    expect(store.get(changedSharedDocsAtom)).toEqual([]);
   });
 
   it('recordDocOpened surfaces a genuinely-opened doc in recent', () => {

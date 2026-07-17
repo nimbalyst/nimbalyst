@@ -875,6 +875,9 @@ export function registerSettingsHandlers() {
         if (!account) {
             return { success: false, error: 'Account not found' };
         }
+        if (!StytchAuth.setSyncAccount(personalOrgId)) {
+            return { success: false, error: 'Unable to select sync account' };
+        }
 
         const currentConfig = getSessionSyncConfig();
         if (!currentConfig) {
@@ -1262,6 +1265,16 @@ export function registerSettingsHandlers() {
     safeHandle('stytch:get-accounts', () => {
         ensureStytchInitialized();
         return StytchAuth.getAccounts();
+    });
+
+    safeHandle('stytch:get-sync-account', () => {
+        ensureStytchInitialized();
+        return StytchAuth.getSyncAccount();
+    });
+
+    safeHandle('stytch:set-sync-account', (_event, personalOrgId: string) => {
+        ensureStytchInitialized();
+        return { success: StytchAuth.setSyncAccount(personalOrgId) };
     });
 
     // Check if user is authenticated with Stytch

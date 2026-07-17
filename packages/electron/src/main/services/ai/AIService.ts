@@ -29,7 +29,7 @@ import { isModelEnabled } from './modelEnablementFilter';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { parseThinkingMode, resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -88,8 +88,9 @@ import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { applyRemoteReadReceipt } from '../../ipc/ReadReceiptHandlers';
+import { applyRemoteTrackerPersonalState } from '../../ipc/TrackerPersonalStateHandlers';
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
-import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/workspaceDetection';
+import { isFileInWorkspaceOrWorktree } from '../../utils/workspaceDetection';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import * as fs from 'fs';
@@ -591,6 +592,7 @@ export class AIService {
       temperature: (session.providerConfig as any)?.temperature,
       ...(apiKey ? { apiKey } : {}),
       ...(effortLevel && { effortLevel }),
+      thinkingMode: parseThinkingMode((session.metadata as any)?.thinkingMode),
     };
 
     const fullModel = session.model || session.providerConfig?.model;
@@ -1050,6 +1052,12 @@ export class AIService {
       if (syncProvider.onReadReceipt) {
         syncProvider.onReadReceipt((receipt) => {
           void applyRemoteReadReceipt(receipt);
+        });
+      }
+
+      if (syncProvider.onTrackerPersonalState) {
+        syncProvider.onTrackerPersonalState((change) => {
+          void applyRemoteTrackerPersonalState(change);
         });
       }
 
@@ -1963,6 +1971,7 @@ export class AIService {
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }
+        initConfig.thinkingMode = parseThinkingMode((session.metadata as any)?.thinkingMode);
       }
 
       // Pass effort level for OpenAI Codex
@@ -2833,10 +2842,10 @@ export class AIService {
         try {
           const { getQueuedPromptsStore } = await import('../RepositoryManager');
           const queueStore = getQueuedPromptsStore();
-          const { completed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
-          if (completed > 0 || rolledBack > 0) {
+          const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
+          if (completed > 0 || failed > 0 || rolledBack > 0) {
             logger.main.info(
-              `[AIService] cancelRequest: swept session ${sessionId} -- ${completed} delivered marked completed, ${rolledBack} undelivered rolled back`
+              `[AIService] cancelRequest: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
             );
           }
         } catch (sweepErr) {
@@ -2895,10 +2904,10 @@ export class AIService {
       try {
         const { getQueuedPromptsStore } = await import('../RepositoryManager');
         const queueStore = getQueuedPromptsStore();
-        const { completed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
-        if (completed > 0 || rolledBack > 0) {
+        const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
+        if (completed > 0 || failed > 0 || rolledBack > 0) {
           logger.main.info(
-            `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} delivered marked completed, ${rolledBack} undelivered rolled back`
+            `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
           );
         }
       } catch (sweepErr) {
@@ -4073,27 +4082,18 @@ export class AIService {
   private async adoptWorktreeForSession(
     session: SessionData,
     worktreePath: string,
-    event: Electron.IpcMainInvokeEvent
+    _event: Electron.IpcMainInvokeEvent
   ): Promise<void> {
     if (!worktreePath || session.worktreePath === worktreePath) {
       return;
     }
 
-    const worktreeProjectPath = resolveProjectPath(worktreePath);
-    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-    await AISessionsRepository.updateMetadata(session.id, {
-      worktreePath,
-      worktreeProjectPath,
-    });
-
-    session.worktreePath = worktreePath;
-    session.worktreeProjectPath = worktreeProjectPath;
-    await this.hooklessWatcher.ensureForSession(session.id, worktreePath);
-
-    logger.main.info('[AIService] Adopted worktree path for session:', {
+    // A path observed in model output is attribution data, never authority to
+    // retarget a session. Native worktree sessions are born with their binding;
+    // a mis-started session must stop and be recreated rather than adopted.
+    logger.main.warn('[AIService] Ignoring inferred worktree path for session:', {
       sessionId: session.id,
       worktreePath,
-      worktreeProjectPath,
     });
   }
 

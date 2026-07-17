@@ -15,6 +15,7 @@ import {
 import crypto from 'crypto';
 import { getCurrentIdentity } from './TrackerIdentityService';
 import { applyCommentMutation, type CommentMutation } from './tracker/commentMutations';
+import { appendActivity } from './tracker/trackerActivity';
 import { extractItemCustomFields } from './tracker/trackerRowCustomFields';
 import {
   getBacklinks as getRelationshipBacklinks,
@@ -23,7 +24,7 @@ import {
 } from './tracker/trackerRelationshipIndexStore';
 import { propagateInverseRelationships } from './tracker/inverseRelationshipWrites';
 import { applyRelationshipFieldWrites } from './tracker/relationshipFieldWrite';
-import { nestRelationshipFieldsIntoCustomFields } from './tracker/relationshipFieldStorage';
+import { nestRelationshipFieldsIntoCustomFields, readStoredFieldValue } from './tracker/relationshipFieldStorage';
 import { projectionWouldChange } from './tracker/projectionUpdateGuard';
 import { extractFrontmatter, extractCommonFields } from '../utils/frontmatterReader';
 import { VIRTUAL_DOCS, isVirtualPath } from '@nimbalyst/runtime';
@@ -1848,12 +1849,31 @@ export class ElectronDocumentService implements DocumentService {
 
     // Stamp lastModifiedBy with current identity
     // getCurrentIdentity imported statically at top of file
-    data.lastModifiedBy = getCurrentIdentity(row.workspace);
+    const modifierIdentity = getCurrentIdentity(row.workspace);
+    data.lastModifiedBy = modifierIdentity;
+
+    const changes: Record<string, { from: any; to: any }> = {};
 
     // Merge remaining updates into data (skip typeTags since it's a column)
     for (const [key, value] of Object.entries(updates)) {
-      if (key === 'typeTags') continue;
+      if (key === 'typeTags') {
+        changes[key] = { from: row.type_tags, to: value };
+        continue;
+      }
+      changes[key] = { from: readStoredFieldValue(data, key), to: value };
       data[key] = value;
+    }
+
+    for (const [field, change] of Object.entries(changes)) {
+      const action = field === 'status' ? 'status_changed'
+        : field === 'archived' ? 'archived'
+        : field === 'type' ? 'type_changed'
+        : 'updated';
+      appendActivity(data, modifierIdentity, action, {
+        field,
+        oldValue: change.from != null ? String(change.from) : undefined,
+        newValue: change.to != null ? String(change.to) : undefined,
+      });
     }
 
     const writtenFields = new Set(Object.keys(updates).filter((key) => key !== 'typeTags'));
@@ -2140,6 +2160,9 @@ export class ElectronDocumentService implements DocumentService {
       throw new Error(`Tracker item not found: ${itemId}`);
     }
     const contentJson = content != null ? JSON.stringify(content) : null;
+    const data = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+    const modifierIdentity = getCurrentIdentity(row.workspace);
+    appendActivity(data, modifierIdentity, 'updated', { field: 'content' });
     // Phase 4b: every body save bumps `body_version` and writes a row
     // into `tracker_body_cache` keyed by `(item_id, body_version)`. The
     // bumped version travels through the metadata sync envelope so
@@ -2153,11 +2176,12 @@ export class ElectronDocumentService implements DocumentService {
     const updateResult = await database.query<{ body_version: string | number | null }>(
       `UPDATE tracker_items
          SET content = $1,
+             data = $2,
              body_version = COALESCE(body_version, 0) + 1,
              updated = NOW()
-       WHERE id = $2
+       WHERE id = $3
        RETURNING body_version`,
-      [contentJson, row.id]
+      [contentJson, JSON.stringify(data), row.id]
     );
     const newBodyVersion = Number(updateResult.rows[0]?.body_version ?? 0);
 

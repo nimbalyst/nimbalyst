@@ -20,6 +20,7 @@ import type { AgentMessage } from '../ai/server/types';
 import { shouldSyncMessageForSessionRoom, truncateContentForSync } from './syncContentTruncator';
 import { appendSyncClientParams } from './syncClientInfo';
 import { buildSyncedSessionIndexFields } from './sessionIndexEntryFields';
+import { deriveTrackerPersonalStateKey } from './trackerPersonalStateKey';
 import type {
   SyncConfig,
   SyncStatus,
@@ -38,6 +39,8 @@ import type {
   VoiceToolResponse,
   EncryptedSettingsPayload,
   EncryptedReadReceiptPayload,
+  EncryptedTrackerPersonalStatePayload,
+  SyncedTrackerPersonalStateChange,
   SyncedSettings,
   SessionControlMessage,
   EncryptedAttachment,
@@ -297,6 +300,7 @@ type ClientMessage =
   | { type: 'requestMobilePush'; sessionId: string; title: string; body: string; requestingDeviceId?: string }
   | { type: 'settingsSync'; settings: EncryptedSettingsPayload }
   | { type: 'readReceipt'; receipt: EncryptedReadReceiptPayload }
+  | { type: 'trackerPersonalState'; state: EncryptedTrackerPersonalStatePayload }
   | { type: 'fileIndexUpdate'; file: EncryptedFileIndexEntry }
   | { type: 'fileIndexDelete'; docId: string };
 
@@ -346,6 +350,7 @@ type ServerMessage =
   | { type: 'sessionControlBroadcast'; message: { sessionId: string; messageType: string; payload?: Record<string, unknown>; timestamp: number; sentBy: 'desktop' | 'mobile' }; fromConnectionId?: string }
   | { type: 'settingsSyncBroadcast'; settings: EncryptedSettingsPayload; fromConnectionId?: string }
   | { type: 'readReceiptBroadcast'; receipt: EncryptedReadReceiptPayload; fromConnectionId?: string }
+  | { type: 'trackerPersonalStateBroadcast'; state: EncryptedTrackerPersonalStatePayload; fromConnectionId?: string }
   | { type: 'error'; code: string; message: string };
 
 // ============================================================================
@@ -1166,6 +1171,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   // Read-receipt listeners (unread-indicator state arriving from other devices)
   const readReceiptListeners = new Set<(receipt: SyncedReadReceipt) => void>();
+  const trackerPersonalStateListeners = new Set<(change: SyncedTrackerPersonalStateChange) => void>();
 
   // Notify all device status listeners
   function notifyDeviceStatusChange(): void {
@@ -2519,6 +2525,27 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               });
             } catch (err) {
               console.error('[CollabV3] Failed to decrypt read receipt:', err);
+            }
+            break;
+          }
+
+          case 'trackerPersonalStateBroadcast': {
+            const payload = message.state;
+            const ourDeviceId = config.getDeviceInfo?.()?.deviceId ?? config.deviceInfo?.deviceId;
+            if (ourDeviceId && payload.deviceId === ourDeviceId) break;
+            if (!config.encryptionKey) {
+              console.error('[CollabV3] Cannot decrypt tracker personal state - no encryption key');
+              break;
+            }
+            try {
+              const json = await decrypt(payload.encryptedState, payload.stateIv, config.encryptionKey);
+              const change: SyncedTrackerPersonalStateChange = JSON.parse(json);
+              trackerPersonalStateListeners.forEach((callback) => {
+                try { callback(change); }
+                catch (err) { console.error('[CollabV3] Error in tracker personal state listener:', err); }
+              });
+            } catch (err) {
+              console.error('[CollabV3] Failed to decrypt tracker personal state:', err);
             }
             break;
           }
@@ -3940,6 +3967,43 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       return () => {
         readReceiptListeners.delete(callback);
       };
+    },
+
+    async syncTrackerPersonalState(change: SyncedTrackerPersonalStateChange): Promise<void> {
+      if (!indexWs || !indexConnected) {
+        try { await connectToIndex(); }
+        catch (err) {
+          console.error('[CollabV3] Failed to connect before syncing tracker personal state:', err);
+          return;
+        }
+      }
+      if (!indexWs || !indexConnected || indexWs.readyState !== WebSocket.OPEN) return;
+      if (!config.encryptionKey) {
+        console.error('[CollabV3] Cannot sync tracker personal state - no encryption key');
+        return;
+      }
+      try {
+        const deviceId = config.getDeviceInfo?.()?.deviceId ?? config.deviceInfo?.deviceId ?? 'unknown';
+        const stateKey = await deriveTrackerPersonalStateKey(change.scope, change.itemId, change.kind);
+        const { encrypted, iv } = await encrypt(JSON.stringify(change), config.encryptionKey);
+        const version = change.kind === 'favorite' ? change.favoriteUpdatedAt : change.lastOpenedAt;
+        const state: EncryptedTrackerPersonalStatePayload = {
+          stateKey,
+          encryptedState: encrypted,
+          stateIv: iv,
+          deviceId,
+          version,
+          timestamp: Date.now(),
+        };
+        indexWs.send(JSON.stringify({ type: 'trackerPersonalState', state } satisfies ClientMessage));
+      } catch (err) {
+        console.error('[CollabV3] Failed to encrypt/send tracker personal state:', err);
+      }
+    },
+
+    onTrackerPersonalState(callback: (change: SyncedTrackerPersonalStateChange) => void): () => void {
+      trackerPersonalStateListeners.add(callback);
+      return () => trackerPersonalStateListeners.delete(callback);
     },
 
     /** Request the sync server to send a push notification to mobile devices */

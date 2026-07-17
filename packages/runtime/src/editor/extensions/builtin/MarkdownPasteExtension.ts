@@ -23,6 +23,7 @@ import type { Transformer } from '@lexical/markdown';
 
 import type { UploadedEditorAsset } from '../../EditorConfig';
 import { markdownToJSONSync } from '../../markdown';
+import { LINK } from '../../markdown/MarkdownTransformers';
 import { INSERT_IMAGE_COMMAND, type InsertImagePayload } from '../../plugins/ImagesPlugin';
 import { isLikelyMarkdown } from '../../utils/markdownDetection';
 import { dataUrlToImageFile, uploadEditorImageAsset } from './imageAssetUpload';
@@ -38,40 +39,96 @@ interface RewrittenHtmlPasteResult {
   imagePayloads: InsertImagePayload[];
 }
 
-async function rewriteClipboardHtmlImages(
+/**
+ * Resolve the actual bytes for a pasted `<img>`, returning a File ready for
+ * upload or `null` when the image should be left untouched.
+ *
+ * A browser image copy ships the real bytes as a clipboard File while the HTML
+ * references them via an ephemeral src (`webkit-fake-url:`, `blob:`) or the
+ * original remote URL -- Lexical's default handler imports that ephemeral src
+ * and the image dies on refresh (NIM-1646). Preferring the clipboard File makes
+ * the asset durable regardless of the src scheme.
+ */
+async function resolveImageBytes(
+  img: HTMLImageElement,
+  imageFilesQueue: File[],
+  index: number,
+): Promise<File | null> {
+  const src = img.getAttribute('src')?.trim() ?? '';
+
+  if (src.startsWith('data:image/')) {
+    return dataUrlToImageFile(src, `pasted-html-image-${index + 1}`);
+  }
+
+  // Real clipboard bytes trump whatever scheme the HTML used to reference them.
+  if (imageFilesQueue.length > 0) {
+    return imageFilesQueue.shift() ?? null;
+  }
+
+  // A blob: URL with no accompanying File is still fetchable within this
+  // renderer session; grab the bytes before it is revoked.
+  if (src.startsWith('blob:')) {
+    try {
+      const response = await fetch(src);
+      if (response.ok) {
+        const blob = await response.blob();
+        return new File([blob], `pasted-html-image-${index + 1}`, {
+          type: blob.type || 'image/png',
+        });
+      }
+    } catch {
+      // Unresolved -- fall through.
+    }
+  }
+
+  // External http(s) images with no local bytes are intentionally left pointing
+  // at the remote; NIM-1646 keeps the fix narrow (no auto-download of remote
+  // content into E2E-encrypted collab storage).
+  return null;
+}
+
+export async function rewriteClipboardHtmlImages(
   htmlData: string,
   uploadAsset?: (file: File) => Promise<UploadedEditorAsset>,
+  imageFiles: File[] = [],
 ): Promise<RewrittenHtmlPasteResult | null> {
   const parser = new DOMParser();
   const doc = parser.parseFromString(htmlData, 'text/html');
   const images = Array.from(doc.querySelectorAll('img'));
-  const dataImages = images.filter((img) => {
-    const src = img.getAttribute('src')?.trim() ?? '';
-    return src.startsWith('data:image/');
-  });
-
-  if (dataImages.length === 0) {
+  if (images.length === 0) {
     return null;
   }
 
-  const imagePayloads = await Promise.all(dataImages.map(async (img, index) => {
-    const src = img.getAttribute('src')?.trim();
-    if (!src) {
-      throw new Error('Clipboard image is missing a src attribute');
+  const imageFilesQueue = [...imageFiles];
+  const imagePayloads: InsertImagePayload[] = [];
+  let unresolved = 0;
+
+  for (let index = 0; index < images.length; index += 1) {
+    const img = images[index];
+    const file = await resolveImageBytes(img, imageFilesQueue, index);
+    if (!file) {
+      unresolved += 1;
+      continue;
     }
 
-    const file = await dataUrlToImageFile(src, `pasted-html-image-${index + 1}`);
     const uploadedSrc = await uploadEditorImageAsset(file, uploadAsset, {
       allowDataUrlFallback: false,
     });
     img.setAttribute('src', uploadedSrc);
-    return {
+    imagePayloads.push({
       altText: img.getAttribute('alt') || file.name,
       src: uploadedSrc,
-    };
-  }));
+    });
+  }
 
-  const imagesOnly = (doc.body.textContent || '').trim().length === 0;
+  if (imagePayloads.length === 0) {
+    return null;
+  }
+
+  // Only shortcut to direct image insertion when every image was rewritten and
+  // there is no surrounding text; a left-behind external image must ride along
+  // in the HTML so it is not dropped.
+  const imagesOnly = unresolved === 0 && (doc.body.textContent || '').trim().length === 0;
   return {
     html: imagesOnly ? null : doc.body.innerHTML,
     imagePayloads,
@@ -99,19 +156,39 @@ export const MarkdownPasteExtension = defineExtension({
           return false;
         }
 
-        // HTML payload available. Only intercept when the HTML contains
-        // inline clipboard images so they can be rewritten to asset paths.
+        // Clipboard image bytes that accompany the HTML (browser copies ship
+        // both). These are the durable source for a pasted image.
+        const imageFiles = clipboardData.files
+          ? Array.from(clipboardData.files).filter((f) => f.type.startsWith('image/'))
+          : [];
+
+        // HTML payload available. Intercept when the HTML contains images we can
+        // rewrite to durable asset paths: inline data: URLs, fetchable blob:
+        // URLs, or any <img> backed by real clipboard bytes.
         const htmlData = clipboardData.getData('text/html');
         if (htmlData && htmlData.trim().length > 0) {
-          if (!/src\s*=\s*["']data:image\//i.test(htmlData)) {
+          const hasImgTag = /<img[\s/>]/i.test(htmlData);
+          const hasDataImage = /<img[^>]+src\s*=\s*["']data:image\//i.test(htmlData);
+          const hasBlobImage = /<img[^>]+src\s*=\s*["']blob:/i.test(htmlData);
+          const canRewriteImages =
+            hasDataImage || hasBlobImage || (hasImgTag && imageFiles.length > 0);
+          if (!canRewriteImages) {
             return false;
           }
 
           event.preventDefault();
           (async () => {
             try {
-              const rewrittenPaste = await rewriteClipboardHtmlImages(htmlData, config.uploadAsset);
+              const rewrittenPaste = await rewriteClipboardHtmlImages(
+                htmlData,
+                config.uploadAsset,
+                imageFiles,
+              );
               if (!rewrittenPaste) {
+                // Nothing was resolvable (e.g. an ephemeral src we could not
+                // fetch and no clipboard bytes). Preserve the original paste
+                // rather than dropping it -- no worse than the default handler.
+                insertHtmlIntoEditor(editor, htmlData);
                 return;
               }
 
@@ -140,9 +217,15 @@ export const MarkdownPasteExtension = defineExtension({
           return false;
         }
 
-        const isMarkdown = isLikelyMarkdown(plainText, {
-          minConfidenceScore: config.minConfidenceScore,
-        });
+        // A single inline markdown link is intentionally below the general
+        // markdown-confidence threshold, but its syntax is unambiguous and the
+        // LINK transformer must run before RichText's plain-text paste path can
+        // split it into literal brackets plus an auto-linked URL.
+        const isMarkdown =
+          LINK.importRegExp?.test(plainText) === true ||
+          isLikelyMarkdown(plainText, {
+            minConfidenceScore: config.minConfidenceScore,
+          });
         if (!isMarkdown) {
           return false;
         }
