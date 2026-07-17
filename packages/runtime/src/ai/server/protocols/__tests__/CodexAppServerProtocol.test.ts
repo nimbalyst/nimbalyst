@@ -11,8 +11,11 @@ import { PassThrough } from 'node:stream';
 // IMPORTANT: mock `node:child_process` BEFORE importing the protocol so the
 // module under test picks up the stub.
 const spawnMock = vi.fn();
+const taskkillSpawnMock = vi.fn();
 vi.mock('node:child_process', () => {
-  const spawn = (...args: unknown[]) => spawnMock(...args);
+  const spawn = (...args: unknown[]) => args[0] === 'taskkill.exe'
+    ? taskkillSpawnMock(...args)
+    : spawnMock(...args);
   return { spawn, default: { spawn } };
 });
 
@@ -117,6 +120,18 @@ describe('CodexAppServerProtocol', () => {
     child = new FakeChildProcess();
     spawnMock.mockReset();
     spawnMock.mockReturnValue(child);
+    taskkillSpawnMock.mockReset();
+    taskkillSpawnMock.mockImplementation(() => {
+      const taskkill = {
+        once: vi.fn((event: string, callback: (...args: unknown[]) => void) => {
+          if (event === 'exit') queueMicrotask(() => callback(0, null));
+          return taskkill;
+        }),
+        unref: vi.fn(),
+        kill: vi.fn(() => true),
+      };
+      return taskkill;
+    });
   });
 
   afterEach(() => {
@@ -156,6 +171,32 @@ describe('CodexAppServerProtocol', () => {
     expect(args).toEqual(['app-server', '--listen', 'stdio://']);
 
     protocol.cleanupSession(session);
+  });
+
+  it('routes cleanup through the owned process-tree terminator exactly once', async () => {
+    const terminateProcessTree = vi.fn((ownedChild: FakeChildProcess) => {
+      // Keep the root alive until the tree terminator has captured it. Ending
+      // stdin first can make codex exit before taskkill /T can traverse.
+      expect(ownedChild.stdin.writableEnded).toBe(false);
+    });
+    const protocol = new CodexAppServerProtocol({
+      terminateProcessTreeOverride: terminateProcessTree,
+    } as never);
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-cleanup' } } });
+    const session = await sessionPromise;
+
+    protocol.cleanupSession(session);
+    protocol.cleanupSession(session);
+
+    expect(terminateProcessTree).toHaveBeenCalledTimes(1);
+    expect(terminateProcessTree).toHaveBeenCalledWith(child);
+    // The tree terminator owns shutdown now. Closing stdin here would race the
+    // detached taskkill process and could erase its root before traversal.
+    expect(child.stdin.writableEnded).toBe(false);
   });
 
   it('streams agentMessage deltas as text events and emits complete on turn/completed', async () => {

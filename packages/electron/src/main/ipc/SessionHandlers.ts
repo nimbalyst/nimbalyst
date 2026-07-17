@@ -26,6 +26,7 @@ import {
 import { enrichTranscriptMessagesWithToolCallDiffs } from '../services/TranscriptToolCallEnricher';
 import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence';
 import { normalizeSessionPhaseMetadataUpdate } from '../services/session/sessionPhaseTransition';
+import { destroyProviderForArchivedSession } from '../services/ai/archiveSessionProviderLifecycle';
 
 // Initialize session manager
 const sessionManager = new SessionManager();
@@ -350,6 +351,7 @@ export async function registerSessionHandlers() {
 
     // Delete session
     safeHandle('session:delete', async (event, sessionId: string) => {
+        ProviderFactory.destroyProvider(sessionId);
         await sessionManager.deleteSession(sessionId);
     });
 
@@ -422,6 +424,16 @@ export async function registerSessionHandlers() {
             }
 
             await AISessionsRepository.updateMetadata(sessionId, updates);
+
+            if (updates.isArchived === true) {
+                destroyProviderForArchivedSession(
+                    sessionId,
+                    (id) => ProviderFactory.destroyProvider(id),
+                    (id, cleanupError) => {
+                        console.error(`[SessionHandlers] Failed to destroy provider for archived session ${id}:`, cleanupError);
+                    }
+                );
+            }
 
             // Notify renderer windows so session list state stays in sync without waiting for full refresh.
             // This covers model/provider/title updates from SessionTranscript and similar paths.

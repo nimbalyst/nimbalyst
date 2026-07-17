@@ -55,6 +55,11 @@ export interface CodexProtocol extends AgentProtocol {
   setApiKey?(apiKey: string): void;
 }
 
+interface ProtocolSessionIdleScheduler {
+  setTimeout(callback: () => void, timeoutMs: number): ReturnType<typeof setTimeout>;
+  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
+}
+
 interface OpenAICodexProviderDeps {
   protocol?: CodexProtocol;
   permissionService?: ToolPermissionService;
@@ -63,6 +68,10 @@ interface OpenAICodexProviderDeps {
   // Legacy: for existing tests that mock the SDK loader
   loadSdkModule?: () => Promise<CodexSdkModuleLike>;
   resolveCodexPathOverride?: () => string | undefined;
+  /** Override the bounded app-server retention window in lifecycle tests. */
+  idleProtocolSessionTimeoutMs?: number;
+  /** Injectable scheduler keeps lifecycle tests deterministic without global fake timers. */
+  idleProtocolSessionScheduler?: ProtocolSessionIdleScheduler;
 }
 
 interface OpenAICodexModelDiscoveryDeps {
@@ -84,6 +93,7 @@ const PERSISTED_APP_SERVER_NOTIFICATION_METHODS = new Set([
 
 export class OpenAICodexProvider extends BaseAgentProvider {
   static readonly DEFAULT_MODEL = DEFAULT_MODELS['openai-codex'];
+  private static readonly APP_SERVER_IDLE_TIMEOUT_MS = 60_000;
   private static readonly CODEX_EXECUTION_PATTERN = 'OpenAICodex(agent-run:*)';
   private static readonly SESSION_NAMING_REMINDER_PROMPT =
     '<SYSTEM_REMINDER>Call the session metadata tool now before continuing. ' +
@@ -185,6 +195,13 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    * `liveProtocolSessions` is in-memory only.
    */
   private readonly liveProtocolSessions = new Map<string, ProtocolSession>();
+  private readonly activeProtocolSessionCounts = new Map<string, number>();
+  private readonly protocolSessionIdleTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly idleProtocolSessionTimeoutMs: number;
+  private readonly idleProtocolSessionScheduler: ProtocolSessionIdleScheduler;
 
   // Analytics initialization data, captured during first sendMessage call
   private _initData: {
@@ -284,6 +301,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   constructor(config?: { apiKey?: string }, deps?: OpenAICodexProviderDeps) {
     super();
     const apiKey = config?.apiKey || '';
+    this.idleProtocolSessionTimeoutMs = deps?.idleProtocolSessionTimeoutMs
+      ?? OpenAICodexProvider.APP_SERVER_IDLE_TIMEOUT_MS;
+    this.idleProtocolSessionScheduler = deps?.idleProtocolSessionScheduler ?? {
+      setTimeout: (callback, timeoutMs) => setTimeout(callback, timeoutMs),
+      clearTimeout: (handle) => clearTimeout(handle),
+    };
 
     // Resolve transport: explicit dep > registered resolver > SDK-specific test
     // deps > default 'app-server'.
@@ -946,6 +969,14 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     this.abortController = abortController;
 
     let fullText = '';
+    if (sessionId) {
+      // The protocol turn owns the child from this point onward. Keeping the
+      // prior idle deadline through prompt preparation means an early setup
+      // error cannot accidentally remove the only eviction deadline.
+      this.cancelProtocolSessionIdleTimer(sessionId);
+      const activeCount = this.activeProtocolSessionCounts.get(sessionId) ?? 0;
+      this.activeProtocolSessionCounts.set(sessionId, activeCount + 1);
+    }
 
     try {
       // Check permission using ToolPermissionService
@@ -1333,6 +1364,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       if (this.abortController === abortController) {
         this.abortController = null;
       }
+      if (sessionId) {
+        const remainingTurns = Math.max(
+          0,
+          (this.activeProtocolSessionCounts.get(sessionId) ?? 1) - 1,
+        );
+        if (remainingTurns > 0) {
+          this.activeProtocolSessionCounts.set(sessionId, remainingTurns);
+        } else {
+          this.activeProtocolSessionCounts.delete(sessionId);
+          this.armProtocolSessionIdleTimer(sessionId);
+        }
+      }
     }
   }
 
@@ -1342,11 +1385,37 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    */
   private evictLiveProtocolSession(sessionId: string | undefined): void {
     if (!sessionId) return;
+    this.cancelProtocolSessionIdleTimer(sessionId);
     const cached = this.liveProtocolSessions.get(sessionId);
     if (!cached) return;
     this.liveProtocolSessions.delete(sessionId);
     try { this.protocol.cleanupSession(cached); }
     catch (err) { console.warn('[CODEX] protocol.cleanupSession threw during eviction:', err); }
+  }
+
+  private cancelProtocolSessionIdleTimer(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    const timer = this.protocolSessionIdleTimers.get(sessionId);
+    if (!timer) return;
+    this.protocolSessionIdleTimers.delete(sessionId);
+    this.idleProtocolSessionScheduler.clearTimeout(timer);
+  }
+
+  private armProtocolSessionIdleTimer(sessionId: string): void {
+    this.cancelProtocolSessionIdleTimer(sessionId);
+    if (this.transport !== 'app-server') return;
+    if (!this.liveProtocolSessions.has(sessionId)) return;
+    if (!Number.isFinite(this.idleProtocolSessionTimeoutMs) || this.idleProtocolSessionTimeoutMs < 0) return;
+
+    const timer = this.idleProtocolSessionScheduler.setTimeout(() => {
+      this.protocolSessionIdleTimers.delete(sessionId);
+      if ((this.activeProtocolSessionCounts.get(sessionId) ?? 0) > 0) return;
+      // evictLiveProtocolSession intentionally preserves ProviderSessionManager's
+      // persisted thread id so a later turn resumes instead of starting over.
+      this.evictLiveProtocolSession(sessionId);
+    }, this.idleProtocolSessionTimeoutMs);
+    this.protocolSessionIdleTimers.set(sessionId, timer);
+    (timer as { unref?: () => void }).unref?.();
   }
 
   /**
@@ -1715,12 +1784,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    * Call this when a session is deleted or no longer needed.
    */
   cleanupSession(sessionId: string): void {
+    this.activeProtocolSessionCounts.delete(sessionId);
     this.evictLiveProtocolSession(sessionId);
     this.sessions.deleteSession(sessionId);
     this.appServerNotificationDeduper.delete(sessionId);
   }
 
   destroy(): void {
+    for (const timer of this.protocolSessionIdleTimers.values()) {
+      this.idleProtocolSessionScheduler.clearTimeout(timer);
+    }
+    this.protocolSessionIdleTimers.clear();
+    this.activeProtocolSessionCounts.clear();
     // Tear down every live ProtocolSession so we don't orphan codex child
     // processes when the provider is replaced (e.g., on API key rotation).
     for (const session of this.liveProtocolSessions.values()) {

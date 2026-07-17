@@ -44,6 +44,7 @@ import {
   getCodexVendorPathEntries,
   resolveCodexBinaryPath,
 } from './codexAppServer/codexAppServerBinary';
+import { terminateOwnedProcessTree } from './processTreeTermination';
 import type {
   AnyItem,
   ApprovalResponse,
@@ -108,6 +109,8 @@ export interface CodexAppServerProtocolOptions {
   host?: CodexAppServerHostBindings;
   /** Optional client info to send in initialize. */
   clientInfo?: { name: string; version: string };
+  /** Injectable exact-tree terminator for deterministic lifecycle tests. */
+  terminateProcessTreeOverride?: (child: ChildProcessWithoutNullStreams) => void;
 }
 
 interface AppServerSessionRaw {
@@ -122,6 +125,8 @@ interface AppServerSessionRaw {
   activeTurnId: string | null;
   /** stderr buffer for diagnostic surface on failure. */
   stderrTail: string[];
+  /** Prevent duplicate cleanup from re-targeting a PID after it exits. */
+  cleanupStarted: boolean;
 }
 
 function previewForLog(value: string | undefined, max = 300): string | undefined {
@@ -186,12 +191,15 @@ export class CodexAppServerProtocol implements AgentProtocol {
   private readonly resolveCodexPathOverride: () => string | undefined;
   private readonly host: CodexAppServerHostBindings;
   private readonly clientInfo: { name: string; version: string };
+  private readonly terminateProcessTree: (child: ChildProcessWithoutNullStreams) => void;
 
   constructor(options: CodexAppServerProtocolOptions = {}) {
     this.apiKey = options.apiKey ?? '';
     this.resolveCodexPathOverride = options.resolveCodexPathOverride ?? (() => undefined);
     this.host = options.host ?? {};
     this.clientInfo = options.clientInfo ?? { name: 'nimbalyst', version: '0.0.0' };
+    this.terminateProcessTree = options.terminateProcessTreeOverride
+      ?? ((child) => terminateOwnedProcessTree(child));
   }
 
   setApiKey(apiKey: string): void {
@@ -417,11 +425,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
   }
 
   private killChild(raw: AppServerSessionRaw): void {
+    if (raw.cleanupStarted) return;
+    raw.cleanupStarted = true;
     try { raw.client.close('cleanup'); } catch { /* noop */ }
-    if (!raw.child.killed) {
-      try { raw.child.stdin?.end(); } catch { /* noop */ }
-      try { raw.child.kill(); } catch { /* noop */ }
-    }
+    this.terminateProcessTree(raw.child);
   }
 
   private async spawnAndInit(options: SessionOptions): Promise<AppServerSessionRaw> {
@@ -464,7 +471,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       client.notify('initialized', {});
     } catch (err) {
       try { client.close('init failed'); } catch { /* noop */ }
-      try { child.kill(); } catch { /* noop */ }
+      this.terminateProcessTree(child);
       const tail = stderrTail.join('').slice(-2000);
       const rawError = `${err instanceof Error ? err.message : String(err)}${tail ? `\nstderr tail: ${tail}` : ''}`;
       const configHint = describeCodexConfigError(rawError);
@@ -479,6 +486,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       dynamicTools: this.extractDynamicTools(options),
       activeTurnId: null,
       stderrTail,
+      cleanupStarted: false,
     };
   }
 
