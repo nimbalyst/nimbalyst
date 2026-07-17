@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Git operations now work when the opened folder is a subfolder of a repository: commits, status, diffs, and commit detection resolve the repository root automatically, and AI agents can access repo-level files (#124)
 
 ### Removed
 <!-- Removed features go here -->
