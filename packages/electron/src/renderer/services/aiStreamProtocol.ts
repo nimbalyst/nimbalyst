@@ -30,6 +30,14 @@ export interface StreamingEdit {
 /**
  * Detects if an AI response contains streaming markers
  */
+// A STREAM_EDIT / @stream-to-editor directive is emitted at the start of a
+// streamed response. The caller invokes detectStreamingIntent on the full,
+// growing accumulated content on every stream chunk, so scanning the whole
+// string each time is O(n^2) over a response and froze the renderer on long
+// turns. Only the head can contain the directive, so scan that; the (rare)
+// clean-content slice below is still derived from the full content.
+const STREAM_MARKER_SCAN_LIMIT = 8192;
+
 export function detectStreamingIntent(content: string): {
   isStreaming: boolean;
   streamConfig?: {
@@ -38,18 +46,23 @@ export function detectStreamingIntent(content: string): {
   };
   cleanContent: string;
 } {
+  const head =
+    content.length > STREAM_MARKER_SCAN_LIMIT
+      ? content.slice(0, STREAM_MARKER_SCAN_LIMIT)
+      : content;
+
   logger.protocol.info('Detecting streaming intent in content:', {
     length: content.length,
-    first100: content.substring(0, 100),
-    startsWithHTML: content.startsWith('<!--'),
-    startsWithAt: content.startsWith('@'),
-    hasStreamEdit: content.includes('STREAM_EDIT'),
-    hasStreamToEditor: content.includes('stream-to-editor')
+    first100: head.substring(0, 100),
+    startsWithHTML: head.startsWith('<!--'),
+    startsWithAt: head.startsWith('@'),
+    hasStreamEdit: head.includes('STREAM_EDIT'),
+    hasStreamToEditor: head.includes('stream-to-editor')
   });
 
   // Look for streaming directive anywhere in the response (not just at start)
   const streamingPattern = /<!--\s*STREAM_EDIT:\s*(.+?)\s*-->/;
-  const match = content.match(streamingPattern);
+  const match = head.match(streamingPattern);
 
   if (match) {
     logger.protocol.info('Found STREAM_EDIT marker:', match[0]);
@@ -74,7 +87,7 @@ export function detectStreamingIntent(content: string): {
 
   // Alternative: Check for MCP-style directive
   const mcpPattern = /^@stream-to-editor\s+(.+?)\n/;
-  const mcpMatch = content.match(mcpPattern);
+  const mcpMatch = head.match(mcpPattern);
 
   if (mcpMatch) {
     logger.protocol.info('Found @stream-to-editor marker:', mcpMatch[0]);
@@ -91,7 +104,7 @@ export function detectStreamingIntent(content: string): {
     };
   }
 
-  logger.protocol.info('No streaming markers found', content);
+  logger.protocol.info('No streaming markers found', { length: content.length });
   return {
     isStreaming: false,
     cleanContent: content
