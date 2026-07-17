@@ -135,7 +135,6 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | `ai_diff_rejected` | `DiffApprovalBar.tsx:380, 450`<br/>`TabEditor.tsx:1442` | User rejects diff or all diffs (markdown/code/mockup) | `rejectType` (partial/all)<br/>`replacementCount`<br/>`fileType` (mockup, optional) | v0.45.25 (2025-11-14) |  |
 | `session_reparented` | `SessionListItem.tsx:290` | User drags session to change parent (workstream reassignment) | `had_previous_parent`<br/>`workspace_path` | (pending release) |  |
 | `ai_effort_level_changed` | `SessionTranscript.tsx` | User changes effort level for Opus 4.6 adaptive reasoning | `effort_level` (low/medium/high/max)<br/>`previous_level` (low/medium/high/max) | (pending release) |  |
-| `ai_thinking_mode_changed` | `SessionTranscript.tsx` | User changes Claude Agent extended thinking mode | `thinking_mode` (enabled/disabled)<br/>`previous_mode` (enabled/disabled)<br/>`model` | (pending release) |  |
 | `ai_mode_changed` | `SessionTranscript.tsx` | User switches session mode via ModeTag or Shift+Tab | `from` (planning/agent)<br/>`to` (planning/agent)<br/>`provider` (string)<br/>`session_id` (string) | (pending release) | Auto mode is no longer user-selectable; it activates transparently via the "Allow All" trust level for supported providers |
 | `exit_plan_mode_response` | `SessionTranscript.tsx:923, 943, 974, 1060` | User responds to plan completion confirmation | `decision` (approved/denied/start_new_session/cancelled)<br/>`has_feedback` (boolean, for denied only)<br/>`is_worktree` (boolean, for start_new_session only) | (pending release) |  |
 | `ask_user_question_answered` | `SessionTranscript.tsx:1081` | User answers an AskUserQuestion prompt from Claude | `numQuestions` (number of questions answered) | (pending release) |  |
@@ -400,14 +399,14 @@ Events from the iOS companion app. These events share the same PostHog project a
 
 - **Total Events**: 118 unique event names
 - **Main Process Events**: 57 (via AnalyticsService)
-- **Renderer Process Events**: 54 (via usePostHog hook)
+- **Renderer Process Events**: 53 (via usePostHog hook)
 - **Mobile Events**: 7 (via Capacitor AnalyticsService)
 - **File Operations**: 7 events
 - **Workspace Operations**: 4 events
 - **Navigation & Editor Mode**: 4 events
 - **Session Kanban Board**: 6 events
 - **File History**: 2 events
-- **AI-Related**: 24 events
+- **AI-Related**: 23 events
 - **Blitz Mode**: 1 event
 - **Session/File Sharing**: 2 events
 - **Session Export**: 1 event

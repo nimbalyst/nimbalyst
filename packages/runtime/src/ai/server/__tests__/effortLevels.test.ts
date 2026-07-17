@@ -1,10 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import {
-  DEFAULT_EFFORT_LEVEL,
-  DEFAULT_THINKING_MODE,
-  parseThinkingMode,
-  resolveEffortLevel,
-} from '../effortLevels';
+import { describe, it, expect } from 'vitest';
+import { resolveEffortLevel, DEFAULT_EFFORT_LEVEL } from '../effortLevels';
 
 describe('resolveEffortLevel', () => {
   it('uses the explicit per-session effort when set', () => {
@@ -27,24 +22,5 @@ describe('resolveEffortLevel', () => {
 
   it('coerces an invalid stored session value to the default level', () => {
     expect(resolveEffortLevel('bogus', 'max')).toBe(DEFAULT_EFFORT_LEVEL);
-  });
-});
-
-describe('thinking mode parsing', () => {
-  it('defaults to enabled (preserving the SDK adaptive-thinking default)', () => {
-    expect(DEFAULT_THINKING_MODE).toBe('enabled');
-    expect(parseThinkingMode(undefined)).toBe('enabled');
-    expect(parseThinkingMode(null)).toBe('enabled');
-  });
-
-  it('accepts enabled and disabled modes', () => {
-    expect(parseThinkingMode('enabled')).toBe('enabled');
-    expect(parseThinkingMode('disabled')).toBe('disabled');
-  });
-
-  it('falls back to the default for unknown values', () => {
-    expect(parseThinkingMode('on')).toBe('enabled');
-    expect(parseThinkingMode('off')).toBe('enabled');
-    expect(parseThinkingMode('')).toBe('enabled');
   });
 });

@@ -6,11 +6,9 @@ import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../../utils/modelUtils';
 interface EffortLevelSelectorProps {
   level: EffortLevel;
   onLevelChange: (level: EffortLevel) => void;
-  disabled?: boolean;
-  disabledTitle?: string;
 }
 
-export function EffortLevelSelector({ level, onLevelChange, disabled = false, disabledTitle }: EffortLevelSelectorProps) {
+export function EffortLevelSelector({ level, onLevelChange }: EffortLevelSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -34,25 +32,15 @@ export function EffortLevelSelector({ level, onLevelChange, disabled = false, di
     };
   }, [isOpen]);
 
-  useEffect(() => {
-    if (disabled) {
-      setIsOpen(false);
-    }
-  }, [disabled]);
-
   const currentLevel = EFFORT_LEVELS.find(l => l.key === level) ?? EFFORT_LEVELS.find(l => l.key === DEFAULT_EFFORT_LEVEL)!;
 
   return (
     <div className="relative inline-block" ref={dropdownRef}>
       <button
         data-testid="effort-level-selector"
-        className={`flex items-center gap-1 px-2 py-[3px] rounded-xl text-[11px] font-medium transition-all duration-200 outline-none whitespace-nowrap bg-[var(--nim-bg-secondary)] text-[var(--nim-text-muted)] border border-[var(--nim-border)] ${disabled ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)]'}`}
-        onClick={() => {
-          if (!disabled) setIsOpen(!isOpen);
-        }}
+        className="flex items-center gap-1 px-2 py-[3px] rounded-xl text-[11px] font-medium cursor-pointer transition-all duration-200 outline-none whitespace-nowrap bg-[var(--nim-bg-secondary)] text-[var(--nim-text-muted)] border border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)]"
+        onClick={() => setIsOpen(!isOpen)}
         aria-label={`Effort level: ${currentLevel.label}`}
-        disabled={disabled}
-        title={disabled ? disabledTitle : undefined}
       >
         <MaterialSymbol icon="psychology" size={12} />
         <span>{currentLevel.label}</span>

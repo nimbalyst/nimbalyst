@@ -752,8 +752,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             mcpServers: options.mcpServers ? Object.keys(options.mcpServers) : [],
             allowedTools: options.allowedTools,
             disallowedTools: options.disallowedTools,
-            permissionMode: options.permissionMode,
-            thinking: options.thinking
+            permissionMode: options.permissionMode
           }
         }), metadataToLog, hideMessages, undefined, true /* searchable */);
       }

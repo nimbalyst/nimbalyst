@@ -1,2 +1,234 @@
+# Agent mistake log (local only)
+agent-mistakes.md
+
+# Dependencies
 node_modules/
+.pnpm-store/
+.yarn/
+.npm/
+
+# Build outputs
 dist/
+#build/
+esm/build/
+split/build/
+out/
+out2/
+release/
+packages/electron/release/
+
+# Development
+.vite/
+.cache/
+.temp/
+.tmp/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+.nyc_output/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional stylelint cache
+.stylelintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# parcel-bundler cache (https://parceljs.org/)
+.parcel-cache/
+
+# Next.js build output
+.next/
+
+# Nuxt.js build / generate output
+.nuxt/
+
+# Storybook build outputs
+.out
+.storybook-out
+
+# Temporary folders
+tmp/
+temp/
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Jest coverage
+coverage/
+
+# Local Netlify folder
+.netlify/
+
+# Vite
+.vite/
+
+# Rollup
+.rollup.cache/
+
+# SvelteKit
+.svelte-kit/
+
+# Workspace files
+*.code-workspace
+
+# Release smoke-test artifacts (unpacked Electron builds left behind by release scripts)
+release-smoke-*/
+
+# Local history
+.history/
+
+# Prettier
+.prettierignore
+
+# ESLint
+.eslintignore
+
+# Turbo
+.turbo/
+# Bundle analysis artifacts
+bundle-stats.html
+bundle-analysis.json
+
+# Temporary test files
+**/temptests/
+
+# Git worktrees
+worktrees/
+
+.nimbalyst/
+nimbalyst-local/
+
+# Nimbalyst-generated agent/skill/plugin compatibility shims (regenerated on launch)
+.agents/skills/.nimbalyst-generated/
+.claude/plugins/.nimbalyst-generated/
+
+# Personal/agent plan documents (Nimbalyst planning feature stores these at
+# workspace root; they're personal working files, not source).
+plans/
+
+# Stray patch files (working snapshots, never source)
+*.patch
+
+# MCP config (may contain personal API tokens)
+.mcp.json
+
+# Database recovery dumps (one-off triage artifacts, never publish)
+recovered-data/
+recovered-data-recent/
+
+# iOS build artifacts
+*.ipa
+
+# E2E test output (screenshots, videos, etc.)
+e2e_test_output/
+e2e-screenshots/
+test-results/
+.superloop/
+
+# Generated marketing assets
+packages/electron/marketing/output/
+packages/electron/marketing/screenshots/
+packages/electron/marketing/videos/
+
+# Test screenshots
+packages/electron/e2e/permissions/screenshots/
+packages/electron/e2e/smoke/screenshots/
+packages/electron/e2e/walkthroughs/screenshots/
+packages/ios/screenshots/
+
+# Auto-generated platform artifacts
+packages/android/app/schemas/
+packages/marketplace/.wrangler/
+
+# Scratch/working directories at repo root (not source)
+/marketing/
+/e2e/
+/tests/
+/test-offscreen-editors/
+
+# Firebase config (commit only after auditing Security Rules)
+packages/android/app/google-services.json
+
+# Android signing keystores — never commit. Secrets come from 1Password via op run.
+*.jks
+*.keystore
+nimbalyst-android-upload.jks
+# op-run env template with resolved secrets (the op:// template itself is safe to commit)
+.env.android-signing.local
+
+# Generated bundle / packaged extension artifact
+packages/electron/index.js
+packages/browser-extension/nimbalyst-web-clipper.zip
+# Built-in extensions ship via build:extensions + electron-builder, not as committed .nimext blobs
+packages/electron/resources/bundled-extensions/*.nimext
+
+# accidentally-tracked SQLite caches
+packages/electron/data/*.db
+packages/electron/memories.db
+
+# Local RAG/memory-tool artifacts (SQLite stores + caches created in the cwd)
+memories.db
+.rag-cache/

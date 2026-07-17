@@ -15,7 +15,7 @@ All insights on this dashboard MUST query from the `WEEKLY_USERS_BASE_VIEW` mate
 - `ghost` -- zero file saves, zero file creates, <=2 editor opens, <=1 workspace opens, zero searches, zero terminal events
 
 **AI events used for classification (`has_ai` flag):**
-- Desktop: `ai_message_sent`, `ai_message_queued`, `ai_response_received`, `ai_stream_interrupted`, `ai_request_failed`, `ai_session_resumed`, `create_ai_session`, `cancel_ai_request`, `claude_code_session_started`, `codex_session_started`, `blitz_created`, `ai_diff_accepted`, `ai_diff_rejected`, `tool_permission_responded`, `ask_user_question_answered`, `ask_user_question_cancelled`, `exit_plan_mode_response`, `git_commit_proposal_response`, `ai_effort_level_changed`, `ai_thinking_mode_changed`
+- Desktop: `ai_message_sent`, `ai_message_queued`, `ai_response_received`, `ai_stream_interrupted`, `ai_request_failed`, `ai_session_resumed`, `create_ai_session`, `cancel_ai_request`, `claude_code_session_started`, `codex_session_started`, `blitz_created`, `ai_diff_accepted`, `ai_diff_rejected`, `tool_permission_responded`, `ask_user_question_answered`, `ask_user_question_cancelled`, `exit_plan_mode_response`, `git_commit_proposal_response`, `ai_effort_level_changed`
 - Voice: `voice_session_started`, `voice_prompt_submitted`
 - Mobile: `mobile_ai_message_sent`, `mobile_session_created`, `mobile_ask_user_question_response`, `mobile_tool_permission_response`, `mobile_exit_plan_mode_response`, `mobile_git_commit_response`
 
