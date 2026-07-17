@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Session rows now separate workflow phase from one prioritized operational state, consistently showing input needed, errors, active or background work, queued prompts, unread results, and wakeups across navigation, groups, Quick Open, tabs, headers, and Kanban.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

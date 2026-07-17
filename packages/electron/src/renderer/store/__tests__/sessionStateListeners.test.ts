@@ -22,11 +22,15 @@ import {
   sessionRegistryAtom,
   sessionChildrenAtom,
   sessionLastActivityAtom,
+  sessionIndicatorStateAtom,
+  sessionUnreadAtom,
+  markSessionReadAtom,
   type SessionMeta,
 } from '../atoms/sessions';
 import {
   globalSessionTurnActivityAtom,
 } from '../atoms/sessionActivity';
+import { sessionErrorAtom } from '../atoms/sessionTranscript';
 
 function seedRegistry(entries: Array<Partial<SessionMeta> & { id: string }>): void {
   const map = new Map(store.get(sessionRegistryAtom));
@@ -176,6 +180,91 @@ describe('AskUserQuestion prompt lifecycle (NIM-850)', () => {
   });
 });
 
+describe('durable prompt identity lifecycle', () => {
+  it('keeps the session actionable until both simultaneous prompts resolve', () => {
+    const sid = uniqueSessionId('two-prompts');
+    handlers.get('ai:askUserQuestion')!({
+      sessionId: sid,
+      questionId: 'question-1',
+      questions: [],
+    });
+    handlers.get('ai:toolPermission')!({
+      sessionId: sid,
+      requestId: 'permission-1',
+      toolName: 'Edit',
+    });
+
+    expect(store.get(sessionPendingPromptsAtom(sid))).toHaveLength(2);
+    expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(true);
+
+    handlers.get('ai:askUserQuestionAnswered')!({
+      sessionId: sid,
+      questionId: 'question-1',
+    });
+
+    expect(store.get(sessionPendingPromptsAtom(sid))).toHaveLength(1);
+    expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(true);
+
+    handlers.get('ai:toolPermissionResolved')!({
+      sessionId: sid,
+      requestId: 'permission-1',
+    });
+
+    expect(store.get(sessionPendingPromptsAtom(sid))).toHaveLength(0);
+    expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(false);
+  });
+
+  it('deduplicates replayed prompt-open events by durable identity', () => {
+    const sid = uniqueSessionId('duplicate-prompt');
+    const open = handlers.get('ai:askUserQuestion')!;
+    open({ sessionId: sid, questionId: 'question-1', questions: [] });
+    open({ sessionId: sid, questionId: 'question-1', questions: [] });
+
+    expect(store.get(sessionPendingPromptsAtom(sid))).toHaveLength(1);
+    expect(store.get(sessionIndicatorStateAtom(sid)).kind).toBe('needs-input');
+  });
+});
+
+describe('error retry lifecycle', () => {
+  it('clears the previous turn error when a new turn starts', () => {
+    const sid = uniqueSessionId('error-retry');
+    store.set(sessionErrorAtom(sid), { message: 'Previous provider failure' });
+
+    handlers.get('ai-session-state:event')!({
+      type: 'session:started',
+      sessionId: sid,
+      workspacePath: WS,
+    });
+
+    expect(store.get(sessionErrorAtom(sid))).toBeNull();
+  });
+
+  it('clears the error on explicit transcript acknowledgment', async () => {
+    const sid = uniqueSessionId('error-ack');
+    store.set(sessionErrorAtom(sid), { message: 'Review me' });
+    const { clearSessionError } = await import('../listeners/sessionTranscriptListeners');
+    clearSessionError(sid);
+    expect(store.get(sessionErrorAtom(sid))).toBeNull();
+  });
+});
+
+describe('operational state lifecycle', () => {
+  it('keeps unread output working until terminal clear, then ready until read', () => {
+    const sid = uniqueSessionId('working-ready-read');
+    const lifecycle = handlers.get('ai-session-state:event');
+    store.set(sessionUnreadAtom(sid), true);
+
+    lifecycle!({ type: 'session:streaming', sessionId: sid, workspacePath: WS });
+    expect(store.get(sessionIndicatorStateAtom(sid)).kind).toBe('working-self');
+
+    lifecycle!({ type: 'session:completed', sessionId: sid, workspacePath: WS });
+    expect(store.get(sessionIndicatorStateAtom(sid))).toEqual({ kind: 'ready' });
+
+    store.set(markSessionReadAtom, sid);
+    expect(store.get(sessionIndicatorStateAtom(sid))).toEqual({ kind: 'idle' });
+  });
+});
+
 describe.each([
   ['session:completed'],
   ['session:error'],
@@ -184,13 +273,23 @@ describe.each([
   it('clears both pending and processing atoms', () => {
     const sid = uniqueSessionId(`terminal-${type}`);
     store.set(sessionHasPendingInteractivePromptAtom(sid), true);
+    store.set(sessionPendingPromptsAtom(sid), [{
+      id: 'prompt-1',
+      sessionId: sid,
+      promptType: 'ask_user_question_request',
+      promptId: 'prompt-1',
+      data: {},
+      createdAt: 1,
+    }]);
     store.set(sessionProcessingAtom(sid), true);
 
     const handler = handlers.get('ai-session-state:event');
     handler!({ type, sessionId: sid, workspacePath: WS });
 
     expect(store.get(sessionHasPendingInteractivePromptAtom(sid))).toBe(false);
+    expect(store.get(sessionPendingPromptsAtom(sid))).toEqual([]);
     expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    expect(store.get(sessionIndicatorStateAtom(sid)).kind).not.toBe('needs-input');
   });
 
   // Regression coverage for nimbalyst#116. arcenik86 reported the "Thinking…"
@@ -522,7 +621,7 @@ describe('processing reconcile on terminal events', () => {
   it('reconcile heals a stuck child that is in sessionChildrenAtom but NOT the registry', async () => {
     vi.useFakeTimers();
     try {
-      // The meta header (sessionOrChildProcessingAtom) reads children from
+      // The meta header's canonical indicator inputs read children from
       // sessionChildrenAtom too. A meta-agent child can sit there while not being
       // a registry key (child-added patches it; archived children drop from the
       // list). The reconcile must still heal it, or the header stays stuck.

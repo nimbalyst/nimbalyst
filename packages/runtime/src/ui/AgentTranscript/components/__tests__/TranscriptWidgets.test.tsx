@@ -1753,7 +1753,7 @@ describe('UpdateSessionMetaWidget', () => {
     expect(screen.getByText('Dark mode implementation')).toBeDefined();
     expect(screen.getByText('set')).toBeDefined();
     // Phase badge
-    expect(screen.getByText('implementing')).toBeDefined();
+    expect(screen.getByText('Implementing')).toBeDefined();
     // Tags with added prefix
     expect(screen.getByText(/feature/)).toBeDefined();
     expect(screen.getByText(/ui/)).toBeDefined();
@@ -1784,10 +1784,40 @@ describe('UpdateSessionMetaWidget', () => {
       </Wrapper>
     );
     // Both phases should appear
-    expect(screen.getByText('planning')).toBeDefined();
-    expect(screen.getByText('implementing')).toBeDefined();
+    const planning = screen.getByText('Planning');
+    const implementing = screen.getByText('Implementing');
+    expect(planning).toBeDefined();
+    expect(implementing).toBeDefined();
+    expect(planning.getAttribute('style')).toContain('--nim-session-phase-planning');
+    expect(implementing.getAttribute('style')).toContain('--nim-session-phase-implementing');
     // Arrow between them
     expect(container.textContent).toContain('\u2192');
+  });
+
+  it('uses the canonical validating color in phase transitions', () => {
+    const result: StructuredSessionMetaResult = {
+      summary: 'Updated phase',
+      before: { name: 'My session', tags: [], phase: 'implementing' },
+      after: { name: 'My session', tags: [], phase: 'validating' },
+    };
+    const message = makeToolMessage(
+      'update_session_meta',
+      { phase: 'validating' },
+      JSON.stringify(result),
+    );
+    render(
+      <Wrapper>
+        <UpdateSessionMetaWidget
+          message={message}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="meta-validating"
+        />
+      </Wrapper>,
+    );
+    expect(screen.getByText('Validating').getAttribute('style')).toContain(
+      '--nim-session-phase-validating',
+    );
   });
 
   it('renders tag additions and removals', () => {
@@ -1949,7 +1979,7 @@ describe('UpdateSessionMetaWidget', () => {
     );
     expect(screen.getByText('Bug fix')).toBeDefined();
     expect(screen.getByText('#bug-fix')).toBeDefined();
-    expect(screen.getByText('implementing')).toBeDefined();
+    expect(screen.getByText('Implementing')).toBeDefined();
     // Should show the "set" badge since name changed from null
     expect(container.textContent).toContain('set');
   });

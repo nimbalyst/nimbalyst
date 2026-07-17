@@ -19,8 +19,7 @@ import { AgentSessionPanel } from './AgentSessionPanel';
 import {
   sessionTitleAtom,
   sessionProviderAtom,
-  sessionProcessingAtom,
-  sessionUnreadAtom,
+  sessionIndicatorStateAtom,
   createChildSessionAtom,
 } from '../../store';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
@@ -28,6 +27,7 @@ import { convertToWorkstreamAtom } from '../../store/atoms/sessions';
 import { workstreamHasChildrenAtom } from '../../store/atoms/workstreamState';
 import { SessionContextMenu } from '../AgenticCoding/SessionContextMenu';
 import type { SerializableDocumentContext } from '../../hooks/useDocumentContext';
+import { SessionOperationalIndicator, getSessionOperationalLabel } from '../AgenticCoding/SessionOperationalIndicator';
 
 export interface WorkstreamSessionTabsProps {
   workspacePath: string;
@@ -61,8 +61,9 @@ const SessionTab: React.FC<{
 }> = React.memo(({ sessionId, isActive, onClick, onArchive, onUnarchive, onRename }) => {
   const title = useAtomValue(sessionTitleAtom(sessionId));
   const provider = useAtomValue(sessionProviderAtom(sessionId));
-  const isProcessing = useAtomValue(sessionProcessingAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
+  const indicatorState = useAtomValue(sessionIndicatorStateAtom(sessionId));
+  const hasUnread = indicatorState.kind === 'ready';
+  const operationalLabel = getSessionOperationalLabel(indicatorState);
   const isArchived = useAtomValue(sessionArchivedAtom(sessionId));
 
   const [showContextMenu, setShowContextMenu] = useState(false);
@@ -118,10 +119,8 @@ const SessionTab: React.FC<{
         onClick={onClick}
         onContextMenu={handleContextMenu}
         title={title || 'Untitled'}
+        aria-label={`Session: ${title || 'Untitled'}.${operationalLabel ? ` Status: ${operationalLabel}.` : ''}`}
       >
-        {isProcessing && (
-          <span className="session-tab-processing-dot w-1.5 h-1.5 rounded-full bg-[var(--nim-primary)] animate-pulse" />
-        )}
         <ProviderIcon
           provider={provider}
           size={14}
@@ -143,9 +142,7 @@ const SessionTab: React.FC<{
             {title || 'Untitled'}
           </span>
         )}
-        {hasUnread && !isRenaming && (
-          <span className="session-tab-unread-dot w-1.5 h-1.5 rounded-full bg-[var(--nim-warning)]" />
-        )}
+        {!isRenaming && <SessionOperationalIndicator sessionId={sessionId} variant="child" />}
       </button>
 
       {/* Context Menu */}

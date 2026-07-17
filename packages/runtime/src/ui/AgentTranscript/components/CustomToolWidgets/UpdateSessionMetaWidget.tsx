@@ -9,6 +9,7 @@
 
 import React from 'react';
 import type { CustomToolWidgetProps } from './index';
+import { getPhasePresentation } from '../../../../session';
 
 // ---------- Types ----------
 
@@ -104,23 +105,13 @@ function extractResult(tool: { result?: unknown }): StructuredResult | null {
   return null;
 }
 
-// ---------- Phase colors ----------
-
-const PHASE_STYLES: Record<string, { bg: string; text: string }> = {
-  backlog: { bg: 'rgba(156,163,175,0.15)', text: 'var(--nim-text-faint)' },
-  planning: { bg: 'rgba(168,85,247,0.15)', text: '#c084fc' },
-  implementing: { bg: 'rgba(59,130,246,0.15)', text: 'var(--nim-primary)' },
-  validating: { bg: 'rgba(251,191,36,0.15)', text: '#fbbf24' },
-  complete: { bg: 'rgba(74,222,128,0.15)', text: '#4ade80' },
-};
-
-const getPhaseStyle = (phase: string | null) =>
-  phase ? (PHASE_STYLES[phase] ?? { bg: 'rgba(156,163,175,0.15)', text: 'var(--nim-text-faint)' }) : null;
-
 // ---------- Small components ----------
 
 const PhaseBadge: React.FC<{ phase: string }> = ({ phase }) => {
-  const style = getPhaseStyle(phase)!;
+  const presentation = getPhasePresentation(phase);
+  const color = presentation
+    ? `var(${presentation.cssVar}, ${presentation.color})`
+    : 'var(--nim-text-faint)';
   return (
     <span
       style={{
@@ -128,11 +119,13 @@ const PhaseBadge: React.FC<{ phase: string }> = ({ phase }) => {
         padding: '1px 7px',
         borderRadius: '10px',
         fontWeight: 500,
-        background: style.bg,
-        color: style.text,
+        background: presentation
+          ? `color-mix(in srgb, ${color} 15%, transparent)`
+          : 'var(--nim-bg-tertiary)',
+        color,
       }}
     >
-      {phase}
+      {presentation?.label ?? phase}
     </span>
   );
 };

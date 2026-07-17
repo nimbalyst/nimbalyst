@@ -22,10 +22,6 @@ vi.mock('@nimbalyst/runtime', async (importOriginal) => {
   };
 });
 
-vi.mock('../../AgenticCoding/SessionListItem', () => ({
-  SessionStatusIndicator: ({ sessionId }: { sessionId: string }) => <span data-testid={`status-${sessionId}`} />,
-}));
-
 vi.mock('../../../help', () => ({
   HelpTooltip: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -105,9 +101,9 @@ describe('AgentSessionsPopover', () => {
 
     expect(onOpenAgentMode).not.toHaveBeenCalled();
     expect(screen.getByTestId('agent-sessions-popover')).toBeTruthy();
-    expect(screen.getByText('Awaiting input')).toBeTruthy();
+    expect(screen.getByText('Needs attention')).toBeTruthy();
     expect(screen.getByText('Running')).toBeTruthy();
-    expect(screen.getByText('Unread')).toBeTruthy();
+    expect(screen.getByText('Ready')).toBeTruthy();
     expect(screen.getByTestId('agent-sessions-row-awaiting')).toBeTruthy();
     expect(screen.getByTestId('agent-sessions-row-running')).toBeTruthy();
     expect(screen.getByTestId('agent-sessions-row-unread')).toBeTruthy();

@@ -216,5 +216,7 @@ export {
   trackerSnapshot,
 } from './readReceipts/trackerUnreadAtoms';
 export { TrackerUnreadDot } from './readReceipts/TrackerUnreadDot';
+// Session phase & operational indicators
+export * from './session';
 // Themes
 export * from './themes';

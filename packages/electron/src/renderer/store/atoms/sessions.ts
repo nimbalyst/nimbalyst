@@ -18,10 +18,17 @@ import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
 import { ModelIdentifier, type ChatAttachment, type SessionData, type TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
-import type { SessionMeta } from '@nimbalyst/runtime';
+import {
+  deriveSessionIndicatorState,
+  aggregateChildInputs,
+  type SessionMeta,
+  type SessionIndicatorState,
+  type GroupIndicatorInput,
+} from '@nimbalyst/runtime';
 import deepEqual from 'fast-deep-equal';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
 import { aiInputHistoryAtom } from './aiInputUndo';
+import { sessionErrorAtom, sessionQueuedPromptsAtom } from '../atoms/sessionTranscript';
 
 // SessionMeta is imported from @nimbalyst/runtime (canonical type).
 // Re-export for consumers that import from the store.
@@ -130,17 +137,8 @@ export const sessionLastActivityAtom = atomFamily((_sessionId: string) =>
 );
 
 /**
- * Per-session pending prompt state.
- * Set when there's a queued prompt waiting to be processed.
- * SessionListItem subscribes to show pending indicator.
- */
-export const sessionPendingPromptAtom = atomFamily((_sessionId: string) =>
-  atom(false)
-);
-
-/**
  * Per-session active scheduled wakeup.
- * Holds the most recent active wakeup row (pending / waiting_for_workspace / overdue)
+ * Holds the most recent active wakeup row (pending / firing / waiting_for_workspace / overdue)
  * for a session, or null if there is none. Updated by `wakeupListener.ts` in response
  * to `wakeup:changed` IPC events.
  */
@@ -176,7 +174,7 @@ export const sessionHasPendingInteractivePromptAtom = atomFamily((_sessionId: st
   atom(false)
 );
 
-export type AgentBubbleColor = 'orange' | 'green' | 'blue';
+export type AgentBubbleColor = 'orange' | 'blue' | 'yellow';
 
 export interface AgentSessionAttentionGroups {
   awaitingInput: SessionMeta[];
@@ -187,6 +185,8 @@ export interface AgentSessionAttentionGroups {
 /**
  * Active-workspace sessions that currently need attention, classified by
  * their highest-priority state so a session appears in exactly one group.
+ * Phase 'complete' no longer suppresses attention — a completed session may
+ * still have unread output or pending prompts.
  */
 export const agentSessionAttentionAtom = atom<AgentSessionAttentionGroups>((get) => {
   const registry = get(sessionRegistryAtom);
@@ -194,7 +194,6 @@ export const agentSessionAttentionAtom = atom<AgentSessionAttentionGroups>((get)
   const sessions = Array.from(registry.values())
     .filter((session) =>
       !session.isArchived &&
-      session.phase !== 'complete' &&
       (!workspacePath || session.workspaceId === workspacePath)
     )
     .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -206,11 +205,12 @@ export const agentSessionAttentionAtom = atom<AgentSessionAttentionGroups>((get)
   };
 
   for (const session of sessions) {
-    if (get(sessionHasPendingInteractivePromptAtom(session.id))) {
+    const state = get(sessionIndicatorStateAtom(session.id));
+    if (state.kind === 'needs-input' || state.kind === 'error' || state.kind === 'wakeup-attention') {
       groups.awaitingInput.push(session);
-    } else if (get(sessionProcessingAtom(session.id))) {
+    } else if (state.kind === 'working-self' || state.kind === 'working-child' || state.kind === 'queued') {
       groups.running.push(session);
-    } else if (get(sessionUnreadAtom(session.id))) {
+    } else if (state.kind === 'ready') {
       groups.unread.push(session);
     }
   }
@@ -225,10 +225,10 @@ export const agentBubbleStateAtom = atom<{ color: AgentBubbleColor | null; count
     return { color: 'orange', count: groups.awaitingInput.length };
   }
   if (groups.running.length > 0) {
-    return { color: 'green', count: groups.running.length };
+    return { color: 'blue', count: groups.running.length };
   }
   if (groups.unread.length > 0) {
-    return { color: 'blue', count: groups.unread.length };
+    return { color: 'yellow', count: groups.unread.length };
   }
   return { color: null, count: 0 };
 });
@@ -325,22 +325,78 @@ export function isInteractivePromptTool(toolName: string): boolean {
   return !!match && INTERACTIVE_PROMPT_TOOLS.has(match[1]);
 }
 
+function bareInteractivePromptToolName(toolName: string): string {
+  if (INTERACTIVE_PROMPT_TOOLS.has(toolName)) return toolName;
+  return toolName.match(/^mcp__[^_]+(?:_[^_]+)*__(.+)$/)?.[1] ?? toolName;
+}
+
+const TOOL_PROMPT_TYPES: Record<string, PendingPrompt['promptType']> = {
+  AskUserQuestion: 'ask_user_question_request',
+  ExitPlanMode: 'exit_plan_mode_request',
+  ToolPermission: 'permission_request',
+  GitCommitProposal: 'git_commit_proposal_request',
+  PromptForUserInput: 'request_user_input_request',
+  RequestUserInput: 'request_user_input_request',
+};
+
+const CANONICAL_PROMPT_TYPES: Record<string, PendingPrompt['promptType']> = {
+  permission_request: 'permission_request',
+  ask_user_question: 'ask_user_question_request',
+  git_commit_proposal: 'git_commit_proposal_request',
+};
+
+function pendingPromptFromMessage(
+  sessionId: string,
+  message: TranscriptViewMessage,
+): PendingPrompt | null {
+  if (message.type === 'interactive_prompt' && message.interactivePrompt?.status === 'pending') {
+    const promptType = CANONICAL_PROMPT_TYPES[message.interactivePrompt.promptType];
+    if (!promptType) return null;
+    const promptId = message.interactivePrompt.requestId;
+    return {
+      id: promptId,
+      sessionId,
+      promptType,
+      promptId,
+      data: message.interactivePrompt,
+      createdAt: message.createdAt.getTime(),
+    };
+  }
+
+  const toolCall = message.toolCall;
+  if (!toolCall || toolCall.status !== 'running' || !isInteractivePromptTool(toolCall.toolName)) {
+    return null;
+  }
+  const promptType = TOOL_PROMPT_TYPES[bareInteractivePromptToolName(toolCall.toolName)];
+  if (!promptType) return null;
+  const promptId = toolCall.providerToolCallId ?? String(message.id);
+  return {
+    id: promptId,
+    sessionId,
+    promptType,
+    promptId,
+    data: toolCall.arguments,
+    createdAt: message.createdAt.getTime(),
+  };
+}
+
 export const refreshPendingPromptsAtom = atom(
   null,
   (get, set, sessionId: string) => {
     // Pending prompts are now rendered from canonical transcript events via widgets.
-    // Update the unified pending interactive prompt state from session messages.
+    // Rebuild the exact durable identities as well as the summary boolean so a
+    // renderer restart retains prompt count/type semantics, not just a generic dot.
     const messages = get(sessionMessagesAtom(sessionId));
-    const hasPendingPrompt = messages.some(
-      msg => {
-        // Interactive prompts projected from canonical events
-        if (msg.type === 'interactive_prompt' && msg.interactivePrompt?.status === 'pending') return true;
-        // Interactive tools stored as tool_calls (from TranscriptTransformer)
-        if (msg.toolCall?.toolName && isInteractivePromptTool(msg.toolCall.toolName) && !msg.toolCall.result) return true;
-        return false;
+    const pendingByIdentity = new Map<string, PendingPrompt>();
+    for (const message of messages) {
+      const prompt = pendingPromptFromMessage(sessionId, message);
+      if (prompt) {
+        pendingByIdentity.set(`${prompt.promptType}:${prompt.promptId}`, prompt);
       }
-    );
-    set(sessionHasPendingInteractivePromptAtom(sessionId), hasPendingPrompt);
+    }
+    const pendingPrompts = Array.from(pendingByIdentity.values());
+    set(sessionPendingPromptsAtom(sessionId), pendingPrompts);
+    set(sessionHasPendingInteractivePromptAtom(sessionId), pendingPrompts.length > 0);
   }
 );
 
@@ -984,85 +1040,169 @@ const parentToChildIdsAtom = atom((get) => {
   return map;
 });
 
-/**
- * Derived: whether a session OR any of its children is processing.
- * For workstreams, the parent header should show processing if ANY child is running.
- * This atom provides that aggregated view - subscribe to this instead of sessionProcessingAtom
- * when displaying processing state for a session that might be a workstream parent.
- *
- * Checks children from TWO sources:
- * 1. sessionChildrenAtom - populated when workstream is opened (has exact child IDs)
- * 2. parentToChildIdsAtom - pre-computed index from registry (O(1) lookup)
- */
-export const sessionOrChildProcessingAtom = atomFamily((sessionId: string) =>
+// ---------------------------------------------------------------------------
+// Session Indicator State (canonical operational attention view model)
+// ---------------------------------------------------------------------------
+
+const sessionRunningBackgroundSummaryAtom = atomFamily((sessionId: string) =>
   atom((get) => {
-    // Check if this session itself is processing
-    if (get(sessionProcessingAtom(sessionId))) {
-      return true;
+    const childIds = new Set<string>(get(sessionChildrenAtom(sessionId)));
+    for (const childId of get(parentToChildIdsAtom).get(sessionId) ?? []) {
+      childIds.add(childId);
     }
 
-    // Check children from sessionChildrenAtom (populated when workstream is opened)
-    const loadedChildren = get(sessionChildrenAtom(sessionId));
-    for (const childId of loadedChildren) {
+    let directChildProcessingCount = 0;
+    for (const childId of childIds) {
       if (get(sessionProcessingAtom(childId))) {
-        return true;
+        directChildProcessingCount++;
       }
     }
 
-    // Check children from pre-computed registry index (works even before workstream is opened)
-    // Uses parentToChildIdsAtom for O(1) lookup instead of scanning the full registry
-    const childIds = get(parentToChildIdsAtom).get(sessionId);
-    if (childIds) {
-      for (const childId of childIds) {
-        if (get(sessionProcessingAtom(childId))) {
-          return true;
-        }
-      }
-    }
+    const metadata = get(sessionStoreAtom(sessionId))?.metadata;
+    const runningTeammateCount = Array.isArray(metadata?.currentTeammates)
+      ? metadata.currentTeammates.filter((entry: { status?: string }) => entry.status === 'running').length
+      : 0;
+    const runningTaskCount = Array.isArray(metadata?.currentTasks)
+      ? metadata.currentTasks.filter((entry: { status?: string }) => entry.status === 'running').length
+      : 0;
 
-    return false;
+    return {
+      count: directChildProcessingCount + runningTeammateCount + runningTaskCount,
+      directChildProcessingCount,
+    };
+  })
+);
+
+/** Background work means a direct child, teammate, or SDK sub-agent task. */
+export const sessionHasChildProcessingAtom = atomFamily((sessionId: string) =>
+  atom((get) => get(sessionRunningBackgroundSummaryAtom(sessionId)).count > 0)
+);
+
+/** Count genuinely running direct children, teammates, and SDK tasks once. */
+export const sessionRunningChildCountAtom = atomFamily((sessionId: string) =>
+  atom((get) => get(sessionRunningBackgroundSummaryAtom(sessionId)).count)
+);
+
+/** Raw inputs for a single session, ready for the pure resolver. */
+export const sessionIndicatorInputsAtom = atomFamily((sessionId: string) =>
+  atom((get): GroupIndicatorInput => {
+    const wakeup = get(sessionWakeupAtom(sessionId));
+    // During the narrow scheduler-to-provider handoff, `firing` is active
+    // system work even before the lifecycle stream marks the lead processing.
+    const isLeadProcessing = get(sessionProcessingAtom(sessionId)) || wakeup?.status === 'firing';
+    const hasChildProcessing = get(sessionHasChildProcessingAtom(sessionId));
+    const childCount = get(sessionRunningChildCountAtom(sessionId));
+    const pendingPrompts = get(sessionPendingPromptsAtom(sessionId));
+    const hasPendingInteractive = get(sessionHasPendingInteractivePromptAtom(sessionId));
+    const queuedPrompts = get(sessionQueuedPromptsAtom(sessionId));
+    const hasUnread = get(sessionUnreadAtom(sessionId));
+    const error = get(sessionErrorAtom(sessionId));
+    const backgroundSummary = get(sessionRunningBackgroundSummaryAtom(sessionId));
+
+    const isWakeupAttention = wakeup?.status === 'overdue' || wakeup?.status === 'waiting_for_workspace';
+    const isScheduled = wakeup?.status === 'pending';
+    const errorCategory = error?.isAuthError || error?.isCodexAuthRequired
+      ? 'Authentication error'
+      : error?.isBedrockToolError
+        ? 'Bedrock tool error'
+        : error?.isServerError
+          ? 'Provider server error'
+          : error?.isWakeupError || wakeup?.status === 'failed'
+            ? 'Wakeup failed'
+          : error
+            ? 'Session error'
+            : '';
+
+    return {
+      hasPendingInteractivePrompt: hasPendingInteractive,
+      pendingPromptCount: pendingPrompts.length,
+      pendingPromptTypes: pendingPrompts.map((prompt) => prompt.promptType),
+      isLeadProcessing,
+      hasChildProcessing,
+      childProcessingCount: childCount,
+      queuedPromptCount: queuedPrompts.length,
+      hasUnread,
+      hasError: !!error || wakeup?.status === 'failed',
+      errorMessage: errorCategory,
+      hasWakeupAttention: isWakeupAttention,
+      hasScheduledWakeup: isScheduled,
+      wakeupReason: wakeup?.reason ?? null,
+      wakeupFireAt: wakeup?.fireAt ?? null,
+      wakeupStatus: wakeup?.status ?? null,
+      directChildProcessingCount: backgroundSummary.directChildProcessingCount,
+    };
   })
 );
 
 /**
- * Aggregated status for a group of sessions.
- * Used by GroupCardStatus to show worktree/workstream status without violating hooks rules.
- *
- * The key is a JSON-serialized array of session IDs for stable atom identity.
- * Returns { hasPendingInteractivePrompt, hasProcessing, hasPendingPrompt, hasUnread } for the group.
+ * Canonical per-session operational/attention state.
+ * Components subscribe to this atom for a pre-resolved indicator state
+ * with the locked precedence and collision rules.
  */
-export const groupSessionStatusAtom = atomFamily((sessionIdsKey: string) =>
-  atom((get) => {
-    const sessionIds: string[] = JSON.parse(sessionIdsKey);
-
-    let hasPendingInteractivePrompt = false;
-    let hasProcessing = false;
-    let hasPendingPrompt = false;
-    let hasUnread = false;
-
-    for (const sessionId of sessionIds) {
-      if (get(sessionHasPendingInteractivePromptAtom(sessionId))) {
-        hasPendingInteractivePrompt = true;
-      }
-      // Use sessionOrChildProcessingAtom to include children of workstreams
-      if (get(sessionOrChildProcessingAtom(sessionId))) {
-        hasProcessing = true;
-      }
-      if (get(sessionPendingPromptAtom(sessionId))) {
-        hasPendingPrompt = true;
-      }
-      if (get(sessionUnreadAtom(sessionId))) {
-        hasUnread = true;
-      }
-      // Early exit if all flags are true
-      if (hasPendingInteractivePrompt && hasProcessing && hasPendingPrompt && hasUnread) {
-        break;
-      }
-    }
-
-    return { hasPendingInteractivePrompt, hasProcessing, hasPendingPrompt, hasUnread };
+export const sessionIndicatorStateAtom = atomFamily((sessionId: string) =>
+  atom((get): SessionIndicatorState => {
+    const inputs = get(sessionIndicatorInputsAtom(sessionId));
+    return deriveSessionIndicatorState(inputs);
   })
 );
+
+/**
+ * Canonical operational/attention state for a group (parent + child IDs).
+ * Same precedence; parent state is never omitted.
+ *
+ * The key is a JSON-serialized `{ parentId, childIds }` object. A null
+ * parentId represents a collection group such as Blitz or Super Loop;
+ * parent-representing workstreams must always provide their real parent ID.
+ */
+export const groupIndicatorStateAtom = atomFamily((key: string) =>
+  atom((get): SessionIndicatorState => {
+    let parsed: { parentId: string | null; childIds: string[] };
+    try {
+      parsed = JSON.parse(key);
+    } catch {
+      return { kind: 'idle' };
+    }
+    if (
+      (parsed.parentId !== null && typeof parsed.parentId !== 'string')
+      || !Array.isArray(parsed.childIds)
+      || parsed.childIds.some((id) => typeof id !== 'string')
+    ) {
+      return { kind: 'idle' };
+    }
+    const { parentId } = parsed;
+    const childIds = Array.from(new Set(parsed.childIds))
+      .filter((id) => id !== parentId);
+
+    const parentInputs: GroupIndicatorInput = parentId
+      ? get(sessionIndicatorInputsAtom(parentId))
+      : {
+          hasPendingInteractivePrompt: false,
+          pendingPromptCount: 0,
+          pendingPromptTypes: [],
+          isLeadProcessing: false,
+          hasChildProcessing: false,
+          childProcessingCount: 0,
+          directChildProcessingCount: 0,
+          queuedPromptCount: 0,
+          hasUnread: false,
+          hasError: false,
+          errorMessage: '',
+          hasWakeupAttention: false,
+          hasScheduledWakeup: false,
+          wakeupReason: null,
+          wakeupFireAt: null,
+          wakeupStatus: null,
+        };
+    const childInputs: GroupIndicatorInput[] = childIds
+      .map((id) => get(sessionIndicatorInputsAtom(id)))
+      .filter(Boolean);
+
+    const aggregated = aggregateChildInputs(parentInputs, childInputs);
+    return deriveSessionIndicatorState(aggregated);
+  })
+);
+
+// ---------------------------------------------------------------------------
 
 /**
  * Per-session parent ID.
@@ -1973,7 +2113,6 @@ export const cleanupSessionAtom = atom(null, (get, set, sessionId: string) => {
   sessionArchivedAtom.remove(sessionId);
   sessionProcessingAtom.remove(sessionId);
   sessionUnreadAtom.remove(sessionId);
-  sessionPendingPromptAtom.remove(sessionId);
   sessionHasPendingInteractivePromptAtom.remove(sessionId);
   sessionLastReadAtom.remove(sessionId);
   sessionDraftInputAtom.remove(sessionId);
@@ -2186,16 +2325,18 @@ export const refreshSessionListAtom = atom(
             ...(s.createdBySessionId !== undefined && { createdBySessionId: s.createdBySessionId }),
           });
 
-          // Initialize unread state from database metadata (for cross-device sync)
-          if (s.hasUnread) {
-            set(sessionUnreadAtom(s.id), true);
-          }
+          // Rehydrate both directions so a cross-device read clears a stale
+          // renderer dot on the next authoritative session-list refresh.
+          set(sessionUnreadAtom(s.id), !!s.hasUnread);
           // Rehydrate the pending-interactive-prompt indicator from the
           // authoritative DB field. Write BOTH directions so a stuck-true
           // atom (e.g. from a missed resolve event after a renderer reload)
           // gets corrected on the next session-list refresh. Persisted by
           // main-process setSessionPendingPrompt on every prompt open/resolve.
           set(sessionHasPendingInteractivePromptAtom(s.id), !!s.hasPendingInteractivePrompt);
+          if (!s.hasPendingInteractivePrompt) {
+            set(sessionPendingPromptsAtom(s.id), []);
+          }
         }
 
         set(sessionRegistryAtom, registry);
@@ -2555,16 +2696,6 @@ export const workstreamUnreadAtom = atomFamily((workstreamId: string) =>
   atom((get) => {
     const sessions = get(workstreamSessionsAtom(workstreamId));
     return sessions.some(id => get(sessionUnreadAtom(id)));
-  })
-);
-
-/**
- * Derived: Does any session in this workstream have a pending prompt?
- */
-export const workstreamPendingPromptAtom = atomFamily((workstreamId: string) =>
-  atom((get) => {
-    const sessions = get(workstreamSessionsAtom(workstreamId));
-    return sessions.some(id => get(sessionPendingPromptAtom(id)));
   })
 );
 

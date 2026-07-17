@@ -1,38 +1,10 @@
-import React, { useState, memo } from 'react';
-import { useAtomValue } from 'jotai';
+import React, { useState } from 'react';
 import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import { parseModelInfo, getProviderLabel } from '../../utils/modelUtils';
 import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
 import { formatDate } from '@nimbalyst/runtime';
-import { sessionProcessingAtom, sessionUnreadAtom } from '../../store';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
-
-/**
- * Status indicator that subscribes to session atoms.
- * Only this component re-renders when the session's state changes.
- */
-const SessionStatusIndicator = memo<{ sessionId: string }>(({ sessionId }) => {
-  const isProcessing = useAtomValue(sessionProcessingAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-
-  if (isProcessing) {
-    return (
-      <div
-        className="session-status-indicator processing w-2 h-2 rounded-full shrink-0 bg-[var(--nim-primary)] animate-pulse"
-        title="Running"
-      />
-    );
-  }
-  if (hasUnread) {
-    return (
-      <div
-        className="session-status-indicator unread w-2 h-2 rounded-full shrink-0 bg-[var(--nim-primary)]"
-        title="Unread response"
-      />
-    );
-  }
-  return null;
-});
+import { SessionOperationalIndicator } from '../AgenticCoding/SessionOperationalIndicator';
 
 // SessionDropdownItem extends SessionData with message count for display
 type SessionDropdownItem = Pick<SessionData, 'id' | 'createdAt' | 'title' | 'provider' | 'model'> & {
@@ -112,7 +84,7 @@ export function SessionDropdown({
         onClick={() => menu.setIsOpen(!menu.isOpen)}
         title="Session History"
       >
-        {currentSessionId && <SessionStatusIndicator sessionId={currentSessionId} />}
+        {currentSessionId && <SessionOperationalIndicator sessionId={currentSessionId} variant="dropdown" />}
         <ProviderIcon provider={getCurrentSession()?.provider || 'claude'} size={16} />
         <span className="session-dropdown-name overflow-hidden text-ellipsis whitespace-nowrap max-w-[200px]">{getCurrentSessionName()}</span>
         <MaterialSymbol
@@ -171,7 +143,7 @@ export function SessionDropdown({
                           }}
                         >
                           <div className="session-name-row flex items-center gap-1.5">
-                            <SessionStatusIndicator sessionId={session.id} />
+                            <SessionOperationalIndicator sessionId={session.id} variant="dropdown" />
                             <span className="session-name overflow-hidden text-ellipsis whitespace-nowrap">{formatSessionName(session)}</span>
                             {session.provider && session.provider !== 'claude-code' && (
                               <span className={`session-provider-badge provider-${session.provider} inline-flex items-center px-1 py-px rounded text-[9px] font-semibold uppercase tracking-wide shrink-0`}>

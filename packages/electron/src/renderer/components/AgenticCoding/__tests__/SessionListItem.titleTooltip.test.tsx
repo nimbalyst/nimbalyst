@@ -6,24 +6,26 @@ import { render, cleanup } from '@testing-library/react';
 // Keep the component isolated: jotai atom reads return defaults, and the store
 // atom families are callable stubs so importing them has no side effects.
 vi.mock('jotai', () => ({
-  useAtomValue: () => undefined,
+  useAtomValue: (atom: string) => atom === 'indicator' ? { kind: 'idle' } : atom === 'activity' ? 0 : undefined,
   useSetAtom: () => () => {},
 }));
-vi.mock('@nimbalyst/runtime', () => ({ MaterialSymbol: () => null, ProviderIcon: () => null }));
+vi.mock('@nimbalyst/runtime', () => ({
+  MaterialSymbol: () => null,
+  ProviderIcon: () => null,
+  getPhasePresentation: (phase?: string) => phase === 'implementing'
+    ? { label: 'Implementing', color: '#eab308', cssVar: '--nim-session-phase-implementing' }
+    : null,
+}));
 // The store atoms are callable stubs (atom families called with a sessionId);
 // their values are read through the mocked jotai useAtomValue above, so the
 // stub return value never matters. Factories are inlined (no outer ref) to
 // avoid the vi.mock hoisting TDZ.
 vi.mock('../../../store', () => ({
-  sessionOrChildProcessingAtom: () => ({}),
-  sessionUnreadAtom: () => ({}),
-  sessionPendingPromptAtom: () => ({}),
-  sessionHasPendingInteractivePromptAtom: () => ({}),
   reparentSessionAtom: () => ({}),
   refreshSessionListAtom: () => ({}),
   sessionShareAtom: () => ({}),
-  sessionWakeupAtom: () => ({}),
-  sessionLastActivityAtom: () => ({}),
+  sessionLastActivityAtom: () => 'activity',
+  sessionIndicatorStateAtom: () => 'indicator',
 }));
 vi.mock('../../../store/atoms/sessions', () => ({ convertToWorkstreamAtom: () => ({}) }));
 vi.mock('../SessionContextMenu', () => ({ SessionContextMenu: () => null }));
@@ -66,5 +68,15 @@ describe('SessionListItem - full name on hover (#577, #429)', () => {
     const { container } = render(<SessionListItem {...baseProps} title={long} />);
     const row = container.querySelector('[aria-label^="Session: "]');
     expect(row?.getAttribute('aria-label')).toContain(long);
+  });
+
+  it('places the canonical phase square after the title and includes it in the row name', () => {
+    const { container } = render(
+      <SessionListItem {...baseProps} title="Phase row" phase="implementing" />,
+    );
+    const title = container.querySelector('.session-list-item-title');
+    expect(title?.nextElementSibling?.classList.contains('session-list-item-phase-square')).toBe(true);
+    const row = container.querySelector('[aria-label^="Session: "]');
+    expect(row?.getAttribute('aria-label')).toContain('Phase: Implementing.');
   });
 });
