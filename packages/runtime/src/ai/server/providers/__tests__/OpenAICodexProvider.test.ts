@@ -536,6 +536,53 @@ describe('OpenAICodexProvider', () => {
     );
   });
 
+  it('forwards initialized effort through the provider session options', async () => {
+    const createSession = vi.fn(async () => ({
+      id: 'thread-effort-forward',
+      platform: 'codex-app-server',
+      raw: { fake: true },
+    }));
+    const protocol = {
+      platform: 'codex-app-server',
+      createSession,
+      resumeSession: vi.fn(),
+      forkSession: vi.fn(),
+      sendMessage: vi.fn(() => createAsyncEventStream([
+        {
+          type: 'complete',
+          content: 'done',
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      ])),
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      { protocol },
+    );
+
+    await provider.initialize({
+      apiKey: 'test-key',
+      model: 'openai-codex:gpt-5.6-sol',
+      effortLevel: 'xhigh',
+    });
+    for await (const _chunk of provider.sendMessage(
+      'Use the configured effort',
+      undefined,
+      'session-effort-forward',
+      [],
+      process.cwd(),
+    )) {
+      // drain
+    }
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+      raw: expect.objectContaining({ effortLevel: 'xhigh' }),
+    }));
+  });
+
   it('persists Codex input attachments in logged message metadata for transcript restoration', async () => {
     const createSession = vi.fn(async () => ({
       id: 'thread-image-metadata',
