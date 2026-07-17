@@ -1,8 +1,9 @@
 import log from 'electron-log/main';
-import { existsSync } from 'fs';
-import { isAbsolute, join, relative } from 'path';
+import { realpathSync } from 'fs';
+import { isAbsolute, relative } from 'path';
 import simpleGit, { SimpleGit } from 'simple-git';
 import { gitOperationLock } from './GitOperationLock';
+import { resolveGitContext } from './GitContextService';
 import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
 
 export interface GitCommitExecutionResult {
@@ -19,14 +20,6 @@ export interface GitCommitProposalResponse {
   error?: string;
   filesCommitted?: string[];
   commitMessage?: string;
-}
-
-function isGitRepository(workspacePath: string): boolean {
-  try {
-    return existsSync(join(workspacePath, '.git'));
-  } catch {
-    return false;
-  }
 }
 
 async function hasCommits(git: SimpleGit): Promise<boolean> {
@@ -97,11 +90,21 @@ export async function executeGitCommit(
   if (!message) {
     return { success: false, error: 'message is required' };
   }
-  if (!isGitRepository(workspacePath)) {
+
+  // Normalize workspacePath to match realpath'd paths from git
+  let realWorkspacePath = workspacePath;
+  try {
+    realWorkspacePath = realpathSync(workspacePath);
+  } catch {
+    // If realpath fails, use the original path; resolveGitContext will handle the error
+  }
+
+  const { isRepo, gitRoot } = resolveGitContext(realWorkspacePath);
+  if (!isRepo || !gitRoot) {
     return { success: false, error: 'Not a git repository' };
   }
 
-  return gitOperationLock.withLock(workspacePath, 'git:commit', async () => {
+  return gitOperationLock.withLock(gitRoot, 'git:commit', async () => {
     let lastLockError: unknown;
     // Retry the whole commit body when git fails because another process holds
     // .git/index.lock. Each iteration re-reads status, so it is idempotent.
@@ -115,8 +118,8 @@ export async function executeGitCommit(
       }
       try {
         const git: SimpleGit = options?.env
-          ? simpleGit(workspacePath, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(options.env)
-          : simpleGit(workspacePath);
+          ? simpleGit(gitRoot, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(options.env)
+          : simpleGit(gitRoot);
         if (options?.onOutput) {
           git.outputHandler((_command, stdout, stderr) => {
             stdout.on('data', (chunk: Buffer | string) => options.onOutput?.('stdout', chunk.toString()));
@@ -126,12 +129,24 @@ export async function executeGitCommit(
         const repoHasCommits = await hasCommits(git);
         // log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
 
+        // Normalize file paths to realpath for consistent relativization
+        const normalizedFilesToStage = filesToStage.map((f) => {
+          if (!isAbsolute(f)) {
+            return f;
+          }
+          try {
+            return realpathSync(f);
+          } catch {
+            return f;
+          }
+        });
+
         const toGitPath = (f: string) => {
-          const rel = isAbsolute(f) ? relative(workspacePath, f) : f;
+          const rel = isAbsolute(f) ? relative(gitRoot, f) : f;
           return rel.replace(/\\/g, '/');
         };
 
-        if (!filesToStage || filesToStage.length === 0) {
+        if (!normalizedFilesToStage || normalizedFilesToStage.length === 0) {
           const preStatus = await git.status();
           const stagedCount = preStatus.staged.length + preStatus.created.length;
           if (stagedCount === 0) {
@@ -173,18 +188,18 @@ export async function executeGitCommit(
           await git.raw(['rm', '--cached', '-r', '.']);
         }
 
-        const filesToStageRelative = filesToStage.map(toGitPath);
+        const filesToStageRelative = normalizedFilesToStage.map(toGitPath);
         // log.info(`${logContext} Staging files (raw): ${filesToStage.join(', ')}`);
         // log.info(`${logContext} Staging files (git-relative): ${filesToStageRelative.join(', ')}`);
 
-        await git.add(['--all', '--', ...filesToStage]);
+        await git.add(['--all', '--', ...normalizedFilesToStage]);
 
         const status = await git.status();
         const stagedFiles = new Set([...status.staged, ...status.created]);
         // log.info(`${logContext} After staging - staged files: [${[...status.staged].join(', ')}], created files: [${[...status.created].join(', ')}]`);
 
         if (stagedFiles.size === 0) {
-          log.warn(`${logContext} No files were staged despite add() succeeding. Requested: [${filesToStage.join(', ')}], git-relative: [${filesToStageRelative.join(', ')}]`);
+          log.warn(`${logContext} No files were staged despite add() succeeding. Requested: [${normalizedFilesToStage.join(', ')}], git-relative: [${filesToStageRelative.join(', ')}]`);
           if (originallyStaged.size > 0) {
             await git.add(Array.from(originallyStaged));
           }
@@ -232,7 +247,7 @@ export async function executeGitCommit(
           };
         }
 
-        const committedFilesSet = new Set((filesToStage || []).map(toGitPath));
+        const committedFilesSet = new Set((normalizedFilesToStage || []).map(toGitPath));
         const filesToRestage = Array.from(originallyStaged).filter((f) => !committedFilesSet.has(f));
         if (filesToRestage.length > 0) {
           log.info(`${logContext} Restoring ${filesToRestage.length} originally staged files`);

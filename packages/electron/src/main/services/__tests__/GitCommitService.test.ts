@@ -169,4 +169,34 @@ describe('GitCommitService', () => {
       error: 'HOOK_DETAIL: lint failed',
     });
   });
+
+  it('commits files at the repo root when the workspace is a subfolder (#124)', async () => {
+    await git(['init', '-q'], tmpRoot);
+    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
+    await git(['config', 'user.name', 'Test User'], tmpRoot);
+
+    const sub = path.join(tmpRoot, 'home');
+    await fs.mkdir(sub, { recursive: true });
+    await fs.writeFile(path.join(sub, 'inner.txt'), 'inner\n', 'utf8');
+    await fs.writeFile(path.join(tmpRoot, 'root.txt'), 'root\n', 'utf8');
+
+    const result = await executeGitCommit(
+      sub, // workspace is the SUBFOLDER, not the repo root
+      'subfolder commit',
+      [path.join(sub, 'inner.txt'), path.join(tmpRoot, 'root.txt')],
+      { logContext: '[test:git-commit]' }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.commitHash).toBeTruthy();
+
+    const { stdout } = await execFileAsync(
+      'git',
+      ['show', '--name-only', '--format='],
+      { cwd: tmpRoot }
+    );
+    const committed = stdout.trim().split('\n');
+    expect(committed).toContain('home/inner.txt');
+    expect(committed).toContain('root.txt');
+  });
 });
