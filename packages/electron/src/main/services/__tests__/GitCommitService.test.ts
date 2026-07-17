@@ -199,4 +199,33 @@ describe('GitCommitService', () => {
     expect(committed).toContain('home/inner.txt');
     expect(committed).toContain('root.txt');
   });
+
+  it('commits a staged deletion from a subfolder workspace', async () => {
+    await git(['init', '-q'], tmpRoot);
+    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
+    await git(['config', 'user.name', 'Test User'], tmpRoot);
+
+    const sub = path.join(tmpRoot, 'home');
+    await fs.mkdir(sub, { recursive: true });
+    await fs.writeFile(path.join(sub, 'del.txt'), 'bye\n', 'utf8');
+    await git(['add', '.'], tmpRoot);
+    await git(['commit', '-q', '-m', 'init'], tmpRoot);
+    await fs.rm(path.join(sub, 'del.txt'));
+
+    const result = await executeGitCommit(
+      sub,
+      'delete file',
+      [path.join(sub, 'del.txt')],
+      { logContext: '[test:git-commit]' }
+    );
+
+    expect(result.success).toBe(true);
+
+    const { stdout } = await execFileAsync(
+      'git',
+      ['show', '--name-only', '--format='],
+      { cwd: tmpRoot }
+    );
+    expect(stdout.trim().split('\n')).toContain('home/del.txt');
+  });
 });

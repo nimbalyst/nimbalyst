@@ -1,6 +1,6 @@
 import log from 'electron-log/main';
 import { realpathSync } from 'fs';
-import { isAbsolute, relative } from 'path';
+import { basename, dirname, isAbsolute, join, relative } from 'path';
 import simpleGit, { SimpleGit } from 'simple-git';
 import { gitOperationLock } from './GitOperationLock';
 import { resolveGitContext } from './GitContextService';
@@ -91,15 +91,7 @@ export async function executeGitCommit(
     return { success: false, error: 'message is required' };
   }
 
-  // Normalize workspacePath to match realpath'd paths from git
-  let realWorkspacePath = workspacePath;
-  try {
-    realWorkspacePath = realpathSync(workspacePath);
-  } catch {
-    // If realpath fails, use the original path; resolveGitContext will handle the error
-  }
-
-  const { isRepo, gitRoot } = resolveGitContext(realWorkspacePath);
+  const { isRepo, gitRoot } = resolveGitContext(workspacePath);
   if (!isRepo || !gitRoot) {
     return { success: false, error: 'Not a git repository' };
   }
@@ -129,16 +121,25 @@ export async function executeGitCommit(
         const repoHasCommits = await hasCommits(git);
         // log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
 
-        // Normalize file paths to realpath for consistent relativization
+        const toRealPath = (f: string): string => {
+          try {
+            return realpathSync(f);
+          } catch {
+            // Deleted files cannot be realpath'd; canonicalize the parent dir instead
+            // so the path still matches the physical gitRoot on symlinked volumes.
+            try {
+              return join(realpathSync(dirname(f)), basename(f));
+            } catch {
+              return f;
+            }
+          }
+        };
+
         const normalizedFilesToStage = filesToStage.map((f) => {
           if (!isAbsolute(f)) {
             return f;
           }
-          try {
-            return realpathSync(f);
-          } catch {
-            return f;
-          }
+          return toRealPath(f);
         });
 
         const toGitPath = (f: string) => {
@@ -189,7 +190,7 @@ export async function executeGitCommit(
         }
 
         const filesToStageRelative = normalizedFilesToStage.map(toGitPath);
-        // log.info(`${logContext} Staging files (raw): ${filesToStage.join(', ')}`);
+        // log.info(`${logContext} Staging files (raw): ${normalizedFilesToStage.join(', ')}`);
         // log.info(`${logContext} Staging files (git-relative): ${filesToStageRelative.join(', ')}`);
 
         await git.add(['--all', '--', ...normalizedFilesToStage]);
