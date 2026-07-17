@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -208,6 +209,26 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
     });
     // Parent project access (shared configs, .git common dir) must survive.
     expect(dirs).toEqual([projectPath]);
+  });
+
+  it('adds the parent git root when the workspace is a subfolder of a repo (#124)', () => {
+    // git rev-parse returns physical paths; realpath the fixture root first
+    // (macOS tmp dirs are symlinked) so the comparison below is apples-to-apples.
+    const repoRoot = fs.realpathSync(tmpRoot);
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    const sub = path.join(repoRoot, 'home');
+    fs.mkdirSync(sub);
+
+    expect(getAdditionalDirectoriesForWorkspace(sub)).toContain(repoRoot);
+  });
+
+  it('does not add anything extra when the workspace is the repo root', () => {
+    const repoRoot = fs.realpathSync(tmpRoot);
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+
+    // gitRoot === workspacePath here, so the new block should add nothing --
+    // same empty result as the no-worktrees/no-extension-marker case above.
+    expect(getAdditionalDirectoriesForWorkspace(repoRoot)).toEqual([]);
   });
 });
 

@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { app } from 'electron';
 import { getRecentItems } from './store';
+import { resolveGitContext } from '../services/GitContextService';
 
 /**
  * NOTE: isPathInWorkspace and getRelativeWorkspacePath have similar implementations
@@ -429,6 +430,26 @@ export function getAdditionalDirectoriesForWorkspace(
       if (siblingPath !== workspacePath) {
         additionalDirs.add(siblingPath);
       }
+    }
+  }
+
+  // If the workspace is a subfolder of a bigger repo (#124), grant the agent
+  // the repo root so it can read and stage repo-level files without escaping
+  // its cwd on its own. `resolveGitContext` returns a physical path (git
+  // rev-parse resolves symlinks); realpath the workspace before comparing so
+  // a symlinked path (e.g. macOS's /tmp -> /private/tmp) doesn't look like a
+  // different directory and get re-added under its physical name.
+  const { gitRoot } = resolveGitContext(workspacePath);
+  if (gitRoot) {
+    let physicalWorkspacePath = workspacePath;
+    try {
+      physicalWorkspacePath = fs.realpathSync(workspacePath);
+    } catch {
+      // Workspace path could not be resolved (e.g. does not exist); fall back
+      // to the raw path rather than failing the whole lookup.
+    }
+    if (path.resolve(gitRoot) !== path.resolve(physicalWorkspacePath)) {
+      additionalDirs.add(gitRoot);
     }
   }
 
