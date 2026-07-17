@@ -31,10 +31,10 @@ describe('resolveEffortLevel', () => {
 });
 
 describe('thinking mode parsing', () => {
-  it('defaults to disabled', () => {
-    expect(DEFAULT_THINKING_MODE).toBe('disabled');
-    expect(parseThinkingMode(undefined)).toBe('disabled');
-    expect(parseThinkingMode(null)).toBe('disabled');
+  it('defaults to enabled (preserving the SDK adaptive-thinking default)', () => {
+    expect(DEFAULT_THINKING_MODE).toBe('enabled');
+    expect(parseThinkingMode(undefined)).toBe('enabled');
+    expect(parseThinkingMode(null)).toBe('enabled');
   });
 
   it('accepts enabled and disabled modes', () => {
@@ -43,8 +43,8 @@ describe('thinking mode parsing', () => {
   });
 
   it('falls back to the default for unknown values', () => {
-    expect(parseThinkingMode('on')).toBe('disabled');
-    expect(parseThinkingMode('off')).toBe('disabled');
-    expect(parseThinkingMode('')).toBe('disabled');
+    expect(parseThinkingMode('on')).toBe('enabled');
+    expect(parseThinkingMode('off')).toBe('enabled');
+    expect(parseThinkingMode('')).toBe('enabled');
   });
 });

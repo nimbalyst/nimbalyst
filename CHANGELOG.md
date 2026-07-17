@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Claude Agent sessions now expose an `Extended: On` / `Extended: Off` selector next to the effort selector for supported Opus/Sonnet variants. The default is `Extended: Off` to avoid unexpected latency and token consumption.
+- Claude Agent sessions now expose an `Extended: On` / `Extended: Off` selector next to the effort selector for supported Opus/Sonnet variants, letting you turn off extended thinking per session to reduce latency and token use. Extended thinking stays on by default.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

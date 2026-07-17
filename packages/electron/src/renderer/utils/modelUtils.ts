@@ -266,9 +266,15 @@ export function supportsEffortLevel(modelId?: string): boolean {
 /**
  * Check if a model supports explicit Claude Agent extended-thinking toggling.
  * Fable/Haiku-style lightweight variants do not accept the SDK thinking option.
+ *
+ * Matches every opus/sonnet variant (including pinned ones like `opus-4-7` and
+ * `sonnet-4-6`) so this stays in lock-step with the server-side
+ * `canDisableThinkingForModel` gate in sdkOptionsBuilder. If the two drift, a
+ * model can have thinking disabled on the server with no UI toggle to restore it.
  */
 export function supportsThinkingToggle(modelId?: string): boolean {
   if (!modelId) return false;
   const variant = extractClaudeCodeVariant(modelId);
-  return variant === 'opus' || variant === 'opus-4-6' || variant === 'sonnet';
+  if (!variant) return false;
+  return variant.startsWith('opus') || variant.startsWith('sonnet');
 }
