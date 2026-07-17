@@ -5,69 +5,137 @@ import * as path from 'path';
 import {
   resolveProjectPath,
   isWorktreePath,
+  clearWorktreeIdentityCache,
   findNearestAncestor,
   findProjectRoot,
   getAdditionalDirectoriesForWorkspace,
 } from '../workspaceDetection';
 
+/**
+ * Hand-construct the real on-disk structure git creates for a linked
+ * worktree, without shelling out to `git worktree add` (keeps tests fast
+ * and independent of a git binary on PATH). Mirrors the exact format
+ * findProjectRoot's own tests already rely on (`.git` file with a
+ * `gitdir: <path>` line) plus the worktree-registration side git also
+ * writes: `<main>/.git/worktrees/<name>/gitdir` pointing back at the
+ * worktree's `.git` file.
+ */
+function createLinkedWorktree(
+  mainRepoPath: string,
+  worktreePath: string,
+  worktreeName: string,
+): void {
+  fs.mkdirSync(mainRepoPath, { recursive: true });
+  fs.mkdirSync(path.join(mainRepoPath, '.git'), { recursive: true });
+  const registrationDir = path.join(mainRepoPath, '.git', 'worktrees', worktreeName);
+  fs.mkdirSync(registrationDir, { recursive: true });
+
+  fs.mkdirSync(worktreePath, { recursive: true });
+  fs.writeFileSync(path.join(worktreePath, '.git'), `gitdir: ${registrationDir}\n`);
+  fs.writeFileSync(path.join(registrationDir, 'gitdir'), `${path.join(worktreePath, '.git')}\n`);
+}
+
 describe('resolveProjectPath', () => {
-  it('returns the same path for regular workspaces', () => {
-    expect(resolveProjectPath('/path/to/project')).toBe('/path/to/project');
-    expect(resolveProjectPath('/Users/dev/my-app')).toBe('/Users/dev/my-app');
-    expect(resolveProjectPath('/home/user/code/myrepo')).toBe('/home/user/code/myrepo');
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-worktree-identity-'));
+    clearWorktreeIdentityCache();
   });
 
-  it('resolves worktree paths to parent project', () => {
-    expect(resolveProjectPath('/path/to/project_worktrees/swift-falcon'))
-      .toBe('/path/to/project');
-    expect(resolveProjectPath('/Users/dev/my-app_worktrees/brave-eagle'))
-      .toBe('/Users/dev/my-app');
-    expect(resolveProjectPath('/home/user/code/myrepo_worktrees/test-123'))
-      .toBe('/home/user/code/myrepo');
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    clearWorktreeIdentityCache();
   });
 
-  it('resolves NESTED worktree paths (branch-style names) to parent project', () => {
-    // Regression for re-prompting in worktrees whose branch name contains a
-    // slash (e.g. `feature/foo`), which create nested directories.
-    expect(resolveProjectPath('/path/to/project_worktrees/feature/my-branch'))
-      .toBe('/path/to/project');
-    expect(resolveProjectPath('/Users/dev/Belegify_worktrees/feature/assign-people-on-receipts'))
-      .toBe('/Users/dev/Belegify');
-    expect(resolveProjectPath('/Users/dev/nimbalyst_worktrees/improvement/fix-askme-for-worktrees'))
-      .toBe('/Users/dev/nimbalyst');
+  it('returns the normalized path unchanged for a regular (non-worktree) project', () => {
+    const projectPath = path.join(tmpRoot, 'project');
+    fs.mkdirSync(path.join(projectPath, '.git'), { recursive: true });
+    expect(resolveProjectPath(projectPath)).toBe(projectPath);
   });
 
-  it('resolves a subfolder inside a nested worktree to the parent project', () => {
-    expect(resolveProjectPath('/path/to/project_worktrees/feature/my-branch/packages/electron'))
-      .toBe('/path/to/project');
+  it('resolves a real linked worktree to its main repository root', () => {
+    const mainRepo = path.join(tmpRoot, 'project');
+    const worktree = path.join(tmpRoot, 'project_worktrees', 'swift-falcon');
+    createLinkedWorktree(mainRepo, worktree, 'swift-falcon');
+
+    expect(resolveProjectPath(worktree)).toBe(fs.realpathSync.native(mainRepo));
   });
 
-  it('resolves nested worktrees with underscore project names', () => {
-    expect(resolveProjectPath('/path/to/my_cool_project_worktrees/feature/x'))
-      .toBe('/path/to/my_cool_project');
+  it('resolves a nested branch-style worktree name to the main repository root', () => {
+    // Regression for branch names containing a slash (e.g. `feature/foo`),
+    // which create nested worktree directories on disk.
+    const mainRepo = path.join(tmpRoot, 'project');
+    const worktree = path.join(tmpRoot, 'project_worktrees', 'feature', 'my-branch');
+    createLinkedWorktree(mainRepo, worktree, 'feature-my-branch');
+
+    expect(resolveProjectPath(worktree)).toBe(fs.realpathSync.native(mainRepo));
   });
 
-  it('handles trailing slashes on nested worktree paths', () => {
-    expect(resolveProjectPath('/path/to/project_worktrees/feature/my-branch/'))
-      .toBe('/path/to/project');
+  it('does NOT resolve a project that is literally named "..._worktrees" (has its own .git directory)', () => {
+    // The old lexical matcher misidentified this; a real .git DIRECTORY
+    // (not a linked-worktree .git FILE) means this is its own project.
+    const literalProject = path.join(tmpRoot, 'my_app_worktrees', 'folder');
+    fs.mkdirSync(path.join(literalProject, '.git'), { recursive: true });
+    expect(resolveProjectPath(literalProject)).toBe(fs.realpathSync.native(literalProject));
   });
 
-  it('does not resolve a plain subfolder of a non-worktree project (the permission cascade handles that)', () => {
-    expect(resolveProjectPath('/path/to/project/packages/electron'))
-      .toBe('/path/to/project/packages/electron');
+  it('does not treat a git submodule as a worktree', () => {
+    // Submodules also use a `.git` FILE, but pointing at `.git/modules/<name>`
+    // -- a distinct trust boundary from a linked worktree, must not inherit
+    // the superproject's trust.
+    const superProject = path.join(tmpRoot, 'super');
+    fs.mkdirSync(superProject, { recursive: true });
+    const moduleDir = path.join(superProject, '.git', 'modules', 'lib');
+    fs.mkdirSync(moduleDir, { recursive: true });
+    const submodulePath = path.join(superProject, 'vendor', 'lib');
+    fs.mkdirSync(submodulePath, { recursive: true });
+    fs.writeFileSync(path.join(submodulePath, '.git'), `gitdir: ${moduleDir}\n`);
+
+    expect(resolveProjectPath(submodulePath)).toBe(fs.realpathSync.native(submodulePath));
   });
 
-  it('handles trailing slashes on worktree paths', () => {
-    expect(resolveProjectPath('/path/to/project_worktrees/swift-falcon/'))
-      .toBe('/path/to/project');
-    expect(resolveProjectPath('/path/to/project_worktrees/swift-falcon//'))
-      .toBe('/path/to/project');
+  it('fails closed (returns the input unchanged) for a forged .git file pointing at another project\'s worktree registration', () => {
+    // SECURITY: an attacker-controlled directory claims to be a worktree of
+    // a real, trusted project by pointing its .git file at that project's
+    // real worktrees/<name> registration -- but that registration's own
+    // back-pointer does not point back at the attacker's directory, so this
+    // must NOT resolve to (and inherit trust from) the victim project.
+    const victim = path.join(tmpRoot, 'victim');
+    const legitWorktree = path.join(tmpRoot, 'victim_worktrees', 'real');
+    createLinkedWorktree(victim, legitWorktree, 'real');
+
+    const attackerDir = path.join(tmpRoot, 'attacker-controlled');
+    fs.mkdirSync(attackerDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(attackerDir, '.git'),
+      `gitdir: ${path.join(victim, '.git', 'worktrees', 'real')}\n`,
+    );
+
+    expect(resolveProjectPath(attackerDir)).toBe(fs.realpathSync.native(attackerDir));
   });
 
-  it('does not match paths that just contain _worktrees in the middle', () => {
-    // This path has _worktrees in it but is not a worktree path pattern
-    expect(resolveProjectPath('/path/to/project_worktrees_backup/folder'))
-      .toBe('/path/to/project_worktrees_backup/folder');
+  it('fails closed for a path that does not exist on disk', () => {
+    const missing = path.join(tmpRoot, 'does-not-exist_worktrees', 'x');
+    expect(resolveProjectPath(missing)).toBe(missing);
+  });
+
+  it('resolves a symlinked worktree the same as the real path', () => {
+    const mainRepo = path.join(tmpRoot, 'project');
+    const worktree = path.join(tmpRoot, 'project_worktrees', 'swift-falcon');
+    createLinkedWorktree(mainRepo, worktree, 'swift-falcon');
+
+    const linkPath = path.join(tmpRoot, 'link-to-worktree');
+    try {
+      fs.symlinkSync(worktree, linkPath, 'junction');
+    } catch {
+      // Symlink/junction creation can require elevated privileges in some
+      // CI sandboxes; skip rather than fail the suite on an environment
+      // limitation unrelated to the code under test.
+      return;
+    }
+
+    expect(resolveProjectPath(linkPath)).toBe(fs.realpathSync.native(mainRepo));
   });
 
   it('handles empty and null-ish inputs gracefully', () => {
@@ -75,55 +143,59 @@ describe('resolveProjectPath', () => {
     expect(resolveProjectPath(null as unknown as string)).toBe(null);
     expect(resolveProjectPath(undefined as unknown as string)).toBe(undefined);
   });
-
-  it('handles complex project names with underscores', () => {
-    expect(resolveProjectPath('/path/to/my_cool_project_worktrees/branch-1'))
-      .toBe('/path/to/my_cool_project');
-  });
-
-  it('handles Windows-style paths', () => {
-    // Note: Our regex uses / which works on Windows when paths are normalized
-    // but if someone passes backslashes, it won't match (that's okay)
-    expect(resolveProjectPath('C:/Users/dev/project_worktrees/feature'))
-      .toBe('C:/Users/dev/project');
-  });
 });
 
 describe('isWorktreePath', () => {
-  it('returns false for regular workspaces', () => {
-    expect(isWorktreePath('/path/to/project')).toBe(false);
-    expect(isWorktreePath('/Users/dev/my-app')).toBe(false);
-    expect(isWorktreePath('/home/user/code/myrepo')).toBe(false);
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-worktree-identity-'));
+    clearWorktreeIdentityCache();
   });
 
-  it('returns true for worktree paths', () => {
-    expect(isWorktreePath('/path/to/project_worktrees/swift-falcon')).toBe(true);
-    expect(isWorktreePath('/Users/dev/my-app_worktrees/brave-eagle')).toBe(true);
-    expect(isWorktreePath('/home/user/code/myrepo_worktrees/test-123')).toBe(true);
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    clearWorktreeIdentityCache();
   });
 
-  it('returns true for NESTED worktree paths (branch-style names)', () => {
-    expect(isWorktreePath('/path/to/project_worktrees/feature/my-branch')).toBe(true);
-    expect(isWorktreePath('/Users/dev/Belegify_worktrees/feature/assign-people')).toBe(true);
-    expect(isWorktreePath('/path/to/project_worktrees/feature/my-branch/packages/electron')).toBe(true);
+  it('returns false for a regular (non-worktree) project', () => {
+    const projectPath = path.join(tmpRoot, 'project');
+    fs.mkdirSync(path.join(projectPath, '.git'), { recursive: true });
+    expect(isWorktreePath(projectPath)).toBe(false);
   });
 
-  it('does not match the _worktrees_backup decoy with nested children', () => {
-    expect(isWorktreePath('/path/to/project_worktrees_backup/feature/x')).toBe(false);
+  it('returns true for a real linked worktree', () => {
+    const mainRepo = path.join(tmpRoot, 'project');
+    const worktree = path.join(tmpRoot, 'project_worktrees', 'swift-falcon');
+    createLinkedWorktree(mainRepo, worktree, 'swift-falcon');
+    expect(isWorktreePath(worktree)).toBe(true);
   });
 
-  it('handles trailing slashes', () => {
-    expect(isWorktreePath('/path/to/project_worktrees/swift-falcon/')).toBe(true);
+  it('returns false for a project literally named "..._worktrees"', () => {
+    const literalProject = path.join(tmpRoot, 'my_app_worktrees', 'folder');
+    fs.mkdirSync(path.join(literalProject, '.git'), { recursive: true });
+    expect(isWorktreePath(literalProject)).toBe(false);
+  });
+
+  it('returns false for a git submodule', () => {
+    const superProject = path.join(tmpRoot, 'super');
+    fs.mkdirSync(superProject, { recursive: true });
+    const moduleDir = path.join(superProject, '.git', 'modules', 'lib');
+    fs.mkdirSync(moduleDir, { recursive: true });
+    const submodulePath = path.join(superProject, 'vendor', 'lib');
+    fs.mkdirSync(submodulePath, { recursive: true });
+    fs.writeFileSync(path.join(submodulePath, '.git'), `gitdir: ${moduleDir}\n`);
+    expect(isWorktreePath(submodulePath)).toBe(false);
+  });
+
+  it('returns false for an unreadable / nonexistent path (fails closed)', () => {
+    expect(isWorktreePath(path.join(tmpRoot, 'does-not-exist_worktrees', 'x'))).toBe(false);
   });
 
   it('handles empty and null-ish inputs gracefully', () => {
     expect(isWorktreePath('')).toBe(false);
     expect(isWorktreePath(null as unknown as string)).toBe(false);
     expect(isWorktreePath(undefined as unknown as string)).toBe(false);
-  });
-
-  it('does not match paths that just contain _worktrees in the middle', () => {
-    expect(isWorktreePath('/path/to/project_worktrees_backup/folder')).toBe(false);
   });
 });
 
@@ -165,12 +237,12 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   it('returns the parent project plus other sibling worktrees when called from a worktree', () => {
     fs.mkdirSync(worktreesDir);
     const cwd = path.join(worktreesDir, 'proud-gorge');
-    fs.mkdirSync(cwd);
+    createLinkedWorktree(projectPath, cwd, 'proud-gorge');
     fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
 
     const dirs = getAdditionalDirectoriesForWorkspace(cwd);
     expect(dirs.sort()).toEqual([
-      projectPath,
+      fs.realpathSync.native(projectPath),
       path.join(worktreesDir, 'swift-falcon'),
     ].sort());
     // The current worktree itself must not appear -- it is already the
@@ -200,14 +272,14 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   it('keeps the parent project but drops siblings when includeSiblingWorktrees is false (worktree)', () => {
     fs.mkdirSync(worktreesDir);
     const cwd = path.join(worktreesDir, 'proud-gorge');
-    fs.mkdirSync(cwd);
+    createLinkedWorktree(projectPath, cwd, 'proud-gorge');
     fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
 
     const dirs = getAdditionalDirectoriesForWorkspace(cwd, {
       includeSiblingWorktrees: false,
     });
     // Parent project access (shared configs, .git common dir) must survive.
-    expect(dirs).toEqual([projectPath]);
+    expect(dirs).toEqual([fs.realpathSync.native(projectPath)]);
   });
 });
 
