@@ -59,3 +59,30 @@ describe('ContextUsageDisplay - context meter opens on click, not hover (#429)',
     expect(meter.getAttribute('aria-expanded')).toBe('true');
   });
 });
+
+describe('ContextUsageDisplay - cumulative rows are labeled as session totals (#824)', () => {
+  it('labels the io breakdown as cumulative session totals when the header shows window fill', () => {
+    // Header-right shows current window fill (132k / 200k) while the io rows
+    // show cumulative session usage (100k). Without a label the two read as
+    // the same quantity and contradict each other (#824: 76k vs 12,073).
+    render(<ContextUsageDisplay {...props} />);
+    fireEvent.click(screen.getByTestId('context-indicator'));
+    expect(screen.getByText('Session totals (cumulative)')).toBeTruthy();
+  });
+
+  it('omits the session-totals label when there is no context window (header already says Token Usage)', () => {
+    // contextWindow: 0 is the no-window state (hasContextWindow derives from
+    // displayContextWindow > 0); the header then reads "Token Usage" and no
+    // window-fill total renders, so there is no second quantity to label.
+    render(
+      <ContextUsageDisplay
+        inputTokens={80_000}
+        outputTokens={20_000}
+        totalTokens={100_000}
+        contextWindow={0}
+      />
+    );
+    fireEvent.click(screen.getByTestId('context-indicator'));
+    expect(screen.queryByText('Session totals (cumulative)')).toBeNull();
+  });
+});

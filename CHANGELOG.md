@@ -83,6 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Attachments in shared documents no longer disappear after an image is moved, deleted-and-undone, or edited by a collaborator — images now stay put for everyone.
 - Very large AI sessions now open quickly instead of appearing to hang, and no longer slow down as your history grows.
 - PR mode now explains when a merge needs the GitHub CLI `workflow` scope and offers the recovery command instead of showing `gh api -X failed`.
+- The context usage popup now labels its cumulative session totals separately from the current window fill, so the two no longer read as contradicting numbers (#824).
 - Queued prompts that were delivered but never answered (app quit or interrupt mid-turn) now show a visible failed state with a retry hint instead of being silently marked completed (#783, #790).
 - Importing Mermaid diagrams into Excalidraw works again: flowcharts (including subgraphs) become editable shapes instead of failing or degrading to a broken image, and AI-added arrows no longer lose their labels.
 - Voice mode no longer stops listening while you are still speaking; the mic stays open until you finish or explicitly pause.
