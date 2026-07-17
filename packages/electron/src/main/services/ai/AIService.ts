@@ -90,7 +90,7 @@ import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../S
 import { applyRemoteReadReceipt } from '../../ipc/ReadReceiptHandlers';
 import { applyRemoteTrackerPersonalState } from '../../ipc/TrackerPersonalStateHandlers';
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
-import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/workspaceDetection';
+import { isFileInWorkspaceOrWorktree } from '../../utils/workspaceDetection';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import * as fs from 'fs';
@@ -4082,27 +4082,18 @@ export class AIService {
   private async adoptWorktreeForSession(
     session: SessionData,
     worktreePath: string,
-    event: Electron.IpcMainInvokeEvent
+    _event: Electron.IpcMainInvokeEvent
   ): Promise<void> {
     if (!worktreePath || session.worktreePath === worktreePath) {
       return;
     }
 
-    const worktreeProjectPath = resolveProjectPath(worktreePath);
-    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-    await AISessionsRepository.updateMetadata(session.id, {
-      worktreePath,
-      worktreeProjectPath,
-    });
-
-    session.worktreePath = worktreePath;
-    session.worktreeProjectPath = worktreeProjectPath;
-    await this.hooklessWatcher.ensureForSession(session.id, worktreePath);
-
-    logger.main.info('[AIService] Adopted worktree path for session:', {
+    // A path observed in model output is attribution data, never authority to
+    // retarget a session. Native worktree sessions are born with their binding;
+    // a mis-started session must stop and be recreated rather than adopted.
+    logger.main.warn('[AIService] Ignoring inferred worktree path for session:', {
       sessionId: session.id,
       worktreePath,
-      worktreeProjectPath,
     });
   }
 

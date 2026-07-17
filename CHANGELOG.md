@@ -78,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tracker item popovers are clearer and easier to scan.
 
 ### Fixed
+- Commit proposals now remain bound to their native worktree and preserve unrelated staged or unstaged changes.
 - Next Tab and Previous Tab now navigate the active mode, including Shared Docs, without changing hidden tabs in another mode.
 - Attachments in shared documents no longer disappear after an image is moved, deleted-and-undone, or edited by a collaborator — images now stay put for everyone.
 - Very large AI sessions now open quickly instead of appearing to hang, and no longer slow down as your history grows.

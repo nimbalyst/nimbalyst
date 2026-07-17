@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => {
     ipcListenerCount: vi.fn((_channel: string) => 0),
     ipcEmit: vi.fn(),
     onPromptResolved: vi.fn(),
+    getDatabase: vi.fn(() => null),
+    createWorktreeStore: vi.fn(),
   };
 });
 
@@ -89,7 +91,15 @@ vi.mock('../../../window/WindowManager', () => ({
   findWindowByWorkspace: vi.fn(),
 }));
 
-import { resolveVoicePromptResponse } from '../MobileSessionControlHandler';
+vi.mock('../../../database/initialize', () => ({
+  getDatabase: mocks.getDatabase,
+}));
+
+vi.mock('../../WorktreeStore', () => ({
+  createWorktreeStore: mocks.createWorktreeStore,
+}));
+
+import { resolveGitCommitWorkspacePath, resolveVoicePromptResponse } from '../MobileSessionControlHandler';
 
 describe('MobileSessionControlHandler', () => {
   beforeEach(() => {
@@ -101,6 +111,28 @@ describe('MobileSessionControlHandler', () => {
     mocks.getProvider.mockImplementation((providerType: string, sessionId: string) =>
       providerType === 'openai-codex' && sessionId === 'session-1' ? mocks.provider : null,
     );
+  });
+
+  it('uses a native worktree path for mobile commit execution', () => {
+    expect(resolveGitCommitWorkspacePath({
+      workspacePath: 'D:/project',
+      worktreeId: 'wt-1',
+      worktreePath: 'D:/project_worktrees/task',
+    })).toBe('D:/project_worktrees/task');
+  });
+
+  it('fails closed when a native worktree session has no worktree path', () => {
+    expect(resolveGitCommitWorkspacePath({
+      workspacePath: 'D:/project',
+      worktreeId: 'wt-1',
+    })).toBeNull();
+  });
+
+  it('fails closed when a worktree path lacks a native worktree identity', () => {
+    expect(resolveGitCommitWorkspacePath({
+      workspacePath: 'D:/project',
+      worktreePath: 'D:/project_worktrees/task',
+    })).toBeNull();
   });
 
   it('uses the session provider and always persists the mobile response', async () => {
