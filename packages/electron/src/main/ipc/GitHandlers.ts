@@ -567,7 +567,7 @@ export function registerGitHandlers(): void {
     'git:commit-detail',
     async (_event, workspacePath: string, hash: string): Promise<{
       body: string;
-      files: Array<{ status: string; path: string; added: number; deleted: number }>;
+      files: Array<{ status: string; path: string; added: number; deleted: number; absolutePath: string }>;
       summary: { filesChanged: number; insertions: number; deletions: number };
     } | null> => {
       if (!workspacePath) throw new Error('workspacePath is required');
@@ -597,14 +597,17 @@ export function registerGitHandlers(): void {
         }
 
         // Parse name-status: "<STATUS>\t<path>" or "<STATUS>\t<old>\t<new>" for renames
-        const files: Array<{ status: string; path: string; added: number; deleted: number }> = [];
+        const files: Array<{ status: string; path: string; added: number; deleted: number; absolutePath: string }> = [];
         for (const line of nameStatusRaw.trim().split('\n').filter(Boolean)) {
           const parts = line.split('\t');
           if (parts.length >= 2) {
             const status = parts[0][0];
             const path = parts[parts.length - 1]; // new path for renames, only path otherwise
             const stats = numstatMap.get(path) ?? { added: 0, deleted: 0 };
-            files.push({ status, path, ...stats });
+            // path is repo-root-relative (git diff-tree output); join against
+            // gitRoot (not workspacePath) so consumers get a correct absolute
+            // path even when workspacePath is a subfolder of the repo (#124).
+            files.push({ status, path, absolutePath: join(gitRoot, path), ...stats });
           }
         }
 
@@ -630,10 +633,10 @@ export function registerGitHandlers(): void {
   safeHandle(
     'git:working-changes',
     async (_event, workspacePath: string): Promise<{
-      staged: Array<{ path: string; status: string }>;
-      unstaged: Array<{ path: string; status: string }>;
-      untracked: Array<{ path: string }>;
-      conflicted: Array<{ path: string }>;
+      staged: Array<{ path: string; status: string; absolutePath: string }>;
+      unstaged: Array<{ path: string; status: string; absolutePath: string }>;
+      untracked: Array<{ path: string; absolutePath: string }>;
+      conflicted: Array<{ path: string; absolutePath: string }>;
     }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       const gitRoot = gitRootFor(workspacePath);
@@ -651,13 +654,16 @@ export function registerGitHandlers(): void {
         // Build staged files list from the various status arrays.
         // status.staged = files with index changes (modified in index vs HEAD)
         // status.created = new files added to index (not in HEAD)
-        const staged: Array<{ path: string; status: string }> = [];
+        // Paths from `git status` are repo-root-relative, so absolutePath is
+        // joined against gitRoot (not workspacePath) -- workspacePath may be
+        // a subfolder of the repo (#124).
+        const staged: Array<{ path: string; status: string; absolutePath: string }> = [];
         for (const f of status.staged) {
           const isDeleted = status.deleted.includes(f);
-          staged.push({ path: f, status: isDeleted ? 'D' : 'M' });
+          staged.push({ path: f, status: isDeleted ? 'D' : 'M', absolutePath: join(gitRoot, f) });
         }
         for (const f of status.created) {
-          staged.push({ path: f, status: 'A' });
+          staged.push({ path: f, status: 'A', absolutePath: join(gitRoot, f) });
         }
 
         // Build unstaged files list.
@@ -665,9 +671,9 @@ export function registerGitHandlers(): void {
         // A file CAN appear in both staged and modified -- this means it has
         // staged changes AND additional unstaged edits on top. We must show
         // it in both lists so the user sees the full picture.
-        const unstaged: Array<{ path: string; status: string }> = [];
+        const unstaged: Array<{ path: string; status: string; absolutePath: string }> = [];
         for (const f of status.modified) {
-          unstaged.push({ path: f, status: 'M' });
+          unstaged.push({ path: f, status: 'M', absolutePath: join(gitRoot, f) });
         }
         for (const f of status.deleted) {
           // Only add to unstaged if it's not already there from modified,
@@ -676,15 +682,15 @@ export function registerGitHandlers(): void {
           // If a file is in status.staged with 'D', that's a staged deletion.
           // If it's in status.deleted but NOT in status.staged, it's unstaged.
           if (!status.staged.includes(f)) {
-            unstaged.push({ path: f, status: 'D' });
+            unstaged.push({ path: f, status: 'D', absolutePath: join(gitRoot, f) });
           }
         }
 
         // Untracked files
-        const untracked = status.not_added.map(f => ({ path: f }));
+        const untracked = status.not_added.map(f => ({ path: f, absolutePath: join(gitRoot, f) }));
 
         // Conflicted files
-        const conflicted = status.conflicted.map(f => ({ path: f }));
+        const conflicted = status.conflicted.map(f => ({ path: f, absolutePath: join(gitRoot, f) }));
 
         return { staged, unstaged, untracked, conflicted };
       } catch (error) {
