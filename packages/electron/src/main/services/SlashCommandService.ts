@@ -330,7 +330,7 @@ export class SlashCommandService {
           // Process markdown files
           try {
             // Compute relative path from root for namespacing
-            const relativePath = path.relative(rootPath, fullPath);
+            const relativePath = path.relative(rootPath, fullPath).replace(/\\/g, '/');
             const command = parseCommandFile(fullPath, source, relativePath);
 
             if (command && validateCommand(command)) {
@@ -365,7 +365,7 @@ export class SlashCommandService {
           this.scanSkillsRecursive(fullPath, rootPath, source, commands);
         } else if (isFileEntry(entry, fullPath) && entry.name === 'SKILL.md') {
           try {
-            const relativePath = path.relative(rootPath, fullPath);
+            const relativePath = path.relative(rootPath, fullPath).replace(/\\/g, '/');
             const command = parseSkillFile(fullPath, source, relativePath);
 
             if (command && validateCommand(command)) {

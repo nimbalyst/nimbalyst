@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'path';
 
 const {
   queryMock,
@@ -123,7 +124,7 @@ describe('TeamService account-to-org viewer binding', () => {
       { personalOrgId: 'personal-bound', personalUserId: 'personal-member-bound', email: 'bound@example.com' },
       { personalOrgId: 'personal-sync', personalUserId: 'personal-member-sync', email: 'sync@example.com' },
     ];
-    files.set('/mock/user-data/stytch-accounts.enc', Buffer.from(JSON.stringify({
+    files.set(path.join('/mock/user-data', 'stytch-accounts.enc'), Buffer.from(JSON.stringify({
       version: 3,
       syncAccountId: 'personal-bound',
       accounts: authState.accounts.map((account) => ({

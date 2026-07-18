@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'path';
 
 const { fetchMock, fsFiles } = vi.hoisted(() => ({
   fetchMock: vi.fn(),
@@ -61,7 +62,7 @@ vi.mock('@nimbalyst/runtime/sync', () => ({
 // OrgKeyService loads this once, lazily, on first `hasOrgKey`; seed it before
 // any test runs so the load sees it. Value is the legacy plain-base64 form.
 fsFiles.set(
-  '/mock/user-data/org-encryption-keys.enc',
+  path.join('/mock/user-data', 'org-encryption-keys.enc'),
   JSON.stringify([['org-legacy-e2e', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']])
 );
 

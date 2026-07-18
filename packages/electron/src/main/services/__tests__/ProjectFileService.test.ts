@@ -125,7 +125,8 @@ describe('ProjectFileService', () => {
     expect(historyCalls.at(-1)?.metadata.projectWritePhase).toBe('rollback');
   });
 
-  it('keys dirty checks and receipt paths on the caller root spelling, not the realpath', async () => {
+  // Windows requires Developer Mode or SeCreateSymbolicLinkPrivilege for this filesystem security case.
+  it.skipIf(process.platform === 'win32')('keys dirty checks and receipt paths on the caller root spelling, not the realpath', async () => {
     // A workspace opened through a symlinked path (common on macOS: /tmp -> /private/tmp)
     // must still line up with the renderer's non-canonical filePath and dirty-registry keys.
     const realDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'nimbalyst-project-real-')));
@@ -162,7 +163,8 @@ describe('ProjectFileService', () => {
     }
   });
 
-  it('rejects workspace escape and symlink escape', async () => {
+  // Windows requires Developer Mode or SeCreateSymbolicLinkPrivilege for this filesystem security case.
+  it.skipIf(process.platform === 'win32')('rejects workspace escape and symlink escape', async () => {
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'nimbalyst-project-outside-'));
     try {
       await fs.symlink(outside, path.join(root, 'escape'));

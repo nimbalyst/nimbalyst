@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sep } from 'path';
+import { resolve, sep } from 'path';
 import {
   encodeNimPreviewUrl,
   validateNimPreviewPath,
@@ -9,8 +9,8 @@ import {
   NIM_PREVIEW_HOST,
 } from '../nimPreviewProtocol';
 
-const ROOT = `${sep}tmp${sep}preview-root`;
-const OTHER = `${sep}tmp${sep}preview-other`;
+const ROOT = resolve(`${sep}tmp${sep}preview-root`);
+const OTHER = resolve(`${sep}tmp${sep}preview-other`);
 
 describe('nimPreviewProtocol', () => {
   describe('encodeNimPreviewUrl', () => {

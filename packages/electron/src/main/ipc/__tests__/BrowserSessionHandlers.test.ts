@@ -8,7 +8,7 @@ import {
 
 describe('getBrowserTranscriptImageDir', () => {
   it('stores transcript screenshots under a durable .nimbalyst subdirectory', () => {
-    const workspacePath = path.join('/tmp', 'workspace');
+    const workspacePath = path.resolve('/tmp', 'workspace');
 
     expect(getBrowserTranscriptImageDir(workspacePath)).toBe(
       path.join(workspacePath, '.nimbalyst', BROWSER_TRANSCRIPT_IMAGE_DIRNAME),
@@ -16,10 +16,10 @@ describe('getBrowserTranscriptImageDir', () => {
   });
 
   it('normalizes the workspace path before joining the transcript image directory', () => {
-    const workspacePath = path.join('/tmp', 'workspace', '..', 'workspace', '.');
+    const workspacePath = path.resolve('/tmp', 'workspace', '..', 'workspace', '.');
 
     expect(getBrowserTranscriptImageDir(workspacePath)).toBe(
-      path.join('/tmp', 'workspace', '.nimbalyst', BROWSER_TRANSCRIPT_IMAGE_DIRNAME),
+      path.join(path.resolve('/tmp', 'workspace'), '.nimbalyst', BROWSER_TRANSCRIPT_IMAGE_DIRNAME),
     );
   });
 });

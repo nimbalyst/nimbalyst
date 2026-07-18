@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sep } from "path";
+import { join, resolve, sep } from "path";
 import {
   encodeNimAssetUrl,
   validateNimAssetPath,
@@ -7,8 +7,8 @@ import {
   NIM_ASSET_HOST,
 } from "../nimAssetProtocol";
 
-const ROOT = `${sep}tmp${sep}allowed-root`;
-const OTHER = `${sep}tmp${sep}allowed-other`;
+const ROOT = resolve(`${sep}tmp${sep}allowed-root`);
+const OTHER = resolve(`${sep}tmp${sep}allowed-other`);
 
 describe("nimAssetProtocol", () => {
   describe("encodeNimAssetUrl", () => {
@@ -33,16 +33,16 @@ describe("nimAssetProtocol", () => {
     const roots = [ROOT, OTHER];
 
     it("accepts a PNG inside the first allowlisted root", () => {
-      expect(validateNimAssetPath(`${ROOT}/img.png`, roots)).toBe(`${ROOT}/img.png`);
+      expect(validateNimAssetPath(`${ROOT}/img.png`, roots)).toBe(join(ROOT, 'img.png'));
     });
 
     it("accepts a JPG inside another allowlisted root", () => {
-      expect(validateNimAssetPath(`${OTHER}/sub/x.jpg`, roots)).toBe(`${OTHER}/sub/x.jpg`);
+      expect(validateNimAssetPath(`${OTHER}/sub/x.jpg`, roots)).toBe(join(OTHER, 'sub', 'x.jpg'));
     });
 
     it("accepts each image extension in the allowlist", () => {
       for (const ext of [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"]) {
-        expect(validateNimAssetPath(`${ROOT}/x${ext}`, roots)).toBe(`${ROOT}/x${ext}`);
+        expect(validateNimAssetPath(`${ROOT}/x${ext}`, roots)).toBe(join(ROOT, `x${ext}`));
       }
     });
 
@@ -88,7 +88,7 @@ describe("nimAssetProtocol", () => {
     });
 
     it("normalizes the file extension comparison case-insensitively", () => {
-      expect(validateNimAssetPath(`${ROOT}/IMG.PNG`, roots)).toBe(`${ROOT}/IMG.PNG`);
+      expect(validateNimAssetPath(`${ROOT}/IMG.PNG`, roots)).toBe(join(ROOT, 'IMG.PNG'));
     });
 
     it("requires the root prefix match to be a directory boundary, not a substring prefix", () => {

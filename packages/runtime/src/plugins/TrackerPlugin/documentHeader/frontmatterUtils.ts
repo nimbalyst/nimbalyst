@@ -95,7 +95,7 @@ export const EXTENSION_OWNED_KEYS: Record<string, string> = {
  * older legacy ID.
  */
 export function buildFullDocumentTrackerId(trackerType: string, relativePath: string): string {
-  return `fm:${trackerType}:${relativePath}`;
+  return `fm:${trackerType}:${relativePath.replace(/\\/g, '/')}`;
 }
 
 /**
