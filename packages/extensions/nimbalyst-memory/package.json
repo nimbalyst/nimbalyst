@@ -9,6 +9,7 @@
   "scripts": {
     "build": "npm run build --prefix engine && vite build && vite build --config vite.backend.config.ts",
     "dev": "vite build --watch",
+    "pretypecheck": "npm run build --prefix engine",
     "typecheck": "npm run typecheck --prefix engine && tsc --noEmit",
     "test": "echo \"engine tests run via root vitest\""
   },
