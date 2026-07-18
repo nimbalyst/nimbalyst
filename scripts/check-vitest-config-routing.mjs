@@ -23,10 +23,10 @@ const requiredRootScripts = {
 const requiredElectronScripts = {
   test: 'npm --prefix ../.. run test:electron --',
   'test:ui': 'npm --prefix ../.. run test:electron:ui --',
-  'test:watch': 'npm --prefix ../.. run test:electron --',
+  'test:watch': 'npm --prefix ../.. run test:electron -- --watch',
   'test:coverage': 'npm --prefix ../.. run test:electron:coverage --',
   'test:ai': 'npm --prefix ../.. run test:electron:ai --',
-  'test:ai:watch': 'npm --prefix ../.. run test:electron:ai --',
+  'test:ai:watch': 'npm --prefix ../.. run test:electron:ai -- --watch',
 };
 
 for (const [name, command] of Object.entries(requiredRootScripts)) {
