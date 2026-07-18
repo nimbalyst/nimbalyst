@@ -231,7 +231,8 @@ How the agent confirms a fix actually works before announcing it.
 ### Unit tests
 
 - `npm run test:unit` (vitest)
-- Per-package: `npm run test` inside the package
+- Electron: `npm run test:electron` from the repository root, or `npm run test` inside `packages/electron` (both use the root Vitest configuration)
+- Other packages: `npm run test` inside the package
 - iOS: `npm run ios:test:swift`
 
 ### E2E tests (Playwright on host)

@@ -59,6 +59,9 @@ jobs:
       - name: Check override/dep sync
         run: npm run check:override-sync
 
+      - name: Check Vitest config routing
+        run: npm run check:vitest-config-routing
+
       - name: Run unit tests
         run: npm run test:unit -- --run
 
