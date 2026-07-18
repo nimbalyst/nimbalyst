@@ -32,6 +32,28 @@ import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { WINDOWS_KNOWN_FAILING_SUITES } from './windows-known-failing-suites.mjs';
 
+// Keep this list aligned with `git rev-parse --local-env-vars`. These values
+// describe one repository/worktree and must not leak from a Git hook into tests
+// that intentionally create and operate on independent repositories.
+const GIT_LOCAL_ENV_VARS = new Set([
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CONFIG',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_COUNT',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_IMPLICIT_WORK_TREE',
+  'GIT_GRAFT_FILE',
+  'GIT_INDEX_FILE',
+  'GIT_NO_REPLACE_OBJECTS',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_PREFIX',
+  'GIT_SHALLOW_FILE',
+  'GIT_COMMON_DIR',
+]);
+const NUMBERED_GIT_CONFIG_ENV = /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/;
+
 export function shouldExcludeKnownFailingSuites({ platform = process.platform, ci = process.env.CI } = {}) {
   return platform === 'win32' && !/^(1|true|yes)$/i.test(ci ?? '');
 }
@@ -52,9 +74,26 @@ export function buildVitestEnv(opts = {}) {
   return env;
 }
 
+export function sanitizeGitLocalEnv(env = process.env) {
+  const sanitized = { ...env };
+  const hasConfigCount = Object.keys(env).some((name) => name.toUpperCase() === 'GIT_CONFIG_COUNT');
+
+  for (const name of Object.keys(sanitized)) {
+    const normalizedName = name.toUpperCase();
+    if (
+      GIT_LOCAL_ENV_VARS.has(normalizedName) ||
+      (hasConfigCount && NUMBERED_GIT_CONFIG_ENV.test(normalizedName))
+    ) {
+      delete sanitized[name];
+    }
+  }
+
+  return sanitized;
+}
+
 function main() {
   const args = buildVitestArgs();
-  const env = { ...process.env, ...buildVitestEnv() };
+  const env = sanitizeGitLocalEnv({ ...process.env, ...buildVitestEnv() });
   if (shouldExcludeKnownFailingSuites()) {
     process.stderr.write(
       `[prepush] Local Windows push: excluding ${WINDOWS_KNOWN_FAILING_SUITES.length} known-failing suite(s). ` +
