@@ -21,6 +21,9 @@ fi
 echo "[pre-push] Checking override/dep sync..."
 npm run check:override-sync
 
+echo "[pre-push] Checking Vitest config routing..."
+npm run check:vitest-config-routing
+
 echo "[pre-push] Building typecheck prerequisites and running the full typecheck..."
 npm run typecheck:prepush
 
