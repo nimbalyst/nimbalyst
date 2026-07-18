@@ -103,6 +103,7 @@ struct ContextInfo: Codable {
 struct ClientMetadata: Codable {
     let currentContext: ContextInfo?
     let hasPendingPrompt: Bool?
+    let attentionSummary: AttentionSummary?
     /// Kanban phase: backlog, planning, implementing, validating, complete
     let phase: String?
     /// Arbitrary tags for categorization
@@ -111,6 +112,62 @@ struct ClientMetadata: Codable {
     let draftInput: String?
     /// Epoch ms when draftInput was last updated by the sending device
     let draftUpdatedAt: Int?
+    /// Marker that the title was AI-chosen; prevents repeated rename attempts.
+    let hasBeenNamed: Bool?
+}
+
+extension ClientMetadata {
+    /// A draft edit replaces the complete encrypted client-metadata blob on the
+    /// index. The server cannot merge this opaque value, so every draft write
+    /// must carry forward the session's canonical prompt/attention state (and
+    /// the other client-only fields already available locally).
+    static func preservingOpaqueState(
+        from session: Session,
+        draftInput: String,
+        draftUpdatedAt: Int
+    ) -> ClientMetadata {
+        let currentContext: ContextInfo?
+        if let tokens = session.contextTokens,
+           let contextWindow = session.contextWindow,
+           contextWindow > 0 {
+            currentContext = ContextInfo(tokens: tokens, contextWindow: contextWindow)
+        } else {
+            currentContext = nil
+        }
+
+        return ClientMetadata(
+            currentContext: currentContext,
+            hasPendingPrompt: session.hasPendingPrompt,
+            attentionSummary: AttentionSummary(
+                pending: session.attentionPending,
+                severity: session.attentionSeverity,
+                eventId: session.attentionEventId,
+                effectiveDeadline: session.attentionEffectiveDeadline
+            ),
+            phase: session.phase,
+            tags: session.tags.isEmpty ? nil : session.tags,
+            draftInput: draftInput,
+            draftUpdatedAt: draftUpdatedAt,
+            hasBeenNamed: session.hasBeenNamed
+        )
+    }
+}
+
+enum SessionOpaqueMetadataReconciler {
+    /// Omission means an older peer did not know the field, so retain local
+    /// knowledge. Explicit false and true are both authoritative values.
+    static func namingMarker(existing: Bool?, incoming: Bool?) -> Bool? {
+        incoming ?? existing
+    }
+}
+
+/// Bounded generic attention state from the encrypted client metadata blob.
+/// It deliberately contains no prompt body, question, or raw error text.
+struct AttentionSummary: Codable, Equatable, Sendable {
+    let pending: Bool
+    let severity: String?
+    let eventId: String?
+    let effectiveDeadline: String?
 }
 
 /// A project entry as received from the server (encrypted fields).

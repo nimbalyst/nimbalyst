@@ -89,6 +89,43 @@ describe('SessionStateManager', () => {
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({ type: 'session:completed' }));
   });
 
+  it('rotates generation when a new prompt is observed before the next CLI running poll', async () => {
+    const listener = vi.fn<(event: SessionStateEvent) => void>();
+    manager.subscribe(listener);
+    await manager.startSession({
+      sessionId: 'session-cli-prompt-race',
+      workspacePath: '/workspace/project',
+      attentionGeneration: 'turn-a',
+    });
+    await manager.updateActivity({
+      sessionId: 'session-cli-prompt-race',
+      status: 'idle',
+      isStreaming: false,
+      attentionGeneration: 'turn-a',
+    });
+    listener.mockClear();
+
+    await manager.updateActivity({
+      sessionId: 'session-cli-prompt-race',
+      status: 'waiting_for_input',
+      isStreaming: false,
+    });
+
+    const turnB = manager.getSessionState('session-cli-prompt-race')?.attentionGeneration;
+    expect(turnB).toMatch(/^session-cli-prompt-race:/);
+    expect(turnB).not.toBe('turn-a');
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'session:waiting',
+      attentionGeneration: turnB,
+    }));
+
+    await manager.endSession('session-cli-prompt-race', { attentionGeneration: 'turn-a' });
+    expect(manager.getSessionState('session-cli-prompt-race')).toMatchObject({
+      status: 'waiting_for_input',
+      attentionGeneration: turnB,
+    });
+  });
+
   it('emits session:completed for sessions missing from active state', async () => {
     const listener = vi.fn<(event: SessionStateEvent) => void>();
     manager.subscribe(listener);
@@ -105,5 +142,81 @@ describe('SessionStateManager', () => {
     expect(database.queries.some(({ sql, params }) =>
       sql.includes('UPDATE ai_sessions SET status = $1') && params?.[0] === 'idle' && params?.[1] === 'session-missing'
     )).toBe(true);
+  });
+
+  it('carries the turn generation into terminal events', async () => {
+    const listener = vi.fn<(event: SessionStateEvent) => void>();
+    manager.subscribe(listener);
+    await manager.startSession({
+      sessionId: 'session-generated',
+      workspacePath: '/workspace/project',
+      attentionGeneration: 'turn-a',
+    } as any);
+    listener.mockClear();
+
+    await manager.endSession('session-generated', { attentionGeneration: 'turn-a' } as any);
+
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'session:completed',
+      attentionGeneration: 'turn-a',
+    }));
+  });
+
+  it('returns the exact generation created for the authoritative turn start', async () => {
+    const generated = await manager.startSession({
+      sessionId: 'session-returned-generation',
+      workspacePath: '/workspace/project',
+    });
+
+    expect(generated).toBe(
+      manager.getSessionState('session-returned-generation')?.attentionGeneration,
+    );
+    expect(generated).toMatch(/^session-returned-generation:/);
+  });
+
+  it('ignores a stale terminal generation after a newer turn starts', async () => {
+    const listener = vi.fn<(event: SessionStateEvent) => void>();
+    manager.subscribe(listener);
+    await manager.startSession({
+      sessionId: 'session-race',
+      workspacePath: '/workspace/project',
+      attentionGeneration: 'turn-b',
+    } as any);
+    listener.mockClear();
+
+    await manager.endSession('session-race', { attentionGeneration: 'turn-a' } as any);
+
+    expect(manager.getSessionState('session-race')).toMatchObject({
+      attentionGeneration: 'turn-b',
+      status: 'running',
+    });
+    expect(listener).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'session:completed',
+    }));
+  });
+
+  it('ignores a stale error generation after a newer turn starts', async () => {
+    const listener = vi.fn<(event: SessionStateEvent) => void>();
+    manager.subscribe(listener);
+    await manager.startSession({
+      sessionId: 'session-error-race',
+      workspacePath: '/workspace/project',
+      attentionGeneration: 'turn-b',
+    });
+    listener.mockClear();
+
+    await manager.updateActivity({
+      sessionId: 'session-error-race',
+      status: 'error',
+      attentionGeneration: 'turn-a',
+    });
+
+    expect(manager.getSessionState('session-error-race')).toMatchObject({
+      attentionGeneration: 'turn-b',
+      status: 'running',
+    });
+    expect(listener).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'session:error',
+    }));
   });
 });

@@ -9,6 +9,7 @@
  */
 
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { assertNoReservedAttentionSupervisorMetadataMutation } from "../services/AttentionSupervisorAuthorization";
 
 // Store reference to the session manager functions (set once at startup)
 let updateSessionTitleFn:
@@ -193,6 +194,7 @@ export async function dispatchSessionMetaTool(
 
   try {
     if (toolName === "update_session_meta") {
+      assertNoReservedAttentionSupervisorMetadataMutation(args, 'MCP update_session_meta');
       const sessionName = args?.name as string | undefined;
       const addTags = Array.isArray(args?.add) ? args.add as string[] : typeof args?.add === 'string' ? [args.add] : undefined;
       const removeTags = Array.isArray(args?.remove) ? args.remove as string[] : typeof args?.remove === 'string' ? [args.remove] : undefined;

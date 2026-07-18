@@ -175,7 +175,10 @@ export interface PidStateWatcherOptions {
    * Emitted only when the mapped turn state changes. `parsed` is null when the
    * state was synthesized by the liveness backstop (no readable PID file).
    */
-  onTurnState: (state: ClaudeTurnState, parsed: ParsedClaudePidFile | null) => void;
+  onTurnState: (
+    state: ClaudeTurnState,
+    parsed: ParsedClaudePidFile | null,
+  ) => void | Promise<void>;
 }
 
 /**
@@ -200,6 +203,7 @@ export function watchClaudePidState(options: PidStateWatcherOptions): () => void
 
   let lastState: ClaudeTurnState | undefined;
   let stopped = false;
+  let callbackTail: Promise<void> = Promise.resolve();
 
   const tick = async () => {
     if (stopped) return;
@@ -226,7 +230,16 @@ export function watchClaudePidState(options: PidStateWatcherOptions): () => void
     const diff = diffTurnState(lastState, next);
     if (diff.changed) {
       lastState = next;
-      options.onTurnState(next, parsed);
+      // Poll ticks may overlap while a previous state callback is awaiting DB
+      // or prompt persistence. Serialize callbacks in observation order so a
+      // late A-idle mutation cannot land after B-running.
+      callbackTail = callbackTail
+        .then(() => options.onTurnState(next!, parsed))
+        .then(() => undefined)
+        .catch((error) => {
+          console.warn('[ClaudeCliPidState] Turn-state callback failed:', error);
+        });
+      await callbackTail;
     }
   };
 

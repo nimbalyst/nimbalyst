@@ -14,6 +14,7 @@ import {
   SessionFilesRepository,
 } from "@nimbalyst/runtime";
 import type { SessionMeta } from "@nimbalyst/runtime";
+import { assertNoReservedAttentionSupervisorMetadataMutation } from "../services/AttentionSupervisorAuthorization";
 
 // ─── Utilities ──────────────────────────────────────────────────────
 
@@ -867,6 +868,7 @@ export async function dispatchSessionContextTool(
       }
 
       case "update_session_board": {
+        assertNoReservedAttentionSupervisorMetadataMutation(args, 'MCP update_session_board');
         const sessionId = args?.sessionId as string;
         const phase = args?.phase as string | null | undefined;
         const tags = args?.tags as string[] | undefined;

@@ -14,6 +14,7 @@ import { getDatabase } from '../database/initialize';
 import { createWorktreeStore } from './WorktreeStore';
 import { getPreferredAgentLanguage } from '../utils/store';
 import { normalizeSessionPhaseMetadataUpdate } from './session/sessionPhaseTransition';
+import { assertNoReservedAttentionSupervisorMetadataMutation } from './AttentionSupervisorAuthorization';
 
 /**
  * Service to manage the session naming MCP server
@@ -74,6 +75,7 @@ export class SessionNamingService {
 
         // Set the metadata update function (for tags, phase, etc.)
         setUpdateSessionMetadataFn(async (sessionId: string, metadata: Record<string, unknown>) => {
+          assertNoReservedAttentionSupervisorMetadataMutation(metadata, 'SessionNamingService MCP metadata callback');
           const normalizedMetadata = normalizeSessionPhaseMetadataUpdate(metadata);
           // SyncedSessionStore.updateMetadata is the single source of truth for
           // what reaches other devices; phase/tags forwarding lives there now.

@@ -12,7 +12,7 @@ import {
   isExitPlanModeProvider,
   isToolPermissionProvider,
 } from '@nimbalyst/runtime/ai/server';
-import { AISessionsRepository, type PermissionScope } from '@nimbalyst/runtime';
+import { AISessionsRepository, AgentMessagesRepository, type PermissionScope } from '@nimbalyst/runtime';
 import { ipcMain, BrowserWindow } from 'electron';
 import { logger } from '../../utils/logger';
 import { TrayManager } from '../../tray/TrayManager';
@@ -33,6 +33,8 @@ import { findWindowByWorkspace } from '../../window/WindowManager';
 import { getDatabase } from '../../database/initialize';
 import { createWorktreeStore } from '../WorktreeStore';
 import { resolve as resolvePath } from 'path';
+import { setSessionPendingPrompt } from './pendingPromptPersistence';
+import { attentionEventService } from '../AttentionEventService';
 
 const log = logger.ai;
 
@@ -360,6 +362,7 @@ function handleRequestUserInputResponse(
   void deliverMobilePromptResponse({
     promptType: 'request_user_input',
     sessionId,
+    promptId,
     waiterIds,
     // No in-process provider: request_user_input is an MCP-only prompt.
     mcpChannel: (sid, waiterId) => getRequestUserInputResponseChannel(sid, waiterId),
@@ -401,6 +404,12 @@ async function handleCancel(
       log.error('Mobile cancel: rollbackExecutingPrompts failed:', rollbackErr);
     }
   };
+
+  const promptClear = await setSessionPendingPrompt(sessionId, false);
+  if (!promptClear.local.succeeded && !promptClear.superseded) {
+    log.warn(`[Mobile] Cancel prompt clear was not durable: ${JSON.stringify(promptClear)}`);
+  }
+  await attentionEventService.cancelAllForSession(sessionId, 'interrupted');
 
   // claude-code-cli is an external CLI process with NO in-process provider —
   // abort it by sending Ctrl-C to the terminal PTY, mirroring the desktop
@@ -477,6 +486,7 @@ async function handleAskUserQuestionResponse(
   await deliverMobilePromptResponse({
     promptType: 'ask_user_question',
     sessionId,
+    promptId: questionId,
     waiterIds,
     deliverToProvider: (provider) => {
       if (!provider || !isAskUserQuestionProvider(provider)) return false;
@@ -536,6 +546,7 @@ function handleExitPlanModeResponse(
   void deliverMobilePromptResponse({
     promptType: 'exit_plan_mode',
     sessionId,
+    promptId,
     deliverToProvider: (provider) => {
       if (!isExitPlanModeProvider(provider)) {
         log.warn('[Mobile] ExitPlanMode: provider cannot resolve confirmation for session:', sessionId);
@@ -589,6 +600,7 @@ function handleToolPermissionResponse(
   void deliverMobilePromptResponse({
     promptType: 'tool_permission',
     sessionId,
+    promptId,
     // The MCP waiter (claude-code-cli PreToolUse path) keys on the canonical
     // `tool-perm-…` id; provider-path sessions resolve via deliverToProvider.
     waiterIds: [promptId],
@@ -648,12 +660,8 @@ async function handleGitCommitResponse(
     filesCommitted?: string[];
     commitMessage?: string;
   }) => {
-    const { ipcMain } = await import('electron');
-    const responseChannel = getGitCommitProposalResponseChannel(sessionId, canonicalPromptId);
-    ipcMain.emit(responseChannel, null, result);
-
-    import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository').then(({ AgentMessagesRepository }) => {
-      AgentMessagesRepository.create({
+    try {
+      await AgentMessagesRepository.create({
         sessionId,
         source: 'nimbalyst',
         direction: 'output' as const,
@@ -670,14 +678,28 @@ async function handleGitCommitResponse(
           respondedBy: 'mobile',
           respondedAt: Date.now(),
         }),
-      }).catch((err) => {
-        log.warn(`[Mobile] Failed to persist GitCommit response: ${err}`);
       });
-    });
+    } catch (err) {
+      log.warn(`[Mobile] Failed to persist GitCommit response: ${err}`);
+    }
+
+    const responseChannel = getGitCommitProposalResponseChannel(sessionId, canonicalPromptId);
+    ipcMain.emit(responseChannel, null, result);
 
     // Notify renderer to clear the pending interactive prompt indicator
     notifyAllWindows('ai:gitCommitProposalResolved', { sessionId, proposalId: canonicalPromptId });
     TrayManager.getInstance().onPromptResolved(sessionId);
+    const promptClear = await setSessionPendingPrompt(sessionId, false, {
+      expectedPromptId: canonicalPromptId,
+    });
+    if (!promptClear.local.succeeded && !promptClear.superseded) {
+      log.warn(`[Mobile] GitCommit prompt clear was not durable: ${JSON.stringify(promptClear)}`);
+    }
+    await attentionEventService.cancelInteractivePrompt(
+      sessionId,
+      canonicalPromptId,
+      result.action === 'cancelled' ? 'cancelled' : 'answered',
+    );
   };
 
   if (response.action === 'cancelled') {

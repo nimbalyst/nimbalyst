@@ -12,7 +12,7 @@ import {
 import type { UpdateSessionMetadataPayload } from '@nimbalyst/runtime/ai/adapters/sessionStore';
 import path from "path";
 import { existsSync } from "fs";
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, dialog } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
 import type { SessionCreateResult } from '../../shared/ipc/types';
@@ -24,12 +24,31 @@ import {
     resolveGitCommitProposalPromptId,
 } from '../services/ai/gitCommitProposalPromptUtils';
 import { enrichTranscriptMessagesWithToolCallDiffs } from '../services/TranscriptToolCallEnricher';
-import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence';
+import {
+    runOwnedPendingPromptAction,
+    type PendingPromptPersistenceResult,
+} from '../services/ai/pendingPromptPersistence';
+import { settleOrphanedPromptTurn } from '../services/ai/orphanedPromptTurnSettlement';
+import { attentionEventService } from '../services/AttentionEventService';
 import { normalizeSessionPhaseMetadataUpdate } from '../services/session/sessionPhaseTransition';
+import {
+    ATTENTION_SUPERVISOR_METADATA_KEY,
+    assertBoundWindowCanMutateAttentionSupervisors,
+    assertNoReservedAttentionSupervisorMetadataMutation,
+    setAttentionSupervisorAuthorizationWithUserConfirmation,
+} from '../services/AttentionSupervisorAuthorization';
+import { windows, windowStates } from '../window/windowState';
 
 // Initialize session manager
 const sessionManager = new SessionManager();
 const analyticsService = AnalyticsService.getInstance();
+
+function getRegisteredWindowId(browserWindow: BrowserWindow): number | null {
+    for (const [windowId, registeredWindow] of windows) {
+        if (registeredWindow === browserWindow) return windowId;
+    }
+    return null;
+}
 
 // Track if handlers are registered to prevent double registration
 let handlersRegistered = false;
@@ -285,6 +304,7 @@ export async function registerSessionHandlers() {
     safeHandle('sessions:create', async (event, payload: { session: any; workspaceId: string }): Promise<SessionCreateResult> => {
         try {
             const { session, workspaceId } = payload;
+            assertNoReservedAttentionSupervisorMetadataMutation(session, 'sessions:create');
 
             // Extract and sync provider from model ID if model follows "provider:model" format
             let provider = session.provider as AIProviderType;
@@ -379,6 +399,7 @@ export async function registerSessionHandlers() {
     // Update session metadata (including mode, isArchived, etc.)
     safeHandle('sessions:update-metadata', async (event, sessionId: string, updates: UpdateSessionMetadataPayload) => {
         try {
+            assertNoReservedAttentionSupervisorMetadataMutation(updates, 'sessions:update-metadata');
             const currentSession = await AISessionsRepository.get(sessionId);
             if (!currentSession) {
                 throw new Error('Session not found');
@@ -454,6 +475,7 @@ export async function registerSessionHandlers() {
     // Update session metadata with extended fields
     safeHandle('sessions:update-session-metadata', async (event, sessionId: string, updates: any) => {
         try {
+            assertNoReservedAttentionSupervisorMetadataMutation(updates, 'sessions:update-session-metadata');
             // Extract sessionType and metadata from updates
             const { sessionType, ...rawMetadataFields } = updates;
             const metadataFields = normalizeSessionPhaseMetadataUpdate(rawMetadataFields);
@@ -480,6 +502,71 @@ export async function registerSessionHandlers() {
             return { success: true };
         } catch (error) {
             console.error('[SessionHandlers] Failed to update session metadata:', error);
+            return { success: false, error: String(error) };
+        }
+    });
+
+    // User-authoritative grant/revoke surface for cross-session attention
+    // supervision. This channel is renderer-only and is deliberately absent
+    // from every agent/MCP allowlist. The calling window must already bind the
+    // exact workspace, and the persistence service independently validates the
+    // canonical target and supervisor session rows in that workspace.
+    safeHandle('sessions:set-attention-supervisor-authorization', async (
+        event,
+        payload: {
+            workspacePath: string;
+            targetSessionId: string;
+            supervisorSessionId: string;
+            authorized: boolean;
+        },
+    ) => {
+        try {
+            if (!payload || typeof payload !== 'object' || !payload.workspacePath) {
+                throw new Error('workspacePath is required');
+            }
+            const senderWindow = BrowserWindow.fromWebContents(event.sender);
+            if (!senderWindow) {
+                throw new Error('Calling renderer window is not available');
+            }
+            const senderWindowId = senderWindow ? getRegisteredWindowId(senderWindow) : null;
+            assertBoundWindowCanMutateAttentionSupervisors(
+                senderWindowId === null ? undefined : windowStates.get(senderWindowId),
+                payload.workspacePath,
+            );
+
+            const result = await setAttentionSupervisorAuthorizationWithUserConfirmation(
+                payload,
+                async (request) => {
+                    const actionLabel = request.action === 'authorize' ? 'Authorize' : 'Revoke';
+                    const response = await dialog.showMessageBox(senderWindow, {
+                        type: 'warning',
+                        title: `${actionLabel} attention supervisor`,
+                        message: `${actionLabel} this session supervisor relationship?`,
+                        detail: [
+                            `Target session: ${request.targetSessionId}`,
+                            `Supervisor session: ${request.supervisorSessionId}`,
+                            request.action === 'authorize'
+                                ? 'The supervisor will be able to notify, arm, inspect, and cancel attention for the target.'
+                                : 'The supervisor will lose cross-session attention access to the target.',
+                        ].join('\n'),
+                        buttons: ['Cancel', actionLabel],
+                        defaultId: 0,
+                        cancelId: 0,
+                        noLink: true,
+                    });
+                    return response.response === 1;
+                },
+            );
+            for (const window of BrowserWindow.getAllWindows()) {
+                if (!window.isDestroyed()) {
+                    window.webContents.send('sessions:session-updated', payload.targetSessionId, {
+                        [ATTENTION_SUPERVISOR_METADATA_KEY]: result.authorizedSupervisorSessionIds,
+                    });
+                }
+            }
+            return { success: true, ...result };
+        } catch (error) {
+            console.error('[SessionHandlers] Failed to update attention supervisor authorization:', error);
             return { success: false, error: String(error) };
         }
     });
@@ -1241,9 +1328,18 @@ export async function registerSessionHandlers() {
             const canonicalPromptId = promptType === 'git_commit_proposal_request'
                 ? await resolveGitCommitProposalPromptId(sessionId, promptId)
                 : promptId;
+            const ownedAction = await runOwnedPendingPromptAction(
+                sessionId,
+                canonicalPromptId,
+                async ({ ownership: promptOwnership, clearPrompt }) => {
+                    let promptClear: PendingPromptPersistenceResult | undefined;
+                    let terminalAttentionSettled = false;
 
-            // Determine response type and content
-            let responseContent: any;
+                    // Determine response type and content only after the exact
+                    // prompt id + generation was validated under the shared
+                    // prompt lock. A stale renderer action performs no DB,
+                    // waiter, provider, tray, or terminal side effect.
+                    let responseContent: any;
             if (promptType === 'permission_request') {
                 responseContent = {
                     type: 'permission_response',
@@ -1401,6 +1497,18 @@ export async function registerSessionHandlers() {
                 }
             }
 
+            // Response persistence above belongs to exact prompt A and may
+            // survive an orphaned waiter. Compare-clear A before any operation
+            // that can wake a provider/waiter or mutate session-wide UI/state.
+            promptClear = await clearPrompt();
+            if (!promptClear.local.succeeded || promptClear.superseded) {
+                return {
+                    responseContent,
+                    promptClear,
+                    currentTurnMutationSkipped: true,
+                };
+            }
+
             // For request_user_input, emit to the session-scoped MCP waiter channel
             // so the MCP handler resolves immediately. (The DB row above is the
             // durable fallback for cases where the MCP transport drops.)
@@ -1462,30 +1570,68 @@ export async function registerSessionHandlers() {
                     // durable. Mark the session as idle so it doesn't appear stuck forever.
                     console.warn(
                         `[SessionHandlers] No MCP waiter for git commit proposal response on channel: ${responseChannel}. ` +
-                        `The Claude Code subprocess may have exited. Session: ${sessionId}, proposalId: ${canonicalPromptId}. ` +
-                        `Marking session as idle.`
+                        `The Claude Code subprocess may have exited. Session: ${sessionId}, proposalId: ${canonicalPromptId}.`
                     );
-                    try {
-                        const { getSessionStateManager } = await import('@nimbalyst/runtime/ai/server/SessionStateManager');
-                        const stateManager = getSessionStateManager();
-                        await stateManager.endSession(sessionId);
-                    } catch (cleanupErr) {
-                        console.warn('[SessionHandlers] Failed to mark orphaned session as idle:', cleanupErr);
+                    if (promptOwnership.attentionGeneration && promptOwnership.matchedPendingPrompt) {
+                        try {
+                            const settlement = await settleOrphanedPromptTurn({
+                                ownership: promptOwnership,
+                                promptClear,
+                                reason: response?.action === 'cancelled'
+                                    ? 'interrupted'
+                                    : response?.action === 'error' || response?.error
+                                        ? 'error'
+                                        : 'completed',
+                            });
+                            promptClear = settlement.promptClear;
+                            terminalAttentionSettled = true;
+                            if (!settlement.settled) {
+                                console.warn(
+                                    `[SessionHandlers] Orphaned proposal ${canonicalPromptId} no longer owns ` +
+                                    `generation ${promptOwnership.attentionGeneration}; preserving the current turn.`,
+                                );
+                            }
+                        } catch (cleanupErr) {
+                            console.warn('[SessionHandlers] Failed to settle orphaned session generation:', cleanupErr);
+                        }
+                    } else {
+                        console.warn(
+                            `[SessionHandlers] Cannot prove generation ownership for orphaned proposal ` +
+                            `${canonicalPromptId}; preserving current session state.`,
+                        );
                     }
                 }
                 event.sender.send('ai:gitCommitProposalResolved', { sessionId, proposalId: canonicalPromptId });
                 TrayManager.getInstance().onPromptResolved(sessionId);
             }
 
-            // Authoritative clear for the persisted "pending prompt" bit.
-            // Covers all prompt types resolved via this handler so the next
-            // session-list refresh on this or any other device sees the
-            // session as idle. The runtime atom clear paths in
-            // sessionStateListeners are still in place; this is the durable
-            // backstop that survives renderer reloads and reaches mobile.
-            void setSessionPendingPrompt(sessionId, false);
+            if (
+                !terminalAttentionSettled &&
+                promptOwnership.attentionGeneration &&
+                promptOwnership.matchedPendingPrompt
+            ) {
+                await attentionEventService.cancelInteractivePrompt(
+                    sessionId,
+                    canonicalPromptId,
+                    response?.cancelled === true || response?.action === 'cancelled' ? 'cancelled' : 'answered',
+                    { expectedGeneration: promptOwnership.attentionGeneration },
+                );
+            }
 
-            return { success: true, responseContent };
+            return {
+                responseContent,
+                ...(promptClear ? { promptClear } : {}),
+            };
+                },
+            );
+            if (!ownedAction.owned || !ownedAction.value) {
+                return {
+                    success: false,
+                    error: 'Prompt action is stale or no longer owns the current turn',
+                    staleAction: true,
+                };
+            }
+            return { success: true, ...ownedAction.value };
         } catch (error) {
             console.error('[SessionHandlers] Failed to respond to prompt:', error);
             return { success: false, error: String(error) };

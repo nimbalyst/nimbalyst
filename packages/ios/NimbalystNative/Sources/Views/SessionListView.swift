@@ -83,7 +83,8 @@ struct WorkstreamGroup: Identifiable {
 // MARK: - Aggregated Status
 
 enum AggregatedStatus {
-    case waitingForInput  // hasPendingPrompt + isExecuting
+    case waitingForInput  // hasPendingPrompt
+    case attention        // generic attention event
     case processing       // isExecuting
     case pendingPrompt    // hasQueuedPrompts
     case unread           // hasUnread
@@ -91,8 +92,11 @@ enum AggregatedStatus {
 }
 
 func computeAggregatedStatus(_ children: [Session]) -> AggregatedStatus {
-    if children.contains(where: { $0.hasQueuedPrompts && $0.isExecuting }) {
+    if children.contains(where: { $0.hasPendingPrompt }) {
         return .waitingForInput
+    }
+    if children.contains(where: { $0.attentionPending }) {
+        return .attention
     }
     if children.contains(where: { $0.isExecuting }) {
         return .processing
@@ -1176,9 +1180,13 @@ struct WorkstreamHeader: View {
     private var statusIndicator: some View {
         switch status {
         case .waitingForInput:
-            Image(systemName: "exclamationmark.bubble.fill")
+            Image(systemName: "questionmark.bubble.fill")
                 .font(.caption)
                 .foregroundStyle(.orange)
+        case .attention:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
         case .processing:
             ProgressView()
                 .controlSize(.small)
@@ -1228,8 +1236,19 @@ struct SessionRow: View {
                             .foregroundStyle(NimbalystColors.primary)
                     }
 
-                    // Status indicators - pending prompt takes priority (it's actionable)
-                    if session.hasQueuedPrompts {
+                    // Generic attention and interactive prompts are distinct.
+                    if let attention = session.attentionPresentation {
+                        Image(systemName: attention.systemImageName)
+                            .foregroundStyle(attention.isCritical ? .red : .orange)
+                            .font(.caption)
+                            .accessibilityLabel(attention.label)
+                    }
+                    if session.hasPendingPrompt {
+                        Image(systemName: "questionmark.bubble.fill")
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                            .accessibilityLabel("Waiting for your response")
+                    } else if session.hasQueuedPrompts {
                         Image(systemName: "clock.fill")
                             .foregroundStyle(.orange)
                             .font(.caption)

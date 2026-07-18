@@ -133,7 +133,10 @@ export interface LaunchClaudeCliSessionInput {
    * Turn-state callback from the CLI PID file, forwarded to the terminal so the
    * watcher can drive `SessionStateManager`. Provided by the production caller.
    */
-  onTurnState?: (state: ClaudeTurnState, parsed: ParsedClaudePidFile | null) => void;
+  onTurnState?: (
+    state: ClaudeTurnState,
+    parsed: ParsedClaudePidFile | null,
+  ) => void | Promise<void>;
   /**
    * Called when the PTY exits. Production uses this to settle the AI session out
    * of "running" even if the CLI dies before the PID watcher reports idle.

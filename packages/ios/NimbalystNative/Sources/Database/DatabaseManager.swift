@@ -300,6 +300,24 @@ public final class DatabaseManager: @unchecked Sendable {
             try db.create(index: "idx_sessions_created_by", on: "sessions", columns: ["createdBySessionId"])
         }
 
+        migrator.registerMigration("v14_attention_state") { db in
+            try db.alter(table: "sessions") { t in
+                t.add(column: "hasPendingPrompt", .boolean).defaults(to: false)
+                t.add(column: "attentionPending", .boolean).defaults(to: false)
+                t.add(column: "attentionSeverity", .text)
+                t.add(column: "attentionEventId", .text)
+                t.add(column: "attentionEffectiveDeadline", .text)
+            }
+        }
+
+        migrator.registerMigration("v15_has_been_named") { db in
+            try db.alter(table: "sessions") { t in
+                // Nullable by design: nil means the marker was omitted by an
+                // older peer, which is distinct from explicit false.
+                t.add(column: "hasBeenNamed", .boolean)
+            }
+        }
+
         try migrator.migrate(writer)
     }
 

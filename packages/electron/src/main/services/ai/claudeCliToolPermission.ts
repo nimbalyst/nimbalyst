@@ -299,11 +299,16 @@ export interface ToolPermissionDeps {
   /** Flip the session indicator to waiting_for_input while the prompt is pending. */
   setWaitingStatus: (sessionId: string) => void;
   /** Restore turn state on settle (CLI-aware; PID watcher owns running/idle). */
-  applySettle: (sessionId: string) => void;
+  applySettle: (sessionId: string, requestId: string, answer: ToolPermissionAnswer) => void | Promise<void>;
   /** Persist an "always" pattern to Claude settings (best-effort). */
   savePattern: (workspacePath: string, pattern: string) => Promise<void>;
   /** Fire the OS "blocked / needs response" notification (best-effort). */
-  notifyBlocked: (args: { sessionId: string; workspacePath: string | undefined; request: ToolPermissionRequest }) => void;
+  notifyBlocked: (args: {
+    sessionId: string;
+    workspacePath: string | undefined;
+    requestId: string;
+    request: ToolPermissionRequest;
+  }) => void | Promise<void>;
   /** Mint a unique requestId (also the widget's answer-channel key). */
   makeRequestId: () => string;
   log?: (message: string) => void;
@@ -377,7 +382,7 @@ export async function resolveClaudeCliToolPermission(
   });
 
   deps.setWaitingStatus(sessionId);
-  deps.notifyBlocked({ sessionId, workspacePath, request });
+  await deps.notifyBlocked({ sessionId, workspacePath, requestId, request });
 
   let answer: ToolPermissionAnswer;
   try {
@@ -388,27 +393,31 @@ export async function resolveClaudeCliToolPermission(
     answer = { decision: 'deny', scope: 'once', cancelled: true };
   }
 
-  await deps.persistToolResult({
-    sessionId,
-    toolUseId: requestId,
-    result: buildToolPermissionResultPayload(answer),
-    isError: answer.decision === 'deny' || answer.cancelled === true,
-  });
+  try {
+    await deps.persistToolResult({
+      sessionId,
+      toolUseId: requestId,
+      result: buildToolPermissionResultPayload(answer),
+      isError: answer.decision === 'deny' || answer.cancelled === true,
+    });
 
-  // Persist scope: Session/Always cache the pattern for this run; Always also
-  // writes it to Claude settings so a future CLI session is auto-allowed by the
-  // CLI itself. `once` and compound patterns are never cached (markPatternApproved
-  // drops compounds defensively).
-  if (answer.decision === 'allow' && !answer.cancelled && (answer.scope === 'session' || answer.scope === 'always' || answer.scope === 'always-all')) {
-    deps.markPatternApproved(sessionId, request.pattern);
-    if ((answer.scope === 'always' || answer.scope === 'always-all') && workspacePath) {
-      await deps.savePattern(workspacePath, request.pattern).catch((e) => {
-        deps.log?.(`[ToolPermission] savePattern failed: ${e instanceof Error ? e.message : String(e)}`);
-      });
+    // Persist scope: Session/Always cache the pattern for this run; Always also
+    // writes it to Claude settings so a future CLI session is auto-allowed by the
+    // CLI itself. `once` and compound patterns are never cached (markPatternApproved
+    // drops compounds defensively).
+    if (answer.decision === 'allow' && !answer.cancelled && (answer.scope === 'session' || answer.scope === 'always' || answer.scope === 'always-all')) {
+      deps.markPatternApproved(sessionId, request.pattern);
+      if ((answer.scope === 'always' || answer.scope === 'always-all') && workspacePath) {
+        await deps.savePattern(workspacePath, request.pattern).catch((e) => {
+          deps.log?.(`[ToolPermission] savePattern failed: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      }
     }
+  } finally {
+    // Prompt clearing must not depend on result-widget persistence or settings
+    // writes. applySettle owns the identity-guarded durable clear.
+    await deps.applySettle(sessionId, requestId, answer);
   }
-
-  deps.applySettle(sessionId);
 
   return toToolPermissionMcpResult(buildToolPermissionBehaviorResult(answer, input));
 }

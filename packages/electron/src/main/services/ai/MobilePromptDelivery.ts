@@ -26,6 +26,11 @@ import {
 import { AISessionsRepository, AgentMessagesRepository } from '@nimbalyst/runtime';
 import { TrayManager } from '../../tray/TrayManager';
 import { logger } from '../../utils/logger';
+import {
+  runClaimedPendingPromptAction,
+  type PendingPromptPersistenceResult,
+} from './pendingPromptPersistence';
+import { attentionEventService } from '../AttentionEventService';
 
 const log = logger.ai;
 
@@ -66,6 +71,8 @@ export interface MobilePromptDeliveryDescriptor {
   /** For logs; also the caller's own record `type` lives in `dbRecord`. */
   promptType: MobilePromptType;
   sessionId: string;
+  /** Stable prompt/request/tool identity used for race-safe clearing. */
+  promptId: string;
 
   /**
    * Alias-expanded ids the MCP waiter / DB may key on (Codex synthetic → raw).
@@ -104,82 +111,129 @@ export interface MobilePromptDeliveryDescriptor {
  */
 export async function deliverMobilePromptResponse(
   descriptor: MobilePromptDeliveryDescriptor,
-): Promise<void> {
+): Promise<{
+  responsePersisted: boolean;
+  persistenceError: string | null;
+  providerConsumed: boolean;
+  notifiedWaiter: boolean;
+  promptClear: PendingPromptPersistenceResult;
+  staleAction: boolean;
+}> {
   const { sessionId, promptType } = descriptor;
   // Capture arrival time before any asynchronous work. Pollers use createdAt
   // as their stale-response cutoff, so assigning it after an IPC waiter wakes
   // could make this response look like it belongs to a later prompt that
   // reuses the same raw provider id.
   const receivedAt = new Date();
-  const { providerType, provider } = await resolveSessionProvider(sessionId);
+  const claimed = await runClaimedPendingPromptAction(
+    sessionId,
+    descriptor.promptId,
+    async ({ ownership }) => {
+      const { providerType, provider } = await resolveSessionProvider(sessionId);
 
-  // Stage 1 — durable DB record. Persist before waking any consumer so a
-  // resumed provider/waiter cannot register a later same-id prompt before this
-  // response is durable. Failure remains best-effort and does not gate the
-  // provider or IPC paths.
-  if (descriptor.dbRecord) {
-    try {
-      await AgentMessagesRepository.create({
-        sessionId,
-        source: providerType,
-        direction: 'output',
-        createdAt: receivedAt,
-        content: JSON.stringify(descriptor.dbRecord),
-      });
-    } catch (err) {
-      log.warn(`[Mobile] Failed to persist ${promptType} response: ${err}`);
-    }
-  }
-
-  // Stage 2 — in-process provider (guarded; never gates the rest).
-  let providerConsumed = false;
-  if (descriptor.deliverToProvider) {
-    try {
-      providerConsumed = descriptor.deliverToProvider(provider, providerType);
-    } catch (err) {
-      log.warn(`[Mobile] ${promptType} provider delivery threw: ${err}`);
-    }
-  }
-
-  // Stage 3 — MCP/IPC waiter, independent of the provider path.
-  let notifiedWaiter = false;
-  try {
-    if (descriptor.mcpChannel && descriptor.ipcPayload) {
-      for (const waiterId of descriptor.waiterIds ?? []) {
-        const channel = descriptor.mcpChannel(sessionId, waiterId);
-        if (ipcMain.listenerCount(channel) > 0) {
-          notifiedWaiter = true;
-          log.info(`[Mobile] Emitting ${promptType} on MCP channel: ${channel}`);
-          ipcMain.emit(channel, {}, descriptor.ipcPayload);
+      // Durable response persistence and every consumer/UI side effect happen
+      // only after the exact prompt id + generation was compare-claimed. The
+      // shared prompt lock remains held until this callback returns, so B cannot
+      // open between the claim and A's exact delivery.
+      let responsePersisted = descriptor.dbRecord === undefined;
+      let persistenceError: string | null = null;
+      if (descriptor.dbRecord) {
+        try {
+          await AgentMessagesRepository.create({
+            sessionId,
+            source: providerType,
+            direction: 'output',
+            createdAt: receivedAt,
+            content: JSON.stringify(descriptor.dbRecord),
+          });
+          responsePersisted = true;
+        } catch (err) {
+          persistenceError = err instanceof Error ? err.message : String(err);
+          log.warn(`[Mobile] Failed to persist ${promptType} response: ${err}`);
         }
       }
-      if (!notifiedWaiter && descriptor.fallbackChannel) {
-        const fallback = descriptor.fallbackChannel(sessionId);
-        if (ipcMain.listenerCount(fallback) > 0) {
-          notifiedWaiter = true;
-          log.info(`[Mobile] Emitting ${promptType} on fallback channel: ${fallback}`);
-          ipcMain.emit(fallback, {}, descriptor.ipcPayload);
+
+      let providerConsumed = false;
+      if (descriptor.deliverToProvider) {
+        try {
+          providerConsumed = descriptor.deliverToProvider(provider, providerType);
+        } catch (err) {
+          log.warn(`[Mobile] ${promptType} provider delivery threw: ${err}`);
         }
       }
-    }
-  } catch (err) {
-    log.warn(`[Mobile] ${promptType} IPC delivery threw: ${err}`);
-  }
 
-  log.info(
-    `[Mobile] ${promptType} resolution: providerConsumed=${providerConsumed}, notifiedWaiter=${notifiedWaiter}`,
+      let notifiedWaiter = false;
+      try {
+        if (descriptor.mcpChannel && descriptor.ipcPayload) {
+          for (const waiterId of descriptor.waiterIds ?? []) {
+            const channel = descriptor.mcpChannel(sessionId, waiterId);
+            if (ipcMain.listenerCount(channel) > 0) {
+              notifiedWaiter = true;
+              log.info(`[Mobile] Emitting ${promptType} on MCP channel: ${channel}`);
+              ipcMain.emit(channel, {}, descriptor.ipcPayload);
+            }
+          }
+          if (!notifiedWaiter && descriptor.fallbackChannel) {
+            const fallback = descriptor.fallbackChannel(sessionId);
+            if (ipcMain.listenerCount(fallback) > 0) {
+              notifiedWaiter = true;
+              log.info(`[Mobile] Emitting ${promptType} on fallback channel: ${fallback}`);
+              ipcMain.emit(fallback, {}, descriptor.ipcPayload);
+            }
+          }
+        }
+      } catch (err) {
+        log.warn(`[Mobile] ${promptType} IPC delivery threw: ${err}`);
+      }
+
+      log.info(
+        `[Mobile] ${promptType} resolution: providerConsumed=${providerConsumed}, notifiedWaiter=${notifiedWaiter}`,
+      );
+
+      try {
+        descriptor.notify();
+      } catch (err) {
+        log.warn(`[Mobile] ${promptType} renderer notification threw: ${err}`);
+      }
+      try {
+        TrayManager.getInstance().onPromptResolved(sessionId);
+      } catch (err) {
+        log.warn(`[Mobile] ${promptType} tray notification threw: ${err}`);
+      }
+      try {
+        await attentionEventService.cancelInteractivePrompt(
+          sessionId,
+          descriptor.promptId,
+          (descriptor.ipcPayload as { cancelled?: boolean } | undefined)?.cancelled === true
+            ? 'cancelled'
+            : 'answered',
+          { expectedGeneration: ownership.attentionGeneration ?? undefined },
+        );
+      } catch (err) {
+        log.warn(`[Mobile] ${promptType} attention settlement threw: ${err}`);
+      }
+
+      return { responsePersisted, persistenceError, providerConsumed, notifiedWaiter };
+    },
   );
 
-  // Stage 4 — renderer clear + tray. Keep these independent as well: a stale
-  // BrowserWindow must not prevent the tray prompt count from being cleared.
-  try {
-    descriptor.notify();
-  } catch (err) {
-    log.warn(`[Mobile] ${promptType} renderer notification threw: ${err}`);
+  if (!claimed.claimed || !claimed.value) {
+    log.warn(
+      `[Mobile] Ignoring stale ${promptType} action for ${sessionId}/${descriptor.promptId}`,
+    );
+    return {
+      responsePersisted: false,
+      persistenceError: null,
+      providerConsumed: false,
+      notifiedWaiter: false,
+      promptClear: claimed.promptClear,
+      staleAction: true,
+    };
   }
-  try {
-    TrayManager.getInstance().onPromptResolved(sessionId);
-  } catch (err) {
-    log.warn(`[Mobile] ${promptType} tray notification threw: ${err}`);
-  }
+
+  return {
+    ...claimed.value,
+    promptClear: claimed.promptClear,
+    staleAction: false,
+  };
 }

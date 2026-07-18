@@ -464,10 +464,9 @@ public final class SyncManager: ObservableObject {
 
         let existing = try? database.session(byId: entry.sessionId)
 
-        // Skip if the session hasn't changed since we last wrote it
-        if let existing = existing, existing.updatedAt == entry.updatedAt {
-            return .skipped
-        }
+        // Do not skip solely on updatedAt: execution, prompt, and encrypted
+        // attention metadata are intentionally metadata-only updates and may
+        // retain the content sort timestamp.
 
         guard let projectId = crypto.decryptOrNil(
             encryptedBase64: entry.encryptedProjectId,
@@ -496,6 +495,15 @@ public final class SyncManager: ObservableObject {
            let metaData = metaJson.data(using: .utf8) {
             clientMeta = try? JSONDecoder().decode(ClientMetadata.self, from: metaData)
         }
+        let pendingPrompt = SessionAttentionReconciler.pendingPrompt(
+            existing: existing?.hasPendingPrompt ?? false,
+            incoming: clientMeta?.hasPendingPrompt ?? entry.hasPendingPrompt,
+            isExecuting: entry.isExecuting
+        )
+        let attention = SessionAttentionReconciler.attention(
+            existing: existing?.attentionState ?? .none,
+            incoming: clientMeta?.attentionSummary
+        )
 
         // Encode tags array to JSON string for storage
         var tagsJson: String? = nil
@@ -532,7 +540,12 @@ public final class SyncManager: ObservableObject {
             branchPointMessageId: entry.branchPointMessageId ?? existing?.branchPointMessageId,
             branchedAt: entry.branchedAt ?? existing?.branchedAt,
             isExecuting: entry.isExecuting ?? existing?.isExecuting ?? false,
-            hasQueuedPrompts: clientMeta?.hasPendingPrompt ?? entry.hasPendingPrompt ?? existing?.hasQueuedPrompts ?? false,
+            hasPendingPrompt: pendingPrompt,
+            hasQueuedPrompts: entry.queuedPromptCount.map { $0 > 0 } ?? existing?.hasQueuedPrompts ?? false,
+            attentionPending: attention.pending,
+            attentionSeverity: attention.severity,
+            attentionEventId: attention.eventId,
+            attentionEffectiveDeadline: attention.effectiveDeadline,
             contextTokens: clientMeta?.currentContext?.tokens ?? existing?.contextTokens,
             contextWindow: clientMeta?.currentContext?.contextWindow ?? existing?.contextWindow,
             createdAt: entry.createdAt,
@@ -542,7 +555,11 @@ public final class SyncManager: ObservableObject {
             lastMessageAt: entry.lastMessageAt ?? existing?.lastMessageAt,
             // "" from remote means "cleared" -> nil locally; nil means "not sent" -> keep existing
             draftInput: clientMeta?.draftInput != nil ? (clientMeta!.draftInput!.isEmpty ? nil : clientMeta!.draftInput!) : existing?.draftInput,
-            draftUpdatedAt: clientMeta?.draftUpdatedAt ?? existing?.draftUpdatedAt
+            draftUpdatedAt: clientMeta?.draftUpdatedAt ?? existing?.draftUpdatedAt,
+            hasBeenNamed: SessionOpaqueMetadataReconciler.namingMarker(
+                existing: existing?.hasBeenNamed,
+                incoming: clientMeta?.hasBeenNamed
+            )
         )
 
         do {
@@ -668,6 +685,15 @@ public final class SyncManager: ObservableObject {
            let metaData = metaJson.data(using: .utf8) {
             clientMeta = try? JSONDecoder().decode(ClientMetadata.self, from: metaData)
         }
+        let pendingPrompt = SessionAttentionReconciler.pendingPrompt(
+            existing: existing?.hasPendingPrompt ?? false,
+            incoming: clientMeta?.hasPendingPrompt ?? entry.hasPendingPrompt,
+            isExecuting: entry.isExecuting
+        )
+        let attention = SessionAttentionReconciler.attention(
+            existing: existing?.attentionState ?? .none,
+            incoming: clientMeta?.attentionSummary
+        )
 
         // Encode tags array to JSON string for storage
         var tagsJson: String? = nil
@@ -700,7 +726,12 @@ public final class SyncManager: ObservableObject {
             branchPointMessageId: entry.branchPointMessageId ?? existing?.branchPointMessageId,
             branchedAt: entry.branchedAt ?? existing?.branchedAt,
             isExecuting: entry.isExecuting ?? existing?.isExecuting ?? false,
-            hasQueuedPrompts: clientMeta?.hasPendingPrompt ?? entry.hasPendingPrompt ?? existing?.hasQueuedPrompts ?? false,
+            hasPendingPrompt: pendingPrompt,
+            hasQueuedPrompts: entry.queuedPromptCount.map { $0 > 0 } ?? existing?.hasQueuedPrompts ?? false,
+            attentionPending: attention.pending,
+            attentionSeverity: attention.severity,
+            attentionEventId: attention.eventId,
+            attentionEffectiveDeadline: attention.effectiveDeadline,
             contextTokens: clientMeta?.currentContext?.tokens ?? existing?.contextTokens,
             contextWindow: clientMeta?.currentContext?.contextWindow ?? existing?.contextWindow,
             createdAt: entry.createdAt,
@@ -710,7 +741,11 @@ public final class SyncManager: ObservableObject {
             lastMessageAt: entry.lastMessageAt ?? existing?.lastMessageAt,
             // "" from remote means "cleared" -> nil locally; nil means "not sent" -> keep existing
             draftInput: clientMeta?.draftInput != nil ? (clientMeta!.draftInput!.isEmpty ? nil : clientMeta!.draftInput!) : existing?.draftInput,
-            draftUpdatedAt: clientMeta?.draftUpdatedAt ?? existing?.draftUpdatedAt
+            draftUpdatedAt: clientMeta?.draftUpdatedAt ?? existing?.draftUpdatedAt,
+            hasBeenNamed: SessionOpaqueMetadataReconciler.namingMarker(
+                existing: existing?.hasBeenNamed,
+                incoming: clientMeta?.hasBeenNamed
+            )
         )
 
         do {
@@ -1285,18 +1320,17 @@ public final class SyncManager: ObservableObject {
                 if let mode = broadcast.metadata.mode {
                     session.mode = mode
                 }
-                // Decrypt client metadata (context usage, pending prompt state, etc.)
+                // Decrypt client metadata (context usage, prompt and attention state, etc.)
+                var decodedClientMeta: ClientMetadata?
                 if let encryptedMeta = broadcast.metadata.encryptedClientMetadata,
                    let metaIv = broadcast.metadata.clientMetadataIv,
                    let metaJson = crypto.decryptOrNil(encryptedBase64: encryptedMeta, ivBase64: metaIv),
                    let metaData = metaJson.data(using: .utf8),
                    let clientMeta = try? JSONDecoder().decode(ClientMetadata.self, from: metaData) {
+                    decodedClientMeta = clientMeta
                     if let ctx = clientMeta.currentContext {
                         session.contextTokens = ctx.tokens
                         session.contextWindow = ctx.contextWindow
-                    }
-                    if let pending = clientMeta.hasPendingPrompt {
-                        session.hasQueuedPrompts = pending
                     }
                     if let phase = clientMeta.phase {
                         session.phase = phase
@@ -1306,6 +1340,23 @@ public final class SyncManager: ObservableObject {
                         session.tagsJson = String(data: tagData, encoding: .utf8)
                     }
                 }
+                session.hasBeenNamed = SessionOpaqueMetadataReconciler.namingMarker(
+                    existing: session.hasBeenNamed,
+                    incoming: decodedClientMeta?.hasBeenNamed
+                )
+                session.hasPendingPrompt = SessionAttentionReconciler.pendingPrompt(
+                    existing: session.hasPendingPrompt,
+                    incoming: decodedClientMeta?.hasPendingPrompt,
+                    isExecuting: broadcast.metadata.isExecuting
+                )
+                let attention = SessionAttentionReconciler.attention(
+                    existing: session.attentionState,
+                    incoming: decodedClientMeta?.attentionSummary
+                )
+                session.attentionPending = attention.pending
+                session.attentionSeverity = attention.severity
+                session.attentionEventId = attention.eventId
+                session.attentionEffectiveDeadline = attention.effectiveDeadline
                 // NOTE: Do NOT apply updatedAt from metadata broadcasts.
                 // Metadata updates (read state, isExecuting, context) should not
                 // change the sort timestamp. Only index sync and message appends
@@ -1379,12 +1430,12 @@ public final class SyncManager: ObservableObject {
         }
 
         do {
-            let clientMeta = ClientMetadata(
-                currentContext: nil,
-                hasPendingPrompt: nil,
-                phase: session.phase,
-                tags: session.tags.isEmpty ? nil : session.tags,
-                draftInput: draftInput,  // Send "" explicitly when clearing so remote caches update
+            // encryptedClientMetadata is an opaque, whole-value replacement on
+            // the server. Preserve waiting/attention/naming (including explicit
+            // false values) while changing only the draft fields.
+            let clientMeta = ClientMetadata.preservingOpaqueState(
+                from: session,
+                draftInput: draftInput, // Send "" explicitly when clearing.
                 draftUpdatedAt: now
             )
             let metaJson = try JSONEncoder().encode(clientMeta)

@@ -4,10 +4,10 @@ import {
   AISessionsRepository,
 } from "@nimbalyst/runtime";
 import { getSessionStateManager } from "@nimbalyst/runtime/ai/server/SessionStateManager";
-import { notificationService } from "../../services/NotificationService";
 import { TrayManager } from "../../tray/TrayManager";
 import { findWindowIdForWorkspacePath } from "../mcpWorkspaceResolver";
 import { setSessionPendingPrompt } from "../../services/ai/pendingPromptPersistence";
+import { attentionEventService } from "../../services/AttentionEventService";
 import { getGitSubprocessEnv } from "../../services/gitEnv";
 import {
   resolveRequestUserInputPromptTargets,
@@ -34,6 +34,43 @@ import { broadcastMessageLogged } from "../../services/ai/claudeCliUserPromptLog
 import { ClaudeSettingsManager } from "../../services/ClaudeSettingsManager";
 import { getPermissionService } from "../../services/PermissionService";
 import { findFreshInteractiveResponse } from "./interactiveResponsePolling";
+
+async function ensureInteractivePromptTranscript(
+  sessionId: string,
+  toolUseId: string,
+  toolName: string,
+  input: Record<string, unknown>,
+): Promise<void> {
+  // The CLI proxy normally writes the original assistant tool_use through a
+  // 200ms queue. Wait briefly for that authoritative row before falling back
+  // to a synthetic row, so attention is never sent before decision context is
+  // durable while avoiding duplicate cards in the normal path.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const messages = await AgentMessagesRepository.listTail(sessionId, 50, { includeHidden: true });
+    const found = messages.some((message) => {
+      try {
+        const content = JSON.parse(message.content) as Record<string, unknown>;
+        return content.id === toolUseId || content.toolUseId === toolUseId || content.promptId === toolUseId;
+      } catch {
+        return false;
+      }
+    });
+    if (found) return;
+    if (attempt < 7) await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  await persistInteractivePromptToolUse({ sessionId, toolUseId, toolName, input });
+}
+
+async function armDirectInteractiveAttention(
+  sessionId: string,
+  workspacePath: string | undefined,
+  args: Omit<Parameters<typeof attentionEventService.armInteractivePrompt>[1], 'sessionId'>,
+): Promise<void> {
+  const session = await AISessionsRepository.get(sessionId);
+  const canonicalWorkspace = session?.workspacePath || workspacePath;
+  if (!canonicalWorkspace) throw new Error(`Workspace missing for interactive prompt ${sessionId}`);
+  await attentionEventService.armInteractivePrompt(canonicalWorkspace, { sessionId, ...args });
+}
 
 export function getInteractiveToolSchemas(sessionId: string | undefined) {
   if (!sessionId) return [];
@@ -263,18 +300,45 @@ export async function handleAskUserQuestion(
     });
   }
 
-  // NIM-806: we deliberately do NOT persist a synthetic nimbalyst_tool_use row
-  // here. The proxy observation bridge already persists the CLI's whole assistant
+  // NIM-806: normally rely on the proxy observation bridge rather than writing
+  // a synthetic nimbalyst_tool_use row. The bridge persists the CLI's whole assistant
   // turn (source 'claude-code') INCLUDING this AskUserQuestion tool_use block, so
   // ClaudeCodeRawParser renders the answerable widget from it (keyed by the same
   // claudecode/toolUseId == questionId, so the answer still reaches our response
-  // channel). Writing a second synthetic row caused an ordering inversion — it
+  // channel). Eagerly writing a second synthetic row caused an ordering inversion — it
   // lands at tool-call time, ~26ms BEFORE the proxy turn's explanatory text
   // (persisted at message_stop) — so the widget rendered ABOVE the text that
   // motivates it, plus a duplicate question card. The settle still writes the
-  // synthetic tool_result (below) to flip the widget to answered. `isCliSession`
+  // synthetic tool_result (below) to flip the widget to answered. The bounded
+  // wait above adds a synthetic request only when the authoritative row did not
+  // arrive in time, preserving decision context before attention delivery.
+  // `isCliSession`
   // is still needed by the settle path (CLI defers turn-state to the PID watcher).
   const isCliSession = await isClaudeCliSession(sessionId);
+
+  let promptPersisted = false;
+  let promptGeneration: string | undefined;
+  if (sessionId) {
+    try {
+      await ensureInteractivePromptTranscript(sessionId, questionId, "AskUserQuestion", {
+        questions: normalizedQuestions,
+      });
+      const persistence = await setSessionPendingPrompt(sessionId, true, { promptId: questionId });
+      promptPersisted = persistence.local.succeeded;
+      promptGeneration = persistence.generation ?? undefined;
+      if (promptPersisted) {
+        await armDirectInteractiveAttention(sessionId, undefined, {
+          promptType: "AskUserQuestion",
+          promptId: questionId,
+          title: "Session has a question",
+          body: "Open Nimbalyst to answer the pending question.",
+          context: { questions: normalizedQuestions },
+        });
+      }
+    } catch (error) {
+      console.error("[MCP Server] Failed to persist/arm AskUserQuestion attention:", error);
+    }
+  }
 
   // NIM-850: drive the pending-interactive-prompt flag from the explicit prompt
   // lifecycle (mirrors PromptForUserInput's ai:requestUserInput and the SDK path),
@@ -287,7 +351,6 @@ export async function handleAskUserQuestion(
   // windows (the renderer handler keys by sessionId); handleAskUserQuestion only
   // runs for the MCP-routed CLI path, so SDK sessions are unaffected.
   if (isCliSession && sessionId) {
-    void setSessionPendingPrompt(sessionId, true);
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) {
         w.webContents.send("ai:askUserQuestion", {
@@ -303,7 +366,7 @@ export async function handleAskUserQuestion(
     let settled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-    const settle = (result: {
+    const settle = async (result: {
       answers?: Record<string, string>;
       cancelled?: boolean;
       respondedBy?: "desktop" | "mobile";
@@ -320,6 +383,7 @@ export async function handleAskUserQuestion(
         void applyInteractivePromptSettleTurnState({
           sessionId,
           isCliSession,
+          attentionGeneration: promptGeneration,
           stateManager: getSessionStateManager(),
         }).catch(() => {});
       }
@@ -342,24 +406,26 @@ export async function handleAskUserQuestion(
       // tool_result block, so persist a synthetic one to flip the widget out of
       // its pending state (ClaudeCliPromptSurface drops answered prompts).
       if (isCliSession && sessionId) {
-        void persistInteractivePromptToolResult({
-          sessionId,
-          toolUseId: questionId,
-          result: {
-            answers: cancelled ? {} : answers,
-            cancelled,
-            respondedBy,
-            respondedAt: Date.now(),
-          },
-          isError: cancelled,
-        });
+        try {
+          await persistInteractivePromptToolResult({
+            sessionId,
+            toolUseId: questionId,
+            result: {
+              answers: cancelled ? {} : answers,
+              cancelled,
+              respondedBy,
+              respondedAt: Date.now(),
+            },
+            isError: cancelled,
+          });
+        } catch (error) {
+          // The identity-guarded pending-state clear below is independent of
+          // result-card persistence, so a storage failure cannot strand the
+          // session in waiting_for_input forever.
+          console.error('[MCP Server] Failed to persist AskUserQuestion tool result:', error);
+        }
 
-        // NIM-850: clear the pending-interactive-prompt flag the moment the prompt
-        // settles (answered or cancelled). For claude-code-cli the renderer otherwise
-        // never clears it mid-turn — session:streaming intentionally doesn't, and
-        // there was no resolved broadcast — so "Thinking…" stayed suppressed until
-        // the turn ended. Mirrors PromptForUserInput's ai:requestUserInputResolved.
-        void setSessionPendingPrompt(sessionId, false);
+        // NIM-850 renderer backstop for the external CLI path.
         for (const w of BrowserWindow.getAllWindows()) {
           if (!w.isDestroyed()) {
             w.webContents.send("ai:askUserQuestionAnswered", {
@@ -367,6 +433,24 @@ export async function handleAskUserQuestion(
               questionId,
             });
           }
+        }
+      }
+
+      if (sessionId) {
+        if (promptGeneration) {
+          const clearResult = await setSessionPendingPrompt(sessionId, false, {
+            expectedPromptId: questionId,
+            expectedGeneration: promptGeneration,
+          });
+          if (!clearResult.local.succeeded && !clearResult.superseded) {
+            console.error("[MCP Server] AskUserQuestion prompt clear was not durable:", clearResult);
+          }
+          await attentionEventService.cancelInteractivePrompt(
+            sessionId,
+            questionId,
+            cancelled ? 'cancelled' : 'answered',
+            { expectedGeneration: promptGeneration },
+          );
         }
       }
 
@@ -409,7 +493,7 @@ export async function handleAskUserQuestion(
         cancelled?: boolean;
         respondedBy?: "desktop" | "mobile";
       }
-    ) => settle(result, 'ipc-specific');
+    ) => { void settle(result, 'ipc-specific'); };
 
     const onSessionFallbackResponse = (
       _event: unknown,
@@ -420,11 +504,16 @@ export async function handleAskUserQuestion(
         respondedBy?: "desktop" | "mobile";
       }
     ) => {
-      settle(result, 'ipc-fallback');
+      // The fallback channel is session-scoped, so it may observe a delayed
+      // response for superseded prompt A while this waiter owns prompt B.
+      // Keep the listener installed and ignore anything that is not for this
+      // exact question identity.
+      if (result?.questionId !== questionId) return;
+      void settle(result, 'ipc-fallback');
     };
 
     ipcMain.once(questionResponseChannel, onQuestionIdResponse);
-    ipcMain.once(fallbackSessionChannel, onSessionFallbackResponse);
+    ipcMain.on(fallbackSessionChannel, onSessionFallbackResponse);
 
     // Database polling fallback: if the IPC path fails (e.g., transport issues),
     // poll for a response message written by the AIService answer handler.
@@ -452,9 +541,9 @@ export async function handleAskUserQuestion(
           });
           if (!content) return;
           if (content.cancelled) {
-            settle({ cancelled: true, respondedBy: content.respondedBy as "desktop" | "mobile" | undefined }, 'db-poll');
+            await settle({ cancelled: true, respondedBy: content.respondedBy as "desktop" | "mobile" | undefined }, 'db-poll');
           } else {
-            settle({
+            await settle({
               answers: content.answers as Record<string, string> | undefined,
               respondedBy: content.respondedBy as "desktop" | "mobile" | undefined,
             }, 'db-poll');
@@ -574,6 +663,7 @@ export async function handleToolPermission(
   }
 
   const isCliSession = await isClaudeCliSession(sessionId);
+  const promptGenerations = new Map<string, string>();
 
   let sessionTitle = "AI Session";
   try {
@@ -627,18 +717,50 @@ export async function handleToolPermission(
             console.error("[MCP Server] Failed to set waiting_for_input for tool permission:", err);
           });
       },
-      applySettle: (sid) => {
-        void applyInteractivePromptSettleTurnState({
+      applySettle: async (sid, requestId, answer) => {
+        const promptGeneration = promptGenerations.get(requestId);
+        await applyInteractivePromptSettleTurnState({
           sessionId: sid,
           isCliSession,
+          attentionGeneration: promptGeneration,
           stateManager: getSessionStateManager(),
         }).catch(() => {});
+        if (promptGeneration) {
+          const clearResult = await setSessionPendingPrompt(sid, false, {
+            expectedPromptId: requestId,
+            expectedGeneration: promptGeneration,
+          });
+          if (!clearResult.local.succeeded && !clearResult.superseded) {
+            console.error("[MCP Server] ToolPermission prompt clear was not durable:", clearResult);
+          }
+          await attentionEventService.cancelInteractivePrompt(
+            sid,
+            requestId,
+            answer.cancelled ? 'cancelled' : 'answered',
+            { expectedGeneration: promptGeneration },
+          );
+        }
+        promptGenerations.delete(requestId);
       },
       savePattern: async (wp, pattern) => {
         await ClaudeSettingsManager.getInstance().addAllowedTool(wp, pattern);
       },
-      notifyBlocked: ({ sessionId: sid, workspacePath: wp }) => {
-        notificationService.showBlockedNotification(sid, sessionTitle, "permission", wp ?? "");
+      notifyBlocked: async ({ sessionId: sid, workspacePath: wp, requestId, request }) => {
+        const persistence = await setSessionPendingPrompt(sid, true, { promptId: requestId });
+        if (persistence.generation) promptGenerations.set(requestId, persistence.generation);
+        if (persistence.local.succeeded) {
+          try {
+            await armDirectInteractiveAttention(sid, wp, {
+              promptType: "ToolPermission",
+              toolUseId: requestId,
+              title: `${sessionTitle} needs permission`,
+              body: "Open Nimbalyst to review the pending tool permission.",
+              context: { request },
+            });
+          } catch (error) {
+            console.error("[MCP Server] Failed to arm ToolPermission attention:", error);
+          }
+        }
         TrayManager.getInstance().onPromptCreated(sid);
       },
       log: (m) => console.log(`[MCP Server] ${m}`),
@@ -740,6 +862,7 @@ export async function handleGitCommitProposal(
       .substring(7)}`;
 
   const targetSessionId = sessionId || "unknown";
+  let proposalPersisted = false;
 
   // Persist the proposal to database for durability
   try {
@@ -802,6 +925,7 @@ export async function handleGitCommitProposal(
       hidden: false,
       createdAt: now,
     });
+    proposalPersisted = true;
     // console.log(
     //   `[MCP Server] Persisted git commit proposal: ${proposalId}, notifying renderer for session: ${targetSessionId}`
     // );
@@ -821,10 +945,6 @@ export async function handleGitCommitProposal(
       console.warn("[MCP Server] No commitWindow found to send IPC event");
     }
 
-    // Notify tray of pending prompt
-    TrayManager.getInstance().onPromptCreated(targetSessionId);
-    // Persist pending-prompt bit + push to mobile
-    void setSessionPendingPrompt(targetSessionId, true);
   } catch (error) {
     console.error("[MCP Server] Failed to persist git commit proposal:", error);
     // Continue anyway - worst case is no durability
@@ -923,9 +1043,6 @@ export async function handleGitCommitProposal(
         reasoning: proposalArgs.reasoning,
       });
     }
-    // Persist resolved state + push to mobile
-    void setSessionPendingPrompt(targetSessionId, false);
-
     if (commitResult.success) {
       console.log(
         `[MCP Server] Auto-commit completed: ${commitResult.commitHash}`
@@ -977,7 +1094,7 @@ export async function handleGitCommitProposal(
     };
   }
 
-  // Show OS notification if app is backgrounded
+  // Arm only for the manual path, after the complete proposal is durable.
   let sessionTitle = "AI Session";
   try {
     const session = await AISessionsRepository.get(targetSessionId);
@@ -987,12 +1104,29 @@ export async function handleGitCommitProposal(
   } catch {
     // Ignore - use default title
   }
-  notificationService.showBlockedNotification(
-    targetSessionId,
-    sessionTitle,
-    "git_commit",
-    workspacePath
-  );
+  let proposalGeneration: string | undefined;
+  if (proposalPersisted) {
+    const persistence = await setSessionPendingPrompt(targetSessionId, true, { promptId: proposalId });
+    proposalGeneration = persistence.generation ?? undefined;
+    TrayManager.getInstance().onPromptCreated(targetSessionId);
+    if (persistence.local.succeeded) {
+      try {
+        await armDirectInteractiveAttention(targetSessionId, workspacePath, {
+          promptType: "GitCommitProposal",
+          promptId: proposalId,
+          title: `${sessionTitle} needs commit approval`,
+          body: "Open Nimbalyst to review the pending commit proposal.",
+          context: {
+            filesToStage: proposalArgs.filesToStage,
+            commitMessage: proposalArgs.commitMessage,
+            reasoning: proposalArgs.reasoning,
+          },
+        });
+      } catch (error) {
+        console.error("[MCP Server] Failed to arm commit-proposal attention:", error);
+      }
+    }
+  }
 
   // Wait for user confirmation with DB polling fallback.
   // The IPC listener is the fast path; DB polling catches responses when the
@@ -1013,7 +1147,7 @@ export async function handleGitCommitProposal(
       commitMessage?: string;
     };
 
-    const settle = (result: CommitResult, source: string) => {
+    const settle = async (result: CommitResult, source: string) => {
       if (settled) return;
       settled = true;
 
@@ -1026,6 +1160,23 @@ export async function handleGitCommitProposal(
         pollTimer = null;
       }
       ipcMain.removeListener(responseChannel, onResponse);
+
+      if (proposalGeneration) {
+        const clearResult = await setSessionPendingPrompt(targetSessionId, false, {
+          expectedPromptId: proposalId,
+          expectedGeneration: proposalGeneration,
+        });
+        if (!clearResult.local.succeeded && !clearResult.superseded) {
+          console.error("[MCP Server] Commit proposal prompt clear was not durable:", clearResult);
+        }
+        await attentionEventService.cancelInteractivePrompt(
+          targetSessionId,
+          proposalId,
+          result.action === 'cancelled' ? 'cancelled' : 'answered',
+          { expectedGeneration: proposalGeneration },
+        );
+      }
+      TrayManager.getInstance().onPromptResolved(targetSessionId);
 
       if (result.action === "committed" && result.commitHash) {
         // Link commit to tracker items via session (fire-and-forget)
@@ -1085,8 +1236,9 @@ export async function handleGitCommitProposal(
       }
     };
 
-    const onResponse = (_event: unknown, result: CommitResult) =>
-      settle(result, "ipc");
+    const onResponse = (_event: unknown, result: CommitResult) => {
+      void settle(result, "ipc");
+    };
 
     const responseChannel = `git-commit-proposal-response:${sessionId || "unknown"}:${proposalId}`;
     // console.log(
@@ -1122,7 +1274,7 @@ export async function handleGitCommitProposal(
                 content.type === "git_commit_proposal_response" &&
                 content.proposalId === proposalId
               ) {
-                settle(
+                await settle(
                   {
                     action: content.action || "cancelled",
                     commitHash: content.commitHash,
@@ -1399,6 +1551,26 @@ export async function handleRequestUserInput(
     `[MCP Server] RequestUserInput waiting for response: promptId=${promptId}, sessionId=${sessionId}`,
   );
 
+  let promptGeneration: string | undefined;
+  if (sessionId) {
+    try {
+      await ensureInteractivePromptTranscript(sessionId, promptId, "PromptForUserInput", args);
+      const persistence = await setSessionPendingPrompt(sessionId, true, { promptId });
+      promptGeneration = persistence.generation ?? undefined;
+      if (persistence.local.succeeded) {
+        await armDirectInteractiveAttention(sessionId, workspacePath, {
+          promptType: "PromptForUserInput",
+          promptId,
+          title: "Session needs structured input",
+          body: "Open Nimbalyst to complete the pending input form.",
+          context: args,
+        });
+      }
+    } catch (error) {
+      console.error("[MCP Server] Failed to persist/arm PromptForUserInput attention:", error);
+    }
+  }
+
   // Update session status so all windows show the pending indicator.
   if (sessionId) {
     getSessionStateManager().updateActivity({
@@ -1407,18 +1579,16 @@ export async function handleRequestUserInput(
     }).catch((err) => {
       console.error("[MCP Server] Failed to update session status:", err);
     });
-    // Persist pending-prompt bit + push to mobile so the sidebar indicator
-    // survives renderer reloads and reaches other devices.
-    void setSessionPendingPrompt(sessionId, true);
   }
 
-  // NIM-806: do NOT persist a synthetic nimbalyst_tool_use here (same reasoning
+  // NIM-806: normally avoid a synthetic nimbalyst_tool_use here (same reasoning
   // as handleAskUserQuestion). The proxy observation bridge already persists the
   // CLI's assistant turn containing this PromptForUserInput tool_use block (full
   // name mcp__nimbalyst__PromptForUserInput, which CustomToolWidgets maps to
   // RequestUserInputWidget), keyed by the same promptId. A second synthetic row
-  // landed ~before the proxy turn's text → widget rendered above its motivating
-  // text + a duplicate card. Settle still writes the synthetic tool_result.
+  // landed before the proxy turn's text → widget rendered above its motivating
+  // text + a duplicate card. The bounded wait above falls back only if the proxy
+  // row did not arrive before attention delivery. Settle still writes the synthetic tool_result.
   // `isCliSession` is still needed by the settle path.
   const isCliSession = sessionId ? await isClaudeCliSession(sessionId) : false;
 
@@ -1442,21 +1612,7 @@ export async function handleRequestUserInput(
     console.warn("[MCP Server] RequestUserInput: failed to notify renderer:", err);
   }
 
-  // Show OS notification if the app is backgrounded.
-  let sessionTitle = "AI Session";
   if (sessionId) {
-    try {
-      const session = await AISessionsRepository.get(sessionId);
-      if (session?.title) sessionTitle = session.title;
-    } catch {
-      // Ignore - use default title.
-    }
-    notificationService.showBlockedNotification(
-      sessionId,
-      sessionTitle,
-      "question",
-      workspacePath ?? "",
-    );
     TrayManager.getInstance().onPromptCreated(sessionId);
   }
 
@@ -1481,11 +1637,10 @@ export async function handleRequestUserInput(
         void applyInteractivePromptSettleTurnState({
           sessionId,
           isCliSession,
+          attentionGeneration: promptGeneration,
           stateManager: getSessionStateManager(),
         }).catch(() => {});
         TrayManager.getInstance().onPromptResolved(sessionId);
-        // Persist resolved state + push to mobile.
-        void setSessionPendingPrompt(sessionId, false);
         // Notify renderer to clear the pending indicator and remove from atom.
         try {
           BrowserWindow.getAllWindows().forEach((w) => {
@@ -1549,6 +1704,21 @@ export async function handleRequestUserInput(
         } catch (err) {
           console.warn("[MCP Server] Failed to persist synthetic RequestUserInput tool_result:", err);
         }
+        if (promptGeneration) {
+          const clearResult = await setSessionPendingPrompt(sessionId, false, {
+            expectedPromptId: promptId,
+            expectedGeneration: promptGeneration,
+          });
+          if (!clearResult.local.succeeded && !clearResult.superseded) {
+            console.error("[MCP Server] RequestUserInput prompt clear was not durable:", clearResult);
+          }
+          await attentionEventService.cancelInteractivePrompt(
+            sessionId,
+            promptId,
+            cancelled ? 'cancelled' : 'answered',
+            { expectedGeneration: promptGeneration },
+          );
+        }
       }
 
       if (cancelled) {
@@ -1590,7 +1760,7 @@ export async function handleRequestUserInput(
         cancelled?: boolean;
         respondedBy?: "desktop" | "mobile";
       },
-    ) => settle(result, "ipc");
+    ) => { void settle(result, "ipc"); };
 
     const onFallbackResponse = (
       _event: unknown,
@@ -1607,15 +1777,13 @@ export async function handleRequestUserInput(
         typeof result.rawPromptId === "string" ? result.rawPromptId : null,
       ].filter((value): value is string => typeof value === "string" && value.length > 0);
 
-      const isSyntheticFallbackPrompt = promptId.startsWith("rui-");
       if (
-        !isSyntheticFallbackPrompt
-        && responsePromptIds.length > 0
-        && !responsePromptIds.some((id) => promptIdAliasSet.has(id))
+        responsePromptIds.length === 0 ||
+        !responsePromptIds.some((id) => promptIdAliasSet.has(id))
       ) {
         return;
       }
-      settle(result, "ipc-fallback");
+      void settle(result, "ipc-fallback");
     };
 
     ipcMain.on(responseChannel, onResponse);
@@ -1646,9 +1814,9 @@ export async function handleRequestUserInput(
           });
           if (!content) return;
           if (content.cancelled) {
-            settle({ cancelled: true, respondedBy: content.respondedBy as "desktop" | "mobile" | undefined }, "db-poll");
+            await settle({ cancelled: true, respondedBy: content.respondedBy as "desktop" | "mobile" | undefined }, "db-poll");
           } else {
-            settle({
+            await settle({
               answers: content.answers as Record<string, unknown> | undefined,
               respondedBy: content.respondedBy as "desktop" | "mobile" | undefined,
             }, "db-poll");

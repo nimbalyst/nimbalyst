@@ -15,6 +15,7 @@ import {
 } from '../../shared/sessionWorkspaceRouting';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
 import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence';
+import { attentionEventService } from '../services/AttentionEventService';
 import {
   clearStalePendingPromptOnTerminal,
   findCompletedSessionsWithPendingPrompt,
@@ -62,12 +63,16 @@ async function getCanonicalWorkspacePathForSession(sessionId: string): Promise<s
 }
 
 /**
- * Read the authoritative persisted `hasPendingPrompt` bit for a session.
+ * Read the authoritative persisted prompt bit plus its turn identity.
  * Returns null when the row is missing or unreadable so callers can no-op
  * instead of churning a write. Parses the metadata column with the
  * backend-divergent helper (SQLite hands back a raw JSON string).
  */
-async function readPersistedHasPendingPrompt(sessionId: string): Promise<boolean | null> {
+async function readPersistedHasPendingPrompt(sessionId: string): Promise<{
+  hasPendingPrompt: boolean;
+  promptId?: string;
+  generation?: string;
+} | null> {
   try {
     const { rows } = await database.query<{ metadata: unknown }>(
       `SELECT metadata FROM ai_sessions WHERE id = $1 LIMIT 1`,
@@ -75,7 +80,13 @@ async function readPersistedHasPendingPrompt(sessionId: string): Promise<boolean
     );
     if (rows.length === 0) return null;
     const metadata = parseJsonObjectColumn(rows[0].metadata);
-    return metadata.hasPendingPrompt === true;
+    const promptId = metadata.pendingPromptId;
+    const generation = metadata.pendingPromptGeneration;
+    return {
+      hasPendingPrompt: metadata.hasPendingPrompt === true,
+      ...(typeof promptId === 'string' && promptId ? { promptId } : {}),
+      ...(typeof generation === 'string' && generation ? { generation } : {}),
+    };
   } catch (error) {
     console.error('[SessionStateHandlers] Failed to read hasPendingPrompt:', error);
     return null;
@@ -117,19 +128,36 @@ export async function registerSessionStateHandlers() {
   // Subscribe to state changes and sync to mobile
   setupSyncSubscription(stateManager);
 
-  // NIM-871: when a turn reaches a terminal state, clear any stale persisted
+  // NIM-871 / NIM-362: when a turn reaches a terminal state, clear only the
+  // prompt owned by that event's captured attention generation.
   // pending-prompt bit. An interactive prompt that was abandoned (e.g. the user
   // submitted a new prompt instead of answering the widget) otherwise leaves
   // `metadata.hasPendingPrompt` set, and the session-list loader re-seeds the
   // "awaiting user input" indicator from it on every refresh — stuck forever.
   // Single subscription (not per-window) so it fires once per transition; the
-  // read-guard inside avoids a metadata write on every prompt-free turn end.
+  // read/compare guard avoids both prompt-free churn and stale A -> B clears.
   stateManager.subscribe((event: SessionStateEvent) => {
-    void clearStalePendingPromptOnTerminal(event, {
-      readHasPendingPrompt: readPersistedHasPendingPrompt,
-      clearPendingPrompt: (sessionId) => setSessionPendingPrompt(sessionId, false),
-      onError: (err) =>
-        console.error('[SessionStateHandlers] Failed to clear stale pending prompt on terminal event:', err),
+    // Serialize the two JSON-metadata writes. PGLiteSessionStore performs a
+    // shallow read/merge/write, so racing them could otherwise resurrect the
+    // prompt bit or discard the attention cancellation.
+    void (async () => {
+      await clearStalePendingPromptOnTerminal(event, {
+        readHasPendingPrompt: readPersistedHasPendingPrompt,
+        clearPendingPrompt: async (sessionId, options) => {
+          const result = await setSessionPendingPrompt(sessionId, false, options);
+          if (!result.local.succeeded) {
+            throw new Error(`Terminal prompt clear was not durable: ${result.local.error || result.local.skippedReason}`);
+          }
+          if (!result.sync.succeeded) {
+            throw new Error(`Terminal prompt clear sync frame was not written: ${result.sync.error || result.sync.skippedReason}`);
+          }
+        },
+        onError: (err) =>
+          console.error('[SessionStateHandlers] Failed to clear stale pending prompt on terminal event:', err),
+      });
+      await attentionEventService.handleSessionStateEvent(event);
+    })().catch((error) => {
+      console.error('[SessionStateHandlers] Failed to clear terminal prompt/attention:', error);
     });
   });
 
@@ -335,7 +363,9 @@ export async function registerSessionStateHandlers() {
     }
   });
 
-  // End tracking a session (called when AI completes)
+  // Explicit renderer command targeting the session's current turn. This is
+  // intentionally generationless; unlike delayed prompt-A callbacks, the
+  // command means "end whatever is current now" at invocation time.
   safeHandle('ai-session-state:end', async (_event, sessionId: string) => {
     try {
       await stateManager.endSession(sessionId);
@@ -346,7 +376,9 @@ export async function registerSessionStateHandlers() {
     }
   });
 
-  // Interrupt a session (called on error or force stop)
+  // Explicit renderer command targeting the session's current turn. Keep this
+  // generationless so a user force-stop interrupts the turn that is current
+  // when the command arrives, not a captured historical prompt generation.
   safeHandle('ai-session-state:interrupt', async (_event, sessionId: string) => {
     try {
       await stateManager.interruptSession(sessionId);

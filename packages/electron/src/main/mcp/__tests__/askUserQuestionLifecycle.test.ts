@@ -68,10 +68,13 @@ function simulateMcpServer(
       };
 
       const onSpecific = (_ev: unknown, data: any) => settle(data, 'ipc-specific');
-      const onFallback = (_ev: unknown, data: any) => settle(data, 'ipc-fallback');
+      const onFallback = (_ev: unknown, data: any) => {
+        if (data?.questionId !== questionId) return;
+        settle(data, 'ipc-fallback');
+      };
 
       ipc.once(qChannel, onSpecific);
-      ipc.once(fChannel, onFallback);
+      ipc.on(fChannel, onFallback);
 
       // Database polling fallback
       if (opts?.dbPollFn) {
@@ -271,37 +274,18 @@ describe('AskUserQuestion lifecycle', () => {
       expect(s2.source).toBe('ipc-specific');
     });
 
-    it('should not cross-contaminate when two questions are pending (specific channels)', async () => {
-      // NOTE: The session fallback channel (ask-user-question:${sessionId}) does NOT filter
-      // by questionId. If two questions are pending on the same session, the fallback channel
-      // from one answer can settle the other question. In practice this is extremely unlikely
-      // because the SDK blocks on tool results (only one AskUserQuestion at a time).
-      // This test verifies the specific channels (which include questionId) work correctly.
-
+    it('does not let the session fallback for question A settle question B', async () => {
       const QID1 = 'toolu_01Q1';
       const QID2 = 'toolu_02Q2';
+      const mcp1 = simulateMcpServer(SESSION_ID, QID1);
+      const mcp2 = simulateMcpServer(SESSION_ID, QID2);
 
-      // Register only specific channel listeners (skip fallback to test isolation)
-      let settled1: any = null;
-      let settled2: any = null;
+      simulateAnswerHandler(QID2, { q: 'two' }, SESSION_ID, false);
+      await expect(mcp2.promise).resolves.toMatchObject({ answers: { q: 'two' } });
+      expect(mcp1.isSettled()).toBe(false);
 
-      const p1 = new Promise<void>((resolve) => {
-        ipc.once(specificChannel(SESSION_ID, QID1), (_ev, data) => { settled1 = data; resolve(); });
-      });
-      const p2 = new Promise<void>((resolve) => {
-        ipc.once(specificChannel(SESSION_ID, QID2), (_ev, data) => { settled2 = data; resolve(); });
-      });
-
-      // Answer question 2 first
-      ipc.emit(specificChannel(SESSION_ID, QID2), {}, { answers: { q: 'two' } });
-      await p2;
-      expect(settled2.answers).toEqual({ q: 'two' });
-      expect(settled1).toBeNull(); // Q1 should NOT be settled
-
-      // Answer question 1
-      ipc.emit(specificChannel(SESSION_ID, QID1), {}, { answers: { q: 'one' } });
-      await p1;
-      expect(settled1.answers).toEqual({ q: 'one' });
+      simulateAnswerHandler(QID1, { q: 'one' }, SESSION_ID, false);
+      await expect(mcp1.promise).resolves.toMatchObject({ answers: { q: 'one' } });
     });
   });
 

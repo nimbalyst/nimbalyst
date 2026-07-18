@@ -23,6 +23,8 @@ export interface ApplyInteractivePromptSettleTurnStateArgs {
   sessionId: string | undefined;
   /** True for the genuine `claude-code-cli` provider. */
   isCliSession: boolean;
+  /** Generation captured when this exact prompt became pending. */
+  attentionGeneration?: string | null;
   stateManager: StateManager;
 }
 
@@ -32,9 +34,13 @@ export async function applyInteractivePromptSettleTurnState(
   if (!args.sessionId) return;
   // CLI sessions: leave the running/idle indicator to the PID watcher (see above).
   if (args.isCliSession) return;
+  // SDK/MCP prompt callbacks are delayed. Without an exact generation this
+  // could flip a newer prompt B from waiting back to running, so fail closed.
+  if (!args.attentionGeneration) return;
   await args.stateManager.updateActivity({
     sessionId: args.sessionId,
     status: 'running',
     isStreaming: true,
+    attentionGeneration: args.attentionGeneration,
   });
 }

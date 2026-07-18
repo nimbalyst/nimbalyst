@@ -33,7 +33,7 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
   // server; update_session_meta + display glue on the eager core `nimbalyst`.
   // spawn_session is deliberately omitted (it reparents the child out of the
   // meta-agent group — see metaAgentServer EXTENSION_META_AGENT_ALLOWED_TOOLS).
-  protected static readonly META_AGENT_ALLOWED_TOOLS: string[] = [
+  public static readonly META_AGENT_ALLOWED_TOOLS: string[] = [
     'mcp__nimbalyst-host__list_spawned_sessions',
     'mcp__nimbalyst-host__list_worktrees',
     'mcp__nimbalyst-host__create_session',
@@ -41,6 +41,10 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
     'mcp__nimbalyst-host__get_session_result',
     'mcp__nimbalyst-host__list_queued_prompts',
     'mcp__nimbalyst-host__send_prompt',
+    'mcp__nimbalyst-host__notify_user',
+    'mcp__nimbalyst-host__attention_arm',
+    'mcp__nimbalyst-host__attention_cancel',
+    'mcp__nimbalyst-host__attention_status',
     'mcp__nimbalyst-host__respond_to_prompt',
     'mcp__nimbalyst-host__get_session_summary',
     'mcp__nimbalyst-host__get_workstream_overview',

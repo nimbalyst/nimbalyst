@@ -45,6 +45,9 @@ import type {
   SessionControlMessage,
   EncryptedAttachment,
   FileIndexData,
+  AttentionSummary,
+  MobilePushClientWriteResult,
+  MetadataSyncClientWriteResult,
 } from './types';
 import type { SyncedReadReceipt } from '../readReceipts/readReceipts';
 
@@ -200,6 +203,7 @@ type DecryptedSessionIndexEntry = Omit<SessionIndexEntry, 'title' | 'encryptedTi
   queuedPrompts?: PlaintextQueuedPrompt[];  // Decrypted queued prompts
   currentContext?: { tokens: number; contextWindow: number };  // Decrypted from client metadata
   hasBeenNamed?: boolean;  // Decrypted from client metadata
+  attentionSummary?: AttentionSummary;  // Decrypted from client metadata
 };
 
 /** Encrypted create session request for wire protocol */
@@ -563,13 +567,15 @@ async function decryptTitle(
  * The server never reads this — only clients encrypt/decrypt it.
  * Add new display-only fields here without touching the server.
  */
-interface ClientMetadata {
+export interface ClientMetadata {
   currentContext?: {
     tokens: number;
     contextWindow: number;
   };
   /** Whether there are pending interactive prompts (permissions, questions, plan approvals, git commits) */
   hasPendingPrompt?: boolean;
+  /** Bounded generic attention state. Never contains prompt text or raw errors. */
+  attentionSummary?: AttentionSummary;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
   phase?: string;
   /** Arbitrary tags for categorization */
@@ -580,6 +586,30 @@ interface ClientMetadata {
   draftUpdatedAt?: number;
   /** Marker that the title was AI-chosen; prevents repeated rename attempts. */
   hasBeenNamed?: boolean;
+}
+
+function normalizeAttentionSummary(value: unknown): AttentionSummary | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.pending === false) return { pending: false };
+  if (candidate.pending !== true) return undefined;
+  if (!['low', 'normal', 'critical'].includes(String(candidate.severity))) return undefined;
+  if (typeof candidate.eventId !== 'string' || !candidate.eventId || candidate.eventId.length > 200) {
+    return undefined;
+  }
+  if (
+    typeof candidate.effectiveDeadline !== 'string' ||
+    candidate.effectiveDeadline.length > 100 ||
+    !Number.isFinite(Date.parse(candidate.effectiveDeadline))
+  ) {
+    return undefined;
+  }
+  return {
+    pending: true,
+    severity: candidate.severity as 'low' | 'normal' | 'critical',
+    eventId: candidate.eventId,
+    effectiveDeadline: new Date(Date.parse(candidate.effectiveDeadline)).toISOString(),
+  };
 }
 
 /**
@@ -596,13 +626,19 @@ function buildClientMetadataFromRaw(
   const draftInput = metadata?.draftInput as string | undefined;
   const draftUpdatedAt = metadata?.draftUpdatedAt as number | undefined;
   const hasBeenNamed = options.hasBeenNamed;
+  const hasPendingPrompt = typeof metadata?.hasPendingPrompt === 'boolean'
+    ? metadata.hasPendingPrompt
+    : undefined;
+  const attentionSummary = normalizeAttentionSummary(metadata?.attentionSummary);
   const hasTokenUsage = tokenUsage?.totalTokens && tokenUsage?.contextWindow;
   const hasPhaseOrTags = phase || (tags && tags.length > 0);
   // draftInput can be "" (explicit clear) - treat as meaningful
   const hasDraftField = draftInput !== undefined;
+  const hasDraftTimestamp = draftUpdatedAt !== undefined;
   const hasNamingMarker = hasBeenNamed !== undefined;
+  const hasPendingState = hasPendingPrompt !== undefined || attentionSummary !== undefined;
 
-  if (!hasTokenUsage && !hasPhaseOrTags && !hasDraftField && !hasNamingMarker) return undefined;
+  if (!hasTokenUsage && !hasPhaseOrTags && !hasDraftField && !hasDraftTimestamp && !hasNamingMarker && !hasPendingState) return undefined;
 
   const result: ClientMetadata = {};
   if (hasTokenUsage) {
@@ -614,10 +650,17 @@ function buildClientMetadataFromRaw(
   if (phase) result.phase = phase;
   if (tags && tags.length > 0) result.tags = tags;
   if (hasDraftField) result.draftInput = draftInput;
-  if (draftUpdatedAt) result.draftUpdatedAt = draftUpdatedAt;
+  if (hasDraftTimestamp) result.draftUpdatedAt = draftUpdatedAt;
   if (hasNamingMarker) result.hasBeenNamed = hasBeenNamed;
+  if (hasPendingPrompt !== undefined) result.hasPendingPrompt = hasPendingPrompt;
+  if (attentionSummary !== undefined) result.attentionSummary = attentionSummary;
   return result;
 }
+
+export {
+  buildClientMetadataFromRaw as buildClientMetadataFromRawForTest,
+  normalizeAttentionSummary as normalizeAttentionSummaryForTest,
+};
 
 // Why: the lightweight `indexClientMetadataPatch` wire message added in
 // v0.63.0 (commit fe78de08f) is not understood by the Cloudflare collab
@@ -646,16 +689,20 @@ function isIndexClientMetadataOnlyUpdate(metadata: Partial<SyncedSessionMetadata
 // `__tests__/CollabV3Sync.routing.test.ts` pins its classification.
 export { isIndexClientMetadataOnlyUpdate as isIndexClientMetadataOnlyUpdateForTest };
 
-function buildClientMetadataFromCacheEntry(entry: Pick<
-  CachedSessionIndex,
-  'currentContext' | 'hasPendingPrompt' | 'phase' | 'tags' | 'draftInput' | 'draftUpdatedAt' | 'hasBeenNamed'
->): ClientMetadata | undefined {
+export type ClientMetadataCacheFields = Pick<
+  ClientMetadata,
+  'currentContext' | 'hasPendingPrompt' | 'attentionSummary' | 'phase' | 'tags' | 'draftInput' | 'draftUpdatedAt' | 'hasBeenNamed'
+>;
+
+function buildClientMetadataFromCacheEntry(entry: ClientMetadataCacheFields): ClientMetadata | undefined {
   if (
     !entry.currentContext &&
     entry.hasPendingPrompt === undefined &&
+    entry.attentionSummary === undefined &&
     !entry.phase &&
     !entry.tags &&
     entry.draftInput === undefined &&
+    entry.draftUpdatedAt === undefined &&
     entry.hasBeenNamed === undefined
   ) {
     return undefined;
@@ -664,6 +711,7 @@ function buildClientMetadataFromCacheEntry(entry: Pick<
   return {
     currentContext: entry.currentContext,
     hasPendingPrompt: entry.hasPendingPrompt,
+    attentionSummary: entry.attentionSummary,
     phase: entry.phase,
     tags: entry.tags,
     draftInput: entry.draftInput,
@@ -672,6 +720,26 @@ function buildClientMetadataFromCacheEntry(entry: Pick<
   };
 }
 
+function serializeClientMetadata(metadata: ClientMetadata): string {
+  return JSON.stringify(metadata);
+}
+
+function parseClientMetadata(json: string): ClientMetadata {
+  const parsed = JSON.parse(json) as ClientMetadata;
+  return {
+    ...parsed,
+    ...(parsed.attentionSummary !== undefined
+      ? { attentionSummary: normalizeAttentionSummary(parsed.attentionSummary) }
+      : {}),
+  };
+}
+
+export {
+  buildClientMetadataFromCacheEntry as buildClientMetadataFromCacheEntryForTest,
+  serializeClientMetadata as serializeClientMetadataForTest,
+  parseClientMetadata as parseClientMetadataForTest,
+};
+
 /**
  * Encrypt client metadata for wire transmission.
  */
@@ -679,7 +747,7 @@ async function encryptClientMetadata(
   metadata: ClientMetadata,
   key: CryptoKey
 ): Promise<{ encryptedClientMetadata: string; clientMetadataIv: string }> {
-  const { encrypted, iv } = await encrypt(JSON.stringify(metadata), key);
+  const { encrypted, iv } = await encrypt(serializeClientMetadata(metadata), key);
   return { encryptedClientMetadata: encrypted, clientMetadataIv: iv };
 }
 
@@ -692,7 +760,7 @@ async function decryptClientMetadata(
   key: CryptoKey
 ): Promise<ClientMetadata> {
   const json = await decrypt(encryptedClientMetadata, clientMetadataIv, key);
-  return JSON.parse(json);
+  return parseClientMetadata(json);
 }
 
 /**
@@ -865,6 +933,8 @@ interface CachedSessionIndex {
   };
   /** Whether there are pending interactive prompts (permissions or questions) waiting for response */
   hasPendingPrompt?: boolean;
+  /** Bounded generic attention state, decrypted from client metadata. */
+  attentionSummary?: AttentionSummary;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
   phase?: string;
   /** Arbitrary tags for categorization */
@@ -1194,10 +1264,19 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // Key: sessionId, Value: partial metadata to merge when session is cached
   const pendingMetadataUpdates = new Map<string, Partial<SyncedSessionMetadata>>();
 
-  async function sendIndexUpdate(baseEntry: CachedSessionIndex): Promise<void> {
+  interface IndexFrameWriteReceipt {
+    attempted: boolean;
+    written: boolean;
+  }
+  const metadataWriteReceiptSymbol = Symbol('metadata-index-write-receipt');
+
+  async function sendIndexUpdate(
+    baseEntry: CachedSessionIndex,
+    receipt?: IndexFrameWriteReceipt,
+  ): Promise<boolean> {
     if (!indexWs || !config.encryptionKey) {
       console.error('[CollabV3] Cannot send session update: index socket or encryption key missing');
-      return;
+      return false;
     }
 
     const { encryptedProjectId, projectIdIv } = await encryptProjectId(baseEntry.projectId, config.encryptionKey);
@@ -1238,15 +1317,25 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       indexEntry.clientMetadataIv = clientMetadataIv;
     }
 
-    sessionIndexCache.set(baseEntry.sessionId, baseEntry);
     const indexMsg: ClientMessage = { type: 'indexUpdate', session: indexEntry };
-    indexWs.send(JSON.stringify(indexMsg));
+    const socket = indexWs;
+    if (!socket || !indexConnected || socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    if (receipt) receipt.attempted = true;
+    socket.send(JSON.stringify(indexMsg));
+    if (receipt) receipt.written = true;
+    sessionIndexCache.set(baseEntry.sessionId, baseEntry);
+    return true;
   }
 
-  async function sendIndexClientMetadataPatch(baseEntry: CachedSessionIndex): Promise<void> {
+  async function sendIndexClientMetadataPatch(
+    baseEntry: CachedSessionIndex,
+    receipt?: IndexFrameWriteReceipt,
+  ): Promise<boolean> {
     if (!indexWs || !config.encryptionKey) {
       console.error('[CollabV3] Cannot send index metadata patch: index socket or encryption key missing');
-      return;
+      return false;
     }
 
     const patch: IndexClientMetadataPatch = {
@@ -1262,9 +1351,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       patch.clientMetadataIv = clientMetadataIv;
     }
 
-    sessionIndexCache.set(baseEntry.sessionId, baseEntry);
     const patchMsg: ClientMessage = { type: 'indexClientMetadataPatch', patch };
-    indexWs.send(JSON.stringify(patchMsg));
+    const socket = indexWs;
+    if (!socket || !indexConnected || socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    if (receipt) receipt.attempted = true;
+    socket.send(JSON.stringify(patchMsg));
+    if (receipt) receipt.written = true;
+    sessionIndexCache.set(baseEntry.sessionId, baseEntry);
+    return true;
   }
 
   /**
@@ -1307,6 +1403,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       isExecuting: 'isExecuting' in pending ? pending.isExecuting : cached.isExecuting,
       currentContext: 'currentContext' in pending ? pending.currentContext : cached.currentContext,
       hasPendingPrompt: 'hasPendingPrompt' in pending ? pending.hasPendingPrompt : cached.hasPendingPrompt,
+      attentionSummary: 'attentionSummary' in pending ? pending.attentionSummary : cached.attentionSummary,
       phase: 'phase' in pending ? (pending as any).phase : cached.phase,
       tags: 'tags' in pending ? (pending as any).tags : cached.tags,
       lastReadAt: 'lastReadAt' in pending ? (pending as any).lastReadAt : cached.lastReadAt,
@@ -1329,9 +1426,14 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   } | null = null;
 
   // Helper to announce device to the index server
-  function announceDevice(): void {
+  function announceDevice(override?: Partial<DeviceInfo>): {
+    attempted: boolean;
+    written: boolean;
+    error?: string;
+  } {
     // Get current device info (prefer callback for dynamic presence, fallback to static)
-    const deviceInfo = config.getDeviceInfo?.() ?? config.deviceInfo;
+    const baseDeviceInfo = config.getDeviceInfo?.() ?? config.deviceInfo;
+    const deviceInfo = baseDeviceInfo ? { ...baseDeviceInfo, ...override } : undefined;
     // Check both our flag AND the actual WebSocket readyState to avoid "Sent before connected" errors
     if (deviceInfo && indexWs && indexConnected && indexWs.readyState === WebSocket.OPEN) {
       const announceMsg: ClientMessage = {
@@ -1342,9 +1444,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           lastActiveAt: deviceInfo.lastActiveAt ?? Date.now(),
         },
       };
-      indexWs.send(JSON.stringify(announceMsg));
-      // console.log('[CollabV3] Announced device:', deviceInfo.name);
+      try {
+        indexWs.send(JSON.stringify(announceMsg));
+        return { attempted: true, written: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[CollabV3] Failed to announce device:', message);
+        return { attempted: true, written: false, error: message.slice(0, 500) };
+      }
     }
+    return { attempted: false, written: false };
   }
 
   // Start periodic device re-announcement to handle server hibernation
@@ -1935,6 +2044,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                   // Decrypt client metadata (context usage, pending prompt state, phase, tags, draft, etc.)
                   let currentContext: CachedSessionIndex['currentContext'];
                   let hasPendingPrompt: boolean | undefined;
+                  let attentionSummary: AttentionSummary | undefined;
                   let phase: string | undefined;
                   let tags: string[] | undefined;
                   let draftInput: string | undefined;
@@ -1945,6 +2055,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                       const clientMeta = await decryptClientMetadata(entry.encryptedClientMetadata, entry.clientMetadataIv, config.encryptionKey);
                       currentContext = clientMeta.currentContext;
                       hasPendingPrompt = clientMeta.hasPendingPrompt;
+                      attentionSummary = clientMeta.attentionSummary;
                       phase = clientMeta.phase;
                       tags = clientMeta.tags;
                       draftInput = clientMeta.draftInput || undefined;
@@ -1982,6 +2093,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                     queuedPromptCount: entry.queuedPromptCount,
                     queuedPrompts,
                     hasPendingPrompt: hasPendingPrompt ?? entry.hasPendingPrompt,
+                    attentionSummary,
                     currentContext,
                     lastReadAt: entry.lastReadAt,
                   };
@@ -2012,6 +2124,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                     isExecuting: decrypted.isExecuting,
                     queuedPrompts: decrypted.queuedPrompts,
                     currentContext: decrypted.currentContext,
+                    hasPendingPrompt: decrypted.hasPendingPrompt,
+                    attentionSummary: decrypted.attentionSummary,
                     phase,
                     tags,
                     draftInput,
@@ -2150,6 +2264,9 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                 decryptedEntry.currentContext = clientMeta.currentContext;
                 if (clientMeta.hasPendingPrompt !== undefined) {
                   decryptedEntry.hasPendingPrompt = clientMeta.hasPendingPrompt;
+                }
+                if (clientMeta.attentionSummary !== undefined) {
+                  decryptedEntry.attentionSummary = clientMeta.attentionSummary;
                 }
                 if (clientMeta.phase) decryptedEntry.phase = clientMeta.phase;
                 if (clientMeta.tags) decryptedEntry.tags = clientMeta.tags;
@@ -2817,8 +2934,20 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       const existingCache = sessionIndexCache.get(session.id);
       const pending = pendingMetadataUpdates.get(session.id);
       const cachedIsExecuting = pending?.isExecuting ?? existingCache?.isExecuting;
-      const cachedHasPendingPrompt = pending?.hasPendingPrompt ?? existingCache?.hasPendingPrompt;
       const cachedLastReadAt = pending?.lastReadAt ?? existingCache?.lastReadAt;
+
+      // Durable PGLite metadata is authoritative after restart/full resync.
+      // Only a genuinely newer in-memory pending update may override it; the
+      // cache is a fallback, never an overwrite source for durable truth.
+      const rawClientMeta = buildClientMetadataFromRaw(session.metadata, {
+        hasBeenNamed: session.hasBeenNamed,
+      });
+      const resolvedHasPendingPrompt = pending?.hasPendingPrompt
+        ?? rawClientMeta?.hasPendingPrompt
+        ?? existingCache?.hasPendingPrompt;
+      const resolvedAttentionSummary = pending?.attentionSummary
+        ?? rawClientMeta?.attentionSummary
+        ?? existingCache?.attentionSummary;
 
       const entry: SessionIndexEntry = {
         sessionId: session.id,
@@ -2847,13 +2976,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       }
 
       // Encrypt client metadata (context usage, pending prompt state, etc.)
-      const rawClientMeta = buildClientMetadataFromRaw(session.metadata, {
-        hasBeenNamed: session.hasBeenNamed,
-      });
       // Merge in transient fields that are not reliably persisted in PGLite before sync runs.
       const clientMeta: ClientMetadata | undefined =
         rawClientMeta ||
-        cachedHasPendingPrompt !== undefined ||
+        resolvedHasPendingPrompt !== undefined ||
+        resolvedAttentionSummary !== undefined ||
         pending?.currentContext !== undefined ||
         pending?.phase !== undefined ||
         pending?.tags !== undefined ||
@@ -2863,7 +2990,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           ? {
               ...rawClientMeta,
               currentContext: pending?.currentContext ?? rawClientMeta?.currentContext,
-              hasPendingPrompt: cachedHasPendingPrompt,
+              hasPendingPrompt: resolvedHasPendingPrompt,
+              attentionSummary: resolvedAttentionSummary,
               phase: pending?.phase ?? rawClientMeta?.phase,
               tags: pending?.tags ?? rawClientMeta?.tags,
               draftInput: pending?.draftInput ?? rawClientMeta?.draftInput,
@@ -2902,7 +3030,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         updatedAt: session.updatedAt,
         currentContext: clientMeta?.currentContext,
         isExecuting: cachedIsExecuting,
-        hasPendingPrompt: cachedHasPendingPrompt,
+        hasPendingPrompt: resolvedHasPendingPrompt,
+        attentionSummary: resolvedAttentionSummary,
         phase: clientMeta?.phase,
         tags: clientMeta?.tags,
         lastReadAt: cachedLastReadAt,
@@ -3152,6 +3281,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     async pushChange(sessionId: string, change: SessionChange): Promise<void> {
+      const metadataWriteReceipt = (
+        change as SessionChange & {
+          [metadataWriteReceiptSymbol]?: IndexFrameWriteReceipt;
+        }
+      )[metadataWriteReceiptSymbol];
       if (isMessageSyncDisabled(sessionId) && change.type === 'message_added') return;
       const session = sessions.get(sessionId);
       const sessionConnected = session?.status.connected;
@@ -3232,15 +3366,18 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           }
           const hasClientMetaFields = ('currentContext' in change.metadata && change.metadata.currentContext) ||
             ('hasPendingPrompt' in change.metadata) ||
+            ('attentionSummary' in change.metadata) ||
             ('phase' in change.metadata) ||
             ('tags' in change.metadata) ||
             ('draftInput' in change.metadata) ||
+            ('draftUpdatedAt' in change.metadata) ||
             ('hasBeenNamed' in change.metadata);
           if (hasClientMetaFields && config.encryptionKey) {
             const cached = sessionIndexCache.get(sessionId);
             const clientMeta: ClientMetadata = {
               currentContext: ('currentContext' in change.metadata ? change.metadata.currentContext : cached?.currentContext) || undefined,
               hasPendingPrompt: 'hasPendingPrompt' in change.metadata ? change.metadata.hasPendingPrompt : cached?.hasPendingPrompt,
+              attentionSummary: 'attentionSummary' in change.metadata ? change.metadata.attentionSummary : cached?.attentionSummary,
               phase: 'phase' in change.metadata ? (change.metadata as any).phase : cached?.phase,
               tags: 'tags' in change.metadata ? (change.metadata as any).tags : cached?.tags,
               draftInput: 'draftInput' in change.metadata ? (change.metadata as any).draftInput : cached?.draftInput,
@@ -3327,6 +3464,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               isExecuting: 'isExecuting' in meta ? meta.isExecuting : cached.isExecuting,
               currentContext: 'currentContext' in meta ? meta.currentContext : cached.currentContext,
               hasPendingPrompt: 'hasPendingPrompt' in meta ? meta.hasPendingPrompt : cached.hasPendingPrompt,
+              attentionSummary: 'attentionSummary' in meta ? meta.attentionSummary : cached.attentionSummary,
               phase: 'phase' in meta ? (meta as any).phase : cached.phase,
               tags: 'tags' in meta ? (meta as any).tags : cached.tags,
               lastReadAt: 'lastReadAt' in meta ? (meta as any).lastReadAt : cached.lastReadAt,
@@ -3335,9 +3473,9 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               hasBeenNamed: 'hasBeenNamed' in meta ? (meta as any).hasBeenNamed : cached.hasBeenNamed,
             };
             if (isIndexClientMetadataOnlyUpdate(meta)) {
-              await sendIndexClientMetadataPatch(updatedCache);
+              await sendIndexClientMetadataPatch(updatedCache, metadataWriteReceipt);
             } else {
-              await sendIndexUpdate(updatedCache);
+              await sendIndexUpdate(updatedCache, metadataWriteReceipt);
             }
           } else if (meta.title && meta.provider) {
             // New session - need at least title and provider
@@ -3369,6 +3507,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               isExecuting: meta.isExecuting,
               currentContext: meta.currentContext,
               hasPendingPrompt: meta.hasPendingPrompt,
+              attentionSummary: meta.attentionSummary,
               phase: (meta as any).phase,
               tags: (meta as any).tags,
               lastReadAt: (meta as any).lastReadAt,
@@ -3376,7 +3515,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               draftUpdatedAt: (meta as any).draftUpdatedAt,
               hasBeenNamed: (meta as any).hasBeenNamed,
             };
-            await sendIndexUpdate(newEntry);
+            await sendIndexUpdate(newEntry, metadataWriteReceipt);
           } else {
             // No cached data and missing required fields for a full update.
             // Queue the partial update to be applied when the session is cached.
@@ -3393,6 +3532,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               'isPinned' in meta ||
               'currentContext' in meta ||
               'hasPendingPrompt' in meta ||
+              'attentionSummary' in meta ||
               'phase' in meta ||
               'tags' in meta ||
               'lastReadAt' in meta ||
@@ -3413,6 +3553,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               if ('isPinned' in meta) existing.isPinned = (meta as any).isPinned;
               if ('currentContext' in meta) existing.currentContext = meta.currentContext;
               if ('hasPendingPrompt' in meta) existing.hasPendingPrompt = meta.hasPendingPrompt;
+              if ('attentionSummary' in meta) existing.attentionSummary = meta.attentionSummary;
               if ('phase' in meta) (existing as any).phase = (meta as any).phase;
               if ('tags' in meta) (existing as any).tags = (meta as any).tags;
               if ('lastReadAt' in meta) (existing as any).lastReadAt = (meta as any).lastReadAt;
@@ -3426,6 +3567,71 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             }
           }
         }
+      }
+    },
+
+    async pushMetadataChangeWithResult(
+      sessionId: string,
+      metadata: Partial<SyncedSessionMetadata>,
+    ): Promise<MetadataSyncClientWriteResult> {
+      if (!config.encryptionKey) {
+        return {
+          outcome: 'skipped',
+          attempted: false,
+          indexFrameWritten: false,
+          skippedReason: 'encryption_key_unavailable',
+        };
+      }
+      if (!indexWs || !indexConnected || indexWs.readyState !== WebSocket.OPEN) {
+        return {
+          outcome: 'skipped',
+          attempted: false,
+          indexFrameWritten: false,
+          skippedReason: 'index_not_connected',
+        };
+      }
+
+      const hadCachedIndexEntry = sessionIndexCache.has(sessionId);
+      const receipt: IndexFrameWriteReceipt = { attempted: false, written: false };
+      try {
+        const change = {
+          type: 'metadata_updated',
+          metadata,
+          [metadataWriteReceiptSymbol]: receipt,
+        } as SessionChange & {
+          [metadataWriteReceiptSymbol]: IndexFrameWriteReceipt;
+        };
+        await Promise.resolve(this.pushChange(sessionId, change));
+        if (!hadCachedIndexEntry && !sessionIndexCache.has(sessionId)) {
+          return {
+            outcome: 'queued',
+            attempted: false,
+            indexFrameWritten: false,
+            skippedReason: 'queued_until_session_indexed',
+          };
+        }
+        if (!receipt.written) {
+          return {
+            outcome: 'skipped',
+            attempted: receipt.attempted,
+            indexFrameWritten: false,
+            skippedReason: 'index_not_connected',
+          };
+        }
+        return {
+          outcome: 'index_frame_written',
+          attempted: receipt.attempted,
+          indexFrameWritten: true,
+          skippedReason: null,
+        };
+      } catch (error) {
+        return {
+          outcome: 'failed',
+          attempted: receipt.attempted,
+          indexFrameWritten: false,
+          skippedReason: 'index_frame_send_failed',
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+        };
       }
     },
 
@@ -4007,7 +4213,32 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     /** Request the sync server to send a push notification to mobile devices */
-    async requestMobilePush(sessionId: string, title: string, body: string): Promise<void> {
+    async requestMobilePush(
+      sessionId: string,
+      title: string,
+      body: string,
+      options?: {
+        bypassActiveDeviceRouting?: boolean;
+        forceDesktopAwayForPush?: boolean;
+      }
+    ): Promise<MobilePushClientWriteResult> {
+      let forcedAwayFrameWritten = false;
+      let restorationScheduled = false;
+      const skipped = (
+        skippedReason: Exclude<MobilePushClientWriteResult['skippedReason'], 'request_frame_send_failed' | null>,
+        error?: unknown,
+      ): MobilePushClientWriteResult => ({
+        outcome: 'skipped',
+        attempted: false,
+        requestFrameWritten: false,
+        skippedReason,
+        ...(error !== undefined
+          ? { error: (error instanceof Error ? error.message : String(error)).slice(0, 500) }
+          : {}),
+        forcedAwayFrameWritten,
+        restorationScheduled,
+      });
+
       // Ensure we're connected before sending the request
       if (!indexWs || !indexConnected) {
         console.log('[CollabV3] Not connected to index, attempting to reconnect before requesting mobile push...');
@@ -4015,36 +4246,71 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           await connectToIndex();
         } catch (err) {
           console.error('[CollabV3] Failed to connect to index before requesting mobile push:', err);
-          return;
+          return skipped('reconnect_failed', err);
         }
       }
 
       // Double-check connection and WebSocket state after await
-      if (!indexWs || !indexConnected) {
+      if (!indexWs) {
         console.error('[CollabV3] Cannot request mobile push - failed to establish connection');
-        return;
+        return skipped('socket_unavailable');
       }
 
       // Check actual WebSocket state
-      if (indexWs.readyState !== WebSocket.OPEN) {
+      if (!indexConnected || indexWs.readyState !== WebSocket.OPEN) {
         console.error('[CollabV3] Cannot request mobile push - WebSocket not open, state:', indexWs.readyState);
-        return;
+        return skipped('socket_not_open');
       }
 
       const deviceId = config.getDeviceInfo?.()?.deviceId ?? config.deviceInfo?.deviceId;
+      if (options?.forceDesktopAwayForPush && deviceId) {
+        const forcedAwayResult = announceDevice({
+          deviceId,
+          isFocused: false,
+          status: 'away',
+          lastActiveAt: Date.now() - 10 * 60 * 1000,
+        });
+        forcedAwayFrameWritten = forcedAwayResult.written;
+        // Schedule restoration before attempting the push frame. If that send
+        // throws, the desktop must not remain advertised as away indefinitely.
+        setTimeout(() => {
+          announceDevice();
+        }, 1500);
+        restorationScheduled = true;
+        if (!forcedAwayResult.written) {
+          return skipped('forced_away_frame_failed', forcedAwayResult.error);
+        }
+      }
+
       const msg: ClientMessage = {
         type: 'requestMobilePush',
         sessionId: sessionId,
         title,
         body,
-        requestingDeviceId: deviceId,
+        ...(options?.bypassActiveDeviceRouting ? {} : { requestingDeviceId: deviceId }),
       };
       // console.log('[CollabV3] Requesting mobile push for session:', sessionId, 'deviceId:', deviceId, 'readyState:', indexWs.readyState);
       try {
         indexWs.send(JSON.stringify(msg));
-        // console.log('[CollabV3] Mobile push message sent successfully');
+        return {
+          outcome: 'request_frame_written',
+          attempted: true,
+          requestFrameWritten: true,
+          skippedReason: null,
+          forcedAwayFrameWritten,
+          restorationScheduled,
+        };
       } catch (error) {
         console.error('[CollabV3] Failed to send mobile push message:', error);
+        return {
+          outcome: 'failed',
+          attempted: true,
+          requestFrameWritten: false,
+          skippedReason: 'request_frame_send_failed',
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+          forcedAwayFrameWritten,
+          restorationScheduled,
+        };
       }
     },
 

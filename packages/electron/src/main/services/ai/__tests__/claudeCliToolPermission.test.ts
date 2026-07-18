@@ -259,7 +259,11 @@ describe('resolveClaudeCliToolPermission (round-trip)', () => {
     expect(spies.setWaitingStatus).toHaveBeenCalledWith(sessionId);
     expect(spies.persistToolResult).toHaveBeenCalledTimes(1);
     expect(spies.persistToolResult.mock.calls[0][0].result).toMatchObject({ decision: 'allow', scope: 'once' });
-    expect(spies.applySettle).toHaveBeenCalledWith(sessionId);
+    expect(spies.applySettle).toHaveBeenCalledWith(
+      sessionId,
+      'tool-perm-fixed',
+      expect.objectContaining({ decision: 'allow', scope: 'once' }),
+    );
 
     // once → not cached, not saved.
     expect(spies.markPatternApproved).not.toHaveBeenCalled();
@@ -268,6 +272,28 @@ describe('resolveClaudeCliToolPermission (round-trip)', () => {
     // Return is the CLI permission contract.
     expect(JSON.parse(result.content[0].text)).toEqual({ behavior: 'allow', updatedInput: input });
     expect(result.isError).toBe(false);
+  });
+
+  it('still settles the prompt when result persistence fails', async () => {
+    const persistToolResult = vi.fn(async () => {
+      throw new Error('result store unavailable');
+    });
+    const { deps, spies } = makeDeps({ persistToolResult });
+
+    await expect(resolveClaudeCliToolPermission(
+      {
+        args: { tool_name: 'Write', input: { file_path: '/w/new.ts', content: 'x' } },
+        sessionId,
+        workspacePath,
+      },
+      deps,
+    )).rejects.toThrow('result store unavailable');
+
+    expect(spies.applySettle).toHaveBeenCalledWith(
+      sessionId,
+      'tool-perm-fixed',
+      expect.objectContaining({ decision: 'allow', scope: 'once' }),
+    );
   });
 
   it('allow-all workspace auto-approves a Write with NO widget (the reported bug)', async () => {

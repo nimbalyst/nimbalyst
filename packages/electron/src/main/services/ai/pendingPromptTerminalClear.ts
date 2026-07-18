@@ -10,11 +10,9 @@
  * this bit (`PGLiteSessionStore` -> `hasPendingInteractivePrompt`), so the
  * session stays stuck showing "awaiting user input" across every refresh.
  *
- * A terminal turn event means the turn is genuinely over. An interactive prompt
- * can only be legitimately open while the turn is blocked on the MCP call, never
- * after it ends, so any bit still set at terminal time is stale. Clearing it here
- * mirrors the renderer's unconditional terminal-event atom clear in
- * `sessionStateListeners` — this is the durable, mobile-reaching counterpart.
+ * A terminal turn event carries the generation captured for that turn. The
+ * recovery clear is allowed only when the persisted prompt has the same
+ * generation, so a delayed terminal callback cannot erase a newer prompt.
  */
 
 const TERMINAL_SESSION_EVENT_TYPES = new Set([
@@ -38,31 +36,39 @@ export function findCompletedSessionsWithPendingPrompt(
 
 export interface PendingPromptTerminalClearDeps {
   /**
-   * Read the current persisted `hasPendingPrompt` bit for a session. Returns
-   * `null` when the value can't be determined (e.g. the row is gone); in that
-   * case we do nothing rather than churn a write.
+   * Read the current persisted prompt bit and identity. Returns `null` when the
+   * row cannot be determined; in that case recovery is a no-op.
    */
-  readHasPendingPrompt: (sessionId: string) => Promise<boolean | null>;
+  readHasPendingPrompt: (sessionId: string) => Promise<{
+    hasPendingPrompt: boolean;
+    promptId?: string;
+    generation?: string;
+  } | null>;
   /** Clear the persisted bit (DB write + mobile sync push). */
-  clearPendingPrompt: (sessionId: string) => Promise<void>;
+  clearPendingPrompt: (
+    sessionId: string,
+    options: { expectedGeneration: string },
+  ) => Promise<void>;
   onError?: (err: unknown) => void;
 }
 
 /**
- * On a terminal session event, clear the persisted pending-prompt bit IFF it is
- * currently set. The read-guard keeps a normal turn end (no prompt was ever
- * open) from writing metadata and pushing a mobile sync change on every single
- * completion. Returns true when a clear was performed.
+ * On a terminal session event, clear the persisted bit iff it is currently set
+ * for the same generation. Returns true when a clear was performed.
  */
 export async function clearStalePendingPromptOnTerminal(
-  event: { type: string; sessionId: string },
+  event: { type: string; sessionId: string; attentionGeneration?: string },
   deps: PendingPromptTerminalClearDeps,
 ): Promise<boolean> {
   if (!isTerminalSessionEvent(event.type) || !event.sessionId) return false;
+  if (!event.attentionGeneration) return false;
   try {
     const current = await deps.readHasPendingPrompt(event.sessionId);
-    if (current !== true) return false;
-    await deps.clearPendingPrompt(event.sessionId);
+    if (current?.hasPendingPrompt !== true) return false;
+    if (current.generation !== event.attentionGeneration) return false;
+    await deps.clearPendingPrompt(event.sessionId, {
+      expectedGeneration: event.attentionGeneration,
+    });
     return true;
   } catch (err) {
     deps.onError?.(err);

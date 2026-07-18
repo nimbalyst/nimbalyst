@@ -6,6 +6,7 @@ import { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { AIProviderType } from '@nimbalyst/runtime/ai/server/types';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { AISessionsRepository, AgentMessagesRepository, SessionFilesRepository } from '@nimbalyst/runtime';
+import type { MobilePushClientWriteResult } from '@nimbalyst/runtime';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getDefaultAIModel } from '../utils/store';
 import { toMillis } from '../utils/timestampUtils';
@@ -16,8 +17,15 @@ import { getDatabase } from '../database/initialize';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { AIService } from './ai/AIService';
 import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
+import {
+  attentionEventService,
+  type ArmAttentionArgs,
+  type AttentionStatusArgs,
+  type CancelAttentionArgs,
+} from './AttentionEventService';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
+import { isAuthorizedAttentionSupervisor } from './AttentionSupervisorAuthorization';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -112,6 +120,19 @@ interface SpawnSessionArgs {
   isolated?: boolean;
 }
 
+interface NotifyUserArgs {
+  title?: string;
+  body?: string;
+  sessionId?: string;
+  bypassFocusCheck?: boolean;
+  silent?: boolean;
+  urgency?: 'normal' | 'critical' | 'low';
+  mobilePush?: 'never' | 'when_desktop_away' | 'always';
+}
+
+const DIRECT_FORCED_NOTIFICATION_RATE_WINDOW_MS = 60 * 1000;
+const DIRECT_FORCED_NOTIFICATION_RATE_LIMIT = 10;
+
 /** Notification-only bound for the reinjected original task text. The stored,
  *  returned `SessionResultData.originalPrompt` value itself stays unbounded --
  *  only the text appended into a `[Child Session Update]` notification (which
@@ -167,6 +188,7 @@ export class MetaAgentService {
   private unsubscribeStateListener: (() => void) | null = null;
   private notificationSignatures = new Map<string, string>();
   private ipcHandlersRegistered = false;
+  private directForcedNotificationAttempts = new Map<string, number[]>();
 
   private constructor() {}
 
@@ -230,6 +252,26 @@ export class MetaAgentService {
           this.listQueuedPromptsJson(targetSessionId, workspaceId, options),
         sendPrompt: (_metaSessionId, workspaceId, targetSessionId, prompt) =>
           this.sendPromptToSession(targetSessionId, workspaceId, prompt),
+        notifyUser: (callerSessionId, workspaceId, args) =>
+          this.notifyUserJson(callerSessionId, workspaceId, args),
+        armAttention: async (callerSessionId, workspaceId, args) => {
+          const typedArgs = args as ArmAttentionArgs;
+          await this.assertCallerCanTarget(callerSessionId, typedArgs.sessionId, workspaceId);
+          return attentionEventService.armJson(workspaceId, typedArgs, {
+            callerSessionId,
+            enforceDirectRateLimit: true,
+          });
+        },
+        cancelAttention: async (callerSessionId, workspaceId, args) => {
+          const typedArgs = args as CancelAttentionArgs;
+          await this.assertCallerCanTarget(callerSessionId, typedArgs.sessionId, workspaceId);
+          return attentionEventService.cancelJson(workspaceId, typedArgs);
+        },
+        getAttentionStatus: async (callerSessionId, workspaceId, args) => {
+          const typedArgs = args as AttentionStatusArgs;
+          await this.assertCallerCanTarget(callerSessionId, typedArgs.sessionId, workspaceId);
+          return attentionEventService.statusJson(workspaceId, typedArgs);
+        },
         respondToPrompt: (_metaSessionId, workspaceId, args) =>
           this.respondToPrompt(workspaceId, args),
         listSpawnedSessions: (metaSessionId, workspaceId) =>
@@ -240,6 +282,10 @@ export class MetaAgentService {
       // server's `/mcp/host` endpoint via `dispatchMetaAgentTool`, which uses the
       // toolFns injected above. This service no longer starts a standalone HTTP
       // server.
+
+      attentionEventService.configureNotifier((callerSessionId, workspaceId, args) =>
+        this.notifyUserJson(callerSessionId, workspaceId, args, { enforceDirectRateLimit: false })
+      );
 
       this.unsubscribeStateListener = getSessionStateManager().subscribe((event) => {
         // NIM-6 follow-up: dedup signatures only describe one turn; clear them
@@ -1007,7 +1053,152 @@ export class MetaAgentService {
       promptId: args.promptId,
       promptType: args.promptType,
       success: true,
+      promptClear: result.promptClear,
     }, null, 2);
+  }
+
+  private async notifyUserJson(
+    callerSessionId: string,
+    workspaceId: string,
+    args: NotifyUserArgs,
+    options: { enforceDirectRateLimit?: boolean } = { enforceDirectRateLimit: true },
+  ): Promise<string> {
+    const title = args.title?.trim();
+    const body = args.body?.trim();
+    if (!title) {
+      throw new Error('title is required');
+    }
+    if (!body) {
+      throw new Error('body is required');
+    }
+
+    const targetSessionId = args.sessionId?.trim() || callerSessionId;
+    const session = await this.assertCallerCanTarget(callerSessionId, targetSessionId, workspaceId);
+    const mobilePushMode = args.mobilePush || 'never';
+    if (
+      mobilePushMode === 'always' &&
+      options.enforceDirectRateLimit !== false
+    ) {
+      this.consumeForcedNotificationRateLimit(callerSessionId, targetSessionId);
+    }
+
+    const boundedTitle = title.length > 120 ? `${title.slice(0, 117)}...` : title;
+    const boundedBody = body.length > 1000 ? `${body.slice(0, 997)}...` : body;
+    // Keep notification/sync infrastructure lazy so unrelated meta-agent
+    // operations and their unit harnesses do not initialize OS/analytics code.
+    const [{ notificationService }, { getSyncProvider, isDesktopTrulyAway }] = await Promise.all([
+      import('./NotificationService'),
+      import('./SyncManager'),
+    ]);
+    const result = await notificationService.showNotificationWithResult({
+      title: boundedTitle,
+      body: boundedBody,
+      sessionId: targetSessionId,
+      workspacePath: session.workspacePath || workspaceId,
+      provider: 'agent',
+      bypassFocusCheck: args.bypassFocusCheck === true,
+      silent: args.silent === true,
+      urgency: args.urgency || 'normal',
+    });
+
+    const desktopTrulyAway = isDesktopTrulyAway();
+    const bypassActiveDeviceRouting = mobilePushMode === 'always';
+    const forceDesktopAwayForPush = mobilePushMode === 'always';
+    let mobilePushAttempted = false;
+    let mobilePushRequestFrameWritten = false;
+    let mobilePushOutcome: MobilePushClientWriteResult['outcome'] = 'skipped';
+    let mobilePushSkippedReason: string | null = mobilePushMode === 'never' ? 'not_requested' : null;
+    let mobilePushError: string | null = null;
+    let forcedAwayFrameWritten = false;
+    let restorationScheduled = false;
+
+    if (mobilePushMode !== 'never') {
+      const syncProvider = getSyncProvider();
+      if (!syncProvider?.requestMobilePush) {
+        mobilePushSkippedReason = 'sync_provider_unavailable';
+      } else if (mobilePushMode === 'when_desktop_away' && !desktopTrulyAway) {
+        mobilePushSkippedReason = 'desktop_not_truly_away';
+      } else {
+        try {
+          const writeResult = await syncProvider.requestMobilePush(targetSessionId, boundedTitle, boundedBody, {
+            bypassActiveDeviceRouting,
+            forceDesktopAwayForPush,
+          });
+          mobilePushAttempted = writeResult.attempted;
+          mobilePushRequestFrameWritten = writeResult.requestFrameWritten;
+          mobilePushOutcome = writeResult.outcome;
+          mobilePushSkippedReason = writeResult.skippedReason;
+          mobilePushError = writeResult.error || null;
+          forcedAwayFrameWritten = writeResult.forcedAwayFrameWritten;
+          restorationScheduled = writeResult.restorationScheduled;
+        } catch (error) {
+          mobilePushError = error instanceof Error ? error.message : String(error);
+          mobilePushSkippedReason = 'provider_rejected';
+          mobilePushOutcome = 'failed';
+        }
+      }
+    }
+
+    return JSON.stringify({
+      tool: 'notify_user',
+      deliveryChannel: 'os_notification',
+      mobilePushAttempted,
+      mobilePush: {
+        mode: mobilePushMode,
+        requested: mobilePushMode !== 'never',
+        attempted: mobilePushAttempted,
+        requestFrameWritten: mobilePushRequestFrameWritten,
+        outcome: mobilePushOutcome,
+        skippedReason: mobilePushSkippedReason,
+        desktopTrulyAway,
+        bypassActiveDeviceRouting,
+        forceDesktopAwayForPush,
+        forcedAwayFrameWritten,
+        restorationScheduled,
+        ...(mobilePushError ? { error: mobilePushError } : {}),
+      },
+      sessionId: targetSessionId,
+      bypassFocusCheck: args.bypassFocusCheck === true,
+      result,
+    }, null, 2);
+  }
+
+  private async assertCallerCanTarget(
+    callerSessionId: string,
+    targetSessionId: string,
+    workspaceId: string,
+  ): Promise<NonNullable<Awaited<ReturnType<typeof AISessionsRepository.get>>>> {
+    const [caller, target] = await Promise.all([
+      AISessionsRepository.get(callerSessionId),
+      AISessionsRepository.get(targetSessionId),
+    ]);
+    if (!caller || caller.workspacePath !== workspaceId) {
+      throw new Error(`Caller session ${callerSessionId} not found`);
+    }
+    if (!target || target.workspacePath !== workspaceId) {
+      throw new Error(`Session ${targetSessionId} not found`);
+    }
+    if (
+      targetSessionId !== callerSessionId &&
+      target.createdBySessionId !== callerSessionId &&
+      !isAuthorizedAttentionSupervisor(target.metadata, callerSessionId)
+    ) {
+      throw new Error(`Session ${callerSessionId} is not authorized to target ${targetSessionId}`);
+    }
+    return target;
+  }
+
+  private consumeForcedNotificationRateLimit(callerSessionId: string, targetSessionId: string): void {
+    const key = `${callerSessionId}\u0000${targetSessionId}`;
+    const now = Date.now();
+    const recent = (this.directForcedNotificationAttempts.get(key) || []).filter(
+      (timestamp) => now - timestamp < DIRECT_FORCED_NOTIFICATION_RATE_WINDOW_MS,
+    );
+    if (recent.length >= DIRECT_FORCED_NOTIFICATION_RATE_LIMIT) {
+      throw new Error('notify_user rate limit exceeded for this caller and target session');
+    }
+    recent.push(now);
+    this.directForcedNotificationAttempts.set(key, recent);
   }
 
   private async listSpawnedSessionsJson(metaSessionId: string, workspaceId: string): Promise<string> {

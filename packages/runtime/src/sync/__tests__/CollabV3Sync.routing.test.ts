@@ -25,6 +25,17 @@ describe('isIndexClientMetadataOnlyUpdate routing predicate', () => {
       ).toBe(false);
     });
 
+    it('routes encrypted attention summary updates through indexUpdate', () => {
+      expect(isIndexClientMetadataOnlyUpdateForTest(m({
+        attentionSummary: {
+          pending: true,
+          severity: 'normal',
+          eventId: 'event-1',
+          effectiveDeadline: '2026-07-18T12:00:00.000Z',
+        },
+      }))).toBe(false);
+    });
+
     it('routes { currentContext } through indexUpdate', () => {
       expect(
         isIndexClientMetadataOnlyUpdateForTest(

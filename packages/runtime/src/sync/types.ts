@@ -81,6 +81,57 @@ export interface SyncStatus {
   error: string | null;
 }
 
+export type AttentionSeverity = 'low' | 'normal' | 'critical';
+
+/**
+ * Bounded, display-only attention state. This is carried inside the encrypted
+ * client metadata blob; prompt text, questions, and raw errors never belong in
+ * the session index.
+ */
+export type AttentionSummary =
+  | { pending: false }
+  | {
+      pending: true;
+      severity: AttentionSeverity;
+      eventId: string;
+      effectiveDeadline: string;
+    };
+
+export interface MobilePushClientWriteResult {
+  /** Describes only the desktop client's WebSocket write, never APNS delivery. */
+  outcome: 'skipped' | 'failed' | 'request_frame_written';
+  /** True only when writing the requestMobilePush frame was attempted. */
+  attempted: boolean;
+  /** True only after WebSocket.send accepted the requestMobilePush frame. */
+  requestFrameWritten: boolean;
+  skippedReason:
+    | 'reconnect_failed'
+    | 'socket_unavailable'
+    | 'socket_not_open'
+    | 'forced_away_frame_failed'
+    | 'request_frame_send_failed'
+    | null;
+  error?: string;
+  forcedAwayFrameWritten: boolean;
+  restorationScheduled: boolean;
+}
+
+export interface MetadataSyncClientWriteResult {
+  /** Describes the encrypted index-update client write, not server persistence. */
+  outcome: 'skipped' | 'queued' | 'failed' | 'index_frame_written';
+  /** True only when an index WebSocket frame write was attempted. */
+  attempted: boolean;
+  /** True only after WebSocket.send accepted the encrypted index frame. */
+  indexFrameWritten: boolean;
+  skippedReason:
+    | 'index_not_connected'
+    | 'encryption_key_unavailable'
+    | 'queued_until_session_indexed'
+    | 'index_frame_send_failed'
+    | null;
+  error?: string;
+}
+
 export interface SyncProvider {
   /** Connect to sync server for a session */
   connect(sessionId: string): Promise<void>;
@@ -120,6 +171,15 @@ export interface SyncProvider {
 
   /** Push local changes to sync */
   pushChange(sessionId: string, change: SessionChange): void;
+
+  /**
+   * Observable metadata-only sync path for lifecycle-sensitive callers.
+   * Legacy fire-and-forget callers may continue using pushChange.
+   */
+  pushMetadataChangeWithResult?(
+    sessionId: string,
+    metadata: Partial<SyncedSessionMetadata>,
+  ): Promise<MetadataSyncClientWriteResult>;
 
   /** Bulk update the sessions index with existing sessions */
   syncSessionsToIndex?(sessions: SessionIndexData[], options?: {
@@ -162,6 +222,7 @@ export interface SyncProvider {
         sentBy: 'mobile' | 'desktop';
       };
       isExecuting?: boolean;
+      attentionSummary?: AttentionSummary;
     }>;
     projects: Array<{
       projectId: string;
@@ -189,6 +250,7 @@ export interface SyncProvider {
       sentBy: 'mobile' | 'desktop';
     };
     isExecuting?: boolean;
+    attentionSummary?: AttentionSummary;
     /** Unix timestamp ms when this session was last read by any device */
     lastReadAt?: number;
     /** Number of prompts queued from mobile, waiting for desktop to process */
@@ -234,6 +296,8 @@ export interface SyncProvider {
     isExecuting?: boolean;
     /** Decrypted queued prompts */
     queuedPrompts?: Array<{ id: string; prompt: string; timestamp: number }>;
+    /** Decrypted bounded generic attention state. */
+    attentionSummary?: AttentionSummary;
   } | undefined;
 
   /** Clear isExecuting in all cached index entries (for startup cleanup) */
@@ -280,7 +344,15 @@ export interface SyncProvider {
    * Used when agent completes execution and user should be notified on mobile.
    * The server will check device presence before sending (suppresses if mobile is active).
    */
-  requestMobilePush?(sessionId: string, title: string, body: string): Promise<void>;
+  requestMobilePush?(
+    sessionId: string,
+    title: string,
+    body: string,
+    options?: {
+      bypassActiveDeviceRouting?: boolean;
+      forceDesktopAwayForPush?: boolean;
+    }
+  ): Promise<MobilePushClientWriteResult>;
 
   /** Get list of currently connected devices */
   getConnectedDevices?(): DeviceInfo[];
@@ -489,6 +561,8 @@ export interface SyncedSessionMetadata {
   };
   /** Whether there are pending interactive prompts (permissions, questions, plan approvals, git commits) */
   hasPendingPrompt?: boolean;
+  /** Bounded generic attention state, encrypted in the client metadata blob. */
+  attentionSummary?: AttentionSummary;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
   phase?: string;
   /** Arbitrary tags for categorization */
@@ -542,6 +616,8 @@ export interface SessionIndexEntry {
   isExecuting?: boolean;
   /** Whether there are pending interactive prompts (permissions or questions) waiting for response */
   hasPendingPrompt?: boolean;
+  /** Bounded generic attention state, decrypted client-side. */
+  attentionSummary?: AttentionSummary;
   /** Current context usage (from /context command for Claude Code) */
   currentContext?: {
     tokens: number;         // Current tokens in context window

@@ -24,7 +24,12 @@ interface DispatchClaimedQueuedPromptOptions {
   ) => Promise<void>;
   logError: (message: string, error: unknown) => void;
   onAfterSettled?: () => Promise<void>;
-  onChainSettled?: (payload: { sessionId: string; workspacePath: string; source: string }) => Promise<void>;
+  onChainSettled?: (payload: {
+    sessionId: string;
+    workspacePath: string;
+    source: string;
+    attentionGeneration: string;
+  }) => Promise<void>;
   onPromptClaimed: (payload: { sessionId: string; promptId: string }) => void;
   processingSet: Set<string>;
   queueStore: QueuedPromptStoreLike;
@@ -34,10 +39,11 @@ interface DispatchClaimedQueuedPromptOptions {
     documentContext?: DocumentContext,
     sessionId?: string,
     workspacePath?: string,
+    turnContext?: { attentionGeneration: string },
   ) => Promise<{ content: string }>;
   sessionId: string;
   source: string;
-  startSession: (options: { sessionId: string; workspacePath: string }) => Promise<void>;
+  startSession: (options: { sessionId: string; workspacePath: string }) => Promise<string>;
   targetWindow: Electron.BrowserWindow;
   workspacePath: string;
 }
@@ -64,8 +70,12 @@ export async function dispatchClaimedQueuedPrompt(
 
   processingSet.add(sessionId);
 
+  let attentionGeneration: string;
   try {
-    await startSession({ sessionId, workspacePath });
+    attentionGeneration = await startSession({ sessionId, workspacePath });
+    if (!attentionGeneration?.trim()) {
+      throw new Error(`Queued turn ${claimed.id} started without an attention generation`);
+    }
   } catch (error) {
     processingSet.delete(sessionId);
     throw error;
@@ -86,7 +96,14 @@ export async function dispatchClaimedQueuedPrompt(
         senderFrame: targetWindow.webContents.mainFrame,
       } as Electron.IpcMainInvokeEvent;
 
-      await sendMessageHandler(mockEvent, claimed.prompt, docContext, sessionId, workspacePath);
+      await sendMessageHandler(
+        mockEvent,
+        claimed.prompt,
+        docContext,
+        sessionId,
+        workspacePath,
+        { attentionGeneration },
+      );
       await queueStore.complete(claimed.id);
     } catch (queueError) {
       logError(`[AIService] Failed to process queued prompt ${claimed.id}:`, queueError);
@@ -112,7 +129,12 @@ export async function dispatchClaimedQueuedPrompt(
       // delete yet), so nobody has marked the session idle. Do it now.
       if (!processingSet.has(sessionId) && onChainSettled) {
         try {
-          await onChainSettled({ sessionId, workspacePath, source });
+          await onChainSettled({
+            sessionId,
+            workspacePath,
+            source,
+            attentionGeneration,
+          });
         } catch (settledErr) {
           logError(`[AIService] ${source} finally: chain-settled hook failed:`, settledErr);
         }

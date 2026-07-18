@@ -485,19 +485,39 @@ public struct SessionDetailView: View {
     }
 
     private var hasStatusInfo: Bool {
-        displaySession.isExecuting || displaySession.hasQueuedPrompts || displaySession.contextUsagePercent != nil
+        displaySession.isExecuting || displaySession.hasPendingPrompt || displaySession.hasQueuedPrompts || displaySession.attentionPending || displaySession.contextUsagePercent != nil
     }
 
     @ViewBuilder
     private var statusBar: some View {
         if hasStatusInfo {
             HStack(spacing: 12) {
-                if displaySession.hasQueuedPrompts {
+                if let attention = displaySession.attentionPresentation {
+                    HStack(spacing: 6) {
+                        Image(systemName: attention.systemImageName)
+                            .foregroundStyle(attention.isCritical ? .red : NimbalystColors.warning)
+                            .font(.caption)
+                        Text(attention.label)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if displaySession.hasPendingPrompt {
+                    HStack(spacing: 6) {
+                        Image(systemName: "questionmark.bubble.fill")
+                            .foregroundStyle(NimbalystColors.warning)
+                            .font(.caption)
+                        Text("Waiting for your response")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if displaySession.hasQueuedPrompts {
                     HStack(spacing: 6) {
                         Image(systemName: "clock.fill")
                             .foregroundStyle(NimbalystColors.warning)
                             .font(.caption)
-                        Text("Waiting for response")
+                        Text("Prompt queued")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

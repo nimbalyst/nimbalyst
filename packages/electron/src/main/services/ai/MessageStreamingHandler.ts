@@ -77,6 +77,8 @@ import { historyManager } from '../../HistoryManager';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { setSessionPendingPrompt } from './pendingPromptPersistence';
+import { attentionEventService } from '../AttentionEventService';
+import { settleTerminalAttentionBeforeContinuation } from './terminalAttentionSettlement';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
 import { getDevAgentOpenAITools, resolveDevToolScope } from '../../mcp/devAgentTools';
@@ -116,6 +118,7 @@ export type SendMessageHandler = (
   documentContext?: DocumentContext,
   sessionId?: string,
   workspacePath?: string,
+  turnContext?: { attentionGeneration: string },
 ) => Promise<{ content: string }>;
 
 /**
@@ -298,6 +301,7 @@ export class MessageStreamingHandler {
     documentContext?: DocumentContext,
     sessionId?: string,
     workspacePath?: string,
+    turnContext?: { attentionGeneration: string },
   ) => {
     // Check for queued prompt deduplication - prevents duplicate execution from multiple renderer panels
     const queuedPromptId = (documentContext as any)?.queuedPromptId as string | undefined;
@@ -369,6 +373,17 @@ export class MessageStreamingHandler {
       console.error(`[AIService] CRITICAL ERROR: Requested session ${sessionId} but got session ${session.id}!`);
       throw new Error(`Session mismatch: requested ${sessionId} but got ${session.id}`);
     }
+
+    // Assigned at the authoritative startSession turn boundary below. Every
+    // prompt opened during this handler persists the same generation, and all
+    // terminal callbacks retain it even if a newer handler starts turn B.
+    let attentionGeneration: string | undefined;
+    const requireAttentionGeneration = (): string => {
+      if (!attentionGeneration) {
+        throw new Error(`No attention generation captured for session ${session.id}`);
+      }
+      return attentionGeneration;
+    };
 
     const inputType = (documentContext as any)?.inputType as string | undefined;
     if (inputType === 'user' && !queuedPromptId) {
@@ -816,33 +831,79 @@ export class MessageStreamingHandler {
     // for why we persist locally: the in-memory atom can desync from reality
     // if a resolve event is missed (renderer reload, HMR, late delivery),
     // and the only recovery is rehydrating from the DB on next list refresh.
-    const syncPendingPrompt = (sessionId: string, hasPendingPrompt: boolean) => {
-      void setSessionPendingPrompt(sessionId, hasPendingPrompt);
+    const syncPendingPrompt = async (
+      sessionId: string,
+      hasPendingPrompt: boolean,
+      promptId?: string,
+    ) => {
+      const result = await setSessionPendingPrompt(sessionId, hasPendingPrompt, hasPendingPrompt
+        ? { promptId, generation: requireAttentionGeneration() }
+        : {
+            expectedPromptId: promptId,
+            expectedGeneration: requireAttentionGeneration(),
+          });
+      if (!result.fullyPropagated) {
+        logger.main.warn('[AIService] Prompt state was not fully persisted/synced:', result);
+      }
+      return result;
+    };
+    const armInteractiveAttention = async (
+      workspacePath: string,
+      args: Parameters<typeof attentionEventService.armInteractivePrompt>[1],
+    ) => {
+      try {
+        await attentionEventService.armInteractivePrompt(workspacePath, {
+          ...args,
+          attentionGeneration: requireAttentionGeneration(),
+        });
+      } catch (error) {
+        logger.main.error('[AIService] Failed to arm interactive attention:', error);
+      }
+    };
+    const clearTerminalAttention = async <T = undefined>(
+      sessionId: string,
+      reason: 'completed' | 'interrupted' | 'error' | 'provider_limit',
+      continuation: () => Promise<T> = async () => undefined as T,
+    ) => {
+      const result = await settleTerminalAttentionBeforeContinuation({
+        sessionId,
+        attentionGeneration: requireAttentionGeneration(),
+        reason,
+      }, continuation);
+      if (!result.promptClear.fullyPropagated && !result.promptClear.superseded) {
+        logger.main.warn(
+          '[AIService] Terminal prompt clear was not fully persisted/synced:',
+          result.promptClear,
+        );
+      }
+      return result;
     };
 
     // Listen for ExitPlanMode confirmation requests and forward to renderer
     const onExitPlanModeConfirm = async (data: { requestId: string; sessionId: string; planSummary: string; timestamp: number }) => {
       logger.main.info('[AIService] ExitPlanMode confirmation requested:', data.requestId);
       safeSend(event, 'ai:exitPlanModeConfirm', { ...data, workspacePath: effectiveWorkspacePath });
-      syncPendingPrompt(data.sessionId, true);
+      const persistedPrompt = await syncPendingPrompt(data.sessionId, true, data.requestId);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status so all windows show the pending indicator
       getSessionStateManager().updateActivity({
         sessionId: data.sessionId,
         status: 'waiting_for_input',
+        attentionGeneration: requireAttentionGeneration(),
       }).catch((err) => {
         logger.main.error('[AIService] Failed to update session status to waiting_for_input:', err);
       });
 
-      // Show OS notification if app is backgrounded
       const sessionTitle = await getCurrentSessionTitle(data.sessionId);
-      notificationService.showBlockedNotification(
-        data.sessionId,
-        sessionTitle,
-        'plan_approval',
-        effectiveWorkspacePath
-      );
+      if (persistedPrompt.local.succeeded) await armInteractiveAttention(effectiveWorkspacePath, {
+        sessionId: data.sessionId,
+        promptType: 'ExitPlanMode',
+        promptId: data.requestId,
+        title: `${sessionTitle} needs plan approval`,
+        body: 'Open Nimbalyst to review the pending plan decision.',
+        context: { planSummary: data.planSummary },
+      });
     };
     this.installListener(provider, 'exitPlanMode:confirm', onExitPlanModeConfirm);
 
@@ -853,7 +914,7 @@ export class MessageStreamingHandler {
     // waiting_for_input and the AGENT panel's "Thinking…" indicator does
     // not re-appear when the SDK resumes streaming. Mirrors the
     // askUserQuestion:answered and toolPermission:resolved patterns above.
-    const onExitPlanModeResolved = (data: {
+    const onExitPlanModeResolved = async (data: {
       requestId: string;
       sessionId: string;
       approved: boolean;
@@ -861,13 +922,20 @@ export class MessageStreamingHandler {
       timestamp: number;
     }) => {
       logger.main.info('[AIService] ExitPlanMode resolved:', data.requestId, 'approved=', data.approved);
-      syncPendingPrompt(data.sessionId, false);
+      await syncPendingPrompt(data.sessionId, false, data.requestId);
+      await attentionEventService.cancelInteractivePrompt(
+        data.sessionId,
+        data.requestId,
+        'answered',
+        { expectedGeneration: requireAttentionGeneration() },
+      );
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
       getSessionStateManager().updateActivity({
         sessionId: data.sessionId,
         status: 'running',
         isStreaming: true,
+        attentionGeneration: requireAttentionGeneration(),
       }).catch((err) => {
         logger.main.error('[AIService] Failed to update session status to running after ExitPlanMode resolve:', err);
       });
@@ -878,33 +946,41 @@ export class MessageStreamingHandler {
     const onAskUserQuestion = async (data: { questionId: string; sessionId: string; questions: any[]; timestamp: number }) => {
       // logger.main.info('[AIService] AskUserQuestion requested:', data.questionId);
       safeSend(event, 'ai:askUserQuestion', { ...data, workspacePath: effectiveWorkspacePath });
-      syncPendingPrompt(data.sessionId, true);
+      const persistedPrompt = await syncPendingPrompt(data.sessionId, true, data.questionId);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status to waiting_for_input so all windows show the pending indicator
       getSessionStateManager().updateActivity({
         sessionId: data.sessionId,
         status: 'waiting_for_input',
+        attentionGeneration: requireAttentionGeneration(),
       }).catch((err) => {
         logger.main.error('[AIService] Failed to update session status to waiting_for_input:', err);
       });
 
-      // Show OS notification if app is backgrounded
       const sessionTitle = await getCurrentSessionTitle(data.sessionId);
-      notificationService.showBlockedNotification(
-        data.sessionId,
-        sessionTitle,
-        'question',
-        effectiveWorkspacePath
-      );
+      if (persistedPrompt.local.succeeded) await armInteractiveAttention(effectiveWorkspacePath, {
+        sessionId: data.sessionId,
+        promptType: 'AskUserQuestion',
+        promptId: data.questionId,
+        title: `${sessionTitle} has a question`,
+        body: 'Open Nimbalyst to answer the pending question.',
+        context: { questions: data.questions },
+      });
     };
     this.installListener(provider, 'askUserQuestion:pending', onAskUserQuestion);
 
     // Listen for AskUserQuestion answers and forward to renderer to update tool call display
-    const onAskUserQuestionAnswered = (data: { questionId: string; sessionId: string; questions: any[]; answers: Record<string, string>; timestamp: number }) => {
+    const onAskUserQuestionAnswered = async (data: { questionId: string; sessionId: string; questions: any[]; answers: Record<string, string>; timestamp: number }) => {
       // logger.main.info('[AIService] AskUserQuestion answered:', data.questionId);
       safeSend(event, 'ai:askUserQuestionAnswered', { ...data, workspacePath: effectiveWorkspacePath });
-      syncPendingPrompt(data.sessionId, false);
+      await syncPendingPrompt(data.sessionId, false, data.questionId);
+      await attentionEventService.cancelInteractivePrompt(
+        data.sessionId,
+        data.questionId,
+        'answered',
+        { expectedGeneration: requireAttentionGeneration() },
+      );
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
       // Update session status back to running so all windows clear the pending indicator
@@ -912,6 +988,7 @@ export class MessageStreamingHandler {
         sessionId: data.sessionId,
         status: 'running',
         isStreaming: true,
+        attentionGeneration: requireAttentionGeneration(),
       }).catch(() => {});
     };
     this.installListener(provider, 'askUserQuestion:answered', onAskUserQuestionAnswered);
@@ -920,13 +997,14 @@ export class MessageStreamingHandler {
     const onToolPermissionPending = async (data: { requestId: string; sessionId: string; workspacePath: string; request: any; timestamp: number }) => {
       logger.main.info('[AIService] Tool permission requested:', data.requestId);
       safeSend(event, 'ai:toolPermission', data);
-      syncPendingPrompt(data.sessionId, true);
+      const persistedPrompt = await syncPendingPrompt(data.sessionId, true, data.requestId);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status so all windows show the pending indicator
       getSessionStateManager().updateActivity({
         sessionId: data.sessionId,
         status: 'waiting_for_input',
+        attentionGeneration: requireAttentionGeneration(),
       }).catch((err) => {
         logger.main.error('[AIService] Failed to update session status to waiting_for_input:', err);
       });
@@ -935,22 +1013,29 @@ export class MessageStreamingHandler {
       const soundService = SoundNotificationService.getInstance();
       soundService.playPermissionSound(data.workspacePath);
 
-      // Show OS notification if app is backgrounded
       const sessionTitle = await getCurrentSessionTitle(data.sessionId);
-      notificationService.showBlockedNotification(
-        data.sessionId,
-        sessionTitle,
-        'permission',
-        data.workspacePath
-      );
+      if (persistedPrompt.local.succeeded) await armInteractiveAttention(data.workspacePath, {
+        sessionId: data.sessionId,
+        promptType: 'ToolPermission',
+        toolUseId: data.requestId,
+        title: `${sessionTitle} needs permission`,
+        body: 'Open Nimbalyst to review the pending tool permission.',
+        context: { request: data.request },
+      });
     };
     this.installListener(provider, 'toolPermission:pending', onToolPermissionPending);
 
     // Listen for tool permission resolved and forward to renderer
-    const onToolPermissionResolved = (data: { requestId: string; sessionId: string; response: any; timestamp: number }) => {
+    const onToolPermissionResolved = async (data: { requestId: string; sessionId: string; response: any; timestamp: number }) => {
       logger.main.info('[AIService] Tool permission resolved:', data.requestId);
       safeSend(event, 'ai:toolPermissionResolved', { ...data, workspacePath: effectiveWorkspacePath });
-      syncPendingPrompt(data.sessionId, false);
+      await syncPendingPrompt(data.sessionId, false, data.requestId);
+      await attentionEventService.cancelInteractivePrompt(
+        data.sessionId,
+        data.requestId,
+        'answered',
+        { expectedGeneration: requireAttentionGeneration() },
+      );
       TrayManager.getInstance().onPromptResolved(data.sessionId);
 
       // Update session status back to running so all windows clear the pending indicator
@@ -958,6 +1043,7 @@ export class MessageStreamingHandler {
         sessionId: data.sessionId,
         status: 'running',
         isStreaming: true,
+        attentionGeneration: requireAttentionGeneration(),
       }).catch(() => {});
     };
     this.installListener(provider, 'toolPermission:resolved', onToolPermissionResolved);
@@ -1070,7 +1156,10 @@ export class MessageStreamingHandler {
         }
 
         logger.main.info(`[AIService] All teammates completed for session ${data.sessionId}, ending deferred session`);
-        await stateManager.endSession(data.sessionId);
+        await clearTerminalAttention(data.sessionId, 'completed');
+        await stateManager.endSession(data.sessionId, {
+          attentionGeneration: requireAttentionGeneration(),
+        });
         // Stop file watcher - session is fully complete (teammates done)
         await this.svc.hooklessWatcher.stopForSession(data.sessionId);
         codexEditWindowRegistry.clearSession(data.sessionId);
@@ -1099,7 +1188,10 @@ export class MessageStreamingHandler {
       if (this.svc.sessionsProcessingQueue.has(data.sessionId)) return;
 
       logger.main.info(`[AIService] Sub-agent drain settled for session ${data.sessionId}, ending deferred session`);
-      await stateManager.endSession(data.sessionId);
+      await clearTerminalAttention(data.sessionId, 'completed');
+      await stateManager.endSession(data.sessionId, {
+        attentionGeneration: requireAttentionGeneration(),
+      });
       await this.svc.hooklessWatcher.stopForSession(data.sessionId);
       codexEditWindowRegistry.clearSession(data.sessionId);
 
@@ -1149,10 +1241,23 @@ export class MessageStreamingHandler {
 
     // Mark session as running/active
     const stateManager = getSessionStateManager();
-    await stateManager.startSession({
+    attentionGeneration = await stateManager.startSession({
       sessionId: session.id,
       workspacePath: session.workspacePath || effectiveWorkspacePath,
+      ...(turnContext?.attentionGeneration
+        ? { attentionGeneration: turnContext.attentionGeneration }
+        : {}),
     });
+    if (
+      turnContext?.attentionGeneration &&
+      attentionGeneration !== turnContext.attentionGeneration
+    ) {
+      throw new Error(
+        `Queued turn generation mismatch for session ${session.id}: ` +
+        `expected ${turnContext.attentionGeneration}, received ${attentionGeneration}`,
+      );
+    }
+    requireAttentionGeneration();
 
     // Mark session as executing for mobile sync (shows "Running" indicator)
     const syncProvider = getSyncProvider();
@@ -1491,7 +1596,8 @@ export class MessageStreamingHandler {
             if (textChunks === 1) {
               await stateManager.updateActivity({
                 sessionId: session.id,
-                isStreaming: true
+                isStreaming: true,
+                attentionGeneration: requireAttentionGeneration(),
               });
             }
             // if (isClaudeCode && textChunks <= 5) {
@@ -2129,6 +2235,14 @@ export class MessageStreamingHandler {
               isCodexAuthRequired: chunk.isCodexAuthRequired || false,
             });
 
+            // Provider-level error chunks are terminal even when a provider
+            // does not throw afterward. Clear directly here; the state-event
+            // subscription and outer catch remain idempotent backstops.
+            await clearTerminalAttention(
+              session.id,
+              isBedrockToolError ? 'provider_limit' : 'error',
+            );
+
             // An in-band 'error' chunk from an extension agent (the gemini
             // backend's only failure-settle path) does NOT throw, so the outer
             // catch never runs and the session would never move off 'running'.
@@ -2150,8 +2264,14 @@ export class MessageStreamingHandler {
               && !this.svc.sessionsProcessingQueue.has(session.id)
             ) {
               try {
-                await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
-                await stateManager.endSession(session.id);
+                await stateManager.updateActivity({
+                  sessionId: session.id,
+                  status: 'error',
+                  attentionGeneration: requireAttentionGeneration(),
+                });
+                await stateManager.endSession(session.id, {
+                  attentionGeneration: requireAttentionGeneration(),
+                });
                 await this.svc.hooklessWatcher.stopForSession(session.id);
               } catch (settleErr) {
                 logger.main.error('[AIService] Failed to settle extension-agent error chunk:', settleErr);
@@ -2541,16 +2661,31 @@ export class MessageStreamingHandler {
             const willResume = session.provider === 'claude-code'
               && typeof (provider as any).willResumeAfterCompletion === 'function'
               && (provider as any).willResumeAfterCompletion();
-            const queuedChainAlreadyActive = this.svc.sessionsProcessingQueue.has(session.id);
-            let queuedContinuationScheduled = false;
-            if (!hasTeammates && !willResume && !queuedChainAlreadyActive) {
-              queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
-                session.id,
-                workspacePath,
-                BrowserWindow.fromWebContents(event.sender),
-                'completion-handler queue',
-              );
-            }
+            // Clear the completed turn's prompt state before a queued or team
+            // continuation can open a newer prompt. This ordering makes the
+            // clear independent of whether endSession is deferred and lets the
+            // per-session prompt lock protect the next prompt identity.
+            const terminalSettlement = await clearTerminalAttention(
+              session.id,
+              'completed',
+              async () => {
+                const queuedChainAlreadyActive = this.svc.sessionsProcessingQueue.has(session.id);
+                let queuedContinuationScheduled = false;
+                if (!hasTeammates && !willResume && !queuedChainAlreadyActive) {
+                  queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
+                    session.id,
+                    workspacePath,
+                    BrowserWindow.fromWebContents(event.sender),
+                    'completion-handler queue',
+                  );
+                }
+                return { queuedChainAlreadyActive, queuedContinuationScheduled };
+              },
+            );
+            const {
+              queuedChainAlreadyActive,
+              queuedContinuationScheduled,
+            } = terminalSettlement.continuationResult;
             if (hasTeammates || willResume || queuedChainAlreadyActive || queuedContinuationScheduled) {
               const reason = hasTeammates
                 ? 'teammates still active'
@@ -2561,7 +2696,9 @@ export class MessageStreamingHandler {
                 : 'queued continuation scheduled';
               // logger.main.info(`[AIService] Deferring endSession for ${session.id} - ${reason}`);
             } else {
-              await stateManager.endSession(session.id);
+              await stateManager.endSession(session.id, {
+                attentionGeneration: requireAttentionGeneration(),
+              });
               // Stop file watcher after a brief delay to let pending
               // watcher events drain through WorkspaceFileEditAttributionService.
               // The manager cancels the scheduled stop if a new turn starts
@@ -2697,7 +2834,10 @@ export class MessageStreamingHandler {
       if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
         syncProvider.pushChange(session.id, {
           type: 'metadata_updated',
-          metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+          // hasPendingPrompt is published only by the generation-guarded
+          // persistence path above. A raw terminal false here could erase a
+          // newer prompt opened by a replacement turn.
+          metadata: { isExecuting: false, updatedAt: Date.now() },
         });
       }
 
@@ -2746,11 +2886,6 @@ export class MessageStreamingHandler {
 
       // Mark session as error and end it
       if (session?.id) {
-        await stateManager.updateActivity({
-          sessionId: session.id,
-          status: 'error'
-        });
-
         // End the session to remove it from active sessions.
         // Skip if teammates are still active or lead is resuming - deferred to teammates:allCompleted.
         // NOTE: Use willResumeAfterCompletion() not isLeadBusy() — we're inside the
@@ -2761,16 +2896,35 @@ export class MessageStreamingHandler {
         const willResumeOnError = session.provider === 'claude-code'
           && typeof (provider as any).willResumeAfterCompletion === 'function'
           && (provider as any).willResumeAfterCompletion();
-        const queuedChainAlreadyActiveOnError = this.svc.sessionsProcessingQueue.has(session.id);
-        let queuedContinuationScheduledOnError = false;
-        if (!hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
-          queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
-            session.id,
-            workspacePath,
-            BrowserWindow.fromWebContents(event.sender),
-            'error-handler queue',
-          );
-        }
+        // Persist the failed turn's clear before dispatching any queued
+        // continuation, so an old terminal callback cannot erase a prompt
+        // opened by that continuation.
+        const terminalSettlement = await clearTerminalAttention(
+          session.id,
+          isBedrockToolSearchError(error) ? 'provider_limit' : 'error',
+          async () => {
+            await stateManager.updateActivity({
+              sessionId: session.id,
+              status: 'error',
+              attentionGeneration: requireAttentionGeneration(),
+            });
+            const queuedChainAlreadyActiveOnError = this.svc.sessionsProcessingQueue.has(session.id);
+            let queuedContinuationScheduledOnError = false;
+            if (!hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
+              queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
+                session.id,
+                workspacePath,
+                BrowserWindow.fromWebContents(event.sender),
+                'error-handler queue',
+              );
+            }
+            return { queuedChainAlreadyActiveOnError, queuedContinuationScheduledOnError };
+          },
+        );
+        const {
+          queuedChainAlreadyActiveOnError,
+          queuedContinuationScheduledOnError,
+        } = terminalSettlement.continuationResult;
         if (hasTeammatesOnError || willResumeOnError || queuedChainAlreadyActiveOnError || queuedContinuationScheduledOnError) {
           const reason = hasTeammatesOnError
             ? 'teammates still active'
@@ -2781,7 +2935,9 @@ export class MessageStreamingHandler {
             : 'queued continuation scheduled';
           logger.main.info(`[AIService] Deferring endSession for ${session.id} on error - ${reason}`);
         } else {
-          await stateManager.endSession(session.id);
+          await stateManager.endSession(session.id, {
+            attentionGeneration: requireAttentionGeneration(),
+          });
           // Stop file watcher - session ended on error
           await this.svc.hooklessWatcher.stopForSession(session.id);
           codexEditWindowRegistry.clearSession(session.id);
@@ -2791,7 +2947,7 @@ export class MessageStreamingHandler {
         if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
           syncProvider.pushChange(session.id, {
             type: 'metadata_updated',
-            metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+            metadata: { isExecuting: false, updatedAt: Date.now() },
           });
 
           // Request mobile push notification for agent error (only when truly away)

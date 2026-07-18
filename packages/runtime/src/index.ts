@@ -193,7 +193,13 @@ export {
 // Editor wrappers
 export * from './editors';
 // Sync types (for capacitor)
-export type { SessionIndexEntry } from './sync/types';
+export type {
+  SessionIndexEntry,
+  AttentionSummary,
+  AttentionSeverity,
+  MobilePushClientWriteResult,
+  MetadataSyncClientWriteResult,
+} from './sync/types';
 // Read receipts (unread indicators for trackers/docs)
 export {
   isEntityUnread,

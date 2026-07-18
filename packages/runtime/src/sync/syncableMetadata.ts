@@ -45,7 +45,9 @@ export const SYNC_RELEVANT_FIELDS = {
    * wiring it cross-device means touching the encrypted client-metadata path,
    * which is a deliberate follow-up rather than a half-wired push.
    */
-  metadataKeys: ['phase', 'tags'] as const,
+  // Only bounded, client-display metadata belongs here. attentionSummary is
+  // encrypted by CollabV3Sync before it reaches the index server.
+  metadataKeys: ['phase', 'tags', 'attentionSummary'] as const,
 
   /**
    * Subset of `columns` whose changes represent meaningful content activity

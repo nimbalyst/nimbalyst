@@ -11,6 +11,8 @@ const ipc = new EventEmitter();
 const SESSION_ID = 'test-session-aaaa-bbbb-cccc';
 const RAW_PROMPT_ID = 'call_prompt_123';
 const SYNTHETIC_PROMPT_ID = buildCodexToolLookupId(RAW_PROMPT_ID, 1234567890, 42);
+const OTHER_RAW_PROMPT_ID = 'call_prompt_456';
+const OTHER_SYNTHETIC_PROMPT_ID = buildCodexToolLookupId(OTHER_RAW_PROMPT_ID, 1234567891, 43);
 
 function specificChannel(sessionId: string, promptId: string) {
   return `request-user-input-response:${sessionId}:${promptId}`;
@@ -64,11 +66,9 @@ function simulateMcpServer(
           typeof data?.promptId === 'string' ? data.promptId : null,
           typeof data?.rawPromptId === 'string' ? data.rawPromptId : null,
         ].filter((value): value is string => !!value);
-        const isSyntheticFallbackPrompt = promptId.startsWith('rui-');
         if (
-          !isSyntheticFallbackPrompt
-          && responsePromptIds.length > 0
-          && !responsePromptIds.some((id) => promptIdAliases.has(id))
+          responsePromptIds.length === 0
+          || !responsePromptIds.some((id) => promptIdAliases.has(id))
         ) {
           return;
         }
@@ -198,9 +198,9 @@ describe('RequestUserInput lifecycle', () => {
     expect(mcp.isSettled()).toBe(true);
   });
 
-  it('resolves via session fallback IPC when the waiter id is unrelated to the response prompt id', async () => {
+  it('resolves via session fallback IPC only when the response carries an exact prompt alias', async () => {
     const answers = { moveToComplete: { type: 'multiSelect', selectedIds: ['session-3'] } };
-    const mcp = simulateMcpServer(SESSION_ID, 'rui-session-fallback');
+    const mcp = simulateMcpServer(SESSION_ID, RAW_PROMPT_ID);
 
     simulateRendererResponse(SESSION_ID, SYNTHETIC_PROMPT_ID, { answers }, { forceFallback: true });
 
@@ -208,5 +208,19 @@ describe('RequestUserInput lifecycle', () => {
     expect(settled.source).toBe('ipc-fallback');
     expect(settled.answers).toEqual(answers);
     expect(mcp.isSettled()).toBe(true);
+  });
+
+  it('does not let a fallback response for prompt B settle prompt A in the same session', async () => {
+    const answers = { moveToComplete: { type: 'multiSelect', selectedIds: ['session-b'] } };
+    const promptA = simulateMcpServer(SESSION_ID, RAW_PROMPT_ID);
+    const promptB = simulateMcpServer(SESSION_ID, OTHER_RAW_PROMPT_ID);
+
+    simulateRendererResponse(SESSION_ID, OTHER_SYNTHETIC_PROMPT_ID, { answers }, { forceFallback: true });
+
+    const settledB = await promptB.promise;
+    expect(settledB.source).toBe('ipc-fallback');
+    expect(settledB.answers).toEqual(answers);
+    expect(promptB.isSettled()).toBe(true);
+    expect(promptA.isSettled()).toBe(false);
   });
 });

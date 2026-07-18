@@ -2,7 +2,7 @@
  * Meta-agent (child-session orchestration) tool surface — `create_session`,
  * `spawn_session`, `send_prompt`, `list_queued_prompts`, `respond_to_prompt`,
  * `get_session_status`, `get_session_result`, `list_spawned_sessions`,
- * `list_worktrees`.
+ * `list_worktrees`, `notify_user`, and attention lifecycle operations.
  *
  * MCP consolidation: these tools are served by the unified internal MCP HTTP
  * server's `/mcp/host` endpoint (`nimbalyst-host`). This module exports the tool
@@ -77,6 +77,42 @@ type ListQueuedPromptsArgs = {
   includePromptText?: boolean;
 };
 
+type NotifyUserArgs = {
+  title: string;
+  body: string;
+  sessionId?: string;
+  bypassFocusCheck?: boolean;
+  silent?: boolean;
+  urgency?: "normal" | "critical" | "low";
+  mobilePush?: "never" | "when_desktop_away" | "always";
+};
+
+type ArmAttentionArgs = {
+  sessionId: string;
+  promptId?: string;
+  toolUseId?: string;
+  progressFingerprint?: string;
+  severity: "low" | "normal" | "critical";
+  deadline?: string;
+  dedupeKey: string;
+  doNotDisturb?: boolean;
+  title?: string;
+  body?: string;
+};
+
+type CancelAttentionArgs = {
+  sessionId: string;
+  eventId?: string;
+  dedupeKey?: string;
+  reason?: string;
+};
+
+type AttentionStatusArgs = {
+  sessionId: string;
+  dedupeKey?: string;
+  includeCancelled?: boolean;
+};
+
 interface MetaAgentToolFns {
   listWorktrees: (
     metaSessionId: string,
@@ -114,6 +150,26 @@ interface MetaAgentToolFns {
     workspaceId: string,
     targetSessionId: string,
     prompt: string
+  ) => Promise<string>;
+  notifyUser: (
+    callerSessionId: string,
+    workspaceId: string,
+    args: NotifyUserArgs
+  ) => Promise<string>;
+  armAttention: (
+    callerSessionId: string,
+    workspaceId: string,
+    args: ArmAttentionArgs
+  ) => Promise<string>;
+  cancelAttention: (
+    callerSessionId: string,
+    workspaceId: string,
+    args: CancelAttentionArgs
+  ) => Promise<string>;
+  getAttentionStatus: (
+    callerSessionId: string,
+    workspaceId: string,
+    args: AttentionStatusArgs
   ) => Promise<string>;
   respondToPrompt: (
     metaSessionId: string,
@@ -335,6 +391,104 @@ export const META_AGENT_TOOL_DEFS: Array<{
     },
   },
   {
+    name: "notify_user",
+    description:
+      "Show a local OS notification and optionally request mobile push. mobilePush=always uses the explicit forced-attention client path and reports only client attempted/skipped/error semantics, not confirmed APNS delivery.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Required short notification title." },
+        body: { type: "string", description: "Required concise notification body." },
+        sessionId: {
+          type: "string",
+          description: "Optional target session. Defaults to the calling session.",
+        },
+        bypassFocusCheck: {
+          type: "boolean",
+          description: "Bypass desktop focus suppression while respecting OS notification settings.",
+        },
+        silent: { type: "boolean", description: "Request a silent OS notification." },
+        urgency: {
+          type: "string",
+          enum: ["low", "normal", "critical"],
+          description: "OS urgency hint. Defaults to normal.",
+        },
+        mobilePush: {
+          type: "string",
+          enum: ["never", "when_desktop_away", "always"],
+          description: "Mobile request policy. Defaults to never.",
+        },
+      },
+      required: ["title", "body"],
+    },
+  },
+  {
+    name: "attention_arm",
+    description:
+      "Arm one persistent attention event for a session. Exactly one immediate forced notification is attempted per dedupeKey unless doNotDisturb is true. Provide at least one of promptId, toolUseId, or progressFingerprint.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string", description: "Target session ID." },
+        promptId: { type: "string", description: "Interactive prompt identifier." },
+        toolUseId: { type: "string", description: "Tool-use identifier." },
+        progressFingerprint: {
+          type: "string",
+          description: "Stable fingerprint for a no-progress watcher event.",
+        },
+        severity: {
+          type: "string",
+          enum: ["low", "normal", "critical"],
+          description: "Attention severity.",
+        },
+        deadline: {
+          type: "string",
+          description: "Optional ISO-8601 escalation deadline. Status uses a ten-minute default when omitted.",
+        },
+        dedupeKey: { type: "string", description: "Stable event dedupe key." },
+        doNotDisturb: {
+          type: "boolean",
+          description: "Record the event but suppress its immediate notification.",
+        },
+        title: { type: "string", description: "Optional notification title override." },
+        body: { type: "string", description: "Optional notification body override." },
+      },
+      required: ["sessionId", "severity", "dedupeKey"],
+    },
+  },
+  {
+    name: "attention_cancel",
+    description:
+      "Cancel a pending attention event by eventId or dedupeKey. Exact prompt settlement, supersede, and terminal transitions cancel automatically.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string", description: "Target session ID." },
+        eventId: { type: "string", description: "Attention event ID." },
+        dedupeKey: { type: "string", description: "Attention event dedupe key." },
+        reason: { type: "string", description: "Optional bounded cancellation detail." },
+      },
+      required: ["sessionId"],
+    },
+  },
+  {
+    name: "attention_status",
+    description:
+      "Inspect persisted attention events, forced-notification receipts, and effective deadlines for a session. By default returns pending events only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string", description: "Target session ID." },
+        dedupeKey: { type: "string", description: "Optional event filter." },
+        includeCancelled: {
+          type: "boolean",
+          description: "Include cancelled receipt history. Defaults to false.",
+        },
+      },
+      required: ["sessionId"],
+    },
+  },
+  {
     name: "respond_to_prompt",
     description:
       "Answer a child session's interactive prompt such as AskUserQuestion, ExitPlanMode, or ToolPermission.",
@@ -402,6 +556,10 @@ const EXTENSION_META_AGENT_ALLOWED_TOOLS = new Set<string>([
   "get_session_result",
   "list_queued_prompts",
   "send_prompt",
+  "notify_user",
+  "attention_arm",
+  "attention_cancel",
+  "attention_status",
   "respond_to_prompt",
   "list_spawned_sessions",
 ]);
@@ -482,6 +640,14 @@ export async function dispatchMetaAgentTool(
         (args?.sessionId as string) ?? "",
         (args?.prompt as string) ?? ""
       );
+    case "notify_user":
+      return toolFns.notifyUser(aiSessionId, effectiveWorkspaceId, (args ?? {}) as NotifyUserArgs);
+    case "attention_arm":
+      return toolFns.armAttention(aiSessionId, effectiveWorkspaceId, (args ?? {}) as ArmAttentionArgs);
+    case "attention_cancel":
+      return toolFns.cancelAttention(aiSessionId, effectiveWorkspaceId, (args ?? {}) as CancelAttentionArgs);
+    case "attention_status":
+      return toolFns.getAttentionStatus(aiSessionId, effectiveWorkspaceId, (args ?? {}) as AttentionStatusArgs);
     case "respond_to_prompt":
       return toolFns.respondToPrompt(aiSessionId, effectiveWorkspaceId, (args ?? {}) as RespondToPromptArgs);
     case "list_spawned_sessions":

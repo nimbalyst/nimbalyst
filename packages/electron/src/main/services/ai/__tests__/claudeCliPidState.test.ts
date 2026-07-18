@@ -117,7 +117,7 @@ describe('watchClaudePidState liveness backstop', () => {
       intervalMs: 500,
       readFile: opts.readFile,
       isProcessAlive: opts.isProcessAlive,
-      onTurnState: (state) => states.push(state),
+      onTurnState: (state) => { states.push(state); },
     });
     return { states, stop };
   }

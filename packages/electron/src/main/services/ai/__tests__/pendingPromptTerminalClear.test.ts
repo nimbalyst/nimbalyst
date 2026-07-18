@@ -39,30 +39,47 @@ describe('clearStalePendingPromptOnTerminal (NIM-871)', () => {
     // showing "awaiting user input".
     const clearPendingPrompt = vi.fn().mockResolvedValue(undefined);
     const result = await clearStalePendingPromptOnTerminal(
-      { type: 'session:completed', sessionId },
+      { type: 'session:completed', sessionId, attentionGeneration: 'turn-a' },
       {
-        readHasPendingPrompt: async () => true,
+        readHasPendingPrompt: async () => ({
+          hasPendingPrompt: true,
+          promptId: 'prompt-a',
+          generation: 'turn-a',
+        }),
         clearPendingPrompt,
       },
     );
     expect(result).toBe(true);
-    expect(clearPendingPrompt).toHaveBeenCalledWith(sessionId);
+    expect(clearPendingPrompt).toHaveBeenCalledWith(sessionId, {
+      expectedGeneration: 'turn-a',
+    });
   });
 
   it('clears on interruption (stop / crash) too', async () => {
     const clearPendingPrompt = vi.fn().mockResolvedValue(undefined);
     await clearStalePendingPromptOnTerminal(
-      { type: 'session:interrupted', sessionId },
-      { readHasPendingPrompt: async () => true, clearPendingPrompt },
+      { type: 'session:interrupted', sessionId, attentionGeneration: 'turn-a' },
+      {
+        readHasPendingPrompt: async () => ({
+          hasPendingPrompt: true,
+          generation: 'turn-a',
+        }),
+        clearPendingPrompt,
+      },
     );
-    expect(clearPendingPrompt).toHaveBeenCalledWith(sessionId);
+    expect(clearPendingPrompt).toHaveBeenCalledWith(sessionId, {
+      expectedGeneration: 'turn-a',
+    });
   });
 
   it('does NOT write on a normal turn end with no pending prompt', async () => {
     const clearPendingPrompt = vi.fn().mockResolvedValue(undefined);
     const result = await clearStalePendingPromptOnTerminal(
-      { type: 'session:completed', sessionId },
-      { readHasPendingPrompt: async () => false, clearPendingPrompt },
+      { type: 'session:completed', sessionId, attentionGeneration: 'turn-a' },
+      {
+        readHasPendingPrompt: async () => ({ hasPendingPrompt: false }),
+        clearPendingPrompt,
+      },
     );
     expect(result).toBe(false);
     expect(clearPendingPrompt).not.toHaveBeenCalled();
@@ -84,7 +101,7 @@ describe('clearStalePendingPromptOnTerminal (NIM-871)', () => {
   it('does nothing when the bit cannot be determined (null)', async () => {
     const clearPendingPrompt = vi.fn().mockResolvedValue(undefined);
     const result = await clearStalePendingPromptOnTerminal(
-      { type: 'session:completed', sessionId },
+      { type: 'session:completed', sessionId, attentionGeneration: 'turn-a' },
       { readHasPendingPrompt: async () => null, clearPendingPrompt },
     );
     expect(result).toBe(false);
@@ -94,7 +111,7 @@ describe('clearStalePendingPromptOnTerminal (NIM-871)', () => {
   it('reports read/clear failures without throwing', async () => {
     const onError = vi.fn();
     const result = await clearStalePendingPromptOnTerminal(
-      { type: 'session:completed', sessionId },
+      { type: 'session:completed', sessionId, attentionGeneration: 'turn-a' },
       {
         readHasPendingPrompt: async () => {
           throw new Error('db down');
@@ -105,5 +122,41 @@ describe('clearStalePendingPromptOnTerminal (NIM-871)', () => {
     );
     expect(result).toBe(false);
     expect(onError).toHaveBeenCalled();
+  });
+
+  it('does not let a delayed generation-A backstop clear generation B', async () => {
+    const clearPendingPrompt = vi.fn().mockResolvedValue(undefined);
+    const result = await clearStalePendingPromptOnTerminal(
+      { type: 'session:completed', sessionId, attentionGeneration: 'turn-a' } as any,
+      {
+        readHasPendingPrompt: async () => ({
+          hasPendingPrompt: true,
+          promptId: 'prompt-b',
+          generation: 'turn-b',
+        }),
+        clearPendingPrompt,
+      } as any,
+    );
+
+    expect(result).toBe(false);
+    expect(clearPendingPrompt).not.toHaveBeenCalled();
+  });
+
+  it('does not let a delayed generation-A error backstop clear generation B', async () => {
+    const clearPendingPrompt = vi.fn().mockResolvedValue(undefined);
+    const result = await clearStalePendingPromptOnTerminal(
+      { type: 'session:error', sessionId, attentionGeneration: 'turn-a' },
+      {
+        readHasPendingPrompt: async () => ({
+          hasPendingPrompt: true,
+          promptId: 'prompt-b',
+          generation: 'turn-b',
+        }),
+        clearPendingPrompt,
+      },
+    );
+
+    expect(result).toBe(false);
+    expect(clearPendingPrompt).not.toHaveBeenCalled();
   });
 });

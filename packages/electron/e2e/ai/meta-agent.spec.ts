@@ -344,6 +344,10 @@ test('creates a meta-agent session that appears in the session list as a group',
 test('surfaces delegated child sessions through the meta-agent MCP tools', async () => {
   const toolNames = await listMcpTools(metaAgentClient);
   expect(toolNames.length).toBeGreaterThan(0);
+  expect(toolNames).toContain('notify_user');
+  expect(toolNames).toContain('attention_arm');
+  expect(toolNames).toContain('attention_cancel');
+  expect(toolNames).toContain('attention_status');
   expect(toolNames).toContain('list_queued_prompts');
 
   const created = await createChildSessionWithMetaAgent('Investigate parser edge cases');

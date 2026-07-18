@@ -22,19 +22,21 @@ export interface SessionState {
   status: SessionStatus;
   lastActivity: Date;
   isStreaming: boolean;
+  /** Opaque identity for the currently executing turn. */
+  attentionGeneration?: string;
 }
 
 /**
  * Events emitted by the SessionStateManager
  */
 export type SessionStateEvent =
-  | { type: 'session:started'; sessionId: string; workspacePath?: string; timestamp: Date }
-  | { type: 'session:streaming'; sessionId: string; workspacePath?: string; timestamp: Date }
-  | { type: 'session:waiting'; sessionId: string; workspacePath?: string; timestamp: Date }
-  | { type: 'session:completed'; sessionId: string; workspacePath?: string; timestamp: Date }
-  | { type: 'session:error'; sessionId: string; workspacePath?: string; error: string; timestamp: Date }
-  | { type: 'session:interrupted'; sessionId: string; workspacePath?: string; timestamp: Date }
-  | { type: 'session:activity'; sessionId: string; workspacePath?: string; timestamp: Date };
+  | { type: 'session:started'; sessionId: string; workspacePath?: string; timestamp: Date; attentionGeneration?: string }
+  | { type: 'session:streaming'; sessionId: string; workspacePath?: string; timestamp: Date; attentionGeneration?: string }
+  | { type: 'session:waiting'; sessionId: string; workspacePath?: string; timestamp: Date; attentionGeneration?: string }
+  | { type: 'session:completed'; sessionId: string; workspacePath?: string; timestamp: Date; attentionGeneration?: string }
+  | { type: 'session:error'; sessionId: string; workspacePath?: string; error: string; timestamp: Date; attentionGeneration?: string }
+  | { type: 'session:interrupted'; sessionId: string; workspacePath?: string; timestamp: Date; attentionGeneration?: string }
+  | { type: 'session:activity'; sessionId: string; workspacePath?: string; timestamp: Date; attentionGeneration?: string };
 
 /**
  * Event listener function type
@@ -72,6 +74,8 @@ export interface StartSessionOptions {
   sessionId: string;
   workspacePath?: string;
   initialStatus?: SessionStatus;
+  /** Caller-supplied turn identity; generated when omitted. */
+  attentionGeneration?: string;
 }
 
 /**
@@ -81,4 +85,11 @@ export interface UpdateActivityOptions {
   sessionId: string;
   status?: SessionStatus;
   isStreaming?: boolean;
+  /** Reject the update when a newer turn has replaced this generation. */
+  attentionGeneration?: string;
+}
+
+export interface EndSessionOptions {
+  /** Reject the terminal transition when a newer turn is active. */
+  attentionGeneration?: string;
 }

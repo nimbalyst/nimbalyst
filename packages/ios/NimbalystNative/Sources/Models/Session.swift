@@ -36,7 +36,14 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
     /// When this session was branched (unix ms)
     public var branchedAt: Int?
     public var isExecuting: Bool
+    /// Authoritative interactive prompt state (questions, permission, plans, commits).
+    public var hasPendingPrompt: Bool
     public var hasQueuedPrompts: Bool
+    /// Generic attention is intentionally separate from interactive prompt state.
+    public var attentionPending: Bool
+    public var attentionSeverity: String?
+    public var attentionEventId: String?
+    public var attentionEffectiveDeadline: String?
     public var contextTokens: Int?
     public var contextWindow: Int?
     public var createdAt: Int
@@ -48,6 +55,8 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
     public var draftInput: String?
     /// Epoch ms when draftInput was last updated by the sending device
     public var draftUpdatedAt: Int?
+    /// Whether the session title was AI-chosen. Nil means an older peer has not supplied the marker.
+    public var hasBeenNamed: Bool?
 
     /// Context usage as a percentage (0-100), or nil if no context info available.
     public var contextUsagePercent: Int? {
@@ -73,6 +82,19 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
         return messageAt > readAt
     }
 
+    var attentionState: SessionAttentionState {
+        SessionAttentionState(
+            pending: attentionPending,
+            severity: attentionSeverity,
+            eventId: attentionEventId,
+            effectiveDeadline: attentionEffectiveDeadline
+        )
+    }
+
+    var attentionPresentation: SessionAttentionPresentation? {
+        SessionAttentionPresentation.make(from: attentionState)
+    }
+
     public init(
         id: String,
         projectId: String,
@@ -95,7 +117,12 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
         branchPointMessageId: Int? = nil,
         branchedAt: Int? = nil,
         isExecuting: Bool = false,
+        hasPendingPrompt: Bool = false,
         hasQueuedPrompts: Bool = false,
+        attentionPending: Bool = false,
+        attentionSeverity: String? = nil,
+        attentionEventId: String? = nil,
+        attentionEffectiveDeadline: String? = nil,
         contextTokens: Int? = nil,
         contextWindow: Int? = nil,
         createdAt: Int = Int(Date().timeIntervalSince1970 * 1000),
@@ -104,7 +131,8 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
         lastReadAt: Int? = nil,
         lastMessageAt: Int? = nil,
         draftInput: String? = nil,
-        draftUpdatedAt: Int? = nil
+        draftUpdatedAt: Int? = nil,
+        hasBeenNamed: Bool? = nil
     ) {
         self.id = id
         self.projectId = projectId
@@ -127,7 +155,12 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
         self.branchPointMessageId = branchPointMessageId
         self.branchedAt = branchedAt
         self.isExecuting = isExecuting
+        self.hasPendingPrompt = hasPendingPrompt
         self.hasQueuedPrompts = hasQueuedPrompts
+        self.attentionPending = attentionPending
+        self.attentionSeverity = attentionSeverity
+        self.attentionEventId = attentionEventId
+        self.attentionEffectiveDeadline = attentionEffectiveDeadline
         self.contextTokens = contextTokens
         self.contextWindow = contextWindow
         self.createdAt = createdAt
@@ -137,6 +170,7 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
         self.lastMessageAt = lastMessageAt
         self.draftInput = draftInput
         self.draftUpdatedAt = draftUpdatedAt
+        self.hasBeenNamed = hasBeenNamed
     }
 }
 
@@ -149,10 +183,11 @@ extension Session: FetchableRecord, PersistableRecord {
         case id, projectId, titleEncrypted, titleIv, titleDecrypted
         case provider, model, mode, sessionType, parentSessionId, agentRole, createdBySessionId, phase, tagsJson, worktreeId
         case isArchived, isPinned, branchedFromSessionId, branchPointMessageId, branchedAt
-        case isExecuting, hasQueuedPrompts
+        case isExecuting, hasPendingPrompt, hasQueuedPrompts
+        case attentionPending, attentionSeverity, attentionEventId, attentionEffectiveDeadline
         case contextTokens, contextWindow
         case createdAt, updatedAt, lastSyncedSeq
-        case lastReadAt, lastMessageAt, draftInput, draftUpdatedAt
+        case lastReadAt, lastMessageAt, draftInput, draftUpdatedAt, hasBeenNamed
     }
 
     /// Association to parent project.

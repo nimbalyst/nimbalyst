@@ -10,12 +10,19 @@
 import React, { useState, useRef, useMemo, useCallback } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol, copyToClipboard } from '@nimbalyst/runtime';
-import { sessionShareAtom, shareKeysAtom, removeSessionShareAtom, buildShareUrl } from '../../store';
+import {
+  sessionRegistryAtom,
+  sessionShareAtom,
+  shareKeysAtom,
+  removeSessionShareAtom,
+  buildShareUrl,
+} from '../../store';
 import { setSessionPhaseAtom, SESSION_PHASE_COLUMNS } from '../../store/atoms/sessionKanban';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../../hooks/useFloatingMenu';
+import { requestAttentionSupervisorAuthorization } from '../../services/attentionSupervisorAuthorization';
 
 export interface SessionContextMenuProps {
   sessionId: string;
@@ -67,6 +74,8 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
   const [submenuFlipped, setSubmenuFlipped] = useState(false);
   const submenuParentRef = useRef<HTMLDivElement>(null);
   const setSessionPhase = useSetAtom(setSessionPhaseAtom);
+  const sessionRegistry = useAtomValue(sessionRegistryAtom);
+  const targetSession = sessionRegistry.get(sessionId);
 
   // Share state
   const shareInfo = useAtomValue(sessionShareAtom(sessionId));
@@ -172,6 +181,51 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
       );
     }
   }, [onClose, sessionId]);
+
+  const handleAttentionSupervisorAuthorization = useCallback(async (
+    e: React.MouseEvent,
+    authorized: boolean,
+  ) => {
+    e.stopPropagation();
+    onClose();
+    const workspacePath = targetSession?.workspaceId;
+    if (!workspacePath) {
+      errorNotificationService.showError(
+        'Attention supervisor update failed',
+        'The target session workspace is unavailable.',
+      );
+      return;
+    }
+
+    try {
+      const result = await requestAttentionSupervisorAuthorization({
+        workspacePath,
+        targetSessionId: sessionId,
+        targetTitle: title,
+        authorized,
+      });
+      if (result.cancelled) return;
+      if (!result.success) {
+        errorNotificationService.showError(
+          'Attention supervisor update failed',
+          result.error || 'The authorization was not changed.',
+        );
+        return;
+      }
+      errorNotificationService.showInfo(
+        authorized ? 'Attention supervisor authorized' : 'Attention supervisor revoked',
+        authorized
+          ? 'The exact supervisor can now manage attention for this session.'
+          : 'The exact supervisor can no longer manage attention for this session.',
+        { duration: 4000 },
+      );
+    } catch (error) {
+      errorNotificationService.showError(
+        'Attention supervisor update failed',
+        error instanceof Error ? error.message : 'An unexpected error occurred',
+      );
+    }
+  }, [onClose, sessionId, targetSession?.workspaceId, title]);
 
   return (
     <FloatingPortal>
@@ -286,6 +340,28 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
           <MaterialSymbol icon="content_copy" size={14} />
           Copy Session ID
         </button>
+
+        {/* Explicit target-bound supervisor capability. The renderer only
+            selects ids; main performs fresh native confirmation + validation. */}
+        {selectedCount === 1 && (
+          <>
+            <div className="h-px bg-[var(--nim-border)] my-1" />
+            <button
+              className={menuItemClass}
+              onClick={(e) => { void handleAttentionSupervisorAuthorization(e, true); }}
+            >
+              <MaterialSymbol icon="supervisor_account" size={14} />
+              Authorize attention supervisor…
+            </button>
+            <button
+              className={menuItemClass}
+              onClick={(e) => { void handleAttentionSupervisorAuthorization(e, false); }}
+            >
+              <MaterialSymbol icon="person_remove" size={14} />
+              Revoke attention supervisor…
+            </button>
+          </>
+        )}
 
         {/* Group 4: Share / export */}
         <div className="h-px bg-[var(--nim-border)] my-1" />

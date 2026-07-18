@@ -18,6 +18,10 @@ const mocks = vi.hoisted(() => {
     onPromptResolved: vi.fn(),
     getDatabase: vi.fn(() => null),
     createWorktreeStore: vi.fn(),
+    clearPendingPrompt: vi.fn(),
+    runClaimedPromptAction: vi.fn(),
+    cancelInteractivePrompt: vi.fn(),
+    cancelAllForSession: vi.fn(),
   };
 });
 
@@ -99,6 +103,18 @@ vi.mock('../../WorktreeStore', () => ({
   createWorktreeStore: mocks.createWorktreeStore,
 }));
 
+vi.mock('../pendingPromptPersistence', () => ({
+  setSessionPendingPrompt: mocks.clearPendingPrompt,
+  runClaimedPendingPromptAction: mocks.runClaimedPromptAction,
+}));
+
+vi.mock('../../AttentionEventService', () => ({
+  attentionEventService: {
+    cancelInteractivePrompt: mocks.cancelInteractivePrompt,
+    cancelAllForSession: mocks.cancelAllForSession,
+  },
+}));
+
 import { resolveGitCommitWorkspacePath, resolveVoicePromptResponse } from '../MobileSessionControlHandler';
 
 describe('MobileSessionControlHandler', () => {
@@ -108,6 +124,42 @@ describe('MobileSessionControlHandler', () => {
     mocks.ipcListenerCount.mockReturnValue(0);
     mocks.getSession.mockResolvedValue({ provider: 'openai-codex' });
     mocks.createMessage.mockResolvedValue(undefined);
+    mocks.clearPendingPrompt.mockResolvedValue({
+      local: { succeeded: true },
+      superseded: false,
+    });
+    mocks.runClaimedPromptAction.mockImplementation(async (
+      sessionId: string,
+      promptId: string,
+      action: (state: any) => Promise<unknown>,
+    ) => {
+      const promptClear = {
+        sessionId,
+        hasPendingPrompt: false,
+        promptId: null,
+        generation: null,
+        applied: true,
+        superseded: false,
+        local: { attempted: true, succeeded: true, skippedReason: null },
+        sync: { attempted: true, succeeded: true, skippedReason: null },
+        fullyPropagated: true,
+      };
+      const ownership = {
+        sessionId,
+        promptId,
+        matchedPendingPrompt: true,
+        attentionGeneration: 'turn-a',
+        readSucceeded: true,
+      };
+      return {
+        ownership,
+        promptClear,
+        claimed: true,
+        value: await action({ ownership, promptClear }),
+      };
+    });
+    mocks.cancelInteractivePrompt.mockResolvedValue(1);
+    mocks.cancelAllForSession.mockResolvedValue(1);
     mocks.getProvider.mockImplementation((providerType: string, sessionId: string) =>
       providerType === 'openai-codex' && sessionId === 'session-1' ? mocks.provider : null,
     );
@@ -422,4 +474,56 @@ describe('MobileSessionControlHandler', () => {
       respondedBy: 'mobile',
     });
   });
+
+  it.each([false, true])(
+    'ignores stale mobile AskUserQuestion action before every side effect (cancelled=%s)',
+    async (cancelled) => {
+      mocks.runClaimedPromptAction.mockResolvedValueOnce({
+        ownership: {
+          sessionId: 'session-1',
+          promptId: 'prompt-a',
+          matchedPendingPrompt: false,
+          attentionGeneration: null,
+          readSucceeded: true,
+        },
+        promptClear: {
+          sessionId: 'session-1',
+          hasPendingPrompt: false,
+          promptId: null,
+          generation: null,
+          applied: false,
+          superseded: true,
+          local: { attempted: false, succeeded: false, skippedReason: 'newer_prompt_is_pending' },
+          sync: { attempted: false, succeeded: false, skippedReason: 'newer_prompt_is_pending' },
+          fullyPropagated: false,
+        },
+        claimed: false,
+      });
+      mocks.ipcListenerCount.mockReturnValue(1);
+
+      resolveVoicePromptResponse('session-1', {
+        promptType: 'ask_user_question',
+        promptId: 'prompt-a',
+        response: {
+          answers: cancelled ? {} : { Scope: 'stale A' },
+          cancelled,
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(mocks.runClaimedPromptAction).toHaveBeenCalledWith(
+          'session-1',
+          'prompt-a',
+          expect.any(Function),
+        );
+      });
+      expect(mocks.getProvider).not.toHaveBeenCalled();
+      expect(mocks.createMessage).not.toHaveBeenCalled();
+      expect(mocks.provider.resolveAskUserQuestion).not.toHaveBeenCalled();
+      expect(mocks.provider.rejectAskUserQuestion).not.toHaveBeenCalled();
+      expect(mocks.ipcEmit).not.toHaveBeenCalled();
+      expect(mocks.onPromptResolved).not.toHaveBeenCalled();
+      expect(mocks.cancelInteractivePrompt).not.toHaveBeenCalled();
+    },
+  );
 });

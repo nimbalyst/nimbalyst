@@ -87,6 +87,17 @@ import {
 import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../../utils/aiSettingsMerge';
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
+import {
+  runClaimedPendingPromptAction,
+  setSessionPendingPrompt,
+  type PendingPromptPersistenceResult,
+} from './pendingPromptPersistence';
+import {
+  runPromptOwnedCurrentAction,
+  schedulePromptOwnedCurrentAction,
+} from './promptActionExecution';
+import { attentionEventService } from '../AttentionEventService';
+import { handleAIUpdateSessionMetadata } from './genericSessionMetadataUpdate';
 import { applyRemoteReadReceipt } from '../../ipc/ReadReceiptHandlers';
 import { applyRemoteTrackerPersonalState } from '../../ipc/TrackerPersonalStateHandlers';
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
@@ -120,10 +131,11 @@ import {
   formatCodexTestError,
   categorizeAIError,
 } from './aiServiceUtils';
-import { MessageStreamingHandler } from './MessageStreamingHandler';
+import { MessageStreamingHandler, type SendMessageHandler } from './MessageStreamingHandler';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import { createAIServiceQueuedChainSettlement } from './aiServiceQueuedChainSettlement';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
@@ -155,7 +167,7 @@ export class AIService {
   private readonly analytics = AnalyticsService.getInstance();
   private cachedNormalizedProviderSettings: Record<string, any> | null = null;
   // Store reference to sendMessage handler for queue processing
-  private sendMessageHandler: ((event: Electron.IpcMainInvokeEvent, message: string, documentContext?: DocumentContext, sessionId?: string, workspacePath?: string) => Promise<{ content: string }>) | null = null;
+  private sendMessageHandler: SendMessageHandler | null = null;
   // NOTE: Providers are now tracked per-session in ProviderFactory, not per-window
   // This allows multiple concurrent sessions in the same window (e.g., agent mode tabs)
 
@@ -296,7 +308,12 @@ export class AIService {
     promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
     response: any;
     respondedBy?: 'desktop' | 'mobile';
-  }): Promise<{ success: boolean; error?: string }> {
+  }): Promise<{
+    success: boolean;
+    error?: string;
+    promptClear?: PendingPromptPersistenceResult;
+    staleAction?: boolean;
+  }> {
     const { sessionId, promptId, promptType, response, respondedBy = 'desktop' } = params;
     const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
     const { database } = await import('../../database/PGLiteDatabaseWorker');
@@ -304,7 +321,6 @@ export class AIService {
     if (!session) {
       return { success: false, error: 'Session not found' };
     }
-
     let responseContent: Record<string, unknown>;
     if (promptType === 'permission_request') {
       responseContent = {
@@ -336,84 +352,117 @@ export class AIService {
       };
     }
 
-    await database.query(
-      `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false]
+    const claimed = await runClaimedPendingPromptAction(
+      sessionId,
+      promptId,
+      async ({ ownership, promptClear }) => {
+        await database.query(
+          `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false],
+        );
+
+        let attentionSettled = false;
+        const finishPromptResponse = async (success: boolean, error?: string) => {
+          if (!attentionSettled) {
+            attentionSettled = true;
+            await attentionEventService.cancelInteractivePrompt(
+              sessionId,
+              promptId,
+              response?.cancelled === true ? 'cancelled' : 'answered',
+              { expectedGeneration: ownership.attentionGeneration ?? undefined },
+            );
+          }
+          return { success, ...(error ? { error } : {}), promptClear };
+        };
+
+        if (promptType === 'permission_request') {
+          const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+          if (!provider) return finishPromptResponse(false, 'Provider not found');
+          if (typeof (provider as any).resolveToolPermission !== 'function') {
+            return finishPromptResponse(false, 'Provider does not support tool permission responses');
+          }
+          try {
+            (provider as any).resolveToolPermission(promptId, response, sessionId, respondedBy);
+          } catch (error) {
+            return finishPromptResponse(false, error instanceof Error ? error.message : String(error));
+          }
+          return finishPromptResponse(true);
+        }
+
+        if (promptType === 'ask_user_question_request') {
+          try {
+            const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+            const resolved = provider && isAskUserQuestionProvider(provider)
+              ? provider.resolveAskUserQuestion(promptId, response.answers || response, sessionId, respondedBy)
+              : false;
+            const { rows: askRequestRows } = await database.query<{ id: string }>(
+              `SELECT id
+               FROM ai_agent_messages
+               WHERE session_id = $1
+                 AND content LIKE '%"type":"ask_user_question_request"%'
+                 AND content LIKE $2
+               LIMIT 1`,
+              [sessionId, `%"questionId":"${promptId}"%`],
+            );
+            const hasPersistedQuestionRequest = askRequestRows.length > 0;
+            const askUserQuestionChannel = `ask-user-question-response:${sessionId}:${promptId}`;
+            const hasAskUserQuestionWaiter = ipcMain.listenerCount(askUserQuestionChannel) > 0;
+            if (hasAskUserQuestionWaiter) {
+              ipcMain.emit(askUserQuestionChannel, {} as any, {
+                questionId: promptId,
+                answers: response.answers || response,
+                cancelled: response.cancelled || false,
+                respondedBy,
+                sessionId,
+              });
+            }
+            const sessionFallbackChannel = `ask-user-question:${sessionId}`;
+            const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
+            if (hasSessionFallbackWaiter) {
+              ipcMain.emit(sessionFallbackChannel, {} as any, {
+                questionId: promptId,
+                answers: response.answers || response,
+                cancelled: response.cancelled || false,
+                respondedBy,
+                sessionId,
+              });
+            }
+            const handled = Boolean(
+              resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter || hasPersistedQuestionRequest,
+            );
+            return finishPromptResponse(handled, handled ? undefined : 'Question not found');
+          } catch (error) {
+            return finishPromptResponse(false, error instanceof Error ? error.message : String(error));
+          }
+        }
+
+        const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+        if (!provider) return finishPromptResponse(false, 'Provider not found');
+        if (typeof (provider as any).resolveExitPlanModeConfirmation !== 'function') {
+          return finishPromptResponse(false, 'Provider does not support ExitPlanMode responses');
+        }
+        try {
+          (provider as any).resolveExitPlanModeConfirmation(promptId, response, sessionId, respondedBy);
+          if (response.approved) {
+            await AISessionsRepository.updateMetadata(sessionId, { mode: 'agent' });
+          }
+        } catch (error) {
+          return finishPromptResponse(false, error instanceof Error ? error.message : String(error));
+        }
+        return finishPromptResponse(true);
+      },
     );
 
-    if (promptType === 'permission_request') {
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (!provider) {
-        return { success: false, error: 'Provider not found' };
-      }
-      if (typeof (provider as any).resolveToolPermission !== 'function') {
-        return { success: false, error: 'Provider does not support tool permission responses' };
-      }
-      (provider as any).resolveToolPermission(promptId, response, sessionId, respondedBy);
-      return { success: true };
+    if (!claimed.claimed || !claimed.value) {
+      return {
+        success: false,
+        error: 'Prompt action is stale or no longer owns the current turn',
+        promptClear: claimed.promptClear,
+        staleAction: true,
+      };
     }
-
-    if (promptType === 'ask_user_question_request') {
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      const resolved = provider && isAskUserQuestionProvider(provider)
-        ? provider.resolveAskUserQuestion(promptId, response.answers || response, sessionId, respondedBy)
-        : false;
-
-      const { rows: askRequestRows } = await database.query<{ id: string }>(
-        `SELECT id
-         FROM ai_agent_messages
-         WHERE session_id = $1
-           AND content LIKE '%"type":"ask_user_question_request"%'
-           AND content LIKE $2
-         LIMIT 1`,
-        [sessionId, `%"questionId":"${promptId}"%`]
-      );
-      const hasPersistedQuestionRequest = askRequestRows.length > 0;
-
-      const askUserQuestionChannel = `ask-user-question-response:${sessionId}:${promptId}`;
-      const hasAskUserQuestionWaiter = ipcMain.listenerCount(askUserQuestionChannel) > 0;
-      if (hasAskUserQuestionWaiter) {
-        ipcMain.emit(askUserQuestionChannel, {} as any, {
-          questionId: promptId,
-          answers: response.answers || response,
-          cancelled: response.cancelled || false,
-          respondedBy,
-          sessionId,
-        });
-      }
-
-      const sessionFallbackChannel = `ask-user-question:${sessionId}`;
-      const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
-      if (hasSessionFallbackWaiter) {
-        ipcMain.emit(sessionFallbackChannel, {} as any, {
-          questionId: promptId,
-          answers: response.answers || response,
-          cancelled: response.cancelled || false,
-          respondedBy,
-          sessionId,
-        });
-      }
-
-      return resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter || hasPersistedQuestionRequest
-        ? { success: true }
-        : { success: false, error: 'Question not found' };
-    }
-
-    const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-    if (!provider) {
-      return { success: false, error: 'Provider not found' };
-    }
-
-    if (typeof (provider as any).resolveExitPlanModeConfirmation !== 'function') {
-      return { success: false, error: 'Provider does not support ExitPlanMode responses' };
-    }
-
-    (provider as any).resolveExitPlanModeConfirmation(promptId, response, sessionId, respondedBy);
-    if (response.approved) {
-      await AISessionsRepository.updateMetadata(sessionId, { mode: 'agent' });
-    }
-    return { success: true };
+    return claimed.value;
   }
 
   /**
@@ -698,12 +747,15 @@ export class AIService {
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
 
-    // Captures whether the just-settled child chain ended in 'error' so the
-    // meta-agent wakeup (onAfterSettled) can skip re-driving the parent for a
-    // dead child. endSession (in onChainSettled, which runs before onAfterSettled)
-    // evicts the child from the state manager, so its terminal status must be
-    // read in onChainSettled before that happens.
-    let settledChildErrored = false;
+    // This exact callback is also the production-wired A-to-B regression seam.
+    // It retains the child outcome used by onAfterSettled while binding every
+    // terminal mutation to the immutable generation captured at turn start.
+    const chainSettlement = createAIServiceQueuedChainSettlement({
+      logInfo: (message) => logger.main.info(message),
+      scheduleStop: (settledSessionId, delayMs) => {
+        this.hooklessWatcher.scheduleStop(settledSessionId, delayMs);
+      },
+    });
 
     return tryClaimAndDispatchNextQueuedPrompt({
       continueQueuedPromptChain: (nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource) =>
@@ -711,6 +763,10 @@ export class AIService {
       logError: (message, error) => logger.main.error(message, error),
       logInfo: (message) => logger.main.info(message),
       onAfterSettled: async () => {
+        // A direct replacement turn may have started after the queued guard was
+        // released. In that case A's generation-bound terminal callback is a
+        // no-op and the child is not actually settled yet.
+        if (!chainSettlement.settledChainEnded) return;
         try {
           const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
           const childSession = await AISessionsRepository.get(sessionId);
@@ -729,9 +785,9 @@ export class AIService {
           // 'error'. A failed child (e.g. an antigravity 429) has no result to
           // deliver, and waking the parent on every such settle is the meta-agent
           // spin loop. Native children settle 'completed', so this is a no-op for
-          // them. settledChildErrored is captured in onChainSettled before
-          // endSession evicts the child's in-memory state.
-          if (settledChildErrored) return;
+          // them. The settlement tracker captures status before an exact
+          // generation end evicts the child's in-memory state.
+          if (chainSettlement.settledChildErrored) return;
 
           const metaSession = await AISessionsRepository.get(childSession.createdBySessionId);
           if (!metaSession?.workspacePath) return;
@@ -749,21 +805,7 @@ export class AIService {
           logger.main.error(`[AIService] ${source}: error checking meta-agent wakeup:`, metaErr);
         }
       },
-      onChainSettled: async ({ sessionId: settledSessionId, source: settledSource }) => {
-        // The completion handler in MessageStreamingHandler deferred endSession
-        // because processingSet still contained this session while the inner
-        // sendMessage was running. Now that the chain has fully drained, mark
-        // the session idle and stop its file watcher.
-        const stateManager = getSessionStateManager();
-        // Capture the child's terminal status BEFORE endSession evicts it from
-        // the state manager, so onAfterSettled can avoid waking the parent for a
-        // child that just failed. getSessionState reads the in-memory map, which
-        // endSession clears on the next line.
-        settledChildErrored = stateManager.getSessionState(settledSessionId)?.status === 'error';
-        logger.main.info(`[AIService] ${settledSource}: chain settled for session ${settledSessionId}, ending session`);
-        await stateManager.endSession(settledSessionId);
-        this.hooklessWatcher.scheduleStop(settledSessionId, 500);
-      },
+      onChainSettled: chainSettlement.onChainSettled,
       onPromptClaimed: ({ sessionId: claimedSessionId, promptId }) => {
         targetWindow?.webContents.send('ai:promptClaimed', {
           sessionId: claimedSessionId,
@@ -2115,28 +2157,27 @@ export class AIService {
       metadata: Record<string, any>,
       workspacePath?: string
     ) => {
-      const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-      await AISessionsRepository.updateMetadata(sessionId, { metadata });
-
-      // Notify TrayManager when hasUnread state changes so the tray menu stays in sync
-      if (metadata.metadata?.hasUnread !== undefined) {
-        TrayManager.getInstance().onSessionUnread(sessionId, !!metadata.metadata.hasUnread);
-      }
-
-      // If lastReadAt is being updated, also push through sync for cross-device read state
-      // NOTE: Do NOT include updatedAt here. Reading a session is not meaningful activity
-      // and should not cause the session to resort to the top of the list on other devices.
-      const syncProvider = getSyncProvider();
-      if (metadata.metadata?.lastReadAt && syncProvider) {
-        syncProvider.pushChange(sessionId, {
-          type: 'metadata_updated',
-          metadata: {
-            lastReadAt: metadata.metadata.lastReadAt,
-          },
-        });
-      }
-
-      return { success: true };
+      return handleAIUpdateSessionMetadata(sessionId, metadata, {
+        updateMetadata: async (targetSessionId, update) => {
+          const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+          await AISessionsRepository.updateMetadata(targetSessionId, update);
+        },
+        onSessionUnread: (targetSessionId, hasUnread) => {
+          TrayManager.getInstance().onSessionUnread(targetSessionId, hasUnread);
+        },
+        // NOTE: Do not add updatedAt. Reading is not meaningful activity and
+        // must not resort the session on other devices.
+        pushLastReadAt: async (targetSessionId, lastReadAt) => {
+          const syncProvider = getSyncProvider();
+          if (!syncProvider) return;
+          void Promise.resolve(syncProvider.pushChange(targetSessionId, {
+            type: 'metadata_updated',
+            metadata: { lastReadAt },
+          })).catch((error) => {
+            logger.main.warn('[AIService] Failed to push lastReadAt metadata:', error);
+          });
+        },
+      });
     });
 
     // Atomically claim a queued prompt for processing
@@ -2383,48 +2424,72 @@ export class AIService {
         logger.main.warn(`[AIService] Session not found for ExitPlanMode response: ${sessionId}`);
         return { success: false, error: 'Session not found' };
       }
+      const claimed = await runClaimedPendingPromptAction(
+        sessionId,
+        requestId,
+        async ({ ownership, promptClear }) => {
+          const settleAttention = () => attentionEventService.cancelInteractivePrompt(
+            sessionId,
+            requestId,
+            'answered',
+            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          );
+          const persistResponse = async () => {
+            const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
+            await AgentMessagesRepository.create({
+              sessionId,
+              source: 'nimbalyst',
+              direction: 'output',
+              createdAt: new Date(),
+              content: JSON.stringify({
+                type: 'exit_plan_mode_response',
+                requestId,
+                ...response,
+                respondedAt: Date.now(),
+                respondedBy: 'desktop',
+              }),
+            });
+          };
 
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (!provider) {
-        logger.main.warn(`[AIService] Provider not found for ExitPlanMode response: ${sessionId}`);
-        return { success: false, error: 'Provider not found' };
-      }
-
-      // Check if this is a ClaudeCodeProvider with the resolve method
-      if (typeof (provider as any).resolveExitPlanModeConfirmation === 'function') {
-        (provider as any).resolveExitPlanModeConfirmation(requestId, response, sessionId, 'desktop');
-
-        // If approved, update the session mode to 'agent' in the database
-        // This ensures the mode persists across session switches and app restarts
-        if (response.approved) {
-          await AISessionsRepository.updateMetadata(sessionId, { mode: 'agent' });
-          logger.main.info(`[AIService] Session ${sessionId} mode updated to 'agent' after ExitPlanMode approval`);
-        }
-
-        // Emit resolved event so the sidebar indicator updates and UI syncs mode change
-        const { BrowserWindow } = await import('electron');
-        const windows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
-        for (const win of windows) {
-          if (!win.webContents.isDestroyed()) {
-            win.webContents.send('ai:exitPlanModeResolved', { sessionId, approved: response.approved });
+          const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+          if (!provider || typeof (provider as any).resolveExitPlanModeConfirmation !== 'function') {
+            await persistResponse();
+            await settleAttention();
+            return {
+              success: false,
+              error: !provider
+                ? 'Provider not found; response was persisted'
+                : 'Provider does not support ExitPlanMode confirmation; response was persisted',
+              promptClear,
+            };
           }
-        }
 
-        // Clear pending prompt state for mobile sync and tray
-        TrayManager.getInstance().onPromptResolved(sessionId);
-        const syncProvider = getSyncProvider();
-        if (syncProvider) {
-          syncProvider.pushChange(sessionId, {
-            type: 'metadata_updated',
-            metadata: { hasPendingPrompt: false, updatedAt: Date.now() },
-          });
-        }
-
-        return { success: true };
-      } else {
-        logger.main.warn(`[AIService] Provider does not support ExitPlanMode confirmation: ${session.provider}`);
-        return { success: false, error: 'Provider does not support ExitPlanMode confirmation' };
+          (provider as any).resolveExitPlanModeConfirmation(requestId, response, sessionId, 'desktop');
+          if (response.approved) {
+            await AISessionsRepository.updateMetadata(sessionId, { mode: 'agent' });
+            logger.main.info(`[AIService] Session ${sessionId} mode updated to 'agent' after ExitPlanMode approval`);
+          }
+          const { BrowserWindow } = await import('electron');
+          const windows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
+          for (const win of windows) {
+            if (!win.webContents.isDestroyed()) {
+              win.webContents.send('ai:exitPlanModeResolved', { sessionId, approved: response.approved });
+            }
+          }
+          TrayManager.getInstance().onPromptResolved(sessionId);
+          await settleAttention();
+          return { success: true, promptClear };
+        },
+      );
+      if (!claimed.claimed || !claimed.value) {
+        return {
+          success: false,
+          error: 'Prompt action is stale or no longer owns the current turn',
+          promptClear: claimed.promptClear,
+          staleAction: true,
+        };
       }
+      return claimed.value;
     });
 
     // Handle AskUserQuestion answer response from renderer
@@ -2454,108 +2519,110 @@ export class AIService {
         logger.main.warn(`[AIService] Session not found for AskUserQuestion: ${resolvedSessionId}`);
         return { success: false, error: 'Session not found' };
       }
-
-      // External/agentless providers (e.g. claude-code-cli) have NO in-process
-      // provider instance holding the pending question — the MCP server handler is
-      // blocked on the IPC response channel instead (see interactiveToolHandlers
-      // handleAskUserQuestion). So a missing provider is NOT fatal: skip the
-      // provider-level resolve and fall through to the MCP-channel emit / DB
-      // fallback / auto-resume below. (Previously this returned early, so a CLI
-      // session's answered widget never reached the waiting MCP handler — NIM-806.)
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, resolvedSessionId);
-      if (!provider) {
-        logger.main.info(`[AIService] No in-process provider for AskUserQuestion (${session.provider}); routing via MCP/IPC channel: ${resolvedSessionId}`);
-      }
-
-      const providerResolved = provider && isAskUserQuestionProvider(provider)
-        ? provider.resolveAskUserQuestion(questionId, answers, resolvedSessionId, 'desktop')
-        : false;
-
-      // MCP interactive tools (Codex path) wait on a session-scoped channel.
-      // Emit best-effort so pending MCP calls can resolve even if provider-level pending map
-      // is unavailable (e.g., after restart/recovery).
-      const mcpQuestionResponseChannel = `ask-user-question-response:${resolvedSessionId || 'unknown'}:${questionId}`;
-      const hasMcpWaiter = ipcMain.listenerCount(mcpQuestionResponseChannel) > 0;
-      if (hasMcpWaiter) {
-        logger.main.info(`[AIService] AskUserQuestion emitting on MCP channel: ${mcpQuestionResponseChannel}`);
-        ipcMain.emit(mcpQuestionResponseChannel, event, {
-          questionId,
-          answers,
-          cancelled: false,
-          respondedBy: 'desktop',
-          sessionId: resolvedSessionId,
-        });
-      }
-
-      const sessionFallbackChannel = `ask-user-question:${resolvedSessionId}`;
-      const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
-      if (hasSessionFallbackWaiter) {
-        logger.main.info(`[AIService] AskUserQuestion emitting on session fallback channel: ${sessionFallbackChannel}`);
-        ipcMain.emit(sessionFallbackChannel, event, {
-          questionId,
-          answers,
-          cancelled: false,
-          respondedBy: 'desktop',
-          sessionId: resolvedSessionId,
-        });
-      }
-
-      // When AskUserQuestion comes through the MCP server path (not the provider's canUseTool path),
-      // the provider's pendingAskUserQuestions map won't have the entry. In that case, also write
-      // the response to the database as a fallback so the MCP server's database polling can find it.
-      if (!providerResolved && resolvedSessionId) {
-        const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
-        AgentMessagesRepository.create({
-          sessionId: resolvedSessionId,
-          source: 'claude-code',
-          direction: 'output' as const,
-          createdAt: new Date(),
-          content: JSON.stringify({
-            type: 'ask_user_question_response',
-            questionId,
-            answers,
-            cancelled: false,
-            respondedBy: 'desktop',
-            respondedAt: Date.now()
-          })
-        }).catch(err => {
-          logger.main.warn(`[AIService] Failed to persist AskUserQuestion response to database: ${err}`);
-        });
-      }
-
-      logger.main.info(`[AIService] AskUserQuestion resolution: providerResolved=${providerResolved}, hasMcpWaiter=${hasMcpWaiter}, hasSessionFallbackWaiter=${hasSessionFallbackWaiter}`);
-
-      if (providerResolved || hasMcpWaiter || hasSessionFallbackWaiter) {
-        return { success: true };
-      }
-
-      // No live handler exists -- the SDK subprocess is dead (e.g., app restarted
-      // while session was waiting for input). Auto-resume the session by sending
-      // a new message that includes the user's answer. The Claude Code SDK will
-      // resume using the stored providerSessionId, picking up conversation history.
-      if (resolvedSessionId && this.sendMessageHandler && session) {
-        const answerText = Object.entries(answers)
-          .map(([question, answer]) => `${question}: ${answer}`)
-          .join('\n');
-        const resumeMessage = `[Resuming after answering a question]\n\n${answerText}`;
-
-        logger.main.info(`[AIService] No live handler for AskUserQuestion, auto-resuming session: ${resolvedSessionId}`);
-
-        // Fire-and-forget: resume the session in the background
-        const workspacePath = session.workspacePath;
-        setImmediate(async () => {
-          try {
-            await this.sendMessageHandler!(event, resumeMessage, undefined, resolvedSessionId, workspacePath);
-          } catch (err) {
-            logger.main.error(`[AIService] Failed to auto-resume session after AskUserQuestion: ${err}`);
+      const claimed = await runClaimedPendingPromptAction(
+        resolvedSessionId,
+        questionId,
+        async ({ ownership, promptClear }) => {
+          const provider = ProviderFactory.getProvider(session.provider as AIProviderType, resolvedSessionId);
+          if (!provider) {
+            logger.main.info(`[AIService] No in-process provider for AskUserQuestion (${session.provider}); routing via MCP/IPC channel: ${resolvedSessionId}`);
           }
-        });
+          const providerResolved = provider && isAskUserQuestionProvider(provider)
+            ? provider.resolveAskUserQuestion(questionId, answers, resolvedSessionId, 'desktop')
+            : false;
+          const mcpQuestionResponseChannel = `ask-user-question-response:${resolvedSessionId}:${questionId}`;
+          const hasMcpWaiter = ipcMain.listenerCount(mcpQuestionResponseChannel) > 0;
+          if (hasMcpWaiter) {
+            ipcMain.emit(mcpQuestionResponseChannel, event, {
+              questionId,
+              answers,
+              cancelled: false,
+              respondedBy: 'desktop',
+              sessionId: resolvedSessionId,
+            });
+          }
+          const sessionFallbackChannel = `ask-user-question:${resolvedSessionId}`;
+          const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
+          if (hasSessionFallbackWaiter) {
+            ipcMain.emit(sessionFallbackChannel, event, {
+              questionId,
+              answers,
+              cancelled: false,
+              respondedBy: 'desktop',
+              sessionId: resolvedSessionId,
+            });
+          }
+          if (!providerResolved) {
+            const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
+            try {
+              await AgentMessagesRepository.create({
+                sessionId: resolvedSessionId,
+                source: 'claude-code',
+                direction: 'output' as const,
+                createdAt: new Date(),
+                content: JSON.stringify({
+                  type: 'ask_user_question_response',
+                  questionId,
+                  answers,
+                  cancelled: false,
+                  respondedBy: 'desktop',
+                  respondedAt: Date.now(),
+                }),
+              });
+            } catch (err) {
+              logger.main.warn(`[AIService] Failed to persist AskUserQuestion response to database: ${err}`);
+            }
+          }
+          await attentionEventService.cancelInteractivePrompt(
+            resolvedSessionId,
+            questionId,
+            'answered',
+            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          );
 
-        return { success: true };
+          if (providerResolved || hasMcpWaiter || hasSessionFallbackWaiter) {
+            return { success: true, promptClear };
+          }
+
+          if (this.sendMessageHandler) {
+            const answerText = Object.entries(answers)
+              .map(([question, answer]) => `${question}: ${answer}`)
+              .join('\n');
+            const resumeMessage = `[Resuming after answering a question]\n\n${answerText}`;
+            const scheduled = schedulePromptOwnedCurrentAction(
+              { ownership, promptClear },
+              async () => {
+                try {
+                  await this.sendMessageHandler!(
+                    event,
+                    resumeMessage,
+                    undefined,
+                    resolvedSessionId,
+                    session.workspacePath,
+                  );
+                } catch (err) {
+                  logger.main.error(`[AIService] Failed to auto-resume session after AskUserQuestion: ${err}`);
+                }
+              },
+            );
+            return {
+              success: true,
+              promptClear,
+              ...(!scheduled ? { currentTurnMutationSkipped: true } : {}),
+            };
+          }
+          return { success: false, error: 'Question not found', promptClear };
+        },
+      );
+      if (!claimed.claimed || !claimed.value) {
+        return {
+          success: false,
+          error: 'Prompt action is stale or no longer owns the current turn',
+          promptClear: claimed.promptClear,
+          staleAction: true,
+        };
       }
-
-      logger.main.warn(`[AIService] Question not found for provider/session: ${resolvedSessionId}`);
-      return { success: false, error: 'Question not found' };
+      return claimed.value;
     });
 
     // Handle AskUserQuestion cancel from renderer
@@ -2585,78 +2652,80 @@ export class AIService {
         logger.main.warn(`[AIService] Session not found for AskUserQuestion cancel: ${resolvedSessionId}`);
         return { success: false, error: 'Session not found' };
       }
-
-      // Missing provider is non-fatal here too (claude-code-cli has no in-process
-      // instance) — fall through to the MCP/IPC cancel emit + DB fallback. NIM-806.
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, resolvedSessionId);
-      if (!provider) {
-        logger.main.info(`[AIService] No in-process provider for AskUserQuestion cancel (${session.provider}); routing via MCP/IPC channel: ${resolvedSessionId}`);
-      }
-
-      const providerSupportsCancel = !!provider && typeof (provider as any).rejectAskUserQuestion === 'function';
-      if (providerSupportsCancel) {
-        (provider as any).rejectAskUserQuestion(questionId, new Error('User cancelled'));
-      }
-
-      const mcpQuestionResponseChannel = `ask-user-question-response:${resolvedSessionId || 'unknown'}:${questionId}`;
-      const hasMcpWaiter = ipcMain.listenerCount(mcpQuestionResponseChannel) > 0;
-      if (hasMcpWaiter) {
-        ipcMain.emit(mcpQuestionResponseChannel, event, {
-          questionId,
-          answers: {},
-          cancelled: true,
-          respondedBy: 'desktop',
-          sessionId: resolvedSessionId,
-        });
-      }
-
-      const sessionFallbackChannel = `ask-user-question:${resolvedSessionId}`;
-      const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
-      if (hasSessionFallbackWaiter) {
-        ipcMain.emit(sessionFallbackChannel, event, {
-          questionId,
-          answers: {},
-          cancelled: true,
-          respondedBy: 'desktop',
-          sessionId: resolvedSessionId,
-        });
-      }
-
-      // Write cancellation to database as fallback for MCP server polling
-      if (!providerSupportsCancel && resolvedSessionId) {
-        const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
-        AgentMessagesRepository.create({
-          sessionId: resolvedSessionId,
-          source: 'claude-code',
-          direction: 'output' as const,
-          createdAt: new Date(),
-          content: JSON.stringify({
-            type: 'ask_user_question_response',
+      const claimed = await runClaimedPendingPromptAction(
+        resolvedSessionId,
+        questionId,
+        async ({ ownership, promptClear }) => {
+          const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
+          await AgentMessagesRepository.create({
+            sessionId: resolvedSessionId,
+            source: 'claude-code',
+            direction: 'output' as const,
+            createdAt: new Date(),
+            content: JSON.stringify({
+              type: 'ask_user_question_response',
+              questionId,
+              answers: {},
+              cancelled: true,
+              respondedBy: 'desktop',
+              respondedAt: Date.now(),
+            }),
+          });
+          const provider = ProviderFactory.getProvider(session.provider as AIProviderType, resolvedSessionId);
+          const providerSupportsCancel = !!provider &&
+            typeof (provider as any).rejectAskUserQuestion === 'function';
+          if (providerSupportsCancel) {
+            (provider as any).rejectAskUserQuestion(questionId, new Error('User cancelled'));
+          }
+          const mcpQuestionResponseChannel = `ask-user-question-response:${resolvedSessionId}:${questionId}`;
+          const hasMcpWaiter = ipcMain.listenerCount(mcpQuestionResponseChannel) > 0;
+          if (hasMcpWaiter) {
+            ipcMain.emit(mcpQuestionResponseChannel, event, {
+              questionId,
+              answers: {},
+              cancelled: true,
+              respondedBy: 'desktop',
+              sessionId: resolvedSessionId,
+            });
+          }
+          const sessionFallbackChannel = `ask-user-question:${resolvedSessionId}`;
+          const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
+          if (hasSessionFallbackWaiter) {
+            ipcMain.emit(sessionFallbackChannel, event, {
+              questionId,
+              answers: {},
+              cancelled: true,
+              respondedBy: 'desktop',
+              sessionId: resolvedSessionId,
+            });
+          }
+          await attentionEventService.cancelInteractivePrompt(
+            resolvedSessionId,
             questionId,
-            answers: {},
-            cancelled: true,
-            respondedBy: 'desktop',
-            respondedAt: Date.now()
-          })
-        }).catch(err => {
-          logger.main.warn(`[AIService] Failed to persist AskUserQuestion cancel to database: ${err}`);
-        });
+            'cancelled',
+            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          );
+          if (!providerSupportsCancel && !hasMcpWaiter && !hasSessionFallbackWaiter) {
+            return { success: false, error: 'Question not found', promptClear };
+          }
+          if (!hasMcpWaiter && !hasSessionFallbackWaiter) {
+            runPromptOwnedCurrentAction(
+              { ownership, promptClear },
+              () => provider?.abort(),
+            );
+          }
+          return { success: true, promptClear };
+        },
+      );
+      if (!claimed.claimed || !claimed.value) {
+        return {
+          success: false,
+          error: 'Prompt action is stale or no longer owns the current turn',
+          promptClear: claimed.promptClear,
+          staleAction: true,
+        };
       }
-
-      if (!providerSupportsCancel && !hasMcpWaiter && !hasSessionFallbackWaiter) {
-        logger.main.warn(`[AIService] Question cancel target not found: ${resolvedSessionId}`);
-        return { success: false, error: 'Question not found' };
-      }
-
-      // For MCP-backed AskUserQuestion (Codex), let the MCP tool call resolve with
-      // a cancelled result instead of force-aborting the provider. Immediate abort can
-      // interrupt the in-flight MCP request before the cancellation result is delivered.
-      if (!hasMcpWaiter && !hasSessionFallbackWaiter) {
-        // Provider-backed AskUserQuestion path (Claude Code): abort active turn.
-        provider?.abort();
-      }
-
-      return { success: true };
+      return claimed.value;
     });
 
     // Handle tool permission response from renderer
@@ -2685,49 +2754,55 @@ export class AIService {
         logger.main.warn(`[AIService] Session not found for tool permission: ${sessionId}`);
         return { success: false, error: 'Session not found' };
       }
-
-      // SDK path (ClaudeCodeProvider) resolves via the in-process provider.
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (provider && typeof (provider as any).resolveToolPermission === 'function') {
-        (provider as any).resolveToolPermission(requestId, response, sessionId, 'desktop');
-        return { success: true };
-      }
-
-      // External/agentless providers (e.g. claude-code-cli) have NO in-process
-      // provider holding the pending permission — the MCP handler
-      // (handleToolPermission) is blocked on the per-request IPC channel instead.
-      // So a missing/unsupported provider is NOT fatal: emit on that channel so
-      // the waiting MCP handler resolves and returns the decision to the CLI.
-      // (Mirrors the AskUserQuestion CLI fix — NIM-806.)
-      const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
-      await AgentMessagesRepository.create({
+      const claimed = await runClaimedPendingPromptAction(
         sessionId,
-        source: 'nimbalyst',
-        direction: 'output',
-        createdAt: new Date(),
-        content: JSON.stringify(buildToolPermissionResponseRecord({
-          requestId,
-          answer: response,
-          respondedBy: 'desktop',
-        })),
-      });
-
-      const mcpPermissionChannel = `tool-permission-response:${sessionId}:${requestId}`;
-      const hasMcpWaiter = ipcMain.listenerCount(mcpPermissionChannel) > 0;
-      if (hasMcpWaiter) {
-        logger.main.info(`[AIService] Tool permission emitting on MCP channel: ${mcpPermissionChannel}`);
-        ipcMain.emit(mcpPermissionChannel, event, {
-          requestId,
-          sessionId,
-          decision: response.decision,
-          scope: response.scope,
-          respondedBy: 'desktop',
-        });
-        return { success: true };
+        requestId,
+        async ({ ownership, promptClear }) => {
+          const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+          if (provider && typeof (provider as any).resolveToolPermission === 'function') {
+            (provider as any).resolveToolPermission(requestId, response, sessionId, 'desktop');
+          } else {
+            const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
+            await AgentMessagesRepository.create({
+              sessionId,
+              source: 'nimbalyst',
+              direction: 'output',
+              createdAt: new Date(),
+              content: JSON.stringify(buildToolPermissionResponseRecord({
+                requestId,
+                answer: response,
+                respondedBy: 'desktop',
+              })),
+            });
+            const mcpPermissionChannel = `tool-permission-response:${sessionId}:${requestId}`;
+            if (ipcMain.listenerCount(mcpPermissionChannel) > 0) {
+              ipcMain.emit(mcpPermissionChannel, event, {
+                requestId,
+                sessionId,
+                decision: response.decision,
+                scope: response.scope,
+                respondedBy: 'desktop',
+              });
+            }
+          }
+          await attentionEventService.cancelInteractivePrompt(
+            sessionId,
+            requestId,
+            'answered',
+            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          );
+          return { success: true, promptClear };
+        },
+      );
+      if (!claimed.claimed || !claimed.value) {
+        return {
+          success: false,
+          error: 'Prompt action is stale or no longer owns the current turn',
+          promptClear: claimed.promptClear,
+          staleAction: true,
+        };
       }
-
-      logger.main.info(`[AIService] Tool permission response persisted without live MCP waiter: ${session.provider} (${sessionId})`);
-      return { success: true };
+      return claimed.value;
     });
 
     // Handle tool permission cancel from renderer
@@ -2754,37 +2829,75 @@ export class AIService {
         logger.main.warn(`[AIService] Session not found for tool permission cancel: ${sessionId}`);
         return { success: false, error: 'Session not found' };
       }
+      const claimed = await runClaimedPendingPromptAction(
+        sessionId,
+        requestId,
+        async ({ ownership, promptClear }) => {
+          const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+          if (provider && typeof (provider as any).rejectToolPermission === 'function') {
+            (provider as any).rejectToolPermission(requestId, new Error('User cancelled'));
+            runPromptOwnedCurrentAction(
+              { ownership, promptClear },
+              () => provider.abort(),
+            );
+            await attentionEventService.cancelInteractivePrompt(
+              sessionId,
+              requestId,
+              'cancelled',
+              { expectedGeneration: ownership.attentionGeneration ?? undefined },
+            );
+            return { success: true, promptClear };
+          }
 
-      // SDK path: reject via the in-process provider and abort the turn.
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (provider && typeof (provider as any).rejectToolPermission === 'function') {
-        (provider as any).rejectToolPermission(requestId, new Error('User cancelled'));
-        provider.abort();
-        return { success: true };
+          const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
+          await AgentMessagesRepository.create({
+            sessionId,
+            source: 'nimbalyst',
+            direction: 'output',
+            createdAt: new Date(),
+            content: JSON.stringify(buildToolPermissionResponseRecord({
+              requestId,
+              answer: { decision: 'deny', scope: 'once', cancelled: true },
+              respondedBy: 'desktop',
+            })),
+          });
+          const mcpPermissionChannel = `tool-permission-response:${sessionId}:${requestId}`;
+          const hasMcpWaiter = ipcMain.listenerCount(mcpPermissionChannel) > 0;
+          if (hasMcpWaiter) {
+            ipcMain.emit(mcpPermissionChannel, event, {
+              requestId,
+              sessionId,
+              decision: 'deny',
+              scope: 'once',
+              cancelled: true,
+              respondedBy: 'desktop',
+            });
+          }
+          await attentionEventService.cancelInteractivePrompt(
+            sessionId,
+            requestId,
+            'cancelled',
+            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          );
+          return hasMcpWaiter
+            ? { success: true, promptClear }
+            : { success: false, error: 'No handler for tool permission cancel', promptClear };
+        },
+      );
+      if (!claimed.claimed || !claimed.value) {
+        return {
+          success: false,
+          error: 'Prompt action is stale or no longer owns the current turn',
+          promptClear: claimed.promptClear,
+          staleAction: true,
+        };
       }
-
-      // External CLI: no provider to reject. Settle the blocked MCP handler with a
-      // cancelled deny so it returns {behavior:'deny'} to the CLI (NIM-806).
-      const mcpPermissionChannel = `tool-permission-response:${sessionId}:${requestId}`;
-      const hasMcpWaiter = ipcMain.listenerCount(mcpPermissionChannel) > 0;
-      if (hasMcpWaiter) {
-        logger.main.info(`[AIService] Tool permission cancel emitting on MCP channel: ${mcpPermissionChannel}`);
-        ipcMain.emit(mcpPermissionChannel, event, {
-          requestId,
-          sessionId,
-          decision: 'deny',
-          scope: 'once',
-          cancelled: true,
-          respondedBy: 'desktop',
-        });
-        return { success: true };
-      }
-
-      logger.main.warn(`[AIService] No provider or MCP waiter for tool permission cancel: ${session.provider} (${sessionId})`);
-      return { success: false, error: 'No handler for tool permission cancel' };
+      return claimed.value;
     });
 
-    // Cancel current request
+    // Explicit user command: cancel the session's current request at invocation
+    // time. Generationless clear/abort is intentional here; prompt-specific
+    // delayed callbacks above use captured identity + generation instead.
     safeHandle('ai:cancelRequest', async (event, sessionId: string, chunksReceived?: number) => {
       // console.log(`[AIService] ai:cancelRequest received for sessionId: ${sessionId}`);
       // Abort the provider for the specific session
@@ -2800,12 +2913,14 @@ export class AIService {
         console.warn(`[AIService] Cancel failed - session not found: ${sessionId}`);
         return { success: false, error: 'Session not found' };
       }
+      const promptClear = await setSessionPendingPrompt(sessionId, false);
+      await attentionEventService.cancelAllForSession(sessionId, 'interrupted');
 
       if (session.provider === 'claude-code-cli') {
         const terminalManager = getTerminalSessionManager();
         if (!terminalManager.isTerminalActive(sessionId)) {
           console.warn(`[AIService] Cancel failed - no active claude-code-cli terminal for session: ${sessionId}`);
-          return { success: false, error: 'No active terminal for session' };
+          return { success: false, error: 'No active terminal for session', promptClear };
         }
 
         terminalManager.writeToTerminal(sessionId, '\x03');
@@ -2815,7 +2930,7 @@ export class AIService {
           reason: 'user_cancel'
         });
         this.analytics.sendEvent('cancel_ai_request', { provider: 'claude-code-cli' });
-        return { success: true };
+        return { success: true, promptClear };
       }
 
       // console.log(`[AIService] Session found, provider type: ${session.provider}`);
@@ -2856,13 +2971,15 @@ export class AIService {
         provider.abort();
         // console.log(`[AIService] Cancelled request for session ${sessionId}`);
         this.analytics.sendEvent('cancel_ai_request', {provider: providerType})
-        return { success: true };
+        return { success: true, promptClear };
       }
       console.warn(`[AIService] Cancel failed - no active provider for session: ${sessionId}`);
-      return { success: false, error: 'No active provider for session' };
+      return { success: false, error: 'No active provider for session', promptClear };
     });
 
-    // Interrupt the current turn (graceful when possible) so queued prompts
+    // Explicit user command: interrupt the current turn (graceful when possible)
+    // at invocation time. It intentionally targets current state rather than a
+    // historical prompt generation. Queued prompts
     // are processed sooner. Providers that support a true mid-stream interrupt
     // (Claude Code) wrap up cleanly; others fall back to abort() via the
     // BaseAIProvider default. Returns { method } so the renderer can
@@ -2884,21 +3001,23 @@ export class AIService {
       if (!session) {
         return { success: false, error: 'Session not found' };
       }
+      const promptClear = await setSessionPendingPrompt(sessionId, false);
+      await attentionEventService.cancelAllForSession(sessionId, 'interrupted');
 
       if (session.provider === 'claude-code-cli') {
         const terminalManager = getTerminalSessionManager();
         if (!terminalManager.isTerminalActive(sessionId)) {
-          return { success: false, error: 'No active terminal for session' };
+          return { success: false, error: 'No active terminal for session', promptClear };
         }
 
         terminalManager.writeToTerminal(sessionId, '\x03');
         logger.main.info(`[AIService] Interrupted claude-code-cli terminal for session ${sessionId}`);
-        return { success: true, method: 'terminal-ctrl-c' };
+        return { success: true, method: 'terminal-ctrl-c', promptClear };
       }
 
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
       if (!provider) {
-        return { success: false, error: 'No active provider for session' };
+        return { success: false, error: 'No active provider for session', promptClear };
       }
 
       this.sessionsProcessingQueue.delete(sessionId);
@@ -2917,7 +3036,7 @@ export class AIService {
 
       const result = await provider.interruptCurrentTurn();
       logger.main.info(`[AIService] Interrupted current turn for session ${sessionId} (method=${result.method})`);
-      return { success: true, method: result.method };
+      return { success: true, method: result.method, promptClear };
     });
 
     // Settings handlers
