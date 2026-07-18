@@ -344,7 +344,7 @@ function findGitRootForPathCached(
   workspaceAbs: string,
   cache: Map<string, string | null>,
 ): string | null {
-  const sep = process.platform === 'win32' ? '\\' : '/';
+  const sep = path.sep;
   const boundaryWithSep = workspaceAbs.endsWith(sep) ? workspaceAbs : workspaceAbs + sep;
   if (absolutePath !== workspaceAbs && !absolutePath.startsWith(boundaryWithSep)) {
     return null;
@@ -832,7 +832,7 @@ function addToReplayBuffer(
     entry.replayBuffer.shift();
   }
 
-  entry.replayBuffer.push({ absolutePath: normalizeToForwardSlash(absolutePath), eventType, timestamp: now });
+  entry.replayBuffer.push({ absolutePath, eventType, timestamp: now });
 }
 
 /** Re-dispatch matching events from the replay buffer when a bypass is added. */
@@ -843,7 +843,7 @@ function replayDroppedEvents(entry: BusEntry, absolutePath: string): void {
 
   for (const event of entry.replayBuffer) {
     if (now - event.timestamp >= REPLAY_BUFFER_TTL_MS) continue; // expired
-    if (event.absolutePath === absolutePath) {
+    if (normalizeToForwardSlash(event.absolutePath) === absolutePath) {
       matching.push(event);
     } else {
       remaining.push(event);

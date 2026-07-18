@@ -44,7 +44,8 @@ describe('isBunRuntimeSpawnCrash', () => {
 });
 
 describe('collectSpawnCrashDiagnostics', () => {
-  it('reports inherited fd limits and binary existence', () => {
+  // Windows does not expose POSIX fd limits through process.report or /proc.
+  it.skipIf(process.platform === 'win32')('reports inherited fd limits and binary existence', () => {
     const diag = collectSpawnCrashDiagnostics({ binaryPath: '/nonexistent/claude', cwd: process.cwd() });
     expect(diag.binaryExists).toBe(false);
     expect(diag.cwdExists).toBe(true);

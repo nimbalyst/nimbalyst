@@ -272,9 +272,11 @@ export class FileSnapshotCache {
   }
 
   private async gitShow(workspacePath: string, sha: string, relativePath: string): Promise<string> {
+    // Git revision paths use forward slashes even when the host filesystem uses backslashes.
+    const gitRelativePath = relativePath.split(path.sep).join('/');
     const { stdout } = await execFileAsync(
       'git',
-      ['show', `${sha}:${relativePath}`],
+      ['show', `${sha}:${gitRelativePath}`],
       { cwd: workspacePath, timeout: 5000, maxBuffer: MAX_FILE_SIZE }
     );
     return stdout;

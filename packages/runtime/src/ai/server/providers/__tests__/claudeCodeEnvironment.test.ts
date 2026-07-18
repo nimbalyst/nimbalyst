@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockApp = {
   isPackaged: false,
-  getAppPath: vi.fn(() => '/repo/packages/electron'),
+  getAppPath: vi.fn(() => path.resolve('/repo/packages/electron')),
 };
 
 vi.mock('electron', () => ({
@@ -18,7 +18,7 @@ describe('claudeCodeEnvironment', () => {
     vi.resetModules();
     vi.restoreAllMocks();
     mockApp.isPackaged = false;
-    mockApp.getAppPath.mockReturnValue('/repo/packages/electron');
+    mockApp.getAppPath.mockReturnValue(path.resolve('/repo/packages/electron'));
     process.env.NODE_PATH = '/custom/modules';
   });
 
@@ -34,8 +34,8 @@ describe('claudeCodeEnvironment', () => {
     vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => {
       return [
         '/custom/modules',
-        '/repo/node_modules',
-        '/repo/packages/runtime/node_modules',
+        path.resolve('/repo/node_modules'),
+        path.resolve('/repo/packages/runtime/node_modules'),
       ].includes(String(candidate));
     });
 
@@ -45,22 +45,22 @@ describe('claudeCodeEnvironment', () => {
 
     expect(nodePaths).toEqual([
       '/custom/modules',
-      '/repo/node_modules',
-      '/repo/packages/runtime/node_modules',
+      path.resolve('/repo/node_modules'),
+      path.resolve('/repo/packages/runtime/node_modules'),
     ]);
   });
 
   it('uses unpacked node_modules in packaged mode', async () => {
     mockApp.isPackaged = true;
-    mockApp.getAppPath.mockReturnValue('/Applications/Nimbalyst.app/Contents/Resources/app.asar');
+    mockApp.getAppPath.mockReturnValue(path.resolve('/Applications/Nimbalyst.app/Contents/Resources/app.asar'));
 
     vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => (
-      String(candidate) === '/Applications/Nimbalyst.app/Contents/Resources/app.asar.unpacked/node_modules'
+      String(candidate) === path.resolve('/Applications/Nimbalyst.app/Contents/Resources/app.asar.unpacked/node_modules')
     ));
 
     const { setupClaudeCodeEnvironment } = await import('../../../../electron/claudeCodeEnvironment');
     const env = setupClaudeCodeEnvironment();
 
-    expect(env.NODE_PATH).toBe('/Applications/Nimbalyst.app/Contents/Resources/app.asar.unpacked/node_modules');
+    expect(env.NODE_PATH).toBe(path.resolve('/Applications/Nimbalyst.app/Contents/Resources/app.asar.unpacked/node_modules'));
   });
 });

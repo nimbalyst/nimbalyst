@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'path';
 
 const { files, fetchMock } = vi.hoisted(() => ({
   files: new Map<string, Buffer>(),
@@ -216,7 +217,7 @@ describe('StytchAuthService sync-account persistence', () => {
       personalUserId: 'member-b',
     };
     files.set(
-      '/mock/user-data/stytch-accounts.enc',
+      path.join('/mock/user-data', 'stytch-accounts.enc'),
       Buffer.from(JSON.stringify({
         version: 2,
         primaryAccountId: 'personal-b',
@@ -238,7 +239,7 @@ describe('StytchAuthService sync-account persistence', () => {
     expect(getSyncAccount()?.personalOrgId).toBe('personal-a');
 
     const persisted = JSON.parse(
-      files.get('/mock/user-data/stytch-accounts.enc')!.toString('utf8'),
+      files.get(path.join('/mock/user-data', 'stytch-accounts.enc'))!.toString('utf8'),
     ) as Record<string, unknown>;
     expect(persisted).toMatchObject({ version: 3, syncAccountId: 'personal-a' });
     expect(persisted).not.toHaveProperty('primaryAccountId');

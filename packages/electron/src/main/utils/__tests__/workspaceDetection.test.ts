@@ -284,17 +284,18 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
 });
 
 describe('findNearestAncestor', () => {
-  const trusted = new Set(['/path/to/project']);
+  const project = path.resolve('/path/to/project');
+  const trusted = new Set([project]);
   const pred = (dir: string) => trusted.has(dir);
 
   it('returns the start path itself when it matches', () => {
-    expect(findNearestAncestor('/path/to/project', pred)).toBe('/path/to/project');
+    expect(findNearestAncestor(project, pred)).toBe(project);
   });
 
   it('walks up to the nearest matching ancestor (subfolder cascade)', () => {
-    expect(findNearestAncestor('/path/to/project/packages/electron', pred))
-      .toBe('/path/to/project');
-    expect(findNearestAncestor('/path/to/project/src', pred)).toBe('/path/to/project');
+    expect(findNearestAncestor(path.join(project, 'packages', 'electron'), pred))
+      .toBe(project);
+    expect(findNearestAncestor(path.join(project, 'src'), pred)).toBe(project);
   });
 
   it('returns null when no ancestor matches', () => {
@@ -302,34 +303,34 @@ describe('findNearestAncestor', () => {
   });
 
   it('returns the most specific matching ancestor when several match', () => {
-    const t2 = new Set(['/a', '/a/b/c']);
-    expect(findNearestAncestor('/a/b/c/d', (d) => t2.has(d))).toBe('/a/b/c');
+    const t2 = new Set([path.resolve('/a'), path.resolve('/a/b/c')]);
+    expect(findNearestAncestor(path.resolve('/a/b/c/d'), (d) => t2.has(d))).toBe(path.resolve('/a/b/c'));
   });
 
   it('handles empty input and trailing slashes', () => {
     expect(findNearestAncestor('', pred)).toBe(null);
-    expect(findNearestAncestor('/path/to/project/packages/', pred)).toBe('/path/to/project');
+    expect(findNearestAncestor(path.join(project, 'packages'), pred)).toBe(project);
   });
 
   describe('stopAt boundary', () => {
     it('still returns a match found at or below the boundary', () => {
       // boundary === the matching ancestor: it is tested, then the walk stops.
-      expect(findNearestAncestor('/path/to/project/src', pred, '/path/to/project'))
-        .toBe('/path/to/project');
+      expect(findNearestAncestor(path.join(project, 'src'), pred, project))
+        .toBe(project);
     });
 
     it('does NOT climb past the boundary to a higher match', () => {
       // A trusted grandparent must not be inherited when a nearer boundary caps
       // the walk - this is the trust-boundary guard for nested projects.
-      const t = new Set(['/root']);
+      const t = new Set([path.resolve('/root')]);
       const p = (d: string) => t.has(d);
-      expect(findNearestAncestor('/root/child/leaf', p, '/root/child')).toBe(null);
+      expect(findNearestAncestor(path.resolve('/root/child/leaf'), p, path.resolve('/root/child'))).toBe(null);
     });
 
     it('returns the nearer match even when a farther one also matches', () => {
-      const t = new Set(['/root', '/root/child']);
+      const t = new Set([path.resolve('/root'), path.resolve('/root/child')]);
       const p = (d: string) => t.has(d);
-      expect(findNearestAncestor('/root/child/leaf', p, '/root/child')).toBe('/root/child');
+      expect(findNearestAncestor(path.resolve('/root/child/leaf'), p, path.resolve('/root/child'))).toBe(path.resolve('/root/child'));
     });
   });
 });

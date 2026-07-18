@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'path';
 
 const {
   existsSyncMock,
@@ -139,7 +140,7 @@ describe('interrupted self-update detection (NIM-1573)', () => {
   });
 
   it('findOrphanedClaudeUpdateFiles lists claude.old.* orphans in the unpacked SDK dir', async () => {
-    existsSyncMock.mockImplementation((candidate: string) => candidate === UNPACKED_SDK_DIR);
+    existsSyncMock.mockImplementation((candidate: string) => candidate.replace(/\\/g, '/') === UNPACKED_SDK_DIR);
     readdirSyncMock.mockReturnValue([
       'claude.old.1783585579626',
       'claude.old.1783585999999',
@@ -150,8 +151,8 @@ describe('interrupted self-update detection (NIM-1573)', () => {
     const environment = await import('../claudeCodeEnvironment');
     const orphans = environment.findOrphanedClaudeUpdateFiles();
     expect(orphans).toEqual([
-      `${UNPACKED_SDK_DIR}/claude.old.1783585579626`,
-      `${UNPACKED_SDK_DIR}/claude.old.1783585999999`,
+      path.join(UNPACKED_SDK_DIR, 'claude.old.1783585579626'),
+      path.join(UNPACKED_SDK_DIR, 'claude.old.1783585999999'),
     ]);
   });
 
@@ -166,7 +167,7 @@ describe('interrupted self-update detection (NIM-1573)', () => {
     expect(base).not.toMatch(/orphan/i);
 
     // Orphan present -> message additionally names the interrupted self-update.
-    existsSyncMock.mockImplementation((candidate: string) => candidate === UNPACKED_SDK_DIR);
+    existsSyncMock.mockImplementation((candidate: string) => candidate.replace(/\\/g, '/') === UNPACKED_SDK_DIR);
     readdirSyncMock.mockReturnValue(['claude.old.1783585579626']);
     const withOrphan = environment.describeMissingClaudeRuntime();
     expect(withOrphan).toMatch(/repair Nimbalyst/i);

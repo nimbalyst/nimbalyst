@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import * as path from 'path';
 import { SafePathValidator } from '../SafePathValidator';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -226,8 +227,8 @@ describe('SafePathValidator Security Tests', () => {
     it('should normalize redundant path elements', () => {
       const paths = [
         { input: './file.txt', expected: 'file.txt' },
-        { input: 'folder//file.txt', expected: 'folder/file.txt' },
-        { input: './folder/./file.txt', expected: 'folder/file.txt' },
+        { input: 'folder//file.txt', expected: path.join('folder', 'file.txt') },
+        { input: './folder/./file.txt', expected: path.join('folder', 'file.txt') },
       ];
 
       for (const { input, expected } of paths) {
@@ -248,10 +249,10 @@ describe('SafePathValidator Security Tests', () => {
 
   describe('Logging Safety', () => {
     it('should not expose full paths in safe log paths', () => {
-      const fullPath = '/Users/username/projects/myapp/src/components/Button.tsx';
+      const fullPath = path.join('C:\\Users', 'username', 'projects', 'myapp', 'src', 'components', 'Button.tsx');
       const safePath = SafePathValidator.getSafeLogPath(fullPath);
 
-      expect(safePath).not.toContain('/Users/username');
+      expect(safePath).not.toContain(path.join('C:\\Users', 'username'));
       expect(safePath).toBe('.../components/Button.tsx');
     });
 
@@ -264,10 +265,9 @@ describe('SafePathValidator Security Tests', () => {
   describe('System Path Detection', () => {
     it('should throw error if workspace is in system directory', () => {
       const systemPaths = [
-        '/System/Library',
-        '/usr/bin',
-        '/etc',
-        '/bin',
+        'C:\\Windows\\System32',
+        'C:\\Program Files',
+        'C:\\ProgramData',
       ];
 
       for (const sysPath of systemPaths) {

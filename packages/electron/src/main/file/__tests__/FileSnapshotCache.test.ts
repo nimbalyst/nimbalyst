@@ -40,7 +40,7 @@ import { FileSnapshotCache } from '../FileSnapshotCache';
 import { logger } from '../../utils/logger';
 
 describe('FileSnapshotCache', () => {
-  const workspacePath = '/test/workspace';
+  const workspacePath = path.resolve('/test/workspace');
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -99,9 +99,9 @@ describe('FileSnapshotCache', () => {
       });
 
       mockReadFile.mockImplementation(async (filePath: string) => {
-        if (filePath.endsWith('src/modified.ts')) return 'working modified content';
-        if (filePath.endsWith('src/staged.ts')) return 'working staged content';
-        if (filePath.endsWith('src/new.ts')) return 'working new content';
+        if (filePath.endsWith(path.join('src', 'modified.ts'))) return 'working modified content';
+        if (filePath.endsWith(path.join('src', 'staged.ts'))) return 'working staged content';
+        if (filePath.endsWith(path.join('src', 'new.ts'))) return 'working new content';
         throw new Error('not found');
       });
 
@@ -218,7 +218,7 @@ describe('FileSnapshotCache', () => {
       const cache = new FileSnapshotCache();
       await cache.startSession(workspacePath, 'session-1');
 
-      const content = await cache.getBeforeState('/outside/workspace/file.ts');
+      const content = await cache.getBeforeState(path.resolve('/outside/workspace/file.ts'));
       expect(content).toBeNull();
     });
 
@@ -227,9 +227,9 @@ describe('FileSnapshotCache', () => {
         'show abc123:src/clean.ts': 'clean tracked content',
       });
 
-      const symlinkWorkspacePath = '/workspace-link';
-      const canonicalWorkspacePath = '/workspace-real';
-      const canonicalFilePath = '/workspace-real/src/clean.ts';
+      const symlinkWorkspacePath = path.resolve('/workspace-link');
+      const canonicalWorkspacePath = path.resolve('/workspace-real');
+      const canonicalFilePath = path.join(canonicalWorkspacePath, 'src', 'clean.ts');
 
       mockRealpath.mockImplementation(async (targetPath: string) => {
         if (targetPath === symlinkWorkspacePath) return canonicalWorkspacePath;
@@ -300,7 +300,7 @@ describe('FileSnapshotCache', () => {
         'show abc123:src/clean.ts': 'committed clean content',
       });
       mockReadFile.mockImplementation(async (filePath: string) => {
-        if (filePath.endsWith('src/dirty.ts')) return 'working dirty content';
+        if (filePath.endsWith(path.join('src', 'dirty.ts'))) return 'working dirty content';
         throw new Error('not found');
       });
 

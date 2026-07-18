@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import path from 'path';
 import { ClaudeCliSessionLauncher, type ClaudeCliSessionLauncherDeps } from '../ClaudeCliSessionLauncher';
 
 type CreateClaudeCliTerminal = ClaudeCliSessionLauncherDeps['terminalManager']['createClaudeCliTerminal'];
@@ -61,7 +62,7 @@ describe('ClaudeCliSessionLauncher', () => {
 
     expect(getMcpServersConfig).toHaveBeenCalledWith({ sessionId: 'sess-01HABC', workspacePath: '/work' });
     expect(writes).toHaveLength(1);
-    expect(result.mcpConfigPath).toBe('/tmp/claude-cli-test/sess-01HABC.mcp.json');
+    expect(result.mcpConfigPath).toBe(path.join('/tmp/claude-cli-test', 'sess-01HABC.mcp.json'));
 
     const parsed = JSON.parse(writes[0].data);
     expect(parsed).toHaveProperty('mcpServers');
@@ -388,7 +389,7 @@ describe('ClaudeCliSessionLauncher', () => {
   it('RESUMES with --resume (not --session-id) when the CLI jsonl already exists', async () => {
     // The probed path is the deterministic ~/.claude/projects/<enc-cwd>/<id>.jsonl.
     const expectedJsonl =
-      '/Users/me/.claude/projects/-work/c261169b-d681-43e7-9c59-de4035b65cef.jsonl';
+      path.join('/Users/me', '.claude', 'projects', '-work', 'c261169b-d681-43e7-9c59-de4035b65cef.jsonl');
     const pathExists = vi.fn((p: string) => p === expectedJsonl);
     const { launcher, createClaudeCliTerminal } = makeHarness({ pathExists });
     await launcher.launch(uuidInput);

@@ -109,7 +109,7 @@ export class ElectronFileSystemService implements FileSystemService {
         try {
           const parsed = JSON.parse(line);
           if (parsed.type === 'match') {
-            const filePath = relative(this.workspacePath, parsed.data.path.text);
+            const filePath = relative(this.workspacePath, parsed.data.path.text).replace(/\\/g, '/');
             results.push({
               file: filePath,
               line: parsed.data.line_number,
@@ -171,7 +171,7 @@ export class ElectronFileSystemService implements FileSystemService {
         const results = await Promise.all(files.map(async (filePath) => {
           const stats = await stat(filePath);
           return {
-            path: relative(this.workspacePath, filePath),
+            path: relative(this.workspacePath, filePath).replace(/\\/g, '/'),
             type: stats.isDirectory() ? 'directory' as const : 'file' as const,
             size: stats.size,
             modified: stats.mtime.toISOString()
@@ -200,7 +200,7 @@ export class ElectronFileSystemService implements FileSystemService {
               const fullPath = join(basePath, item.name);
               const stats = await stat(fullPath);
               return {
-                path: relative(this.workspacePath, fullPath),
+                path: relative(this.workspacePath, fullPath).replace(/\\/g, '/'),
                 name: item.name,
                 type: item.isDirectory() ? 'directory' as const : 'file' as const,
                 size: stats.size,

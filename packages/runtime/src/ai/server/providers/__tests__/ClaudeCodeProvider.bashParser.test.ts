@@ -8,7 +8,7 @@ import { parseBashForFileOps } from '../../permissions/BashCommandAnalyzer';
  */
 
 describe('bashUtils - Bash Parser', () => {
-  const testWorkspace = '/test/workspace';
+  const testWorkspace = path.resolve('/test/workspace');
 
   describe('Output Redirects', () => {
     it('should detect cat > file', () => {
