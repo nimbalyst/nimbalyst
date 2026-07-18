@@ -16,8 +16,9 @@
   },
   "scripts": {
     "build": "npm run build --prefix packages/runtime",
+    "pretypecheck": "npm run build --workspace=@nimbalyst/extension-sdk && npm run build --workspace=@nimbalyst/runtime && npm run build --prefix packages/extensions/nimbalyst-memory/engine",
     "typecheck": "npm run typecheck -ws --if-present",
-    "typecheck:prepush": "npm run build --workspace=@nimbalyst/extension-sdk && npm run build --workspace=@nimbalyst/runtime && npm run build --prefix packages/extensions/nimbalyst-memory/engine && npm run typecheck",
+    "typecheck:prepush": "npm run typecheck",
     "test": "npm run test:unit",
     "test:unit": "vitest",
     "test:prepush": "vitest --run",
