@@ -13,7 +13,20 @@
  * each window's `resets_at` moment passes, while still surfacing a
  * still-active sibling window.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('electron', () => ({
+  BrowserWindow: { getAllWindows: vi.fn(() => []) },
+}));
+vi.mock('../../utils/logger', () => ({
+  logger: { main: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } },
+}));
+vi.mock('../CodexAuthService', () => ({
+  codexAuthService: {
+    onRateLimitsUpdated: vi.fn(() => () => {}),
+    getRateLimits: vi.fn(),
+  },
+}));
 import {
   convertAccountRateLimitsResponse,
   filterRateLimitsByExpiry,

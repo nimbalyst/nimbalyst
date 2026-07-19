@@ -23,12 +23,28 @@ import type {
 } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/types';
 import { logger } from '../utils/logger';
 import { codexAuthService } from './CodexAuthService';
+import {
+  aggregateCapacityState,
+  capacityModelMatches,
+  capacityError,
+  normalizeCapacityModelId,
+  normalizedTimestamp,
+  ratioFromPercent,
+  stateFromRemainingRatio,
+  stateFromUsedRatio,
+  type CapacityObservationError,
+  type CapacityWindow,
+  type ProviderCapacityObservation,
+} from './provider-capacity-types';
 
 export interface CodexUsageWindow {
   slot: 'primary' | 'secondary';
   usedPercent: number;
+  usedPercentReported?: boolean;
+  usedPercentMalformed?: boolean;
   windowDurationMins: number | null;
   resetsAt: string | null;
+  resetMalformed?: boolean;
 }
 
 export interface CodexUsageLimit {
@@ -45,9 +61,13 @@ export interface CodexUsageLimit {
     limit: string;
     used: string;
     remainingPercent: number;
-    resetsAt: string;
+    remainingPercentReported?: boolean;
+    remainingPercentMalformed?: boolean;
+    resetsAt: string | null;
+    resetMalformed?: boolean;
   } | null;
   rateLimitReachedType: string | null;
+  spendControlReached?: boolean | null;
 }
 
 export interface CodexUsageData {
@@ -69,6 +89,7 @@ export interface CodexUsageData {
   source?: 'account' | 'session';
   lastUpdated: number; // Unix timestamp
   error?: string;
+  errorCode?: CapacityObservationError['code'];
 }
 
 interface CodexRateLimits {
@@ -105,18 +126,19 @@ const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes before going to sleep
 const MAX_FILES_TO_CHECK = 5; // Check up to N recent session files for rate_limits
 
-class CodexUsageServiceImpl {
+export class CodexUsageServiceImpl {
   private cachedUsage: CodexUsageData | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private lastActivityTime: number = 0;
   private isPolling: boolean = false;
   private isSleeping: boolean = true;
   private unsubscribeRateLimits: (() => void) | null = null;
+  private refreshGeneration = 0;
 
   initialize(): void {
     this.unsubscribeRateLimits ??= codexAuthService.onRateLimitsUpdated(() => {
       void this.refresh().catch((error) => {
-        logger.main.warn('[CodexUsageService] Failed to refresh after rate-limit update:', error);
+        logger.main.warn('[CodexUsageService] Failed to refresh after rate-limit update');
       });
     });
     logger.main.info('[CodexUsageService] Initialized (sleeping until activity detected)');
@@ -140,36 +162,57 @@ class CodexUsageServiceImpl {
     return this.cachedUsage;
   }
 
+  async getCapacityObservation(
+    requestedModel?: string,
+    signal?: AbortSignal,
+  ): Promise<ProviderCapacityObservation> {
+    return toCodexCapacityObservation(await this.collectUsage(signal), requestedModel);
+  }
+
   async refresh(): Promise<CodexUsageData> {
+    const generation = ++this.refreshGeneration;
+    const usageData = await this.collectUsage();
+    if (generation === this.refreshGeneration) {
+      this.cachedUsage = usageData;
+      this.broadcastUpdate();
+    }
+    return usageData;
+  }
+
+  private async collectUsage(signal?: AbortSignal): Promise<CodexUsageData> {
+    let accountReadFailure: CapacityObservationError['code'] | null = null;
     try {
+      throwIfAborted(signal);
       try {
         const accountRateLimits = await codexAuthService.getRateLimits();
+        throwIfAborted(signal);
         if (hasAccountRateLimits(accountRateLimits)) {
-          const usageData = convertAccountRateLimitsResponse(accountRateLimits);
-          this.cachedUsage = usageData;
-          this.broadcastUpdate();
-          return usageData;
+          return convertAccountRateLimitsResponse(accountRateLimits);
         }
       } catch (error) {
+        throwIfAborted(signal);
+        accountReadFailure = codexErrorCode(error instanceof Error ? error.message : '');
         logger.main.debug(
-          '[CodexUsageService] account/rateLimits/read unavailable; falling back to session files:',
-          error
+          '[CodexUsageService] account/rateLimits/read unavailable; falling back to session files'
         );
       }
 
-      const snapshot = await this.findLatestUsageSnapshot();
+      const snapshot = await this.findLatestUsageSnapshot(signal);
+      throwIfAborted(signal);
       logger.main.debug(
         '[CodexUsageService] findLatestUsageSnapshot result:',
         snapshot.rateLimits ? 'rate limits' : snapshot.tokenUsage ? 'token usage' : 'null'
       );
       if (!snapshot.rateLimits && !snapshot.tokenUsage) {
+        const errorCode = accountReadFailure ?? 'unsupported';
         const noData: CodexUsageData = {
           limits: [],
           lastUpdated: Date.now(),
-          error: 'No Codex usage data found. Use Codex CLI with a ChatGPT subscription to see usage.',
+          error: accountReadFailure
+            ? codexUsageErrorMessage(errorCode)
+            : 'No Codex usage data found. Use Codex CLI with a ChatGPT subscription to see usage.',
+          errorCode,
         };
-        this.cachedUsage = noData;
-        this.broadcastUpdate();
         return noData;
       }
 
@@ -181,8 +224,6 @@ class CodexUsageServiceImpl {
           source: 'session',
           lastUpdated: Date.now(),
         };
-        this.cachedUsage = usageData;
-        this.broadcastUpdate();
         return usageData;
       }
 
@@ -192,18 +233,17 @@ class CodexUsageServiceImpl {
       if (snapshot.tokenUsage) {
         usageData.tokenUsage = snapshot.tokenUsage;
       }
-      this.cachedUsage = usageData;
-      this.broadcastUpdate();
       return usageData;
     } catch (error) {
-      logger.main.error('[CodexUsageService] Error refreshing usage:', error);
+      throwIfAborted(signal);
+      logger.main.error('[CodexUsageService] Usage refresh failed');
+      const errorCode = codexErrorCode(error instanceof Error ? error.message : '');
       const errorData: CodexUsageData = {
         limits: [],
         lastUpdated: Date.now(),
-        error: error instanceof Error ? error.message : 'Unknown error reading Codex session files',
+        error: codexUsageErrorMessage(errorCode),
+        errorCode,
       };
-      this.cachedUsage = errorData;
-      this.broadcastUpdate();
       return errorData;
     }
   }
@@ -251,13 +291,15 @@ class CodexUsageServiceImpl {
    * Walks the session directory tree to find the most recent files,
    * then reads them to extract rate_limits or token usage from token_count events.
    */
-  private async findLatestUsageSnapshot(): Promise<CodexUsageSnapshot> {
+  private async findLatestUsageSnapshot(signal?: AbortSignal): Promise<CodexUsageSnapshot> {
+    throwIfAborted(signal);
     if (!existsSync(CODEX_SESSIONS_DIR)) {
-      logger.main.debug('[CodexUsageService] Sessions directory does not exist:', CODEX_SESSIONS_DIR);
+      logger.main.debug('[CodexUsageService] Sessions directory does not exist');
       return { rateLimits: null, tokenUsage: null };
     }
 
-    const recentFiles = await this.getRecentSessionFiles();
+    const recentFiles = await this.getRecentSessionFiles(signal);
+    throwIfAborted(signal);
     logger.main.debug('[CodexUsageService] Found session files:', recentFiles.length);
     if (recentFiles.length === 0) {
       return { rateLimits: null, tokenUsage: null };
@@ -267,8 +309,9 @@ class CodexUsageServiceImpl {
 
     // Check files from most recent to oldest
     for (const filePath of recentFiles.slice(0, MAX_FILES_TO_CHECK)) {
-      logger.main.debug('[CodexUsageService] Checking file:', filePath);
-      const snapshot = await this.extractUsageSnapshotFromFile(filePath);
+      throwIfAborted(signal);
+      logger.main.debug('[CodexUsageService] Checking recent session usage file');
+      const snapshot = await this.extractUsageSnapshotFromFile(filePath, signal);
       if (snapshot.tokenUsage && !fallbackTokenUsage) {
         fallbackTokenUsage = snapshot.tokenUsage;
       }
@@ -284,30 +327,36 @@ class CodexUsageServiceImpl {
   /**
    * Get recent session files sorted by modification time (newest first).
    */
-  private async getRecentSessionFiles(): Promise<string[]> {
+  private async getRecentSessionFiles(signal?: AbortSignal): Promise<string[]> {
     const files: Array<{ path: string; mtime: number }> = [];
 
     try {
+      throwIfAborted(signal);
       // Walk year/month/day directory structure
-      const years = await this.getSortedSubdirs(CODEX_SESSIONS_DIR);
+      const years = await this.getSortedSubdirs(CODEX_SESSIONS_DIR, signal);
       // Check most recent years first (reversed)
       for (const year of years.reverse().slice(0, 2)) {
+        throwIfAborted(signal);
         const yearPath = join(CODEX_SESSIONS_DIR, year);
-        const months = await this.getSortedSubdirs(yearPath);
+        const months = await this.getSortedSubdirs(yearPath, signal);
         for (const month of months.reverse().slice(0, 2)) {
+          throwIfAborted(signal);
           const monthPath = join(yearPath, month);
-          const days = await this.getSortedSubdirs(monthPath);
+          const days = await this.getSortedSubdirs(monthPath, signal);
           for (const day of days.reverse().slice(0, 3)) {
+            throwIfAborted(signal);
             const dayPath = join(monthPath, day);
             const entries = await readdir(dayPath);
             const jsonlFiles = entries.filter((f: string) => f.endsWith('.jsonl') && f.startsWith('rollout-'));
 
             for (const file of jsonlFiles) {
+              throwIfAborted(signal);
               const filePath = join(dayPath, file);
               try {
                 const fileStat = await stat(filePath);
                 files.push({ path: filePath, mtime: fileStat.mtimeMs });
               } catch {
+                throwIfAborted(signal);
                 // Skip files we can't stat
               }
             }
@@ -318,7 +367,8 @@ class CodexUsageServiceImpl {
         if (files.length >= MAX_FILES_TO_CHECK) break;
       }
     } catch (error) {
-      logger.main.debug('[CodexUsageService] Error walking session directory:', error);
+      throwIfAborted(signal);
+      logger.main.debug('[CodexUsageService] Error walking session directory');
     }
 
     // Sort by modification time, newest first
@@ -326,14 +376,17 @@ class CodexUsageServiceImpl {
     return files.map((f: { path: string; mtime: number }) => f.path);
   }
 
-  private async getSortedSubdirs(dirPath: string): Promise<string[]> {
+  private async getSortedSubdirs(dirPath: string, signal?: AbortSignal): Promise<string[]> {
     try {
+      throwIfAborted(signal);
       const entries = await readdir(dirPath, { withFileTypes: true });
+      throwIfAborted(signal);
       return entries
         .filter(e => e.isDirectory())
         .map(e => e.name)
         .sort();
     } catch {
+      throwIfAborted(signal);
       return [];
     }
   }
@@ -342,16 +395,22 @@ class CodexUsageServiceImpl {
    * Extract the latest token usage and rate_limits with at least one active window from a JSONL file.
    * Reads the entire file and scans for token_count events.
    */
-  private async extractUsageSnapshotFromFile(filePath: string): Promise<CodexUsageSnapshot> {
+  private async extractUsageSnapshotFromFile(
+    filePath: string,
+    signal?: AbortSignal,
+  ): Promise<CodexUsageSnapshot> {
     let tokenUsage: CodexTokenUsage | null = null;
     let rateLimits: CodexRateLimits | null = null;
 
     try {
-      const content = await readFile(filePath, 'utf8');
+      throwIfAborted(signal);
+      const content = await readFile(filePath, { encoding: 'utf8', signal });
+      throwIfAborted(signal);
       const lines = content.split('\n');
 
       // Scan from the end for the latest token_count event and rate limits
       for (let i = lines.length - 1; i >= 0; i--) {
+        throwIfAborted(signal);
         const line = lines[i].trim();
         if (!line) continue;
 
@@ -372,7 +431,8 @@ class CodexUsageServiceImpl {
         }
       }
     } catch (error) {
-      logger.main.debug(`[CodexUsageService] Error reading file ${filePath}:`, error);
+      throwIfAborted(signal);
+      logger.main.debug('[CodexUsageService] Error reading recent session usage file');
     }
 
     return { rateLimits, tokenUsage };
@@ -428,31 +488,7 @@ class CodexUsageServiceImpl {
   }
 
   private convertRateLimits(rateLimits: CodexRateLimits): CodexUsageData {
-    const windows: CodexUsageWindow[] = [];
-    if (rateLimits.primary) {
-      windows.push(convertLegacyWindow('primary', rateLimits.primary));
-    }
-    if (rateLimits.secondary) {
-      windows.push(convertLegacyWindow('secondary', rateLimits.secondary));
-    }
-
-    const data: CodexUsageData = {
-      limits: [{
-        id: rateLimits.limit_id ?? 'codex',
-        name: null,
-        planType: null,
-        windows,
-        credits: rateLimits.credits ? {
-          hasCredits: rateLimits.credits.has_credits,
-          unlimited: rateLimits.credits.unlimited,
-          balance: rateLimits.credits.balance === null ? null : String(rateLimits.credits.balance),
-        } : null,
-        individualLimit: null,
-        rateLimitReachedType: null,
-      }],
-      lastUpdated: Date.now(),
-    };
-    return data;
+    return convertCodexSessionRateLimits(rateLimits, Date.now());
   }
 
   private broadcastUpdate(): void {
@@ -465,6 +501,16 @@ class CodexUsageServiceImpl {
   }
 }
 
+function abortError(): Error {
+  const error = new Error('The capacity observation was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+
 function hasAccountRateLimits(response: AccountRateLimitsReadResponse): boolean {
   return response.rateLimits !== null
     || Object.keys(response.rateLimitsByLimitId ?? {}).length > 0
@@ -475,13 +521,21 @@ function convertAccountWindow(
   slot: CodexUsageWindow['slot'],
   window: NonNullable<AccountRateLimitSnapshot['primary']>
 ): CodexUsageWindow {
+  const usedPercent = finiteNumberOrNull(window.usedPercent);
+  const windowDurationMins = finiteNumberOrNull(window.windowDurationMins);
+  const resetsAt = safeIsoFromSeconds(window.resetsAt);
+  const usedPercentPresent = Object.prototype.hasOwnProperty.call(window, 'usedPercent');
+  const resetMalformed = window.resetsAt !== null
+    && window.resetsAt !== undefined
+    && resetsAt === null;
   return {
     slot,
-    usedPercent: window.usedPercent,
-    windowDurationMins: window.windowDurationMins,
-    resetsAt: typeof window.resetsAt === 'number'
-      ? new Date(window.resetsAt * 1000).toISOString()
-      : null,
+    usedPercent: usedPercent ?? 0,
+    ...(usedPercent === null ? { usedPercentReported: false } : {}),
+    ...(usedPercentPresent && usedPercent === null ? { usedPercentMalformed: true } : {}),
+    windowDurationMins,
+    resetsAt,
+    ...(resetMalformed ? { resetMalformed: true } : {}),
   };
 }
 
@@ -492,6 +546,16 @@ function convertAccountLimit(
   const windows: CodexUsageWindow[] = [];
   if (snapshot.primary) windows.push(convertAccountWindow('primary', snapshot.primary));
   if (snapshot.secondary) windows.push(convertAccountWindow('secondary', snapshot.secondary));
+  const remainingPercent = snapshot.individualLimit
+    ? finiteNumberOrNull(snapshot.individualLimit.remainingPercent)
+    : null;
+  const individualResetAt = snapshot.individualLimit
+    ? safeIsoFromSeconds(snapshot.individualLimit.resetsAt)
+    : null;
+  const individualResetMalformed = snapshot.individualLimit !== null
+    && snapshot.individualLimit.resetsAt !== null
+    && snapshot.individualLimit.resetsAt !== undefined
+    && individualResetAt === null;
 
   return {
     id: snapshot.limitId ?? fallbackId,
@@ -502,15 +566,21 @@ function convertAccountLimit(
     individualLimit: snapshot.individualLimit ? {
       limit: snapshot.individualLimit.limit,
       used: snapshot.individualLimit.used,
-      remainingPercent: snapshot.individualLimit.remainingPercent,
-      resetsAt: new Date(snapshot.individualLimit.resetsAt * 1000).toISOString(),
+      remainingPercent: remainingPercent ?? 0,
+      ...(remainingPercent === null
+        ? { remainingPercentReported: false, remainingPercentMalformed: true }
+        : {}),
+      resetsAt: individualResetAt,
+      ...(individualResetMalformed ? { resetMalformed: true } : {}),
     } : null,
     rateLimitReachedType: snapshot.rateLimitReachedType ?? null,
+    spendControlReached: snapshot.spendControlReached ?? null,
   };
 }
 
 export function convertAccountRateLimitsResponse(
-  response: AccountRateLimitsReadResponse
+  response: AccountRateLimitsReadResponse,
+  lastUpdated = Date.now(),
 ): CodexUsageData {
   const limits: CodexUsageLimit[] = [];
   const seenIds = new Set<string>();
@@ -536,14 +606,12 @@ export function convertAccountRateLimitsResponse(
         id: credit.id,
         title: credit.title,
         description: credit.description,
-        expiresAt: typeof credit.expiresAt === 'number'
-          ? new Date(credit.expiresAt * 1000).toISOString()
-          : null,
+        expiresAt: safeIsoFromSeconds(credit.expiresAt),
       })) ?? null,
     } : null,
     limitsAvailable: limits.some((limit) => limit.windows.length > 0),
     source: 'account',
-    lastUpdated: Date.now(),
+    lastUpdated,
   };
 }
 
@@ -551,13 +619,370 @@ function convertLegacyWindow(
   slot: CodexUsageWindow['slot'],
   window: NonNullable<CodexRateLimits['primary']>
 ): CodexUsageWindow {
+  const usedPercent = finiteNumberOrNull(window.used_percent);
+  const windowDurationMins = finiteNumberOrNull(window.window_minutes);
+  const resetsAt = safeIsoFromSeconds(window.resets_at);
+  const usedPercentPresent = Object.prototype.hasOwnProperty.call(window, 'used_percent');
+  const resetMalformed = window.resets_at !== null
+    && window.resets_at !== undefined
+    && resetsAt === null;
   return {
     slot,
-    usedPercent: window.used_percent,
-    windowDurationMins: window.window_minutes,
-    resetsAt: window.resets_at
-      ? new Date(window.resets_at * 1000).toISOString()
-      : null,
+    usedPercent: usedPercent ?? 0,
+    ...(usedPercent === null ? { usedPercentReported: false } : {}),
+    ...(usedPercentPresent && usedPercent === null ? { usedPercentMalformed: true } : {}),
+    windowDurationMins,
+    resetsAt,
+    ...(resetMalformed ? { resetMalformed: true } : {}),
+  };
+}
+
+/** Allowlisted conversion at the raw Codex JSONL rate-limit boundary. */
+export function convertCodexSessionRateLimits(
+  rateLimits: CodexRateLimits,
+  lastUpdated = Date.now(),
+): CodexUsageData {
+  const windows: CodexUsageWindow[] = [];
+  if (rateLimits.primary && typeof rateLimits.primary === 'object') {
+    windows.push(convertLegacyWindow('primary', rateLimits.primary));
+  }
+  if (rateLimits.secondary && typeof rateLimits.secondary === 'object') {
+    windows.push(convertLegacyWindow('secondary', rateLimits.secondary));
+  }
+
+  return {
+    limits: [{
+      id: typeof rateLimits.limit_id === 'string' ? rateLimits.limit_id : 'codex',
+      name: null,
+      planType: null,
+      windows,
+      credits: rateLimits.credits && typeof rateLimits.credits === 'object' ? {
+        hasCredits: rateLimits.credits.has_credits === true,
+        unlimited: rateLimits.credits.unlimited === true,
+        balance: rateLimits.credits.balance === null ? null : String(rateLimits.credits.balance),
+      } : null,
+      individualLimit: null,
+      rateLimitReachedType: null,
+    }],
+    limitsAvailable: windows.length > 0,
+    source: 'session',
+    lastUpdated,
+  };
+}
+
+function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function safeIsoFromSeconds(value: unknown): string | null {
+  const seconds = finiteNumberOrNull(value);
+  if (seconds === null) return null;
+  const millis = seconds * 1_000;
+  if (!Number.isFinite(millis)) return null;
+  const date = new Date(millis);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function timestampFromMillis(value: number): string | null {
+  if (!Number.isFinite(value)) return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function codexErrorCode(message: string): CapacityObservationError['code'] {
+  if (/unsupported|not supported/i.test(message)) return 'unsupported';
+  if (/credential|authentication|login|unauthori[sz]ed|forbidden/i.test(message)) {
+    return 'auth-required';
+  }
+  if (/timeout|timed out/i.test(message)) return 'timeout';
+  if (/rate limit|429/i.test(message)) return 'rate-limited';
+  if (/unreachable|ECONN|ENOTFOUND|network/i.test(message)) return 'provider-unreachable';
+  return 'unknown';
+}
+
+function codexUsageErrorMessage(code: CapacityObservationError['code']): string {
+  switch (code) {
+    case 'auth-required':
+      return 'Codex authentication is required.';
+    case 'rate-limited':
+      return 'Codex usage capacity is temporarily rate limited.';
+    case 'timeout':
+      return 'Codex usage capacity request timed out.';
+    case 'provider-unreachable':
+      return 'Codex usage capacity is unreachable.';
+    case 'unsupported':
+      return 'Codex usage capacity is unsupported.';
+    default:
+      return 'Codex usage capacity request failed.';
+  }
+}
+
+function normalizedWindowBaseId(window: CodexUsageWindow): string {
+  if (window.windowDurationMins === 300) return 'five-hour';
+  if (window.windowDurationMins === 10_080) return 'weekly';
+  return 'provider-window';
+}
+
+function toCodexWindow(
+  window: CodexUsageWindow,
+  id: string,
+  scope: CapacityWindow['scope'],
+  model?: string,
+): { window: CapacityWindow; malformedRatio: boolean; malformedReset: boolean } {
+  const reportedUsedPercent = window.usedPercentReported === false ? null : window.usedPercent;
+  const usedRatio = ratioFromPercent(reportedUsedPercent);
+  const resetAt = normalizedTimestamp(window.resetsAt);
+  const malformedRatio = window.usedPercentMalformed === true
+    || (reportedUsedPercent !== null && usedRatio === null);
+  return {
+    window: {
+      id,
+      label: window.windowDurationMins === 300
+        ? '5-hour'
+        : window.windowDurationMins === 10_080
+          ? 'Weekly'
+          : 'Provider window',
+      scope,
+      ...(model ? { model } : {}),
+      state: stateFromUsedRatio(usedRatio),
+      usedRatio,
+      remainingRatio: usedRatio === null ? null : 1 - usedRatio,
+      usedUnits: typeof reportedUsedPercent === 'number' && Number.isFinite(reportedUsedPercent)
+        ? reportedUsedPercent
+        : null,
+      remainingUnits: usedRatio === null ? null : 100 - reportedUsedPercent!,
+      unit: 'percent',
+      resetAt,
+      resetConfidence: resetAt ? 'provider-reported' : 'unknown',
+      ...(malformedRatio ? { evidenceError: 'parse-error' as const } : {}),
+    },
+    malformedRatio,
+    malformedReset: window.resetMalformed === true
+      || (window.resetsAt !== null && resetAt === null),
+  };
+}
+
+/** Convert only allowlisted Codex usage fields into a provider observation. */
+export function toCodexCapacityObservation(
+  usage: CodexUsageData | null,
+  requestedModel?: string,
+): ProviderCapacityObservation {
+  const model = normalizeCapacityModelId('openai-codex', requestedModel);
+  if (!usage) {
+    return {
+      provider: 'openai-codex',
+      ...(model ? { model } : {}),
+      observationState: 'unavailable',
+      capacityState: 'unknown',
+      observedAt: null,
+      source: {
+        kind: 'provider-cli',
+        confidence: 'none',
+        collector: 'CodexUsageService',
+        providerReported: false,
+      },
+      windows: [],
+      error: capacityError('collector-unavailable', true),
+    };
+  }
+
+  if (usage.error) {
+    const code = usage.errorCode ?? codexErrorCode(usage.error);
+    if (code === 'unsupported' && /No Codex usage data found/i.test(usage.error)) {
+      return {
+        provider: 'openai-codex',
+        ...(model ? { model } : {}),
+        observationState: 'unsupported',
+        capacityState: 'unknown',
+        observedAt: timestampFromMillis(usage.lastUpdated),
+        source: {
+          kind: 'unsupported',
+          confidence: 'none',
+          collector: 'CodexUsageService',
+          providerReported: false,
+        },
+        windows: [],
+        error: capacityError('unsupported', false),
+      };
+    }
+    return {
+      provider: 'openai-codex',
+      ...(model ? { model } : {}),
+      observationState: code === 'unsupported'
+        ? 'unsupported'
+        : code === 'auth-required'
+          ? 'unavailable'
+          : 'error',
+      capacityState: 'unknown',
+      observedAt: timestampFromMillis(usage.lastUpdated),
+      source: {
+        kind: code === 'unsupported' ? 'unsupported' : 'provider-cli',
+        confidence: 'none',
+        collector: 'CodexUsageService',
+        providerReported: false,
+      },
+      windows: [],
+      error: capacityError(code, code !== 'auth-required' && code !== 'unsupported'),
+    };
+  }
+
+  const hasStructuredLimit = usage.limits.some((limit) =>
+    limit.windows.length > 0
+    || limit.individualLimit !== null
+    || Boolean(limit.rateLimitReachedType)
+    || limit.spendControlReached === true);
+  if (!hasStructuredLimit) {
+    return {
+      provider: 'openai-codex',
+      ...(model ? { model } : {}),
+      observationState: 'unsupported',
+      capacityState: 'unknown',
+      observedAt: timestampFromMillis(usage.lastUpdated),
+      source: {
+        kind: 'unsupported',
+        confidence: 'none',
+        collector: 'CodexUsageService',
+        providerReported: false,
+      },
+      windows: [],
+      error: capacityError('unsupported', false),
+    };
+  }
+
+  const windowIdCounts = new Map<string, number>();
+  let malformedRatio = false;
+  let malformedReset = false;
+  let structuredHardLimit = false;
+  const windows: CapacityWindow[] = [];
+
+  for (const limit of usage.limits) {
+    const scope: CapacityWindow['scope'] = limit.name ? 'model' : 'account';
+    const limitModel = scope === 'model'
+      ? normalizeCapacityModelId('openai-codex', limit.name)
+      : undefined;
+    if (
+      scope === 'model'
+      && model
+      && !capacityModelMatches({
+        id: 'model-applicability',
+        scope: 'model',
+        model: limitModel,
+        state: 'unknown',
+        usedRatio: null,
+        remainingRatio: null,
+        usedUnits: null,
+        remainingUnits: null,
+        unit: 'unknown',
+        resetAt: null,
+        resetConfidence: 'unknown',
+      }, model)
+    ) {
+      continue;
+    }
+    for (const sourceWindow of limit.windows) {
+      const baseId = normalizedWindowBaseId(sourceWindow);
+      const occurrence = windowIdCounts.get(baseId) ?? 0;
+      windowIdCounts.set(baseId, occurrence + 1);
+      const id = occurrence === 0 ? baseId : `${baseId}-${occurrence + 1}`;
+      const mapped = toCodexWindow(sourceWindow, id, scope, limitModel);
+      windows.push(mapped.window);
+      malformedRatio ||= mapped.malformedRatio;
+      malformedReset ||= mapped.malformedReset;
+    }
+
+    if (limit.individualLimit) {
+      const reportedRemainingPercent = limit.individualLimit.remainingPercentReported === false
+        ? null
+        : limit.individualLimit.remainingPercent;
+      const remainingRatio = ratioFromPercent(reportedRemainingPercent);
+      const resetAt = normalizedTimestamp(limit.individualLimit.resetsAt);
+      const individualMalformedRatio = limit.individualLimit.remainingPercentMalformed === true
+        || (reportedRemainingPercent !== null && remainingRatio === null);
+      windows.push({
+        id: 'individual-limit',
+        label: 'Individual limit',
+        scope: 'account',
+        state: stateFromRemainingRatio(remainingRatio),
+        usedRatio: remainingRatio === null ? null : 1 - remainingRatio,
+        remainingRatio,
+        usedUnits: null,
+        remainingUnits: typeof reportedRemainingPercent === 'number'
+          && Number.isFinite(reportedRemainingPercent)
+          ? reportedRemainingPercent
+          : null,
+        unit: 'percent',
+        resetAt,
+        resetConfidence: resetAt ? 'provider-reported' : 'unknown',
+        ...(individualMalformedRatio ? { evidenceError: 'parse-error' as const } : {}),
+      });
+      if (limit.spendControlReached === true) {
+        windows[windows.length - 1].state = 'exhausted';
+      }
+      malformedRatio ||= individualMalformedRatio;
+      malformedReset ||= limit.individualLimit.resetMalformed === true
+        || (limit.individualLimit.resetsAt !== null && resetAt === null);
+    }
+
+    const reachedType = limit.rateLimitReachedType?.toLowerCase() ?? '';
+    if (reachedType === 'primary' || reachedType === 'secondary') {
+      const reachedSlot = limit.windows.findIndex((candidate) => candidate.slot === reachedType);
+      if (reachedSlot >= 0) {
+        const baseIndex = windows.length - limit.windows.length - (limit.individualLimit ? 1 : 0);
+        const reachedWindow = windows[baseIndex + reachedSlot];
+        if (reachedWindow) reachedWindow.state = 'exhausted';
+      }
+    }
+    structuredHardLimit ||= Boolean(limit.rateLimitReachedType) || limit.spendControlReached === true;
+  }
+
+  if (structuredHardLimit && !windows.some((window) => window.state === 'exhausted')) {
+    windows.push({
+      id: 'provider-hard-limit',
+      label: 'Provider hard limit',
+      scope: 'provider',
+      state: 'exhausted',
+      usedRatio: null,
+      remainingRatio: null,
+      usedUnits: null,
+      remainingUnits: null,
+      unit: 'unknown',
+      resetAt: null,
+      resetConfidence: 'unknown',
+    });
+  }
+
+  if (malformedRatio && !structuredHardLimit) {
+    return {
+      provider: 'openai-codex',
+      ...(model ? { model } : {}),
+      observationState: 'error',
+      capacityState: 'unknown',
+      observedAt: timestampFromMillis(usage.lastUpdated),
+      source: {
+        kind: 'provider-cli',
+        confidence: 'low',
+        collector: 'CodexUsageService',
+        providerReported: true,
+      },
+      windows,
+      error: capacityError('parse-error', true),
+    };
+  }
+
+  return {
+    provider: 'openai-codex',
+    ...(model ? { model } : {}),
+    observationState: 'ok',
+    capacityState: structuredHardLimit ? 'exhausted' : aggregateCapacityState(windows),
+    observedAt: timestampFromMillis(usage.lastUpdated),
+    source: {
+      kind: structuredHardLimit ? 'provider-error' : 'provider-cli',
+      confidence: malformedRatio ? 'low' : malformedReset ? 'medium' : 'high',
+      collector: 'CodexUsageService',
+      providerReported: true,
+    },
+    windows,
+    error: null,
   };
 }
 
