@@ -1,12 +1,17 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStore } from 'jotai';
 import {
   openProjectsAtom,
   activeWorkspacePathAtom,
   activeOpenProjectAtom,
   addOpenProjectAtom,
+  seedInitialOpenProjectAtom,
   closeOpenProjectAtom,
   isOpenProjectsAtCapAtom,
+  getReplacementOpenProjectPath,
+  multiProjectModeAtom,
+  initOpenProjects,
+  teardownOpenProjects,
   attachWorkspaceSwitchCleanup,
   resolveInitialOpenProjectsState,
   selectProjectsToRegister,
@@ -29,6 +34,10 @@ describe('openProjects atoms', () => {
   });
 
   describe('addOpenProjectAtom', () => {
+    it('enables project tabs by default', () => {
+      expect(jotaiStore.get(multiProjectModeAtom)).toBe(true);
+    });
+
     it('adds a new project and activates it', () => {
       jotaiStore.set(addOpenProjectAtom, project('/ws/a'));
 
@@ -71,7 +80,40 @@ describe('openProjects atoms', () => {
     });
   });
 
+  describe('seedInitialOpenProjectAtom', () => {
+    it('preserves a restored active project when App startup seeds the primary afterward', () => {
+      jotaiStore.set(openProjectsAtom, [project('/ws/primary'), project('/ws/restored-active')]);
+      jotaiStore.set(activeWorkspacePathAtom, '/ws/restored-active');
+
+      jotaiStore.set(seedInitialOpenProjectAtom, project('/ws/primary'));
+
+      expect(jotaiStore.get(openProjectsAtom).map((entry) => entry.path)).toEqual([
+        '/ws/primary',
+        '/ws/restored-active',
+      ]);
+      expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/restored-active');
+    });
+
+    it('adds and activates the primary when startup seeding wins the hydration race', () => {
+      jotaiStore.set(seedInitialOpenProjectAtom, project('/ws/primary'));
+
+      expect(jotaiStore.get(openProjectsAtom)).toEqual([project('/ws/primary')]);
+      expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/primary');
+    });
+  });
+
   describe('closeOpenProjectAtom', () => {
+    it('selects the same adjacent replacement used by the main-process handoff', () => {
+      expect(getReplacementOpenProjectPath(
+        [project('/ws/a'), project('/ws/b'), project('/ws/c')],
+        '/ws/b',
+      )).toBe('/ws/c');
+      expect(getReplacementOpenProjectPath(
+        [project('/ws/a'), project('/ws/b')],
+        '/ws/b',
+      )).toBe('/ws/a');
+    });
+
     it('removes the project from the list', () => {
       jotaiStore.set(addOpenProjectAtom, project('/ws/a'));
       jotaiStore.set(addOpenProjectAtom, project('/ws/b'));
@@ -256,7 +298,7 @@ describe('openProjects atoms', () => {
       });
     });
 
-    it('uses persisted state on launch when restore previous projects is enabled', () => {
+    it('keeps a detached window isolated from the legacy global tab list', () => {
       const result = resolveInitialOpenProjectsState({
         persistedPaths: ['/ws/a', '/ws/b'],
         persistedActivePath: '/ws/b',
@@ -270,8 +312,8 @@ describe('openProjects atoms', () => {
       });
 
       expect(result).toEqual({
-        paths: ['/ws/a', '/ws/b'],
-        activePath: '/ws/b',
+        paths: ['/ws/a'],
+        activePath: '/ws/a',
       });
     });
 
@@ -292,6 +334,68 @@ describe('openProjects atoms', () => {
         paths: ['/ws/a'],
         activePath: '/ws/a',
       });
+    });
+  });
+
+  describe('initOpenProjects', () => {
+    beforeEach(() => {
+      teardownOpenProjects();
+    });
+
+    afterEach(() => {
+      teardownOpenProjects();
+      vi.unstubAllGlobals();
+    });
+
+    it('shares in-flight hydration across repeated setup calls and resets on teardown', async () => {
+      let resolveMode!: (mode: boolean) => void;
+      const modePromise = new Promise<boolean>((resolve) => {
+        resolveMode = resolve;
+      });
+      const invoke = vi.fn((channel: string): Promise<unknown> => {
+        switch (channel) {
+          case 'app:get-multi-project-mode':
+            return modePromise;
+          case 'app:get-restore-previous-projects':
+            return Promise.resolve(false);
+          case 'app:get-open-projects':
+            return Promise.resolve([]);
+          case 'app:get-active-project-path':
+            return Promise.resolve(null);
+          default:
+            return Promise.resolve(undefined);
+        }
+      });
+      const getInitialState = vi.fn().mockResolvedValue(null);
+      vi.stubGlobal('window', {
+        electronAPI: { invoke, getInitialState },
+      });
+
+      const firstInitialization = initOpenProjects();
+      const repeatedInitialization = initOpenProjects();
+
+      expect(repeatedInitialization).toBe(firstInitialization);
+      expect(invoke).toHaveBeenCalledTimes(4);
+      expect(getInitialState).toHaveBeenCalledOnce();
+
+      let repeatedCallSettled = false;
+      void repeatedInitialization.then(() => {
+        repeatedCallSettled = true;
+      });
+      await Promise.resolve();
+      expect(repeatedCallSettled).toBe(false);
+
+      resolveMode(true);
+      await firstInitialization;
+      expect(repeatedCallSettled).toBe(true);
+
+      teardownOpenProjects();
+      const initializationAfterTeardown = initOpenProjects();
+
+      expect(initializationAfterTeardown).not.toBe(firstInitialization);
+      await initializationAfterTeardown;
+      expect(invoke).toHaveBeenCalledTimes(8);
+      expect(getInitialState).toHaveBeenCalledTimes(2);
     });
   });
 

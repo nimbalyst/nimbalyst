@@ -14,8 +14,8 @@ import {
   multiProjectModeAtom,
   openProjectsAtom,
   activeWorkspacePathAtom,
-  closeOpenProjectAtom,
 } from '../store/atoms/openProjects';
+import { closeActiveProjectTab } from '../services/projectTabs';
 import { prRemoteAtom } from '../store/atoms/pullRequests';
 import { developerModeAtom } from '../store/atoms/appSettings';
 import posthog from 'posthog-js';
@@ -261,7 +261,6 @@ export function useKeyboardShortcuts({
             if (target.path !== currentActive) {
               if (isFullscreenPanelActive) exitFullscreenPanel();
               store.set(activeWorkspacePathAtom, target.path);
-              window.electronAPI?.invoke?.('workspace:set-active', { workspacePath: target.path }).catch(() => {});
             }
           }
         }
@@ -269,16 +268,7 @@ export function useKeyboardShortcuts({
         if (e.shiftKey && e.key === 'W') {
           e.preventDefault();
           e.stopPropagation();
-          const activePath = store.get(activeWorkspacePathAtom);
-          const projects = store.get(openProjectsAtom);
-          if (activePath) {
-            const wasLast = projects.length <= 1;
-            store.set(closeOpenProjectAtom, activePath);
-            window.electronAPI?.invoke?.('workspace:unregister-additional', { workspacePath: activePath }).catch(() => {});
-            if (wasLast) {
-              window.electronAPI?.invoke?.('workspace:close-rail-window').catch(() => {});
-            }
-          }
+          void closeActiveProjectTab().catch(() => {});
         }
       }
     };

@@ -155,8 +155,20 @@ class DocumentModelRegistryImpl {
    * Used during mode switches.
    */
   async flushAll(): Promise<void> {
+    await this.flushPaths(this.entries.keys());
+  }
+
+  /**
+   * Flush dirty editors for only the requested file paths.
+   * Used when transferring one workspace so unrelated projects are untouched.
+   */
+  async flushPaths(filePaths: Iterable<string>): Promise<void> {
     const promises: Promise<void>[] = [];
-    for (const entry of this.entries.values()) {
+    const visited = new Set<RegistryEntry>();
+    for (const filePath of filePaths) {
+      const entry = this.entries.get(this.normalizePath(filePath));
+      if (!entry || visited.has(entry)) continue;
+      visited.add(entry);
       if (entry.model.isDirty()) {
         promises.push(entry.model.flushDirtyEditors());
       }

@@ -17,6 +17,11 @@ import React, { createContext, useContext, useRef, useCallback, useSyncExternalS
 import { getFileName } from '../utils/pathUtils';
 import { isCollabUri } from '../utils/collabUri';
 import { store as jotaiStore, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
+import { DocumentModelRegistry } from '../services/document-model/DocumentModelRegistry';
+import {
+  collabConnectionStatusAtom,
+  hasCollabUnsyncedChanges,
+} from '../store/atoms/collabEditor';
 
 export interface TabData {
   id: string;
@@ -182,6 +187,89 @@ export function pruneTabsSlot(workspacePath: string): void {
   if (!slot) return;
   slot.listeners.clear();
   persistentSlots.delete(workspacePath);
+}
+
+/** Whether these tabs currently own an unsaved editor. */
+export function hasDirtyTabs(tabs: Iterable<TabData>): boolean {
+  return Array.from(tabs).some((tab) => {
+    const editorKey = makeEditorKey(tab.filePath);
+    return jotaiStore.get(editorDirtyAtom(editorKey));
+  });
+}
+
+/** Whether collaborative tabs still have local updates awaiting the server. */
+export function hasUnsyncedCollaborativeTabs(tabs: Iterable<TabData>): boolean {
+  return Array.from(tabs).some((tab) => {
+    if (!isCollabUri(tab.filePath)) return false;
+    return hasCollabUnsyncedChanges(
+      jotaiStore.get(collabConnectionStatusAtom(tab.filePath)),
+    );
+  });
+}
+
+/** Avoid overwriting persisted tabs with an empty slot before hydration. */
+export function shouldPersistTabsSlot(hasRestored: boolean, openTabCount: number): boolean {
+  return hasRestored || openTabCount > 0;
+}
+
+/** Flush only the document models owned by one workspace's file tabs. */
+export async function flushTabsSlot(workspacePath: string): Promise<void> {
+  const slot = persistentSlots.get(workspacePath);
+  if (!slot) return;
+  await DocumentModelRegistry.flushPaths(
+    Array.from(slot.store.tabs.values(), (tab) => tab.filePath),
+  );
+}
+
+/** Explain why a workspace cannot safely be transferred to another renderer. */
+export function getTabsSlotTransferBlocker(workspacePath: string): string | null {
+  const slot = persistentSlots.get(workspacePath);
+  if (!slot) return null;
+  if (hasUnsyncedCollaborativeTabs(slot.store.tabs.values())) {
+    return 'Wait for the project\'s collaborative documents to finish syncing before moving it.';
+  }
+  if (hasDirtyTabs(slot.store.tabs.values())) {
+    return 'Save or discard the project\'s unsaved editor changes before moving it.';
+  }
+  return null;
+}
+
+/** Persist a workspace's open file tabs before its project tab changes windows. */
+export async function persistTabsSlot(workspacePath: string): Promise<void> {
+  const slot = persistentSlots.get(workspacePath);
+  if (!slot || !window.electronAPI?.invoke) return;
+  if (!shouldPersistTabsSlot(slot.hasRestored, slot.store.tabs.size)) return;
+
+  const tabs = slot.store.tabOrder
+    .map((id) => slot.store.tabs.get(id))
+    .filter((tab): tab is TabData => tab !== undefined)
+    .map((tab) => ({
+      id: tab.id,
+      filePath: tab.filePath,
+      fileName: tab.fileName,
+      isDirty: jotaiStore.get(editorDirtyAtom(makeEditorKey(tab.filePath))),
+      isPinned: tab.isPinned,
+      isVirtual: tab.isVirtual,
+      lastSaved: tab.lastSaved?.toISOString(),
+    }));
+  const closedTabs = slot.store.closedTabs.map((tab) => ({
+    id: tab.id,
+    filePath: tab.filePath,
+    fileName: tab.fileName,
+    isDirty: tab.isDirty,
+    isPinned: tab.isPinned,
+    isVirtual: tab.isVirtual,
+    lastSaved: tab.lastSaved?.toISOString(),
+  }));
+  const tabsState = {
+    tabs,
+    activeTabId: slot.store.activeTabId,
+    tabOrder: [...slot.store.tabOrder],
+    closedTabs,
+  };
+
+  await window.electronAPI.invoke('workspace:update-state', workspacePath, { tabs: tabsState });
+  slot.lastSavedState = JSON.stringify(tabsState);
 }
 
 /** Test seam: snapshot the live persistent slot map size. */
@@ -570,10 +658,12 @@ export function TabsProvider({
       try {
         const workspaceState = await window.electronAPI!.invoke('workspace:get-state', workspacePath);
         const savedState = workspaceState?.tabs;
+        // A successful read hydrates the slot even when the persisted layout
+        // is empty. Future zero-tab saves must be allowed to clear a layout
+        // that briefly became non-empty after this point.
+        slotState.hasRestored = true;
 
         if (savedState?.tabs?.length > 0) {
-          slotState.hasRestored = true;
-
           const store = slotState.store;
           const restoredTabs = new Map<string, TabData>();
           const restoredOrder: string[] = [];

@@ -2,15 +2,26 @@ import { BrowserWindow } from 'electron';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { windows, windowStates, createWindow, windowFocusOrder, windowDevToolsState, getWindowId } from '../window/WindowManager';
 import { loadFileIntoWindow } from '../file/FileOperations';
-import { getSessionState, saveSessionState as saveToStore, SessionState, clearSessionState } from '../utils/store';
+import {
+    getSessionState,
+    saveSessionState as saveToStore,
+    SessionState,
+    clearSessionState,
+    getMultiProjectMode,
+    getRestorePreviousProjectsOnLaunch,
+} from '../utils/store';
 import { startWorkspaceWatcher } from '../file/WorkspaceWatcher.ts';
 import { getFolderContents } from '../utils/FileTree';
 import { basename } from 'path';
 import { logger } from '../utils/logger';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { GitStatusService } from '../services/GitStatusService';
-import { autoMatchTeamForWorkspace } from '../services/TeamService';
-import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
+import { ensureWorkspaceTabServices } from '../services/WorkspaceTabServices';
+import {
+    activateWorkspaceTabContext,
+    initializeWorkspaceTabBackground,
+} from '../services/WorkspaceTabBackground';
+import { MAX_OPEN_PROJECT_TABS } from '../../shared/projectTabs';
 
 // Save session state
 export async function saveSessionState() {
@@ -40,6 +51,14 @@ export async function saveSessionState() {
         }
         if (state.workspacePath) {
             sessionWindow.workspacePath = state.workspacePath;
+            const openProjectPaths = [state.workspacePath, ...(state.additionalWorkspacePaths ?? [])]
+                .filter((path, index, paths): path is string => Boolean(path) && paths.indexOf(path) === index)
+                .slice(0, MAX_OPEN_PROJECT_TABS);
+            sessionWindow.openProjectPaths = openProjectPaths;
+            sessionWindow.activeWorkspacePath = state.activeWorkspacePath
+                && openProjectPaths.includes(state.activeWorkspacePath)
+                ? state.activeWorkspacePath
+                : state.workspacePath;
         }
 
         sessionWindows.push(sessionWindow);
@@ -99,6 +118,7 @@ export async function restoreSessionState(): Promise<boolean> {
     // The last window (highest focus order) uses show() to activate the app once;
     // all earlier windows use showInactive() so the app doesn't steal focus repeatedly.
     const totalWindows = sortedWindows.length;
+    const restoreProjectTabs = getMultiProjectMode() && getRestorePreviousProjectsOnLaunch();
 
     for (let index = 0; index < totalWindows; index++) {
         const sessionWindow = sortedWindows[index];
@@ -109,15 +129,25 @@ export async function restoreSessionState(): Promise<boolean> {
                 let window: BrowserWindow | null = null;
 
                 if (sessionWindow.mode === 'workspace' && sessionWindow.workspacePath) {
+                    const primaryCandidates = restoreProjectTabs
+                        ? [
+                            sessionWindow.workspacePath,
+                            ...(sessionWindow.openProjectPaths ?? []),
+                            sessionWindow.activeWorkspacePath,
+                        ]
+                        : [sessionWindow.activeWorkspacePath, sessionWindow.workspacePath];
+                    const restoredPrimaryPath = primaryCandidates.find(
+                        (path): path is string => typeof path === 'string' && existsSync(path),
+                    ) ?? sessionWindow.workspacePath;
                     // Check if workspace path still exists
-                    if (existsSync(sessionWindow.workspacePath)) {
+                    if (existsSync(restoredPrimaryPath)) {
                         // Track workspace opened from startup restore
                         try {
                             // Count files and check for subfolders
                             let fileCount = 0;
                             let hasSubfolders = false;
                             try {
-                                const entries = readdirSync(sessionWindow.workspacePath, { withFileTypes: true });
+                                const entries = readdirSync(restoredPrimaryPath, { withFileTypes: true });
                                 for (const entry of entries) {
                                     if (entry.isFile()) {
                                         fileCount++;
@@ -141,9 +171,9 @@ export async function restoreSessionState(): Promise<boolean> {
 
                             try {
                                 const gitStatusService = new GitStatusService();
-                                isGitRepository = await gitStatusService.isGitRepo(sessionWindow.workspacePath);
+                                isGitRepository = await gitStatusService.isGitRepo(restoredPrimaryPath);
                                 if (isGitRepository) {
-                                    isGitHub = await gitStatusService.hasGitHubRemote(sessionWindow.workspacePath);
+                                    isGitHub = await gitStatusService.hasGitHubRemote(restoredPrimaryPath);
                                 }
                             } catch (gitError) {
                                 // Git checks failed - continue with defaults (false, false)
@@ -164,21 +194,54 @@ export async function restoreSessionState(): Promise<boolean> {
 
                         // Last window uses show() to activate app once; others use showInactive()
                         const isLastWindow = index === totalWindows - 1;
-                        window = createWindow(false, true, sessionWindow.workspacePath, sessionWindow.bounds, isLastWindow ? undefined : { showInactive: true });
-                        logger.session.info(`Restored workspace window: ${sessionWindow.workspacePath}`);
+                        window = createWindow(false, true, restoredPrimaryPath, sessionWindow.bounds, isLastWindow ? undefined : { showInactive: true });
+                        const windowId = getWindowId(window);
+                        const state = windowId !== null ? windowStates.get(windowId) : undefined;
+                        const requestedPaths = restoreProjectTabs
+                            ? [
+                                restoredPrimaryPath,
+                                ...(sessionWindow.openProjectPaths ?? []),
+                            ]
+                            : [restoredPrimaryPath];
+                        const distinctExistingPaths = [...new Set(requestedPaths)]
+                            .filter((path) => typeof path === 'string' && existsSync(path))
+                            .slice(0, MAX_OPEN_PROJECT_TABS);
+                        const restoredPaths = [restoredPrimaryPath];
 
-                        const restoredWorkspacePath = sessionWindow.workspacePath;
-                        setTimeout(() => {
-                            // Yield before running background workspace matching so
-                            // restored windows don't block the startup tick.
-                            void autoMatchTeamForWorkspace(restoredWorkspacePath).catch(() => {});
-                            updateTrackerSchemaWorkspace(restoredWorkspacePath);
-                        }, 0);
+                        for (const projectPath of distinctExistingPaths) {
+                            if (projectPath === restoredPrimaryPath) continue;
+                            const result = ensureWorkspaceTabServices(window, projectPath);
+                            if (result.success) restoredPaths.push(projectPath);
+                            else logger.session.warn(`Skipped project tab during restore: ${projectPath} (${result.error})`);
+                        }
+
+                        const requestedActivePath = restoreProjectTabs
+                            ? sessionWindow.activeWorkspacePath
+                            : restoredPrimaryPath;
+                        const activeWorkspacePath = requestedActivePath
+                            && restoredPaths.includes(requestedActivePath)
+                            ? requestedActivePath
+                            : restoredPrimaryPath;
+                        if (state) {
+                            state.additionalWorkspacePaths = restoredPaths.filter(
+                                (path) => path !== restoredPrimaryPath,
+                            );
+                            state.activeWorkspacePath = activeWorkspacePath;
+                        }
+
+                        for (const projectPath of restoredPaths) {
+                            initializeWorkspaceTabBackground(projectPath);
+                        }
+                        activateWorkspaceTabContext(activeWorkspacePath);
+
+                        logger.session.info(
+                            `Restored workspace window: ${restoredPrimaryPath} (${restoredPaths.length} project tab(s))`,
+                        );
 
                         // Note: Workspace tabs will be restored by the workspace's own tab state management
                         // We don't manually open files here to avoid interfering with tab restoration
                     } else {
-                        logger.session.warn(`Workspace path no longer exists: ${sessionWindow.workspacePath}`);
+                        logger.session.warn(`Workspace path no longer exists: ${restoredPrimaryPath}`);
                     }
                 } else if (sessionWindow.mode === 'document' && sessionWindow.filePath) {
                     // Check if file still exists

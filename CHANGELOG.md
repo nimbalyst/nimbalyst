@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Projects now open as tabs across the top of the current window by default and can be dragged between windows or out into a separate window.
 - Settings is reorganized into Application, Account, and Project sections, with organization management moved to a dedicated window.
 - Logging in to your Claude subscription now opens the terminal in your current project folder.
 

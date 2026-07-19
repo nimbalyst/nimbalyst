@@ -27,6 +27,8 @@ import * as path from 'path';
 import { existsSync } from 'fs';
 import * as fs from 'fs';
 import { windows, windowStates, createWindow, findWindowByFilePath, getWindowId } from '../window/WindowManager';
+import { routeWorkspaceToProjectTab } from '../window/projectTabRouting';
+import { resolveActiveWorkspacePath } from '../window/windowState';
 import { createAboutWindow } from '../window/AboutWindow';
 import { createWorkspaceManagerWindow } from '../window/WorkspaceManagerWindow.ts';
 import { createAIUsageReportWindow } from '../window/AIUsageReportWindow';
@@ -34,7 +36,12 @@ import { createDatabaseBrowserWindow } from '../window/DatabaseBrowserWindow';
 import { createDeveloperDashboardWindow } from '../window/DeveloperDashboardWindow';
 import { runDiffErgonomicsHarness } from '../file/DiffErgonomicsFixture';
 import { loadFileIntoWindow } from '../file/FileOperations';
-import { getRecentItems, clearRecentItems, addToRecentItems, getTheme, setTheme, store, getWorkspaceState, getWorkspaceWindowState, isExtensionDevToolsEnabled, setWorktreeOnboardingShown } from '../utils/store';
+import { getRecentItems, clearRecentItems, addToRecentItems, getTheme, setTheme, store, getWorkspaceState, getWorkspaceWindowState, getMultiProjectMode, isExtensionDevToolsEnabled, setWorktreeOnboardingShown } from '../utils/store';
+import { CLOSE_ACTIVE_PROJECT_TAB_CHANNEL } from '../../shared/projectTabs';
+import {
+    activateWorkspaceTabContext,
+    initializeWorkspaceTabBackground,
+} from '../services/WorkspaceTabBackground';
 import { updateWindowTitleBars, updateNativeTheme } from '../theme/ThemeManager';
 import { refreshWorkspaceFileTree } from '../file/FileWatcherDebug';
 import { getFolderContents } from '../utils/FileTree';
@@ -88,8 +95,8 @@ function createWindowListMenu(): any[] {
             title = 'About';
             category = 'other';
         } else if (state) {
-            if (state.mode === 'workspace' && state.workspacePath) {
-                title = basename(state.workspacePath);
+            if (state.mode === 'workspace' && resolveActiveWorkspacePath(state)) {
+                title = basename(resolveActiveWorkspacePath(state)!);
                 category = 'workspace';
             }
         }
@@ -182,11 +189,29 @@ async function createRecentSubmenu(): Promise<any[]> {
                 click: async () => {
                     // Check if workspace exists
                     if (existsSync(workspace.path)) {
+                        const tabRoute = routeWorkspaceToProjectTab(workspace.path, {
+                            preferredWindow: BrowserWindow.getFocusedWindow(),
+                        });
+                        if (tabRoute.status === 'routed') return;
+                        if (tabRoute.status === 'rejected') {
+                            await dialog.showMessageBox({
+                                type: 'warning',
+                                title: 'Unable to Open Project Tab',
+                                message: tabRoute.error,
+                                detail: tabRoute.reason === 'tab-cap'
+                                    ? 'Close a project tab first, or drag an existing tab into its own window.'
+                                    : 'The project was not opened in a separate window.',
+                            });
+                            return;
+                        }
+
                         // Check for saved workspace window state
                         const savedState = getWorkspaceWindowState(workspace.path);
 
                         // Create window with saved bounds if available
                         const window = createWindow(false, true, workspace.path, savedState?.bounds);
+                        initializeWorkspaceTabBackground(workspace.path);
+                        activateWorkspaceTabContext(workspace.path);
 
                         // Restore dev tools if they were open
                         if (savedState?.devToolsOpen) {
@@ -516,8 +541,9 @@ export async function createApplicationMenu() {
                             const state = windowId !== null ? windowStates.get(windowId) : undefined;
                             let projectName = 'Untitled';
 
-                            if (state?.mode === 'workspace' && state.workspacePath) {
-                                projectName = basename(state.workspacePath);
+                            const activeWorkspacePath = resolveActiveWorkspacePath(state);
+                            if (state?.mode === 'workspace' && activeWorkspacePath) {
+                                projectName = basename(activeWorkspacePath);
                             } else if (state?.filePath) {
                                 projectName = basename(state.filePath);
                             }
@@ -529,8 +555,11 @@ export async function createApplicationMenu() {
                                 electronId: focused.id
                             });
 
-                            // TODO: Add warning dialog if AI/agent is running
-                            focused.close();
+                            if (state?.mode === 'workspace' && getMultiProjectMode()) {
+                                focused.webContents.send(CLOSE_ACTIVE_PROJECT_TAB_CHANNEL);
+                            } else {
+                                focused.close();
+                            }
                         } else {
                             console.error('[Close Project] No focused window found or window is destroyed');
                         }

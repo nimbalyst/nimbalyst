@@ -580,6 +580,27 @@ describe('DocumentModel', () => {
       expect(save1).toHaveBeenCalledTimes(1);
       expect(save2).not.toHaveBeenCalled();
     });
+
+    it('waits for an asynchronous editor save to finish', async () => {
+      const handle = model.attach();
+      let finishSave: (() => void) | undefined;
+      const save = vi.fn(() => new Promise<void>((resolve) => {
+        finishSave = resolve;
+      }));
+      handle.onSaveRequested(save);
+      handle.setDirty(true);
+      let flushFinished = false;
+
+      const flush = model.flushDirtyEditors().then(() => {
+        flushFinished = true;
+      });
+      await Promise.resolve();
+      expect(flushFinished).toBe(false);
+
+      finishSave?.();
+      await flush;
+      expect(flushFinished).toBe(true);
+    });
   });
 
   describe('getState', () => {

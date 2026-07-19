@@ -1,94 +1,127 @@
 .project-rail {
-  width: 56px;
-  height: 100%;
+  width: 100%;
+  height: 40px;
   flex-shrink: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  padding: 12px 0 8px;
-  gap: 8px;
-  background-color: var(--nim-bg-secondary, #1a1a1a);
-  border-right: 1px solid var(--nim-border, rgba(255, 255, 255, 0.06));
-  overflow-y: auto;
-  overflow-x: hidden;
+  padding: 4px 8px;
+  gap: 6px;
+  background-color: var(--nim-bg-secondary);
+  border-bottom: 1px solid var(--nim-border);
+  overflow: hidden;
   -webkit-app-region: no-drag;
 }
 
+.project-rail-tabs {
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  border-radius: 6px;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.project-rail-tabs.is-drop-target {
+  background-color: color-mix(in srgb, var(--nim-primary) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nim-primary) 65%, transparent);
+}
+
+.project-rail-tabs::-webkit-scrollbar {
+  display: none;
+}
+
 .project-rail-item {
-  /*
-   * --rail-item-accent is set inline per project (see ProjectRail.tsx:
-   * style={{ '--rail-item-accent': accentColor }}). It comes from
-   * generateWorkspaceAccentColor(path) so the rail icon shares its color
-   * with the workspace summary header bar. Falls back to --nim-primary so
-   * the rail still looks correct if the inline variable is ever missing.
-   */
+  --rail-item-accent: var(--nim-primary);
   position: relative;
-  width: 40px;
-  height: 40px;
+  min-width: 132px;
+  max-width: 220px;
+  height: 32px;
+  flex: 0 1 190px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  border-radius: 6px 6px 0 0;
+  border-top: 2px solid transparent;
+  background-color: transparent;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.project-rail-item:hover {
+  background-color: var(--nim-bg-hover);
+}
+
+.project-rail-item.is-active {
+  background-color: var(--nim-bg);
+  border-top-color: var(--rail-item-accent);
+}
+
+.project-rail-item.is-dragging {
+  opacity: 0.55;
 }
 
 .project-rail-item-main {
-  position: relative;
+  min-width: 0;
   width: 100%;
   height: 100%;
-  border-radius: 50%;
   display: flex;
   align-items: center;
-  justify-content: center;
-  background-color: var(--nim-bg-tertiary, #2a2a2a);
-  color: var(--rail-item-accent, var(--nim-primary, #3b82f6));
-  font-size: 14px;
-  font-weight: 600;
+  gap: 7px;
+  padding: 0 30px 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--nim-text-muted);
   cursor: pointer;
-  user-select: none;
-  border: 1.5px solid transparent;
-  padding: 0;
-  transition: border-radius 150ms ease, background-color 150ms ease,
-    border-color 150ms ease, color 150ms ease, transform 150ms ease;
-}
-
-.project-rail-item-main:hover {
-  border-radius: 14px;
-  background-color: var(--rail-item-accent, var(--nim-primary, #3b82f6));
-  color: #ffffff;
+  text-align: left;
 }
 
 .project-rail-item.is-active .project-rail-item-main {
-  border-radius: 14px;
-  background-color: var(--rail-item-accent, var(--nim-primary, #3b82f6));
-  color: #ffffff;
-  border-color: transparent;
+  color: var(--nim-text);
 }
 
-.project-rail-item.is-active::before {
-  content: '';
-  position: absolute;
-  left: -10px;
-  top: 8px;
-  bottom: 8px;
-  width: 4px;
-  border-radius: 0 4px 4px 0;
-  background-color: var(--rail-item-accent, var(--nim-text, #111827));
+.project-rail-item-icon {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: color-mix(in srgb, var(--rail-item-accent) 16%, transparent);
+  color: var(--rail-item-accent);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.project-rail-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .project-rail-item-badge {
   position: absolute;
-  bottom: -2px;
-  right: -2px;
-  width: 16px;
-  height: 16px;
+  top: -4px;
+  right: -5px;
+  min-width: 14px;
+  height: 14px;
   box-sizing: border-box;
-  padding: 0;
-  border-radius: 50%;
-  background-color: var(--nim-primary, #3b82f6);
-  border: 2px solid var(--nim-bg-secondary, #1a1a1a);
-  font-size: 9px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background-color: var(--nim-primary);
+  border: 2px solid var(--nim-bg-secondary);
+  font-size: 8px;
   font-weight: 700;
   line-height: 1;
-  color: var(--nim-on-primary, #ffffff);
+  color: var(--nim-on-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -97,61 +130,54 @@
 
 .project-rail-item-close {
   position: absolute;
-  top: -4px;
-  right: -4px;
+  top: 6px;
+  right: 6px;
   width: 18px;
   height: 18px;
-  border-radius: 50%;
-  background-color: var(--nim-bg-secondary, #1a1a1a);
-  color: var(--nim-text, #111827);
-  border: 1px solid var(--nim-border, rgba(255, 255, 255, 0.12));
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text-muted);
+  border: 0;
   display: none;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1;
   cursor: pointer;
   padding: 0;
 }
 
-.project-rail-item:hover .project-rail-item-close {
+.project-rail-item:hover .project-rail-item-close,
+.project-rail-item.is-active .project-rail-item-close {
   display: flex;
 }
 
 .project-rail-item-close:hover {
-  background-color: var(--nim-error, #ef4444);
-  color: #ffffff;
-}
-
-.project-rail-divider {
-  width: 32px;
-  height: 1px;
-  background-color: var(--nim-border, rgba(255, 255, 255, 0.06));
-  margin: 4px 0;
+  background-color: var(--nim-error);
+  color: var(--nim-on-primary);
 }
 
 .project-rail-add {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 5px;
   display: flex;
   align-items: center;
   justify-content: center;
   background-color: transparent;
-  color: var(--nim-text-muted, #6b7280);
-  font-size: 22px;
+  color: var(--nim-text-muted);
+  font-size: 19px;
   line-height: 1;
   cursor: pointer;
-  border: 1px dashed var(--nim-border, rgba(255, 255, 255, 0.18));
+  border: 1px solid transparent;
   padding: 0;
-  transition: border-radius 150ms ease, background-color 150ms ease, color 150ms ease;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .project-rail-add:hover:not(:disabled) {
-  border-radius: 14px;
-  border-style: solid;
-  background-color: var(--nim-bg-tertiary, #2a2a2a);
-  color: var(--nim-text, #111827);
+  background-color: var(--nim-bg-hover);
+  color: var(--nim-text);
 }
 
 .project-rail-add:disabled {
@@ -162,11 +188,11 @@
 .project-rail-context-menu {
   position: fixed;
   min-width: 180px;
-  background-color: var(--nim-bg-secondary, #1a1a1a);
-  border: 1px solid var(--nim-border, rgba(255, 255, 255, 0.12));
+  background-color: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
   border-radius: 6px;
   padding: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--nim-text) 20%, transparent);
   z-index: 2000;
   display: flex;
   flex-direction: column;
@@ -178,20 +204,20 @@
   padding: 6px 12px;
   text-align: left;
   font-size: 13px;
-  color: var(--nim-text, #111827);
+  color: var(--nim-text);
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
 }
 
 .project-rail-context-menu-item:hover {
-  background-color: var(--nim-primary, #3b82f6);
-  color: var(--nim-on-primary, #ffffff);
+  background-color: var(--nim-primary);
+  color: var(--nim-on-primary);
 }
 
 .project-rail-context-menu-divider {
   height: 1px;
-  background-color: var(--nim-border, rgba(255, 255, 255, 0.08));
+  background-color: var(--nim-border);
   margin: 4px 6px;
 }
 
@@ -201,7 +227,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--nim-text-muted, #6b7280);
+  color: var(--nim-text-muted);
 }
 
 .project-rail-add-menu {
@@ -223,7 +249,7 @@
 
 .project-rail-context-menu-item-path {
   font-size: 11px;
-  color: var(--nim-text-muted, #6b7280);
+  color: var(--nim-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -231,43 +257,36 @@
 }
 
 .project-rail-context-menu-item-recent:hover .project-rail-context-menu-item-path {
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--nim-on-primary);
 }
 
-/*
- * Tooltip is rendered through @floating-ui/react's FloatingPortal
- * (see ProjectRail.tsx) so it escapes `.project-rail`'s `overflow: hidden`
- * clip. Position + visibility are owned by floating-ui — these rules cover
- * appearance only.
- */
 .project-rail-tooltip {
   padding: 6px 10px;
-  background-color: var(--nim-bg-tertiary, #2a2a2a);
-  color: var(--nim-text, #111827);
+  background-color: var(--nim-bg-tertiary);
+  color: var(--nim-text);
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   border-radius: 4px;
-  border: 1px solid var(--nim-border, rgba(255, 255, 255, 0.12));
+  border: 1px solid var(--nim-border);
   pointer-events: none;
   z-index: 1000;
   display: flex;
   flex-direction: column;
   gap: 2px;
   max-width: 320px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--nim-text) 18%, transparent);
 }
 
 .project-rail-tooltip-name {
   font-weight: 600;
-  color: var(--nim-text, #111827);
+  color: var(--nim-text);
 }
 
 .project-rail-tooltip-path {
   font-size: 11px;
   font-weight: 400;
-  color: var(--nim-text-muted, #6b7280);
+  color: var(--nim-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
 }
-

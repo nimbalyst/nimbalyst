@@ -1088,7 +1088,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
 
         const currentContent = getContentFnRef.current();
         logger.ui.info(`[TabEditor] DocumentModel autosave: ${fileName}`);
-        saveWithHistory(currentContent, 'auto').catch((err) => {
+        return saveWithHistory(currentContent, 'auto').catch((err) => {
           logger.ui.error(`[TabEditor] DocumentModel autosave failed for ${filePath}:`, err);
         });
       }),

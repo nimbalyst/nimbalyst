@@ -129,7 +129,7 @@ export interface DocumentModelEditorHandle {
    * Subscribe to save requests from the DocumentModel's autosave timer.
    * The editor should serialize its content and call saveContent().
    */
-  onSaveRequested(callback: () => void): () => void;
+  onSaveRequested(callback: () => void | Promise<void>): () => void;
 
   /**
    * Subscribe to diff mode requests.

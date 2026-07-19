@@ -117,6 +117,7 @@ import { initCollabReplicaListeners } from './store/listeners/collabReplicaListe
 import { initNotificationListeners } from './store/listeners/notificationListeners';
 import { initExtensionPermissionListeners } from './store/listeners/extensionPermissionListeners';
 import { initPermissionListeners } from './store/listeners/permissionListeners';
+import { initProjectTabListeners } from './store/listeners/projectTabListeners';
 import { initSoundListeners } from './store/listeners/soundListeners';
 import { initStytchAuthListeners } from './store/listeners/stytchAuthListeners';
 import { initSyncListeners } from './store/listeners/syncListeners';
@@ -141,7 +142,7 @@ import { organizationDirectoryAtom, personalAccountsAtom } from './store/atoms/s
 import {
   activeWorkspacePathAtom,
   multiProjectModeAtom,
-  addOpenProjectAtom as addOpenProjectAction,
+  seedInitialOpenProjectAtom as seedInitialOpenProjectAction,
 } from './store/atoms/openProjects';
 import { registerDocumentLinkPlugin } from './plugins/registerDocumentLinkPlugin';
 import { registerTrackerLinkPlugin } from './plugins/registerTrackerLinkPlugin';
@@ -306,7 +307,7 @@ export default function App() {
     // Multi-project rail state — fire-and-forget so legacy single-project
     // startup is not blocked by IPC. The rail consumers re-render when the
     // atoms hydrate.
-    initOpenProjects();
+    const openProjectsReady = initOpenProjects();
     initWorkspaceStatePruner();
 
     // Extension-contributed agent provider ids are registered with
@@ -328,6 +329,7 @@ export default function App() {
     const cleanupNotification = initNotificationListeners();
     const cleanupExtensionPermission = initExtensionPermissionListeners();
     const cleanupPermission = initPermissionListeners();
+    const cleanupProjectTabs = initProjectTabListeners(openProjectsReady);
     const cleanupSound = initSoundListeners();
     const cleanupStytchAuth = initStytchAuthListeners();
     const cleanupSync = initSyncListeners();
@@ -358,6 +360,7 @@ export default function App() {
       cleanupNotification?.();
       cleanupExtensionPermission?.();
       cleanupPermission?.();
+      cleanupProjectTabs?.();
       cleanupSound?.();
       cleanupStytchAuth?.();
       cleanupSync?.();
@@ -484,7 +487,7 @@ export default function App() {
   // (which is wired to that state) re-renders for the new project.
   const isMultiProjectMode = useAtomValue(multiProjectModeAtom);
   const railActivePath = useAtomValue(activeWorkspacePathAtom);
-  const addOpenProject = useSetAtom(addOpenProjectAction);
+  const seedInitialOpenProject = useSetAtom(seedInitialOpenProjectAction);
   const setRailActivePath = useSetAtom(activeWorkspacePathAtom);
   // NOTE: fileTree, sidebarWidth, isNewFileDialogOpen, newFileDirectory, isHistoryDialogOpen moved to EditorMode
   // NOTE: Navigation dialogs (QuickOpen, SessionQuickOpen, PromptQuickOpen, ProjectQuickOpen) are now managed by DialogProvider
@@ -1730,7 +1733,7 @@ export default function App() {
               // Seed the multi-project rail: this window's primary
               // workspace is always represented in the rail (visible only
               // when multiProjectMode is on, hidden otherwise).
-              addOpenProject({
+              seedInitialOpenProject({
                 path: initialState.workspacePath,
                 name: initialState.workspaceName ?? initialState.workspacePath,
                 openedAt: Date.now(),
@@ -1746,7 +1749,7 @@ export default function App() {
     };
 
     loadInitialState();
-  }, [addOpenProject]);
+  }, [seedInitialOpenProject]);
 
   // Multi-project rail switch: when the rail's active path changes, mirror
   // it into the legacy `workspacePath` useState so the rest of the App
@@ -2097,11 +2100,11 @@ export default function App() {
     />
     <WalkthroughProvider currentMode={activeMode}>
     <TipProvider currentMode={activeMode} workspacePath={workspacePath || undefined}>
-    <div data-layout="root-container" className="h-screen flex flex-row">
-      {/* Far-left: project rail (Discord-style) — visible only when
-          multi-project mode is enabled in settings. */}
+    <div data-layout="root-container" className="h-screen flex flex-col">
+      {/* Project tabs sit directly below the native File/Edit menu. */}
       <ProjectRail />
-      {/* Left: Navigation Gutter - full height */}
+      <div data-layout="workspace-shell" className="flex-1 min-h-0 flex flex-row overflow-hidden">
+      {/* Left: Navigation Gutter - remaining workspace height */}
       <NavigationGutter
         contentMode={activeMode}
         onContentModeChange={setActiveMode}
@@ -2415,6 +2418,7 @@ export default function App() {
           }
           return null;
         })()}
+      </div>
       </div>
 
       {/* Navigation dialogs (QuickOpen, SessionQuickOpen, PromptQuickOpen, ProjectQuickOpen) */}

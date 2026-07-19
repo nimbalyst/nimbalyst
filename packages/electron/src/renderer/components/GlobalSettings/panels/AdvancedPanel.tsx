@@ -624,9 +624,9 @@ export function AdvancedPanel() {
 }
 
 /**
- * Toggle for the multi-project rail. When the user disables it with
- * inactive warm projects in the rail, those projects' main-process
- * services are released and the rail collapses to just the active
+ * Toggle for project tabs. When the user disables it with inactive warm
+ * projects, those projects' main-process services are released and the
+ * tab strip collapses to just the active
  * project so state stays consistent.
  */
 function MultiProjectModeToggle() {
@@ -637,7 +637,7 @@ function MultiProjectModeToggle() {
   const handleChange = async (next: boolean) => {
     if (!next && openProjects.length > 1) {
       const proceed = window.confirm(
-        `${openProjects.length} projects are open in the rail. Disable multi-project mode? The other projects will be closed (their unsaved work stays on disk).`
+        `${openProjects.length} project tabs are open. Disable project tabs? The other projects will be closed (their unsaved work stays on disk).`
       );
       if (!proceed) return;
 
@@ -666,16 +666,16 @@ function MultiProjectModeToggle() {
     <SettingsToggle
       checked={enabled}
       onChange={handleChange}
-      name="Multi-project Mode"
-      description="Open multiple projects in a single window via a project rail. When off, each project opens in its own window."
+      name="Open projects in tabs"
+      description="Open projects as tabs across the top of the current window. Drag a tab out or use its context menu to open it in a separate window."
     />
   );
 }
 
 /**
- * Toggle for re-opening last session's rail projects on launch. Default
+ * Toggle for re-opening last session's project tabs on launch. Default
  * off so a normal launch from the project picker opens just the picked
- * project; warm rail projects must be added explicitly via the rail's
+ * project; warm tabs must be added explicitly via the tab strip's
  * `+` button.
  */
 function RestorePreviousProjectsToggle() {
@@ -689,8 +689,8 @@ function RestorePreviousProjectsToggle() {
       name="Restore last session's projects on launch"
       description={
         isMultiProject
-          ? 'When on, the project rail rehydrates with every project that was open at last close. When off, only the project you pick from the launch screen opens.'
-          : 'Only takes effect when Multi-project Mode is enabled.'
+          ? 'When on, the project tabs restore every project that was open at last close. When off, only the project you pick from the launch screen opens.'
+          : 'Only takes effect when project tabs are enabled.'
       }
     />
   );

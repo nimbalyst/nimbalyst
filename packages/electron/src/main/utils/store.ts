@@ -227,8 +227,8 @@ interface AppStoreSchema {
   usageIndicatorsMigratedToGutter?: boolean;
   // Extension marketplace install tracking
   marketplaceInstalls?: Record<string, MarketplaceInstallRecord>;
-  // Multi-project rail: opt-in flag to host multiple projects in a single
-  // window. When false (default), each project still gets its own window.
+  // Project tabs: host multiple projects in one window by default. Users can
+  // disable this to retain the legacy one-window-per-project behavior.
   multiProjectMode?: boolean;
   // Workspace paths currently warm in the multi-project rail, in display
   // order. Empty when multiProjectMode is off or before the user adds any.
@@ -2486,13 +2486,13 @@ export function updateMarketplaceInstall(extensionId: string, updates: Partial<M
   }
 }
 
-// Multi-Project Rail Settings
-// `multiProjectMode` is the opt-in toggle that lets users open several
-// projects in a single window via the project rail. The `openProjects` list
-// and `activeProjectPath` are restored on launch so the rail rehydrates.
+// Project Tab Settings
+// `multiProjectMode` keeps projects in tabs within the current window by
+// default. Users can disable it to retain one window per project. The
+// `openProjects` list and `activeProjectPath` are restored on launch.
 
 export function getMultiProjectMode(): boolean {
-  return getAppStore().get('multiProjectMode', false);
+  return getAppStore().get('multiProjectMode', true);
 }
 
 export function setMultiProjectMode(enabled: boolean): void {

@@ -1,3 +1,5 @@
+import type { ProjectTabMutation } from '../shared/projectTabs';
+
 export interface TabState {
     id: string;                  // Unique tab identifier
     filePath: string;            // Full file path
@@ -38,6 +40,14 @@ export interface WindowState {
      * and document caches stay alive even when the project is hidden.
      */
     additionalWorkspacePaths?: string[];
+    /**
+     * Main-to-renderer tab-open requests waiting to be consumed. This closes
+     * the small startup/reload race where a live IPC event can arrive before
+     * React installs its listener.
+     */
+    pendingProjectTabPaths?: string[];
+    /** Durable cross-window tab mutations awaiting renderer acknowledgement. */
+    pendingProjectTabMutations?: ProjectTabMutation[];
     documentEdited: boolean;
 
     // Tab management (optional for backward compatibility)
@@ -59,6 +69,10 @@ export interface SessionWindow {
     mode: 'document' | 'workspace' | 'agentic-coding';
     filePath?: string;
     workspacePath?: string;
+    /** Ordered project tabs belonging to this specific window. */
+    openProjectPaths?: string[];
+    /** Project tab that was visible when the session was saved. */
+    activeWorkspacePath?: string | null;
     bounds: {
         x: number;
         y: number;

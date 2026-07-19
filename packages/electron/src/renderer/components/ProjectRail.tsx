@@ -1,7 +1,7 @@
 /**
- * ProjectRail
+ * ProjectTabs
  *
- * Discord-style vertical rail of warm projects. Click an icon to switch
+ * Horizontal tab strip of warm projects. Click a tab to switch
  * the visible project; the inactive projects' state is kept warm via
  * per-workspace atom families and main-process service refcounting.
  *
@@ -22,22 +22,37 @@ import {
   shift,
   type VirtualElement,
 } from '@floating-ui/react';
-import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { useAtom, useAtomValue } from 'jotai';
 import { OrgSwitcher } from './OrgSwitcher';
 import {
   multiProjectModeAtom,
   openProjectsAtom,
   activeWorkspacePathAtom,
   isOpenProjectsAtCapAtom,
-  addOpenProjectAtom,
-  closeOpenProjectAtom,
   type OpenProject,
 } from '../store/atoms/openProjects';
-import {
-  globalSessionActivityAtom,
-  projectActivitySummaryAtom,
-} from '../store/atoms/sessionActivity';
+import { projectActivitySummaryAtom } from '../store/atoms/sessionActivity';
 import { generateWorkspaceAccentColor } from './WorkspaceSummaryHeader';
+import { errorNotificationService } from '../services/ErrorNotificationService';
+import { flushTabsSlot, getTabsSlotTransferBlocker, persistTabsSlot } from '../contexts/TabsContext';
+import {
+  closeProjectTab,
+  detachProjectTab,
+  moveProjectTabToCurrentWindow,
+  openProjectTab,
+} from '../services/projectTabs';
+import {
+  hasProjectTabDragType,
+  parseProjectTabDragPayload,
+  serializeProjectTabDragPayload,
+  shouldDetachProjectTabAfterDrag,
+  waitForProjectTabPreparation,
+} from './projectTabDrag';
+import {
+  PROJECT_TAB_DRAG_MIME,
+  type ProjectTabDragPayload,
+  type ProjectTabDragRegistration,
+} from '../../shared/projectTabs';
 import './ProjectRail.css';
 
 const REVEAL_LABEL = (() => {
@@ -63,7 +78,9 @@ interface ProjectRailIconProps {
   processingCount: number;
   unreadCount: number;
   onActivate: (path: string) => void;
+  onNavigate: (project: OpenProject, key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End') => void;
   onClose: (project: OpenProject) => void;
+  onDetach: (project: OpenProject, screenX: number, screenY: number) => void;
   onContextMenu: (project: OpenProject, x: number, y: number) => void;
 }
 
@@ -73,9 +90,13 @@ function ProjectRailIcon({
   processingCount,
   unreadCount,
   onActivate,
+  onNavigate,
   onClose,
+  onDetach,
   onContextMenu,
 }: ProjectRailIconProps) {
+  const dragIdRef = React.useRef<string | null>(null);
+  const dragPreparationRef = React.useRef<Promise<{ success: boolean; error?: string }> | null>(null);
   // Hover tooltip via floating-ui. Renders through FloatingPortal so the
   // tooltip escapes the rail container's `overflow: hidden` clip — the
   // earlier CSS-only `:hover > .project-rail-tooltip` approach was clipped
@@ -84,7 +105,7 @@ function ProjectRailIcon({
   const { refs: tooltipRefs, floatingStyles: tooltipFloatingStyles, context: tooltipContext } = useFloating({
     open: tooltipOpen,
     onOpenChange: setTooltipOpen,
-    placement: 'right',
+    placement: 'bottom',
     middleware: [offset(12), flip({ padding: 8 }), shift({ padding: 8 })],
   });
   const tooltipHover = useHover(tooltipContext, { delay: { open: 200, close: 0 }, move: false });
@@ -112,6 +133,106 @@ function ProjectRailIcon({
     [onContextMenu, project]
   );
 
+  const handleDragStart = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    const dragId = globalThis.crypto?.randomUUID?.()
+      ?? `project-tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const payload: ProjectTabDragPayload = {
+      version: 1,
+      dragId,
+    };
+    const registration: ProjectTabDragRegistration = { ...payload, workspacePath: project.path };
+    dragIdRef.current = dragId;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData(PROJECT_TAB_DRAG_MIME, serializeProjectTabDragPayload(payload));
+    window.electronAPI?.send?.('workspace:begin-project-tab-drag', registration);
+    dragPreparationRef.current = (async () => {
+      try {
+        // Moving removes this renderer's workspace slot. Flush buffers and
+        // persist its file-tab layout before main commits the handoff so the
+        // destination can restore it without losing unsaved work.
+        await flushTabsSlot(project.path);
+        const transferBlocker = getTabsSlotTransferBlocker(project.path);
+        if (transferBlocker) throw new Error(transferBlocker);
+        await persistTabsSlot(project.path);
+        window.electronAPI?.send?.('workspace:project-tab-drag-ready', { dragId });
+        return { success: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        window.electronAPI?.send?.('workspace:project-tab-drag-ready', { dragId, error: message });
+        return { success: false, error: message };
+      }
+    })();
+    event.currentTarget.classList.add('is-dragging');
+  }, [project.path]);
+
+  const handleDragEnd = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.currentTarget.classList.remove('is-dragging');
+    const dragId = dragIdRef.current;
+    const preparation = dragPreparationRef.current;
+    dragIdRef.current = null;
+    dragPreparationRef.current = null;
+
+    // A project rail accepted this drop. Main owns the move transaction and
+    // will publish mutations to both renderers, so the source must not also
+    // run its tear-out path and create a third window.
+    if (event.dataTransfer.dropEffect === 'move') return;
+
+    const strip = event.currentTarget.closest('.project-rail')?.getBoundingClientRect();
+    if (!strip) {
+      if (dragId) window.electronAPI?.send?.('workspace:end-project-tab-drag', { dragId });
+      return;
+    }
+
+    const shouldDetach = shouldDetachProjectTabAfterDrag({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      dropEffect: event.dataTransfer.dropEffect,
+    }, strip);
+    if (!shouldDetach) {
+      if (dragId) window.electronAPI?.send?.('workspace:end-project-tab-drag', { dragId });
+      return;
+    }
+
+    const { screenX, screenY } = event;
+    void (async () => {
+      // A Linux dragend can occasionally report dropEffect=none even though
+      // another BrowserWindow accepted the drop. Give that atomic move a
+      // brief chance to settle before creating a detached window.
+      let result: { handled?: boolean; moved?: boolean } | null = null;
+      try {
+        result = dragId
+          ? await window.electronAPI?.invoke?.('workspace:wait-project-tab-drag-result', { dragId })
+          : null;
+      } catch (error) {
+        console.error('[ProjectTabs] failed to resolve project-tab drag:', error);
+      }
+      if (result?.handled || result?.moved) return;
+
+      const prepared = await waitForProjectTabPreparation(preparation);
+      if (prepared && !prepared.success) {
+        errorNotificationService.showWarning(
+          'Project tab was not moved',
+          prepared.error || 'The project could not be saved before moving.',
+          { duration: 8000 },
+        );
+        return;
+      }
+      onDetach(project, screenX, screenY);
+    })();
+  }, [onDetach, project]);
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (
+      event.key === 'ArrowLeft'
+      || event.key === 'ArrowRight'
+      || event.key === 'Home'
+      || event.key === 'End'
+    ) {
+      event.preventDefault();
+      onNavigate(project, event.key);
+    }
+  }, [onNavigate, project]);
+
   const className = isActive ? 'project-rail-item is-active' : 'project-rail-item';
 
   // Per-project accent color, derived deterministically from the workspace
@@ -133,6 +254,9 @@ function ProjectRailIcon({
       ref={tooltipRefs.setReference}
       className={className}
       onContextMenu={handleContextMenu}
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
       data-testid="project-rail-item"
       data-project-path={project.path}
       style={{ ['--rail-item-accent' as any]: accentColor }}
@@ -142,10 +266,16 @@ function ProjectRailIcon({
         type="button"
         className="project-rail-item-main"
         onClick={handleClick}
+        onKeyDown={handleKeyDown}
+        role="tab"
         aria-label={`Switch to project ${project.name}`}
-        aria-current={isActive ? 'true' : undefined}
+        aria-selected={isActive}
+        tabIndex={isActive ? 0 : -1}
       >
-        {projectInitials(project.name)}
+        <span className="project-rail-item-icon" aria-hidden="true">
+          {projectInitials(project.name)}
+        </span>
+        <span className="project-rail-item-name">{project.name}</span>
         {showBadge && (
           <span
             className="project-rail-item-badge"
@@ -185,10 +315,8 @@ export function ProjectRail() {
   const openProjects = useAtomValue(openProjectsAtom);
   const [activePath, setActivePath] = useAtom(activeWorkspacePathAtom);
   const atCap = useAtomValue(isOpenProjectsAtCapAtom);
-  const addProject = useSetAtom(addOpenProjectAtom);
-  const closeProject = useSetAtom(closeOpenProjectAtom);
-  const activity = useAtomValue(globalSessionActivityAtom);
   const activitySummary = useAtomValue(projectActivitySummaryAtom);
+  const [isProjectTabDropTarget, setIsProjectTabDropTarget] = useState(false);
 
   const handleActivate = useCallback(
     (path: string) => {
@@ -201,27 +329,35 @@ export function ProjectRail() {
     [activePath, setActivePath]
   );
 
-  const addProjectByPath = useCallback(async (workspacePath: string) => {
-    if (!window.electronAPI?.invoke) return;
-    try {
-      const reg = await window.electronAPI.invoke('workspace:register-additional', { workspacePath });
-      if (!reg?.success) {
-        console.error('[ProjectRail] register-additional failed:', reg?.error);
-        return;
-      }
+  const handleNavigate = useCallback((
+    project: OpenProject,
+    key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End',
+  ) => {
+    const index = openProjects.findIndex((entry) => entry.path === project.path);
+    if (index < 0 || openProjects.length === 0) return;
 
-      const project: OpenProject = {
-        path: workspacePath,
-        name: workspacePath.split(/[\\/]/).filter(Boolean).pop() || workspacePath,
-        openedAt: Date.now(),
-      };
-      // `addOpenProjectAtom` flips `activeWorkspacePathAtom` to this path;
-      // the atom subscriber dispatches `workspace:set-active` to main.
-      addProject(project);
-    } catch (err) {
-      console.error('[ProjectRail] addProjectByPath failed:', err);
+    let targetIndex = index;
+    if (key === 'ArrowLeft') targetIndex = (index - 1 + openProjects.length) % openProjects.length;
+    if (key === 'ArrowRight') targetIndex = (index + 1) % openProjects.length;
+    if (key === 'Home') targetIndex = 0;
+    if (key === 'End') targetIndex = openProjects.length - 1;
+
+    const target = openProjects[targetIndex];
+    handleActivate(target.path);
+    requestAnimationFrame(() => {
+      const item = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid="project-rail-item"]'),
+      ).find((element) => element.dataset.projectPath === target.path);
+      item?.querySelector<HTMLButtonElement>('[role="tab"]')?.focus();
+    });
+  }, [handleActivate, openProjects]);
+
+  const addProjectByPath = useCallback(async (workspacePath: string) => {
+    const result = await openProjectTab(workspacePath);
+    if (!result.success) {
+      console.error('[ProjectTabs] addProjectByPath failed:', result.error);
     }
-  }, [addProject]);
+  }, []);
 
   const handlePickFolder = useCallback(async () => {
     if (!window.electronAPI?.invoke) return;
@@ -251,7 +387,7 @@ export function ProjectRail() {
 
   const handleOpenAddMenu = useCallback(() => {
     if (atCap) {
-      window.alert('You can have at most 8 projects open in the rail. Close one first or open in a new window.');
+      window.alert('You can have at most 8 project tabs open. Close one first or open it in a new window.');
       return;
     }
     refreshRecents();
@@ -260,42 +396,53 @@ export function ProjectRail() {
 
   const handleClose = useCallback(
     async (project: OpenProject) => {
-      // Warn if there are streaming sessions for this project. Read from the
-      // cross-workspace activity tracker (kept in sync by sessionStateListeners
-      // for every warm rail project) instead of `sessionRegistryAtom`, which
-      // only carries the active project's sessions and would silently skip
-      // the prompt when closing an inactive rail project.
-      const streaming = activity.get(project.path)?.streaming.size ?? 0;
-      if (streaming > 0) {
-        const proceed = window.confirm(
-          `${project.name} has ${streaming} streaming session${streaming === 1 ? '' : 's'}. Close anyway? Sessions will be paused.`
-        );
-        if (!proceed) return;
-      }
-
-      const wasLast = openProjects.length <= 1;
-
-      closeProject(project.path);
-
-      try {
-        await window.electronAPI?.invoke?.('workspace:unregister-additional', { workspacePath: project.path });
-      } catch (err) {
-        console.error('[ProjectRail] unregister-additional failed:', err);
-      }
-
-      // Closing the last project leaves nothing to render in this window.
-      // Ask the host to close the window so the app can fall back to its
-      // initial project-selection flow.
-      if (wasLast) {
-        try {
-          await window.electronAPI?.invoke?.('workspace:close-rail-window');
-        } catch (err) {
-          console.error('[ProjectRail] close-rail-window failed:', err);
-        }
+      const result = await closeProjectTab(project.path);
+      if (!result.success && result.error !== 'cancelled') {
+        console.error('[ProjectTabs] close failed:', result.error);
       }
     },
-    [closeProject, activity, openProjects.length]
+    []
   );
+
+  const handleDetach = useCallback(async (project: OpenProject, screenX: number, screenY: number) => {
+    const result = await detachProjectTab(project.path, { screenX, screenY });
+    if (!result.success) console.error('[ProjectTabs] detach failed:', result.error);
+  }, []);
+
+  const handleProjectTabDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasProjectTabDragType(event.dataTransfer.types)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+    setIsProjectTabDropTarget(true);
+  }, []);
+
+  const handleProjectTabDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+    setIsProjectTabDropTarget(false);
+  }, []);
+
+  const handleProjectTabDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasProjectTabDragType(event.dataTransfer.types)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+    setIsProjectTabDropTarget(false);
+
+    // DataTransfer contents must be read synchronously during the drop event.
+    const payload = parseProjectTabDragPayload(event.dataTransfer.getData(PROJECT_TAB_DRAG_MIME));
+    if (!payload) return;
+    void moveProjectTabToCurrentWindow(payload).then((result) => {
+      if (!result.success) {
+        errorNotificationService.showWarning(
+          'Project tab was not moved',
+          result.error || 'The destination window could not accept this project.',
+          { duration: 8000 },
+        );
+      }
+    });
+  }, []);
 
   // Right-click context menu state. Anchored to a virtual reference at the
   // cursor position so it works for any rail icon without per-icon refs.
@@ -315,7 +462,7 @@ export function ProjectRail() {
   } = useFloating({
     open: addMenuOpen,
     onOpenChange: setAddMenuOpen,
-    placement: 'right-end',
+    placement: 'bottom-end',
     middleware: [offset(8), flip(), shift({ padding: 8 })],
   });
   const addDismiss = useDismiss(addContext);
@@ -333,7 +480,7 @@ export function ProjectRail() {
   } = useFloating({
     open: addTooltipOpen,
     onOpenChange: setAddTooltipOpen,
-    placement: 'right',
+    placement: 'bottom',
     middleware: [offset(12), flip({ padding: 8 }), shift({ padding: 8 })],
   });
   const addTooltipHover = useHover(addTooltipContext, { delay: { open: 200, close: 0 }, move: false });
@@ -358,7 +505,7 @@ export function ProjectRail() {
     onOpenChange: (open) => {
       if (!open) closeMenu();
     },
-    placement: 'right-start',
+    placement: 'bottom-start',
     middleware: [offset(4), flip(), shift({ padding: 8 })],
   });
 
@@ -385,7 +532,11 @@ export function ProjectRail() {
   const handleOpenInNewWindow = useCallback(async (project: OpenProject) => {
     closeMenu();
     try {
-      await window.electronAPI?.invoke?.('workspace-manager:open-workspace', project.path);
+      await window.electronAPI?.invoke?.(
+        'workspace-manager:open-workspace',
+        project.path,
+        { forceNewWindow: true },
+      );
     } catch (err) {
       console.error('[ProjectRail] open-workspace failed:', err);
     }
@@ -403,25 +554,36 @@ export function ProjectRail() {
   if (!isMultiProjectMode) return null;
 
   return (
-    <nav className="project-rail" data-testid="project-rail" aria-label="Open projects">
-      {/* Epic H1: org switcher sits above the project switcher. */}
+    <nav className="project-rail" data-testid="project-rail" aria-label="Open project tabs">
+      {/* Org switcher leads the project tabs when team organizations exist. */}
       <OrgSwitcher />
-      {openProjects.map((project) => {
-        const activity = activitySummary.get(project.path);
-        return (
-          <ProjectRailIcon
-            key={project.path}
-            project={project}
-            isActive={project.path === activePath}
-            processingCount={activity?.processing ?? 0}
-            unreadCount={activity?.unread ?? 0}
-            onActivate={handleActivate}
-            onClose={handleClose}
-            onContextMenu={handleContextMenu}
-          />
-        );
-      })}
-      {openProjects.length > 0 && <div className="project-rail-divider" aria-hidden="true" />}
+      <div
+        className={isProjectTabDropTarget ? 'project-rail-tabs is-drop-target' : 'project-rail-tabs'}
+        role="tablist"
+        aria-label="Projects"
+        onDragEnter={handleProjectTabDragOver}
+        onDragOver={handleProjectTabDragOver}
+        onDragLeave={handleProjectTabDragLeave}
+        onDrop={handleProjectTabDrop}
+      >
+        {openProjects.map((project) => {
+          const activity = activitySummary.get(project.path);
+          return (
+            <ProjectRailIcon
+              key={project.path}
+              project={project}
+              isActive={project.path === activePath}
+              processingCount={activity?.processing ?? 0}
+              unreadCount={activity?.unread ?? 0}
+              onActivate={handleActivate}
+              onNavigate={handleNavigate}
+              onClose={handleClose}
+              onDetach={handleDetach}
+              onContextMenu={handleContextMenu}
+            />
+          );
+        })}
+      </div>
       <button
         ref={addButtonRef}
         type="button"
@@ -429,7 +591,7 @@ export function ProjectRail() {
         onClick={handleOpenAddMenu}
         disabled={atCap}
         data-testid="project-rail-add"
-        aria-label="Add project to rail"
+        aria-label="Open project tab"
         {...getAddTooltipRefProps()}
       >
         +
@@ -442,7 +604,7 @@ export function ProjectRail() {
             style={addTooltipFloatingStyles}
             {...getAddTooltipFloatingProps()}
           >
-            {atCap ? 'Rail full (8 projects max)' : 'Add project'}
+            {atCap ? 'Tab strip full (8 projects max)' : 'Open project tab'}
           </div>
         </FloatingPortal>
       )}

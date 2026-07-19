@@ -1,9 +1,9 @@
 /**
  * Open Projects state
  *
- * Tracks the list of workspace projects warm in the multi-project rail and
- * which one is currently visible. The rail is opt-in: when
- * `multiProjectModeAtom` is `false`, the rail stays hidden and the host
+ * Tracks the list of workspace projects warm in the project tab strip and
+ * which one is currently visible. Tabs are enabled by default; when
+ * `multiProjectModeAtom` is `false`, the strip stays hidden and the host
  * window keeps the legacy "one project per window" behavior.
  *
  * `activeWorkspacePathAtom` is the single source of truth for the path
@@ -18,6 +18,7 @@ import { store } from '@nimbalyst/runtime/store';
 import { clearWorkspaceActivityAtom } from './sessionActivity';
 import { activeSessionIdAtom, selectedWorkstreamAtom } from './sessions';
 import { workstreamActiveChildAtom } from './workstreamState';
+import { MAX_OPEN_PROJECT_TABS } from '../../../shared/projectTabs';
 
 type JotaiStore = ReturnType<typeof createStore>;
 
@@ -44,8 +45,6 @@ interface ResolveInitialOpenProjectsInput {
   windowState: InitialWorkspaceWindowState | null;
 }
 
-const MAX_OPEN_PROJECTS = 8;
-
 /**
  * Path of the workspace currently visible in this window.
  *
@@ -57,25 +56,25 @@ const MAX_OPEN_PROJECTS = 8;
 export const activeWorkspacePathAtom = atom<string | null>(null);
 
 /**
- * Whether multi-project mode is enabled. When false, rail UI is hidden and
- * opening a new project spawns a fresh window (legacy behavior). When true,
- * opening a project adds it to the rail in the current window.
+ * Whether project tabs are enabled. When false, tab UI is hidden and opening
+ * a new project spawns a fresh window (legacy behavior). When true, opening a
+ * project adds it to the current window.
  *
  * Persisted via `app:set-multi-project-mode` IPC; seeded from store on
  * launch by an effect that reads `app:get-multi-project-mode`.
  */
-export const multiProjectModeAtom = atom<boolean>(false);
+export const multiProjectModeAtom = atom<boolean>(true);
 
 /**
- * When true, the rail rehydrates with the projects that were open at last
- * app close. When false (default), the rail starts with only the project
+ * When true, the tab strip rehydrates with the projects that were open at
+ * last app close. When false (default), it starts with only the project
  * the user picked from the launch screen; additional projects are added
  * explicitly via the `+` button.
  */
 export const restorePreviousProjectsAtom = atom<boolean>(false);
 
 /**
- * Ordered list of open projects in the rail. First entry is leftmost.
+ * Ordered list of open project tabs. First entry is leftmost.
  *
  * Capped at `MAX_OPEN_PROJECTS` to bound memory of warm projects.
  */
@@ -95,7 +94,7 @@ export const activeOpenProjectAtom = atom((get) => {
  * the "+" button and show a hint to close a project first.
  */
 export const isOpenProjectsAtCapAtom = atom((get) => {
-  return get(openProjectsAtom).length >= MAX_OPEN_PROJECTS;
+  return get(openProjectsAtom).length >= MAX_OPEN_PROJECT_TABS;
 });
 
 /**
@@ -116,13 +115,42 @@ export const addOpenProjectAtom = atom(
       return;
     }
 
-    if (current.length >= MAX_OPEN_PROJECTS) {
+    if (current.length >= MAX_OPEN_PROJECT_TABS) {
       return;
     }
 
     set(openProjectsAtom, [...current, project]);
     set(activeWorkspacePathAtom, project.path);
   }
+);
+
+/**
+ * Seed the BrowserWindow's primary project without overriding a tab selection
+ * that `initOpenProjects()` already restored. App startup and tab hydration
+ * are independent async paths, so this write must be safe in either order.
+ */
+export const seedInitialOpenProjectAtom = atom(
+  null,
+  (get, set, project: OpenProject) => {
+    const current = get(openProjectsAtom);
+    const activePath = get(activeWorkspacePathAtom);
+    const existing = current.find((entry) => entry.path === project.path);
+
+    if (existing) {
+      if (!activePath || !current.some((entry) => entry.path === activePath)) {
+        set(activeWorkspacePathAtom, existing.path);
+      }
+      return;
+    }
+
+    if (current.length >= MAX_OPEN_PROJECT_TABS) return;
+
+    const next = [...current, project];
+    set(openProjectsAtom, next);
+    if (!activePath || !next.some((entry) => entry.path === activePath)) {
+      set(activeWorkspacePathAtom, project.path);
+    }
+  },
 );
 
 /**
@@ -157,6 +185,17 @@ export const closeOpenProjectAtom = atom(
   }
 );
 
+/** Select the tab that should become active after `pathToClose` leaves. */
+export function getReplacementOpenProjectPath(
+  projects: OpenProject[],
+  pathToClose: string,
+): string | null {
+  const index = projects.findIndex((project) => project.path === pathToClose);
+  if (index === -1) return null;
+  const remaining = projects.filter((project) => project.path !== pathToClose);
+  return remaining[index]?.path ?? remaining[index - 1]?.path ?? remaining[0]?.path ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
@@ -177,7 +216,7 @@ function normalizeProjectPaths(paths: unknown): string[] {
     if (typeof path !== 'string' || path.length === 0 || seen.has(path)) continue;
     seen.add(path);
     normalized.push(path);
-    if (normalized.length >= MAX_OPEN_PROJECTS) break;
+    if (normalized.length >= MAX_OPEN_PROJECT_TABS) break;
   }
   return normalized;
 }
@@ -222,13 +261,11 @@ export function resolveInitialOpenProjectsState({
     windowState?.activeWorkspacePath && normalizedWindowPaths.includes(windowState.activeWorkspacePath)
       ? windowState.activeWorkspacePath
       : normalizedWindowPaths[0] ?? null;
-  const windowHasLiveRailState =
-    normalizedWindowPaths.length > 1 ||
-    (windowState?.workspacePath != null &&
-      normalizedWindowActivePath != null &&
-      normalizedWindowActivePath !== windowState.workspacePath);
-
-  if (windowHasLiveRailState) {
+  // Main-process window state is authoritative whenever present. Project
+  // tabs are persisted per BrowserWindow, so consulting the old app-global
+  // list here would make a detached one-tab window inherit another window's
+  // full tab set on reload.
+  if (normalizedWindowPaths.length > 0) {
     return {
       paths: normalizedWindowPaths,
       activePath: normalizedWindowActivePath,
@@ -251,7 +288,7 @@ export function resolveInitialOpenProjectsState({
   };
 }
 
-let initialized = false;
+let initializationPromise: Promise<void> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let unsubscribers: Array<() => void> = [];
 
@@ -264,10 +301,14 @@ let unsubscribers: Array<() => void> = [];
  *
  * Returns once the initial state has been loaded.
  */
-export async function initOpenProjects(): Promise<void> {
-  if (initialized) return;
-  initialized = true;
+export function initOpenProjects(): Promise<void> {
+  if (!initializationPromise) {
+    initializationPromise = initializeOpenProjects();
+  }
+  return initializationPromise;
+}
 
+async function initializeOpenProjects(): Promise<void> {
   if (!window.electronAPI?.invoke) return;
 
   try {
@@ -421,8 +462,9 @@ function schedulePersistActivePath(): void {
 }
 
 /**
- * Tear down persistence subscribers (e.g. for tests). Resets `initialized`
- * so the next `initOpenProjects` call re-loads from disk.
+ * Tear down persistence subscribers (e.g. for tests). Clears the cached
+ * initialization promise so the next `initOpenProjects` call re-loads from
+ * disk.
  */
 export function teardownOpenProjects(): void {
   unsubscribers.forEach((unsub) => unsub());
@@ -431,5 +473,5 @@ export function teardownOpenProjects(): void {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
-  initialized = false;
+  initializationPromise = null;
 }
