@@ -11,6 +11,7 @@ import { runTracker } from './commands/tracker.js';
 import { runStatus } from './commands/status.js';
 import { runWorkspace } from './commands/workspace.js';
 import { runSession, runDoc } from './commands/sessionDoc.js';
+import { runHostControlAdapter } from './commands/hostControlAdapter.js';
 
 export const VERSION = '0.1.0';
 
@@ -25,6 +26,7 @@ Nouns:
   doc         workspace documents (read-only in v1)
   workspace   list / show workspaces
   status      what nim is connected to (live or direct), schema, workspaces
+  host-control authenticated host-control adapter (one JSON object via stdin/stdout)
 
 Tracker (read):
   nim tracker list   [--type T] [--status open|closed|<s>] [--priority P]
@@ -60,7 +62,7 @@ Cross-cutting flags:
   --quiet, -q          ids only
   --no-color           disable ANSI color (also honors NO_COLOR)
 
-Exit codes: 0 ok · 1 not found · 2 usage · 3 connection · 4 schema · 5 write-not-permitted
+Exit codes: 0 ok · 1 not found · 2 usage · 3 connection · 4 schema · 5 write-not-permitted · 6 rejected
 `;
 
 export async function main(argv: string[]): Promise<number> {
@@ -95,6 +97,8 @@ export async function main(argv: string[]): Promise<number> {
         return await runSession(args);
       case 'doc':
         return await runDoc(args);
+      case 'host-control':
+        return await runHostControlAdapter(args);
       default:
         process.stderr.write(`nim: unknown command '${args.noun}'. Run 'nim --help'.\n`);
         return ExitCode.USAGE;

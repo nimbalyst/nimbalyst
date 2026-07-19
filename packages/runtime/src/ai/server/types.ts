@@ -719,7 +719,7 @@ export interface PermissionResponseContent {
   decision: 'allow' | 'deny';
   scope: 'once' | 'session' | 'always' | 'always-all';
   respondedAt: number;
-  respondedBy: 'desktop' | 'mobile';
+  respondedBy: 'desktop' | 'mobile' | 'telegram';
 }
 
 /**
@@ -747,7 +747,7 @@ export interface AskUserQuestionResponseContent {
   answers: Record<string, string>;
   cancelled?: boolean;          // True if user cancelled instead of answering
   respondedAt: number;
-  respondedBy: 'desktop' | 'mobile';
+  respondedBy: 'desktop' | 'mobile' | 'telegram';
 }
 
 /**

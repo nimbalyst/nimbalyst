@@ -33,7 +33,7 @@ export interface AskUserQuestionProvider {
     questionId: string,
     answers: Record<string, string>,
     sessionId?: string,
-    respondedBy?: 'desktop' | 'mobile'
+    respondedBy?: 'desktop' | 'mobile' | 'telegram'
   ): boolean;
 
   /**
@@ -42,7 +42,7 @@ export interface AskUserQuestionProvider {
   rejectAskUserQuestion(
     questionId: string,
     error: Error,
-    respondedBy?: 'desktop' | 'mobile'
+    respondedBy?: 'desktop' | 'mobile' | 'telegram'
   ): void;
 }
 
@@ -62,7 +62,7 @@ export interface ExitPlanModeConfirmationProvider {
     requestId: string,
     response: { approved: boolean; clearContext?: boolean; feedback?: string },
     sessionId?: string,
-    respondedBy?: 'desktop' | 'mobile'
+    respondedBy?: 'desktop' | 'mobile' | 'telegram'
   ): void;
 }
 
@@ -84,7 +84,7 @@ export interface ToolPermissionProvider {
     requestId: string,
     response: { decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' },
     sessionId?: string,
-    respondedBy?: 'desktop' | 'mobile'
+    respondedBy?: 'desktop' | 'mobile' | 'telegram'
   ): void;
 }
 

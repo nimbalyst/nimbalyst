@@ -215,10 +215,48 @@ describe('PGLiteToSQLiteMigrator', () => {
         status TEXT NOT NULL DEFAULT 'pending',
         attachments JSONB,
         document_context JSONB,
+        delivery_class TEXT NOT NULL DEFAULT 'ordinary'
+          CHECK (delivery_class IN ('ordinary', 'control')),
+        priority_rank INTEGER NOT NULL DEFAULT 0,
+        producer TEXT,
+        idempotency_key TEXT,
+        request_digest TEXT,
+        control_operation TEXT,
+        interrupt_target_generation TEXT,
+        interrupt_receipt JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         claimed_at TIMESTAMPTZ,
         completed_at TIMESTAMPTZ,
         error_message TEXT
+      );
+
+      CREATE TABLE host_control_receipts (
+        id TEXT PRIMARY KEY,
+        reservation_key TEXT NOT NULL UNIQUE,
+        request_digest TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        event_identity TEXT NOT NULL,
+        attention_generation TEXT,
+        state TEXT NOT NULL,
+        receipt JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE native_winner_outbox (
+        id TEXT PRIMARY KEY,
+        reservation_key TEXT NOT NULL UNIQUE,
+        session_id TEXT NOT NULL,
+        event_identity TEXT NOT NULL,
+        attention_generation TEXT,
+        state TEXT NOT NULL DEFAULT 'pending',
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        receipt JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_attempt_at TIMESTAMPTZ,
+        sent_at TIMESTAMPTZ
       );
 
       CREATE TABLE ai_session_wakeups (
@@ -408,9 +446,32 @@ describe('PGLiteToSQLiteMigrator', () => {
 
     // queued_prompts
     await pglite.query(
-      `INSERT INTO queued_prompts(id, session_id, prompt, status)
-       VALUES ($1, $2, $3, $4)`,
-      ['qp-1', 'sess-1', 'rerun the auth check', 'pending'],
+      `INSERT INTO queued_prompts(
+         id, session_id, prompt, status, delivery_class, priority_rank,
+         producer, idempotency_key, request_digest, control_operation,
+         interrupt_target_generation, interrupt_receipt)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)`,
+      [
+        'qp-1', 'sess-1', 'rerun the auth check', 'executing', 'control', 100,
+        'watcher_obligation_event', 'watcher:event-migrate', 'digest-migrate', 'terminal_observed',
+        'generation-7', JSON.stringify({ state: 'reserved', method: 'interrupt' }),
+      ],
+    );
+
+    await pglite.query(
+      `INSERT INTO host_control_receipts(
+         id, reservation_key, request_digest, operation, session_id,
+         event_identity, attention_generation, state, receipt)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
+      [
+        'hcr-1', 'attention-reply:watch-migrate', 'request-digest-migrate',
+        'inject_attention_reply', 'sess-1', 'prompt-migrate', 'generation-9',
+        'injected', JSON.stringify({
+          outcome: 'injected',
+          verified: true,
+          receipt: { route: 'host-attention-answer', event_cleared: true },
+        }),
+      ],
     );
 
     // ai_session_wakeups
@@ -484,6 +545,59 @@ describe('PGLiteToSQLiteMigrator', () => {
     expect(new Date(migratedRetry.next_attempt_at).toISOString()).toBe(
       '2026-07-15T05:00:00.000Z',
     );
+    const migratedQueuedPrompt = sqlite.getRawHandle()!
+      .prepare(`
+        SELECT delivery_class, priority_rank, producer, idempotency_key,
+               request_digest, control_operation, interrupt_target_generation, interrupt_receipt
+        FROM queued_prompts WHERE id = ?
+      `)
+      .get('qp-1') as {
+        delivery_class: string;
+        priority_rank: number;
+        producer: string;
+        idempotency_key: string;
+        request_digest: string;
+        control_operation: string;
+        interrupt_target_generation: string;
+        interrupt_receipt: string;
+      };
+    expect({
+      ...migratedQueuedPrompt,
+      interrupt_receipt: JSON.parse(migratedQueuedPrompt.interrupt_receipt),
+    }).toEqual({
+      delivery_class: 'control',
+      priority_rank: 100,
+      producer: 'watcher_obligation_event',
+      idempotency_key: 'watcher:event-migrate',
+      request_digest: 'digest-migrate',
+      control_operation: 'terminal_observed',
+      interrupt_target_generation: 'generation-7',
+      interrupt_receipt: { state: 'reserved', method: 'interrupt' },
+    });
+    const migratedHostReceipt = sqlite.getRawHandle()!
+      .prepare(`
+        SELECT reservation_key, request_digest, operation, session_id,
+               event_identity, attention_generation, state, receipt
+        FROM host_control_receipts WHERE id = ?
+      `)
+      .get('hcr-1') as Record<string, unknown>;
+    expect({
+      ...migratedHostReceipt,
+      receipt: JSON.parse(migratedHostReceipt.receipt as string),
+    }).toEqual({
+      reservation_key: 'attention-reply:watch-migrate',
+      request_digest: 'request-digest-migrate',
+      operation: 'inject_attention_reply',
+      session_id: 'sess-1',
+      event_identity: 'prompt-migrate',
+      attention_generation: 'generation-9',
+      state: 'injected',
+      receipt: {
+        outcome: 'injected',
+        verified: true,
+        receipt: { route: 'host-attention-answer', event_cleared: true },
+      },
+    });
 
     // Progress events fired through every phase and ended at 100%.
     const phases = new Set(progressEvents.map((p) => p.phase));

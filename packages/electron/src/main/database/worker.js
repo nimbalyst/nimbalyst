@@ -1682,6 +1682,14 @@ class PGLiteWorker {
           status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'executing', 'completed', 'failed')),
           attachments JSONB,
           document_context JSONB,
+          delivery_class TEXT NOT NULL DEFAULT 'ordinary' CHECK (delivery_class IN ('ordinary', 'control')),
+          priority_rank INTEGER NOT NULL DEFAULT 0,
+          producer TEXT,
+          idempotency_key TEXT,
+          request_digest TEXT,
+          control_operation TEXT,
+          interrupt_target_generation TEXT,
+          interrupt_receipt JSONB,
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
           claimed_at TIMESTAMPTZ,
           completed_at TIMESTAMPTZ,
@@ -1697,9 +1705,74 @@ class PGLiteWorker {
         CREATE INDEX IF NOT EXISTS idx_queued_prompts_session_status ON queued_prompts(session_id, status);
         CREATE INDEX IF NOT EXISTS idx_queued_prompts_created ON queued_prompts(created_at);
       `);
+      await this.db.exec(`
+        ALTER TABLE queued_prompts
+          ADD COLUMN IF NOT EXISTS delivery_class TEXT NOT NULL DEFAULT 'ordinary'
+          CHECK (delivery_class IN ('ordinary', 'control'));
+        ALTER TABLE queued_prompts
+          ADD COLUMN IF NOT EXISTS priority_rank INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS producer TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS request_digest TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS control_operation TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_target_generation TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_receipt JSONB;
+      `);
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_queued_prompts_pending_priority
+          ON queued_prompts(session_id, priority_rank DESC, created_at, id)
+          WHERE status = 'pending';
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_prompts_idempotency_key
+          ON queued_prompts(idempotency_key)
+          WHERE idempotency_key IS NOT NULL;
+      `);
       console.log('[PGLite Worker] queued_prompts table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create queued_prompts table:', error);
+      throw error;
+    }
+
+    // Host-control answer receipts and native-winner notification outbox.
+    // These are durable control ledgers, never prompt queues.
+    console.log('[PGLite Worker] Creating host control receipt tables...');
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS host_control_receipts (
+          id TEXT PRIMARY KEY,
+          reservation_key TEXT NOT NULL UNIQUE,
+          request_digest TEXT NOT NULL,
+          operation TEXT NOT NULL CHECK (operation = 'inject_attention_reply'),
+          session_id TEXT NOT NULL,
+          event_identity TEXT NOT NULL,
+          attention_generation TEXT,
+          state TEXT NOT NULL CHECK (state IN ('reserved', 'injected', 'already_resolved', 'failed')),
+          receipt JSONB,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_host_control_receipts_session
+          ON host_control_receipts(session_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS native_winner_outbox (
+          id TEXT PRIMARY KEY,
+          reservation_key TEXT NOT NULL UNIQUE,
+          session_id TEXT NOT NULL,
+          event_identity TEXT NOT NULL,
+          attention_generation TEXT,
+          state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sent')),
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          receipt JSONB,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          last_attempt_at TIMESTAMPTZ,
+          sent_at TIMESTAMPTZ
+        );
+        CREATE INDEX IF NOT EXISTS idx_native_winner_outbox_pending
+          ON native_winner_outbox(created_at, id) WHERE state = 'pending';
+      `);
+      console.log('[PGLite Worker] host control receipt tables created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create host control receipt tables:', error);
       throw error;
     }
 

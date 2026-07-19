@@ -32,6 +32,38 @@ export interface MigrationResult {
   skipped: number[];
 }
 
+function runIdempotentAdditiveSqlMigration(
+  db: SqliteDatabase,
+  sqlFile: string,
+  tableName: string,
+): void {
+  const statements = fs.readFileSync(sqlFile, 'utf-8')
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+  let columns: Set<string> | null = null;
+
+  for (const statement of statements) {
+    const addColumn = statement.match(
+      new RegExp(`\\bALTER\\s+TABLE\\s+${tableName}\\s+ADD\\s+COLUMN\\s+([A-Za-z_][A-Za-z0-9_]*)`, 'i'),
+    );
+    if (addColumn) {
+      columns ??= new Set(
+        (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>)
+          .map((column) => column.name),
+      );
+      if (columns.has(addColumn[1])) {
+        continue;
+      }
+    }
+
+    db.exec(`${statement};`);
+    if (addColumn) {
+      columns!.add(addColumn[1]);
+    }
+  }
+}
+
 /**
  * Order matters. Versions must be ascending; gaps are allowed but unusual.
  *
@@ -165,6 +197,20 @@ export function getMigrations(schemaDir: string): Migration[] {
       version: 25,
       name: 'account_org_bindings',
       sqlFile: path.join(schemaDir, '0025_account_org_bindings.sql'),
+    },
+    {
+      version: 26,
+      name: 'queued_prompt_priority_control',
+      run: (db) => runIdempotentAdditiveSqlMigration(
+        db,
+        path.join(schemaDir, '0026_queued_prompt_priority_control.sql'),
+        'queued_prompts',
+      ),
+    },
+    {
+      version: 27,
+      name: 'host_control_receipts',
+      sqlFile: path.join(schemaDir, '0027_host_control_receipts.sql'),
     },
   ];
 }

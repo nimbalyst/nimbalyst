@@ -134,7 +134,7 @@ export interface PermissionRequestPayload {
   warnings: string[];
   decision?: 'allow' | 'deny';
   scope?: 'once' | 'session' | 'always' | 'always-all';
-  respondedBy?: 'desktop' | 'mobile';
+  respondedBy?: 'desktop' | 'mobile' | 'telegram';
 }
 
 export interface AskUserQuestionPayload {
@@ -149,7 +149,7 @@ export interface AskUserQuestionPayload {
   }>;
   answers?: Record<string, string>;
   cancelled?: boolean;
-  respondedBy?: 'desktop' | 'mobile';
+  respondedBy?: 'desktop' | 'mobile' | 'telegram';
 }
 
 export interface GitCommitProposalPayload {
@@ -160,7 +160,7 @@ export interface GitCommitProposalPayload {
   stagedFiles: string[];
   decision?: 'committed' | 'cancelled';
   commitSha?: string;
-  respondedBy?: 'desktop' | 'mobile';
+  respondedBy?: 'desktop' | 'mobile' | 'telegram';
 }
 
 export type InteractivePromptPayload =

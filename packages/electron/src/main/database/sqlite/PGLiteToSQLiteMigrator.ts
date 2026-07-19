@@ -151,6 +151,8 @@ const COPY_TABLES: readonly string[] = [
   'tracker_body_cache',
   'tracker_transactions',
   'queued_prompts',
+  'host_control_receipts',
+  'native_winner_outbox',
   'ai_session_wakeups',
   'super_loops',
   'super_iterations',

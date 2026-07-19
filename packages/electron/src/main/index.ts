@@ -4,6 +4,7 @@ import { markBootComplete } from './utils/bootState';
 import { markStart, markEnd, checkpoint, logSummary } from './utils/startupTiming';
 import type { SessionStore } from '@nimbalyst/runtime';
 import * as os from 'os';
+import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { join } from 'path';
 import * as fs from 'fs';
@@ -264,6 +265,12 @@ export function setRestarting(value: boolean): void {
 
 // Track app start time for memory monitoring
 const appStartTime = Date.now();
+
+// Stable, immutable-for-this-launch boot identity (NIM-364). Reused as the
+// watcher-obligation recovery nonce and safe to expose in the MCP endpoint
+// descriptor; regenerated fresh on every launch (a new PID/timestamp alone
+// is not sufficient because a fast restart can collide on either).
+const hostBootId = randomUUID();
 
 // Single instance lock removed - allow multiple instances to run
 
@@ -2186,12 +2193,6 @@ app.whenReady().then(async () => {
       logger.main.error('[Main] Boot sweep failed:', sweepErr);
     }
 
-    // Check for pending restart continuations and queue continuation prompts
-    await checkForRestartContinuation(aiService);
-
-    // Recover any super loops that were running when the app last shut down
-    await getSuperLoopService().recoverStaleLoopState();
-
     // Initialize Voice Mode handlers
     // The renderer calls 'voice-mode:init' to trigger initialization
     safeHandle('voice-mode:init', async () => {
@@ -2227,7 +2228,7 @@ app.whenReady().then(async () => {
     }
 
     try {
-        const result = await startMcpHttpServer(3456);
+        const result = await startMcpHttpServer(3456, { aiService });
         mcpHttpServer = result.httpServer;
         logger.mcp.info('MCP SSE server started on port', result.port);
 
@@ -2262,6 +2263,7 @@ app.whenReady().then(async () => {
             writeMcpEndpointDescriptor({
                 port: result.port,
                 token: mcpAuthToken,
+                hostBootId,
                 workspaces: collectOpenWorkspaces(),
             });
         } catch (descriptorError) {
@@ -2334,6 +2336,29 @@ app.whenReady().then(async () => {
     } catch (error) {
         logger.mcp.error('Failed to start meta-agent MCP server:', error);
     }
+
+    // Watcher-obligation startup recovery (NIM-364): after the DB/queue boot
+    // sweep and the meta-agent MCP surface are both up, but before restart
+    // continuations, super-loop recovery, or session wakeups resume, give an
+    // operator-configured watcher-obligation controller one chance to
+    // re-establish its own state for this boot. A failure here must never
+    // block startup.
+    try {
+        const { runWatcherObligationStartupRecovery } = await import('./services/WatcherObligationStartupRecovery');
+        await runWatcherObligationStartupRecovery({ hostBootId });
+    } catch (error) {
+        logger.main.error('[Main] Watcher-obligation startup recovery failed:', error);
+    }
+
+    // Check for pending restart continuations and queue continuation prompts.
+    // NIM-364: moved here (was previously right after the boot sweep) so it
+    // runs after the meta-agent MCP surface and watcher-obligation recovery
+    // are both ready, per the required startup ordering.
+    await checkForRestartContinuation(aiService);
+
+    // Recover any super loops that were running when the app last shut down.
+    // NIM-364: moved here alongside checkForRestartContinuation, same reason.
+    await getSuperLoopService().recoverStaleLoopState();
 
     // Start session wakeup scheduler (persistent scheduled re-invocations)
     try {

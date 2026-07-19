@@ -948,7 +948,7 @@ export class MessageStreamingHandler {
       requestId: string;
       sessionId: string;
       approved: boolean;
-      respondedBy?: 'desktop' | 'mobile';
+      respondedBy?: 'desktop' | 'mobile' | 'telegram';
       timestamp: number;
     }) => {
       logger.main.info('[AIService] ExitPlanMode resolved:', data.requestId, 'approved=', data.approved);

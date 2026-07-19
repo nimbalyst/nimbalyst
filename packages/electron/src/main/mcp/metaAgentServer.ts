@@ -1,6 +1,6 @@
 /**
  * Meta-agent (child-session orchestration) tool surface — `create_session`,
- * `spawn_session`, `send_prompt`, `list_queued_prompts`, `respond_to_prompt`,
+ * `spawn_session`, `send_prompt`, `send_prompt_now`, `list_queued_prompts`, `respond_to_prompt`,
  * `get_session_status`, `get_session_result`, `list_spawned_sessions`,
  * `list_worktrees`, `notify_user`, and attention lifecycle operations.
  *
@@ -77,6 +77,13 @@ type ListQueuedPromptsArgs = {
   includePromptText?: boolean;
 };
 
+type SendPromptNowArgs = {
+  sessionId: string;
+  prompt: string;
+  idempotencyKey: string;
+  controlOperation: string;
+};
+
 type NotifyUserArgs = {
   title: string;
   body: string;
@@ -150,6 +157,11 @@ interface MetaAgentToolFns {
     workspaceId: string,
     targetSessionId: string,
     prompt: string
+  ) => Promise<string>;
+  sendPromptNow: (
+    callerSessionId: string,
+    workspaceId: string,
+    args: SendPromptNowArgs
   ) => Promise<string>;
   notifyUser: (
     callerSessionId: string,
@@ -391,6 +403,33 @@ export const META_AGENT_TOOL_DEFS: Array<{
     },
   },
   {
+    name: "send_prompt_now",
+    description:
+      "Deliver a priority/control prompt that may interrupt the target session's current turn. This is distinct from the ordinary non-interrupting FIFO send_prompt tool.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "The authorized target session ID.",
+        },
+        prompt: {
+          type: "string",
+          description: "The priority/control prompt to deliver.",
+        },
+        idempotencyKey: {
+          type: "string",
+          description: "Required replay-safety key for this control delivery.",
+        },
+        controlOperation: {
+          type: "string",
+          description: "Required semantic label describing the control operation.",
+        },
+      },
+      required: ["sessionId", "prompt", "idempotencyKey", "controlOperation"],
+    },
+  },
+  {
     name: "notify_user",
     description:
       "Show a local OS notification and optionally request mobile push. mobilePush=always uses the explicit forced-attention client path and reports only client attempted/skipped/error semantics, not confirmed APNS delivery.",
@@ -556,6 +595,7 @@ const EXTENSION_META_AGENT_ALLOWED_TOOLS = new Set<string>([
   "get_session_result",
   "list_queued_prompts",
   "send_prompt",
+  "send_prompt_now",
   "notify_user",
   "attention_arm",
   "attention_cancel",
@@ -639,6 +679,12 @@ export async function dispatchMetaAgentTool(
         effectiveWorkspaceId,
         (args?.sessionId as string) ?? "",
         (args?.prompt as string) ?? ""
+      );
+    case "send_prompt_now":
+      return toolFns.sendPromptNow(
+        aiSessionId,
+        effectiveWorkspaceId,
+        (args ?? {}) as SendPromptNowArgs
       );
     case "notify_user":
       return toolFns.notifyUser(aiSessionId, effectiveWorkspaceId, (args ?? {}) as NotifyUserArgs);

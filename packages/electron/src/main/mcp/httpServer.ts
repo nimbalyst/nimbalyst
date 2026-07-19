@@ -11,11 +11,22 @@ import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { BrowserWindow } from "electron";
+import { AISessionsRepository } from "@nimbalyst/runtime";
+import { getSessionStateManager } from "@nimbalyst/runtime/ai/server/SessionStateManager";
 import { getMostRecentlyFocusedWorkspaceWindow, windowStates, windowFocusOrder } from "../window/WindowManager";
 import { windows } from "../window/windowState";
 import { workspaceToWindowMap } from "./mcpWorkspaceResolver";
 import { requireMcpAuth } from "./mcpAuth";
 import { getAllowedClipOrigin, hasAllowedClipContentType } from "./clipRequestGuards";
+import {
+  handleHostControlRequest,
+  type HostControlDependencies,
+} from "../services/HostControlService";
+import { createPriorityPromptDeliveryService } from "../services/PriorityPromptDeliveryService";
+import { getHostControlReceiptsStore, getQueuedPromptsStore } from "../services/RepositoryManager";
+import { resolveQueuedPromptDispatchTarget } from "../services/ai/queuedPromptDispatcher";
+import type { AIService } from "../services/ai/AIService";
+import { attentionEventService } from "../services/AttentionEventService";
 
 // Extracted modules
 import {
@@ -298,7 +309,8 @@ export async function shutdownHttpServer(): Promise<void> {
 }
 
 export async function startMcpHttpServer(
-  startPort: number = 3456
+  startPort: number = 3456,
+  options: HostControlServerOptions = {},
 ): Promise<{ httpServer: any; port: number }> {
   let port = startPort;
   let httpServer: any = null;
@@ -306,7 +318,7 @@ export async function startMcpHttpServer(
 
   while (maxAttempts > 0) {
     try {
-      httpServer = await tryCreateServer(port);
+      httpServer = await tryCreateServer(port, options);
       break;
     } catch (error: any) {
       if (error.code === "EADDRINUSE") {
@@ -325,7 +337,9 @@ export async function startMcpHttpServer(
   }
 
   httpServerInstance = httpServer;
-  return { httpServer, port };
+  const address = httpServer.address?.();
+  const boundPort = address && typeof address === "object" ? address.port : port;
+  return { httpServer, port: boundPort };
 }
 
 /**
@@ -684,6 +698,60 @@ async function readJsonBody(
   }
 }
 
+const HOST_CONTROL_BODY_MAX_BYTES = 4096;
+
+type CappedJsonBodyResult =
+  | { kind: "ok"; body: unknown }
+  | { kind: "invalid" }
+  | { kind: "too_large" };
+
+function readCappedJsonBody(
+  req: IncomingMessage,
+  maxBytes: number = HOST_CONTROL_BODY_MAX_BYTES,
+): Promise<CappedJsonBodyResult> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+
+    const finish = (result: CappedJsonBodyResult) => {
+      if (settled) return;
+      settled = true;
+      req.removeListener("data", onData);
+      req.removeListener("end", onEnd);
+      req.removeListener("error", onError);
+      resolve(result);
+    };
+    const onData = (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
+      if (bytes > maxBytes) {
+        req.pause();
+        finish({ kind: "too_large" });
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = () => {
+      const raw = Buffer.concat(chunks).toString("utf8").trim();
+      if (!raw) {
+        finish({ kind: "invalid" });
+        return;
+      }
+      try {
+        finish({ kind: "ok", body: JSON.parse(raw) });
+      } catch {
+        finish({ kind: "invalid" });
+      }
+    };
+    const onError = () => finish({ kind: "invalid" });
+
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+  });
+}
+
 function isInitializeMessage(value: unknown): boolean {
   return typeof value === 'object' && value !== null && 'method' in value && (value as Record<string, unknown>).method === 'initialize';
 }
@@ -700,8 +768,65 @@ function isInitializePayload(payload: unknown): boolean {
 
 // ---- HTTP Server Creation ----
 
-async function tryCreateServer(port: number): Promise<any> {
+type HostControlAIService = Pick<
+  AIService,
+  "interruptCurrentTurnForSession" | "triggerQueuedPromptProcessingForSession" | "respondToInteractivePrompt"
+>;
+
+export interface HostControlServerOptions {
+  aiService?: HostControlAIService;
+  hostControlDependencies?: HostControlDependencies;
+}
+
+function createHostControlDependencies(
+  options: HostControlServerOptions,
+): HostControlDependencies | null {
+  if (options.hostControlDependencies) {
+    return options.hostControlDependencies;
+  }
+  if (!options.aiService) {
+    return null;
+  }
+
+  const deliveryService = createPriorityPromptDeliveryService({
+    getSession: (sessionId) => AISessionsRepository.get(sessionId),
+    resolveDispatchTarget: resolveQueuedPromptDispatchTarget,
+    queueStore: getQueuedPromptsStore(),
+    getCurrentAttentionGeneration: (sessionId) =>
+      getSessionStateManager().getSessionState(sessionId)?.attentionGeneration,
+    getSessionStatus: (sessionId) =>
+      getSessionStateManager().getSessionState(sessionId)?.status ?? "idle",
+    interruptCurrentTurnForSession: (sessionId, interruptOptions) =>
+      options.aiService!.interruptCurrentTurnForSession(sessionId, interruptOptions),
+    triggerQueuedPromptProcessingForSession: (sessionId, workspacePath) =>
+      options.aiService!.triggerQueuedPromptProcessingForSession(sessionId, workspacePath),
+  });
+  const receiptsStore = getHostControlReceiptsStore();
+
+  return {
+    getSession: async (sessionId) => {
+      const session = await AISessionsRepository.get(sessionId);
+      if (!session?.workspacePath) return null;
+      return { id: session.id, workspacePath: session.workspacePath };
+    },
+    deliverPriorityPrompt: deliveryService.deliverPriorityPrompt,
+    attentionReply: {
+      getPendingInteractiveEvent: (sessionId, identity) =>
+        attentionEventService.getPendingInteractiveEvent(sessionId, identity),
+      respondToInteractivePrompt: (params) =>
+        options.aiService!.respondToInteractivePrompt(params),
+      reserveReceipt: (input) => receiptsStore.reserveReceipt(input),
+      finalizeReceipt: (input) => receiptsStore.finalizeReceipt(input),
+    },
+  };
+}
+
+async function tryCreateServer(
+  port: number,
+  options: HostControlServerOptions,
+): Promise<any> {
   return new Promise((resolve, reject) => {
+    const hostControlDependencies = createHostControlDependencies(options);
     const httpServer = createServer(
       async (req: IncomingMessage, res: ServerResponse) => {
         const parsedUrl = parseUrl(req.url || "", true);
@@ -783,6 +908,51 @@ async function tryCreateServer(port: number): Promise<any> {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ decision: "ask", reason: "permission handler error" }));
           }
+          return;
+        }
+
+        if (pathname === "/host-control" && req.method === "POST") {
+          if (!requireMcpAuth(req)) {
+            res.writeHead(401);
+            res.end("Unauthorized");
+            return;
+          }
+
+          const parsedBody = await readCappedJsonBody(req);
+          if (parsedBody.kind === "too_large") {
+            res.writeHead(413, {
+              "Content-Type": "application/json",
+              Connection: "close",
+            });
+            res.end(JSON.stringify({
+              accepted: false,
+              outcome: "request_too_large",
+            }));
+            return;
+          }
+          if (parsedBody.kind === "invalid") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              accepted: false,
+              outcome: "malformed_json",
+            }));
+            return;
+          }
+          if (!hostControlDependencies) {
+            res.writeHead(503, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              accepted: false,
+              outcome: "host_control_unavailable",
+            }));
+            return;
+          }
+
+          const result = await handleHostControlRequest(
+            hostControlDependencies,
+            parsedBody.body,
+          );
+          res.writeHead(result.status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result.receipt));
           return;
         }
 

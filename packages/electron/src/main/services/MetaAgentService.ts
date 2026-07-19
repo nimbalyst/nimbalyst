@@ -26,7 +26,11 @@ import {
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 import { isAuthorizedAttentionSupervisor } from './AttentionSupervisorAuthorization';
-import { isQueuedPromptDispatchSessionRetired } from './ai/queuedPromptDispatcher';
+import {
+  isQueuedPromptDispatchSessionRetired,
+  resolveQueuedPromptDispatchTarget,
+} from './ai/queuedPromptDispatcher';
+import { createPriorityPromptDeliveryService } from './PriorityPromptDeliveryService';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -129,6 +133,13 @@ interface NotifyUserArgs {
   silent?: boolean;
   urgency?: 'normal' | 'critical' | 'low';
   mobilePush?: 'never' | 'when_desktop_away' | 'always';
+}
+
+interface SendPromptNowArgs {
+  sessionId: string;
+  prompt: string;
+  idempotencyKey: string;
+  controlOperation: string;
 }
 
 const DIRECT_FORCED_NOTIFICATION_RATE_WINDOW_MS = 60 * 1000;
@@ -253,6 +264,11 @@ export class MetaAgentService {
           this.listQueuedPromptsJson(targetSessionId, workspaceId, options),
         sendPrompt: (_metaSessionId, workspaceId, targetSessionId, prompt) =>
           this.sendPromptToSession(targetSessionId, workspaceId, prompt),
+        sendPromptNow: async (callerSessionId, workspaceId, args) => {
+          const typedArgs = args as SendPromptNowArgs;
+          await this.assertCallerCanTarget(callerSessionId, typedArgs.sessionId, workspaceId);
+          return this.sendPromptNowToSession(callerSessionId, workspaceId, typedArgs);
+        },
         notifyUser: (callerSessionId, workspaceId, args) =>
           this.notifyUserJson(callerSessionId, workspaceId, args),
         armAttention: async (callerSessionId, workspaceId, args) => {
@@ -1040,6 +1056,58 @@ export class MetaAgentService {
       processingTriggered: processingTriggerAccepted,
       processingTriggerAccepted,
       dispatchScheduled: processingTriggerAccepted,
+    }, null, 2);
+  }
+
+  private async sendPromptNowToSession(
+    callerSessionId: string,
+    workspaceId: string,
+    args: SendPromptNowArgs,
+  ): Promise<string> {
+    if (!this.aiService) {
+      throw new Error('AI service not initialized');
+    }
+    if (typeof args.prompt !== 'string' || !args.prompt.trim()) {
+      throw new Error('prompt is required');
+    }
+    if (typeof args.idempotencyKey !== 'string' || !args.idempotencyKey.trim()) {
+      throw new Error('idempotencyKey is required');
+    }
+    if (typeof args.controlOperation !== 'string' || !args.controlOperation.trim()) {
+      throw new Error('controlOperation is required');
+    }
+
+    const { getQueuedPromptsStore } = await import('./RepositoryManager');
+    const deliveryService = createPriorityPromptDeliveryService({
+      getSession: (sessionId) => AISessionsRepository.get(sessionId),
+      resolveDispatchTarget: resolveQueuedPromptDispatchTarget,
+      queueStore: getQueuedPromptsStore(),
+      getCurrentAttentionGeneration: (sessionId) =>
+        getSessionStateManager().getSessionState(sessionId)?.attentionGeneration,
+      getSessionStatus: (sessionId) =>
+        getSessionStateManager().getSessionState(sessionId)?.status ?? 'idle',
+      interruptCurrentTurnForSession: (sessionId, options) =>
+        this.aiService!.interruptCurrentTurnForSession(sessionId, options),
+      triggerQueuedPromptProcessingForSession: (sessionId, workspacePath) =>
+        this.aiService!.triggerQueuedPromptProcessingForSession(sessionId, workspacePath),
+    });
+    const result = await deliveryService.deliverPriorityPrompt({
+      sessionId: args.sessionId,
+      workspacePath: workspaceId,
+      prompt: args.prompt.trim(),
+      idempotencyKey: args.idempotencyKey.trim(),
+      producer: `send_prompt_now:${callerSessionId}`,
+      controlOperation: args.controlOperation.trim(),
+    });
+
+    return JSON.stringify({
+      controlRowId: result.controlRowId,
+      routingWorkspacePath: result.routingWorkspacePath,
+      action: result.action,
+      processingTriggerCalled: result.processingTriggerCalled,
+      processingTriggerAccepted: result.processingTriggerAccepted,
+      interrupt: result.interrupt,
+      verification: result.verification,
     }, null, 2);
   }
 

@@ -3139,7 +3139,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     requestId: string,
     response: { approved: boolean; clearContext?: boolean; feedback?: string },
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' = 'desktop'
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
   ): void {
     const pending = this.pendingExitPlanModeConfirmations.get(requestId);
     if (pending) {
@@ -3208,7 +3208,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     questionId: string,
     answers: Record<string, string>,
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' = 'desktop'
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
   ): boolean {
     const pending = this.pendingAskUserQuestions.get(questionId);
     if (pending) {
@@ -3272,7 +3272,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     requestId: string,
     response: { decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' },
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' = 'desktop'
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
   ): void {
     // Try ToolPermissionService first (primary path when service is available)
     if (this.permissionService) {

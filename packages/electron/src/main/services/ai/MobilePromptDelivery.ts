@@ -31,6 +31,7 @@ import {
   type PendingPromptPersistenceResult,
 } from './pendingPromptPersistence';
 import { attentionEventService } from '../AttentionEventService';
+import { settleConfiguredInteractiveAttentionAfterResponse } from '../NativeWinnerNotificationService';
 
 const log = logger.ai;
 
@@ -201,13 +202,30 @@ export async function deliverMobilePromptResponse(
         log.warn(`[Mobile] ${promptType} tray notification threw: ${err}`);
       }
       try {
-        await attentionEventService.cancelInteractivePrompt(
-          sessionId,
-          descriptor.promptId,
-          (descriptor.ipcPayload as { cancelled?: boolean } | undefined)?.cancelled === true
-            ? 'cancelled'
-            : 'answered',
-          { expectedGeneration: ownership.attentionGeneration ?? undefined },
+        await settleConfiguredInteractiveAttentionAfterResponse(
+          (settleSessionId, eventIdentity, reason, options) =>
+            attentionEventService.cancelInteractivePrompt(
+              settleSessionId,
+              eventIdentity,
+              reason,
+              options,
+            ),
+          {
+            sessionId,
+            eventIdentity: descriptor.promptId,
+            attentionGeneration: ownership.attentionGeneration ?? undefined,
+            respondedBy: 'mobile',
+            cancelReason:
+              (descriptor.ipcPayload as { cancelled?: boolean } | undefined)?.cancelled === true
+                ? 'cancelled'
+                : 'answered',
+          },
+          (notificationError) => {
+            log.warn(
+              '[Mobile] Native-winner notification attempt failed:',
+              notificationError,
+            );
+          },
         );
       } catch (err) {
         log.warn(`[Mobile] ${promptType} attention settlement threw: ${err}`);

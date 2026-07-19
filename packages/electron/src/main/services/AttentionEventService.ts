@@ -369,6 +369,21 @@ export class AttentionEventService {
     });
   }
 
+  async getPendingInteractiveEvent(
+    sessionId: string,
+    promptIdentity: string,
+  ): Promise<AttentionEvent | null> {
+    const boundedSessionId = this.requireBoundedString(sessionId, 'sessionId', 200);
+    const boundedIdentity = this.requireBoundedString(promptIdentity, 'promptIdentity', 300);
+    const session = await this.deps.getSession(boundedSessionId);
+    if (!session) return null;
+    return this.readEvents(session).find((event) =>
+      event.status === 'pending'
+      && event.kind === 'interactive_prompt'
+      && (event.promptId === boundedIdentity || event.toolUseId === boundedIdentity)
+    ) ?? null;
+  }
+
   async cancelAllForSession(
     sessionId: string,
     reason: Extract<AttentionCancelReason, 'completed' | 'interrupted' | 'error' | 'provider_limit' | 'cancelled'>,

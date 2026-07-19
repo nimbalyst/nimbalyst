@@ -5,6 +5,7 @@
  * Uses simple row-level atomic updates instead of JSONB array manipulation.
  */
 
+import { createHash, randomUUID } from 'crypto';
 import { toMillis } from '../utils/timestampUtils';
 
 export interface QueuedPrompt {
@@ -24,6 +25,14 @@ export interface QueuedPrompt {
   claimedAt?: number; // epoch ms
   completedAt?: number; // epoch ms
   errorMessage?: string;
+  deliveryClass?: 'ordinary' | 'control';
+  priorityRank?: number;
+  producer?: string;
+  idempotencyKey?: string;
+  requestDigest?: string;
+  controlOperation?: string;
+  interruptTargetGeneration?: string;
+  interruptReceipt?: unknown;
 }
 
 export interface CreateQueuedPromptInput {
@@ -44,8 +53,29 @@ export interface QueuedPromptsStore {
   /** Create a new queued prompt */
   create(input: CreateQueuedPromptInput): Promise<QueuedPrompt>;
 
+  /** Create or replay one host-owned priority control prompt. */
+  createPriorityControlQueuedPrompt(input: {
+    sessionId: string;
+    prompt: string;
+    idempotencyKey: string;
+    producer: string;
+    controlOperation: string;
+  }): Promise<QueuedPrompt>;
+
   /** Get a specific queued prompt by ID */
   get(id: string): Promise<QueuedPrompt | null>;
+
+  /** Get a queued prompt by its non-null idempotency key. */
+  getByIdempotencyKey(key: string): Promise<QueuedPrompt | null>;
+
+  /** Atomically reserve the row's first generation-bound interrupt attempt. */
+  reserveInterrupt(input: {
+    id: string;
+    expectedGeneration: string;
+  }): Promise<{ reserved: boolean; row: QueuedPrompt }>;
+
+  /** Persist one bounded interrupt attempt receipt. */
+  recordInterruptReceipt(input: { id: string; receipt: unknown }): Promise<QueuedPrompt>;
 
   /** List all queued prompts for a session */
   listForSession(sessionId: string, options?: { includeCompleted?: boolean }): Promise<QueuedPrompt[]>;
@@ -162,6 +192,15 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     }
   }
 
+  let interruptReceipt = row.interrupt_receipt;
+  if (typeof interruptReceipt === 'string') {
+    try {
+      interruptReceipt = JSON.parse(interruptReceipt);
+    } catch {
+      interruptReceipt = undefined;
+    }
+  }
+
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -173,6 +212,14 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     claimedAt: toMillis(row.claimed_at) ?? undefined,
     completedAt: toMillis(row.completed_at) ?? undefined,
     errorMessage: row.error_message || undefined,
+    deliveryClass: row.delivery_class ?? 'ordinary',
+    priorityRank: Number(row.priority_rank ?? 0),
+    producer: row.producer || undefined,
+    idempotencyKey: row.idempotency_key || undefined,
+    requestDigest: row.request_digest || undefined,
+    controlOperation: row.control_operation || undefined,
+    interruptTargetGeneration: row.interrupt_target_generation || undefined,
+    interruptReceipt,
   };
 }
 
@@ -191,8 +238,10 @@ export function createPGLiteQueuedPromptsStore(
       await ensureReady();
 
       const { rows } = await db.query<any>(
-        `INSERT INTO queued_prompts (id, session_id, prompt, attachments, document_context)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO queued_prompts (
+           id, session_id, prompt, attachments, document_context,
+           delivery_class, priority_rank)
+         VALUES ($1, $2, $3, $4, $5, 'ordinary', 0)
          RETURNING *`,
         [
           input.id,
@@ -211,6 +260,47 @@ export function createPGLiteQueuedPromptsStore(
       return rowToQueuedPrompt(rows[0]);
     },
 
+    async createPriorityControlQueuedPrompt(input): Promise<QueuedPrompt> {
+      await ensureReady();
+
+      const canonicalJson = JSON.stringify({
+        sessionId: input.sessionId,
+        prompt: input.prompt,
+        producer: input.producer,
+        controlOperation: input.controlOperation,
+      });
+      const requestDigest = createHash('sha256').update(canonicalJson).digest('hex');
+
+      // The partial unique index is the serialization point. Matching retries
+      // take the no-op update path and return the existing row; a mismatched
+      // request fails the UPDATE predicate and therefore returns no row.
+      const { rows } = await db.query<any>(
+        `INSERT INTO queued_prompts (
+           id, session_id, prompt, delivery_class, priority_rank,
+           producer, idempotency_key, control_operation, request_digest)
+         VALUES ($1, $2, $3, 'control', 100, $4, $5, $6, $7)
+         ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+         DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+         WHERE queued_prompts.request_digest = EXCLUDED.request_digest
+         RETURNING *`,
+        [
+          `control-${randomUUID()}`,
+          input.sessionId,
+          input.prompt,
+          input.producer,
+          input.idempotencyKey,
+          input.controlOperation,
+          requestDigest,
+        ]
+      );
+
+      if (rows.length === 0) {
+        throw new Error(`idempotency_conflict:${input.idempotencyKey}`);
+      }
+
+      return rowToQueuedPrompt(rows[0]);
+    },
+
     async get(id: string): Promise<QueuedPrompt | null> {
       await ensureReady();
 
@@ -220,6 +310,78 @@ export function createPGLiteQueuedPromptsStore(
       );
 
       return rows.length > 0 ? rowToQueuedPrompt(rows[0]) : null;
+    },
+
+    async getByIdempotencyKey(key: string): Promise<QueuedPrompt | null> {
+      await ensureReady();
+
+      const { rows } = await db.query<any>(
+        `SELECT * FROM queued_prompts WHERE idempotency_key = $1`,
+        [key]
+      );
+
+      return rows.length > 0 ? rowToQueuedPrompt(rows[0]) : null;
+    },
+
+    async reserveInterrupt(input): Promise<{ reserved: boolean; row: QueuedPrompt }> {
+      await ensureReady();
+
+      const { rows } = await db.query<any>(
+        `UPDATE queued_prompts
+         SET interrupt_target_generation = $2
+         WHERE id = $1 AND interrupt_target_generation IS NULL
+         RETURNING *`,
+        [input.id, input.expectedGeneration]
+      );
+
+      if (rows.length > 0) {
+        return { reserved: true, row: rowToQueuedPrompt(rows[0]) };
+      }
+
+      const current = await db.query<any>(
+        `SELECT * FROM queued_prompts WHERE id = $1`,
+        [input.id]
+      );
+      if (current.rows.length === 0) {
+        throw new Error(`Cannot reserve interrupt: queued prompt ${input.id} does not exist`);
+      }
+
+      return { reserved: false, row: rowToQueuedPrompt(current.rows[0]) };
+    },
+
+    async recordInterruptReceipt(input): Promise<QueuedPrompt> {
+      await ensureReady();
+
+      let serializedReceipt: string;
+      try {
+        const serialized = JSON.stringify(input.receipt);
+        if (serialized === undefined) {
+          throw new Error('receipt is not JSON-serializable');
+        }
+        serializedReceipt = serialized;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Cannot record interrupt receipt: ${message}`);
+      }
+
+      const receiptSizeBytes = Buffer.byteLength(serializedReceipt, 'utf8');
+      if (receiptSizeBytes > 4096) {
+        throw new Error(`Cannot record interrupt receipt: serialized receipt exceeds 4096 bytes (${receiptSizeBytes} bytes)`);
+      }
+
+      const { rows } = await db.query<any>(
+        `UPDATE queued_prompts
+         SET interrupt_receipt = $2
+         WHERE id = $1
+         RETURNING *`,
+        [input.id, serializedReceipt]
+      );
+
+      if (rows.length === 0) {
+        throw new Error(`Cannot record interrupt receipt: queued prompt ${input.id} does not exist`);
+      }
+
+      return rowToQueuedPrompt(rows[0]);
     },
 
     async listForSession(
@@ -246,7 +408,7 @@ export function createPGLiteQueuedPromptsStore(
       const { rows } = await db.query<any>(
         `SELECT * FROM queued_prompts
          WHERE session_id = $1 AND status = 'pending'
-         ORDER BY created_at ASC`,
+         ORDER BY priority_rank DESC, created_at ASC, id ASC`,
         [sessionId]
       );
 
@@ -372,14 +534,15 @@ export function createPGLiteQueuedPromptsStore(
       //     builds that ran the blanket `rollbackAllExecuting` sweep on
       //     boot. POSITION > 0 implies the text is already in the
       //     conversation, so the row must not be re-delivered.
-      // (c) `pending` rows older than 24h -- abandoned. Catches the
-      //     long-tail of (b) where the content match misses because
-      //     JSON escaping (newlines, quotes, pasted attachments)
+      // (c) ordinary `pending` rows older than 24h -- abandoned. Control
+      //     rows are excluded because their producer owns retry/finalization;
+      //     a generic staleness sweep must not silently complete them. This
+      //     catches the long-tail of (b) where the content match misses
+      //     because JSON escaping (newlines, quotes, pasted attachments)
       //     differs between the queued prompt and the logged input. A
-      //     legitimately-queued prompt is processed within seconds of
-      //     creation; a row sitting >24h pending is effectively
-      //     abandoned regardless of whether it was technically
-      //     delivered.
+      //     legitimately-queued ordinary prompt is processed within seconds
+      //     of creation; one sitting >24h pending is effectively abandoned
+      //     regardless of whether it was technically delivered.
       const completedResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'completed', completed_at = CURRENT_TIMESTAMP
@@ -408,6 +571,7 @@ export function createPGLiteQueuedPromptsStore(
             ))
            OR
            (status = 'pending'
+            AND delivery_class != 'control'
             AND created_at < NOW() - INTERVAL '1 day')
          )
          RETURNING id`
@@ -550,10 +714,12 @@ export function createPGLiteQueuedPromptsStore(
 
       const cutoffDate = new Date(Date.now() - olderThanMs);
 
+      // Cleanup never reaps control rows; a later dedicated policy must use the actual controller retry horizon.
       const { rows } = await db.query<{ count: string }>(
         `WITH deleted AS (
            DELETE FROM queued_prompts
            WHERE status IN ('completed', 'failed')
+             AND delivery_class != 'control'
              AND completed_at < $1
            RETURNING 1
          )

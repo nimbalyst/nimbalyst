@@ -20,7 +20,9 @@ import { createSyncedAgentMessagesStore } from './SyncedAgentMessagesStore';
 import { createPGLiteWorkspaceRepository } from './PGLiteWorkspaceRepository';
 import { createPGLiteDocumentsRepository } from './PGLiteDocumentsRepository';
 import { createPGLiteQueuedPromptsStore, type QueuedPromptsStore } from './PGLiteQueuedPromptsStore';
+import { createHostControlReceiptsStore, type HostControlReceiptsStore } from './HostControlReceiptsStore';
 import { createPGLiteSessionWakeupsStore, type SessionWakeupsStore } from './PGLiteSessionWakeupsStore';
+import { configureNativeWinnerNotificationStore } from './NativeWinnerNotificationService';
 import { runAgentMessagesBackfill } from './AgentMessagesBackfill';
 import { runWhenFirstUsable } from './startupMaintenanceGate';
 import { database } from '../database/PGLiteDatabaseWorker';
@@ -40,6 +42,7 @@ class RepositoryManager {
   private workspaceRepository: WorkspaceRepository | null = null;
   private documentsRepository: DocumentsRepository | null = null;
   private queuedPromptsStore: QueuedPromptsStore | null = null;
+  private hostControlReceiptsStore: HostControlReceiptsStore | null = null;
   private sessionWakeupsStore: SessionWakeupsStore | null = null;
   private initialized = false;
   private authListenerUnsubscribe: (() => void) | null = null;
@@ -129,6 +132,16 @@ class RepositoryManager {
           }
         }
       );
+
+      this.hostControlReceiptsStore = createHostControlReceiptsStore(
+        dbAdapter,
+        async () => {
+          if (!database.isInitialized()) {
+            await database.initialize();
+          }
+        },
+      );
+      configureNativeWinnerNotificationStore(this.hostControlReceiptsStore);
 
       // Create session wakeups store (scheduled re-invocations)
       this.sessionWakeupsStore = createPGLiteSessionWakeupsStore(
@@ -284,6 +297,13 @@ class RepositoryManager {
     return this.queuedPromptsStore;
   }
 
+  getHostControlReceiptsStore(): HostControlReceiptsStore {
+    if (!this.hostControlReceiptsStore) {
+      throw new Error('RepositoryManager not initialized. Call initialize() first.');
+    }
+    return this.hostControlReceiptsStore;
+  }
+
   /**
    * Get the session wakeups store instance.
    * Used by SessionWakeupScheduler and IPC handlers.
@@ -366,6 +386,8 @@ class RepositoryManager {
     this.workspaceRepository = null;
     this.documentsRepository = null;
     this.queuedPromptsStore = null;
+    this.hostControlReceiptsStore = null;
+    configureNativeWinnerNotificationStore(null);
     this.sessionWakeupsStore = null;
     this.initialized = false;
     this.wasAuthenticated = false;
@@ -406,6 +428,10 @@ export function getBaseAgentMessagesStore(): AgentMessagesStore {
 
 export function getQueuedPromptsStore(): QueuedPromptsStore {
   return repositoryManager.getQueuedPromptsStore();
+}
+
+export function getHostControlReceiptsStore(): HostControlReceiptsStore {
+  return repositoryManager.getHostControlReceiptsStore();
 }
 
 export function getSessionWakeupsStore(): SessionWakeupsStore {

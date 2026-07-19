@@ -9,6 +9,8 @@ export const ExitCode = {
   CONNECTION: 3,
   SCHEMA_INCOMPATIBLE: 4,
   WRITE_NOT_PERMITTED: 5,
+  /** The host returned a well-formed receipt that did not accept the request. */
+  REJECTED: 6,
 } as const;
 
 export type ExitCodeValue = (typeof ExitCode)[keyof typeof ExitCode];

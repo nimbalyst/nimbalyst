@@ -8,7 +8,7 @@
  * and delete it on quit:
  *
  *   <userData>/mcp-endpoint.json  (mode 0600)
- *   { pid, port, token, startedAt, schemaVersion?, workspaces: [{ path, name }] }
+ *   { pid, port, token, hostBootId, startedAt, schemaVersion?, workspaces: [{ path, name }] }
  *
  * Security: 0600, loopback-only server, pid-liveness checked by the reader, and
  * the token is already the app's CORS/loopback mitigation. The CLI confirms the
@@ -27,6 +27,7 @@ export interface EndpointWorkspace {
 export interface WriteDescriptorParams {
   port: number;
   token: string;
+  hostBootId: string;
   schemaVersion?: number;
   workspaces?: EndpointWorkspace[];
 }
@@ -42,6 +43,7 @@ export function writeMcpEndpointDescriptor(params: WriteDescriptorParams): void 
       pid: process.pid,
       port: params.port,
       token: params.token,
+      hostBootId: params.hostBootId,
       startedAt: new Date().toISOString(),
       schemaVersion: params.schemaVersion,
       workspaces: params.workspaces ?? [],

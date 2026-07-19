@@ -327,6 +327,15 @@ CREATE TABLE IF NOT EXISTS queued_prompts (
     CHECK (status IN ('pending', 'executing', 'completed', 'failed')),
   attachments TEXT,                               -- JSON
   document_context TEXT,                          -- JSON
+  delivery_class TEXT NOT NULL DEFAULT 'ordinary'
+    CHECK (delivery_class IN ('ordinary', 'control')),
+  priority_rank INTEGER NOT NULL DEFAULT 0,
+  producer TEXT,
+  idempotency_key TEXT,
+  request_digest TEXT,
+  control_operation TEXT,
+  interrupt_target_generation TEXT,
+  interrupt_receipt TEXT,                         -- JSON
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   claimed_at TEXT,
   completed_at TEXT,
@@ -340,6 +349,51 @@ CREATE INDEX IF NOT EXISTS idx_queued_prompts_status ON queued_prompts(status);
 CREATE INDEX IF NOT EXISTS idx_queued_prompts_session_status
   ON queued_prompts(session_id, status);
 CREATE INDEX IF NOT EXISTS idx_queued_prompts_created ON queued_prompts(created_at);
+CREATE INDEX IF NOT EXISTS idx_queued_prompts_pending_priority
+  ON queued_prompts(session_id, priority_rank DESC, created_at, id)
+  WHERE status = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_prompts_idempotency_key
+  ON queued_prompts(idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+
+-- ----------------------------------------------------------------------------
+-- host_control_receipts + native_winner_outbox
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS host_control_receipts (
+  id TEXT PRIMARY KEY,
+  reservation_key TEXT NOT NULL UNIQUE,
+  request_digest TEXT NOT NULL,
+  operation TEXT NOT NULL CHECK (operation = 'inject_attention_reply'),
+  session_id TEXT NOT NULL,
+  event_identity TEXT NOT NULL,
+  attention_generation TEXT,
+  state TEXT NOT NULL CHECK (state IN ('reserved', 'injected', 'already_resolved', 'failed')),
+  receipt TEXT,                                    -- JSON, capped by the store
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_host_control_receipts_session
+  ON host_control_receipts(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS native_winner_outbox (
+  id TEXT PRIMARY KEY,
+  reservation_key TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
+  event_identity TEXT NOT NULL,
+  attention_generation TEXT,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sent')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  receipt TEXT,                                    -- JSON, capped by the store
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  last_attempt_at TEXT,
+  sent_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_native_winner_outbox_pending
+  ON native_winner_outbox(created_at, id) WHERE state = 'pending';
 
 -- ----------------------------------------------------------------------------
 -- ai_session_wakeups

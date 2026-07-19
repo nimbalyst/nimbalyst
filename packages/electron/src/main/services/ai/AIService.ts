@@ -97,6 +97,10 @@ import {
   schedulePromptOwnedCurrentAction,
 } from './promptActionExecution';
 import { attentionEventService } from '../AttentionEventService';
+import {
+  retryPendingNativeWinnerNotifications,
+  settleConfiguredInteractiveAttentionAfterResponse,
+} from '../NativeWinnerNotificationService';
 import { handleAIUpdateSessionMetadata } from './genericSessionMetadataUpdate';
 import { applyRemoteReadReceipt } from '../../ipc/ReadReceiptHandlers';
 import { applyRemoteTrackerPersonalState } from '../../ipc/TrackerPersonalStateHandlers';
@@ -142,6 +146,11 @@ import { createAIServiceQueuedChainSettlement } from './aiServiceQueuedChainSett
 import { dispatchQueuedPromptToClaudeCliWithTarget } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
+import {
+  runInterruptCurrentTurnForSession,
+  type InterruptCurrentTurnOptions,
+  type InterruptCurrentTurnResult,
+} from './interruptCurrentTurnForSession';
 
 const execFileAsync = promisify(execFile);
 
@@ -305,19 +314,59 @@ export class AIService {
     return this.processQueuedPrompt(sessionId, workspacePath, targetWindow);
   }
 
+  public async interruptCurrentTurnForSession(
+    sessionId: string,
+    options?: InterruptCurrentTurnOptions,
+  ): Promise<InterruptCurrentTurnResult> {
+    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+    const terminalManager = getTerminalSessionManager();
+
+    return runInterruptCurrentTurnForSession(
+      {
+        getSession: (id) => AISessionsRepository.get(id),
+        setSessionPendingPrompt: (id, hasPendingPrompt) =>
+          setSessionPendingPrompt(id, hasPendingPrompt),
+        cancelAllAttentionForSession: (id, reason) =>
+          attentionEventService.cancelAllForSession(id, reason),
+        isTerminalActive: (id) => terminalManager.isTerminalActive(id),
+        writeToTerminal: (id, text) => terminalManager.writeToTerminal(id, text),
+        getProvider: (providerType, id) =>
+          ProviderFactory.getProvider(providerType as AIProviderType, id) ?? null,
+        deleteFromProcessingQueue: (id) => this.sessionsProcessingQueue.delete(id),
+        sweepExecutingForSession: async (id) => {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          return getQueuedPromptsStore().sweepExecutingForSession(id);
+        },
+        getCurrentAttentionGeneration: (id) =>
+          getSessionStateManager().getSessionState(id)?.attentionGeneration,
+        getSessionStatus: (id) => getSessionStateManager().getSessionState(id)?.status,
+        logInfo: (message) => logger.main.info(message),
+        logError: (message, error) => logger.main.error(message, error),
+      },
+      sessionId,
+      options,
+    );
+  }
+
   public async respondToInteractivePrompt(params: {
     sessionId: string;
     promptId: string;
     promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
     response: any;
-    respondedBy?: 'desktop' | 'mobile';
+    respondedBy?: 'desktop' | 'mobile' | 'telegram';
   }): Promise<{
     success: boolean;
     error?: string;
     promptClear?: PendingPromptPersistenceResult;
     staleAction?: boolean;
+    attentionCancelledCount?: number;
   }> {
     const { sessionId, promptId, promptType, response, respondedBy = 'desktop' } = params;
+    try {
+      await retryPendingNativeWinnerNotifications();
+    } catch (error) {
+      logger.main.warn('[AIService] Native-winner notification retry failed:', error);
+    }
     const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
     const { database } = await import('../../database/PGLiteDatabaseWorker');
     const session = await AISessionsRepository.get(sessionId);
@@ -366,17 +415,40 @@ export class AIService {
         );
 
         let attentionSettled = false;
+        let attentionCancelledCount = 0;
         const finishPromptResponse = async (success: boolean, error?: string) => {
           if (!attentionSettled) {
             attentionSettled = true;
-            await attentionEventService.cancelInteractivePrompt(
-              sessionId,
-              promptId,
-              response?.cancelled === true ? 'cancelled' : 'answered',
-              { expectedGeneration: ownership.attentionGeneration ?? undefined },
+            const cancelReason = response?.cancelled === true ? 'cancelled' : 'answered';
+            attentionCancelledCount = await settleConfiguredInteractiveAttentionAfterResponse(
+              (settleSessionId, eventIdentity, reason, options) =>
+                attentionEventService.cancelInteractivePrompt(
+                  settleSessionId,
+                  eventIdentity,
+                  reason,
+                  options,
+                ),
+              {
+                sessionId,
+                eventIdentity: promptId,
+                attentionGeneration: ownership.attentionGeneration ?? undefined,
+                respondedBy,
+                cancelReason,
+              },
+              (notificationError) => {
+              logger.main.warn(
+                '[AIService] Native-winner notification attempt failed:',
+                notificationError,
+              );
+              },
             );
           }
-          return { success, ...(error ? { error } : {}), promptClear };
+          return {
+            success,
+            ...(error ? { error } : {}),
+            promptClear,
+            attentionCancelledCount,
+          };
         };
 
         if (promptType === 'permission_request') {
@@ -2461,11 +2533,27 @@ export class AIService {
         sessionId,
         requestId,
         async ({ ownership, promptClear }) => {
-          const settleAttention = () => attentionEventService.cancelInteractivePrompt(
-            sessionId,
-            requestId,
-            'answered',
-            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          const settleAttention = () => settleConfiguredInteractiveAttentionAfterResponse(
+            (settleSessionId, eventIdentity, reason, options) =>
+              attentionEventService.cancelInteractivePrompt(
+                settleSessionId,
+                eventIdentity,
+                reason,
+                options,
+              ),
+            {
+              sessionId,
+              eventIdentity: requestId,
+              attentionGeneration: ownership.attentionGeneration ?? undefined,
+              respondedBy: 'desktop',
+              cancelReason: 'answered',
+            },
+            (notificationError) => {
+              logger.main.warn(
+                '[AIService] Native-winner notification attempt failed:',
+                notificationError,
+              );
+            },
           );
           const persistResponse = async () => {
             const { AgentMessagesRepository } = await import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository');
@@ -2606,11 +2694,27 @@ export class AIService {
               logger.main.warn(`[AIService] Failed to persist AskUserQuestion response to database: ${err}`);
             }
           }
-          await attentionEventService.cancelInteractivePrompt(
-            resolvedSessionId,
-            questionId,
-            'answered',
-            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          await settleConfiguredInteractiveAttentionAfterResponse(
+            (settleSessionId, eventIdentity, reason, options) =>
+              attentionEventService.cancelInteractivePrompt(
+                settleSessionId,
+                eventIdentity,
+                reason,
+                options,
+              ),
+            {
+              sessionId: resolvedSessionId,
+              eventIdentity: questionId,
+              attentionGeneration: ownership.attentionGeneration ?? undefined,
+              respondedBy: 'desktop',
+              cancelReason: 'answered',
+            },
+            (notificationError) => {
+              logger.main.warn(
+                '[AIService] Native-winner notification attempt failed:',
+                notificationError,
+              );
+            },
           );
 
           if (providerResolved || hasMcpWaiter || hasSessionFallbackWaiter) {
@@ -2732,11 +2836,27 @@ export class AIService {
               sessionId: resolvedSessionId,
             });
           }
-          await attentionEventService.cancelInteractivePrompt(
-            resolvedSessionId,
-            questionId,
-            'cancelled',
-            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          await settleConfiguredInteractiveAttentionAfterResponse(
+            (settleSessionId, eventIdentity, reason, options) =>
+              attentionEventService.cancelInteractivePrompt(
+                settleSessionId,
+                eventIdentity,
+                reason,
+                options,
+              ),
+            {
+              sessionId: resolvedSessionId,
+              eventIdentity: questionId,
+              attentionGeneration: ownership.attentionGeneration ?? undefined,
+              respondedBy: 'desktop',
+              cancelReason: 'cancelled',
+            },
+            (notificationError) => {
+              logger.main.warn(
+                '[AIService] Native-winner notification attempt failed:',
+                notificationError,
+              );
+            },
           );
           if (!providerSupportsCancel && !hasMcpWaiter && !hasSessionFallbackWaiter) {
             return { success: false, error: 'Question not found', promptClear };
@@ -2818,11 +2938,27 @@ export class AIService {
               });
             }
           }
-          await attentionEventService.cancelInteractivePrompt(
-            sessionId,
-            requestId,
-            'answered',
-            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          await settleConfiguredInteractiveAttentionAfterResponse(
+            (settleSessionId, eventIdentity, reason, options) =>
+              attentionEventService.cancelInteractivePrompt(
+                settleSessionId,
+                eventIdentity,
+                reason,
+                options,
+              ),
+            {
+              sessionId,
+              eventIdentity: requestId,
+              attentionGeneration: ownership.attentionGeneration ?? undefined,
+              respondedBy: 'desktop',
+              cancelReason: 'answered',
+            },
+            (notificationError) => {
+              logger.main.warn(
+                '[AIService] Native-winner notification attempt failed:',
+                notificationError,
+              );
+            },
           );
           return { success: true, promptClear };
         },
@@ -2873,11 +3009,27 @@ export class AIService {
               { ownership, promptClear },
               () => provider.abort(),
             );
-            await attentionEventService.cancelInteractivePrompt(
-              sessionId,
-              requestId,
-              'cancelled',
-              { expectedGeneration: ownership.attentionGeneration ?? undefined },
+            await settleConfiguredInteractiveAttentionAfterResponse(
+              (settleSessionId, eventIdentity, reason, options) =>
+                attentionEventService.cancelInteractivePrompt(
+                  settleSessionId,
+                  eventIdentity,
+                  reason,
+                  options,
+                ),
+              {
+                sessionId,
+                eventIdentity: requestId,
+                attentionGeneration: ownership.attentionGeneration ?? undefined,
+                respondedBy: 'desktop',
+                cancelReason: 'cancelled',
+              },
+              (notificationError) => {
+                logger.main.warn(
+                  '[AIService] Native-winner notification attempt failed:',
+                  notificationError,
+                );
+              },
             );
             return { success: true, promptClear };
           }
@@ -2906,11 +3058,27 @@ export class AIService {
               respondedBy: 'desktop',
             });
           }
-          await attentionEventService.cancelInteractivePrompt(
-            sessionId,
-            requestId,
-            'cancelled',
-            { expectedGeneration: ownership.attentionGeneration ?? undefined },
+          await settleConfiguredInteractiveAttentionAfterResponse(
+            (settleSessionId, eventIdentity, reason, options) =>
+              attentionEventService.cancelInteractivePrompt(
+                settleSessionId,
+                eventIdentity,
+                reason,
+                options,
+              ),
+            {
+              sessionId,
+              eventIdentity: requestId,
+              attentionGeneration: ownership.attentionGeneration ?? undefined,
+              respondedBy: 'desktop',
+              cancelReason: 'cancelled',
+            },
+            (notificationError) => {
+              logger.main.warn(
+                '[AIService] Native-winner notification attempt failed:',
+                notificationError,
+              );
+            },
           );
           return hasMcpWaiter
             ? { success: true, promptClear }
@@ -3025,51 +3193,7 @@ export class AIService {
     // follow-up ai:triggerQueueProcessing doesn't re-send the same input
     // -- NIM-615).
     safeHandle('ai:interruptCurrentTurn', async (_event, sessionId: string) => {
-      if (!sessionId) {
-        throw new Error('Session ID is required to interrupt');
-      }
-
-      const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-      const session = await AISessionsRepository.get(sessionId);
-      if (!session) {
-        return { success: false, error: 'Session not found' };
-      }
-      const promptClear = await setSessionPendingPrompt(sessionId, false);
-      await attentionEventService.cancelAllForSession(sessionId, 'interrupted');
-
-      if (session.provider === 'claude-code-cli') {
-        const terminalManager = getTerminalSessionManager();
-        if (!terminalManager.isTerminalActive(sessionId)) {
-          return { success: false, error: 'No active terminal for session', promptClear };
-        }
-
-        terminalManager.writeToTerminal(sessionId, '\x03');
-        logger.main.info(`[AIService] Interrupted claude-code-cli terminal for session ${sessionId}`);
-        return { success: true, method: 'terminal-ctrl-c', promptClear };
-      }
-
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (!provider) {
-        return { success: false, error: 'No active provider for session', promptClear };
-      }
-
-      this.sessionsProcessingQueue.delete(sessionId);
-      try {
-        const { getQueuedPromptsStore } = await import('../RepositoryManager');
-        const queueStore = getQueuedPromptsStore();
-        const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
-        if (completed > 0 || failed > 0 || rolledBack > 0) {
-          logger.main.info(
-            `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
-          );
-        }
-      } catch (sweepErr) {
-        logger.main.error('[AIService] interruptCurrentTurn: sweepExecutingForSession failed:', sweepErr);
-      }
-
-      const result = await provider.interruptCurrentTurn();
-      logger.main.info(`[AIService] Interrupted current turn for session ${sessionId} (method=${result.method})`);
-      return { success: true, method: result.method, promptClear };
+      return this.interruptCurrentTurnForSession(sessionId);
     });
 
     // Settings handlers

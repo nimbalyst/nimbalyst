@@ -466,7 +466,7 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
     requestId: string,
     response: { decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' },
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' = 'desktop'
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
   ): void {
     this.permissionService.resolvePermission(requestId, response);
 

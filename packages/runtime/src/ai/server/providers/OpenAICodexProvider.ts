@@ -1357,7 +1357,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     requestId: string,
     response: { decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' },
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' = 'desktop'
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
   ): void {
     // Resolve via service
     this.permissionService.resolvePermission(requestId, response);
@@ -1376,7 +1376,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     questionId: string,
     answers: Record<string, string>,
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' = 'desktop'
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
   ): boolean {
     const pending = this.pendingAskUserQuestions.get(questionId);
     if (!pending) {
@@ -1404,7 +1404,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   public rejectAskUserQuestion(
     questionId: string,
     _error: Error,
-    respondedBy: 'desktop' | 'mobile' = 'desktop'
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
   ): void {
     const pending = this.pendingAskUserQuestions.get(questionId);
     if (!pending) {
@@ -1435,7 +1435,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     questionId: string;
     answers: Record<string, string>;
     cancelled?: boolean;
-    respondedBy?: 'desktop' | 'mobile';
+    respondedBy?: 'desktop' | 'mobile' | 'telegram';
   }): void {
     if (!args.sessionId || args.sessionId === 'unknown') {
       return;

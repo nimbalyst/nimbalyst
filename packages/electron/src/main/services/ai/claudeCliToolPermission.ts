@@ -81,7 +81,7 @@ export interface ToolPermissionResponseRecord {
   scope: ToolPermissionAnswer['scope'];
   cancelled: boolean;
   respondedAt: number;
-  respondedBy: 'desktop' | 'mobile';
+  respondedBy: 'desktop' | 'mobile' | 'telegram';
 }
 
 /** The Claude Code `--permission-prompt-tool` return contract. */
@@ -202,7 +202,7 @@ export function normalizeToolPermissionAnswer(payload: any): ToolPermissionAnswe
 export function buildToolPermissionResponseRecord(args: {
   requestId: string;
   answer: ToolPermissionAnswer;
-  respondedBy: 'desktop' | 'mobile';
+  respondedBy: 'desktop' | 'mobile' | 'telegram';
   respondedAt?: number;
 }): ToolPermissionResponseRecord {
   const answer = normalizeToolPermissionAnswer(args.answer);

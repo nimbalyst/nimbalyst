@@ -41,6 +41,7 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
     'mcp__nimbalyst-host__get_session_result',
     'mcp__nimbalyst-host__list_queued_prompts',
     'mcp__nimbalyst-host__send_prompt',
+    'mcp__nimbalyst-host__send_prompt_now',
     'mcp__nimbalyst-host__notify_user',
     'mcp__nimbalyst-host__attention_arm',
     'mcp__nimbalyst-host__attention_cancel',
@@ -125,7 +126,7 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
     requestId: string,
     response: PermissionDecision,
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' = 'desktop'
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
   ): void {
     this.permissions.resolveToolPermission(
       requestId,
@@ -359,7 +360,7 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
   protected createPermissionResultMessage(
     requestId: string,
     response: PermissionDecision,
-    respondedBy: 'desktop' | 'mobile'
+    respondedBy: 'desktop' | 'mobile' | 'telegram'
   ): string {
     return JSON.stringify({
       type: 'nimbalyst_tool_result',
