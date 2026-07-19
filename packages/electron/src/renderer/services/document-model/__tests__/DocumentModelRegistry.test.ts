@@ -118,6 +118,25 @@ describe('DocumentModelRegistry', () => {
     h2.detach();
   });
 
+  it('flushPaths flushes only dirty models in the requested workspace', async () => {
+    const { handle: projectAHandle } = DocumentModelRegistry.getOrCreate('/project-a/a.md');
+    const { handle: projectBHandle } = DocumentModelRegistry.getOrCreate('/project-b/b.md');
+    const saveProjectA = vi.fn();
+    const saveProjectB = vi.fn();
+    projectAHandle.onSaveRequested(saveProjectA);
+    projectBHandle.onSaveRequested(saveProjectB);
+    projectAHandle.setDirty(true);
+    projectBHandle.setDirty(true);
+
+    await DocumentModelRegistry.flushPaths(['/project-a/a.md']);
+
+    expect(saveProjectA).toHaveBeenCalledTimes(1);
+    expect(saveProjectB).not.toHaveBeenCalled();
+
+    projectAHandle.detach();
+    projectBHandle.detach();
+  });
+
   it('clear() disposes all models', () => {
     const { handle: h1 } = DocumentModelRegistry.getOrCreate('/test/a.md');
     const { handle: h2 } = DocumentModelRegistry.getOrCreate('/test/b.md');

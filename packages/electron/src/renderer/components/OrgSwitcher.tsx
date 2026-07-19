@@ -1,5 +1,5 @@
 /**
- * OrgSwitcher — the org-level nav element that sits above the project rail
+ * OrgSwitcher — the org-level nav element that leads the project tab strip
  * (Epic H1). Shows the organization the active workspace belongs to and lets
  * the user see every org they're a member of, jumping to Settings → Org to
  * administer one.
@@ -97,7 +97,7 @@ export function OrgSwitcher() {
   const { refs, floatingStyles, context } = useFloating({
     open,
     onOpenChange: setOpen,
-    placement: 'right-start',
+    placement: 'bottom-start',
     middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
     whileElementsMounted: autoUpdate,
   });
@@ -124,7 +124,7 @@ export function OrgSwitcher() {
       <button
         ref={refs.setReference}
         {...getReferenceProps()}
-        className="org-switcher-button w-10 h-10 mx-auto mt-2 mb-1 rounded-lg bg-gradient-to-br from-[#60a5fa] to-[#a78bfa] text-white text-[12px] font-semibold flex items-center justify-center shadow-sm hover:brightness-110 transition"
+        className="org-switcher-button w-7 h-7 mx-1 rounded-md bg-[var(--nim-bg-tertiary)] border border-[var(--nim-border)] text-[var(--nim-text)] text-[10px] font-semibold flex flex-none items-center justify-center hover:bg-[var(--nim-bg-hover)] transition"
         data-testid="org-switcher"
         title={activeOrg ? `Organization: ${activeOrg.name}` : 'Organization'}
         aria-label="Switch organization"

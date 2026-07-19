@@ -6,15 +6,16 @@ import { readdir } from 'fs/promises';
 import { resolveEntryType } from '../utils/FileTree';
 import { shouldExcludeDir } from '../utils/fileFilters';
 import { getRecentItems, addToRecentItems, store, getWorkspaceWindowState, getTheme } from '../utils/store';
-import { createWindow, findWindowByWorkspace, windowStates } from './WindowManager';
+import { createWindow, windowStates } from './WindowManager';
+import { routeWorkspaceToProjectTab } from './projectTabRouting';
 import { safeHandle } from '../utils/ipcRegistry';
 import { getBackgroundColor } from '../theme/ThemeManager';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { GitStatusService } from '../services/GitStatusService';
-import { getMcpConfigService } from '../index';
-import { autoMatchTeamForWorkspace } from '../services/TeamService';
-import { initializeTrackerSync } from '../services/TrackerSyncManager';
-import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
+import {
+  activateWorkspaceTabContext,
+  initializeWorkspaceTabBackground,
+} from '../services/WorkspaceTabBackground';
 
 let workspaceManagerWindow: BrowserWindow | null = null;
 
@@ -235,13 +236,14 @@ export function setupWorkspaceManagerHandlers() {
 
   // Get currently open workspace paths (for Project Quick Open)
   safeHandle('workspace-manager:get-open-workspaces', async () => {
-    const openPaths: string[] = [];
+    const openPaths = new Set<string>();
     for (const [, state] of windowStates) {
       if (state.workspacePath && state.mode === 'workspace') {
-        openPaths.push(state.workspacePath);
+        openPaths.add(state.workspacePath);
+        state.additionalWorkspacePaths?.forEach((path) => openPaths.add(path));
       }
     }
-    return openPaths;
+    return [...openPaths];
   });
 
   // Get workspace statistics
@@ -336,23 +338,45 @@ export function setupWorkspaceManagerHandlers() {
   });
 
   // Open workspace (reuse existing window if already open)
-  safeHandle('workspace-manager:open-workspace', async (event, workspacePath: string) => {
+  safeHandle('workspace-manager:open-workspace', async (
+    event,
+    workspacePath: string,
+    options?: { forceNewWindow?: boolean },
+  ) => {
     // Add to recent workspaces
     addToRecentItems('workspaces', workspacePath, basename(workspacePath));
 
-    // Check if this workspace is already open in an existing window
-    const existingWindow = findWindowByWorkspace(workspacePath);
-    if (existingWindow && !existingWindow.isDestroyed()) {
-      // Focus the existing window instead of creating a new one
-      existingWindow.focus();
-
-      // Close workspace manager after focusing existing workspace
-      if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
-        workspaceManagerClosingForProject = true;
-        workspaceManagerWindow.close();
+    // Normal project opens prefer a tab in the invoking workspace window,
+    // then the most recently focused workspace window. Drag-out and the tab
+    // context menu pass forceNewWindow as the explicit escape hatch.
+    if (!options?.forceNewWindow) {
+      const invokingWindow = BrowserWindow.fromWebContents(event.sender);
+      const tabRoute = routeWorkspaceToProjectTab(workspacePath, {
+        preferredWindow: invokingWindow,
+      });
+      if (tabRoute.status === 'routed') {
+        if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
+          workspaceManagerClosingForProject = true;
+          workspaceManagerWindow.close();
+        }
+        return { success: true, disposition: 'tab' };
       }
-
-      return { success: true };
+      if (tabRoute.status === 'rejected') {
+        const parent = invokingWindow && !invokingWindow.isDestroyed()
+          ? invokingWindow
+          : workspaceManagerWindow ?? undefined;
+        const messageBoxOptions: Electron.MessageBoxOptions = {
+          type: 'warning',
+          title: 'Unable to Open Project Tab',
+          message: tabRoute.error,
+          detail: tabRoute.reason === 'tab-cap'
+            ? 'Close a project tab first, or drag an existing tab into its own window.'
+            : 'The project was not opened in a separate window.',
+        };
+        if (parent) await dialog.showMessageBox(parent, messageBoxOptions);
+        else await dialog.showMessageBox(messageBoxOptions);
+        return { success: false, disposition: 'blocked', error: tabRoute.error };
+      }
     }
 
     // Check for saved workspace window state
@@ -360,6 +384,8 @@ export function setupWorkspaceManagerHandlers() {
 
     // Create window with saved bounds if available
     const window = createWindow(false, true, workspacePath, savedState?.bounds);
+    initializeWorkspaceTabBackground(workspacePath);
+    activateWorkspaceTabContext(workspacePath);
 
     (async () => {
       try {
@@ -391,25 +417,6 @@ export function setupWorkspaceManagerHandlers() {
       }
     })();
 
-    setTimeout(() => {
-      // Start watching workspace MCP config for changes after the open handler returns.
-      try {
-        const mcpService = getMcpConfigService();
-        if (mcpService) {
-          mcpService.startWatchingWorkspaceConfig(workspacePath);
-        }
-      } catch (error) {
-        // Log error but don't throw - workspace opening must continue
-        console.error('[MCP] Failed to start watching workspace config:', error);
-      }
-
-      // Auto-match workspace to a team and initialize tracker sync only after
-      // we've yielded the main thread; both paths may probe git remotes.
-      void autoMatchTeamForWorkspace(workspacePath).catch(() => {});
-      void initializeTrackerSync(workspacePath).catch(() => {});
-      updateTrackerSchemaWorkspace(workspacePath);
-    }, 0);
-
     // Restore dev tools if they were open
     if (savedState?.devToolsOpen) {
       window.webContents.once('did-finish-load', () => {
@@ -434,7 +441,7 @@ export function setupWorkspaceManagerHandlers() {
       workspaceManagerWindow.close();
     }
 
-    return { success: true };
+    return { success: true, disposition: 'window' };
   });
 
   // Remove from recent.workspaces

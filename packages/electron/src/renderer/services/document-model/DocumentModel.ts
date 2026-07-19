@@ -48,7 +48,7 @@ interface EditorAttachment {
   id: string;
   isDirty: boolean;
   fileChangedCallbacks: Set<(content: string | ArrayBuffer) => void>;
-  saveRequestedCallbacks: Set<() => void>;
+  saveRequestedCallbacks: Set<() => void | Promise<void>>;
   diffRequestedCallbacks: Set<(state: DiffState) => void>;
   diffResolvedCallbacks: Set<(accepted: boolean) => void>;
 }

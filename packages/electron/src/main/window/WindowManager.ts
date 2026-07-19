@@ -17,6 +17,7 @@ import {
   setFileSystemService,
   clearFileSystemService,
   setFileSystemServiceFor,
+  clearFileSystemServiceFor,
 } from '@nimbalyst/runtime';
 import { navigationHistoryService } from '../services/NavigationHistoryService';
 import { signalFirstWindowLoaded } from '../services/startupMaintenanceGate';
@@ -26,8 +27,18 @@ import { ExtensionLogService } from '../services/ExtensionLogService';
 import { getMcpConfigService } from '../mcpConfigServiceRef';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
 import { addNimPreviewWorkspaceRoot } from '../protocols/nimPreviewProtocol';
-import { windows, windowStates, anyWindowReferencesWorkspace, resolveDocumentServicePath } from './windowState';
+import {
+  windows,
+  windowStates,
+  anyWindowReferencesWorkspace,
+  resolveActiveWorkspacePath,
+  resolveDocumentServicePath,
+} from './windowState';
 import { shouldSaveSessionOnWindowClose } from './sessionSaveOnClose';
+import {
+  activateWorkspaceTabContext,
+  releaseWorkspaceTabBackground,
+} from '../services/WorkspaceTabBackground';
 
 // Window management
 export { windows, windowStates };
@@ -467,6 +478,7 @@ export function createWindow(
                     if (fileSystemService) {
                         fileSystemService.destroy();
                         fileSystemServices.delete(path);
+                        clearFileSystemServiceFor(path);
                         clearFileSystemService();
                         console.log('[MAIN] Destroyed FileSystemService for workspace:', path);
                     }
@@ -479,6 +491,7 @@ export function createWindow(
                     } catch (error) {
                         console.error('[MAIN] Error stopping MCP config watcher:', error);
                     }
+                    releaseWorkspaceTabBackground(path);
                 }
             }
 
@@ -501,6 +514,12 @@ export function createWindow(
         window.on('focus', () => {
             // Update focus order
             windowFocusOrder.set(windowId, ++focusOrderCounter);
+            const activeWorkspacePath = resolveActiveWorkspacePath(windowStates.get(windowId));
+            const activeFileSystemService = activeWorkspacePath
+                ? fileSystemServices.get(activeWorkspacePath)
+                : null;
+            if (activeFileSystemService) setFileSystemService(activeFileSystemService);
+            if (activeWorkspacePath) activateWorkspaceTabContext(activeWorkspacePath);
             // This will be handled by the menu system
         });
 
@@ -686,9 +705,15 @@ export function createWindow(
             if (isWorkspaceMode && workspacePath) {
                 // Don't send 'workspace-opened' here - the renderer already knows it's in workspace mode
                 // from the initial state. Sending this event causes the tabs to be cleared.
-                // Just start watching the workspace directory for changes
+                // Start the workspace that is actually visible. Session
+                // restoration may have populated additional project tabs and
+                // selected a non-primary active path before the renderer loads.
                 setTimeout(() => {
-                    startWorkspaceWatcher(window, workspacePath);
+                    const activeWorkspacePath = resolveActiveWorkspacePath(windowStates.get(windowId))
+                        ?? workspacePath;
+                    startWorkspaceWatcher(window, activeWorkspacePath);
+                    const activeFileSystemService = fileSystemServices.get(activeWorkspacePath);
+                    if (activeFileSystemService) setFileSystemService(activeFileSystemService);
                 }, 100);
             } else if (!isOpeningFile) {
                 // Create new untitled document

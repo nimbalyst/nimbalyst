@@ -498,7 +498,14 @@ interface ElectronAPI {
     getWorkspaceStats: (workspacePath: string) => Promise<any>;
     openFolderDialog: () => Promise<{ success: true; path: string } | { success: false }>;
     createWorkspaceDialog: () => Promise<{ success: true; path: string } | { success: false; error?: string }>;
-    openWorkspace: (workspacePath: string) => Promise<{ success: boolean }>;
+    openWorkspace: (
+      workspacePath: string,
+      options?: { forceNewWindow?: boolean },
+    ) => Promise<{
+      success: boolean;
+      disposition?: 'tab' | 'window' | 'blocked';
+      error?: string;
+    }>;
     removeRecent: (workspacePath: string) => Promise<{ success: boolean }>;
     getOpenWorkspaces: () => Promise<string[]>;
   };

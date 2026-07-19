@@ -1,6 +1,7 @@
 import { BrowserWindow, shell, nativeImage, app, powerMonitor } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { windowStates, windows, getWindowId } from '../window/WindowManager';
+import { resolveActiveWorkspacePath } from '../window/windowState';
 import { basename, join } from 'path';
 import { writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -81,9 +82,10 @@ export function registerWindowHandlers() {
         const state = windowStates.get(windowId);
         if (!state || state.mode !== 'workspace') return null;
 
+        const workspacePath = resolveActiveWorkspacePath(state);
         return {
-            path: state.workspacePath,
-            name: state.workspacePath ? basename(state.workspacePath) : null
+            path: workspacePath,
+            name: workspacePath ? basename(workspacePath) : null
         };
     });
     // Set document edited state

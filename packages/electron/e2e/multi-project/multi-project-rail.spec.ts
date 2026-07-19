@@ -7,10 +7,10 @@ import * as path from 'path';
 test.describe.configure({ mode: 'serial' });
 
 /**
- * E2E coverage for the multi-project rail (issue #155).
+ * E2E coverage for project tabs (issue #155).
  *
  * Scenarios covered:
- *   1. Toggle on `multiProjectMode` exposes the rail UI and an active item.
+ *   1. Project tabs are enabled by default and expose an active item.
  *   2. Adding a second project via `register-additional` puts it on the rail
  *      and switching activates it (workspace:set-active fires through the
  *      atom subscriber).
@@ -49,8 +49,13 @@ test.describe('Multi-Project Rail', () => {
     await page.waitForLoadState('domcontentloaded');
     await page.waitForSelector('.workspace-sidebar', { timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
 
-    // Enable multi-project mode through the IPC settings handler so the
-    // rail is rendered without going through the Settings UI.
+    const tabsEnabledByDefault = await page.evaluate(async () => {
+      return window.electronAPI.invoke('app:get-multi-project-mode');
+    });
+    expect(tabsEnabledByDefault).toBe(true);
+
+    // Keep the fixture deterministic if a developer reuses a persisted E2E
+    // profile that predates the default-on migration.
     await page.evaluate(async () => {
       await window.electronAPI.invoke('app:set-multi-project-mode', true);
     });
@@ -106,7 +111,7 @@ test.describe('Multi-Project Rail', () => {
     const items = rail.locator('[data-testid="project-rail-item"]');
     await expect(items).toHaveCount(2);
 
-    const active = rail.locator('[data-testid="project-rail-item"].active');
+    const active = rail.locator('[data-testid="project-rail-item"].is-active');
     await expect(active).toHaveCount(1);
   });
 
@@ -167,7 +172,7 @@ test.describe('Multi-Project Rail', () => {
 
     // Click the active item to surface its close button (CSS shows it on
     // hover or when active).
-    const activeItem = rail.locator('[data-testid="project-rail-item"].active');
+    const activeItem = rail.locator('[data-testid="project-rail-item"].is-active');
     await activeItem.hover();
 
     // Auto-accept the streaming-confirm dialog (none expected here, but
@@ -214,7 +219,7 @@ test.describe('Multi-Project Rail', () => {
       // panel must show its empty state — no leaked tabs from the
       // previously active workspace.
       const rail = page.locator('[data-testid="project-rail"]');
-      const activeItem = rail.locator('[data-testid="project-rail-item"].active');
+      const activeItem = rail.locator('[data-testid="project-rail-item"].is-active');
       await expect(activeItem).toHaveCount(1);
 
       const empty = page.locator('.agent-mode-empty');

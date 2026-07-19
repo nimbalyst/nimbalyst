@@ -765,7 +765,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getWorkspaceStats: (workspacePath: string) => ipcRenderer.invoke('workspace-manager:get-workspace-stats', workspacePath),
     openFolderDialog: () => ipcRenderer.invoke('workspace-manager:open-folder-dialog'),
     createWorkspaceDialog: () => ipcRenderer.invoke('workspace-manager:create-workspace-dialog'),
-    openWorkspace: (workspacePath: string) => ipcRenderer.invoke('workspace-manager:open-workspace', workspacePath),
+    openWorkspace: (workspacePath: string, options?: { forceNewWindow?: boolean }) =>
+      ipcRenderer.invoke('workspace-manager:open-workspace', workspacePath, options),
     removeRecent: (workspacePath: string) => ipcRenderer.invoke('workspace-manager:remove-recent', workspacePath),
     getOpenWorkspaces: () => ipcRenderer.invoke('workspace-manager:get-open-workspaces') as Promise<string[]>,
   },
