@@ -44,6 +44,13 @@ interface ModelSelectorProps {
   readOnly?: boolean;
   /** Tooltip shown on the read-only chip explaining why it can't change. */
   readOnlyTitle?: string;
+  /**
+   * Monotonic signal from the AI input to open the picker from a keyboard
+   * shortcut. Keeping the trigger here makes the menu own its focus behavior.
+   */
+  openRequest?: number;
+  /** Restore focus to the AI input when Escape dismisses the menu. */
+  onKeyboardDismiss?: () => void;
 }
 
 export function ModelSelector({
@@ -53,6 +60,8 @@ export function ModelSelector({
   currentProvider = null,
   readOnly = false,
   readOnlyTitle,
+  openRequest,
+  onKeyboardDismiss,
 }: ModelSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [models, setModels] = useState<Record<string, Model[]>>({});
@@ -62,6 +71,8 @@ export function ModelSelector({
   const providers = useAtomValue(providersAtom);
   const setWindowMode = useSetAtom(setWindowModeAtom);
   const navigateToSettings = useSetAtom(navigateToSettingsAtom);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+  const lastOpenRequestRef = React.useRef(openRequest);
   const { refs, floatingStyles, context } = useFloating({
     open: isOpen,
     onOpenChange: setIsOpen,
@@ -75,11 +86,18 @@ export function ModelSelector({
     ],
   });
   const dismiss = useDismiss(context, {
-    escapeKey: true,
+    // Escape is handled on the menu so the AI input can reclaim focus.
+    escapeKey: false,
     outsidePress: (event) => !(event.target as Element | null)?.closest?.('.help-tooltip'),
   });
   const role = useRole(context, { role: 'menu' });
   const { getReferenceProps, getFloatingProps } = useInteractions([dismiss, role]);
+
+  React.useLayoutEffect(() => {
+    if (openRequest === undefined || openRequest === lastOpenRequestRef.current) return;
+    lastOpenRequestRef.current = openRequest;
+    setIsOpen(true);
+  }, [openRequest]);
 
   // Clear cached models when provider settings change so next dropdown open fetches fresh data
   useEffect(() => {
@@ -116,6 +134,58 @@ export function ModelSelector({
   const handleModelSelect = (modelId: string) => {
     onModelChange(modelId);
     setIsOpen(false);
+  };
+
+  const getEnabledModelOptions = React.useCallback((): HTMLButtonElement[] => {
+    if (!menuRef.current) return [];
+    return Array.from(
+      menuRef.current.querySelectorAll<HTMLButtonElement>('.model-selector-option:not([aria-disabled="true"])')
+    );
+  }, []);
+
+  const focusMenu = React.useCallback((menu: HTMLDivElement) => {
+    const options = Array.from(
+      menu.querySelectorAll<HTMLButtonElement>('.model-selector-option:not([aria-disabled="true"])')
+    );
+    const currentOption = options.find(option => option.dataset.modelId === currentModel);
+    (currentOption ?? options[0] ?? menu).focus();
+  }, [currentModel]);
+
+  const setMenuReference = React.useCallback((node: HTMLDivElement | null) => {
+    refs.setFloating(node);
+    menuRef.current = node;
+    // A portal's children may attach after the parent's layout effects. Focus
+    // from the ref as well so reopening a cached list never waits for another
+    // state change before keyboard navigation becomes active.
+    if (node) focusMenu(node);
+  }, [refs.setFloating, focusMenu]);
+
+  const handleOptionKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const options = getEnabledModelOptions();
+    const currentIndex = options.indexOf(event.currentTarget);
+
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      const nextIndex = Math.max(0, Math.min(options.length - 1, currentIndex + direction));
+      options[nextIndex]?.focus();
+      return;
+    }
+
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      handleModelSelect(event.currentTarget.dataset.modelId!);
+      return;
+    }
+
+  };
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    setIsOpen(false);
+    onKeyboardDismiss?.();
   };
 
   const getSettingsCategoryForModel = (modelId: string): SettingsCategory => {
@@ -233,6 +303,14 @@ export function ModelSelector({
     return acc;
   }, {} as Record<'agents' | 'models', Record<string, Model[]>>);
 
+  // Capture focus as soon as the popup opens, including while models are still
+  // loading. Once options exist, move focus to the active model (or the first
+  // available one) so Arrow keys work immediately.
+  React.useLayoutEffect(() => {
+    if (!isOpen) return;
+    if (menuRef.current) focusMenu(menuRef.current);
+  }, [isOpen, loading, models, focusMenu]);
+
   // Read-only chip: show the running provider/model without a dropdown. Used by
   // committed claude-code-cli sessions where the model is fixed at spawn, and
   // by voice sessions (openai-realtime) whose model isn't user-selectable.
@@ -269,10 +347,11 @@ export function ModelSelector({
       {isOpen && (
         <FloatingPortal>
           <div
-            ref={refs.setFloating}
+            ref={setMenuReference}
             className="model-selector-dropdown nim-scrollbar min-w-[240px] max-w-[320px] max-h-[min(400px,calc(100vh-24px))] overflow-y-auto rounded-lg p-1 z-[1000] bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_4px_12px_rgba(0,0,0,0.15)]"
             style={floatingStyles}
-            {...getFloatingProps()}
+            tabIndex={-1}
+            {...getFloatingProps({ onKeyDown: handleMenuKeyDown })}
           >
           {loading ? (
             <div className="model-selector-loading p-3 text-center text-xs text-[var(--nim-text-faint)]">Loading models...</div>
@@ -314,8 +393,10 @@ export function ModelSelector({
                             key={model.id}
                             className={`model-selector-option flex items-center justify-between gap-2 pl-6 pr-2 py-1.5 w-full border-none rounded text-xs cursor-pointer transition-[background] duration-150 text-left text-[var(--nim-text)] ${isCurrent ? 'selected bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)]' : ''} ${isDisabled ? 'disabled opacity-50 cursor-not-allowed' : 'hover:bg-[var(--nim-bg-hover)]'}`}
                             onClick={() => !isDisabled && handleModelSelect(model.id)}
+                            onKeyDown={handleOptionKeyDown}
                             title={isDisabled ? disabledTooltip : undefined}
                             aria-disabled={isDisabled}
+                            data-model-id={model.id}
                           >
                             <span className={`model-selector-option-name flex-1 overflow-hidden text-ellipsis whitespace-nowrap ${isDisabled ? 'text-[var(--nim-text-faint)]' : ''}`}>{model.name}</span>
                             {isDisabled ? (
@@ -358,8 +439,10 @@ export function ModelSelector({
                             key={model.id}
                             className={`model-selector-option flex items-center justify-between gap-2 pl-6 pr-2 py-1.5 w-full border-none rounded text-xs cursor-pointer transition-[background] duration-150 text-left text-[var(--nim-text)] ${isCurrent ? 'selected bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)]' : ''} ${isDisabled ? 'disabled opacity-50 cursor-not-allowed' : 'hover:bg-[var(--nim-bg-hover)]'}`}
                             onClick={() => !isDisabled && handleModelSelect(model.id)}
+                            onKeyDown={handleOptionKeyDown}
                             title={isDisabled ? disabledTooltip : undefined}
                             aria-disabled={isDisabled}
+                            data-model-id={model.id}
                           >
                             <span className={`model-selector-option-name flex-1 overflow-hidden text-ellipsis whitespace-nowrap ${isDisabled ? 'text-[var(--nim-text-faint)]' : ''}`}>{model.name}</span>
                             {isDisabled ? (

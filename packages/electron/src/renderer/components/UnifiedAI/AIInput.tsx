@@ -145,6 +145,10 @@ const MIN_PROMPT_HEIGHT = 36;
 const MAX_PROMPT_HEIGHT = 600;
 const DEFAULT_MAX_PROMPT_HEIGHT = 200;
 
+export function isOpenModelPickerShortcut(event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'shiftKey'>): boolean {
+  return (event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'm';
+}
+
 export const AIInput = forwardRef<AIInputRef, AIInputProps>(
   ({
     value,
@@ -194,6 +198,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     const [allSlashCommands, setAllSlashCommands] = useState<SlashCommandEntry[]>([]);
     const [dragActive, setDragActive] = useState(false);
     const [isFocused, setIsFocused] = useState(false);
+    const [modelPickerOpenRequest, setModelPickerOpenRequest] = useState(0);
 
     // Command pills: caret position (to suppress the token being typed) and the
     // inspect popover opened when a pill is clicked.
@@ -807,6 +812,20 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         : typeaheadMatch?.trigger === '@' ? fileMentionOptions
         : slashCommandOptions;
 
+      // Open the model picker without moving to the mouse. The picker itself
+      // takes focus on the current model so Arrow keys and Enter work at once.
+      if (
+        onModelChange
+        && !readOnlyModel
+        && currentProvider !== 'openai-realtime'
+        && !e.nativeEvent.isComposing
+        && isOpenModelPickerShortcut(e)
+      ) {
+        e.preventDefault();
+        setModelPickerOpenRequest(request => request + 1);
+        return;
+      }
+
       // Handle typeahead navigation
       if (typeaheadMatch && currentOptions.length > 0) {
         if (e.key === 'ArrowDown') {
@@ -1368,18 +1387,21 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
 {onModeChange && provider === 'claude-code' && mode && <ModeTag mode={mode} onModeChange={onModeChange} />}
 
             {(onModelChange || (readOnlyModel && currentModel)) && (
-              <HelpTooltip testId="model-picker">
-                <span style={{ display: 'inline-flex' }}>
-                  <ModelSelector
-                    currentModel={currentModel || ''}
-                    onModelChange={onModelChange ?? (() => {})}
-                    sessionHasMessages={sessionHasMessages}
-                    currentProvider={currentProvider}
-                    readOnly={!onModelChange && readOnlyModel}
-                    readOnlyTitle={readOnlyModelTitle}
-                  />
-                </span>
-              </HelpTooltip>
+              <span style={{ display: 'inline-flex' }}>
+                <ModelSelector
+                  currentModel={currentModel || ''}
+                  onModelChange={(modelId) => {
+                    onModelChange?.(modelId);
+                    textareaRef.current?.focus();
+                  }}
+                  sessionHasMessages={sessionHasMessages}
+                  currentProvider={currentProvider}
+                  readOnly={!onModelChange && readOnlyModel}
+                  readOnlyTitle={readOnlyModelTitle}
+                  openRequest={modelPickerOpenRequest}
+                  onKeyboardDismiss={() => textareaRef.current?.focus()}
+                />
+              </span>
             )}
             {showEffortLevel && onEffortLevelChange && effortLevel && (
               <EffortLevelSelector
