@@ -4,6 +4,53 @@ import os
 import UIKit
 #endif
 
+struct WebSocketConnectionContext: Equatable, Sendable {
+    let generation: Int
+    let roomId: String
+}
+
+protocol SyncWebSocketClient: AnyObject {
+    var sendsDeviceAnnounce: Bool { get set }
+    var onMessageWithContext: ((Data, WebSocketConnectionContext) -> Void)? { get set }
+    var onConnectionStateChangedWithContext: ((Bool, WebSocketConnectionContext) -> Void)? { get set }
+    var isConnected: Bool { get }
+
+    func reportActivity()
+    func setAppInForeground(_ inForeground: Bool)
+    func connect(serverUrl: String, roomId: String, authToken: String)
+    func disconnect()
+    func reconnect()
+    func sendRaw(_ json: String)
+    func sendRaw(_ json: String, completion: ((Error?) -> Void)?)
+    func startPings()
+    func stopPings()
+}
+
+enum WebSocketReconnectPolicy {
+    static func accepts(currentGeneration: Int, context: WebSocketConnectionContext) -> Bool {
+        currentGeneration == context.generation
+    }
+
+    static func shouldSchedule(
+        isIntentionallyClosed: Bool,
+        hasScheduledReconnect: Bool,
+        currentGeneration: Int,
+        context: WebSocketConnectionContext
+    ) -> Bool {
+        !isIntentionallyClosed
+            && !hasScheduledReconnect
+            && accepts(currentGeneration: currentGeneration, context: context)
+    }
+
+    static func shouldRunScheduled(
+        isIntentionallyClosed: Bool,
+        currentGeneration: Int,
+        scheduledGeneration: Int
+    ) -> Bool {
+        !isIntentionallyClosed && currentGeneration == scheduledGeneration
+    }
+}
+
 /// A WebSocket client using URLSessionWebSocketTask with automatic reconnection
 /// and periodic device announcements (heartbeat).
 final class WebSocketClient: @unchecked Sendable {
@@ -19,6 +66,7 @@ final class WebSocketClient: @unchecked Sendable {
     /// dead socket can't be mistaken for liveness on the new socket.
     private var connectionGeneration: Int = 0
     private var isIntentionallyClosed = false
+    private var reconnectWorkItem: DispatchWorkItem?
 
     /// The server URL and auth token needed to (re)connect.
     private var serverUrl: String?
@@ -28,8 +76,18 @@ final class WebSocketClient: @unchecked Sendable {
     /// Callback for received messages.
     var onMessage: ((Data) -> Void)?
 
+    /// Generation-bound callback used by session/index owners that need to
+    /// reject work queued across a room handoff. The legacy callback remains
+    /// available for clients whose room identity is fixed for their lifetime.
+    var onMessageWithContext: ((Data, WebSocketConnectionContext) -> Void)?
+
     /// Callback for connection state changes.
     var onConnectionStateChanged: ((Bool) -> Void)?
+
+    /// Generation-bound connection callback. A callback may be delivered after
+    /// its caller has already queued a replacement connection, so consumers
+    /// must retain and compare this context before mutating their state.
+    var onConnectionStateChangedWithContext: ((Bool, WebSocketConnectionContext) -> Void)?
 
     var isConnected: Bool {
         task?.state == .running
@@ -123,11 +181,20 @@ final class WebSocketClient: @unchecked Sendable {
     /// Disconnect and stop reconnection attempts.
     func disconnect() {
         isIntentionallyClosed = true
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         stopDeviceAnnounceTimer()
         stopPings()
+        let closedContext = roomId.map {
+            WebSocketConnectionContext(generation: connectionGeneration, roomId: $0)
+        }
+        connectionGeneration &+= 1
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         onConnectionStateChanged?(false)
+        if let closedContext {
+            onConnectionStateChangedWithContext?(false, closedContext)
+        }
     }
 
     /// Reconnect using the previously stored connection parameters.
@@ -137,6 +204,8 @@ final class WebSocketClient: @unchecked Sendable {
     }
 
     private func performConnect() {
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         // Clean up existing connection
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -172,10 +241,15 @@ final class WebSocketClient: @unchecked Sendable {
         let wsTask = session.webSocketTask(with: url)
         wsTask.maximumMessageSize = 16 * 1024 * 1024 // 16 MB (default is 1 MB)
         self.task = wsTask
+        let context = WebSocketConnectionContext(
+            generation: connectionGeneration,
+            roomId: roomId
+        )
         wsTask.resume()
 
         onConnectionStateChanged?(true)
-        startReceiving(on: wsTask)
+        onConnectionStateChangedWithContext?(true, context)
+        startReceiving(on: wsTask, context: context)
         if sendsDeviceAnnounce {
             startDeviceAnnounceTimer()
         }
@@ -221,9 +295,20 @@ final class WebSocketClient: @unchecked Sendable {
             completion?(NSError(domain: "WebSocketClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Not connected"]))
             return
         }
+        let generation = connectionGeneration
         task.send(.string(json)) { [weak self] error in
+            guard let self,
+                  self.task === task,
+                  self.connectionGeneration == generation else {
+                completion?(NSError(
+                    domain: "WebSocketClient",
+                    code: -2,
+                    userInfo: [NSLocalizedDescriptionKey: "Connection was replaced before send completed"]
+                ))
+                return
+            }
             if let error = error {
-                self?.logger.error("Send raw error: \(error.localizedDescription)")
+                self.logger.error("Send raw error: \(error.localizedDescription)")
             }
             completion?(error)
         }
@@ -231,10 +316,17 @@ final class WebSocketClient: @unchecked Sendable {
 
     // MARK: - Receive Loop
 
-    private func startReceiving(on wsTask: URLSessionWebSocketTask) {
+    private func startReceiving(
+        on wsTask: URLSessionWebSocketTask,
+        context: WebSocketConnectionContext
+    ) {
         wsTask.receive { [weak self] result in
             guard let self = self else { return }
-            guard self.task === wsTask else { return }
+            guard self.task === wsTask,
+                  WebSocketReconnectPolicy.accepts(
+                    currentGeneration: self.connectionGeneration,
+                    context: context
+                  ) else { return }
 
             switch result {
             case .success(let message):
@@ -242,42 +334,69 @@ final class WebSocketClient: @unchecked Sendable {
                 case .string(let text):
                     if let data = text.data(using: .utf8) {
                         self.onMessage?(data)
+                        self.onMessageWithContext?(data, context)
                     }
                 case .data(let data):
                     self.onMessage?(data)
+                    self.onMessageWithContext?(data, context)
                 @unknown default:
                     break
                 }
                 // Continue receiving
-                self.startReceiving(on: wsTask)
+                self.startReceiving(on: wsTask, context: context)
 
             case .failure(let error):
                 self.logger.error("Receive error: \(error.localizedDescription)")
-                self.handleDisconnect(for: wsTask)
+                self.handleDisconnect(for: wsTask, context: context)
             }
         }
     }
 
     // MARK: - Reconnection
 
-    private func handleDisconnect(for wsTask: URLSessionWebSocketTask) {
+    private func handleDisconnect(
+        for wsTask: URLSessionWebSocketTask,
+        context: WebSocketConnectionContext
+    ) {
         // Receive callbacks fire on a URLSession background queue.
         // Hop to main for Timer invalidation and shared state mutation.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            guard self.task === wsTask else { return }
+            guard self.task === wsTask,
+                  WebSocketReconnectPolicy.accepts(
+                    currentGeneration: self.connectionGeneration,
+                    context: context
+                  ) else { return }
             self.task = nil
             self.stopDeviceAnnounceTimer()
             self.stopPings()
             self.onConnectionStateChanged?(false)
+            self.onConnectionStateChangedWithContext?(false, context)
 
-            guard !self.isIntentionallyClosed else { return }
+            guard WebSocketReconnectPolicy.shouldSchedule(
+                isIntentionallyClosed: self.isIntentionallyClosed,
+                hasScheduledReconnect: self.reconnectWorkItem != nil,
+                currentGeneration: self.connectionGeneration,
+                context: context
+            ) else { return }
 
             self.logger.info("Scheduling reconnect in \(self.reconnectDelay)s")
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.reconnectDelay) { [weak self] in
-                guard let self = self, !self.isIntentionallyClosed else { return }
+            let scheduledGeneration = context.generation
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                self.reconnectWorkItem = nil
+                guard WebSocketReconnectPolicy.shouldRunScheduled(
+                    isIntentionallyClosed: self.isIntentionallyClosed,
+                    currentGeneration: self.connectionGeneration,
+                    scheduledGeneration: scheduledGeneration
+                ) else { return }
                 self.performConnect()
             }
+            self.reconnectWorkItem = workItem
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + self.reconnectDelay,
+                execute: workItem
+            )
         }
     }
 
@@ -338,7 +457,11 @@ final class WebSocketClient: @unchecked Sendable {
                 if let error = error {
                     self.logger.warning("Ping failed -- treating connection as dead: \(error.localizedDescription)")
                     if let deadTask = self.task {
-                        self.handleDisconnect(for: deadTask)
+                        let context = WebSocketConnectionContext(
+                            generation: generation,
+                            roomId: self.roomId ?? ""
+                        )
+                        self.handleDisconnect(for: deadTask, context: context)
                     }
                 }
             }
@@ -418,3 +541,5 @@ final class WebSocketClient: @unchecked Sendable {
         return clamped.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? clamped
     }
 }
+
+extension WebSocketClient: SyncWebSocketClient {}
