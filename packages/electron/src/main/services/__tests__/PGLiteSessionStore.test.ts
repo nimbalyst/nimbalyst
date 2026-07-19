@@ -58,6 +58,7 @@ describe('PGLiteSessionStore JSON-column read normalization', () => {
     worktree_id: null,
     worktree_path: null,
     worktree_project_path: null,
+    worktree_is_archived: null,
     is_archived: false,
     is_pinned: false,
     branched_from_session_id: null,
@@ -95,6 +96,82 @@ describe('PGLiteSessionStore JSON-column read normalization', () => {
     const spread = { ...(session?.metadata as Record<string, unknown>) };
     expect(spread).not.toHaveProperty('0');
     expect(spread).toHaveProperty('tags');
+  });
+
+  it.each([
+    ['PGLite-shaped metadata', { workspaceId: '/metadata-alias' }],
+    ['SQLite-shaped metadata', '{"workspaceId":"/metadata-alias"}'],
+  ])('keeps the DB workspace column authoritative with %s', async (_label, metadata) => {
+    const db = {
+      query: vi.fn(async () => ({
+        rows: [makeRow({
+          workspace_id: '/repo',
+          worktree_id: 'worktree-1',
+          worktree_path: '/repo_worktrees/fresh',
+          worktree_project_path: '/repo',
+          metadata,
+        })],
+      })),
+    };
+    const store = createPGLiteSessionStore(db as any);
+
+    const session = await store.get('s1');
+
+    expect(session).toMatchObject({
+      workspacePath: '/repo',
+      worktreePath: '/repo_worktrees/fresh',
+      worktreeProjectPath: '/repo',
+    });
+    expect(session?.metadata).toMatchObject({ workspaceId: '/metadata-alias' });
+  });
+
+  it.each([
+    ['PGLite active', false, false],
+    ['PGLite archived', true, true],
+    ['SQLite active', 0, false],
+    ['SQLite archived', 1, true],
+  ])('get() normalizes %s session and joined-worktree lifecycle evidence', async (_label, storedValue, expectedValue) => {
+    const queries: string[] = [];
+    const db = {
+      query: vi.fn(async (sql: string) => {
+        queries.push(sql);
+        return {
+          rows: [makeRow({
+            worktree_id: 'worktree-1',
+            worktree_path: '/repo_worktrees/fresh',
+            worktree_project_path: '/repo',
+            worktree_is_archived: storedValue,
+            is_archived: storedValue,
+          })],
+        };
+      }),
+    };
+    const store = createPGLiteSessionStore(db as any);
+
+    const session = await store.get('s1');
+
+    expect(queries[0]).toContain('w.is_archived AS worktree_is_archived');
+    expect(session?.worktreeIsArchived).toBe(expectedValue);
+    expect(session?.isArchived).toBe(expectedValue);
+  });
+
+  it('get() leaves joined lifecycle evidence absent when the worktree row was deleted', async () => {
+    const db = {
+      query: vi.fn(async () => ({
+        rows: [makeRow({
+          worktree_id: 'worktree-deleted',
+          worktree_path: null,
+          worktree_is_archived: null,
+        })],
+      })),
+    };
+    const store = createPGLiteSessionStore(db as any);
+
+    const session = await store.get('s1');
+
+    expect(session).toMatchObject({ worktreeId: 'worktree-deleted' });
+    expect(session?.worktreePath).toBeUndefined();
+    expect(session?.worktreeIsArchived).toBeUndefined();
   });
 
   it('get() falls back to {} when the metadata text is malformed', async () => {

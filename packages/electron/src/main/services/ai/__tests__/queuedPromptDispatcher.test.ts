@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  assertQueuedPromptReloadTarget,
+  resolveQueuedPromptDispatchTarget,
   tryClaimAndDispatchNextQueuedPrompt,
   type ClaimedQueuedPrompt,
   type QueuedPromptStoreLike,
@@ -59,6 +61,11 @@ describe('queuedPromptDispatcher', () => {
       },
       processingSet,
       queueStore,
+      resolveTarget: async () => ({
+        routingWorkspacePath: '/workspace/project',
+        expectedWorktreeId: null,
+        expectedWorktreePath: null,
+      }),
       sendMessageHandler,
       sessionId: 'session-1',
       source: 'test queue',
@@ -84,7 +91,12 @@ describe('queuedPromptDispatcher', () => {
       expect.objectContaining({ queuedPromptId: 'prompt-1' }),
       'session-1',
       '/workspace/project',
-      { attentionGeneration: 'turn-a' },
+      expect.objectContaining({
+        attentionGeneration: 'turn-a',
+        expectedWorktreeId: null,
+        expectedWorktreePath: null,
+        registerDeferredDrainReplay: expect.any(Function),
+      }),
     );
   });
 
@@ -98,10 +110,16 @@ describe('queuedPromptDispatcher', () => {
       documentContext: null,
     };
 
+    let rowStatus: 'pending' | 'executing' | 'completed' = 'pending';
     const queueStore: QueuedPromptStoreLike = {
-      listPending: vi.fn(async () => [claimedPrompt]),
-      claim: vi.fn(async () => claimedPrompt),
-      complete: vi.fn(async () => {}),
+      listPending: vi.fn(async () => rowStatus === 'pending' ? [claimedPrompt] : []),
+      claim: vi.fn(async () => {
+        rowStatus = 'executing';
+        return claimedPrompt;
+      }),
+      complete: vi.fn(async () => {
+        rowStatus = 'completed';
+      }),
       fail: vi.fn(async () => {}),
     };
 
@@ -123,6 +141,11 @@ describe('queuedPromptDispatcher', () => {
       onPromptClaimed: () => {},
       processingSet,
       queueStore,
+      resolveTarget: async () => ({
+        routingWorkspacePath: '/workspace/project',
+        expectedWorktreeId: null,
+        expectedWorktreePath: null,
+      }),
       sendMessageHandler: vi.fn(async () => ({ content: 'ok' })),
       sessionId: 'session-1',
       source: 'test queue',
@@ -140,6 +163,7 @@ describe('queuedPromptDispatcher', () => {
       workspacePath: '/workspace/project',
       source: 'test queue',
       attentionGeneration: 'turn-a',
+      outcome: 'completed',
     });
   });
 
@@ -180,6 +204,11 @@ describe('queuedPromptDispatcher', () => {
       onPromptClaimed: () => {},
       processingSet,
       queueStore,
+      resolveTarget: async () => ({
+        routingWorkspacePath: '/workspace/project',
+        expectedWorktreeId: null,
+        expectedWorktreePath: null,
+      }),
       sendMessageHandler: vi.fn(async () => ({ content: 'ok' })),
       sessionId: 'session-1',
       source: 'test queue',
@@ -218,10 +247,16 @@ describe('queuedPromptDispatcher', () => {
       attachments: null,
       documentContext: null,
     };
+    let rowStatus: 'pending' | 'executing' | 'completed' = 'pending';
     const queueStore: QueuedPromptStoreLike = {
-      listPending: vi.fn(async () => [claimedPrompt]),
-      claim: vi.fn(async () => claimedPrompt),
-      complete: vi.fn(async () => {}),
+      listPending: vi.fn(async () => rowStatus === 'pending' ? [claimedPrompt] : []),
+      claim: vi.fn(async () => {
+        rowStatus = 'executing';
+        return claimedPrompt;
+      }),
+      complete: vi.fn(async () => {
+        rowStatus = 'completed';
+      }),
       fail: vi.fn(async () => {}),
     };
     const targetWindow = {
@@ -324,6 +359,11 @@ describe('queuedPromptDispatcher', () => {
       onPromptClaimed: () => {},
       processingSet,
       queueStore,
+      resolveTarget: async () => ({
+        routingWorkspacePath: '/workspace/project',
+        expectedWorktreeId: null,
+        expectedWorktreePath: null,
+      }),
       sendMessageHandler: vi.fn(async () => ({ content: 'ok' })),
       sessionId,
       source: 'forced A-to-B interleaving',
@@ -348,6 +388,488 @@ describe('queuedPromptDispatcher', () => {
       status: 'pending',
       promptId: 'prompt-b',
       generation: turnB,
+    });
+  });
+
+  it('canonicalizes an active worktree alias before claim and completes only after handler success', async () => {
+    const sessionId = 'session-worktree';
+    const canonicalWorkspace = '/repo';
+    const worktreePath = '/repo_worktrees/fresh';
+    const persistedSession = {
+      id: sessionId,
+      workspacePath: canonicalWorkspace,
+      worktreeId: 'worktree-fresh',
+      worktreePath,
+      worktreeIsArchived: false,
+    };
+    const row = {
+      id: 'prompt-worktree-initial',
+      prompt: 'implement the bounded task',
+      status: 'pending' as 'pending' | 'executing' | 'completed' | 'failed',
+      errorMessage: null as string | null,
+    };
+    let releaseHandler!: () => void;
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    let reportHandlerStarted!: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      reportHandlerStarted = resolve;
+    });
+    let reportChainSettled!: () => void;
+    const chainSettled = new Promise<void>((resolve) => {
+      reportChainSettled = resolve;
+    });
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => row.status === 'pending' ? [row] : []),
+      claim: vi.fn(async () => {
+        if (row.status !== 'pending') return null;
+        row.status = 'executing';
+        return row;
+      }),
+      complete: vi.fn(async () => {
+        row.status = 'completed';
+      }),
+      fail: vi.fn(async (_id, errorMessage) => {
+        row.status = 'failed';
+        row.errorMessage = errorMessage;
+      }),
+    };
+    const lifecycleWorkspaces: string[] = [];
+    const handlerWorkspaces: string[] = [];
+    const executionCwds: string[] = [];
+    const onChainSettled = vi.fn(async (payload) => {
+      expect(payload).toMatchObject({
+        sessionId,
+        workspacePath: canonicalWorkspace,
+        outcome: 'completed',
+      });
+      reportChainSettled();
+    });
+
+    const processed = await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onChainSettled,
+      onPromptClaimed: vi.fn(),
+      processingSet: new Set<string>(),
+      queueStore,
+      resolveTarget: ({ sessionId: requestedSessionId, workspacePath: requestedWorkspace }) =>
+        resolveQueuedPromptDispatchTarget(
+          requestedSessionId,
+          requestedWorkspace,
+          persistedSession,
+        ),
+      sendMessageHandler: vi.fn(async (_event, _message, _context, _sessionId, handlerWorkspace) => {
+        handlerWorkspaces.push(handlerWorkspace!);
+        executionCwds.push(persistedSession.worktreePath || handlerWorkspace!);
+        reportHandlerStarted();
+        await handlerGate;
+        return { content: 'done' };
+      }),
+      sessionId,
+      source: 'native-worktree initial prompt',
+      startSession: vi.fn(async ({ workspacePath: lifecycleWorkspace }) => {
+        lifecycleWorkspaces.push(lifecycleWorkspace);
+        return 'turn-worktree-a';
+      }),
+      targetWindow: {
+        isDestroyed: () => false,
+        webContents: { send: vi.fn(), mainFrame: {} },
+      } as unknown as Electron.BrowserWindow,
+      workspacePath: worktreePath,
+    });
+
+    expect(processed).toBe(true);
+    expect(row.status).toBe('executing');
+    await handlerStarted;
+    expect(row.status).toBe('executing');
+    expect(lifecycleWorkspaces).toEqual([canonicalWorkspace]);
+    expect(handlerWorkspaces).toEqual([canonicalWorkspace]);
+    expect(executionCwds).toEqual([worktreePath]);
+
+    releaseHandler();
+    await chainSettled;
+
+    expect(row.status).toBe('completed');
+    expect(row.errorMessage).toBeNull();
+    expect(queueStore.claim).toHaveBeenCalledTimes(1);
+    expect(queueStore.complete).toHaveBeenCalledTimes(1);
+    expect(queueStore.fail).not.toHaveBeenCalled();
+    expect(onChainSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      'deletion',
+      {
+        worktreeId: 'worktree-a',
+        worktreePath: null,
+        worktreeIsArchived: undefined,
+      },
+    ],
+    [
+      'replacement',
+      {
+        worktreeId: 'worktree-b',
+        worktreePath: '/repo_worktrees/b',
+        worktreeIsArchived: false,
+      },
+    ],
+    [
+      'archive',
+      {
+        isArchived: true,
+      },
+    ],
+  ])('fails a claimed worktree turn when reload observes %s after preflight', async (_label, reloadMutation) => {
+    const sessionId = 'session-worktree-race';
+    const canonicalWorkspace = '/repo';
+    const originalWorktreePath = '/repo_worktrees/a';
+    const preflightSession = {
+      id: sessionId,
+      workspacePath: canonicalWorkspace,
+      worktreeId: 'worktree-a',
+      worktreePath: originalWorktreePath,
+      isArchived: false,
+      worktreeIsArchived: false,
+    };
+    const reloadedSession = { ...preflightSession } as {
+      id: string;
+      workspacePath: string;
+      worktreeId: string | null;
+      worktreePath: string | null;
+      isArchived: boolean;
+      worktreeIsArchived?: boolean;
+    };
+    const row = {
+      id: `prompt-worktree-${_label}`,
+      prompt: 'must stay target-bound',
+      status: 'pending' as 'pending' | 'executing' | 'completed' | 'failed',
+      errorMessage: null as string | null,
+    };
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => row.status === 'pending' ? [row] : []),
+      claim: vi.fn(async () => {
+        if (row.status !== 'pending') return null;
+        row.status = 'executing';
+        Object.assign(reloadedSession, reloadMutation);
+        return row;
+      }),
+      complete: vi.fn(async () => {
+        row.status = 'completed';
+      }),
+      fail: vi.fn(async (_promptId, errorMessage) => {
+        row.status = 'failed';
+        row.errorMessage = errorMessage;
+      }),
+    };
+    const watcherConstructed = vi.fn();
+    const providerConstructed = vi.fn();
+    let capturedTurnContext: any;
+    let reportAfterSettled!: () => void;
+    const afterSettled = new Promise<void>((resolve) => {
+      reportAfterSettled = resolve;
+    });
+
+    const accepted = await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onAfterSettled: async () => reportAfterSettled(),
+      onChainSettled: vi.fn(async () => {}),
+      onPromptClaimed: vi.fn(),
+      processingSet: new Set<string>(),
+      queueStore,
+      resolveTarget: ({ sessionId: requestedId, workspacePath }) =>
+        resolveQueuedPromptDispatchTarget(requestedId, workspacePath, preflightSession),
+      sendMessageHandler: vi.fn(async (
+        _event,
+        _message,
+        _context,
+        requestedId,
+        _routingWorkspace,
+        turnContext,
+      ) => {
+        capturedTurnContext = turnContext;
+        // This is the exact production assertion MessageStreamingHandler runs
+        // after loadSession and before watcher/provider construction.
+        assertQueuedPromptReloadTarget(requestedId!, reloadedSession, turnContext);
+        watcherConstructed();
+        providerConstructed();
+        return { content: 'unexpected' };
+      }),
+      sessionId,
+      source: `worktree ${_label} race`,
+      startSession: vi.fn(async () => 'turn-worktree-race'),
+      targetWindow: {
+        isDestroyed: () => false,
+        webContents: { send: vi.fn(), mainFrame: {} },
+      } as unknown as Electron.BrowserWindow,
+      workspacePath: originalWorktreePath,
+    });
+
+    expect(accepted).toBe(true);
+    await afterSettled;
+
+    expect(capturedTurnContext).toEqual(expect.objectContaining({
+      attentionGeneration: 'turn-worktree-race',
+      expectedWorktreeId: 'worktree-a',
+      expectedWorktreePath: originalWorktreePath,
+      registerDeferredDrainReplay: expect.any(Function),
+    }));
+    expect(row.status).toBe('failed');
+    expect(row.errorMessage).toMatch(/archived|retired|changed worktree identity/i);
+    expect(queueStore.fail).toHaveBeenCalledTimes(1);
+    expect(queueStore.complete).not.toHaveBeenCalled();
+    expect(watcherConstructed).not.toHaveBeenCalled();
+    expect(providerConstructed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['retired worktree alias', '/repo_worktrees/retired'],
+    ['unrelated workspace alias', '/other-repo'],
+  ])('rejects a %s before listing or claiming a queue row', async (_label, requestedWorkspace) => {
+    const sessionId = 'session-worktree';
+    const persistedSession = {
+      id: sessionId,
+      workspacePath: '/repo',
+      worktreeId: 'worktree-active',
+      worktreePath: '/repo_worktrees/active',
+      worktreeIsArchived: false,
+    };
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [{ id: 'prompt-1', prompt: 'continue' }]),
+      claim: vi.fn(async (id) => ({ id, prompt: 'continue' })),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+    const sendMessageHandler = vi.fn(async () => ({ content: 'unexpected' }));
+    const startSession = vi.fn(async () => 'turn-unexpected');
+
+    const processed = await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: vi.fn(),
+      processingSet: new Set<string>(),
+      queueStore,
+      resolveTarget: ({ sessionId: requestedSessionId, workspacePath }) =>
+        resolveQueuedPromptDispatchTarget(
+          requestedSessionId,
+          workspacePath,
+          persistedSession,
+        ),
+      sendMessageHandler,
+      sessionId,
+      source: 'invalid alias preflight',
+      startSession,
+      targetWindow: {
+        isDestroyed: () => false,
+        webContents: { send: vi.fn(), mainFrame: {} },
+      } as unknown as Electron.BrowserWindow,
+      workspacePath: requestedWorkspace,
+    });
+
+    expect(processed).toBe(false);
+    expect(queueStore.listPending).not.toHaveBeenCalled();
+    expect(queueStore.claim).not.toHaveBeenCalled();
+    expect(startSession).not.toHaveBeenCalled();
+    expect(sendMessageHandler).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'archived session',
+      {
+        id: 'session-retired',
+        workspacePath: '/repo',
+        worktreeId: 'worktree-active',
+        worktreePath: '/repo_worktrees/active',
+        isArchived: true,
+        worktreeIsArchived: false,
+      },
+    ],
+    [
+      'archived worktree',
+      {
+        id: 'session-retired',
+        workspacePath: '/repo',
+        worktreeId: 'worktree-retired',
+        worktreePath: '/repo_worktrees/retired',
+        isArchived: false,
+        worktreeIsArchived: true,
+      },
+    ],
+    [
+      'deleted worktree row',
+      {
+        id: 'session-retired',
+        workspacePath: '/repo',
+        worktreeId: 'worktree-deleted',
+        worktreePath: null,
+        isArchived: false,
+        worktreeIsArchived: undefined,
+      },
+    ],
+  ])('rejects a %s before listing or claiming its queue', async (_label, persistedSession) => {
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [{ id: 'prompt-1', prompt: 'continue' }]),
+      claim: vi.fn(async (id) => ({ id, prompt: 'continue' })),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+    const startSession = vi.fn(async () => 'turn-unexpected');
+    const sendMessageHandler = vi.fn(async () => ({ content: 'unexpected' }));
+
+    const processed = await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: vi.fn(),
+      processingSet: new Set<string>(),
+      queueStore,
+      resolveTarget: ({ sessionId, workspacePath }) =>
+        resolveQueuedPromptDispatchTarget(
+          sessionId,
+          workspacePath,
+          persistedSession,
+        ),
+      sendMessageHandler,
+      sessionId: persistedSession.id,
+      source: 'retired target preflight',
+      startSession,
+      targetWindow: {
+        isDestroyed: () => false,
+        webContents: { send: vi.fn(), mainFrame: {} },
+      } as unknown as Electron.BrowserWindow,
+      workspacePath: persistedSession.workspacePath,
+    });
+
+    expect(processed).toBe(false);
+    expect(queueStore.listPending).not.toHaveBeenCalled();
+    expect(queueStore.claim).not.toHaveBeenCalled();
+    expect(startSession).not.toHaveBeenCalled();
+    expect(sendMessageHandler).not.toHaveBeenCalled();
+  });
+
+  it('settles a plain post-claim handler throw as failed without continuing the queue', async () => {
+    vi.useFakeTimers();
+    const claimedPrompt: ClaimedQueuedPrompt = {
+      id: 'prompt-handler-failure',
+      prompt: 'fail before provider start',
+    };
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [claimedPrompt]),
+      claim: vi.fn(async () => claimedPrompt),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+    const processingSet = new Set<string>();
+    const continueQueuedPromptChain = vi.fn(async () => {});
+    const onChainSettled = vi.fn(async () => {});
+
+    await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain,
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onChainSettled,
+      onPromptClaimed: vi.fn(),
+      processingSet,
+      queueStore,
+      resolveTarget: async () => ({
+        routingWorkspacePath: '/repo',
+        expectedWorktreeId: null,
+        expectedWorktreePath: null,
+      }),
+      sendMessageHandler: vi.fn(async () => {
+        throw new Error('plain early validation failure');
+      }),
+      sessionId: 'session-handler-failure',
+      source: 'handler failure',
+      startSession: vi.fn(async () => 'turn-handler-failure'),
+      targetWindow: {
+        isDestroyed: () => false,
+        webContents: { send: vi.fn(), mainFrame: {} },
+      } as unknown as Electron.BrowserWindow,
+      workspacePath: '/repo',
+    });
+
+    await vi.runAllTimersAsync();
+
+    expect(queueStore.fail).toHaveBeenCalledTimes(1);
+    expect(queueStore.fail).toHaveBeenCalledWith(
+      'prompt-handler-failure',
+      'plain early validation failure',
+    );
+    expect(queueStore.complete).not.toHaveBeenCalled();
+    expect(continueQueuedPromptChain).not.toHaveBeenCalled();
+    expect(processingSet.has('session-handler-failure')).toBe(false);
+    expect(onChainSettled).toHaveBeenCalledTimes(1);
+    expect(onChainSettled).toHaveBeenCalledWith({
+      sessionId: 'session-handler-failure',
+      workspacePath: '/repo',
+      source: 'handler failure',
+      attentionGeneration: 'turn-handler-failure',
+      outcome: 'failed',
+    });
+  });
+
+  it('fails the claimed row and returns false when session start fails before handler scheduling', async () => {
+    const claimedPrompt: ClaimedQueuedPrompt = {
+      id: 'prompt-start-failure',
+      prompt: 'cannot start',
+    };
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [claimedPrompt]),
+      claim: vi.fn(async () => claimedPrompt),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+    const processingSet = new Set<string>();
+    const onChainSettled = vi.fn(async () => {});
+    const onPromptClaimed = vi.fn();
+    const sendMessageHandler = vi.fn(async () => ({ content: 'unexpected' }));
+
+    await expect(tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onChainSettled,
+      onPromptClaimed,
+      processingSet,
+      queueStore,
+      resolveTarget: async () => ({
+        routingWorkspacePath: '/repo',
+        expectedWorktreeId: null,
+        expectedWorktreePath: null,
+      }),
+      sendMessageHandler,
+      sessionId: 'session-start-failure',
+      source: 'start failure',
+      startSession: vi.fn(async () => {
+        throw new Error('state start failed');
+      }),
+      targetWindow: {
+        isDestroyed: () => false,
+        webContents: { send: vi.fn(), mainFrame: {} },
+      } as unknown as Electron.BrowserWindow,
+      workspacePath: '/repo',
+    })).resolves.toBe(false);
+
+    expect(queueStore.fail).toHaveBeenCalledTimes(1);
+    expect(queueStore.fail).toHaveBeenCalledWith('prompt-start-failure', 'state start failed');
+    expect(queueStore.complete).not.toHaveBeenCalled();
+    expect(onPromptClaimed).not.toHaveBeenCalled();
+    expect(sendMessageHandler).not.toHaveBeenCalled();
+    expect(processingSet.has('session-start-failure')).toBe(false);
+    expect(onChainSettled).toHaveBeenCalledWith({
+      sessionId: 'session-start-failure',
+      workspacePath: '/repo',
+      source: 'start failure',
+      attentionGeneration: undefined,
+      outcome: 'failed',
     });
   });
 });

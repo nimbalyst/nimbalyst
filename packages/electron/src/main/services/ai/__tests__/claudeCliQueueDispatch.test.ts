@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { dispatchQueuedPromptToClaudeCli } from '../claudeCliQueueDispatch';
+import {
+  dispatchQueuedPromptToClaudeCli,
+  dispatchQueuedPromptToClaudeCliWithTarget,
+} from '../claudeCliQueueDispatch';
 import type { ClaudeCliQueueDispatchDeps } from '../claudeCliQueueDispatch';
+import type { QueuedClaudeCliWorktree } from '../claudeCliQueueDispatch';
 
 // NIM-834: queued prompts for claude-code-cli sessions (meta-agent spawns,
 // restart continuations, wakeups) were routed through the SDK dispatcher into
@@ -42,6 +46,80 @@ describe('dispatchQueuedPromptToClaudeCli (NIM-834)', () => {
     // Launch path: queue drains on the PID watcher's idle transition; no direct
     // flush needed unless the CLI already reports idle.
     expect(deps.flushNext).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['deleted', async (): Promise<QueuedClaudeCliWorktree | null> => null],
+    ['archived', async (): Promise<QueuedClaudeCliWorktree | null> => ({ id: 'worktree-a', path: '/repo_worktrees/a', isArchived: true })],
+    ['replaced', async (): Promise<QueuedClaudeCliWorktree | null> => ({ id: 'worktree-a', path: '/repo_worktrees/replacement', isArchived: false })],
+    ['lookup error', async (): Promise<QueuedClaudeCliWorktree | null> => { throw new Error('worktree lookup exploded'); }],
+  ] as const)(
+    'fails closed before CLI launch when the preflight worktree is %s at the second lookup',
+    async (_label, getWorktree) => {
+      const deps = makeDeps();
+
+      const handled = await dispatchQueuedPromptToClaudeCliWithTarget(
+        deps,
+        {
+          sessionId: 's-worktree',
+          workspacePath: '/repo',
+          model: 'claude-code-cli:fable-1m',
+        },
+        {
+          expectedWorktreeId: 'worktree-a',
+          expectedWorktreePath: '/repo_worktrees/a',
+        },
+        getWorktree,
+      );
+
+      expect(handled).toBe(false);
+      expect(deps.ensureSession).not.toHaveBeenCalled();
+      expect(deps.flushNext).not.toHaveBeenCalled();
+      expect(deps.logWarn).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('launches a worktree-owned CLI only with the exact active preflight path', async () => {
+    const deps = makeDeps();
+
+    const handled = await dispatchQueuedPromptToClaudeCliWithTarget(
+      deps,
+      { sessionId: 's-worktree', workspacePath: '/repo' },
+      {
+        expectedWorktreeId: 'worktree-a',
+        expectedWorktreePath: '/repo_worktrees/a',
+      },
+      async () => ({
+        id: 'worktree-a',
+        path: '/repo_worktrees/a',
+        isArchived: false,
+      }),
+    );
+
+    expect(handled).toBe(true);
+    expect(deps.ensureSession).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: '/repo_worktrees/a',
+    }));
+  });
+
+  it('preserves canonical-checkout launch for a session with no worktree identity', async () => {
+    const deps = makeDeps();
+    const getWorktree = vi.fn(async () => null);
+
+    const handled = await dispatchQueuedPromptToClaudeCliWithTarget(
+      deps,
+      { sessionId: 's-canonical', workspacePath: '/repo' },
+      { expectedWorktreeId: null, expectedWorktreePath: null },
+      getWorktree,
+    );
+
+    expect(handled).toBe(true);
+    expect(getWorktree).not.toHaveBeenCalled();
+    expect(deps.ensureSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 's-canonical',
+      workspacePath: '/repo',
+      cwd: undefined,
+    }));
   });
 
   it('kicks a direct flush when the launched CLI already reports idle', async () => {

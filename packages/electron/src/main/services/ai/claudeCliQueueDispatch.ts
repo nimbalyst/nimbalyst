@@ -26,6 +26,17 @@ export interface ClaudeCliQueueDispatchInput {
   cwd?: string;
 }
 
+export interface QueuedClaudeCliDispatchTarget {
+  expectedWorktreeId: string | null;
+  expectedWorktreePath: string | null;
+}
+
+export interface QueuedClaudeCliWorktree {
+  id: string;
+  path: string;
+  isArchived?: boolean | null;
+}
+
 export interface ClaudeCliQueueDispatchDeps {
   isTerminalActive(sessionId: string): boolean;
   ensureSession(input: {
@@ -98,4 +109,52 @@ export async function dispatchQueuedPromptToClaudeCli(
     `[ClaudeCliQueueDispatch] CLI mid-turn for ${sessionId}; queue drains on next idle`
   );
   return false;
+}
+
+/**
+ * Compose the central queued-target preflight with the CLI launch rail's
+ * second worktree read. Kept injectable so post-preflight deletion/archive/
+ * replacement races are exercised without launching a real terminal.
+ */
+export async function dispatchQueuedPromptToClaudeCliWithTarget(
+  deps: ClaudeCliQueueDispatchDeps,
+  input: Omit<ClaudeCliQueueDispatchInput, 'cwd'>,
+  target: QueuedClaudeCliDispatchTarget,
+  getWorktree: (worktreeId: string) => Promise<QueuedClaudeCliWorktree | null>,
+): Promise<boolean> {
+  let cwd: string | undefined;
+  const hasExpectedWorktreeId = Boolean(target.expectedWorktreeId);
+  const hasExpectedWorktreePath = Boolean(target.expectedWorktreePath);
+  if (hasExpectedWorktreeId !== hasExpectedWorktreePath) {
+    deps.logWarn(
+      `[ClaudeCliQueueDispatch] incomplete worktree identity for ${input.sessionId}; refusing CLI launch`,
+    );
+    return false;
+  }
+  if (target.expectedWorktreeId && target.expectedWorktreePath) {
+    let worktree: QueuedClaudeCliWorktree | null;
+    try {
+      worktree = await getWorktree(target.expectedWorktreeId);
+    } catch (worktreeError) {
+      deps.logWarn(
+        `[ClaudeCliQueueDispatch] worktree lookup failed for ${input.sessionId}: ${
+          worktreeError instanceof Error ? worktreeError.message : String(worktreeError)
+        }`,
+      );
+      return false;
+    }
+    if (
+      !worktree
+      || worktree.id !== target.expectedWorktreeId
+      || worktree.path !== target.expectedWorktreePath
+      || Boolean(worktree.isArchived)
+    ) {
+      deps.logWarn(
+        `[ClaudeCliQueueDispatch] worktree identity changed or retired for ${input.sessionId}; refusing CLI launch`,
+      );
+      return false;
+    }
+    cwd = target.expectedWorktreePath;
+  }
+  return dispatchQueuedPromptToClaudeCli(deps, { ...input, cwd });
 }

@@ -26,6 +26,7 @@ import {
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 import { isAuthorizedAttentionSupervisor } from './AttentionSupervisorAuthorization';
+import { isQueuedPromptDispatchSessionRetired } from './ai/queuedPromptDispatcher';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -358,6 +359,8 @@ export class MetaAgentService {
     worktreeId: string | null;
     promotedParent: boolean;
     queuedInitialPrompt: boolean;
+    processingTriggerAccepted: boolean;
+    dispatchScheduled: boolean;
   }> {
     if (!args?.prompt?.trim()) {
       throw new Error('prompt is required');
@@ -408,6 +411,8 @@ export class MetaAgentService {
       worktreeId: childResult.worktreeId ?? null,
       promotedParent: resolved.promotedParent,
       queuedInitialPrompt: childResult.queuedInitialPrompt,
+      processingTriggerAccepted: childResult.processingTriggerAccepted,
+      dispatchScheduled: childResult.dispatchScheduled,
     };
   }
 
@@ -457,6 +462,8 @@ export class MetaAgentService {
     worktreeMode: 'existing' | 'new' | 'none';
     createdBySessionId: string;
     queuedInitialPrompt: boolean;
+    processingTriggerAccepted: boolean;
+    dispatchScheduled: boolean;
     parentSessionId: string | null;
   }> {
     if (!this.aiService) {
@@ -711,8 +718,12 @@ export class MetaAgentService {
       }
     }
 
+    let processingTriggerAccepted = false;
     if (initialPrompt && !shouldBypassExecution) {
-      await this.aiService.triggerQueuedPromptProcessingForSession(sessionId, worktreePath || workspaceId);
+      processingTriggerAccepted = await this.aiService.triggerQueuedPromptProcessingForSession(
+        sessionId,
+        workspaceId,
+      );
     }
 
     return {
@@ -725,6 +736,8 @@ export class MetaAgentService {
       worktreeMode: args.worktreeId ? 'existing' : args.useWorktree ? 'new' : 'none',
       createdBySessionId: metaSessionId,
       queuedInitialPrompt: !!initialPrompt,
+      processingTriggerAccepted,
+      dispatchScheduled: processingTriggerAccepted,
       parentSessionId: args.parentSessionIdOverride ?? null,
     };
   }
@@ -980,7 +993,11 @@ export class MetaAgentService {
     }
 
     const session = await AISessionsRepository.get(sessionId);
-    if (!session || session.workspacePath !== workspaceId) {
+    if (
+      !session
+      || session.workspacePath !== workspaceId
+      || isQueuedPromptDispatchSessionRetired(session)
+    ) {
       throw new Error(`Session ${sessionId} not found`);
     }
 
@@ -997,18 +1014,21 @@ export class MetaAgentService {
         prompt: normalizedPrompt,
         statusBeforeQueue,
         processingTriggered: false,
+        processingTriggerAccepted: false,
+        dispatchScheduled: false,
         bypassedExecutionForTest: true,
       }, null, 2);
     }
 
     const queued = await this.aiService.queuePromptForSession(sessionId, normalizedPrompt);
     const status = (statusRow?.status || 'idle') as SessionStatusValue;
-    const processingTriggered = status === 'idle' || status === 'interrupted' || status === 'error';
+    const shouldTriggerProcessing = status === 'idle' || status === 'interrupted' || status === 'error';
+    let processingTriggerAccepted = false;
 
-    if (processingTriggered) {
-      await this.aiService.triggerQueuedPromptProcessingForSession(
+    if (shouldTriggerProcessing) {
+      processingTriggerAccepted = await this.aiService.triggerQueuedPromptProcessingForSession(
         sessionId,
-        session.worktreePath || session.workspacePath || workspaceId
+        session.workspacePath || workspaceId,
       );
     }
 
@@ -1017,7 +1037,9 @@ export class MetaAgentService {
       queuedPromptId: queued.id,
       prompt: queued.prompt,
       statusBeforeQueue: status,
-      processingTriggered,
+      processingTriggered: processingTriggerAccepted,
+      processingTriggerAccepted,
+      dispatchScheduled: processingTriggerAccepted,
     }, null, 2);
   }
 

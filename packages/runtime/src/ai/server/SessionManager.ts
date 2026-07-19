@@ -145,7 +145,11 @@ function viewMessageFromServerMessage(msg: any): TranscriptViewMessage {
 function sessionDataFromChatSession(session: ChatSession, fallbackWorkspace: string): SessionData {
   const metadata = (session.metadata ?? {}) as Record<string, unknown>;
   const documentContext = metadata.documentContext as DocumentContext | undefined;
-  const workspaceId = (metadata.workspaceId as string | undefined) ?? fallbackWorkspace;
+  // The persisted top-level workspacePath is the repository adapter's mapping
+  // of ai_sessions.workspace_id. Metadata and the caller-supplied lookup alias
+  // are not routing authorities; retain the fallback only for legacy/custom
+  // stores that do not expose the canonical column.
+  const workspaceId = session.workspacePath ?? fallbackWorkspace;
   const providerConfig = metadata.providerConfig as SessionData['providerConfig'];
   // CRITICAL: providerSessionId is stored at top-level, not in metadata
   const providerSessionId = session.providerSessionId ?? (metadata.providerSessionId as string | undefined);
@@ -177,6 +181,8 @@ function sessionDataFromChatSession(session: ChatSession, fallbackWorkspace: str
     // Worktree fields - passed through from database query
     worktreeId: session.worktreeId ?? undefined,
     worktreePath: session.worktreePath ?? undefined,
+    worktreeProjectPath: session.worktreeProjectPath ?? undefined,
+    worktreeIsArchived: session.worktreeIsArchived ?? undefined,
     // Hierarchical workstream parent (separate from branch)
     parentSessionId: session.parentSessionId ?? undefined,
     // Branch tracking fields - passed through from database query

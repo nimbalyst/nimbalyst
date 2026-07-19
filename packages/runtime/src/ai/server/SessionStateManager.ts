@@ -23,6 +23,24 @@ interface DatabaseWorker {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
 }
 
+/**
+ * startSession installs its immutable generation before notifying listeners.
+ * If persistence or a listener throws, retain that ownership on the rejection
+ * so callers can settle exactly the installed turn without consulting mutable
+ * current state.
+ */
+export class SessionStartError extends Error {
+  readonly attentionGeneration: string;
+  readonly cause: unknown;
+
+  constructor(attentionGeneration: string, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'SessionStartError';
+    this.attentionGeneration = attentionGeneration;
+    this.cause = cause;
+  }
+}
+
 export class SessionStateManager extends EventEmitter {
   private activeSessions: Map<string, SessionState> = new Map();
   private database: DatabaseWorker | null = null;
@@ -86,17 +104,21 @@ export class SessionStateManager extends EventEmitter {
 
     this.activeSessions.set(sessionId, state);
 
-    // Update database
-    await this.updateDatabase(sessionId, initialStatus);
-
-    // Emit event
-    this.emitEvent({
-      type: 'session:started',
-      sessionId,
-      workspacePath: state.workspacePath,
-      timestamp: new Date(),
-      attentionGeneration,
-    });
+    // Persistence and event delivery both happen after the generation is
+    // installed. Either can reject before the caller receives the generation,
+    // so preserve that exact owner for generation-safe cleanup.
+    try {
+      await this.updateDatabase(sessionId, initialStatus);
+      this.emitEvent({
+        type: 'session:started',
+        sessionId,
+        workspacePath: state.workspacePath,
+        timestamp: new Date(),
+        attentionGeneration,
+      });
+    } catch (error) {
+      throw new SessionStartError(attentionGeneration, error);
+    }
     return attentionGeneration;
   }
 

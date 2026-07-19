@@ -326,6 +326,7 @@ export interface SessionData {
   worktreeId?: string;  // ID of the associated worktree
   worktreePath?: string;  // Path to the worktree directory
   worktreeProjectPath?: string;  // Path to the parent project (for permission lookups)
+  worktreeIsArchived?: boolean;  // Joined lifecycle state of the associated worktree
 
   // Hierarchical session support (workstreams)
   // parent_session_id = hierarchical containment (child sessions within a workstream)

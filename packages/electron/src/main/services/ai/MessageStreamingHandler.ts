@@ -108,6 +108,11 @@ import {
 } from './aiServiceUtils';
 import { disableParentNotificationsAfterDirectTakeover } from './childSessionTakeover';
 import { installScopedProviderListener } from './providerListenerRegistry';
+import {
+  assertQueuedPromptReloadTarget,
+  type QueuedPromptTurnContext,
+} from './queuedPromptDispatcher';
+import { createDeferredSessionDrainHandlers } from './aiServiceQueuedChainSettlement';
 import type Store from 'electron-store';
 import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
@@ -118,7 +123,7 @@ export type SendMessageHandler = (
   documentContext?: DocumentContext,
   sessionId?: string,
   workspacePath?: string,
-  turnContext?: { attentionGeneration: string },
+  turnContext?: QueuedPromptTurnContext,
 ) => Promise<{ content: string }>;
 
 /**
@@ -301,7 +306,7 @@ export class MessageStreamingHandler {
     documentContext?: DocumentContext,
     sessionId?: string,
     workspacePath?: string,
-    turnContext?: { attentionGeneration: string },
+    turnContext?: QueuedPromptTurnContext,
   ) => {
     // Check for queued prompt deduplication - prevents duplicate execution from multiple renderer panels
     const queuedPromptId = (documentContext as any)?.queuedPromptId as string | undefined;
@@ -324,16 +329,6 @@ export class MessageStreamingHandler {
     // Mobile attachments arrive as EncryptedAttachment[] (with encryptedData/iv fields)
     // and need decryption + temp file writing before they can be used as ChatAttachments
     let attachments = (documentContext as any)?.attachments;
-    if (attachments && attachments.length > 0 && attachments[0].encryptedData && workspacePath) {
-      try {
-        const { decryptMobileAttachments } = await import('../SyncManager');
-        attachments = await decryptMobileAttachments(attachments, workspacePath, sessionId!);
-        logger.main.info(`[AIService] Decrypted ${attachments.length} mobile attachments`);
-      } catch (err) {
-        logger.main.error('[AIService] Failed to decrypt mobile attachments:', err);
-        attachments = undefined;
-      }
-    }
     const startTime = Date.now();
     const perfLog: any = {
       startTime,
@@ -343,41 +338,73 @@ export class MessageStreamingHandler {
       hasDocumentContext: !!documentContext
     };
 
-    // ALWAYS load session by ID - never use "current" session (causes cross-window issues)
-    if (!sessionId) {
-      throw new Error('No session ID provided - cannot send message');
+    let session: SessionData;
+    try {
+      // ALWAYS load session by ID - never use "current" session (causes cross-window issues)
+      if (!sessionId) {
+        throw new Error('No session ID provided - cannot send message');
+      }
+
+      // Get workspace path from window state if not provided
+      if (!workspacePath) {
+        const windowState = windowStates.get(event.sender.id);
+        workspacePath = windowState?.workspacePath || undefined;
+      }
+
+      // Require workspace path for AI operations
+      if (!workspacePath) {
+        throw new Error('No workspace path available - AI operations require an open workspace');
+      }
+
+      const loadStartTime = Date.now();
+      const loadedSession = await this.svc.sessionManager.loadSession(sessionId, workspacePath);
+      perfLog.sessionLoadTime = Date.now() - loadStartTime;
+
+      if (!loadedSession) {
+        throw new Error(`Session ${sessionId} not found`);
+      }
+
+      // Verify we got the right session
+      if (loadedSession.id !== sessionId) {
+        console.error(`[AIService] CRITICAL ERROR: Requested session ${sessionId} but got session ${loadedSession.id}!`);
+        throw new Error(`Session mismatch: requested ${sessionId} but got ${loadedSession.id}`);
+      }
+      assertQueuedPromptReloadTarget(sessionId, loadedSession, turnContext);
+      session = loadedSession;
+    } catch (error) {
+      await this.markQueuedHandlerValidationFailure({
+        sessionId,
+        turnContext,
+        queuedPromptId,
+        error,
+      });
+      throw error;
     }
 
-    // Get workspace path from window state if not provided
-    if (!workspacePath) {
-      const windowState = windowStates.get(event.sender.id);
-      workspacePath = windowState?.workspacePath || undefined;
-    }
+    const canonicalWorkspacePath = session.workspacePath || workspacePath;
+    workspacePath = canonicalWorkspacePath;
 
-    // Require workspace path for AI operations
-    if (!workspacePath) {
-      throw new Error('No workspace path available - AI operations require an open workspace');
-    }
-
-    const loadStartTime = Date.now();
-    const session = await this.svc.sessionManager.loadSession(sessionId, workspacePath);
-    perfLog.sessionLoadTime = Date.now() - loadStartTime;
-
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
-
-
-    // Verify we got the right session
-    if (session.id !== sessionId) {
-      console.error(`[AIService] CRITICAL ERROR: Requested session ${sessionId} but got session ${session.id}!`);
-      throw new Error(`Session mismatch: requested ${sessionId} but got ${session.id}`);
+    if (attachments && attachments.length > 0 && attachments[0].encryptedData) {
+      try {
+        const { decryptMobileAttachments } = await import('../SyncManager');
+        attachments = await decryptMobileAttachments(
+          attachments,
+          canonicalWorkspacePath,
+          session.id,
+        );
+        logger.main.info(`[AIService] Decrypted ${attachments.length} mobile attachments`);
+      } catch (err) {
+        logger.main.error('[AIService] Failed to decrypt mobile attachments:', err);
+        attachments = undefined;
+      }
     }
 
     // Assigned at the authoritative startSession turn boundary below. Every
     // prompt opened during this handler persists the same generation, and all
     // terminal callbacks retain it even if a newer handler starts turn B.
-    let attentionGeneration: string | undefined;
+    let attentionGeneration: string | undefined = turnContext?.attentionGeneration;
+    let deferredDrainOutcome: 'completed' | 'error' | null = null;
+    const stateManager = getSessionStateManager();
     const requireAttentionGeneration = (): string => {
       if (!attentionGeneration) {
         throw new Error(`No attention generation captured for session ${session.id}`);
@@ -392,11 +419,11 @@ export class MessageStreamingHandler {
 
     // CRITICAL: If session has a worktree, use its path instead of workspace path
     // This ensures Claude Code runs in the worktree directory
-    let effectiveWorkspacePath = session.worktreePath || workspacePath;
+    let effectiveWorkspacePath = session.worktreePath || canonicalWorkspacePath;
 
-    // For worktree sessions, use the parent project path for permission lookups
-    // This is passed through documentContext to avoid changing sendMessage signature
-    let permissionsPath = session.worktreeProjectPath || effectiveWorkspacePath;
+    // Routing, permissions, and lifecycle state belong to the canonical DB
+    // workspace. The worktree is only the provider/file-execution cwd.
+    let permissionsPath = canonicalWorkspacePath;
     if (isAgentProvider(session.provider)) {
       await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath);
     }
@@ -474,8 +501,7 @@ export class MessageStreamingHandler {
       let apiKey: string | undefined;
       let errorMessage = 'API key not configured';
       let requiresApiKey = true;
-      const effectiveWorkspacePath = session.workspacePath || workspacePath;
-      apiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
+      apiKey = this.svc.getApiKeyForProvider(session.provider, canonicalWorkspacePath);
 
       // Resolve the extension-agent ref (null for built-in providers). The
       // built-in switch below is the legacy path; the registry lookup is the
@@ -658,8 +684,13 @@ export class MessageStreamingHandler {
           this.svc.processingQueuedPromptIds.delete(queuedPromptId);
         }
 
-        // Return empty response instead of throwing - the error message is now in the conversation
-        return { content: '' };
+        // Preserve the direct-chat compatibility response. A queued turn has
+        // a durable row and generation owner, so it must propagate failure to
+        // the dispatcher instead of being marked completed with empty content.
+        if (!queuedPromptId && !turnContext?.attentionGeneration) {
+          return { content: '' };
+        }
+        throw initError;
       }
 
       // CRITICAL: Restore provider session data from database
@@ -729,10 +760,9 @@ export class MessageStreamingHandler {
 
       const currentModel = ((provider as any).config as ProviderConfig | undefined)?.model;
       if (expectedModel && currentModel !== expectedModel) {
-        const effectiveWorkspacePath = session.workspacePath || workspacePath;
         const apiKey = session.provider === 'lmstudio'
           ? 'not-required'
-          : this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
+          : this.svc.getApiKeyForProvider(session.provider, canonicalWorkspacePath);
         if (!apiKey && session.provider !== 'lmstudio') {
           throw new Error(session.provider === 'openai' ? 'OpenAI API key not configured' : 'Anthropic API key not configured');
         }
@@ -784,7 +814,7 @@ export class MessageStreamingHandler {
     // sessions, so it can't always resolve the path on its own.
     const onMessageLogged = (data: { sessionId: string; direction: string; hidden?: boolean }) => {
       if (data.hidden) return;
-      safeSend(event, 'ai:message-logged', { ...data, workspacePath: effectiveWorkspacePath });
+      safeSend(event, 'ai:message-logged', { ...data, workspacePath: canonicalWorkspacePath });
     };
     // Replace this handler's previous 'message:logged' subscription only,
     // so other modules subscribing to the same provider event stay wired.
@@ -882,7 +912,7 @@ export class MessageStreamingHandler {
     // Listen for ExitPlanMode confirmation requests and forward to renderer
     const onExitPlanModeConfirm = async (data: { requestId: string; sessionId: string; planSummary: string; timestamp: number }) => {
       logger.main.info('[AIService] ExitPlanMode confirmation requested:', data.requestId);
-      safeSend(event, 'ai:exitPlanModeConfirm', { ...data, workspacePath: effectiveWorkspacePath });
+      safeSend(event, 'ai:exitPlanModeConfirm', { ...data, workspacePath: canonicalWorkspacePath });
       const persistedPrompt = await syncPendingPrompt(data.sessionId, true, data.requestId);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
@@ -896,7 +926,7 @@ export class MessageStreamingHandler {
       });
 
       const sessionTitle = await getCurrentSessionTitle(data.sessionId);
-      if (persistedPrompt.local.succeeded) await armInteractiveAttention(effectiveWorkspacePath, {
+      if (persistedPrompt.local.succeeded) await armInteractiveAttention(canonicalWorkspacePath, {
         sessionId: data.sessionId,
         promptType: 'ExitPlanMode',
         promptId: data.requestId,
@@ -945,7 +975,7 @@ export class MessageStreamingHandler {
     // Listen for AskUserQuestion requests and forward to renderer
     const onAskUserQuestion = async (data: { questionId: string; sessionId: string; questions: any[]; timestamp: number }) => {
       // logger.main.info('[AIService] AskUserQuestion requested:', data.questionId);
-      safeSend(event, 'ai:askUserQuestion', { ...data, workspacePath: effectiveWorkspacePath });
+      safeSend(event, 'ai:askUserQuestion', { ...data, workspacePath: canonicalWorkspacePath });
       const persistedPrompt = await syncPendingPrompt(data.sessionId, true, data.questionId);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
@@ -959,7 +989,7 @@ export class MessageStreamingHandler {
       });
 
       const sessionTitle = await getCurrentSessionTitle(data.sessionId);
-      if (persistedPrompt.local.succeeded) await armInteractiveAttention(effectiveWorkspacePath, {
+      if (persistedPrompt.local.succeeded) await armInteractiveAttention(canonicalWorkspacePath, {
         sessionId: data.sessionId,
         promptType: 'AskUserQuestion',
         promptId: data.questionId,
@@ -973,7 +1003,7 @@ export class MessageStreamingHandler {
     // Listen for AskUserQuestion answers and forward to renderer to update tool call display
     const onAskUserQuestionAnswered = async (data: { questionId: string; sessionId: string; questions: any[]; answers: Record<string, string>; timestamp: number }) => {
       // logger.main.info('[AIService] AskUserQuestion answered:', data.questionId);
-      safeSend(event, 'ai:askUserQuestionAnswered', { ...data, workspacePath: effectiveWorkspacePath });
+      safeSend(event, 'ai:askUserQuestionAnswered', { ...data, workspacePath: canonicalWorkspacePath });
       await syncPendingPrompt(data.sessionId, false, data.questionId);
       await attentionEventService.cancelInteractivePrompt(
         data.sessionId,
@@ -996,7 +1026,10 @@ export class MessageStreamingHandler {
     // Listen for tool permission requests and forward to renderer
     const onToolPermissionPending = async (data: { requestId: string; sessionId: string; workspacePath: string; request: any; timestamp: number }) => {
       logger.main.info('[AIService] Tool permission requested:', data.requestId);
-      safeSend(event, 'ai:toolPermission', data);
+      safeSend(event, 'ai:toolPermission', {
+        ...data,
+        workspacePath: canonicalWorkspacePath,
+      });
       const persistedPrompt = await syncPendingPrompt(data.sessionId, true, data.requestId);
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
@@ -1011,10 +1044,10 @@ export class MessageStreamingHandler {
 
       // Play permission request sound (don't block on async title lookup)
       const soundService = SoundNotificationService.getInstance();
-      soundService.playPermissionSound(data.workspacePath);
+      soundService.playPermissionSound(canonicalWorkspacePath);
 
       const sessionTitle = await getCurrentSessionTitle(data.sessionId);
-      if (persistedPrompt.local.succeeded) await armInteractiveAttention(data.workspacePath, {
+      if (persistedPrompt.local.succeeded) await armInteractiveAttention(canonicalWorkspacePath, {
         sessionId: data.sessionId,
         promptType: 'ToolPermission',
         toolUseId: data.requestId,
@@ -1028,7 +1061,7 @@ export class MessageStreamingHandler {
     // Listen for tool permission resolved and forward to renderer
     const onToolPermissionResolved = async (data: { requestId: string; sessionId: string; response: any; timestamp: number }) => {
       logger.main.info('[AIService] Tool permission resolved:', data.requestId);
-      safeSend(event, 'ai:toolPermissionResolved', { ...data, workspacePath: effectiveWorkspacePath });
+      safeSend(event, 'ai:toolPermissionResolved', { ...data, workspacePath: canonicalWorkspacePath });
       await syncPendingPrompt(data.sessionId, false, data.requestId);
       await attentionEventService.cancelInteractivePrompt(
         data.sessionId,
@@ -1109,10 +1142,10 @@ export class MessageStreamingHandler {
         // the setImmediate and when that runs. Re-calling startSession is safe (idempotent).
         await sessionStateManager.startSession({
           sessionId: data.sessionId,
-          workspacePath: effectiveWorkspacePath,
+          workspacePath: canonicalWorkspacePath,
         });
 
-        const targetWindow = findWindowByWorkspace(effectiveWorkspacePath);
+        const targetWindow = findWindowByWorkspace(canonicalWorkspacePath);
         if (targetWindow && !targetWindow.isDestroyed()) {
           // Create a mock event and call sendMessage directly
           const mockEvent = {
@@ -1124,7 +1157,7 @@ export class MessageStreamingHandler {
             // Fire-and-forget: sendMessage will stream results to the renderer
             setImmediate(async () => {
               try {
-                await this.svc.sendMessageHandler!(mockEvent, data.message, {} as any, data.sessionId, effectiveWorkspacePath);
+                await this.svc.sendMessageHandler!(mockEvent, data.message, {} as any, data.sessionId, canonicalWorkspacePath);
               } catch (err) {
                 logger.main.error('[AIService] Failed to process teammate message while idle:', err);
               }
@@ -1137,68 +1170,26 @@ export class MessageStreamingHandler {
     };
     this.installListener(provider, 'teammate:messageWhileIdle', onTeammateMessageWhileIdle);
 
-    // Listen for all teammates completing. When the lead finished but teammates
-    // were still active, endSession was deferred. Now that all teammates are
-    // done, end the session and play the completion sound.
-    const onTeammatesAllCompleted = async (data: { sessionId: string }) => {
-      if (!data.sessionId) return;
-      // Only end the session if it's still tracked as active (lead deferred ending)
-      if (stateManager.isSessionActive(data.sessionId)) {
-        // Don't end the session if the lead is currently processing or about to
-        // process a message. The lead's sendMessage completion will handle endSession.
-        // This prevents a race where teammates:allCompleted fires while the lead's
-        // resumed CLI subprocess is still spawning (can take 10+ seconds).
-        const isLeadBusy = typeof (provider as any).isLeadBusy === 'function'
-          && (provider as any).isLeadBusy();
-        if (isLeadBusy) {
-          logger.main.info(`[AIService] All teammates completed for ${data.sessionId}, but lead is busy — deferring endSession to sendMessage completion`);
-          return;
-        }
-
-        logger.main.info(`[AIService] All teammates completed for session ${data.sessionId}, ending deferred session`);
-        await clearTerminalAttention(data.sessionId, 'completed');
-        await stateManager.endSession(data.sessionId, {
-          attentionGeneration: requireAttentionGeneration(),
-        });
-        // Stop file watcher - session is fully complete (teammates done)
-        await this.svc.hooklessWatcher.stopForSession(data.sessionId);
-        codexEditWindowRegistry.clearSession(data.sessionId);
-
-        // Play completion sound now that the session is truly done
-        const soundService = SoundNotificationService.getInstance();
-        soundService.playCompletionSound(workspacePath);
-      }
-    };
-    this.installListener(provider, 'teammates:allCompleted', onTeammatesAllCompleted);
-
-    // Listen for a background sub-agent drain settling. When the lead finished but
-    // a native (non-teammate) sub-agent was still running, endSession was deferred
-    // (willResumeAfterCompletion). Once the drain settles with no continuation, end
-    // the deferred session. Mirrors onTeammatesAllCompleted. See NIM-1344 / #732.
-    const onSubagentsDrainSettled = async (data: { sessionId: string }) => {
-      if (!data.sessionId) return;
-      if (!stateManager.isSessionActive(data.sessionId)) return;
-      const isLeadBusy = typeof (provider as any).isLeadBusy === 'function'
-        && (provider as any).isLeadBusy();
-      if (isLeadBusy) {
-        logger.main.info(`[AIService] Sub-agent drain settled for ${data.sessionId}, but lead is busy — deferring endSession`);
-        return;
-      }
-      // A queued/continuation turn may already be taking over; let it own the end.
-      if (this.svc.sessionsProcessingQueue.has(data.sessionId)) return;
-
-      logger.main.info(`[AIService] Sub-agent drain settled for session ${data.sessionId}, ending deferred session`);
-      await clearTerminalAttention(data.sessionId, 'completed');
-      await stateManager.endSession(data.sessionId, {
-        attentionGeneration: requireAttentionGeneration(),
-      });
-      await this.svc.hooklessWatcher.stopForSession(data.sessionId);
-      codexEditWindowRegistry.clearSession(data.sessionId);
-
-      const soundService = SoundNotificationService.getInstance();
-      soundService.playCompletionSound(workspacePath);
-    };
-    this.installListener(provider, 'subagents:drainSettled', onSubagentsDrainSettled);
+    // A lead completion can be deferred while teammates/native subagents drain.
+    // The shared production handlers keep that later event bound to this turn.
+    const deferredDrainHandlers = createDeferredSessionDrainHandlers({
+      sessionId: session.id,
+      stateManager,
+      processingSet: this.svc.sessionsProcessingQueue,
+      getAttentionGeneration: () => attentionGeneration,
+      getDeferredOutcome: () => deferredDrainOutcome,
+      isLeadBusy: () => typeof (provider as any).isLeadBusy === 'function'
+        && (provider as any).isLeadBusy(),
+      settleTerminal: (reason) => clearTerminalAttention(session.id, reason),
+      stopWatcher: () => this.svc.hooklessWatcher.stopForSession(session.id),
+      scheduleWatcherStop: (delayMs) => this.svc.hooklessWatcher.scheduleStop(session.id, delayMs),
+      clearEditWindow: () => codexEditWindowRegistry.clearSession(session.id),
+      playCompletionSound: () => SoundNotificationService.getInstance().playCompletionSound(workspacePath),
+      logInfo: (text) => logger.main.info(text),
+    });
+    turnContext?.registerDeferredDrainReplay?.(deferredDrainHandlers.replayPendingDrain);
+    this.installListener(provider, 'teammates:allCompleted', deferredDrainHandlers.onTeammatesAllCompleted);
+    this.installListener(provider, 'subagents:drainSettled', deferredDrainHandlers.onSubagentsDrainSettled);
 
     // Track user @ mentions in the message
     try {
@@ -1240,10 +1231,9 @@ export class MessageStreamingHandler {
     });
 
     // Mark session as running/active
-    const stateManager = getSessionStateManager();
     attentionGeneration = await stateManager.startSession({
       sessionId: session.id,
-      workspacePath: session.workspacePath || effectiveWorkspacePath,
+      workspacePath: canonicalWorkspacePath,
       ...(turnContext?.attentionGeneration
         ? { attentionGeneration: turnContext.attentionGeneration }
         : {}),
@@ -1304,7 +1294,7 @@ export class MessageStreamingHandler {
 
       if (isClaudeCode) {
         // Refresh provider config every turn so auth/key changes in settings apply immediately.
-        const refreshedConfig = await this.svc.buildClaudeCodeRuntimeConfig(session, effectiveWorkspacePath);
+        const refreshedConfig = await this.svc.buildClaudeCodeRuntimeConfig(session, canonicalWorkspacePath);
         await provider.initialize(refreshedConfig);
 
         //   messageLength: message.length,
@@ -1318,7 +1308,7 @@ export class MessageStreamingHandler {
         // No need to configure per-session context
       } else {
         // Refresh credentials every turn for all providers so key changes in settings apply immediately.
-        const freshApiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
+        const freshApiKey = this.svc.getApiKeyForProvider(session.provider, canonicalWorkspacePath);
         const turnEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
         const turnConfig: any = {
           apiKey: freshApiKey,
@@ -1337,7 +1327,11 @@ export class MessageStreamingHandler {
       }
 
       // Attach @ mentioned files for non-agent providers
-      const { enhancedMessage, attachedFiles } = await attachMentionedFiles(message, workspacePath, provider);
+      const { enhancedMessage, attachedFiles } = await attachMentionedFiles(
+        message,
+        effectiveWorkspacePath,
+        provider,
+      );
       const messageToSend = enhancedMessage;
 
       if (attachedFiles.length > 0) {
@@ -1389,8 +1383,8 @@ export class MessageStreamingHandler {
         // Session metadata
         sessionType: documentContext?.sessionType ?? session.sessionType,
         mode: effectiveMode,
-        permissionsPath,  // For worktree sessions, this is the parent project path
-        mcpConfigWorkspacePath: session.worktreeProjectPath || effectiveWorkspacePath,  // Use parent project for MCP config lookup
+        permissionsPath,  // Canonical DB workspace; worktree stays provider cwd only
+        mcpConfigWorkspacePath: canonicalWorkspacePath,
         attachments,
 
         // Worktree context
@@ -1418,7 +1412,7 @@ export class MessageStreamingHandler {
         const { updateDocumentState, registerWorkspaceWindow } = await import('../../mcp/httpServer');
         updateDocumentState({
           filePath: contextWithSession?.filePath,
-          workspacePath: effectiveWorkspacePath,
+          workspacePath: canonicalWorkspacePath,
           fileType: contextWithSession?.fileType
         }, session.id);
 
@@ -1426,7 +1420,7 @@ export class MessageStreamingHandler {
         const { BrowserWindow } = await import('electron');
         const window = BrowserWindow.fromWebContents(event.sender);
         if (window) {
-          registerWorkspaceWindow(effectiveWorkspacePath, window.id);
+          registerWorkspaceWindow(canonicalWorkspacePath, window.id);
         }
       }
 
@@ -1637,7 +1631,6 @@ export class MessageStreamingHandler {
                 if (inferredWorktreePath) {
                   await this.svc.adoptWorktreeForSession(session, inferredWorktreePath, event);
                   effectiveWorkspacePath = session.worktreePath || effectiveWorkspacePath;
-                  permissionsPath = session.worktreeProjectPath || permissionsPath;
                   break;
                 }
               }
@@ -1796,7 +1789,6 @@ export class MessageStreamingHandler {
                     if (inferredWorktreePath) {
                       await this.svc.adoptWorktreeForSession(session, inferredWorktreePath, event);
                       effectiveWorkspacePath = session.worktreePath || effectiveWorkspacePath;
-                      permissionsPath = session.worktreeProjectPath || permissionsPath;
                     }
                   }
 
@@ -1959,7 +1951,7 @@ export class MessageStreamingHandler {
                       try {
                         await this.svc.hooklessWatcher.captureBashPreEditSnapshots(
                           session.id,
-                          workspacePath,
+                          effectiveWorkspacePath,
                           trackArgs.command,
                         );
                       } catch (snapshotError) {
@@ -1970,7 +1962,7 @@ export class MessageStreamingHandler {
                     if (seenCount >= 2 && !processedBashCommandItemIds.has(commandItemId)) {
                       const tracked = await this.svc.hooklessWatcher.trackBashEditsFromCommand(
                         session,
-                        workspacePath,
+                        effectiveWorkspacePath,
                         trackArgs.command,
                         commandItemId
                       );
@@ -2686,6 +2678,10 @@ export class MessageStreamingHandler {
               queuedChainAlreadyActive,
               queuedContinuationScheduled,
             } = terminalSettlement.continuationResult;
+            if (hasTeammates || willResume) {
+              deferredDrainOutcome = 'completed';
+              await deferredDrainHandlers.replayPendingDrain();
+            }
             if (hasTeammates || willResume || queuedChainAlreadyActive || queuedContinuationScheduled) {
               const reason = hasTeammates
                 ? 'teammates still active'
@@ -2815,7 +2811,7 @@ export class MessageStreamingHandler {
         try {
           const tracked = await this.svc.hooklessWatcher.trackBashEditsFromCommand(
             session,
-            workspacePath,
+            effectiveWorkspacePath,
             command,
             commandItemId
           );
@@ -2925,6 +2921,10 @@ export class MessageStreamingHandler {
           queuedChainAlreadyActiveOnError,
           queuedContinuationScheduledOnError,
         } = terminalSettlement.continuationResult;
+        if (hasTeammatesOnError || willResumeOnError) {
+          deferredDrainOutcome = 'error';
+          await deferredDrainHandlers.replayPendingDrain();
+        }
         if (hasTeammatesOnError || willResumeOnError || queuedChainAlreadyActiveOnError || queuedContinuationScheduledOnError) {
           const reason = hasTeammatesOnError
             ? 'teammates still active'
@@ -2985,6 +2985,42 @@ export class MessageStreamingHandler {
       throw error;
     }
   };
+
+  private async markQueuedHandlerValidationFailure(input: {
+    sessionId?: string;
+    turnContext?: QueuedPromptTurnContext;
+    queuedPromptId?: string;
+    error: unknown;
+  }): Promise<void> {
+    const { sessionId, turnContext, queuedPromptId, error } = input;
+    if (queuedPromptId) {
+      this.svc.processingQueuedPromptIds.delete(queuedPromptId);
+    }
+    if (!sessionId || !turnContext?.attentionGeneration) {
+      return;
+    }
+
+    const stateManager = getSessionStateManager();
+    const state = stateManager.getSessionState(sessionId);
+    if (
+      state?.attentionGeneration &&
+      state.attentionGeneration !== turnContext.attentionGeneration
+    ) {
+      return;
+    }
+
+    logger.main.error(
+      `[AIService] Queued handler validation failed for session ${sessionId}:`,
+      error,
+    );
+    if (state?.status !== 'error') {
+      await stateManager.updateActivity({
+        sessionId,
+        status: 'error',
+        attentionGeneration: turnContext.attentionGeneration,
+      });
+    }
+  }
 
   private async disableParentNotificationsAfterDirectTakeover(session: SessionData): Promise<void> {
     await disableParentNotificationsAfterDirectTakeover(session);

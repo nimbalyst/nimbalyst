@@ -134,9 +134,12 @@ import {
 import { MessageStreamingHandler, type SendMessageHandler } from './MessageStreamingHandler';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
-import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import {
+  resolveQueuedPromptDispatchTarget,
+  tryClaimAndDispatchNextQueuedPrompt,
+} from './queuedPromptDispatcher';
 import { createAIServiceQueuedChainSettlement } from './aiServiceQueuedChainSettlement';
-import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
+import { dispatchQueuedPromptToClaudeCliWithTarget } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 
@@ -733,15 +736,46 @@ export class AIService {
     // scheduled wakeups for CLI sessions). Route them onto the CLI's PTY
     // queue-drain rails instead: launch the genuine CLI if needed and let the
     // PID watcher's idle flush deliver the prompt.
-    let dispatchSession: { provider?: string; model?: string | null; worktreeId?: string | null } | null = null;
+    let dispatchSession: {
+      id: string;
+      provider?: string;
+      model?: string | null;
+      workspacePath?: string | null;
+      worktreeId?: string | null;
+      worktreePath?: string | null;
+      isArchived?: boolean | null;
+      worktreeIsArchived?: boolean | null;
+    } | null = null;
     try {
       const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
       dispatchSession = await AISessionsRepository.get(sessionId);
     } catch (lookupError) {
       logger.main.warn(`[AIService] ${source}: provider lookup failed before queued dispatch:`, lookupError);
+      return false;
+    }
+    if (!dispatchSession) {
+      logger.main.info(`[AIService] ${source}: session ${sessionId} not found before queued dispatch`);
+      return false;
+    }
+    const dispatchTarget = resolveQueuedPromptDispatchTarget(
+      sessionId,
+      workspacePath,
+      dispatchSession,
+    );
+    if (!dispatchTarget) {
+      logger.main.info(
+        `[AIService] ${source}: session ${sessionId} is archived, retired, or not addressable from workspace ${workspacePath}`,
+      );
+      return false;
     }
     if (dispatchSession?.provider === 'claude-code-cli') {
-      return this.dispatchQueuedPromptToClaudeCliSession(sessionId, workspacePath, dispatchSession, source);
+      return this.dispatchQueuedPromptToClaudeCliSession(
+        sessionId,
+        dispatchTarget.routingWorkspacePath,
+        dispatchSession,
+        dispatchTarget,
+        source,
+      );
     }
 
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
@@ -814,6 +848,7 @@ export class AIService {
       },
       processingSet: this.sessionsProcessingQueue,
       queueStore,
+      resolveTarget: () => dispatchTarget,
       sendMessageHandler: this.sendMessageHandler,
       sessionId,
       source,
@@ -837,23 +872,14 @@ export class AIService {
     sessionId: string,
     workspacePath: string,
     session: { model?: string | null; worktreeId?: string | null },
+    target: {
+      expectedWorktreeId: string | null;
+      expectedWorktreePath: string | null;
+    },
     source: string,
   ): Promise<boolean> {
-    let cwd: string | undefined;
-    if (session.worktreeId) {
-      try {
-        const { createWorktreeStore } = await import('../WorktreeStore');
-        const { getDatabase } = await import('../../database/initialize');
-        const db = getDatabase();
-        const worktree = db ? await createWorktreeStore(db).get(session.worktreeId) : null;
-        cwd = worktree?.path ?? undefined;
-      } catch (worktreeError) {
-        logger.main.warn(`[AIService] ${source}: worktree lookup failed for CLI queued dispatch:`, worktreeError);
-      }
-    }
-
     const terminalManager = getTerminalSessionManager();
-    return dispatchQueuedPromptToClaudeCli(
+    return dispatchQueuedPromptToClaudeCliWithTarget(
       {
         isTerminalActive: (id) => terminalManager.isTerminalActive(id),
         ensureSession: (input) => ensureClaudeCliSession(input),
@@ -863,7 +889,14 @@ export class AIService {
         logInfo: (message) => logger.main.info(`[AIService] ${source}: ${message}`),
         logWarn: (message) => logger.main.warn(`[AIService] ${source}: ${message}`),
       },
-      { sessionId, workspacePath, model: session.model, cwd },
+      { sessionId, workspacePath, model: session.model },
+      target,
+      async (worktreeId) => {
+        const { createWorktreeStore } = await import('../WorktreeStore');
+        const { getDatabase } = await import('../../database/initialize');
+        const db = getDatabase();
+        return db ? createWorktreeStore(db).get(worktreeId) : null;
+      },
     );
   }
 

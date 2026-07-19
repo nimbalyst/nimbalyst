@@ -530,6 +530,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
          EXTRACT(EPOCH FROM s.last_read_timestamp) * 1000 AS last_read_ms,
          w.path AS worktree_path,
          w.workspace_id AS worktree_project_path,
+         w.is_archived AS worktree_is_archived,
          branched_from.provider_session_id AS branched_from_provider_session_id
          FROM ai_sessions s
          LEFT JOIN worktrees w ON s.worktree_id = w.id
@@ -561,6 +562,9 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         worktreeId: row.worktree_id ?? undefined,
         worktreePath: row.worktree_path ?? undefined,
         worktreeProjectPath: row.worktree_project_path ?? undefined,
+        worktreeIsArchived: row.worktree_path
+          ? Boolean(row.worktree_is_archived ?? false)
+          : undefined,
         parentSessionId: row.parent_session_id ?? null,  // Hierarchical workstream support
         createdBySessionId: row.created_by_session_id ?? null,
         createdAt: toMillis(row.created_at)!,
@@ -571,7 +575,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         providerSessionId: row.provider_session_id ?? undefined,
         lastReadMessageTimestamp: row.last_read_ms ? Number(row.last_read_ms) : undefined,
         hasBeenNamed: row.has_been_named ?? false,
-        isArchived: row.is_archived ?? false,
+        isArchived: Boolean(row.is_archived ?? false),
         isPinned: row.is_pinned ?? false,
         // Branch tracking fields - SEPARATE from hierarchical parentSessionId
         branchedFromSessionId: row.branched_from_session_id ?? undefined,

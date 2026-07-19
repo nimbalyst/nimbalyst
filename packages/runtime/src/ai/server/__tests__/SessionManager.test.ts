@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionManager } from '../SessionManager';
 import type {
   SessionStore,
@@ -7,6 +7,7 @@ import type {
   UpdateSessionMetadataPayload,
 } from '../../adapters/sessionStore';
 import { shouldBlockStartedSessionProviderSwitch, type SessionData, type TranscriptViewMessage } from '../types';
+import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
 
 class InMemorySessionStore implements SessionStore {
   private sessions = new Map<string, SessionData>();
@@ -24,6 +25,10 @@ class InMemorySessionStore implements SessionStore {
       messages: [],
       createdAt: now,
       updatedAt: now,
+      workspacePath: payload.workspaceId,
+      worktreeId: payload.worktreeId,
+      worktreePath: payload.worktreePath,
+      worktreeProjectPath: payload.worktreeProjectPath,
       metadata: {
         workspaceId: payload.workspaceId,
         filePath: payload.filePath,
@@ -63,6 +68,10 @@ class InMemorySessionStore implements SessionStore {
 
   async get(sessionId: string): Promise<SessionData | null> {
     return this.sessions.get(sessionId) ?? null;
+  }
+
+  seed(session: SessionData): void {
+    this.sessions.set(session.id, session);
   }
 
   private toMeta(session: SessionData): SessionMeta {
@@ -130,7 +139,14 @@ describe('SessionManager (runtime server)', () => {
   beforeEach(async () => {
     store = new InMemorySessionStore();
     manager = new SessionManager(store);
+    TranscriptMigrationRepository.setService({
+      getViewMessages: vi.fn(async () => []),
+    } as any);
     await manager.initialize();
+  });
+
+  afterEach(() => {
+    TranscriptMigrationRepository.clearService();
   });
 
   it('returns persisted tool messages when listing sessions', async () => {
@@ -187,5 +203,55 @@ describe('SessionManager (runtime server)', () => {
     expect(shouldBlockStartedSessionProviderSwitch('claude', 'openai', true)).toBe(false);
     expect(shouldBlockStartedSessionProviderSwitch('claude-code', 'openai-codex', false)).toBe(false);
   });
+
+  it('accepts the exact active-worktree alias but returns canonical DB identity', async () => {
+    store.seed({
+      id: 'worktree-session',
+      provider: 'openai-codex',
+      model: 'openai-codex:gpt-test',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+      workspacePath: '/repo',
+      worktreeId: 'worktree-1',
+      worktreePath: '/repo_worktrees/fresh',
+      worktreeProjectPath: '/repo',
+      worktreeIsArchived: false,
+      metadata: {
+        workspaceId: '/metadata-must-not-own-routing',
+      },
+    });
+
+    const loaded = await manager.loadSession(
+      'worktree-session',
+      '/repo_worktrees/fresh',
+    );
+
+    expect(loaded).toMatchObject({
+      id: 'worktree-session',
+      workspacePath: '/repo',
+      worktreePath: '/repo_worktrees/fresh',
+      worktreeProjectPath: '/repo',
+      worktreeIsArchived: false,
+    });
+  });
+
+  it.each(['/repo_worktrees/retired', '/other-repo'])(
+    'rejects non-active workspace alias %s',
+    async (workspaceAlias) => {
+      store.seed({
+        id: 'worktree-session',
+        provider: 'openai-codex',
+        messages: [],
+        createdAt: 1,
+        updatedAt: 1,
+        workspacePath: '/repo',
+        worktreePath: '/repo_worktrees/active',
+        metadata: {},
+      });
+
+      await expect(manager.loadSession('worktree-session', workspaceAlias)).resolves.toBeNull();
+    },
+  );
 
 });
