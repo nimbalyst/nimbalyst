@@ -345,6 +345,7 @@ test('surfaces delegated child sessions through the meta-agent MCP tools', async
   const toolNames = await listMcpTools(metaAgentClient);
   expect(toolNames.length).toBeGreaterThan(0);
   expect(toolNames).toContain('list_queued_prompts');
+  expect(toolNames).toContain('send_prompt_now');
 
   const created = await createChildSessionWithMetaAgent('Investigate parser edge cases');
   await insertUserPrompt(page, created.sessionId, 'Investigate parser edge cases');
@@ -682,6 +683,37 @@ test('list_queued_prompts exposes bounded queue state for a child session', asyn
   expect(queue.prompts[0].status).toBe('pending');
   expect(queue.prompts[0].promptPreview).toContain('remain queued');
   expect(queue.prompts[0].prompt).toBeUndefined();
+});
+
+test('send_prompt_now exposes force-delivery metadata and records the prompt', async () => {
+  const childSessionId = await createLinkedTestSession({
+    title: 'Urgent delegated follow-up task',
+    status: 'running',
+  });
+
+  const sendResult = await callMetaAgentTool<{
+    sessionId: string;
+    prompt: string;
+    interruptCurrentTurnRequested: boolean;
+    interruptAttempted: boolean;
+    processingTriggered: boolean;
+    bypassedExecutionForTest?: boolean;
+  }>(metaAgentClient, 'send_prompt_now', {
+    sessionId: childSessionId,
+    prompt: 'Interrupt with this follow-up',
+  });
+  expect(sendResult.sessionId).toBe(childSessionId);
+  expect(sendResult.prompt).toBe('Interrupt with this follow-up');
+  expect(sendResult.interruptCurrentTurnRequested).toBe(true);
+  expect(sendResult.interruptAttempted).toBe(false);
+  expect(sendResult.processingTriggered).toBe(false);
+  expect(sendResult.bypassedExecutionForTest).toBe(true);
+
+  const result = await callMetaAgentTool<{
+    sessionId: string;
+    userPrompts: string[];
+  }>(metaAgentClient, 'get_session_result', { sessionId: childSessionId });
+  expect(result.userPrompts).toContain('Interrupt with this follow-up');
 });
 
 test('send_prompt rejects empty or missing prompt', async () => {

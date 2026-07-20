@@ -77,6 +77,25 @@ type ListQueuedPromptsArgs = {
   includePromptText?: boolean;
 };
 
+type SendPromptArgs = {
+  sessionId: string;
+  prompt: string;
+  /**
+   * Interrupt the target session's active turn before triggering queued prompt
+   * processing. This is the same intent as the queued-prompt "Interrupt and
+   * send now" action.
+   */
+  interruptCurrentTurn?: boolean;
+  /** Backward-compatible alias for clients that use concise force semantics. */
+  force?: boolean;
+  /**
+   * If true, allow force-delivery to interrupt a session that is currently
+   * waiting for an interactive prompt. Defaults to false; respond_to_prompt is
+   * usually the correct tool for that state.
+   */
+  interruptWaitingForInput?: boolean;
+};
+
 interface MetaAgentToolFns {
   listWorktrees: (
     metaSessionId: string,
@@ -113,7 +132,8 @@ interface MetaAgentToolFns {
     metaSessionId: string,
     workspaceId: string,
     targetSessionId: string,
-    prompt: string
+    prompt: string,
+    options?: Pick<SendPromptArgs, "interruptCurrentTurn" | "force" | "interruptWaitingForInput">
   ) => Promise<string>;
   respondToPrompt: (
     metaSessionId: string,
@@ -318,7 +338,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "send_prompt",
     description:
-      "Queue a follow-up prompt for a child session. If the session is idle, prompt processing starts immediately.",
+      "Queue a follow-up prompt for a child session. If the session is idle, prompt processing starts immediately. Set interruptCurrentTurn only when you must interrupt an active child turn; for clearer force-delivery semantics, prefer send_prompt_now.",
     inputSchema: {
       type: "object",
       properties: {
@@ -329,6 +349,45 @@ export const META_AGENT_TOOL_DEFS: Array<{
         prompt: {
           type: "string",
           description: "The follow-up prompt to send.",
+        },
+        interruptCurrentTurn: {
+          type: "boolean",
+          description:
+            "Optional. If true, interrupt an active target session before triggering queued prompt processing. Defaults to false.",
+        },
+        force: {
+          type: "boolean",
+          description:
+            "Optional alias for interruptCurrentTurn for clients that use concise force semantics.",
+        },
+        interruptWaitingForInput: {
+          type: "boolean",
+          description:
+            "Optional. If true, allow interrupting a session that is waiting for an interactive prompt. Defaults to false; respond_to_prompt is usually the correct tool for that state.",
+        },
+      },
+      required: ["sessionId", "prompt"],
+    },
+  },
+  {
+    name: "send_prompt_now",
+    description:
+      "Queue a follow-up prompt for a child session, interrupt the child session's active turn when needed, and trigger queue processing immediately. This is the MCP equivalent of the queued-prompt lightning action.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "The target child session ID.",
+        },
+        prompt: {
+          type: "string",
+          description: "The urgent follow-up prompt to deliver.",
+        },
+        interruptWaitingForInput: {
+          type: "boolean",
+          description:
+            "Optional. If true, allow interrupting a session that is waiting for an interactive prompt. Defaults to false; respond_to_prompt is usually the correct tool for that state.",
         },
       },
       required: ["sessionId", "prompt"],
@@ -402,6 +461,7 @@ const EXTENSION_META_AGENT_ALLOWED_TOOLS = new Set<string>([
   "get_session_result",
   "list_queued_prompts",
   "send_prompt",
+  "send_prompt_now",
   "respond_to_prompt",
   "list_spawned_sessions",
 ]);
@@ -480,7 +540,23 @@ export async function dispatchMetaAgentTool(
         aiSessionId,
         effectiveWorkspaceId,
         (args?.sessionId as string) ?? "",
-        (args?.prompt as string) ?? ""
+        (args?.prompt as string) ?? "",
+        {
+          interruptCurrentTurn: args?.interruptCurrentTurn === true,
+          force: args?.force === true,
+          interruptWaitingForInput: args?.interruptWaitingForInput === true,
+        }
+      );
+    case "send_prompt_now":
+      return toolFns.sendPrompt(
+        aiSessionId,
+        effectiveWorkspaceId,
+        (args?.sessionId as string) ?? "",
+        (args?.prompt as string) ?? "",
+        {
+          interruptCurrentTurn: true,
+          interruptWaitingForInput: args?.interruptWaitingForInput === true,
+        }
       );
     case "respond_to_prompt":
       return toolFns.respondToPrompt(aiSessionId, effectiveWorkspaceId, (args ?? {}) as RespondToPromptArgs);

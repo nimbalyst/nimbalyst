@@ -112,6 +112,12 @@ interface SpawnSessionArgs {
   isolated?: boolean;
 }
 
+interface SendPromptOptions {
+  interruptCurrentTurn?: boolean;
+  force?: boolean;
+  interruptWaitingForInput?: boolean;
+}
+
 export class MetaAgentService {
   private static instance: MetaAgentService | null = null;
   private starting: Promise<void> | null = null;
@@ -183,8 +189,8 @@ export class MetaAgentService {
           this.getSessionResultJson(targetSessionId, workspaceId, options),
         listQueuedPrompts: (_metaSessionId, workspaceId, targetSessionId, options) =>
           this.listQueuedPromptsJson(targetSessionId, workspaceId, options),
-        sendPrompt: (_metaSessionId, workspaceId, targetSessionId, prompt) =>
-          this.sendPromptToSession(targetSessionId, workspaceId, prompt),
+        sendPrompt: (_metaSessionId, workspaceId, targetSessionId, prompt, options) =>
+          this.sendPromptToSession(targetSessionId, workspaceId, prompt, options),
         respondToPrompt: (_metaSessionId, workspaceId, args) =>
           this.respondToPrompt(workspaceId, args),
         listSpawnedSessions: (metaSessionId, workspaceId) =>
@@ -880,7 +886,12 @@ export class MetaAgentService {
     }, null, 2);
   }
 
-  private async sendPromptToSession(sessionId: string, workspaceId: string, prompt: string): Promise<string> {
+  private async sendPromptToSession(
+    sessionId: string,
+    workspaceId: string,
+    prompt: string,
+    options: SendPromptOptions = {}
+  ): Promise<string> {
     if (!this.aiService) {
       throw new Error('AI service not initialized');
     }
@@ -894,6 +905,8 @@ export class MetaAgentService {
     }
 
     const normalizedPrompt = prompt.trim();
+    const interruptCurrentTurnRequested = options.interruptCurrentTurn === true || options.force === true;
+    const interruptWaitingForInput = options.interruptWaitingForInput === true;
     const shouldBypassExecution = this.shouldBypassChildAgentExecutionForTests();
     const statusRow = await this.getSessionStatusRow(sessionId, workspaceId);
     const statusBeforeQueue = (statusRow?.status || 'idle') as SessionStatusValue;
@@ -905,6 +918,9 @@ export class MetaAgentService {
         queuedPromptId: null,
         prompt: normalizedPrompt,
         statusBeforeQueue,
+        interruptCurrentTurnRequested,
+        interruptWaitingForInput,
+        interruptAttempted: false,
         processingTriggered: false,
         bypassedExecutionForTest: true,
       }, null, 2);
@@ -912,21 +928,60 @@ export class MetaAgentService {
 
     const queued = await this.aiService.queuePromptForSession(sessionId, normalizedPrompt);
     const status = (statusRow?.status || 'idle') as SessionStatusValue;
-    const processingTriggered = status === 'idle' || status === 'interrupted' || status === 'error';
+    const waitingForInputBlocked = status === 'waiting_for_input' && !interruptWaitingForInput;
+    const interruptEligible = status === 'running' || (status === 'waiting_for_input' && interruptWaitingForInput);
+    const interruptAttempted = interruptCurrentTurnRequested && interruptEligible;
+    const interruptSkippedReason = interruptCurrentTurnRequested && waitingForInputBlocked
+      ? 'waiting_for_input'
+      : null;
+    let interruptResult: Awaited<ReturnType<AIService['interruptCurrentTurnForSession']>> | null = null;
 
-    if (processingTriggered) {
-      await this.aiService.triggerQueuedPromptProcessingForSession(
-        sessionId,
-        session.worktreePath || session.workspacePath || workspaceId
-      );
+    if (interruptAttempted) {
+      try {
+        interruptResult = await this.aiService.interruptCurrentTurnForSession(sessionId);
+      } catch (error) {
+        interruptResult = {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
 
+    const processingTriggered =
+      status === 'idle' ||
+      status === 'interrupted' ||
+      status === 'error' ||
+      (interruptCurrentTurnRequested && !waitingForInputBlocked);
+    let processingTriggerAccepted: boolean | null = null;
+    let processingTriggerError: string | null = null;
+
+    if (processingTriggered) {
+      try {
+        processingTriggerAccepted = await this.aiService.triggerQueuedPromptProcessingForSession(
+          sessionId,
+          session.worktreePath || session.workspacePath || workspaceId
+        );
+      } catch (error) {
+        processingTriggerAccepted = false;
+        processingTriggerError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    const statusAfterQueue = (await this.getSessionStatusRow(sessionId, workspaceId))?.status || status;
     return JSON.stringify({
       sessionId,
       queuedPromptId: queued.id,
       prompt: queued.prompt,
       statusBeforeQueue: status,
+      statusAfterQueue,
+      interruptCurrentTurnRequested,
+      interruptWaitingForInput,
+      interruptAttempted,
+      interruptSkippedReason,
+      interruptResult,
       processingTriggered,
+      processingTriggerAccepted,
+      ...(processingTriggerError ? { processingTriggerError } : {}),
     }, null, 2);
   }
 
@@ -1085,16 +1140,56 @@ export class MetaAgentService {
       }
 
       const notification = this.buildNotificationMessage(eventType, result);
-      await this.aiService.queuePromptForSession(session.createdBySessionId, notification);
+      const shouldForceDeliverNotification = eventType !== 'session:error';
+      if (!shouldForceDeliverNotification) {
+        // Do not auto-re-drive the parent when THIS child settle was an error.
+        // The [Child Session Update] notification is still queued for visibility,
+        // but re-triggering the parent's queue on every error settle spins the
+        // meta-agent wakeup loop with no backoff.
+        await this.aiService.queuePromptForSession(session.createdBySessionId, notification);
+        return;
+      }
 
-      // Do not auto-re-drive the parent when THIS child settle was an error.
-      // The [Child Session Update] notification above is still queued for
-      // visibility, but re-triggering the parent's queue on every error settle
-      // spins the meta-agent wakeup loop with no backoff (an antigravity 429
-      // child settles instantly into 'error' every cycle). Native children
-      // settle 'session:completed', so this gate is a no-op for them.
-      if (eventType !== 'session:error' && (metaStatus === 'idle' || metaStatus === 'interrupted' || metaStatus === 'error')) {
-        await this.aiService.triggerQueuedPromptProcessingForSession(metaSession.id, metaSession.workspacePath);
+      const deliveryResult = await this.sendPromptToSession(
+        session.createdBySessionId,
+        metaSession.workspacePath,
+        notification,
+        {
+          force: shouldForceDeliverNotification,
+          interruptCurrentTurn: shouldForceDeliverNotification,
+          interruptWaitingForInput: false,
+        }
+      );
+
+      if (shouldForceDeliverNotification) {
+        try {
+          const parsed = JSON.parse(deliveryResult) as {
+            processingTriggered?: boolean;
+            processingTriggerAccepted?: boolean | null;
+            interruptAttempted?: boolean;
+            interruptResult?: { success?: boolean; error?: string } | null;
+            interruptSkippedReason?: string | null;
+          };
+          if (
+            parsed.processingTriggered !== true ||
+            parsed.processingTriggerAccepted !== true ||
+            parsed.interruptResult?.success === false
+          ) {
+            console.warn('[MetaAgentService] child notification force delivery was not accepted:', {
+              childSessionId: sessionId,
+              parentSessionId: session.createdBySessionId,
+              eventType,
+              processingTriggered: parsed.processingTriggered,
+              processingTriggerAccepted: parsed.processingTriggerAccepted,
+              interruptAttempted: parsed.interruptAttempted,
+              interruptSkippedReason: parsed.interruptSkippedReason,
+              interruptError: parsed.interruptResult?.error,
+              parentStatusBeforeDelivery: metaStatus,
+            });
+          }
+        } catch (parseError) {
+          console.warn('[MetaAgentService] failed to parse child notification delivery result:', parseError);
+        }
       }
     } catch (error) {
       console.error(`[MetaAgentService] handleChildSessionEvent failed for session ${sessionId} (${eventType}):`, error);
