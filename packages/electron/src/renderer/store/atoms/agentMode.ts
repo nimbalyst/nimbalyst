@@ -82,12 +82,16 @@ const DEFAULT_LAYOUT: AgentModeLayout = {
  * Deep merge persisted state with defaults.
  * Handles missing fields from old persisted data.
  */
-function mergeWithDefaults(persisted: Partial<AgentModeLayout> | undefined): AgentModeLayout {
+export function mergeWithDefaults(persisted: Partial<AgentModeLayout> | undefined): AgentModeLayout {
   const sessionHistoryLayout: SessionHistoryLayout = {
     ...DEFAULT_SESSION_HISTORY_LAYOUT,
     ...persisted?.sessionHistoryLayout,
     // The retired 'card' view mode coerces to 'list' on load.
     viewMode: persisted?.sessionHistoryLayout?.viewMode === 'kanban' ? 'kanban' : 'list',
+    // Escape hatch (#924): a persisted sortOrder that crashes the panel would
+    // otherwise brick the workspace on every launch with no in-app recovery.
+    // Coerce any value other than the two known ones back to 'updated'.
+    sortOrder: persisted?.sessionHistoryLayout?.sortOrder === 'created' ? 'created' : 'updated',
   };
   // Only pick known layout fields from persisted data.
   // agenticCodingWindowState stores both layout AND selectedWorkstream at the same level.

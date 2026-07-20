@@ -844,7 +844,16 @@ const SessionHistoryComponent: React.FC = () => {
         clearTimeout(orderThrottleTimerRef.current);
         orderThrottleTimerRef.current = null;
       }
-      commitOrderMap(liveOrderTimestampMap);
+      // Guard the commit the same way the throttled path does below (#924).
+      // `commitOrderMap` sets `displayOrderRankMap`, and `buildCommittedRankMap`
+      // — which depends on that state and is in this effect's deps — gets a new
+      // identity on every commit, re-running this effect. Without an equality
+      // check that is an unconditional setState → dep-change → setState loop
+      // (React #185), which crashed the app whenever sortOrder was 'created'.
+      const currentDisplayMap = displayOrderTimestampMapRef.current;
+      if (!mapsHaveEqualEntries(currentDisplayMap, liveOrderTimestampMap)) {
+        commitOrderMap(liveOrderTimestampMap);
+      }
       return;
     }
 
