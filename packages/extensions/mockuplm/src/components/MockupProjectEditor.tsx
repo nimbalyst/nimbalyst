@@ -5,7 +5,7 @@
  * Content state lives in a Zustand store (same pattern as DataModelLM).
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import { MockupProjectCanvas, type MockupProjectCanvasRef } from './MockupProjectCanvas';
 import { createMockupProjectStore, type MockupProjectStoreApi } from '../store/projectStore';
@@ -13,8 +13,13 @@ import { createEmptyProject, type MockupProjectFile } from '../types/project';
 import {
   useEditorLifecycle,
   useCollaborativeEditor,
+  type EditorContextItem,
   type EditorHostProps,
 } from '@nimbalyst/extension-sdk';
+import {
+  buildConnectionSelectionContextItem,
+  buildMockupSelectionContextItem,
+} from '../selectionContext';
 import { getFilesystem } from '../index';
 import { type MockupTheme } from '../utils/themeEngine';
 import { MockupProjectBinding } from '../collab/mockupProjectBinding';
@@ -280,66 +285,45 @@ export function MockupProjectEditor({ host }: EditorHostProps) {
     setNewScreenName('');
   }, [store, host.filePath]);
 
-  // Push selected screen context to the chat via EditorHost
-  useEffect(() => {
-    const unsubscribe = store.subscribe(() => {
-      const s = store.getState();
-      const selectedId = s.selectedMockupId;
-      if (selectedId) {
-        const mockup = s.mockups.find((m) => m.id === selectedId);
-        if (mockup) {
-          // Build description with connections
-          const outgoing = s.connections.filter((c) => c.fromMockupId === selectedId);
-          const incoming = s.connections.filter((c) => c.toMockupId === selectedId);
-          let desc = `Selected screen "${mockup.label}" (${mockup.path}) in mockup project "${s.name}".`;
-          if (outgoing.length > 0) {
-            const targets = outgoing.map((c) => {
-              const target = s.mockups.find((m) => m.id === c.toMockupId);
-              return target ? `${target.label} (${c.label || 'link'})` : c.toMockupId;
-            });
-            desc += `\nNavigates to: ${targets.join(', ')}`;
-          }
-          if (incoming.length > 0) {
-            const sources = incoming.map((c) => {
-              const source = s.mockups.find((m) => m.id === c.fromMockupId);
-              return source ? `${source.label} (${c.label || 'link'})` : c.fromMockupId;
-            });
-            desc += `\nNavigated from: ${sources.join(', ')}`;
-          }
-          // List all screens in the project for full context
-          const allScreens = s.mockups.map((m) => `${m.label} (${m.path})`).join(', ');
-          desc += `\nAll screens in project: ${allScreens}`;
-
-          host.setEditorContext({
-            label: `Screen: ${mockup.label}`,
-            description: desc,
-          });
-        }
-      } else {
-        // Nothing selected - still provide project-level context
-        const s2 = store.getState();
-        if (s2.mockups.length > 0) {
-          const allScreens = s2.mockups.map((m) => `${m.label} (${m.path})`).join(', ');
-          host.setEditorContext({
-            label: `Project: ${s2.name}`,
-            description: `Mockup project "${s2.name}" with ${s2.mockups.length} screens: ${allScreens}`,
-          });
-        } else {
-          host.setEditorContext(null);
-        }
-      }
-    });
-    // Fire once on mount to set initial context
-    const s = store.getState();
-    if (s.mockups.length > 0) {
-      const allScreens = s.mockups.map((m) => `${m.label} (${m.path})`).join(', ');
-      host.setEditorContext({
-        label: `Project: ${s.name}`,
-        description: `Mockup project "${s.name}" with ${s.mockups.length} screens: ${allScreens}`,
-      });
+  // Report the current selection to the chat as a removable context chip.
+  // The store.subscribe above already force-updates this component on every
+  // selection change, so deriving from the live store state here stays fresh.
+  const selectionState = store.getState();
+  const editorContextItem = useMemo<EditorContextItem | null>(() => {
+    if (selectionState.selectedMockupId) {
+      const mockup = selectionState.mockups.find((m) => m.id === selectionState.selectedMockupId);
+      return mockup
+        ? buildMockupSelectionContextItem(mockup, {
+            projectName: selectionState.name,
+            mockups: selectionState.mockups,
+            connections: selectionState.connections,
+          })
+        : null;
     }
-    return unsubscribe;
-  }, [store, host]);
+    if (selectionState.selectedConnectionId) {
+      const connection = selectionState.connections.find((c) => c.id === selectionState.selectedConnectionId);
+      return connection
+        ? buildConnectionSelectionContextItem(connection, {
+            projectName: selectionState.name,
+            mockups: selectionState.mockups,
+          })
+        : null;
+    }
+    return null;
+  }, [
+    selectionState.name,
+    selectionState.mockups,
+    selectionState.connections,
+    selectionState.selectedMockupId,
+    selectionState.selectedConnectionId,
+  ]);
+
+  useEffect(() => {
+    host.setEditorContextItems(editorContextItem ? [editorContextItem] : null);
+  }, [editorContextItem, host]);
+
+  // Clear the chip when the editor unmounts (tab closed / switched away).
+  useEffect(() => () => host.setEditorContextItems(null), [host]);
 
   const handleStartAddScreen = useCallback(() => {
     setIsAddingScreen(true);
