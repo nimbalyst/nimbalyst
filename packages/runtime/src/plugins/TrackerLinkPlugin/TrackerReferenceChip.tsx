@@ -1,7 +1,7 @@
 /**
  * TrackerReferenceChip — inline chip rendered by `TrackerReferenceNode`.
  *
- * Shows the reference key + a visible status badge + the item's LIVE title,
+ * Shows the item's type, reference key, LIVE title, workflow state, and owner,
  * resolved from the canonical runtime tracker store. Clicking opens a hover-card
  * preview popover (floating-ui) with a "Go to item" action.
  *
@@ -35,6 +35,7 @@ import {
   getStatusColor,
   getTypeColor,
   getTypeIcon,
+  getInitials,
 } from '../TrackerPlugin/components/trackerColumns';
 
 function normalizeStatus(status: string | undefined): string | undefined {
@@ -62,7 +63,7 @@ interface StatusPresentation {
   color: string;
   background: string;
   border: string;
-  icon: string;
+  icon?: string;
   label: string;
   tone: StatusTone;
 }
@@ -75,19 +76,16 @@ const STATUS_TONES: Record<
     color: 'var(--nim-text-muted)',
     background: 'var(--nim-bg-tertiary)',
     border: 'var(--nim-border)',
-    icon: 'radio_button_unchecked',
   },
   'in-progress': {
     color: 'var(--nim-warning)',
     background: 'color-mix(in srgb, var(--nim-warning) 12%, transparent)',
     border: 'color-mix(in srgb, var(--nim-warning) 40%, var(--nim-border))',
-    icon: 'donut_small',
   },
   'in-review': {
-    color: 'var(--nim-info)',
-    background: 'color-mix(in srgb, var(--nim-info) 12%, transparent)',
-    border: 'color-mix(in srgb, var(--nim-info) 40%, var(--nim-border))',
-    icon: 'rate_review',
+    color: 'var(--nim-purple)',
+    background: 'color-mix(in srgb, var(--nim-purple) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--nim-purple) 40%, var(--nim-border))',
   },
   completed: {
     color: 'var(--nim-success)',
@@ -99,19 +97,16 @@ const STATUS_TONES: Record<
     color: 'var(--nim-error)',
     background: 'color-mix(in srgb, var(--nim-error) 12%, transparent)',
     border: 'color-mix(in srgb, var(--nim-error) 40%, var(--nim-border))',
-    icon: 'block',
   },
   informational: {
     color: 'var(--nim-info)',
     background: 'color-mix(in srgb, var(--nim-info) 12%, transparent)',
     border: 'color-mix(in srgb, var(--nim-info) 40%, var(--nim-border))',
-    icon: 'info',
   },
   neutral: {
     color: 'var(--nim-text-muted)',
     background: 'var(--nim-bg-tertiary)',
     border: 'var(--nim-border)',
-    icon: 'label',
   },
 };
 
@@ -134,6 +129,12 @@ const STATUS_TONE_BY_VALUE: Record<string, StatusTone> = {
   "won't-fix": 'neutral',
   'wont-fix': 'neutral',
 };
+
+// Transcript markdown can remount a link renderer during routine message
+// updates while preserving the outer message row. Scope open cards to that
+// stable host and a per-reference key so they survive the child remount without
+// leaking across messages or duplicate references.
+const previewOpenKeysByHost = new WeakMap<HTMLElement, Set<string>>();
 
 function getStatusPresentation(
   normalizedStatus: string | undefined,
@@ -207,20 +208,42 @@ function MetadataBadge({
 export interface TrackerReferenceChipProps {
   referenceKey: string;
   nodeKey?: string;
+  /** Stable per-renderer identity used to preserve an open transcript card. */
+  previewStateKey?: string;
   /** Compact chips omit the live title while retaining preview and navigation. */
   variant?: 'default' | 'compact';
 }
 
 export function TrackerReferenceChip({
   referenceKey,
+  nodeKey,
+  previewStateKey,
   variant = 'default',
 }: TrackerReferenceChipProps): JSX.Element {
   const resolved = useResolvedTrackerReference(referenceKey);
   const [open, setOpen] = React.useState(false);
+  const referenceHostRef = React.useRef<HTMLElement | null>(null);
+  const openStateKey = previewStateKey ?? nodeKey ?? referenceKey;
+  const handleOpenChange = React.useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    const host = referenceHostRef.current;
+    if (host) {
+      let openKeys = previewOpenKeysByHost.get(host);
+      if (nextOpen) {
+        if (!openKeys) {
+          openKeys = new Set();
+          previewOpenKeysByHost.set(host, openKeys);
+        }
+        openKeys.add(openStateKey);
+      } else if (openKeys) {
+        openKeys.delete(openStateKey);
+      }
+    }
+  }, [openStateKey]);
 
   const { refs, floatingStyles, context } = useFloating({
     open,
-    onOpenChange: setOpen,
+    onOpenChange: handleOpenChange,
     placement: 'bottom-start',
     middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
     whileElementsMounted: autoUpdate,
@@ -234,12 +257,37 @@ export function TrackerReferenceChip({
     dismiss,
     role,
   ]);
+  const setReference = React.useCallback(
+    (node: HTMLElement | null) => {
+      refs.setReference(node);
+      if (!node) return;
+
+      const host =
+        (node.closest(
+          '.tracker-reference, .rich-transcript-message',
+        ) as HTMLElement | null) ?? node;
+      referenceHostRef.current = host;
+      if (previewOpenKeysByHost.get(host)?.has(openStateKey)) {
+        setOpen(true);
+      }
+    },
+    [openStateKey, refs],
+  );
 
   const normalizedStatus = normalizeStatus(resolved?.status);
   const statusPresentation = getStatusPresentation(normalizedStatus);
   const isCompleted = statusPresentation?.tone === 'completed';
   const label = resolved?.issueKey ?? referenceKey;
   const title = resolved?.title;
+  const typeColor = resolved?.type ? getTypeColor(resolved.type) : undefined;
+  const typeIcon = resolved?.type ? getTypeIcon(resolved.type) : undefined;
+  const ownerInitials = resolved?.owner
+    ? getInitials(
+        resolved.owner.includes('@')
+          ? resolved.owner.split('@')[0]
+          : resolved.owner,
+      )
+    : undefined;
   const tooltip = resolved
     ? `${label}${resolved.status ? ` · ${resolved.status}` : ''}${
         resolved.title ? ` — ${resolved.title}` : ''
@@ -249,7 +297,7 @@ export function TrackerReferenceChip({
   return (
     <>
       <span
-        ref={refs.setReference}
+        ref={setReference}
         {...getReferenceProps()}
         className="tracker-reference-chip"
         data-issue-key={referenceKey}
@@ -257,12 +305,16 @@ export function TrackerReferenceChip({
         data-status={normalizedStatus}
         data-status-tone={statusPresentation?.tone}
         data-completed={isCompleted ? 'true' : 'false'}
+        data-type={resolved?.type}
+        data-owner={resolved?.owner}
         title={tooltip}
         style={{
           display: 'inline-flex',
           alignItems: 'center',
-          gap: '4px',
-          padding: '0 6px',
+          gap: '5px',
+          maxWidth: '100%',
+          boxSizing: 'border-box',
+          padding: '1px 6px',
           borderRadius: '10px',
           fontSize: '0.85em',
           lineHeight: '1.5',
@@ -274,6 +326,47 @@ export function TrackerReferenceChip({
           userSelect: 'none',
         }}
       >
+        {typeIcon && typeColor ? (
+          <span
+            className="material-symbols-outlined tracker-reference-chip-type-icon"
+            role="img"
+            aria-label={`${displayLabel(resolved?.type ?? '')} item`}
+            style={{
+              color: typeColor,
+              flexShrink: 0,
+              fontSize: '15px',
+              lineHeight: 1,
+            }}
+          >
+            {typeIcon}
+          </span>
+        ) : null}
+        <span
+          className="tracker-reference-chip-key"
+          style={{
+            flexShrink: 0,
+            fontWeight: 700,
+            color: 'var(--nim-text)',
+          }}
+        >
+          {label}
+        </span>
+        {title && variant === 'default' ? (
+          <span
+            className="tracker-reference-chip-title"
+            style={{
+              display: 'inline-block',
+              minWidth: 0,
+              maxWidth: '32ch',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              color: 'var(--nim-text-muted)',
+              textDecoration: isCompleted ? 'line-through' : undefined,
+            }}
+          >
+            {title}
+          </span>
+        ) : null}
         {statusPresentation ? (
           <span
             className="tracker-reference-chip-status"
@@ -293,38 +386,40 @@ export function TrackerReferenceChip({
               whiteSpace: 'nowrap',
             }}
           >
-            <span
-              className="material-symbols-outlined tracker-reference-chip-status-icon"
-              aria-hidden="true"
-              style={{ fontSize: '11px', lineHeight: 1 }}
-            >
-              {statusPresentation.icon}
-            </span>
+            {statusPresentation.icon ? (
+              <span
+                className="material-symbols-outlined tracker-reference-chip-status-icon"
+                aria-hidden="true"
+                style={{ fontSize: '11px', lineHeight: 1 }}
+              >
+                {statusPresentation.icon}
+              </span>
+            ) : null}
             {statusPresentation.label}
           </span>
         ) : null}
-        <span
-          className="tracker-reference-chip-key"
-          style={{
-            fontWeight: 600,
-            color: isCompleted ? 'var(--nim-text-muted)' : 'var(--nim-text)',
-            textDecoration: isCompleted ? 'line-through' : undefined,
-          }}
-        >
-          {label}
-        </span>
-        {title && variant === 'default' ? (
+        {ownerInitials ? (
           <span
-            className="tracker-reference-chip-title"
+            className="tracker-reference-chip-owner"
+            aria-label={`Owner: ${resolved?.owner}`}
+            title={resolved?.owner}
             style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '18px',
+              height: '18px',
+              flexShrink: 0,
+              borderRadius: '50%',
+              border: '1px solid var(--nim-border)',
+              background: 'var(--nim-bg-tertiary)',
               color: 'var(--nim-text-muted)',
-              maxWidth: '40ch',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              textDecoration: isCompleted ? 'line-through' : undefined,
+              fontSize: '9px',
+              fontWeight: 650,
+              lineHeight: 1,
             }}
           >
-            {title}
+            {ownerInitials}
           </span>
         ) : null}
       </span>
@@ -343,7 +438,7 @@ export function TrackerReferenceChip({
                 if (resolved) {
                   navigateToTrackerReference(resolved);
                 }
-                setOpen(false);
+                handleOpenChange(false);
               }}
             />
           </div>
@@ -399,6 +494,7 @@ function TrackerReferencePreview({
       {resolved ? (
         <>
           <div
+            className="tracker-reference-preview-header"
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -406,7 +502,16 @@ function TrackerReferencePreview({
               marginBottom: '7px',
             }}
           >
+            {resolved.type ? (
+              <MetadataBadge
+                className="tracker-reference-preview-type"
+                color={typeColor}
+                icon={getTypeIcon(resolved.type)}
+                label={displayLabel(resolved.type)}
+              />
+            ) : null}
             <span
+              className="tracker-reference-preview-key"
               style={{
                 color: 'var(--nim-text-faint)',
                 fontSize: '10px',
@@ -437,14 +542,6 @@ function TrackerReferencePreview({
               marginBottom: '12px',
             }}
           >
-            {resolved.type ? (
-              <MetadataBadge
-                className="tracker-reference-preview-type"
-                color={typeColor}
-                icon={getTypeIcon(resolved.type)}
-                label={displayLabel(resolved.type)}
-              />
-            ) : null}
             {resolved.status ? (
               <MetadataBadge
                 className="tracker-reference-preview-status"

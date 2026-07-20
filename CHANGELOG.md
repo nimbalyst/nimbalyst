@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Inline tracker references now show the item type, key, live title, workflow state, and owner, with completed titles crossed out.
 
 ### Fixed
 <!-- Bug fixes go here -->

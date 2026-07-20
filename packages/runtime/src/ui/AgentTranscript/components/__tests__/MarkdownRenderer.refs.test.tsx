@@ -59,6 +59,39 @@ describe('MarkdownRenderer reference autolinking', () => {
     expect(screen.getByText('Autolinked bug')).toBeDefined();
   });
 
+  it('keeps a tracker card open through a transcript markdown rerender', () => {
+    const store = createStore();
+    store.set(
+      trackerItemsMapAtom,
+      new Map([[trackerRecord.id, trackerRecord]]),
+    );
+    const renderMessage = () => (
+      <Provider store={store}>
+        <div className="rich-transcript-message">
+          <MarkdownRenderer
+            content="See [NIM-1](nimbalyst://NIM-1)."
+            messageId="message-1"
+          />
+        </div>
+      </Provider>
+    );
+    const { container, rerender } = render(renderMessage());
+
+    fireEvent.click(
+      container.querySelector<HTMLElement>('.tracker-reference-chip')!,
+    );
+    expect(document.querySelector('.tracker-reference-preview')).not.toBeNull();
+
+    rerender(renderMessage());
+
+    expect(document.querySelector('.tracker-reference-preview')).not.toBeNull();
+    expect(
+      container
+        .querySelector('.tracker-reference-chip')
+        ?.getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
   it('does not autolink a token whose prefix is not a workspace tracker prefix', () => {
     const { container } = renderWith('Encoding is UTF-8 here.');
     expect(container.querySelector('.tracker-reference-chip')).toBeNull();

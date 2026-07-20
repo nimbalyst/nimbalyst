@@ -27,6 +27,7 @@ const trackerRecord: TrackerRecord = {
     title: 'Theme-safe tracker preview',
     status: 'in-progress',
     priority: 'medium',
+    owner: 'Morgan Reed',
   },
 };
 
@@ -68,6 +69,41 @@ describe('TrackerReferenceChip', () => {
     expect(button.style.color).toBe('var(--nim-text)');
   });
 
+  it('keeps the preview open when the transcript remounts the chip', () => {
+    const store = createStore();
+    store.set(
+      trackerItemsMapAtom,
+      new Map([[trackerRecord.id, trackerRecord]]),
+    );
+
+    const renderChip = (key: string) => (
+      <Provider store={store}>
+        <div className="rich-transcript-message">
+          <TrackerReferenceChip
+            key={key}
+            referenceKey="NIM-1"
+            previewStateKey="message-1:tracker-0"
+          />
+        </div>
+      </Provider>
+    );
+    const { container, rerender } = render(renderChip('first'));
+
+    fireEvent.click(
+      container.querySelector<HTMLElement>('.tracker-reference-chip')!,
+    );
+    expect(document.querySelector('.tracker-reference-preview')).not.toBeNull();
+
+    rerender(renderChip('replacement'));
+
+    expect(document.querySelector('.tracker-reference-preview')).not.toBeNull();
+    expect(
+      container
+        .querySelector('.tracker-reference-chip')
+        ?.getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
   it('presents type, status, priority, and the last update as distinct metadata', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-11T12:00:00.000Z'));
@@ -85,9 +121,23 @@ describe('TrackerReferenceChip', () => {
 
     fireEvent.click(screen.getByText('NIM-1'));
 
+    const previewHeader = document.querySelector(
+      '.tracker-reference-preview-header',
+    );
+    expect(
+      Array.from(previewHeader?.children ?? []).map(child => child.className),
+    ).toEqual([
+      'tracker-reference-preview-type',
+      'tracker-reference-preview-key',
+    ]);
     expect(
       document.querySelector('.tracker-reference-preview-type')?.textContent,
     ).toContain('Bug');
+    expect(
+      document.querySelector(
+        '.tracker-reference-preview-badges .tracker-reference-preview-type',
+      ),
+    ).toBeNull();
     expect(
       document.querySelector('.tracker-reference-preview-status')?.textContent,
     ).toContain('In Progress');
@@ -105,6 +155,62 @@ describe('TrackerReferenceChip', () => {
     ).toBe('true');
   });
 
+  it('renders the five-part inline anatomy in the designed order', () => {
+    const store = createStore();
+    store.set(
+      trackerItemsMapAtom,
+      new Map([[trackerRecord.id, trackerRecord]]),
+    );
+
+    const { container } = render(
+      <Provider store={store}>
+        <TrackerReferenceChip referenceKey="NIM-1" />
+      </Provider>,
+    );
+
+    const chip = container.querySelector<HTMLElement>(
+      '.tracker-reference-chip',
+    );
+    const typeIcon = container.querySelector<HTMLElement>(
+      '.tracker-reference-chip-type-icon',
+    );
+    const key = container.querySelector<HTMLElement>(
+      '.tracker-reference-chip-key',
+    );
+    const title = container.querySelector<HTMLElement>(
+      '.tracker-reference-chip-title',
+    );
+    const status = container.querySelector<HTMLElement>(
+      '.tracker-reference-chip-status',
+    );
+    const owner = container.querySelector<HTMLElement>(
+      '.tracker-reference-chip-owner',
+    );
+
+    expect(
+      Array.from(chip?.children ?? []).map(child => child.className),
+    ).toEqual([
+      'material-symbols-outlined tracker-reference-chip-type-icon',
+      'tracker-reference-chip-key',
+      'tracker-reference-chip-title',
+      'tracker-reference-chip-status',
+      'tracker-reference-chip-owner',
+    ]);
+    expect(typeIcon?.textContent).toBe('bug_report');
+    expect(typeIcon?.style.color).toBe('rgb(220, 38, 38)');
+    expect(key?.textContent).toBe('NIM-1');
+    expect(key?.style.color).toBe('var(--nim-text)');
+    expect(title?.textContent).toBe('Theme-safe tracker preview');
+    expect(title?.style.color).toBe('var(--nim-text-muted)');
+    expect(title?.style.overflow).toBe('hidden');
+    expect(title?.style.textOverflow).toBe('ellipsis');
+    expect(status?.textContent).toContain('In Progress');
+    expect(status?.style.color).toBe('var(--nim-warning)');
+    expect(owner?.textContent).toBe('MR');
+    expect(owner?.style.background).toBe('var(--nim-bg-tertiary)');
+    expect(owner?.style.color).toBe('var(--nim-text-muted)');
+  });
+
   it('supports a compact extension-editor variant without losing live resolution', () => {
     const store = createStore();
     store.set(
@@ -118,10 +224,18 @@ describe('TrackerReferenceChip', () => {
       </Provider>,
     );
 
-    expect(container.querySelector('.tracker-reference-chip-key')?.textContent).toBe('NIM-1');
+    expect(
+      container.querySelector('.tracker-reference-chip-key')?.textContent,
+    ).toBe('NIM-1');
     expect(container.querySelector('.tracker-reference-chip-title')).toBeNull();
-    expect(container.querySelector('.tracker-reference-chip-status')?.textContent).toContain('In Progress');
-    expect(container.querySelector('.tracker-reference-chip')?.getAttribute('data-resolved')).toBe('true');
+    expect(
+      container.querySelector('.tracker-reference-chip-status')?.textContent,
+    ).toContain('In Progress');
+    expect(
+      container
+        .querySelector('.tracker-reference-chip')
+        ?.getAttribute('data-resolved'),
+    ).toBe('true');
   });
 
   it.each(['done', 'completed', 'implemented', 'decided'])(
@@ -163,7 +277,7 @@ describe('TrackerReferenceChip', () => {
       expect(
         container.querySelector<HTMLElement>('.tracker-reference-chip-key')
           ?.style.textDecoration,
-      ).toBe('line-through');
+      ).toBe('');
       expect(
         container.querySelector<HTMLElement>('.tracker-reference-chip-title')
           ?.style.textDecoration,
@@ -209,7 +323,7 @@ describe('TrackerReferenceChip', () => {
   it.each([
     ['to-do', 'to-do', 'To Do', 'var(--nim-text-muted)'],
     ['in-progress', 'in-progress', 'In Progress', 'var(--nim-warning)'],
-    ['in-review', 'in-review', 'In Review', 'var(--nim-info)'],
+    ['in-review', 'in-review', 'In Review', 'var(--nim-purple)'],
     ['blocked', 'blocked', 'Blocked', 'var(--nim-error)'],
     ['custom-status', 'neutral', 'Custom Status', 'var(--nim-text-muted)'],
   ])(
@@ -247,7 +361,7 @@ describe('TrackerReferenceChip', () => {
     },
   );
 
-  it('updates the visible state treatment when the live tracker record changes', () => {
+  it('updates state, title, and owner when the live tracker record changes', () => {
     const store = createStore();
     store.set(
       trackerItemsMapAtom,
@@ -275,11 +389,22 @@ describe('TrackerReferenceChip', () => {
     expect(
       container.querySelector('.tracker-reference-chip-status')?.textContent,
     ).toContain('To Do');
+    expect(
+      container.querySelector('.tracker-reference-chip-title')?.textContent,
+    ).toBe('Theme-safe tracker preview');
+    expect(
+      container.querySelector('.tracker-reference-chip-owner')?.textContent,
+    ).toBe('MR');
 
     act(() => {
       store.set(upsertTrackerItemAtom, {
         ...trackerRecord,
-        fields: { ...trackerRecord.fields, status: 'in-progress' },
+        fields: {
+          ...trackerRecord.fields,
+          title: 'Updated live title',
+          status: 'in-progress',
+          owner: 'Alex Kim',
+        },
       });
     });
 
@@ -288,6 +413,12 @@ describe('TrackerReferenceChip', () => {
     expect(
       container.querySelector('.tracker-reference-chip-status')?.textContent,
     ).toContain('In Progress');
+    expect(
+      container.querySelector('.tracker-reference-chip-title')?.textContent,
+    ).toBe('Updated live title');
+    expect(
+      container.querySelector('.tracker-reference-chip-owner')?.textContent,
+    ).toBe('AK');
 
     act(() => {
       store.set(upsertTrackerItemAtom, {

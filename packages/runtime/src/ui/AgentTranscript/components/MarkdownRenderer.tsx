@@ -424,6 +424,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     if (typeof offset !== 'number') return undefined;
     return `cb:${String(messageId)}:${offset}`;
   }, [messageId]);
+  const trackerReferencePreviewKey = useCallback(
+    (node: unknown, referenceKey: string): string | undefined => {
+      if (messageId == null) return undefined;
+      const offset = (node as { position?: { start?: { offset?: number } } } | null | undefined)
+        ?.position?.start?.offset;
+      return `tracker:${String(messageId)}:${String(offset ?? 'unknown')}:${referenceKey}`;
+    },
+    [messageId],
+  );
 
   // Extension-contributed markdown plugins/components are merged on top of
   // the core baseline. The transcript registry handles deduping styles and
@@ -673,7 +682,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             // status chip instead of an anchor.
             const trackerKey = parseTrackerReferenceHref(href);
             if (trackerKey) {
-              return <TrackerReferenceChip referenceKey={trackerKey} />;
+              return (
+                <TrackerReferenceChip
+                  referenceKey={trackerKey}
+                  previewStateKey={trackerReferencePreviewKey(node, trackerKey)}
+                />
+              );
             }
             // Session references (a bare session UUID href) render as a live
             // session chip that resolves the title/phase and opens the session
