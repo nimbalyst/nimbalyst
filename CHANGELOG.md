@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Text you select in an editor again reliably appears as a removable chip in the AI chat and is sent with your prompt -- including after the editor reloads, in shared documents, and for selected cells in shared spreadsheets.
+- Text you select in an editor again reliably appears as a removable chip in the AI chat and is sent with your prompt -- including after the editor reloads, in shared documents, in agent-session editor tabs, and for selected cells in shared spreadsheets.
 - RTL Support no longer flattens transcript headings or strips spacing and layout from other Markdown blocks.
 - Opening a shared code or calc-sheet document no longer intermittently fails to connect for collaboration.
 - Sorting the sessions list by created date no longer crashes the app, and a bad saved sort preference can no longer lock you out of a workspace.

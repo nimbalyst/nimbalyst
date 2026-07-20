@@ -42,6 +42,8 @@ export interface WorkstreamSessionTabsProps {
   onSessionArchive?: (sessionId: string) => void; // Callback to archive a session
   onSessionUnarchive?: (sessionId: string) => void; // Callback to unarchive a session
   onSessionRename?: (sessionId: string, newName: string) => void; // Callback to rename a session
+  /** Static document context (scopes the "+ selection" chips to the active editor tab) */
+  documentContext?: SerializableDocumentContext;
   /** Getter for document context from the workstream editor (for AI file/selection context) */
   getDocumentContext?: () => Promise<SerializableDocumentContext>;
   /** When true, collapse the transcript but keep tab bar and AI input visible */
@@ -224,6 +226,7 @@ export const WorkstreamSessionTabs: React.FC<WorkstreamSessionTabsProps> = React
   onSessionArchive,
   onSessionUnarchive,
   onSessionRename,
+  documentContext,
   getDocumentContext,
   collapseTranscript = false,
 }) => {
@@ -291,6 +294,7 @@ export const WorkstreamSessionTabs: React.FC<WorkstreamSessionTabsProps> = React
           onFileClick={onFileClick}
           onClearAgentSession={handleNewSession}
           onCreateWorktreeSession={onCreateWorktreeSession}
+          documentContext={documentContext}
           getDocumentContext={getDocumentContext}
           collapseTranscript={collapseTranscript}
         />

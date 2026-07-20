@@ -64,6 +64,7 @@ import {
   loadWorkstreamState,
   workstreamStatesLoadedAtom,
   workstreamWorktreePathAtom,
+  workstreamActiveFileAtom,
   type WorkstreamLayoutMode,
 } from '../../store/atoms/workstreamState';
 import {
@@ -1086,6 +1087,23 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
   // Collapse the transcript content (hide messages) when in editor mode
   const collapseTranscript = layoutMode === 'editor';
 
+  // Reactive file path of the active workstream editor tab, so the agent chat
+  // scopes its "+ selection" chips to the file the user is actually looking at.
+  // SelectionChips shows a chip only when currentFilePath matches the selection's
+  // filePath (no most-recent fallback — that leaked a selection across modes).
+  // The editor tabs live inside WorkstreamEditorTabs' own TabsProvider; the active
+  // file is mirrored to workstreamState, so workstreamActiveFileAtom is null when
+  // the active tab is a tracker (not a file) or nothing is open. Empty when the
+  // editor area is hidden (transcript-only view) so a stale selection can't leak.
+  // The send path still uses getDocumentContext for the fresh selection.
+  const activeEditorFile = useAtomValue(workstreamActiveFileAtom(workstreamId));
+  // Stable object identity (only changes when the active file does) so the memoized
+  // WorkstreamSessionTabs / AgentSessionPanel aren't re-rendered every parent render.
+  const sessionDocumentContext = React.useMemo(
+    () => ({ filePath: showEditorTabs ? (activeEditorFile ?? '') : '' }),
+    [showEditorTabs, activeEditorFile]
+  );
+
   // Open pending file once editor mounts after layout mode change
   useEffect(() => {
     if (pendingFileOpenRef.current && showEditorTabs && editorTabsRef.current) {
@@ -1340,6 +1358,7 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
                 onSessionArchive={handleSessionArchive}
                 onSessionUnarchive={handleSessionUnarchive}
                 onSessionRename={handleSessionRename}
+                documentContext={sessionDocumentContext}
                 getDocumentContext={getDocumentContext}
                 collapseTranscript={collapseTranscript}
               />

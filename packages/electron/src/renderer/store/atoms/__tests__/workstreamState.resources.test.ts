@@ -177,6 +177,27 @@ describe('workstream resource actions', () => {
     ).toEqual(['/a.ts', trackerResourceId('T1'), '/b.ts']);
   });
 
+  it('mirrors the active editor tab to workstreamActiveFileAtom for agent-chat selection scoping', () => {
+    // AgentWorkstreamPanel reads workstreamActiveFileAtom to scope the agent
+    // chat's "+ selection" chip to the active editor tab. WorkstreamEditorTabs'
+    // persist effect writes the live tab set through setWorkstreamResourcesAtom;
+    // this pins that a file-active tab surfaces its path (chip scopes to it) and
+    // a tracker-active tab surfaces null (chat passes '' -> no cross-tab leak).
+    store.set(setWorkstreamResourcesAtom, {
+      workstreamId: wsId,
+      resources: [fileResource('/a.ts'), trackerResource('T1')],
+      activeResourceId: '/a.ts',
+    });
+    expect(store.get(workstreamActiveFileAtom(wsId))).toBe('/a.ts');
+
+    store.set(setWorkstreamResourcesAtom, {
+      workstreamId: wsId,
+      resources: [fileResource('/a.ts'), trackerResource('T1')],
+      activeResourceId: trackerResourceId('T1'),
+    });
+    expect(store.get(workstreamActiveFileAtom(wsId))).toBeNull();
+  });
+
   it('closing the active resource moves focus to the left neighbor', () => {
     store.set(addWorkstreamFileAtom, { workstreamId: wsId, filePath: '/a.ts' });
     store.set(addWorkstreamFileAtom, { workstreamId: wsId, filePath: '/b.ts' });
