@@ -2,6 +2,14 @@ import Foundation
 import CryptoKit
 import os
 
+typealias DocumentWebSocketClientFactory = @MainActor () -> WebSocketClient
+typealias DocumentMessageWillHandle = @MainActor @Sendable (Data, String) async -> Void
+
+private struct DocumentClientGenerationScope {
+    let clientId: ObjectIdentifier
+    var highestAcceptedGeneration: Int?
+}
+
 /// Manages document sync with ProjectSyncRoom Durable Objects.
 /// Handles one WebSocket connection per project for syncing .md files.
 ///
@@ -44,12 +52,36 @@ public final class DocumentSyncManager: ObservableObject {
 
     /// Track per-project connection state for queueing decisions.
     private var projectConnected: [String: Bool] = [:]
+    private var projectContexts: [String: WebSocketConnectionContext] = [:]
+    private var projectGenerationScopes: [String: DocumentClientGenerationScope] = [:]
+    private let clientFactory: DocumentWebSocketClientFactory
+    private let messageWillHandle: DocumentMessageWillHandle
 
-    public init(crypto: CryptoManager, database: DatabaseManager, serverUrl: String, userId: String) {
+    public convenience init(crypto: CryptoManager, database: DatabaseManager, serverUrl: String, userId: String) {
+        self.init(
+            crypto: crypto,
+            database: database,
+            serverUrl: serverUrl,
+            userId: userId,
+            clientFactory: { WebSocketClient() },
+            messageWillHandle: { _, _ in }
+        )
+    }
+
+    init(
+        crypto: CryptoManager,
+        database: DatabaseManager,
+        serverUrl: String,
+        userId: String,
+        clientFactory: @escaping DocumentWebSocketClientFactory,
+        messageWillHandle: @escaping DocumentMessageWillHandle
+    ) {
         self.crypto = crypto
         self.database = database
         self.serverUrl = serverUrl
         self.userId = userId
+        self.clientFactory = clientFactory
+        self.messageWillHandle = messageWillHandle
     }
 
     /// The user ID to use for room routing. Prefers authUserId (from JWT) over pairing userId.
@@ -91,30 +123,69 @@ public final class DocumentSyncManager: ObservableObject {
 
         activeProjectId = projectId
 
-        let client = WebSocketClient()
-        projectClients[projectId] = client
+        let client = clientFactory()
+        let retiredClient = projectClients.updateValue(client, forKey: projectId)
+        projectContexts.removeValue(forKey: projectId)
+        projectConnected[projectId] = false
+        projectGenerationScopes[projectId] = DocumentClientGenerationScope(
+            clientId: ObjectIdentifier(client),
+            highestAcceptedGeneration: nil
+        )
+        if activeProjectId == projectId {
+            isConnected = false
+        }
+
+        // Rebind authority to the new identity before retiring the old client.
+        // Any synchronous or delayed callback from the retired client then
+        // fails the exact identity/scope guard and cannot regain authority.
+        retiredClient?.disconnect()
 
         let roomId = "org:\(orgId):user:\(effectiveUserId):project:\(hashedId)"
         logger.info("[DocSync] Connecting to project room: \(roomId)")
 
-        client.onConnectionStateChanged = { [weak self] connected in
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.projectConnected[projectId] = connected
+        client.onConnectionStateChangedWithContext = { [weak self, weak client] connected, context in
+            guard let self,
+                  let client,
+                  self.projectClients[projectId] === client,
+                  var generationScope = self.projectGenerationScopes[projectId],
+                  generationScope.clientId == ObjectIdentifier(client),
+                  context.roomId == roomId else { return }
+
+            if connected {
+                guard WebSocketConnectedContextGate.accepts(
+                    highestAcceptedGeneration: generationScope.highestAcceptedGeneration,
+                    incomingContext: context
+                ) else { return }
+                generationScope.highestAcceptedGeneration = context.generation
+                self.projectGenerationScopes[projectId] = generationScope
+                self.projectContexts[projectId] = context
+                self.projectConnected[projectId] = true
                 if self.activeProjectId == projectId {
-                    self.isConnected = connected
+                    self.isConnected = true
                 }
-                if connected {
-                    self.sendSyncRequest(projectId: projectId)
-                    self.replayOfflineQueue(projectId: projectId)
+                self.sendSyncRequest(projectId: projectId)
+                self.replayOfflineQueue(projectId: projectId)
+            } else if self.projectContexts[projectId] == context {
+                self.projectContexts.removeValue(forKey: projectId)
+                self.projectConnected[projectId] = false
+                if self.activeProjectId == projectId {
+                    self.isConnected = false
                 }
             }
         }
 
-        client.onMessage = { [weak self] data in
-            Task { @MainActor in
-                self?.handleMessage(data, projectId: projectId)
-            }
+        client.onMessageWithContext = { [weak self, weak client] data, context in
+            guard let self,
+                  let client,
+                  self.projectClients[projectId] === client,
+                  self.projectGenerationScopes[projectId]?.clientId == ObjectIdentifier(client),
+                  self.projectContexts[projectId] == context else { return }
+            await self.handleMessage(
+                data,
+                projectId: projectId,
+                client: client,
+                context: context
+            )
         }
 
         client.connect(serverUrl: serverUrl, roomId: roomId, authToken: authToken)
@@ -122,9 +193,11 @@ public final class DocumentSyncManager: ObservableObject {
 
     /// Disconnect from a project's sync room.
     public func disconnectProject(_ projectId: String) {
-        projectClients[projectId]?.disconnect()
-        projectClients.removeValue(forKey: projectId)
+        let retiredClient = projectClients.removeValue(forKey: projectId)
         projectConnected.removeValue(forKey: projectId)
+        projectContexts.removeValue(forKey: projectId)
+        projectGenerationScopes.removeValue(forKey: projectId)
+        retiredClient?.disconnect()
         // Keep offline queue -- it will replay if we reconnect later
         if activeProjectId == projectId {
             activeProjectId = nil
@@ -134,14 +207,17 @@ public final class DocumentSyncManager: ObservableObject {
 
     /// Disconnect from all project rooms.
     public func disconnectAll() {
-        for (_, client) in projectClients {
-            client.disconnect()
-        }
+        let retiredClients = Array(projectClients.values)
         projectClients.removeAll()
         projectConnected.removeAll()
+        projectContexts.removeAll()
+        projectGenerationScopes.removeAll()
         offlineQueues.removeAll()
         activeProjectId = nil
         isConnected = false
+        for client in retiredClients {
+            client.disconnect()
+        }
     }
 
     /// Reconnect active project if WebSocket was dropped (e.g., app returning from background).
@@ -216,7 +292,17 @@ public final class DocumentSyncManager: ObservableObject {
 
     // MARK: - Message Handling
 
-    private func handleMessage(_ data: Data, projectId: String) {
+    private func handleMessage(
+        _ data: Data,
+        projectId: String,
+        client: WebSocketClient,
+        context: WebSocketConnectionContext
+    ) async {
+        await messageWillHandle(data, projectId)
+        guard projectClients[projectId] === client,
+              projectGenerationScopes[projectId]?.clientId == ObjectIdentifier(client),
+              projectContexts[projectId] == context else { return }
+
         guard let envelope = try? decoder.decode(ServerMessage.self, from: data) else {
             logger.error("[DocSync] Failed to decode message envelope")
             return

@@ -42,6 +42,37 @@ enum SessionRoomEventGate {
     }
 }
 
+enum WebSocketConnectedContextGate {
+    /// A connected callback may arrive after a replacement connection has
+    /// already been accepted. Only a strictly newer generation may advance
+    /// manager-owned context; disconnect/message events still require equality.
+    static func accepts(
+        highestAcceptedGeneration: Int?,
+        incomingContext: WebSocketConnectionContext
+    ) -> Bool {
+        guard let highestAcceptedGeneration else { return true }
+        return incomingContext.generation > highestAcceptedGeneration
+    }
+}
+
+struct SessionCatchUpAuthority: Equatable {
+    let epoch: UInt64
+    let sessionId: String
+    let context: WebSocketConnectionContext
+}
+
+@MainActor
+protocol SessionCatchUpYielding: AnyObject {
+    func yieldAfterPersistedChunk() async
+}
+
+@MainActor
+final class TaskSessionCatchUpYielder: SessionCatchUpYielding {
+    func yieldAfterPersistedChunk() async {
+        await Task.yield()
+    }
+}
+
 typealias SyncScheduledOperation = @MainActor () -> Void
 
 @MainActor
@@ -198,13 +229,18 @@ public final class SyncManager: ObservableObject {
     private var foregroundReconnectGate = ForegroundReconnectGate(initiallyForeground: true)
     private var activeIndexContext: WebSocketConnectionContext?
     private var activeSessionContext: WebSocketConnectionContext?
+    private var highestAcceptedIndexGeneration: Int?
+    private var highestAcceptedSessionGeneration: Int?
     private var sessionCatchUpInFlight = false
     private var sessionCatchUpPending = false
     private var sessionCatchUpSessionId: String?
+    private var sessionCatchUpEpoch: UInt64 = 0
+    private var sessionCatchUpAuthority: SessionCatchUpAuthority?
     private var sessionSyncTotalCount = 0
     private var sessionSyncStoredCount = 0
     private var sessionSyncFailedIds: [String] = []
     private var sessionSyncFailedSequences: [Int] = []
+    private let sessionCatchUpYielder: any SessionCatchUpYielding
 
     public convenience init(crypto: CryptoManager, database: DatabaseManager, serverUrl: String, userId: String) {
         self.init(
@@ -215,7 +251,8 @@ public final class SyncManager: ObservableObject {
             indexClient: WebSocketClient(),
             sessionClient: WebSocketClient(),
             scheduler: MainQueueSyncScheduler(),
-            indexExecutor: SerialIndexWorkExecutor()
+            indexExecutor: SerialIndexWorkExecutor(),
+            sessionCatchUpYielder: TaskSessionCatchUpYielder()
         )
     }
 
@@ -227,7 +264,8 @@ public final class SyncManager: ObservableObject {
         indexClient: any SyncWebSocketClient,
         sessionClient: any SyncWebSocketClient,
         scheduler: any SyncScheduling,
-        indexExecutor: any IndexWorkExecuting
+        indexExecutor: any IndexWorkExecuting,
+        sessionCatchUpYielder: any SessionCatchUpYielding = TaskSessionCatchUpYielder()
     ) {
         self.crypto = crypto
         self.database = database
@@ -237,6 +275,7 @@ public final class SyncManager: ObservableObject {
         self.sessionClient = sessionClient
         self.scheduler = scheduler
         self.indexExecutor = indexExecutor
+        self.sessionCatchUpYielder = sessionCatchUpYielder
         self.indexClient.sendsDeviceAnnounce = true
 
         setupIndexClient()
@@ -373,32 +412,33 @@ public final class SyncManager: ObservableObject {
 
     private func setupIndexClient() {
         indexClient.onConnectionStateChangedWithContext = { [weak self] connected, context in
-            Task { @MainActor in
-                guard let self else { return }
-                if connected {
-                    self.activeIndexContext = context
-                    self.indexExecutor.setActiveGeneration(context.generation)
-                    self.isConnected = true
-                    self.requestIndexSync()
-                    if NotificationManager.shared.shouldRegisterForPush,
-                       let token = NotificationManager.shared.deviceToken {
-                        self.registerPushToken(token)
-                    } else {
-                        self.unregisterPushToken()
-                    }
-                } else if self.activeIndexContext == context {
-                    self.activeIndexContext = nil
-                    self.indexExecutor.setActiveGeneration(nil)
-                    self.isConnected = false
+            guard let self else { return }
+            if connected {
+                guard WebSocketConnectedContextGate.accepts(
+                    highestAcceptedGeneration: self.highestAcceptedIndexGeneration,
+                    incomingContext: context
+                ) else { return }
+                self.highestAcceptedIndexGeneration = context.generation
+                self.activeIndexContext = context
+                self.indexExecutor.setActiveGeneration(context.generation)
+                self.isConnected = true
+                self.requestIndexSync()
+                if NotificationManager.shared.shouldRegisterForPush,
+                   let token = NotificationManager.shared.deviceToken {
+                    self.registerPushToken(token)
+                } else {
+                    self.unregisterPushToken()
                 }
+            } else if self.activeIndexContext == context {
+                self.activeIndexContext = nil
+                self.indexExecutor.setActiveGeneration(nil)
+                self.isConnected = false
             }
         }
 
         indexClient.onMessageWithContext = { [weak self] data, context in
-            Task { @MainActor in
-                guard let self, self.activeIndexContext == context else { return }
-                self.handleIndexMessage(data, context: context)
-            }
+            guard let self, self.activeIndexContext == context else { return }
+            self.handleIndexMessage(data, context: context)
         }
     }
 
@@ -419,17 +459,15 @@ public final class SyncManager: ObservableObject {
               let json = String(data: data, encoding: .utf8) else { return }
 
         indexClient.sendRaw(json) { [weak self] error in
-            Task { @MainActor in
-                guard let self,
-                      error != nil,
-                      self.activeIndexContext == context,
-                      attempt < 3 else { return }
+            guard let self,
+                  error != nil,
+                  self.activeIndexContext == context,
+                  attempt < 3 else { return }
 
-                self.logger.info("Index sync request failed, retrying (attempt \(attempt + 1))")
-                self.scheduler.schedule(after: 1.0) { [weak self] in
-                    guard let self, self.activeIndexContext == context else { return }
-                    self.requestIndexSync(fullSync: fullSync, attempt: attempt + 1)
-                }
+            self.logger.info("Index sync request failed, retrying (attempt \(attempt + 1))")
+            self.scheduler.schedule(after: 1.0) { [weak self] in
+                guard let self, self.activeIndexContext == context else { return }
+                self.requestIndexSync(fullSync: fullSync, attempt: attempt + 1)
             }
         }
     }
@@ -1187,39 +1225,42 @@ public final class SyncManager: ObservableObject {
 
     private func setupSessionClient() {
         sessionClient.onConnectionStateChangedWithContext = { [weak self] connected, context in
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.logger.info("sessionClient connection state: \(connected) (activeSessionId=\(self.activeSessionId ?? "nil"))")
-                if connected {
-                    guard let sessionId = self.activeSessionId else { return }
-                    let expectedRoomId = self.sessionRoomId(for: sessionId)
-                    guard context.roomId == expectedRoomId else { return }
-                    self.activeSessionContext = context
-                    self.resetSessionCatchUp(for: sessionId)
-                    self.requestSessionSync()
-                } else if self.activeSessionContext == context {
-                    self.activeSessionContext = nil
-                    self.sessionCatchUpInFlight = false
-                }
+            guard let self else { return }
+            self.logger.info("sessionClient connection state: \(connected) (activeSessionId=\(self.activeSessionId ?? "nil"))")
+            if connected {
+                guard let sessionId = self.activeSessionId else { return }
+                let expectedRoomId = self.sessionRoomId(for: sessionId)
+                guard context.roomId == expectedRoomId,
+                      WebSocketConnectedContextGate.accepts(
+                        highestAcceptedGeneration: self.highestAcceptedSessionGeneration,
+                        incomingContext: context
+                      ) else { return }
+                self.highestAcceptedSessionGeneration = context.generation
+                self.activeSessionContext = context
+                self.resetSessionCatchUp(for: sessionId)
+                self.requestSessionSync()
+            } else if self.activeSessionContext == context {
+                self.activeSessionContext = nil
+                self.invalidateSessionCatchUp(for: self.activeSessionId)
             }
         }
 
         sessionClient.onMessageWithContext = { [weak self] data, context in
-            Task { @MainActor in
-                guard let self, let sessionId = self.activeSessionId else { return }
-                let expectedRoomId = self.sessionRoomId(for: sessionId)
-                guard SessionRoomEventGate.accepts(
-                    activeSessionId: sessionId,
-                    expectedRoomId: expectedRoomId,
-                    activeContext: self.activeSessionContext,
-                    eventContext: context
-                ) else { return }
-                await self.handleSessionMessage(data, sessionId: sessionId, context: context)
-            }
+            guard let self, let sessionId = self.activeSessionId else { return }
+            let expectedRoomId = self.sessionRoomId(for: sessionId)
+            guard SessionRoomEventGate.accepts(
+                activeSessionId: sessionId,
+                expectedRoomId: expectedRoomId,
+                activeContext: self.activeSessionContext,
+                eventContext: context
+            ) else { return }
+            await self.handleSessionMessage(data, sessionId: sessionId, context: context)
         }
     }
 
     private func resetSessionCatchUp(for sessionId: String?) {
+        sessionCatchUpEpoch &+= 1
+        sessionCatchUpAuthority = nil
         sessionCatchUpInFlight = false
         sessionCatchUpPending = false
         sessionCatchUpSessionId = sessionId
@@ -1229,23 +1270,56 @@ public final class SyncManager: ObservableObject {
         sessionSyncFailedSequences = []
     }
 
+    private func invalidateSessionCatchUp(for sessionId: String?) {
+        resetSessionCatchUp(for: sessionId)
+    }
+
+    private func beginSessionCatchUp(
+        sessionId: String,
+        context: WebSocketConnectionContext
+    ) -> SessionCatchUpAuthority {
+        sessionCatchUpEpoch &+= 1
+        let authority = SessionCatchUpAuthority(
+            epoch: sessionCatchUpEpoch,
+            sessionId: sessionId,
+            context: context
+        )
+        sessionCatchUpAuthority = authority
+        sessionCatchUpInFlight = true
+        sessionCatchUpPending = false
+        sessionCatchUpSessionId = sessionId
+        sessionSyncTotalCount = 0
+        sessionSyncStoredCount = 0
+        sessionSyncFailedIds = []
+        sessionSyncFailedSequences = []
+        return authority
+    }
+
+    private func ownsSessionCatchUp(_ authority: SessionCatchUpAuthority) -> Bool {
+        sessionCatchUpInFlight
+            && sessionCatchUpAuthority == authority
+            && sessionCatchUpSessionId == authority.sessionId
+            && activeSessionId == authority.sessionId
+            && activeSessionContext == authority.context
+    }
+
     private func requestSessionSync() {
         guard let sessionId = activeSessionId else {
             logger.warning("requestSessionSync skipped: activeSessionId is nil (connection state fired without a target)")
             return
         }
-        guard activeSessionContext != nil else {
+        guard let context = activeSessionContext else {
             logger.debug("requestSessionSync deferred until the session connection is current")
             sessionCatchUpPending = true
             return
         }
 
-        if sessionCatchUpInFlight, sessionCatchUpSessionId == sessionId {
+        if let authority = sessionCatchUpAuthority,
+           ownsSessionCatchUp(authority) {
             sessionCatchUpPending = true
             return
         }
-        resetSessionCatchUp(for: sessionId)
-        sessionCatchUpInFlight = true
+        let authority = beginSessionCatchUp(sessionId: sessionId, context: context)
 
         let localMessages = (try? database.messages(forSession: sessionId)) ?? []
         let localCount = localMessages.count
@@ -1268,22 +1342,30 @@ public final class SyncManager: ObservableObject {
             sinceSeq = nil
         }
 
-        sendSessionSyncRequest(sessionId: sessionId, sinceSeq: sinceSeq)
+        sendSessionSyncRequest(
+            sessionId: sessionId,
+            sinceSeq: sinceSeq,
+            authority: authority
+        )
     }
 
     private func sendSessionSyncRequest(
         sessionId: String,
         sinceSeq: Int?,
-        attempt: Int = 0
+        attempt: Int = 0,
+        authority: SessionCatchUpAuthority
     ) {
-        guard activeSessionId == sessionId,
-              let context = activeSessionContext else { return }
+        guard authority.sessionId == sessionId,
+              ownsSessionCatchUp(authority) else { return }
 
         let request = SessionSyncRequest(sinceSeq: sinceSeq)
         guard let data = try? JSONEncoder().encode(request),
               let json = String(data: data, encoding: .utf8) else {
             logger.error("requestSessionSync failed to encode request for session \(sessionId)")
-            sessionCatchUpInFlight = false
+            finishSessionCatchUp(
+                authority: authority,
+                error: "Sync request encode failed"
+            )
             return
         }
 
@@ -1298,31 +1380,31 @@ public final class SyncManager: ObservableObject {
         // Without a successful syncRequest, the server won't mark this connection
         // as synced and won't include it in message broadcasts.
         sessionClient.sendRaw(json) { [weak self] error in
-            Task { @MainActor in
-                guard let self,
-                      self.activeSessionId == sessionId,
-                      self.activeSessionContext == context else { return }
-                if let error {
-                    self.logger.warning("requestSessionSync send failed for \(sessionId): \(error.localizedDescription)")
-                    guard attempt < 3 else {
-                        self.sessionCatchUpInFlight = false
-                        return
-                    }
-
-                    self.logger.info("Session sync request failed, retrying (attempt \(attempt + 1))")
-                    self.scheduler.schedule(after: 1.0) { [weak self] in
-                        guard let self,
-                              self.activeSessionId == sessionId,
-                              self.activeSessionContext == context else { return }
-                        self.sendSessionSyncRequest(
-                            sessionId: sessionId,
-                            sinceSeq: sinceSeq,
-                            attempt: attempt + 1
-                        )
-                    }
-                } else {
-                    self.logger.debug("requestSessionSync: send acknowledged for \(sessionId)")
+            guard let self,
+                  self.ownsSessionCatchUp(authority) else { return }
+            if let error {
+                self.logger.warning("requestSessionSync send failed for \(sessionId): \(error.localizedDescription)")
+                guard attempt < 3 else {
+                    self.finishSessionCatchUp(
+                        authority: authority,
+                        error: "Sync request failed: \(error.localizedDescription)"
+                    )
+                    return
                 }
+
+                self.logger.info("Session sync request failed, retrying (attempt \(attempt + 1))")
+                self.scheduler.schedule(after: 1.0) { [weak self] in
+                    guard let self,
+                          self.ownsSessionCatchUp(authority) else { return }
+                    self.sendSessionSyncRequest(
+                        sessionId: sessionId,
+                        sinceSeq: sinceSeq,
+                        attempt: attempt + 1,
+                        authority: authority
+                    )
+                }
+            } else {
+                self.logger.debug("requestSessionSync: send acknowledged for \(sessionId)")
             }
         }
     }
@@ -1359,9 +1441,10 @@ public final class SyncManager: ObservableObject {
         sessionId: String,
         context: WebSocketConnectionContext
     ) async {
-        guard sessionCatchUpInFlight,
-              sessionCatchUpSessionId == sessionId,
-              activeSessionContext == context else { return }
+        guard let authority = sessionCatchUpAuthority,
+              authority.sessionId == sessionId,
+              authority.context == context,
+              ownsSessionCatchUp(authority) else { return }
 
         let response: SessionSyncResponse
         do {
@@ -1371,7 +1454,7 @@ public final class SyncManager: ObservableObject {
             let rawPreview = String(data: data.prefix(500), encoding: .utf8) ?? "<binary>"
             logger.error("Failed to decode session syncResponse: \(error.localizedDescription) — raw: \(rawPreview)")
             finishSessionCatchUp(
-                sessionId: sessionId,
+                authority: authority,
                 error: "Sync response decode failed: \(error.localizedDescription)"
             )
             return
@@ -1379,8 +1462,7 @@ public final class SyncManager: ObservableObject {
 
         sessionSyncTotalCount += response.messages.count
         for entryChunk in SessionFeedBatching.chunks(response.messages) {
-            guard activeSessionId == sessionId,
-                  activeSessionContext == context else { return }
+            guard ownsSessionCatchUp(authority) else { return }
 
             var decrypted: [Message] = []
             for entry in entryChunk {
@@ -1402,41 +1484,55 @@ public final class SyncManager: ObservableObject {
             } catch {
                 logger.error("Failed to store session message chunk: \(error.localizedDescription)")
                 finishSessionCatchUp(
-                    sessionId: sessionId,
+                    authority: authority,
                     error: "Database write failed: \(error.localizedDescription)"
                 )
                 return
             }
-            await Task.yield()
+            await sessionCatchUpYielder.yieldAfterPersistedChunk()
+            guard ownsSessionCatchUp(authority) else { return }
         }
 
+        guard ownsSessionCatchUp(authority) else { return }
         if let metadata = response.metadata {
             applySessionMetadata(metadata, sessionId: sessionId)
         }
 
+        guard ownsSessionCatchUp(authority) else { return }
         if response.hasMore {
             guard let cursor = response.cursor,
                   let sinceSeq = Int(cursor) else {
                 finishSessionCatchUp(
-                    sessionId: sessionId,
+                    authority: authority,
                     error: "Missing or invalid session sync cursor"
                 )
                 return
             }
-            sendSessionSyncRequest(sessionId: sessionId, sinceSeq: sinceSeq)
+            guard ownsSessionCatchUp(authority) else { return }
+            sendSessionSyncRequest(
+                sessionId: sessionId,
+                sinceSeq: sinceSeq,
+                authority: authority
+            )
         } else {
-            finishSessionCatchUp(sessionId: sessionId, error: nil)
+            guard ownsSessionCatchUp(authority) else { return }
+            finishSessionCatchUp(authority: authority, error: nil)
         }
     }
 
-    private func finishSessionCatchUp(sessionId: String, error: String?) {
-        guard sessionCatchUpSessionId == sessionId else { return }
+    private func finishSessionCatchUp(
+        authority: SessionCatchUpAuthority,
+        error: String?
+    ) {
+        guard ownsSessionCatchUp(authority) else { return }
+        let sessionId = authority.sessionId
 
         let totalCount = sessionSyncTotalCount
         let storedCount = sessionSyncStoredCount
         let failedIds = sessionSyncFailedIds
         let failedSequences = sessionSyncFailedSequences
         sessionCatchUpInFlight = false
+        sessionCatchUpAuthority = nil
 
         let diagnosticError: String?
         if let error {
@@ -1462,7 +1558,7 @@ public final class SyncManager: ObservableObject {
 
         if sessionCatchUpPending,
            activeSessionId == sessionId,
-           activeSessionContext != nil {
+           activeSessionContext == authority.context {
             sessionCatchUpPending = false
             requestSessionSync()
         }
