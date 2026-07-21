@@ -13,7 +13,11 @@ import {
   sessionListWorkspaceAtom,
   sessionRegistryAtom,
   sessionChildrenAtom,
+  sessionHierarchyParentIdsAtom,
+  switchSessionHierarchyWorkspaceAtom,
   sessionParentIdAtom,
+  sessionStoreAtom,
+  applySessionReparentedAtom,
 } from '../atoms/sessions';
 import { workstreamStateAtom } from '../atoms/workstreamState';
 import { sessionRefMapAtom, type SessionRefMeta } from '@nimbalyst/runtime';
@@ -21,6 +25,43 @@ import { sessionRefMapAtom, type SessionRefMeta } from '@nimbalyst/runtime';
 // Track pending refresh to debounce rapid-fire events
 let pendingRefreshTimer: NodeJS.Timeout | null = null;
 const DEBOUNCE_MS = 150; // Debounce rapid refreshes within 150ms
+const MAX_APPLIED_VISIBILITY_AUDITS = 1_000;
+const appliedVisibilityAudits = new Map<string, string>();
+
+function rememberAppliedVisibilityAudit(
+  workspacePath: string,
+  auditId: string,
+  targetSessionId: string,
+): void {
+  const key = `${workspacePath}\u0000${auditId}`;
+  appliedVisibilityAudits.delete(key);
+  appliedVisibilityAudits.set(key, targetSessionId);
+  if (appliedVisibilityAudits.size > MAX_APPLIED_VISIBILITY_AUDITS) {
+    const oldest = appliedVisibilityAudits.keys().next().value;
+    if (oldest) appliedVisibilityAudits.delete(oldest);
+  }
+}
+
+function hasExactWorkstreamHierarchy(sessionId: string, expectedParentId: string | null): boolean {
+  const registry = store.get(sessionRegistryAtom);
+  if (registry.get(sessionId)?.parentSessionId !== expectedParentId) return false;
+  if (store.get(sessionParentIdAtom(sessionId)) !== expectedParentId) return false;
+  const loaded = store.get(sessionStoreAtom(sessionId));
+  if (loaded && loaded.parentSessionId !== expectedParentId) return false;
+
+  const candidateIds = new Set(store.get(sessionHierarchyParentIdsAtom));
+  for (const [candidateId, candidate] of registry) {
+    if (candidate.sessionType === 'workstream') candidateIds.add(candidateId);
+  }
+  if (expectedParentId) candidateIds.add(expectedParentId);
+  for (const candidateId of candidateIds) {
+    const expected = candidateId === expectedParentId;
+    const inChildren = store.get(sessionChildrenAtom(candidateId)).includes(sessionId);
+    const inWorkstream = store.get(workstreamStateAtom(candidateId)).childSessionIds.includes(sessionId);
+    if (inChildren !== expected || inWorkstream !== expected) return false;
+  }
+  return true;
+}
 
 /**
  * Initialize session list IPC listeners.
@@ -28,6 +69,23 @@ const DEBOUNCE_MS = 150; // Debounce rapid refreshes within 150ms
  */
 export function initSessionListListeners(): () => void {
   const cleanups: Array<() => void> = [];
+  appliedVisibilityAudits.clear();
+  let hierarchyWorkspacePath = store.get(sessionListWorkspaceAtom);
+  store.set(switchSessionHierarchyWorkspaceAtom, {
+    previousWorkspacePath: null,
+    nextWorkspacePath: hierarchyWorkspacePath,
+  });
+  cleanups.push(store.sub(sessionListWorkspaceAtom, () => {
+    // Applied evidence belongs to one continuously active workspace view.
+    // A switch unloads that proof even if the user later returns to the path.
+    appliedVisibilityAudits.clear();
+    const nextWorkspacePath = store.get(sessionListWorkspaceAtom);
+    store.set(switchSessionHierarchyWorkspaceAtom, {
+      previousWorkspacePath: hierarchyWorkspacePath,
+      nextWorkspacePath,
+    });
+    hierarchyWorkspacePath = nextWorkspacePath;
+  }));
 
   // Handle session list refresh requests (e.g., from mobile sync, session creation)
   const handleRefreshRequest = (data: { workspacePath: string; sessionId?: string }) => {
@@ -60,6 +118,13 @@ export function initSessionListListeners(): () => void {
   // Handle targeted session metadata updates (e.g., phase/tags from MCP tools)
   // Updates the registry entry directly without a full refresh
   const handleSessionUpdated = (sessionId: string, updates: Record<string, unknown>) => {
+    const eventWorkspace = updates.workspacePath;
+    if (
+      typeof eventWorkspace === 'string' &&
+      eventWorkspace !== store.get(sessionListWorkspaceAtom)
+    ) {
+      return;
+    }
     // console.log('[sessionListListeners] session-updated received:', sessionId, updates);
     const registry = new Map(store.get(sessionRegistryAtom));
     const meta = registry.get(sessionId);
@@ -83,11 +148,61 @@ export function initSessionListListeners(): () => void {
         ...(updates.isPinned !== undefined && { isPinned: updates.isPinned as boolean }),
       });
       store.set(sessionRegistryAtom, registry);
+      if (typeof updates.visibilityAuditId === 'string' && typeof eventWorkspace === 'string') {
+        const hierarchyApplied = updates.parentSessionId === undefined || hasExactWorkstreamHierarchy(
+          sessionId,
+          updates.parentSessionId as string | null,
+        );
+        if (hierarchyApplied) {
+          rememberAppliedVisibilityAudit(eventWorkspace, updates.visibilityAuditId, sessionId);
+        }
+      }
     }
   };
 
   cleanups.push(
     window.electronAPI.on('sessions:session-updated', handleSessionUpdated)
+  );
+
+  const handleSessionReparented = (data: {
+    workspacePath: string;
+    sessionId: string;
+    oldParentSessionId: string | null;
+    newParentSessionId: string | null;
+  }) => {
+    if (data.workspacePath !== store.get(sessionListWorkspaceAtom)) return;
+    store.set(applySessionReparentedAtom, {
+      sessionId: data.sessionId,
+      oldParentSessionId: data.oldParentSessionId,
+      newParentSessionId: data.newParentSessionId,
+    });
+  };
+
+  cleanups.push(
+    window.electronAPI.on('sessions:session-reparented', handleSessionReparented)
+  );
+
+  // Main sends this marker after all authoritative events for one committed
+  // mutation. Electron preserves send order, and the handlers above apply
+  // synchronously, so acknowledging here means the matching workspace store
+  // has consumed the state rather than merely having a window available.
+  cleanups.push(
+    window.electronAPI.on('sessions:visibility-delivery', (data: {
+      auditId: string;
+      workspaceId: string;
+      workspacePath: string;
+      targetSessionId: string;
+    }) => {
+      if (data.workspacePath !== store.get(sessionListWorkspaceAtom)) return;
+      const key = `${data.workspacePath}\u0000${data.auditId}`;
+      if (appliedVisibilityAudits.get(key) !== data.targetSessionId) return;
+      void window.electronAPI.invoke('sessions:visibility-delivery-ack', {
+        auditId: data.auditId,
+        workspacePath: data.workspacePath,
+      }).then((acknowledged) => {
+        if (acknowledged === true) appliedVisibilityAudits.delete(key);
+      }).catch(() => undefined);
+    })
   );
 
   // Handle linked tracker item changes (from tracker_link_session, tracker_link_file, auto-linking)
@@ -140,6 +255,9 @@ export function initSessionListListeners(): () => void {
 
     // 1. Patch the parent's children list (deduped).
     const currentChildren = store.get(sessionChildrenAtom(parentSessionId));
+    const knownParents = new Set(store.get(sessionHierarchyParentIdsAtom));
+    knownParents.add(parentSessionId);
+    store.set(sessionHierarchyParentIdsAtom, knownParents);
     const isNewChild = !currentChildren.includes(childSessionId);
     if (isNewChild) {
       store.set(sessionChildrenAtom(parentSessionId), [...currentChildren, childSessionId]);

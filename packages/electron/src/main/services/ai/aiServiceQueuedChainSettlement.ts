@@ -1,6 +1,51 @@
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { settleTerminalAttentionBeforeContinuation } from './terminalAttentionSettlement';
 import { codexEditWindowRegistry } from '../CodexEditWindowRegistry';
+import { revokeHostBoundMcpAuthority } from '../../mcp/httpServer';
+
+type SessionEndManager = Pick<
+  ReturnType<typeof getSessionStateManager>,
+  'endSession' | 'getSessionState'
+>;
+
+/**
+ * One ordered terminal-capability boundary for every host-owned AI turn.
+ * Ownership is checked synchronously immediately before revocation. Revocation
+ * removes the host record and scoped credentials before awaiting transport
+ * closure, so no terminal state write can race ahead while MCP authority is
+ * still usable.
+ */
+export async function terminateHostBoundAiSession(
+  sessionId: string,
+  terminalTransition: () => Promise<void>,
+  ownsTerminalTurn: () => boolean = () => true,
+): Promise<boolean> {
+  if (!ownsTerminalTurn()) return false;
+  await revokeHostBoundMcpAuthority(sessionId);
+  // Revocation may await transport shutdown. Re-check the captured generation
+  // before applying terminal state so a replacement turn cannot be ended by a
+  // delayed callback from its predecessor.
+  if (!ownsTerminalTurn()) return false;
+  await terminalTransition();
+  return true;
+}
+
+export async function endHostBoundAiSession(
+  stateManager: SessionEndManager,
+  sessionId: string,
+  options: Parameters<SessionEndManager['endSession']>[1],
+): Promise<boolean> {
+  const expectedGeneration = options?.attentionGeneration;
+  return terminateHostBoundAiSession(
+    sessionId,
+    () => stateManager.endSession(sessionId, options),
+    () => {
+      if (!expectedGeneration) return true;
+      const state = stateManager.getSessionState(sessionId);
+      return !state || state.attentionGeneration === expectedGeneration;
+    },
+  );
+}
 
 export interface AIServiceQueuedChainSettlementPayload {
   sessionId: string;
@@ -88,6 +133,11 @@ export function createDeferredSessionDrainHandlers(
           stateAfterErrorCleanup?.attentionGeneration === attentionGeneration
           && stateAfterErrorCleanup.status === 'error'
         ) {
+          await terminateHostBoundAiSession(
+            deps.sessionId,
+            async () => undefined,
+            () => stateManager.getSessionState(deps.sessionId)?.attentionGeneration === attentionGeneration,
+          );
           deps.scheduleWatcherStop(500);
           deps.clearEditWindow();
           settled = true;
@@ -100,12 +150,17 @@ export function createDeferredSessionDrainHandlers(
       if (!stateBeforeEnd || stateBeforeEnd.attentionGeneration !== attentionGeneration) return;
       if (stateBeforeEnd.status === 'error') {
         await deps.settleTerminal('error');
+        await terminateHostBoundAiSession(
+          deps.sessionId,
+          async () => undefined,
+          () => stateManager.getSessionState(deps.sessionId)?.attentionGeneration === attentionGeneration,
+        );
         deps.scheduleWatcherStop(500);
         deps.clearEditWindow();
         settled = true;
         return;
       }
-      await stateManager.endSession(deps.sessionId, { attentionGeneration });
+      await endHostBoundAiSession(stateManager, deps.sessionId, { attentionGeneration });
       // A replacement generation can start while endSession's DB write awaits.
       // Never apply A's watcher/sound cleanup to that new owner.
       if (stateManager.getSessionState(deps.sessionId)) return;
@@ -210,11 +265,17 @@ export function createAIServiceQueuedChainSettlement(
         attentionGeneration: settlementGeneration,
         reason: failed ? 'error' : 'completed',
       }, async () => {
-        if (!failed) {
-          await stateManager.endSession(sessionId, {
-            attentionGeneration: settlementGeneration,
-          });
+        if (failed) {
+          await terminateHostBoundAiSession(
+            sessionId,
+            async () => undefined,
+            () => stateManager.getSessionState(sessionId)?.attentionGeneration === settlementGeneration,
+          );
+          return;
         }
+        await endHostBoundAiSession(stateManager, sessionId, {
+          attentionGeneration: settlementGeneration,
+        });
       });
 
       const stateAfterSettlement = stateManager.getSessionState(sessionId);

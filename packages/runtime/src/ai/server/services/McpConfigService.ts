@@ -63,6 +63,16 @@ export interface McpConfigServiceDeps {
    */
   mcpAuthToken?: string | null;
 
+  /**
+   * Main-process issuer for an opaque credential bound to one authenticated
+   * actor session and canonical MCP workspace. Used instead of the process
+   * bearer whenever a session-bearing internal config is built.
+   */
+  mcpSessionCredentialIssuer?: ((authority: {
+    actorSessionId: string;
+    workspacePath: string;
+  }) => string) | null;
+
   /** Loader for user and workspace MCP server configs */
   mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, any>>) | null;
 
@@ -106,8 +116,15 @@ export class McpConfigService {
     // Issue #146: localhost MCP servers require a per-launch bearer token.
     // Both the Claude Agent SDK and Codex SDK accept `headers` on remote MCP
     // server configs and forward them on every request.
-    const authHeaders: Record<string, string> | undefined = this.deps.mcpAuthToken
-      ? { Authorization: `Bearer ${this.deps.mcpAuthToken}` }
+    const scopedCredential = sessionId && workspacePath && this.deps.mcpSessionCredentialIssuer
+      ? this.deps.mcpSessionCredentialIssuer({
+          actorSessionId: sessionId,
+          workspacePath,
+        })
+      : null;
+    const effectiveAuthToken = scopedCredential ?? this.deps.mcpAuthToken;
+    const authHeaders: Record<string, string> | undefined = effectiveAuthToken
+      ? { Authorization: `Bearer ${effectiveAuthToken}` }
       : undefined;
 
     // The internal Nimbalyst MCP surface is served by the unified HTTP server on

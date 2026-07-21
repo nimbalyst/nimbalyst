@@ -33,6 +33,7 @@ import { startClaudeCliProxyObservation, fireClaudeCliTurnCompletion } from './c
 import { flushNextClaudeCliQueuedPromptForSession } from './claudeCliQueueFlushSingleton';
 import { maybeAutoNameClaudeCliSessionProduction } from './claudeCliSessionAutoNameSingleton';
 import type { ClaudeTurnState } from './claudeCliPidState';
+import { endHostBoundAiSession } from './aiServiceQueuedChainSettlement';
 
 interface ClaudeCliLauncherConfig {
   // Internal MCP-server enablement (ports, kill-switches, loaders, auth token)
@@ -348,7 +349,7 @@ export async function ensureClaudeCliSession(
           console.log(`[ClaudeCliLauncher] Claude CLI exited for ${input.sessionId} with code ${exitCode}; ending AI session state`);
           const exitRun = turnStateTail.then(async () => {
             const exitGeneration = currentTurnGeneration;
-            await stateManager.endSession(input.sessionId, {
+            await endHostBoundAiSession(stateManager, input.sessionId, {
               attentionGeneration: exitGeneration,
             });
             const currentState = stateManager.getSessionState(input.sessionId);
@@ -370,7 +371,9 @@ export async function ensureClaudeCliSession(
       console.error('[ClaudeCliLauncher] Failed to ensure session:', error);
       // Roll the session back out of "running" so the UI doesn't spin forever.
       if (attentionGeneration) {
-        void stateManager.endSession(input.sessionId, { attentionGeneration }).catch(() => {});
+        await endHostBoundAiSession(stateManager, input.sessionId, {
+          attentionGeneration,
+        }).catch(() => false);
       } else {
         console.warn('[ClaudeCliLauncher] Cannot roll back failed launch without a captured turn generation');
       }

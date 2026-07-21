@@ -864,6 +864,14 @@ async function decryptProjectPath(
 // ============================================================================
 
 interface SessionConnection {
+  /** Monotonic provider-local identity for same-session socket replacement. */
+  generation: number;
+  /**
+   * The caller-owned connect intent which authorized this socket. This is
+   * deliberately distinct from the socket generation: it exists before a
+   * socket is allocated so disconnect() can retire an in-flight JWT request.
+   */
+  intentGeneration: number;
   ws: WebSocket;
   status: SyncStatus;
   statusListeners: Set<(status: SyncStatus) => void>;
@@ -874,6 +882,8 @@ interface SessionConnection {
   cachedMetadata?: Partial<SessionMetadata>;
   /** Timestamp of last activity (send/receive) for LRU eviction */
   lastActivity: number;
+  connectTimer?: ReturnType<typeof setTimeout>;
+  connectReject?: (error: Error) => void;
 }
 
 const FATAL_MESSAGE_SYNC_ERROR_CODES = new Set([
@@ -1021,6 +1031,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   }
 
   const sessions = new Map<string, SessionConnection>();
+  let nextSessionConnectionGeneration = 0;
+  const sessionIntentGenerations = new Map<string, number>();
   const sessionIndexCache = new Map<string, CachedSessionIndex>();
   const disabledMessageSyncSessions = new Set<string>();
   /**
@@ -1030,6 +1042,82 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
    * and outbound changes start flowing again without waiting for a user action.
    */
   const wantedSessions = new Set<string>();
+
+  function beginSessionIntent(sessionId: string): number {
+    const generation = (sessionIntentGenerations.get(sessionId) ?? 0) + 1;
+    sessionIntentGenerations.set(sessionId, generation);
+    wantedSessions.add(sessionId);
+    return generation;
+  }
+
+  function invalidateSessionIntent(sessionId: string): void {
+    // Increment even when no WebSocket is mapped. A connect() suspended in
+    // ensureFreshJwt() owns only this generation, so it must not be able to
+    // create a socket after an explicit disconnect or fatal disable.
+    sessionIntentGenerations.set(
+      sessionId,
+      (sessionIntentGenerations.get(sessionId) ?? 0) + 1,
+    );
+    wantedSessions.delete(sessionId);
+  }
+
+  function isCurrentSessionIntent(sessionId: string, generation: number): boolean {
+    return !disposed &&
+      wantedSessions.has(sessionId) &&
+      sessionIntentGenerations.get(sessionId) === generation;
+  }
+
+  function isMappedSessionConnection(
+    sessionId: string,
+    session: SessionConnection,
+  ): boolean {
+    const current = sessions.get(sessionId);
+    return current === session &&
+      current.generation === session.generation &&
+      current.ws === session.ws;
+  }
+
+  function isCurrentSessionConnection(
+    sessionId: string,
+    session: SessionConnection,
+  ): boolean {
+    return isMappedSessionConnection(sessionId, session) &&
+      isCurrentSessionIntent(sessionId, session.intentGeneration);
+  }
+
+  function fenceDetachedSessionConnection(
+    session: SessionConnection,
+    reason: Error,
+    closeSocket: boolean,
+  ): void {
+    if (session.connectTimer) clearTimeout(session.connectTimer);
+    session.connectTimer = undefined;
+    session.connectReject?.(reason);
+    session.connectReject = undefined;
+    session.ws.onopen = null;
+    session.ws.onclose = null;
+    session.ws.onerror = null;
+    session.ws.onmessage = null;
+    if (closeSocket) {
+      try { session.ws.close(); } catch { /* retired identity is authoritative */ }
+    }
+  }
+
+  function retireSessionConnection(
+    sessionId: string,
+    session: SessionConnection,
+    reason: Error,
+    closeSocket = true,
+  ): boolean {
+    // Retirement needs the exact map identity even after its intent has been
+    // invalidated; callback delivery, by contrast, requires both identities.
+    if (!isMappedSessionConnection(sessionId, session)) return false;
+    // Delete/fence before close: native close/error/message callbacks may be
+    // delivered synchronously by test transports or later by the platform.
+    sessions.delete(sessionId);
+    fenceDetachedSessionConnection(session, reason, closeSocket);
+    return true;
+  }
   let indexWs: WebSocket | null = null;
   let indexConnected = false;
   /**
@@ -1041,6 +1129,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
    */
   let indexReady = false;
   let indexReadyListeners = new Set<() => void>();
+  const indexReadyRejectors = new Map<() => void, (error: Error) => void>();
   const INDEX_STABILITY_MS = 500;
   let indexStabilityTimer: ReturnType<typeof setTimeout> | null = null;
   let deviceAnnounceInterval: ReturnType<typeof setInterval> | null = null;
@@ -1056,6 +1145,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
    */
   let indexPreOpenFailures = 0;
   let indexReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  // disconnectAll is a terminal provider-lifetime boundary. A retired
+  // instance may still receive late socket/promise callbacks, but none may
+  // reconnect, enqueue, drain, or publish after this latch flips.
+  let disposed = false;
+  const transientSessionSockets = new Set<WebSocket>();
   /**
    * When `ensureFreshJwt` detects that the JWT cannot possibly succeed against
    * the configured room (JWT `sub` does not match `config.userId`), we set this
@@ -1087,6 +1181,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     const listeners = Array.from(indexReadyListeners);
     indexReadyListeners.clear();
     for (const cb of listeners) {
+      indexReadyRejectors.delete(cb);
       try {
         cb();
       } catch (err) {
@@ -1114,16 +1209,15 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       syncing: false,
       error: message || 'Session reached the server sync limit',
     });
-    wantedSessions.delete(sessionId);
+    invalidateSessionIntent(sessionId);
 
     const session = sessions.get(sessionId);
     if (session) {
-      sessions.delete(sessionId);
-      try {
-        session.ws.close();
-      } catch {
-        // The session is already disabled; socket cleanup is best-effort.
-      }
+      retireSessionConnection(
+        sessionId,
+        session,
+        new Error('COLLAB_V3_MESSAGE_SYNC_DISABLED'),
+      );
     }
   }
 
@@ -1134,7 +1228,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
    * and the user would keep seeing `sessionExists: false` warnings.
    */
   function resubscribeWantedSessions(): void {
-    if (wantedSessions.size === 0) return;
+    if (disposed || wantedSessions.size === 0) return;
     for (const sessionId of wantedSessions) {
       if (sessions.has(sessionId)) continue;
       // Use the public `connect` method via the captured `provider` ref.
@@ -1163,7 +1257,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
    * `reconnectIndex()` call (network change, user toggles sync, app focus).
    */
   function scheduleIndexReconnect(options?: { preOpenFailure?: boolean }): void {
-    if (indexAuthBlocked) {
+    if (disposed || indexAuthBlocked) {
       // Don't keep hammering a connection the server will hard-reject. Wait for
       // an explicit reconnect trigger that resets indexAuthBlocked.
       return;
@@ -1190,10 +1284,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     if (indexReconnectTimer) clearTimeout(indexReconnectTimer);
     indexReconnectTimer = setTimeout(() => {
       indexReconnectTimer = null;
-      if (indexAuthBlocked) return;
+      if (disposed || indexAuthBlocked) return;
       if (!indexWs && !indexConnected) {
         console.log('[CollabV3] Attempting to reconnect to index...');
         connectToIndex().catch(err => {
+          if (disposed) return;
           if (isAuthMismatchError(err)) {
             // ensureFreshJwt already set indexAuthBlocked. Do not reschedule.
             console.warn('[CollabV3] Index reconnect blocked: JWT/userId mismatch. Waiting for explicit reconnect trigger.');
@@ -1263,6 +1358,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // Queue for partial metadata updates waiting for the session to be cached
   // Key: sessionId, Value: partial metadata to merge when session is cached
   const pendingMetadataUpdates = new Map<string, Partial<SyncedSessionMetadata>>();
+  const pendingMetadataFlushes = new Map<string, Promise<void>>();
 
   interface IndexFrameWriteReceipt {
     attempted: boolean;
@@ -1274,12 +1370,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     baseEntry: CachedSessionIndex,
     receipt?: IndexFrameWriteReceipt,
   ): Promise<boolean> {
-    if (!indexWs || !config.encryptionKey) {
+    if (disposed || !indexWs || !config.encryptionKey) {
       console.error('[CollabV3] Cannot send session update: index socket or encryption key missing');
       return false;
     }
 
     const { encryptedProjectId, projectIdIv } = await encryptProjectId(baseEntry.projectId, config.encryptionKey);
+    if (disposed) return false;
 
     const indexEntry: SessionIndexEntry = {
       sessionId: baseEntry.sessionId,
@@ -1306,6 +1403,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     if (baseEntry.title) {
       const { encryptedTitle, titleIv } = await encryptTitle(baseEntry.title, config.encryptionKey);
+      if (disposed) return false;
       indexEntry.encryptedTitle = encryptedTitle;
       indexEntry.titleIv = titleIv;
     }
@@ -1313,6 +1411,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     const clientMeta = buildClientMetadataFromCacheEntry(baseEntry);
     if (clientMeta) {
       const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
+      if (disposed) return false;
       indexEntry.encryptedClientMetadata = encryptedClientMetadata;
       indexEntry.clientMetadataIv = clientMetadataIv;
     }
@@ -1333,7 +1432,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     baseEntry: CachedSessionIndex,
     receipt?: IndexFrameWriteReceipt,
   ): Promise<boolean> {
-    if (!indexWs || !config.encryptionKey) {
+    if (disposed || !indexWs || !config.encryptionKey) {
       console.error('[CollabV3] Cannot send index metadata patch: index socket or encryption key missing');
       return false;
     }
@@ -1347,6 +1446,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     const clientMeta = buildClientMetadataFromCacheEntry(baseEntry);
     if (clientMeta) {
       const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
+      if (disposed) return false;
       patch.encryptedClientMetadata = encryptedClientMetadata;
       patch.clientMetadataIv = clientMetadataIv;
     }
@@ -1368,54 +1468,77 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
    * This handles the case where isExecuting is pushed before the session is in the cache.
    */
   async function applyPendingMetadataUpdates(sessionId: string): Promise<void> {
-    const pending = pendingMetadataUpdates.get(sessionId);
-    if (!pending) return;
+    if (disposed) return;
+    const existingFlush = pendingMetadataFlushes.get(sessionId);
+    if (existingFlush) return existingFlush;
+    const flush = (async () => {
+      while (true) {
+        if (disposed) return;
+        const pending = pendingMetadataUpdates.get(sessionId);
+        if (!pending) return;
 
-    pendingMetadataUpdates.delete(sessionId);
+        const cached = sessionIndexCache.get(sessionId);
+        if (!cached || !indexWs || !indexConnected || indexWs.readyState !== WebSocket.OPEN) return;
 
-    const cached = sessionIndexCache.get(sessionId);
-    if (!cached || !indexWs || !indexConnected) return;
+        // Merge pending update with cached entry. Preserve cached.updatedAt:
+        // execution/context updates must not bump the session sort timestamp.
+        const updatedCache: CachedSessionIndex = {
+          sessionId,
+          projectId: cached.projectId,
+          title: pending.title ?? cached.title,
+          provider: cached.provider,
+          model: cached.model,
+          mode: cached.mode,
+          sessionType: 'sessionType' in pending ? pending.sessionType : cached.sessionType,
+          parentSessionId: 'parentSessionId' in pending ? pending.parentSessionId : cached.parentSessionId,
+          worktreeId: 'worktreeId' in pending ? pending.worktreeId : cached.worktreeId,
+          agentRole: cached.agentRole,
+          createdBySessionId: cached.createdBySessionId,
+          isArchived: 'isArchived' in pending ? pending.isArchived : cached.isArchived,
+          isPinned: 'isPinned' in pending ? pending.isPinned : cached.isPinned,
+          messageCount: cached.messageCount,
+          lastMessageAt: cached.lastMessageAt,
+          createdAt: cached.createdAt,
+          updatedAt: pending.updatedAt ?? cached.updatedAt,
+          pendingExecution: 'pendingExecution' in pending ? pending.pendingExecution : cached.pendingExecution,
+          isExecuting: 'isExecuting' in pending ? pending.isExecuting : cached.isExecuting,
+          currentContext: 'currentContext' in pending ? pending.currentContext : cached.currentContext,
+          hasPendingPrompt: 'hasPendingPrompt' in pending ? pending.hasPendingPrompt : cached.hasPendingPrompt,
+          attentionSummary: 'attentionSummary' in pending ? pending.attentionSummary : cached.attentionSummary,
+          phase: 'phase' in pending ? (pending as any).phase : cached.phase,
+          tags: 'tags' in pending ? (pending as any).tags : cached.tags,
+          lastReadAt: 'lastReadAt' in pending ? (pending as any).lastReadAt : cached.lastReadAt,
+          draftInput: 'draftInput' in pending ? (pending as any).draftInput : cached.draftInput,
+          draftUpdatedAt: 'draftUpdatedAt' in pending ? (pending as any).draftUpdatedAt : cached.draftUpdatedAt,
+          hasBeenNamed: 'hasBeenNamed' in pending ? (pending as any).hasBeenNamed : cached.hasBeenNamed,
+        };
 
-    // console.log('[CollabV3] Applying pending metadata update for session:', sessionId, pending);
+        const written = isIndexClientMetadataOnlyUpdate(pending)
+          ? await sendIndexClientMetadataPatch(updatedCache)
+          : await sendIndexUpdate(updatedCache);
+        if (!written) return;
+        // Delete only the exact snapshot whose frame was written. A concurrent
+        // update installs a new immutable object and is drained by this loop.
+        if (pendingMetadataUpdates.get(sessionId) === pending) {
+          pendingMetadataUpdates.delete(sessionId);
+          return;
+        }
+      }
+    })().finally(() => {
+      if (pendingMetadataFlushes.get(sessionId) === flush) {
+        pendingMetadataFlushes.delete(sessionId);
+      }
+    });
+    pendingMetadataFlushes.set(sessionId, flush);
+    return flush;
+  }
 
-    // Merge pending update with cached entry
-    // NOTE: Preserve cached.updatedAt -- pending metadata updates (isExecuting, context, etc.)
-    // should not bump the sort timestamp. Only message appends change updatedAt.
-    const updatedCache: CachedSessionIndex = {
-      sessionId: sessionId,
-      projectId: cached.projectId,
-      title: pending.title ?? cached.title,
-      provider: cached.provider,
-      model: cached.model,
-      mode: cached.mode,
-      sessionType: 'sessionType' in pending ? pending.sessionType : cached.sessionType,
-      parentSessionId: 'parentSessionId' in pending ? pending.parentSessionId : cached.parentSessionId,
-      worktreeId: 'worktreeId' in pending ? pending.worktreeId : cached.worktreeId,
-      agentRole: cached.agentRole,
-      createdBySessionId: cached.createdBySessionId,
-      isArchived: 'isArchived' in pending ? pending.isArchived : cached.isArchived,
-      isPinned: 'isPinned' in pending ? pending.isPinned : cached.isPinned,
-      messageCount: cached.messageCount,
-      lastMessageAt: cached.lastMessageAt,
-      createdAt: cached.createdAt,
-      updatedAt: pending.updatedAt ?? cached.updatedAt,
-      pendingExecution: 'pendingExecution' in pending ? pending.pendingExecution : cached.pendingExecution,
-      isExecuting: 'isExecuting' in pending ? pending.isExecuting : cached.isExecuting,
-      currentContext: 'currentContext' in pending ? pending.currentContext : cached.currentContext,
-      hasPendingPrompt: 'hasPendingPrompt' in pending ? pending.hasPendingPrompt : cached.hasPendingPrompt,
-      attentionSummary: 'attentionSummary' in pending ? pending.attentionSummary : cached.attentionSummary,
-      phase: 'phase' in pending ? (pending as any).phase : cached.phase,
-      tags: 'tags' in pending ? (pending as any).tags : cached.tags,
-      lastReadAt: 'lastReadAt' in pending ? (pending as any).lastReadAt : cached.lastReadAt,
-      draftInput: 'draftInput' in pending ? (pending as any).draftInput : cached.draftInput,
-      draftUpdatedAt: 'draftUpdatedAt' in pending ? (pending as any).draftUpdatedAt : cached.draftUpdatedAt,
-      hasBeenNamed: 'hasBeenNamed' in pending ? (pending as any).hasBeenNamed : cached.hasBeenNamed,
-    };
-
-    if (isIndexClientMetadataOnlyUpdate(pending)) {
-      await sendIndexClientMetadataPatch(updatedCache);
-    } else {
-      await sendIndexUpdate(updatedCache);
+  function replayPendingMetadataUpdates(): void {
+    if (disposed) return;
+    for (const sessionId of pendingMetadataUpdates.keys()) {
+      void applyPendingMetadataUpdates(sessionId).catch((error) => {
+        console.warn(`[CollabV3] Failed to replay pending metadata for ${sessionId}:`, error);
+      });
     }
   }
 
@@ -1431,6 +1554,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     written: boolean;
     error?: string;
   } {
+    if (disposed) return { attempted: false, written: false };
     // Get current device info (prefer callback for dynamic presence, fallback to static)
     const baseDeviceInfo = config.getDeviceInfo?.() ?? config.deviceInfo;
     const deviceInfo = baseDeviceInfo ? { ...baseDeviceInfo, ...override } : undefined;
@@ -1462,6 +1586,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     if (config.deviceInfo || config.getDeviceInfo) {
       // Re-announce every 30 seconds to handle server hibernation and presence updates
       deviceAnnounceInterval = setInterval(() => {
+        if (disposed) return;
         announceDevice();
       }, 30000);
     }
@@ -1479,6 +1604,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   function startPingInterval(): void {
     stopPingInterval();
     pingInterval = setInterval(() => {
+      if (disposed) return;
       if (indexWs && indexWs.readyState === WebSocket.OPEN) {
         try {
           indexWs.send(JSON.stringify({ type: 'ping' }));
@@ -1615,10 +1741,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   function handleServerMessage(
     sessionId: string,
+    expectedSession: SessionConnection,
     data: string | ArrayBuffer
   ): void {
-    const session = sessions.get(sessionId);
-    if (!session) return;
+    if (!isCurrentSessionConnection(sessionId, expectedSession)) return;
 
     try {
       const message: ServerMessage = JSON.parse(
@@ -1627,16 +1753,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
       switch (message.type) {
         case 'syncResponse':
-          handleSyncResponse(sessionId, message);
+          handleSyncResponse(sessionId, expectedSession, message);
           break;
 
         case 'messageBroadcast':
-          handleMessageBroadcast(sessionId, message);
+          handleMessageBroadcast(sessionId, expectedSession, message);
           break;
 
         case 'metadataBroadcast':
           // Note: async function, but we don't await to avoid blocking message processing
-          handleMetadataBroadcast(sessionId, message).catch(err => {
+          handleMetadataBroadcast(sessionId, expectedSession, message).catch(err => {
             console.error('[CollabV3] Error handling metadata broadcast:', err);
           });
           break;
@@ -1657,10 +1783,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   async function handleSyncResponse(
     sessionId: string,
+    expectedSession: SessionConnection,
     response: Extract<ServerMessage, { type: 'syncResponse' }>
   ): Promise<void> {
-    const session = sessions.get(sessionId);
-    if (!session) return;
+    if (!isCurrentSessionConnection(sessionId, expectedSession)) return;
+    const session = expectedSession;
     if (isMessageSyncDisabled(sessionId)) return;
 
     // Update last sequence
@@ -1691,6 +1818,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       for (const encrypted of response.messages) {
         try {
           const decrypted = await decryptMessage(encrypted, session.encryptionKey);
+          if (!isCurrentSessionConnection(sessionId, session)) return;
           decrypted.sessionId = sessionId;
 
           session.changeListeners.forEach((cb) =>
@@ -1716,6 +1844,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     }
 
     // Update status
+    if (!isCurrentSessionConnection(sessionId, session)) return;
     updateStatus(sessionId, {
       syncing: response.hasMore,
       lastSyncedAt: Date.now(),
@@ -1733,13 +1862,15 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   async function handleMessageBroadcast(
     sessionId: string,
+    expectedSession: SessionConnection,
     broadcast: Extract<ServerMessage, { type: 'messageBroadcast' }>
   ): Promise<void> {
-    const session = sessions.get(sessionId);
-    if (!session || !session.encryptionKey) return;
+    if (!isCurrentSessionConnection(sessionId, expectedSession) || !expectedSession.encryptionKey) return;
+    const session = expectedSession;
 
     try {
       const decrypted = await decryptMessage(broadcast.message, session.encryptionKey);
+      if (!isCurrentSessionConnection(sessionId, session)) return;
       decrypted.sessionId = sessionId;
 
       // Update sequence tracking
@@ -1756,15 +1887,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   async function handleMetadataBroadcast(
     sessionId: string,
+    expectedSession: SessionConnection,
     broadcast: Extract<ServerMessage, { type: 'metadataBroadcast' }>
   ): Promise<void> {
     // console.log('[CollabV3] Received metadata_broadcast for session:', sessionId, 'metadata:', JSON.stringify(broadcast.metadata));
 
-    const session = sessions.get(sessionId);
-    if (!session) {
+    if (!isCurrentSessionConnection(sessionId, expectedSession)) {
       // console.log('[CollabV3] No session found for metadata_broadcast, sessionId:', sessionId);
       return;
     }
+    const session = expectedSession;
 
     // Cache the metadata broadcast (merge with existing cache)
     session.cachedMetadata = { ...session.cachedMetadata, ...broadcast.metadata };
@@ -1822,6 +1954,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     // console.log('[CollabV3] Notifying', session.changeListeners.size, 'change listeners with queuedPrompts:', metadata.queuedPrompts?.length ?? 0);
 
+    if (!isCurrentSessionConnection(sessionId, session)) return;
     session.changeListeners.forEach((cb) =>
       cb({ type: 'metadata_updated', metadata })
     );
@@ -1829,12 +1962,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   // Process pending operations that were queued before connection was established
   function processPendingOperations(): void {
-    if (!indexWs || !indexConnected) return;
+    if (disposed || !indexWs || !indexConnected) return;
 
     // console.log('[CollabV3] Processing', pendingOperations.length, 'pending operations');
 
     // Process in order they were queued
     while (pendingOperations.length > 0) {
+      if (disposed) return;
       const op = pendingOperations.shift()!;
       if (op.type === 'sessions') {
         // Call the sync function directly (now that we're connected)
@@ -1849,6 +1983,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   // Connect to index for session list updates
   async function connectToIndex(): Promise<void> {
+    if (disposed) return;
     if (indexWs && indexConnected) {
       // Already connected and healthy, nothing to do
       return;
@@ -1889,6 +2024,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       }
       throw err;
     }
+    if (disposed) return;
 
     const indexRoomId = getIndexRoomId();
     console.log('[CollabV3] connectToIndex() roomId:', indexRoomId, 'orgId:', config.orgId, 'userId:', getUserId());
@@ -1897,6 +2033,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     const wsUrl = appendSyncClientParams(`${url}?token=${encodeURIComponent(jwt)}`);
 
     indexWs = new WebSocket(wsUrl);
+    const socket = indexWs;
 
     /**
      * Tracks whether THIS WebSocket instance ever fired `onopen`. Pre-open
@@ -1908,7 +2045,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
      */
     let reachedOpen = false;
 
-    indexWs.onopen = () => {
+    socket.onopen = () => {
+      if (disposed || indexWs !== socket) {
+        try { socket.close(); } catch { /* retired socket */ }
+        return;
+      }
       reachedOpen = true;
       indexConnected = true;
       indexReconnectAttempts = 0;
@@ -1920,6 +2061,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
       // Process any operations that were queued while connecting
       processPendingOperations();
+      replayPendingMetadataUpdates();
 
       // Set up periodic re-announcement to handle server hibernation
       // The server may hibernate and lose device state, so we re-announce every 30 seconds
@@ -1935,14 +2077,15 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       if (indexStabilityTimer) clearTimeout(indexStabilityTimer);
       indexStabilityTimer = setTimeout(() => {
         indexStabilityTimer = null;
-        if (indexWs && indexConnected) {
+        if (!disposed && indexWs === socket && indexConnected) {
           markIndexReady();
           resubscribeWantedSessions();
         }
       }, INDEX_STABILITY_MS);
     };
 
-    indexWs.onclose = (event: CloseEvent) => {
+    socket.onclose = (event: CloseEvent) => {
+      if (disposed || indexWs !== socket) return;
       stopPingInterval();
       indexConnected = false;
       indexWs = null;
@@ -1964,7 +2107,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       scheduleIndexReconnect({ preOpenFailure: !reachedOpen });
     };
 
-    indexWs.onerror = (event) => {
+    socket.onerror = (event) => {
+      if (disposed || indexWs !== socket) return;
       // WS `onerror` carries almost no info -- the actionable signal (close
       // code / reason) arrives on `onclose`, which always fires after error.
       // Log a stable summary here and let `onclose` add the close-frame
@@ -1975,7 +2119,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       console.error('[CollabV3] Index WebSocket error:', errorInfo, 'URL:', wsUrl);
     };
 
-    indexWs.onmessage = async (event) => {
+    socket.onmessage = async (event) => {
+      if (disposed || indexWs !== socket) return;
       try {
         const message: ServerMessage = JSON.parse(
           typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data)
@@ -2695,6 +2840,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // clear indexAuthBlocked and try again. Other errors fall through to the
   // existing scheduleIndexReconnect path via the onclose handler.
   connectToIndex().catch(err => {
+    if (disposed) return;
     if (isAuthMismatchError(err)) {
       console.warn('[CollabV3] Initial index connect blocked: JWT/userId mismatch. Waiting for explicit reconnect trigger.');
       return;
@@ -2709,6 +2855,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     messages: AgentMessage[],
     metadata?: { title?: string; provider?: string; model?: string; mode?: string }
   ): Promise<void> {
+    if (disposed) return;
     if (isMessageSyncDisabled(sessionId)) return;
     if (!config.encryptionKey) {
       console.error('[CollabV3] Cannot sync messages - no encryption key');
@@ -2719,6 +2866,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     // Get fresh JWT before connecting
     const { jwt } = await ensureFreshJwt();
+    if (disposed) return;
 
     // Connect to session room
     const roomId = getRoomId(sessionId);
@@ -2728,23 +2876,35 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(wsUrl);
+      transientSessionSockets.add(ws);
       let resolved = false;
 
+      const settle = (outcome: 'resolve' | 'reject', error?: unknown): void => {
+        if (resolved) return;
+        resolved = true;
+        transientSessionSockets.delete(ws);
+        clearTimeout(timeout);
+        try { ws.close(); } catch { /* terminal close */ }
+        if (outcome === 'reject') reject(error);
+        else resolve();
+      };
+
       const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          ws.close();
-          reject(new Error('Timeout syncing messages'));
+        if (disposed) {
+          settle('resolve');
+          return;
         }
+        settle('reject', new Error('Timeout syncing messages'));
       }, 30000);
 
       ws.onopen = async () => {
         try {
+          if (disposed) {
+            settle('resolve');
+            return;
+          }
           if (isMessageSyncDisabled(sessionId)) {
-            clearTimeout(timeout);
-            resolved = true;
-            ws.close();
-            resolve();
+            settle('resolve');
             return;
           }
 
@@ -2760,6 +2920,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             // (see also IndexRoom.encrypted_title for the index-side equivalent).
             if (metadata.title && config.encryptionKey) {
               const { encryptedTitle, titleIv } = await encryptTitle(metadata.title, config.encryptionKey);
+              if (disposed) {
+                settle('resolve');
+                return;
+              }
               wireMetadata.encryptedTitle = encryptedTitle;
               wireMetadata.titleIv = titleIv;
             }
@@ -2767,6 +2931,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               type: 'updateMetadata',
               metadata: wireMetadata,
             };
+            if (disposed) {
+              settle('resolve');
+              return;
+            }
             ws.send(JSON.stringify(metadataMsg));
           }
 
@@ -2777,35 +2945,30 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               continue;
             }
             const encrypted = await encryptMessage(message, config.encryptionKey!);
+            if (disposed) {
+              settle('resolve');
+              return;
+            }
             const clientMsg: ClientMessage = { type: 'appendMessage', message: encrypted };
             ws.send(JSON.stringify(clientMsg));
           }
 
           // Small delay to ensure messages are processed
           await new Promise(r => setTimeout(r, 500));
-
-          clearTimeout(timeout);
-          resolved = true;
-          ws.close();
-          resolve();
+          settle('resolve');
         } catch (err) {
-          clearTimeout(timeout);
-          resolved = true;
-          ws.close();
-          reject(err);
+          settle(disposed ? 'resolve' : 'reject', err);
         }
       };
 
       ws.onerror = (event) => {
         if (!resolved) {
-          clearTimeout(timeout);
-          resolved = true;
           // WebSocket onerror receives a DOM Event, not an Error object.
           // Extract meaningful info to avoid "Uncaught Error: undefined" dialogs.
           const errorInfo = typeof ErrorEvent !== 'undefined' && event instanceof ErrorEvent
             ? event.message || 'WebSocket error'
             : 'WebSocket connection error';
-          reject(new Error(`[CollabV3] ${errorInfo} for session ${sessionId}`));
+          settle(disposed ? 'resolve' : 'reject', new Error(`[CollabV3] ${errorInfo} for session ${sessionId}`));
         }
       };
 
@@ -2818,10 +2981,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           if (message.type !== 'error' || !isFatalMessageSyncErrorCode(message.code)) return;
 
           disableMessageSync(sessionId, message.code, message.message);
-          clearTimeout(timeout);
-          resolved = true;
-          ws.close();
-          resolve();
+          settle('resolve');
         } catch {
           // Non-JSON and unrelated server messages do not affect batch sync.
         }
@@ -2829,9 +2989,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
       ws.onclose = () => {
         if (!resolved) {
-          clearTimeout(timeout);
-          resolved = true;
-          resolve();
+          settle('resolve');
         }
       };
     });
@@ -2845,6 +3003,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     messageSyncRequests?: Array<{ sessionId: string; sinceTimestamp: number }>,
     getMessagesForSync?: (requests: Array<{ sessionId: string; sinceTimestamp: number }>) => Promise<Map<string, any[]>>,
   ): Promise<void> {
+    if (disposed) return;
     const batchSize = 3;
     const delayMs = 1000;
 
@@ -2857,11 +3016,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       // console.log('[CollabV3] Lazy batch syncing messages for', sessionIds.length, 'sessions in batches of', batchSize);
 
       for (let i = 0; i < sessionIds.length; i += batchSize) {
+        if (disposed) return;
         const batchIds = sessionIds.slice(i, i + batchSize);
         const batchRequests = batchIds.map(id => requestMap.get(id)!);
 
         // Load messages for just this batch
         const messagesBySession = await getMessagesForSync(batchRequests);
+        if (disposed) return;
 
         // Sync each session's messages
         await Promise.all(batchIds.map(sessionId => {
@@ -2879,6 +3040,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         // Delay before next batch
         if (i + batchSize < sessionIds.length) {
           await new Promise(resolve => setTimeout(resolve, delayMs));
+          if (disposed) return;
         }
       }
 
@@ -2890,6 +3052,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     const sessionsWithMessages = sessionsData.filter(s => s.messages && s.messages.length > 0);
 
     for (let i = 0; i < sessionsWithMessages.length; i += batchSize) {
+      if (disposed) return;
       const batch = sessionsWithMessages.slice(i, i + batchSize);
 
       await Promise.all(batch.map(session =>
@@ -2903,6 +3066,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
       if (i + batchSize < sessionsWithMessages.length) {
         await new Promise(resolve => setTimeout(resolve, delayMs));
+        if (disposed) return;
       }
     }
   }
@@ -2913,7 +3077,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     messageSyncRequests?: Array<{ sessionId: string; sinceTimestamp: number }>;
     getMessagesForSync?: (requests: Array<{ sessionId: string; sinceTimestamp: number }>) => Promise<Map<string, any[]>>;
   }): Promise<void> {
-    if (!indexWs || !indexConnected) {
+    if (disposed || !indexWs || !indexConnected) {
       console.error('[CollabV3] doSyncSessionsToIndex called but not connected!');
       return;
     }
@@ -2922,6 +3086,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     // Build all entries, encrypting sensitive fields
     const entries: SessionIndexEntry[] = await Promise.all(sessionsData.map(async session => {
+      if (disposed) throw new Error('COLLAB_V3_PROVIDER_DISPOSED');
       const projectId = session.workspaceId ?? 'default';
 
       // Encrypt projectId - encryption is required
@@ -2929,6 +3094,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         throw new Error('[CollabV3] Cannot send session: no encryption key for projectId');
       }
       const { encryptedProjectId, projectIdIv } = await encryptProjectId(projectId, config.encryptionKey);
+      if (disposed) throw new Error('COLLAB_V3_PROVIDER_DISPOSED');
 
       // Check if we have cached execution/prompt state for this session
       const existingCache = sessionIndexCache.get(session.id);
@@ -2971,6 +3137,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       // Encrypt title - encryption is required
       if (session.title) {
         const { encryptedTitle, titleIv } = await encryptTitle(session.title, config.encryptionKey);
+        if (disposed) throw new Error('COLLAB_V3_PROVIDER_DISPOSED');
         entry.encryptedTitle = encryptedTitle;
         entry.titleIv = titleIv;
       }
@@ -3001,6 +3168,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           : undefined;
       if (clientMeta) {
         const { encryptedClientMetadata, clientMetadataIv } = await encryptClientMetadata(clientMeta, config.encryptionKey);
+        if (disposed) throw new Error('COLLAB_V3_PROVIDER_DISPOSED');
         entry.encryptedClientMetadata = encryptedClientMetadata;
         entry.clientMetadataIv = clientMetadataIv;
       }
@@ -3049,16 +3217,19 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
       return entry;
     }));
+    if (disposed) return;
+    const activeSocket = indexWs;
+    if (!activeSocket || !indexConnected || activeSocket.readyState !== WebSocket.OPEN) return;
 
     // Use batch API if we have multiple sessions, otherwise single update
     if (entries.length > 1) {
       const msg: ClientMessage = { type: 'indexBatchUpdate', sessions: entries };
       const msgStr = JSON.stringify(msg);
       console.log('[CollabV3] Sending batch index update:', entries.length, 'sessions, message length:', msgStr.length);
-      indexWs.send(msgStr);
+      activeSocket.send(msgStr);
     } else if (entries.length === 1) {
       const msg: ClientMessage = { type: 'indexUpdate', session: entries[0] };
-      indexWs.send(JSON.stringify(msg));
+      activeSocket.send(JSON.stringify(msg));
     }
 
     // Sync messages if requested (fire-and-forget, catch errors to avoid unhandled rejections)
@@ -3077,24 +3248,23 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // Create provider object
   const provider: SyncProvider = {
     async connect(sessionId: string): Promise<void> {
+      if (disposed) throw new Error('COLLAB_V3_PROVIDER_DISPOSED');
       if (isMessageSyncDisabled(sessionId)) return;
       // Track this session as wanted so we re-subscribe after reconnects.
-      // Do this before the short-circuit so callers resubscribing an already-connected
-      // session (e.g. after the Map got deleted on onclose) still register intent.
-      wantedSessions.add(sessionId);
+      // Keep an already-created socket on its current intent. A new attempt
+      // without a mapped socket gets a fresh intent before its JWT await.
       if (sessions.has(sessionId)) {
-        // console.log(`[CollabV3] connect() - already connected to session ${sessionId}`);
         return; // Already connected
       }
+      const intentGeneration = beginSessionIntent(sessionId);
 
       // Short-circuit when the JWT/userId mismatch latch is set. The server
       // would reject any session WebSocket against this room, and an active
       // agent streams ~10 messages/sec -- without this guard every message
       // hit `ensureFreshJwt()`, threw AUTH_MISMATCH, and flooded main.log
       // (1686/4986 lines during a single mobile-build session on 2026-05-21).
-      // The latch clears on reconnectIndex() / disconnectAll(), so legitimate
-      // signals (network change, settings update, auth refresh) still
-      // unblock subsequent connects.
+      // An explicit reconnect before terminal disposal may clear the latch so
+      // legitimate network/settings/auth-refresh signals can retry.
       if (indexAuthBlocked) {
         const err = new Error('CollabV3 session connection blocked: JWT/userId mismatch');
         (err as any).code = 'AUTH_MISMATCH';
@@ -3149,6 +3319,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         }
         throw err;
       }
+      if (disposed) throw new Error('COLLAB_V3_PROVIDER_DISPOSED');
+      // Per-session disconnect/reconnect/disable may have occurred while the
+      // credential acquisition was pending. Never allocate a socket for a
+      // retired intent, even though this provider instance remains live.
+      if (!isCurrentSessionIntent(sessionId, intentGeneration) || isMessageSyncDisabled(sessionId)) {
+        return;
+      }
+      // Another same-ID connect may have completed while JWT acquisition was
+      // awaiting. Never overwrite its exact socket generation.
+      if (sessions.has(sessionId)) return;
 
       const roomId = getRoomId(sessionId);
       const url = getWebSocketUrl(roomId);
@@ -3159,6 +3339,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         const ws = new WebSocket(wsUrl);
 
         const session: SessionConnection = {
+          generation: ++nextSessionConnectionGeneration,
+          intentGeneration,
           ws,
           status: createInitialStatus(),
           statusListeners: new Set(),
@@ -3171,13 +3353,35 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         sessions.set(sessionId, session);
 
         const timeout = setTimeout(() => {
-          reject(new Error('Connection timeout'));
-          ws.close();
-          sessions.delete(sessionId);
+          retireSessionConnection(
+            sessionId,
+            session,
+            new Error('Connection timeout'),
+          );
         }, 10000);
+        session.connectTimer = timeout;
+        session.connectReject = reject;
 
         ws.onopen = () => {
+          if (!isCurrentSessionConnection(sessionId, session)) {
+            fenceDetachedSessionConnection(
+              session,
+              new Error('COLLAB_V3_SESSION_REPLACED'),
+              true,
+            );
+            return;
+          }
+          if (disposed) {
+            retireSessionConnection(
+              sessionId,
+              session,
+              new Error('COLLAB_V3_PROVIDER_DISPOSED'),
+            );
+            return;
+          }
           clearTimeout(timeout);
+          session.connectTimer = undefined;
+          session.connectReject = undefined;
           updateStatus(sessionId, { connected: true, syncing: true });
 
           // Request initial sync
@@ -3188,6 +3392,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         };
 
         ws.onclose = (event: CloseEvent) => {
+          if (disposed || !isCurrentSessionConnection(sessionId, session)) return;
+          if (session.connectTimer) clearTimeout(session.connectTimer);
+          session.connectTimer = undefined;
+          session.connectReject?.(new Error('COLLAB_V3_SESSION_CLOSED'));
+          session.connectReject = undefined;
           // Auth rejections (expired/invalid JWT) arrive here as a close
           // frame, not as an error event. Logging code/reason makes the
           // root cause visible the next time something goes wrong.
@@ -3195,10 +3404,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             `[CollabV3] Session WebSocket closed for ${sessionId} (code=${event?.code ?? 'unknown'}, reason="${event?.reason ?? ''}", wasClean=${event?.wasClean ?? 'unknown'})`,
           );
           updateStatus(sessionId, { connected: false });
-          sessions.delete(sessionId);
+          retireSessionConnection(
+            sessionId,
+            session,
+            new Error('COLLAB_V3_SESSION_CLOSED'),
+            false,
+          );
         };
 
         ws.onerror = (event) => {
+          if (disposed || !isCurrentSessionConnection(sessionId, session)) return;
           // onerror itself carries little -- the close frame that follows has
           // the actionable code/reason. Keep this log as a breadcrumb only.
           const errorInfo = typeof ErrorEvent !== 'undefined' && event instanceof ErrorEvent
@@ -3209,30 +3424,42 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         };
 
         ws.onmessage = (event) => {
+          if (disposed || !isCurrentSessionConnection(sessionId, session)) return;
           // Update activity timestamp on message receive
-          const sess = sessions.get(sessionId);
-          if (sess) sess.lastActivity = Date.now();
-          handleServerMessage(sessionId, event.data);
+          session.lastActivity = Date.now();
+          handleServerMessage(sessionId, session, event.data);
         };
       });
     },
 
     disconnect(sessionId: string): void {
-      // Caller explicitly no longer wants this session -- drop intent so it
-      // isn't resubscribed on the next index reconnect.
-      wantedSessions.delete(sessionId);
+      // Retire the pre-socket intent before looking up a WebSocket. This
+      // fences a connect() that is currently awaiting ensureFreshJwt().
+      invalidateSessionIntent(sessionId);
       const session = sessions.get(sessionId);
       if (!session) return;
-
-      session.ws.close();
-      sessions.delete(sessionId);
+      retireSessionConnection(
+        sessionId,
+        session,
+        new Error('COLLAB_V3_SESSION_DISCONNECTED'),
+      );
     },
 
     disconnectAll(): void {
+      if (disposed) return;
+      disposed = true;
       wantedSessions.clear();
-      for (const sessionId of sessions.keys()) {
-        this.disconnect(sessionId);
+      for (const [sessionId, session] of sessions) {
+        retireSessionConnection(
+          sessionId,
+          session,
+          new Error('COLLAB_V3_PROVIDER_DISPOSED'),
+        );
       }
+      for (const socket of transientSessionSockets) {
+        try { socket.close(); } catch { /* terminal best-effort close */ }
+      }
+      transientSessionSockets.clear();
 
       if (indexReconnectTimer) {
         clearTimeout(indexReconnectTimer);
@@ -3242,9 +3469,27 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       indexPreOpenFailures = 0;
       indexAuthBlocked = false;
       clearIndexReady();
+      stopPingInterval();
+      stopDeviceAnnounceInterval();
+      for (const reject of indexReadyRejectors.values()) {
+        reject(new Error('COLLAB_V3_PROVIDER_DISPOSED'));
+      }
+      indexReadyRejectors.clear();
       indexReadyListeners.clear();
+      pendingOperations.length = 0;
+      pendingMetadataUpdates.clear();
+      pendingMetadataFlushes.clear();
+      if (pendingIndexFetch) {
+        pendingIndexFetch.reject(new Error('COLLAB_V3_PROVIDER_DISPOSED'));
+        pendingIndexFetch = null;
+      }
       if (indexWs) {
-        indexWs.close();
+        const socket = indexWs;
+        socket.onopen = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
+        try { socket.close(); } catch { /* terminal best-effort close */ }
         indexWs = null;
         indexConnected = false;
       }
@@ -3281,6 +3526,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     async pushChange(sessionId: string, change: SessionChange): Promise<void> {
+      if (disposed) return;
       const metadataWriteReceipt = (
         change as SessionChange & {
           [metadataWriteReceiptSymbol]?: IndexFrameWriteReceipt;
@@ -3315,6 +3561,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           }
           try {
             const encrypted = await encryptMessage(change.message, session.encryptionKey);
+            if (!isCurrentSessionConnection(sessionId, session)) return;
             // console.log('[CollabV3] Encrypted message:', {
             //   id: encrypted.id,
             //   contentLength: encrypted.encryptedContent.length,
@@ -3336,6 +3583,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           // Encrypt title
           if (change.metadata.title && config.encryptionKey) {
             const { encryptedTitle, titleIv } = await encryptTitle(change.metadata.title, config.encryptionKey);
+            if (disposed) return;
             metadata.encryptedTitle = encryptedTitle;
             metadata.titleIv = titleIv;
           }
@@ -3356,6 +3604,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                 throw new Error('[CollabV3] Cannot send queued prompts: no encryption key available');
               }
               metadata.encryptedQueuedPrompts = await encryptQueuedPrompts(change.metadata.queuedPrompts, config.encryptionKey);
+              if (disposed) return;
             } else {
               metadata.encryptedQueuedPrompts = undefined;
             }
@@ -3388,6 +3637,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               // console.log('[CollabV3] Encrypting clientMeta with draftInput, sending to index');
             }
             const encrypted = await encryptClientMetadata(clientMeta, config.encryptionKey);
+            if (disposed) return;
             metadata.encryptedClientMetadata = encrypted.encryptedClientMetadata;
             metadata.clientMetadataIv = encrypted.clientMetadataIv;
           }
@@ -3405,7 +3655,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       }
 
       // Send to session room (if connected and we have a message to send)
-      if (clientMessage && sessionConnected) {
+      if (disposed) return;
+      if (
+        clientMessage &&
+        sessionConnected &&
+        session &&
+        isCurrentSessionConnection(sessionId, session)
+      ) {
         try {
           const json = JSON.stringify(clientMessage);
           // console.log('[CollabV3] Sending message, length:', json.length);
@@ -3542,7 +3798,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               'updatedAt' in meta;
             if (hasPartialUpdate) {
               // console.log('[CollabV3] Queueing partial metadata update for session:', sessionId, { isExecuting: meta.isExecuting, pendingExecution: meta.pendingExecution, title: meta.title });
-              const existing = pendingMetadataUpdates.get(sessionId) || {};
+              const existing = { ...(pendingMetadataUpdates.get(sessionId) || {}) };
               if ('isExecuting' in meta) existing.isExecuting = meta.isExecuting;
               if ('pendingExecution' in meta) existing.pendingExecution = meta.pendingExecution;
               if (meta.title !== undefined) existing.title = meta.title;
@@ -3574,6 +3830,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       sessionId: string,
       metadata: Partial<SyncedSessionMetadata>,
     ): Promise<MetadataSyncClientWriteResult> {
+      if (disposed) {
+        return {
+          outcome: 'failed', attempted: false, indexFrameWritten: false,
+          skippedReason: 'index_not_connected',
+          error: 'COLLAB_V3_PROVIDER_DISPOSED',
+        };
+      }
       if (!config.encryptionKey) {
         return {
           outcome: 'skipped',
@@ -3640,6 +3903,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       messageSyncRequests?: Array<{ sessionId: string; sinceTimestamp: number }>;
       getMessagesForSync?: (requests: Array<{ sessionId: string; sinceTimestamp: number }>) => Promise<Map<string, any[]>>;
     }): void {
+      if (disposed) return;
       if (!indexWs || !indexConnected) {
         // Queue the operation to run when connection is established
         console.log('[CollabV3] Index not connected yet, queueing sync of', sessionsData.length, 'sessions');
@@ -3663,7 +3927,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     async syncProjectConfig(projectId: string, projectConfig: ProjectConfig): Promise<void> {
-      if (!indexWs || !indexConnected) {
+      if (disposed || !indexWs || !indexConnected) {
         console.log('[CollabV3] Index not connected, cannot sync project config');
         return;
       }
@@ -3674,6 +3938,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
       // Encrypt project ID (deterministic)
       const { encryptedProjectId, projectIdIv } = await encryptProjectId(projectId, config.encryptionKey);
+      if (disposed) return;
 
       // Build message -- only include encrypted config if there are commands
       // (skip when just sending gitRemoteHash on startup to avoid overwriting existing config)
@@ -3687,6 +3952,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       if (projectConfig.commands.length > 0) {
         const configJson = JSON.stringify(projectConfig);
         const { encrypted: encryptedConfig, iv: configIv } = await encrypt(configJson, config.encryptionKey);
+        if (disposed) return;
         message.encryptedConfig = encryptedConfig;
         message.configIv = configIv;
       }
@@ -3696,12 +3962,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     async fetchIndex(): Promise<{ sessions: DecryptedSessionIndexEntry[]; projects: Array<{ projectId: string; name: string; sessionCount: number; lastActivityAt: number; syncEnabled: boolean; gitRemoteHash?: string }> }> {
+      if (disposed) throw new Error('COLLAB_V3_PROVIDER_DISPOSED');
       // Wait for connection if not ready
       if (!indexWs || !indexConnected) {
         // console.log('[CollabV3] Waiting for index connection before fetching...');
         await new Promise<void>((resolve) => {
           const checkConnection = setInterval(() => {
-            if (indexWs && indexConnected) {
+            if (disposed || (indexWs && indexConnected)) {
               clearInterval(checkConnection);
               resolve();
             }
@@ -3714,6 +3981,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         });
       }
 
+      if (disposed) throw new Error('COLLAB_V3_PROVIDER_DISPOSED');
       if (!indexWs || !indexConnected) {
         throw new Error('Index connection not available');
       }
@@ -4274,6 +4542,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         // Schedule restoration before attempting the push frame. If that send
         // throws, the desktop must not remain advertised as away indefinitely.
         setTimeout(() => {
+          if (disposed) return;
           announceDevice();
         }, 1500);
         restorationScheduled = true;
@@ -4353,6 +4622,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     /** Attempt to reconnect the index connection when network becomes available */
     async reconnectIndex(): Promise<void> {
+      if (disposed) return;
       // A previous reconnectIndex() already started a fresh handshake that
       // hasn't resolved yet. Don't tear it down -- post-wake the broker fires
       // several network-available events in a ~20s burst and we'd otherwise
@@ -4399,8 +4669,10 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       console.log('[CollabV3] Network available, attempting to reconnect index...');
       try {
         await connectToIndex();
+        if (disposed) return;
         console.log('[CollabV3] Successfully reconnected to index after network restoration');
       } catch (err) {
+        if (disposed) return;
         console.error('[CollabV3] Failed to reconnect to index:', err);
         // Start the backoff retry loop since the explicit reconnect failed
         scheduleIndexReconnect();
@@ -4423,16 +4695,25 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
      * TrackerSync, TeamSync, and DocumentSync on a verified-healthy index.
      */
     waitForIndexReady(timeoutMs: number = 5000): Promise<void> {
+      if (disposed) return Promise.reject(new Error('COLLAB_V3_PROVIDER_DISPOSED'));
       if (indexReady) return Promise.resolve();
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           indexReadyListeners.delete(listener);
+          indexReadyRejectors.delete(listener);
           reject(new Error(`Index not ready within ${timeoutMs}ms`));
         }, timeoutMs);
         const listener = () => {
           clearTimeout(timer);
+          indexReadyRejectors.delete(listener);
           resolve();
         };
+        indexReadyRejectors.set(listener, (error) => {
+          clearTimeout(timer);
+          indexReadyListeners.delete(listener);
+          indexReadyRejectors.delete(listener);
+          reject(error);
+        });
         indexReadyListeners.add(listener);
       });
     },

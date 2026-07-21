@@ -20,6 +20,7 @@ import {
   clearStalePendingPromptOnTerminal,
   findCompletedSessionsWithPendingPrompt,
 } from '../services/ai/pendingPromptTerminalClear';
+import { endHostBoundAiSession } from '../services/ai/aiServiceQueuedChainSettlement';
 
 // Track if handlers are registered to prevent double registration
 let handlersRegistered = false;
@@ -30,6 +31,33 @@ const windowSubscriptions = new Map<number, () => void>();
 // Track sync subscription cleanup
 let syncSubscriptionCleanup: (() => void) | null = null;
 const sessionWorkspaceCache = new Map<string, string | null>();
+
+type SessionStateEndManager = Pick<
+  ReturnType<typeof getSessionStateManager>,
+  'endSession' | 'getSessionState'
+>;
+
+export function registerHostBoundSessionEndHandler(
+  stateManager: SessionStateEndManager,
+  register: typeof safeHandle = safeHandle,
+): void {
+  // Explicit renderer command targets the turn current at invocation time.
+  register('ai-session-state:end', async (_event, sessionId: string) => {
+    try {
+      const attentionGeneration = stateManager.getSessionState(sessionId)?.attentionGeneration;
+      if (!attentionGeneration) return { success: false, error: 'session turn is no longer active' };
+      const ended = await endHostBoundAiSession(stateManager, sessionId, {
+        attentionGeneration,
+      });
+      return ended
+        ? { success: true }
+        : { success: false, error: 'session turn is no longer active' };
+    } catch (error) {
+      console.error('[SessionStateHandlers] Error ending session:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+}
 
 async function getCanonicalWorkspacePathForSession(sessionId: string): Promise<string | null> {
   if (sessionWorkspaceCache.has(sessionId)) {
@@ -363,18 +391,7 @@ export async function registerSessionStateHandlers() {
     }
   });
 
-  // Explicit renderer command targeting the session's current turn. This is
-  // intentionally generationless; unlike delayed prompt-A callbacks, the
-  // command means "end whatever is current now" at invocation time.
-  safeHandle('ai-session-state:end', async (_event, sessionId: string) => {
-    try {
-      await stateManager.endSession(sessionId);
-      return { success: true };
-    } catch (error) {
-      console.error('[SessionStateHandlers] Error ending session:', error);
-      return { success: false, error: String(error) };
-    }
-  });
+  registerHostBoundSessionEndHandler(stateManager);
 
   // Explicit renderer command targeting the session's current turn. Keep this
   // generationless so a user force-stop interrupts the turn that is current

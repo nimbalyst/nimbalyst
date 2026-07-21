@@ -68,7 +68,13 @@ import {
 } from '../permissions/ToolPermissionService';
 import { AgentToolHooks } from '../permissions/AgentToolHooks';
 import { McpConfigService } from '../services/McpConfigService';
-import { getMcpConfigService, isInternalMcpServerEnabled, areTrackerToolsEnabled, resolveTrackersWorkspacePath } from '../services/mcpServerConfig';
+import {
+  buildClaudeMetaAgentMcpConfig,
+  getMcpConfigService,
+  isInternalMcpServerEnabled,
+  areTrackerToolsEnabled,
+  resolveTrackersWorkspacePath,
+} from '../services/mcpServerConfig';
 import { historyManager } from '../../../../../electron/src/main/HistoryManager';
 import {
   appendLargeAttachmentInstructions,
@@ -717,10 +723,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
       // Meta-agent: override MCP config with meta-agent profile and apply tool restrictions
       if (isMetaAgent) {
-        options.mcpServers = await this.mcpConfigService.getMcpServersConfig({
+        options.mcpServers = await buildClaudeMetaAgentMcpConfig(this.mcpConfigService, {
           sessionId,
-          workspacePath,
-          profile: 'meta-agent',
+          providerWorkspacePath: workspacePath,
+          mcpConfigWorkspacePath,
         });
         const allowedSet = new Set(BaseAgentProvider.META_AGENT_ALLOWED_TOOLS);
         const blockedNativeTools = SDK_NATIVE_TOOLS.filter(t => !allowedSet.has(t));

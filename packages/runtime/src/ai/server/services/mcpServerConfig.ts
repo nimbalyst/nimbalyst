@@ -33,6 +33,7 @@ export type SharedMcpServerConfig = Pick<
   | 'trackersAgentToolsDisabledLoader'
   | 'extensionMcpServerNamesLoader'
   | 'mcpAuthToken'
+  | 'mcpSessionCredentialIssuer'
 >;
 
 /** Provider-owned deps merged on top of the shared config per `getMcpConfigService`. */
@@ -49,6 +50,7 @@ const shared: SharedMcpServerConfig = {
   trackersAgentToolsDisabledLoader: null,
   extensionMcpServerNamesLoader: null,
   mcpAuthToken: null,
+  mcpSessionCredentialIssuer: null,
 };
 
 /** Set/update the shared MCP-enablement deps. Called once from electron main. */
@@ -98,5 +100,21 @@ export function getMcpConfigService(overrides: PerProviderMcpDeps): McpConfigSer
     mcpConfigLoader: overrides.mcpConfigLoader,
     claudeSettingsEnvLoader: overrides.claudeSettingsEnvLoader,
     shellEnvironmentLoader: overrides.shellEnvironmentLoader,
+  });
+}
+
+/** Build the Claude meta-agent override from the canonical MCP config path. */
+export async function buildClaudeMetaAgentMcpConfig(
+  service: Pick<McpConfigService, 'getMcpServersConfig'>,
+  context: {
+    sessionId?: string;
+    providerWorkspacePath: string;
+    mcpConfigWorkspacePath?: string;
+  },
+): Promise<Record<string, any>> {
+  return service.getMcpServersConfig({
+    sessionId: context.sessionId,
+    workspacePath: context.mcpConfigWorkspacePath ?? context.providerWorkspacePath,
+    profile: 'meta-agent',
   });
 }

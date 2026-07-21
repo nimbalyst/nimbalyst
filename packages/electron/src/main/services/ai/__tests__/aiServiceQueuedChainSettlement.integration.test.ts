@@ -6,6 +6,11 @@ const fixture = vi.hoisted(() => ({
   getSession: vi.fn(),
   updateMetadata: vi.fn(),
   pushMetadataChangeWithResult: vi.fn(),
+  revokeHostBoundMcpAuthority: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../../mcp/httpServer', () => ({
+  revokeHostBoundMcpAuthority: fixture.revokeHostBoundMcpAuthority,
 }));
 
 vi.mock('@nimbalyst/runtime', () => ({
@@ -28,6 +33,7 @@ import { AttentionEventService } from '../../AttentionEventService';
 import {
   createAIServiceQueuedChainSettlement,
   createDeferredSessionDrainHandlers,
+  endHostBoundAiSession,
 } from '../aiServiceQueuedChainSettlement';
 import {
   resolveQueuedPromptDispatchTarget,
@@ -305,7 +311,74 @@ describe('AIService queued-chain generation settlement integration', () => {
     ]);
     expect(order.indexOf('row:completed')).toBeLessThan(order.indexOf('event:session:completed'));
     expect(events.filter((event) => event.type === 'session:completed')).toHaveLength(1);
+    expect(fixture.revokeHostBoundMcpAuthority).toHaveBeenCalledWith(sessionId);
     unsubscribe();
+  });
+
+  it('revokes capability before the real deferred-success drain ends its owned generation', async () => {
+    const stateManager = new SessionStateManager();
+    setSessionStateManager(stateManager);
+    await stateManager.startSession({
+      sessionId,
+      workspacePath,
+      attentionGeneration: 'turn-deferred-success',
+    });
+    const order: string[] = [];
+    fixture.revokeHostBoundMcpAuthority.mockImplementationOnce(async () => {
+      order.push('revoked');
+    });
+    const originalEnd = stateManager.endSession.bind(stateManager);
+    vi.spyOn(stateManager, 'endSession').mockImplementation(async (...args) => {
+      order.push('ended');
+      await originalEnd(...args);
+    });
+    const handlers = createDeferredSessionDrainHandlers({
+      sessionId,
+      stateManager,
+      processingSet: new Set<string>(),
+      getAttentionGeneration: () => 'turn-deferred-success',
+      getDeferredOutcome: () => 'completed',
+      isLeadBusy: () => false,
+      settleTerminal: vi.fn(async () => undefined),
+      stopWatcher: vi.fn(async () => undefined),
+      scheduleWatcherStop: vi.fn(),
+      clearEditWindow: vi.fn(),
+      playCompletionSound: vi.fn(),
+      logInfo: vi.fn(),
+    });
+
+    await handlers.onTeammatesAllCompleted({ sessionId });
+
+    expect(order).toEqual(['revoked', 'ended']);
+    expect(stateManager.getSessionState(sessionId)).toBeUndefined();
+  });
+
+  it('revalidates generation after an awaited revocation before ending terminal state', async () => {
+    const stateManager = new SessionStateManager();
+    setSessionStateManager(stateManager);
+    await stateManager.startSession({
+      sessionId,
+      workspacePath,
+      attentionGeneration: 'turn-a',
+    });
+    let releaseRevocation!: () => void;
+    fixture.revokeHostBoundMcpAuthority.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releaseRevocation = resolve; }),
+    );
+
+    const staleEnd = endHostBoundAiSession(stateManager, sessionId, {
+      attentionGeneration: 'turn-a',
+    });
+    await vi.waitFor(() => expect(fixture.revokeHostBoundMcpAuthority).toHaveBeenCalled());
+    await stateManager.startSession({
+      sessionId,
+      workspacePath,
+      attentionGeneration: 'turn-b',
+    });
+    releaseRevocation();
+
+    await expect(staleEnd).resolves.toBe(false);
+    expect(stateManager.getSessionState(sessionId)?.attentionGeneration).toBe('turn-b');
   });
 
   it('checks and claims successor B before replaying one successful early drain from A', async () => {
@@ -631,6 +704,7 @@ describe('AIService queued-chain generation settlement integration', () => {
     expect(scheduleStop).toHaveBeenCalledWith(sessionId, 500);
     expect(codexEditWindowRegistry.getSessionWindowCount(sessionId)).toBe(0);
     expect(codexEditWindowRegistry.getWindow('abandoned-codex-write')).toBeUndefined();
+    expect(fixture.revokeHostBoundMcpAuthority).toHaveBeenCalledWith(sessionId);
     unsubscribe();
   });
 
@@ -925,6 +999,7 @@ describe('AIService queued-chain generation settlement integration', () => {
       expect(scheduleWatcherStop).toHaveBeenCalledWith(500);
       expect(clearEditWindow).toHaveBeenCalledTimes(1);
       expect(playCompletionSound).not.toHaveBeenCalled();
+      expect(fixture.revokeHostBoundMcpAuthority).toHaveBeenCalledWith(sessionId);
       unsubscribe();
     },
   );

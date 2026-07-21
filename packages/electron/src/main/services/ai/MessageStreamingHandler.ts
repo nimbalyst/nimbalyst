@@ -41,6 +41,7 @@ import { AISessionsRepository, resolveClaudeCodeParentContextWindow } from '@nim
 import { toolRegistry } from './tools';
 import { resolveExtensionAgentRef } from './providerResolution';
 import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
+import { getPrivilegedExtensionHost } from '../../extensions/PrivilegedExtensionHost';
 
 /**
  * Resolve the human-readable model name (e.g. "Gemini 3.5 Flash (High)") for an
@@ -112,10 +113,15 @@ import {
   assertQueuedPromptReloadTarget,
   type QueuedPromptTurnContext,
 } from './queuedPromptDispatcher';
-import { createDeferredSessionDrainHandlers } from './aiServiceQueuedChainSettlement';
+import {
+  createDeferredSessionDrainHandlers,
+  endHostBoundAiSession,
+} from './aiServiceQueuedChainSettlement';
 import type Store from 'electron-store';
 import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
+
+export { endHostBoundAiSession } from './aiServiceQueuedChainSettlement';
 
 export type SendMessageHandler = (
   event: Electron.IpcMainInvokeEvent,
@@ -125,6 +131,28 @@ export type SendMessageHandler = (
   workspacePath?: string,
   turnContext?: QueuedPromptTurnContext,
 ) => Promise<{ content: string }>;
+
+/** Production boundary that binds host authority before the extension bridge
+ * creates its backend session and streaming RPC. Tests exercise this with the
+ * real ExtensionAgentProvider -> extensionAgentBridge -> privileged host path.
+ */
+export function beginHostBoundExtensionAgentTurn<T>(args: {
+  extensionId: string;
+  moduleId: string;
+  runtimeWorkspacePath: string;
+  actorSessionId: string;
+  canonicalWorkspacePath: string;
+  send: () => AsyncIterableIterator<T>;
+}): AsyncIterableIterator<T> {
+  getPrivilegedExtensionHost().bindNextExtensionAgentTurnAuthority({
+    extensionId: args.extensionId,
+    moduleId: args.moduleId,
+    runtimeWorkspacePath: args.runtimeWorkspacePath,
+    actorSessionId: args.actorSessionId,
+    canonicalWorkspacePath: args.canonicalWorkspacePath,
+  });
+  return args.send();
+}
 
 /**
  * Structural view of the AIService members this handler needs. Keeping it
@@ -1519,9 +1547,45 @@ export class MessageStreamingHandler {
                 model: session.model ?? undefined,
                 modelDisplayName: resolveExtensionModelDisplayName(session.provider, session.model),
               })
-            : undefined;
+          : undefined;
 
-      for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments, extensionAgentTools, extensionAgentSystemPrompt)) {
+      let providerStream: AsyncIterableIterator<any>;
+      if (isMetaAgentExtensionSession && extensionAgentTools) {
+        const extensionEntry = getAgentProviderRegistry().findByContributionId(session.provider);
+        if (!extensionEntry) {
+          throw new Error(`Extension-agent provider disappeared: ${session.provider}`);
+        }
+        providerStream = beginHostBoundExtensionAgentTurn({
+          extensionId: extensionEntry.extensionId,
+          moduleId: extensionEntry.backendModuleId,
+          runtimeWorkspacePath: effectiveWorkspacePath,
+          actorSessionId: session.id,
+          canonicalWorkspacePath,
+          send: () => provider.sendMessage(
+            messageToSend,
+            contextWithSession,
+            session.id,
+            sessionMessages,
+            effectiveWorkspacePath,
+            attachments,
+            extensionAgentTools,
+            extensionAgentSystemPrompt,
+          ),
+        });
+      } else {
+        providerStream = provider.sendMessage(
+          messageToSend,
+          contextWithSession,
+          session.id,
+          sessionMessages,
+          effectiveWorkspacePath,
+          attachments,
+          extensionAgentTools,
+          extensionAgentSystemPrompt,
+        );
+      }
+
+      for await (const chunk of providerStream) {
         if (!chunk) continue;
         chunkCount++;
 
@@ -2261,7 +2325,7 @@ export class MessageStreamingHandler {
                   status: 'error',
                   attentionGeneration: requireAttentionGeneration(),
                 });
-                await stateManager.endSession(session.id, {
+                await endHostBoundAiSession(stateManager, session.id, {
                   attentionGeneration: requireAttentionGeneration(),
                 });
                 await this.svc.hooklessWatcher.stopForSession(session.id);
@@ -2692,7 +2756,7 @@ export class MessageStreamingHandler {
                 : 'queued continuation scheduled';
               // logger.main.info(`[AIService] Deferring endSession for ${session.id} - ${reason}`);
             } else {
-              await stateManager.endSession(session.id, {
+              await endHostBoundAiSession(stateManager, session.id, {
                 attentionGeneration: requireAttentionGeneration(),
               });
               // Stop file watcher after a brief delay to let pending
@@ -2935,7 +2999,7 @@ export class MessageStreamingHandler {
             : 'queued continuation scheduled';
           logger.main.info(`[AIService] Deferring endSession for ${session.id} on error - ${reason}`);
         } else {
-          await stateManager.endSession(session.id, {
+          await endHostBoundAiSession(stateManager, session.id, {
             attentionGeneration: requireAttentionGeneration(),
           });
           // Stop file watcher - session ended on error

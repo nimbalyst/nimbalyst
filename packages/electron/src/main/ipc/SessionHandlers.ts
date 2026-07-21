@@ -11,7 +11,17 @@ import {
 } from '@nimbalyst/runtime/ai/server/types';
 import type { UpdateSessionMetadataPayload } from '@nimbalyst/runtime/ai/adapters/sessionStore';
 import path from "path";
-import { existsSync } from "fs";
+import { createHash, randomUUID } from 'crypto';
+import {
+    existsSync,
+    readFileSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    statSync,
+} from "fs";
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { createServer as createNetServer, type Server as NetServer } from 'node:net';
 import { BrowserWindow, dialog } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
@@ -38,16 +48,297 @@ import {
     setAttentionSupervisorAuthorizationWithUserConfirmation,
 } from '../services/AttentionSupervisorAuthorization';
 import { windows, windowStates } from '../window/windowState';
+import { findWindowByWorkspace } from '../window/WindowManager';
+import {
+    SessionVisibilityControlService,
+    canonicalizeSessionWorkspacePath,
+    toSessionVisibilityErrorPayload,
+    workspaceReceiptId,
+    type SessionVisibilityContext,
+} from '../services/SessionVisibilityControlService';
+import { claimVisibilityStorageDatabaseFence } from '../services/PGLiteSessionStore';
+import { revokeHostBoundMcpAuthority } from '../mcp/httpServer';
+import { database } from '../database/PGLiteDatabaseWorker';
 
 // Initialize session manager
 const sessionManager = new SessionManager();
 const analyticsService = AnalyticsService.getInstance();
+let sessionVisibilityControlService: SessionVisibilityControlService;
+
+export interface VisibilityStorageRootLease {
+    rootPath: string;
+    rootIdentity: string;
+    ownerId: string;
+    assertOwned(): void;
+    runProtectedWrite<T>(work: () => Promise<T>): Promise<T>;
+    /** Fatal-loss path: drop kernel ownership without waiting for admitted work. */
+    forfeitAfterFatalOwnershipLoss(): Promise<void>;
+    release(): Promise<void>;
+}
+
+export interface VisibilityStorageRootOwnershipOptions {
+    /** Deprecated clock knobs retained for compatibility; OS ownership is not time-based. */
+    staleAfterMs?: number;
+    heartbeatIntervalMs?: number;
+    now?: () => number;
+    beforeReleaseQuarantine?: () => Promise<void>;
+}
+
+export interface VisibilityStorageRootEndpoint {
+    host: '127.0.0.1';
+    port: number;
+}
+
+function resolveVisibilityStorageRootIdentity(rootPath: string): string {
+    const resolved = realpathSync.native(path.resolve(rootPath));
+    const stat = statSync(resolved, { bigint: true });
+    return `${stat.dev.toString(16)}:${stat.ino.toString(16)}`;
+}
+
+/**
+ * Deterministic OS-owned endpoint for one userData root. The kernel releases
+ * the listener on crash, PID reuse, suspension, and wall-clock movement do not
+ * affect it, and a hash collision fails closed rather than sharing a root.
+ */
+export function resolveVisibilityStorageRootEndpoint(
+    rootPath: string,
+): VisibilityStorageRootEndpoint {
+    // Device + inode/file-index identifies the physical directory across
+    // junctions, symlinks, SUBST drives, 8.3 names, slash and drive-case aliases.
+    const physicalIdentity = resolveVisibilityStorageRootIdentity(rootPath);
+    const prefix = createHash('sha256').update(physicalIdentity).digest().readUInt32BE(0);
+    return { host: '127.0.0.1', port: 20_000 + (prefix % 40_000) };
+}
+
+async function closeOwnershipServer(server: NetServer): Promise<void> {
+    if (!server.listening) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+/**
+ * Cross-process ownership for the exact userData root. The listening socket
+ * is the operational exclusivity primitive. owner.json is discovery/recovery
+ * metadata only; the active database fence row is the canonical commit nonce
+ * for protected visibility mutations.
+ */
+export async function acquireVisibilityStorageRootOwnership(
+    rootPath: string,
+    options: VisibilityStorageRootOwnershipOptions = {},
+): Promise<VisibilityStorageRootLease> {
+    const resolvedRoot = path.resolve(rootPath);
+    const lockPath = path.join(resolvedRoot, '.session-visibility-owner');
+    const ownerFile = path.join(lockPath, 'owner.json');
+    const ownerId = `sv-root-${process.pid}-${randomUUID()}`;
+    const processStartEpochSecond = Math.floor(
+        (Date.now() - process.uptime() * 1_000) / 1_000,
+    );
+    await mkdir(resolvedRoot, { recursive: true });
+    const physicalRoot = realpathSync.native(resolvedRoot);
+    const rootIdentity = resolveVisibilityStorageRootIdentity(physicalRoot);
+    const endpoint = resolveVisibilityStorageRootEndpoint(physicalRoot);
+    const ownershipServer = createNetServer((socket) => socket.destroy());
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const onError = (error: NodeJS.ErrnoException) => {
+                ownershipServer.removeListener('listening', onListening);
+                reject(error);
+            };
+            const onListening = () => {
+                ownershipServer.removeListener('error', onError);
+                resolve();
+            };
+            ownershipServer.once('error', onError);
+            ownershipServer.once('listening', onListening);
+            ownershipServer.listen({ ...endpoint, exclusive: true });
+        });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+            throw new Error('session visibility storage root is already owned');
+        }
+        throw error;
+    }
+    ownershipServer.unref();
+
+    const staleQuarantine = `${lockPath}.stale-${ownerId}`;
+    try {
+        await rename(lockPath, staleQuarantine);
+        await rm(staleQuarantine, { recursive: true, force: true });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            await closeOwnershipServer(ownershipServer);
+            throw error;
+        }
+    }
+    try {
+        await mkdir(lockPath);
+        await writeFile(ownerFile, JSON.stringify({
+            protocol: 2,
+            ownerId,
+            pid: process.pid,
+            processStartEpochSecond,
+            acquiredAt: Date.now(),
+            endpoint,
+        }), { encoding: 'utf8', flag: 'wx' });
+    } catch (error) {
+        await closeOwnershipServer(ownershipServer);
+        throw error;
+    }
+
+    let released = false;
+    let lost = false;
+    let releasing = false;
+    let activeProtectedWrites = 0;
+    const protectedWriteDrainedWaiters = new Set<() => void>();
+    const markLost = () => {
+        lost = true;
+        void closeOwnershipServer(ownershipServer);
+    };
+    ownershipServer.on('error', markLost);
+    const assertOwned = () => {
+        if (released || lost || !ownershipServer.listening) {
+            throw new Error('session visibility storage root ownership was lost');
+        }
+    };
+    const releaseOnExit = () => {
+        if (released || lost) return;
+        try {
+            const current = JSON.parse(readFileSync(ownerFile, 'utf8')) as { ownerId?: string };
+            if (current.ownerId === ownerId) {
+                const quarantine = `${lockPath}.released-${ownerId}`;
+                renameSync(lockPath, quarantine);
+                rmSync(quarantine, { recursive: true, force: true });
+            }
+        } catch {
+            // Kernel endpoint release remains the crash-safe ownership fence.
+        }
+    };
+    process.once('exit', releaseOnExit);
+    const runProtectedWrite = async <T>(work: () => Promise<T>): Promise<T> => {
+        if (releasing) throw new Error('session visibility storage root ownership was lost');
+        assertOwned();
+        activeProtectedWrites += 1;
+        try {
+            return await work();
+        } finally {
+            activeProtectedWrites -= 1;
+            if (activeProtectedWrites === 0) {
+                for (const resolve of protectedWriteDrainedWaiters) resolve();
+                protectedWriteDrainedWaiters.clear();
+            }
+        }
+    };
+    return {
+        rootPath: physicalRoot,
+        rootIdentity,
+        ownerId,
+        assertOwned,
+        runProtectedWrite,
+        async forfeitAfterFatalOwnershipLoss() {
+            if (released || lost) return;
+            releasing = true;
+            lost = true;
+            process.removeListener('exit', releaseOnExit);
+            // Leave discovery metadata in place for the successor's quarantine
+            // path. The kernel endpoint loss is immediate; any already-admitted
+            // JS continuation is fenced by the canonical database nonce.
+            await closeOwnershipServer(ownershipServer);
+        },
+        async release() {
+            if (released) return;
+            releasing = true;
+            assertOwned();
+            if (activeProtectedWrites > 0) {
+                await new Promise<void>((resolve) => protectedWriteDrainedWaiters.add(resolve));
+            }
+            assertOwned();
+            await options.beforeReleaseQuarantine?.();
+            const quarantine = `${lockPath}.released-${ownerId}`;
+            await rename(lockPath, quarantine);
+            released = true;
+            process.removeListener('exit', releaseOnExit);
+            await closeOwnershipServer(ownershipServer);
+            await rm(quarantine, { recursive: true, force: true });
+        },
+    };
+}
+
+/**
+ * Exact production registration boundary for visibility storage authority.
+ * The physical-root kernel lease is acquired before the active database row
+ * is claimed, and the repository receives the same opaque nonce only after
+ * both steps succeed.
+ */
+export async function bindVisibilityStorageRootAuthority(
+    rootPath: string,
+): Promise<VisibilityStorageRootLease> {
+    const lease = await acquireVisibilityStorageRootOwnership(rootPath);
+    try {
+        await claimVisibilityStorageDatabaseFence(
+            database,
+            lease.rootIdentity,
+            lease.ownerId,
+        );
+        AISessionsRepository.configureVisibilityStorageFence({
+            rootIdentity: lease.rootIdentity,
+            ownerId: lease.ownerId,
+        });
+        return lease;
+    } catch (error) {
+        await lease.release().catch(() => undefined);
+        throw error;
+    }
+}
+
+async function createVisibilityIpcContext(
+    event: Electron.IpcMainInvokeEvent,
+): Promise<SessionVisibilityContext> {
+    const browserWindow = BrowserWindow.fromWebContents(event.sender);
+    const windowId = browserWindow ? getRegisteredWindowId(browserWindow) : null;
+    const windowState = windowId === null ? undefined : windowStates.get(windowId);
+    const canonicalWorkspacePath = windowState?.activeWorkspacePath ?? windowState?.workspacePath;
+    return {
+        actorSessionId: `renderer-window:${windowId ?? 'unbound'}`,
+        actorKind: 'renderer-user',
+        // IPC payload workspace paths are compatibility-only. Authority comes
+        // from the registered sender window's currently visible workspace.
+        workspacePath: canonicalWorkspacePath ?? '__unbound_renderer__',
+        source: 'renderer-ipc',
+        correlationId: `ipc-${randomUUID()}`,
+    };
+}
+
+function visibilityIpcFailure(error: unknown): Record<string, unknown> {
+    return {
+        success: false,
+        ...toSessionVisibilityErrorPayload(error),
+    };
+}
 
 function getRegisteredWindowId(browserWindow: BrowserWindow): number | null {
     for (const [windowId, registeredWindow] of windows) {
         if (registeredWindow === browserWindow) return windowId;
     }
     return null;
+}
+
+function resolveCurrentVisibilityWorkspacePath(
+    workspaceId: string,
+    durableWorkspacePath: string,
+): string | null {
+    const comparisonPath = canonicalizeSessionWorkspacePath(durableWorkspacePath);
+    if (workspaceReceiptId(comparisonPath) !== workspaceId) return null;
+    const matches: string[] = [];
+    for (const [windowId, state] of windowStates) {
+        const candidate = state.activeWorkspacePath ?? state.workspacePath;
+        if (!candidate || canonicalizeSessionWorkspacePath(candidate) !== comparisonPath) continue;
+        const window = windows.get(windowId);
+        if (window && !window.isDestroyed()) matches.push(candidate);
+    }
+    // The configured userData root owns this resolver. Within that root an
+    // operational route is authoritative only when exactly one live window
+    // claims the durable workspace identity; aliases must never be selected by
+    // insertion order.
+    return matches.length === 1 ? matches[0] : null;
 }
 
 // Track if handlers are registered to prevent double registration
@@ -285,7 +576,9 @@ async function getCachedUncommittedFiles(workspacePath: string): Promise<Set<str
     }
 }
 
-export async function registerSessionHandlers() {
+export async function registerSessionHandlers(options: {
+    userDataPath?: string;
+} = {}) {
     if (handlersRegistered) {
         console.log('[SessionHandlers] Handlers already registered, skipping');
         return;
@@ -293,6 +586,44 @@ export async function registerSessionHandlers() {
 
     // Initialize session manager
     await sessionManager.initialize();
+    const visibilityStorageRoot = options.userDataPath ?? (process.env.VITEST
+      ? path.join(process.env.TEMP ?? process.cwd(), `nimbalyst-vitest-${process.pid}`)
+      : undefined);
+    if (!visibilityStorageRoot) {
+      throw new Error('session visibility storage root is required');
+    }
+    const visibilityStorageRootLease = await bindVisibilityStorageRootAuthority(
+      visibilityStorageRoot,
+    );
+    sessionVisibilityControlService = SessionVisibilityControlService.getInstance({
+      storageRoot: visibilityStorageRoot,
+      assertStorageRootOwnership: () => visibilityStorageRootLease.assertOwned(),
+      withStorageRootWriteFence: (work) => visibilityStorageRootLease.runProtectedWrite(work),
+    });
+    void Promise.resolve(sessionVisibilityControlService.configureHostBroadcast?.((workspacePath, channel, ...args) => {
+      const window = findWindowByWorkspace(workspacePath);
+      if (!window || window.isDestroyed()) throw new Error('no matching renderer window available');
+      window.webContents.send(channel, ...args);
+      // Production delivery is acknowledged only after the matching renderer
+      // has applied the preceding authoritative events.
+      return false;
+    }, resolveCurrentVisibilityWorkspacePath)).catch((error) => {
+      console.error('[SessionVisibility] Failed to initialize convergence delivery:', error);
+    });
+
+    safeHandle('sessions:visibility-delivery-ack', async (event, payload: {
+        auditId?: unknown;
+        workspacePath?: unknown;
+    }) => {
+        const context = await createVisibilityIpcContext(event);
+        if (typeof payload?.auditId !== 'string' || !payload.auditId.trim()) return false;
+        // Ignore the renderer-supplied workspace. The sender window is the
+        // authority for the operational path and comparison identity.
+        return sessionVisibilityControlService.acknowledgeRendererDelivery(
+            payload.auditId.trim(),
+            context.workspacePath,
+        );
+    });
 
     // Create session
     safeHandle('session:create', async (event, filePath: string, type: string, source?: any) => {
@@ -371,14 +702,18 @@ export async function registerSessionHandlers() {
     // Delete session
     safeHandle('session:delete', async (event, sessionId: string) => {
         await sessionManager.deleteSession(sessionId);
+        await revokeHostBoundMcpAuthority(sessionId);
     });
 
     // Update session title
     safeHandle('sessions:update-title', async (event, sessionId: string, title: string) => {
-        await sessionManager.updateSessionTitle(sessionId, title, {
-            force: true,
-            markAsNamed: true,
-        });
+        try {
+            const context = await createVisibilityIpcContext(event);
+            const receipt = await sessionVisibilityControlService.rename(context, sessionId, title);
+            return { success: true, ...receipt };
+        } catch (error) {
+            return visibilityIpcFailure(error);
+        }
     });
 
     // Update session model
@@ -847,42 +1182,16 @@ export async function registerSessionHandlers() {
         workspacePath: string;
     }) => {
         try {
-            const { sessionId, newParentId, workspacePath } = payload;
-
-            // Validate session exists
-            const session = await AISessionsRepository.get(sessionId);
-            if (!session) {
-                return { success: false, error: 'Session not found' };
-            }
-
-            // Validate session belongs to the workspace
-            if (session.workspacePath !== workspacePath) {
-                return { success: false, error: 'Session does not belong to this workspace' };
-            }
-
-            // If setting a parent, validate the parent exists and is in same workspace
-            if (newParentId) {
-                const parent = await AISessionsRepository.get(newParentId);
-                if (!parent) {
-                    return { success: false, error: 'Parent session not found' };
-                }
-                if (parent.workspacePath !== workspacePath) {
-                    return { success: false, error: 'Parent session is in a different workspace' };
-                }
-
-                // Parent must not itself be a child session (no nested workstreams)
-                if (parent.parentSessionId) {
-                    return { success: false, error: 'Cannot nest workstreams: parent is already a child session' };
-                }
-            }
-
-            // Update parent_session_id
-            await AISessionsRepository.updateMetadata(sessionId, { parentSessionId: newParentId });
-
-            return { success: true };
+            const { sessionId, newParentId } = payload;
+            const context = await createVisibilityIpcContext(event);
+            const receipt = await sessionVisibilityControlService.setWorkstream(
+                context,
+                sessionId,
+                newParentId,
+            );
+            return { success: true, ...receipt };
         } catch (error) {
-            console.error('[SessionHandlers] Failed to set session parent:', error);
-            return { success: false, error: String(error) };
+            return visibilityIpcFailure(error);
         }
     });
 
@@ -937,6 +1246,7 @@ export async function registerSessionHandlers() {
             ProviderFactory.destroyProvider(sessionId);
 
             await AISessionsRepository.delete(sessionId);
+            await revokeHostBoundMcpAuthority(sessionId);
             return { success: true };
         } catch (error) {
             console.error('[SessionHandlers] Failed to delete session:', error);
@@ -945,13 +1255,17 @@ export async function registerSessionHandlers() {
     });
 
     // Update session pinned status
-    safeHandle('sessions:update-pinned', async (_event, sessionId: string, isPinned: boolean) => {
+    safeHandle('sessions:update-pinned', async (event, sessionId: string, isPinned: boolean) => {
         try {
-            await AISessionsRepository.updateMetadata(sessionId, { isPinned } as any);
-            return { success: true };
+            const context = await createVisibilityIpcContext(event);
+            const receipt = await sessionVisibilityControlService.setPinned(
+                context,
+                sessionId,
+                isPinned,
+            );
+            return { success: true, ...receipt };
         } catch (error) {
-            console.error('[SessionHandlers] Failed to update session pinned status:', error);
-            return { success: false, error: String(error) };
+            return visibilityIpcFailure(error);
         }
     });
 

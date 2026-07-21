@@ -13,6 +13,12 @@
  */
 
 import { resolveProjectPath } from "../utils/workspaceDetection";
+import {
+  SESSION_VISIBILITY_TOOL_NAMES,
+  dispatchHostBoundSessionVisibilityTool,
+  getSessionVisibilityOpenAITools,
+  type HostBoundSessionVisibilityAuthority,
+} from './sessionContextServer';
 
 type CreateSessionArgs = {
   title?: string;
@@ -605,16 +611,44 @@ const EXTENSION_META_AGENT_ALLOWED_TOOLS = new Set<string>([
 ]);
 
 export function getMetaAgentOpenAITools(): MetaAgentOpenAITool[] {
-  return META_AGENT_TOOL_DEFS
+  const orchestrationTools: MetaAgentOpenAITool[] = META_AGENT_TOOL_DEFS
     .filter((t) => EXTENSION_META_AGENT_ALLOWED_TOOLS.has(t.name))
     .map((t) => ({
-      type: "function",
+      type: "function" as const,
       function: {
         name: t.name,
         description: t.description,
         parameters: t.inputSchema as Record<string, unknown>,
       },
     }));
+  return [
+    ...orchestrationTools,
+    ...(getSessionVisibilityOpenAITools() as MetaAgentOpenAITool[]),
+  ];
+}
+
+const SESSION_VISIBILITY_TOOL_SET = new Set<string>(SESSION_VISIBILITY_TOOL_NAMES);
+
+/**
+ * Extension-agent broker dispatch with host-bound turn authority. Backend
+ * payload identity fields are intentionally absent from this contract.
+ */
+export async function dispatchExtensionMetaAgentTool(
+  name: string,
+  args: Record<string, unknown> | undefined,
+  authority: Readonly<HostBoundSessionVisibilityAuthority>,
+): Promise<string> {
+  const toolName = name.replace(/^mcp__nimbalyst-[a-z-]+__/, '');
+  if (SESSION_VISIBILITY_TOOL_SET.has(toolName)) {
+    const result = await dispatchHostBoundSessionVisibilityTool(name, args, authority);
+    return result.content[0]?.text ?? JSON.stringify({ ok: false, code: 'INTERNAL_ERROR' });
+  }
+  return dispatchMetaAgentTool(
+    name,
+    authority.actorSessionId,
+    authority.workspacePath,
+    args,
+  );
 }
 
 /**

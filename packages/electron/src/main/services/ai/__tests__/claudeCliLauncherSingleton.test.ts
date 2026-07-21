@@ -20,6 +20,7 @@ describe('claudeCliLauncherSingleton', () => {
       attentionGeneration: string;
     } | null = null;
     let rotatedGeneration = 0;
+    const terminalOrder: string[] = [];
     const stateManager = {
       startSession: vi.fn(async () => {
         currentState = {
@@ -33,6 +34,7 @@ describe('claudeCliLauncherSingleton', () => {
         return 'turn-a';
       }),
       endSession: vi.fn(async (_sessionId: string, options?: { attentionGeneration?: string }) => {
+        terminalOrder.push('ended');
         if (
           options?.attentionGeneration &&
           currentState?.attentionGeneration !== options.attentionGeneration
@@ -69,6 +71,7 @@ describe('claudeCliLauncherSingleton', () => {
       getSessionState: vi.fn(() => currentState),
     };
     const launch = vi.fn(async (_input?: any): Promise<void> => undefined);
+    const revoke = vi.fn(async () => { terminalOrder.push('revoked'); });
     const fileWatcher = {
       ensureForSession: vi.fn(async () => undefined),
       scheduleStop: vi.fn(),
@@ -125,6 +128,9 @@ describe('claudeCliLauncherSingleton', () => {
         }
       },
     }));
+    vi.doMock('../../../mcp/httpServer', () => ({
+      revokeHostBoundMcpAuthority: revoke,
+    }));
 
     const mod = await import('../claudeCliLauncherSingleton');
     return {
@@ -132,6 +138,8 @@ describe('claudeCliLauncherSingleton', () => {
       manager,
       stateManager,
       launch,
+      revoke,
+      terminalOrder,
       fileWatcher,
       replaceCurrentTurn: (attentionGeneration: string) => {
         currentState = {
@@ -190,6 +198,8 @@ describe('claudeCliLauncherSingleton', () => {
         attentionGeneration: 'turn-a',
       });
     });
+    expect(h.revoke).toHaveBeenCalledWith('session-1');
+    expect(h.terminalOrder).toEqual(['revoked', 'ended']);
   }, 20000);
 
   it('rotates generation at each real long-lived CLI turn boundary', async () => {
@@ -283,6 +293,8 @@ describe('claudeCliLauncherSingleton', () => {
     expect(h.stateManager.endSession).toHaveBeenCalledWith('session-1', {
       attentionGeneration: 'turn-a',
     });
+    expect(h.revoke).toHaveBeenCalledWith('session-1');
+    expect(h.terminalOrder).toEqual(['revoked', 'ended']);
   }, 20000);
 
   it('keeps replacement turn B active across stale PID-idle and exit callbacks from A', async () => {

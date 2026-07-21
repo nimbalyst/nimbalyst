@@ -47,6 +47,31 @@ class RepositoryManager {
   private initialized = false;
   private authListenerUnsubscribe: (() => void) | null = null;
   private wasAuthenticated = false; // Track auth state to detect transitions
+  private lifecycleGeneration = 0;
+  private activeLifecycleCancellation: (() => void) | null = null;
+
+  private beginLifecycleOwnership(): {
+    generation: number;
+    cancelled: Promise<void>;
+    isCurrent: () => boolean;
+  } {
+    this.activeLifecycleCancellation?.();
+    const generation = ++this.lifecycleGeneration;
+    let cancelledFlag = false;
+    let cancel!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      cancel = () => {
+        cancelledFlag = true;
+        resolve();
+      };
+    });
+    this.activeLifecycleCancellation = cancel;
+    return {
+      generation,
+      cancelled,
+      isCurrent: () => !cancelledFlag && this.lifecycleGeneration === generation,
+    };
+  }
 
   /**
    * Initialize all repositories with PGLite database
@@ -180,6 +205,7 @@ class RepositoryManager {
       });
 
       this.initialized = true;
+      this.lifecycleGeneration += 1;
       logger.main.info('[RepositoryManager] All repositories initialized successfully');
 
       // Phase 1C/5 of canonical-transcript-deprecation: backfill
@@ -326,65 +352,98 @@ class RepositoryManager {
    * Called when sync settings are changed at runtime.
    */
   async reinitializeSyncWithNewConfig(): Promise<void> {
+    const ownership = this.beginLifecycleOwnership();
     logger.main.info('[RepositoryManager] reinitializeSyncWithNewConfig called', {
       initialized: this.initialized,
       hasBaseSessionStore: !!this.baseSessionStore,
       hasBaseAgentMessagesStore: !!this.baseAgentMessagesStore,
     });
 
-    if (!this.initialized || !this.baseSessionStore || !this.baseAgentMessagesStore) {
-      logger.main.warn('[RepositoryManager] Cannot reinitialize sync - not initialized yet');
-      return;
-    }
-
-    logger.main.info('[RepositoryManager] Reinitializing sync with new configuration...');
-
-    // Reinitialize sync (this shuts down existing sync and starts new one if enabled)
-    this.sessionStore = await reinitializeSync(this.baseSessionStore);
-    AISessionsRepository.setStore(this.sessionStore);
-
-    // Rewrap agent messages store with sync if enabled
-    this.agentMessagesStore = isSyncEnabled()
-      ? createSyncedAgentMessagesStore(this.baseAgentMessagesStore)
-      : this.baseAgentMessagesStore;
-    AgentMessagesRepository.setStore(this.agentMessagesStore);
-
-    logger.main.info('[RepositoryManager] Sync reinitialization complete, sync enabled:', isSyncEnabled());
-
-    // Also reinitialize tracker sync for all open workspaces
-    // Tracker sync requires a workspace path (for project identity via git remote)
-    for (const state of windowStates.values()) {
-      if (state.workspacePath) {
-        initializeTrackerSync(state.workspacePath).catch(err => {
-          logger.main.error('[RepositoryManager] Failed to initialize tracker sync for workspace:', err);
-        });
+    const operation = (async () => {
+      if (
+        !ownership.isCurrent() ||
+        !this.initialized ||
+        !this.baseSessionStore ||
+        !this.baseAgentMessagesStore
+      ) {
+        logger.main.warn('[RepositoryManager] Ignoring stale sync reinitialization request');
+        return;
       }
-    }
+
+      logger.main.info('[RepositoryManager] Reinitializing sync with new configuration...');
+      const baseSessionStore = this.baseSessionStore;
+      const baseAgentMessagesStore = this.baseAgentMessagesStore;
+      const lifetimeStillCurrent = () => (
+        ownership.isCurrent() &&
+        this.initialized &&
+        this.baseSessionStore === baseSessionStore &&
+        this.baseAgentMessagesStore === baseAgentMessagesStore
+      );
+      const candidateSessionStore = await reinitializeSync(
+        baseSessionStore,
+        lifetimeStillCurrent,
+      );
+
+      // Another outer reinitialize or cleanup may have arrived while provider
+      // construction was awaiting. Only the exact still-current manager
+      // generation may publish globally or trigger tracker follow-up.
+      if (
+        !lifetimeStillCurrent()
+      ) {
+        return;
+      }
+
+      const candidateAgentStore = isSyncEnabled()
+        ? createSyncedAgentMessagesStore(baseAgentMessagesStore)
+        : baseAgentMessagesStore;
+      this.sessionStore = candidateSessionStore;
+      this.agentMessagesStore = candidateAgentStore;
+      AISessionsRepository.setStore(candidateSessionStore);
+      AgentMessagesRepository.setStore(candidateAgentStore);
+
+      logger.main.info('[RepositoryManager] Sync reinitialization complete, sync enabled:', isSyncEnabled());
+
+      for (const state of windowStates.values()) {
+        if (!lifetimeStillCurrent()) return;
+        if (state.workspacePath) {
+          initializeTrackerSync(state.workspacePath).catch(err => {
+            logger.main.error('[RepositoryManager] Failed to initialize tracker sync for workspace:', err);
+          });
+        }
+      }
+    })();
+    const outcome = await Promise.race([
+      operation.then(
+        () => ({ kind: 'complete' as const }),
+        (error) => ({ kind: 'error' as const, error }),
+      ),
+      ownership.cancelled.then(() => ({ kind: 'cancelled' as const })),
+    ]);
+    if (outcome.kind === 'error') throw outcome.error;
+    if (ownership.isCurrent()) this.activeLifecycleCancellation = null;
   }
 
   /**
    * Clean up resources
    */
   async cleanup(): Promise<void> {
+    // Cancel in-flight initialization synchronously. Cleanup never waits
+    // behind an external/crypto/provider await owned by an obsolete request.
+    const ownership = this.beginLifecycleOwnership();
+    this.initialized = false;
     // Unsubscribe from auth state changes
     if (this.authListenerUnsubscribe) {
       this.authListenerUnsubscribe();
       this.authListenerUnsubscribe = null;
     }
 
-    // Shutdown sync first
+    // Repository ownership is revoked before the first await. A disposed old
+    // decorator can therefore never remain globally reachable merely because
+    // its replacement initialization does not settle.
     shutdownTrackerSync();
-    shutdownSync();
-
-    if (this.sessionStore) {
-      AISessionsRepository.clearStore();
-    }
-    if (this.sessionFileStore) {
-      SessionFilesRepository.clearStore();
-    }
-    if (this.agentMessagesStore) {
-      AgentMessagesRepository.clearStore();
-    }
+    if (this.sessionStore) AISessionsRepository.clearStore();
+    if (this.sessionFileStore) SessionFilesRepository.clearStore();
+    if (this.agentMessagesStore) AgentMessagesRepository.clearStore();
     TranscriptMigrationRepository.clearService();
     this.sessionStore = null;
     this.sessionFileStore = null;
@@ -395,8 +454,18 @@ class RepositoryManager {
     this.hostControlReceiptsStore = null;
     configureNativeWinnerNotificationStore(null);
     this.sessionWakeupsStore = null;
-    this.initialized = false;
     this.wasAuthenticated = false;
+
+    const shutdown = shutdownSync();
+    const outcome = await Promise.race([
+      shutdown.then(
+        () => ({ kind: 'complete' as const }),
+        (error) => ({ kind: 'error' as const, error }),
+      ),
+      ownership.cancelled.then(() => ({ kind: 'cancelled' as const })),
+    ]);
+    if (outcome.kind === 'error') throw outcome.error;
+    if (ownership.isCurrent()) this.activeLifecycleCancellation = null;
   }
 }
 

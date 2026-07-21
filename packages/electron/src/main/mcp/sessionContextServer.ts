@@ -9,12 +9,18 @@
  */
 
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { randomUUID } from "crypto";
 import {
   AISessionsRepository,
   SessionFilesRepository,
 } from "@nimbalyst/runtime";
 import type { SessionMeta } from "@nimbalyst/runtime";
 import { assertNoReservedAttentionSupervisorMetadataMutation } from "../services/AttentionSupervisorAuthorization";
+import {
+  SessionVisibilityControlService,
+  canonicalizeSessionWorkspacePath,
+  toSessionVisibilityErrorPayload,
+} from "../services/SessionVisibilityControlService";
 
 // ─── Utilities ──────────────────────────────────────────────────────
 
@@ -51,6 +57,28 @@ function stripWorkspacePath(filePath: string, workspacePath: string): string {
     return relative.startsWith("/") ? relative.slice(1) : relative;
   }
   return filePath;
+}
+
+function sessionMatchesWorkspace(
+  session: { workspacePath?: string } | null,
+  workspacePath: string,
+): boolean {
+  if (!session?.workspacePath || !workspacePath) return false;
+  return canonicalizeSessionWorkspacePath(session.workspacePath) ===
+    canonicalizeSessionWorkspacePath(workspacePath);
+}
+
+async function loadAuthorizedReadTarget(
+  targetSessionId: string,
+  actorSessionId: string,
+  workspacePath: string,
+) {
+  const actor = await AISessionsRepository.get(actorSessionId);
+  if (!sessionMatchesWorkspace(actor, workspacePath)) return null;
+  const target = targetSessionId === actorSessionId
+    ? actor
+    : await AISessionsRepository.get(targetSessionId);
+  return sessionMatchesWorkspace(target, workspacePath) ? target : null;
 }
 
 // ─── Last-assistant-response aggregation ────────────────────────────
@@ -115,9 +143,13 @@ async function handleGetSessionSummary(
 ): Promise<string> {
   const sessionId = targetSessionId || currentSessionId;
 
-  const session = await AISessionsRepository.get(sessionId);
+  const session = await loadAuthorizedReadTarget(
+    sessionId,
+    currentSessionId,
+    workspaceId,
+  );
   if (!session) {
-    return `Error: Session ${sessionId} not found`;
+    return "Error: TARGET_NOT_FOUND";
   }
 
   // Phase 3 of canonical-transcript-deprecation: ai_transcript_events is
@@ -157,12 +189,17 @@ async function handleGetSessionSummary(
   lines.push(
     `Created: ${formatDate(session.createdAt)} | Last active: ${formatDate(session.updatedAt)}`
   );
+  lines.push(`Pinned: ${session.isPinned === true ? "yes" : "no"}`);
 
   if (session.parentSessionId) {
     const parent = await AISessionsRepository.get(session.parentSessionId);
-    if (parent) {
-      lines.push(`Workstream: "${parent.title || "Untitled"}"`);
+    if (sessionMatchesWorkspace(parent, workspaceId)) {
+      lines.push(`Workstream: "${parent!.title || "Untitled"}" (${parent!.id})`);
+    } else {
+      lines.push("Workstream: none");
     }
+  } else {
+    lines.push("Workstream: none");
   }
 
   const metadata = session.metadata as Record<string, unknown> | undefined;
@@ -209,22 +246,24 @@ async function handleGetWorkstreamOverview(
   currentSessionId: string,
   workspaceId: string
 ): Promise<string> {
+  const actor = await loadAuthorizedReadTarget(
+    currentSessionId,
+    currentSessionId,
+    workspaceId,
+  );
+  if (!actor) return "Error: TARGET_NOT_FOUND";
   let parentId = workstreamId;
 
   if (!parentId) {
-    const currentSession = await AISessionsRepository.get(currentSessionId);
-    if (!currentSession) {
-      return "Error: Current session not found";
-    }
-    parentId = currentSession.parentSessionId ?? undefined;
+    parentId = actor.parentSessionId ?? undefined;
     if (!parentId) {
       return "This session is not part of a workstream (no parent session). Use get_session_summary to view the current session.";
     }
   }
 
-  const parent = await AISessionsRepository.get(parentId);
+  const parent = await loadAuthorizedReadTarget(parentId, currentSessionId, workspaceId);
   if (!parent) {
-    return `Error: Workstream session ${parentId} not found`;
+    return "Error: TARGET_NOT_FOUND";
   }
 
   const { database } = await import("../database/PGLiteDatabaseWorker");
@@ -318,6 +357,12 @@ async function handleListRecentSessions(
   includeArchived: boolean,
   searchField: "title" | "content" | "both" = "both"
 ): Promise<string> {
+  const actor = await loadAuthorizedReadTarget(
+    currentSessionId,
+    currentSessionId,
+    workspaceId,
+  );
+  if (!actor) return "Error: TARGET_NOT_FOUND";
   let sessions: SessionMeta[];
 
   const options = { includeArchived };
@@ -366,7 +411,9 @@ async function handleListRecentSessions(
         Array.from(parentIds)
       );
       for (const p of parents) {
-        parentTitles.set(p.id, p.title || "Untitled");
+        if (sessionMatchesWorkspace(p, workspaceId)) {
+          parentTitles.set(p.id, p.title || "Untitled");
+        }
       }
     } catch {
       // Continue without parent titles
@@ -428,14 +475,19 @@ async function handleListRecentSessions(
 
     const meta: string[] = [];
     meta.push(`Provider: ${s.provider}`);
+    meta.push(`Pinned: ${s.isPinned === true ? "yes" : "no"}`);
     if (s.sessionType && s.sessionType !== "session") {
       meta.push(`Type: ${s.sessionType}`);
     }
     if (s.parentSessionId) {
       const parentTitle = parentTitles.get(s.parentSessionId);
       if (parentTitle) {
-        meta.push(`Workstream: "${parentTitle}"`);
+        meta.push(`Workstream: "${parentTitle}" (${s.parentSessionId})`);
+      } else {
+        meta.push(`Workstream: ${s.parentSessionId} (title unavailable)`);
       }
+    } else {
+      meta.push("Workstream: none");
     }
     if (s.phase) {
       meta.push(`Phase: ${s.phase}`);
@@ -454,9 +506,13 @@ async function handleGetWorkstreamEditedFiles(
   currentSessionId: string,
   workspaceId: string
 ): Promise<string> {
-  const currentSession = await AISessionsRepository.get(currentSessionId);
+  const currentSession = await loadAuthorizedReadTarget(
+    currentSessionId,
+    currentSessionId,
+    workspaceId,
+  );
   if (!currentSession) {
-    return "Error: Current session not found";
+    return "Error: TARGET_NOT_FOUND";
   }
 
   const parentId = currentSession.parentSessionId;
@@ -594,6 +650,48 @@ async function handleScheduleWakeup(args: {
 
 /** Tool schemas exposed by the session-context surface. */
 export const SESSION_CONTEXT_TOOL_SCHEMAS = [
+  {
+    name: "session_set_pinned",
+    description:
+      "Set a session's pinned visibility state in the caller's current workspace. Idempotent; returns authoritative before/after state and an audit receipt.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1, maxLength: 200 },
+        pinned: { type: "boolean" },
+      },
+      required: ["sessionId", "pinned"],
+    },
+  },
+  {
+    name: "session_set_workstream",
+    description:
+      "Move an ordinary session into an existing workstream container in the caller's current workspace, or remove membership with null. Never creates a workstream or changes workspace/worktree binding.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1, maxLength: 200 },
+        workstreamId: { type: ["string", "null"], minLength: 1, maxLength: 200 },
+      },
+      required: ["sessionId", "workstreamId"],
+    },
+  },
+  {
+    name: "session_rename",
+    description:
+      "Set the exact target session's display name in the caller's current workspace. Does not rename a worktree, workstream parent, blitz parent, repository, or branch.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1, maxLength: 200 },
+        name: { type: "string", minLength: 1, maxLength: 100 },
+      },
+      required: ["sessionId", "name"],
+    },
+  },
   {
     name: "get_session_summary",
     description:
@@ -745,6 +843,112 @@ export const SESSION_CONTEXT_TOOL_SCHEMAS = [
   },
 ];
 
+export const SESSION_VISIBILITY_TOOL_NAMES = [
+  'session_set_pinned',
+  'session_set_workstream',
+  'session_rename',
+] as const;
+
+const SESSION_VISIBILITY_TOOL_NAME_SET = new Set<string>(SESSION_VISIBILITY_TOOL_NAMES);
+
+/** OpenAI function-calling schemas for extension-agent hosts. The host must
+ * still supply its own bound principal/workspace to the dispatcher below. */
+export function getSessionVisibilityOpenAITools() {
+  return SESSION_CONTEXT_TOOL_SCHEMAS
+    .filter((tool) => SESSION_VISIBILITY_TOOL_NAME_SET.has(tool.name))
+    .map((tool) => ({
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      },
+    }));
+}
+
+export interface HostBoundSessionVisibilityAuthority {
+  actorSessionId: string;
+  workspacePath: string;
+}
+
+export function deriveHostBoundSessionVisibilityAuthority(
+  actorSessionId: string | undefined,
+  boundState: { workspacePath?: string } | null | undefined,
+  _untrustedWorkspacePath?: string,
+): Readonly<HostBoundSessionVisibilityAuthority> | null {
+  if (!actorSessionId || !boundState?.workspacePath) return null;
+  return Object.freeze({
+    actorSessionId,
+    // Preserve the host/database spelling for operational lookups. The
+    // service computes a separate normalized identity for equality checks.
+    workspacePath: boundState.workspacePath.trim(),
+  });
+}
+
+/** Extension/broker-safe visibility dispatcher. Backend tool arguments cannot
+ * replace the host-bound actor or canonical workspace. */
+export async function dispatchHostBoundSessionVisibilityTool(
+  name: string,
+  args: Record<string, any> | undefined,
+  authority: Readonly<Partial<HostBoundSessionVisibilityAuthority>> | null | undefined,
+) {
+  const toolName = name.replace(/^mcp__nimbalyst-[a-z-]+__/, '');
+  if (!SESSION_VISIBILITY_TOOL_NAME_SET.has(toolName)) {
+    throw new Error(`Unknown session visibility tool: ${name}`);
+  }
+  return dispatchVisibilityControl(
+    toolName as typeof SESSION_VISIBILITY_TOOL_NAMES[number],
+    args,
+    typeof authority?.actorSessionId === 'string' ? authority.actorSessionId : '',
+    typeof authority?.workspacePath === 'string' && authority.workspacePath.trim()
+      ? authority.workspacePath.trim()
+      : '',
+  );
+}
+
+async function dispatchVisibilityControl(
+  toolName: "session_set_pinned" | "session_set_workstream" | "session_rename",
+  args: Record<string, any> | undefined,
+  actorSessionId: string,
+  workspacePath: string,
+): Promise<{ content: Array<{ type: string; text: string }>; isError: boolean }> {
+  const service = SessionVisibilityControlService.getInstance();
+  const allowedKeys = toolName === 'session_set_pinned'
+    ? new Set(['sessionId', 'pinned'])
+    : toolName === 'session_set_workstream'
+      ? new Set(['sessionId', 'workstreamId'])
+      : new Set(['sessionId', 'name']);
+  const requestArgumentsValid = Boolean(
+    args &&
+    typeof args === 'object' &&
+    !Array.isArray(args) &&
+    Object.keys(args).every((key) => allowedKeys.has(key)),
+  );
+  const context = {
+    actorSessionId,
+    workspacePath,
+    source: 'mcp-host' as const,
+    correlationId: `mcp-${randomUUID()}`,
+    requestArgumentsValid,
+  };
+  try {
+    const receipt = toolName === 'session_set_pinned'
+      ? await service.setPinned(context, args?.sessionId, args?.pinned)
+      : toolName === 'session_set_workstream'
+        ? await service.setWorkstream(context, args?.sessionId, args?.workstreamId)
+        : await service.rename(context, args?.sessionId, args?.name);
+    return {
+      content: [{ type: 'text', text: JSON.stringify(receipt) }],
+      isError: false,
+    };
+  } catch (error) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify(toSessionVisibilityErrorPayload(error)) }],
+      isError: true,
+    };
+  }
+}
+
 /**
  * Dispatch a session-context tool call and return the MCP `{content, isError}`
  * shape. `name` may carry the `mcp__nimbalyst-session-context__` (or `-host`)
@@ -761,6 +965,11 @@ export async function dispatchSessionContextTool(
 
   try {
     switch (toolName) {
+      case "session_set_pinned":
+      case "session_set_workstream":
+      case "session_rename":
+        return dispatchVisibilityControl(toolName, args, aiSessionId, workspaceId);
+
       case "get_session_summary": {
         const result = await handleGetSessionSummary(
           args?.sessionId as string | undefined,
@@ -808,7 +1017,7 @@ export async function dispatchSessionContextTool(
         );
         return {
           content: [{ type: "text", text: result }],
-          isError: false,
+          isError: result.startsWith("Error:"),
         };
       }
 

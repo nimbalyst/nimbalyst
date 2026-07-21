@@ -221,8 +221,9 @@ describe('McpConfigService', () => {
     });
 
     describe('Bearer-token plumbing (Issue #146)', () => {
-      it('emits Authorization header on every nimbalyst-* server when mcpAuthToken is set', async () => {
+      it('issues one actor/workspace-scoped credential for every internal server config', async () => {
         mockDeps.mcpAuthToken = 'token-abc123';
+        mockDeps.mcpSessionCredentialIssuer = vi.fn(() => 'scoped-session-token');
 
         service = new McpConfigService(mockDeps);
         const config = await service.getMcpServersConfig({
@@ -230,22 +231,25 @@ describe('McpConfigService', () => {
           workspacePath: '/test/workspace',
         });
 
-        // Unified-server endpoints (core / host / trackers / situational) on the
-        // shared port, plus the standalone extension-dev server.
+        expect(mockDeps.mcpSessionCredentialIssuer).toHaveBeenCalledTimes(1);
+        expect(mockDeps.mcpSessionCredentialIssuer).toHaveBeenCalledWith({
+          actorSessionId: 'session123',
+          workspacePath: '/test/workspace',
+        });
         expect(config['nimbalyst'].headers).toEqual({
-          Authorization: 'Bearer token-abc123',
+          Authorization: 'Bearer scoped-session-token',
         });
         expect(config['nimbalyst-host'].headers).toEqual({
-          Authorization: 'Bearer token-abc123',
+          Authorization: 'Bearer scoped-session-token',
         });
         expect(config['nimbalyst-trackers'].headers).toEqual({
-          Authorization: 'Bearer token-abc123',
+          Authorization: 'Bearer scoped-session-token',
         });
         expect(config['nimbalyst-situational'].headers).toEqual({
-          Authorization: 'Bearer token-abc123',
+          Authorization: 'Bearer scoped-session-token',
         });
         expect(config['nimbalyst-extension-dev'].headers).toEqual({
-          Authorization: 'Bearer token-abc123',
+          Authorization: 'Bearer scoped-session-token',
         });
       });
 

@@ -106,7 +106,11 @@ import {
 // MCP consolidation Phase 7: sessionContextServer / settingsServer no longer run
 // as standalone HTTP servers; their tool dispatch + schemas are imported by the
 // unified httpServer instead. Nothing to start/shutdown from here.
-import { generateMcpAuthToken, getMcpAuthToken } from './mcp/mcpAuth';
+import {
+  generateMcpAuthToken,
+  getMcpAuthToken,
+  issueMcpSessionCredential,
+} from './mcp/mcpAuth';
 import {
   registerNimAssetSchemeAsPrivileged,
   registerNimAssetProtocolHandler,
@@ -1568,7 +1572,7 @@ app.whenReady().then(async () => {
     registerWindowHandlers();
     registerEditorStateHandlers();
     await registerHistoryHandlers();
-    await registerSessionHandlers();
+    await registerSessionHandlers({ userDataPath: app.getPath('userData') });
     await registerSessionStateHandlers();
     await registerThemeHandlers();
     setupWorkspaceManagerHandlers();
@@ -2211,7 +2215,11 @@ app.whenReady().then(async () => {
     // Issue #146: required so a malicious page in the user's browser can't
     // invoke MCP tools against the localhost ports.
     const mcpAuthToken = generateMcpAuthToken();
-    configureMcpServers({ mcpAuthToken });
+    configureMcpServers({
+      mcpAuthToken,
+      mcpSessionCredentialIssuer: ({ actorSessionId, workspacePath }) =>
+        issueMcpSessionCredential(actorSessionId, workspacePath),
+    });
 
     // Test-only IPC handler: lets E2E tests verify the bearer token is
     // enforced by the MCP servers. Mirrors the pattern used for

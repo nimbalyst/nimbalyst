@@ -8,6 +8,7 @@ import {
   settleTerminalAttentionBeforeContinuation,
   type TerminalAttentionSettlementArgs,
 } from './terminalAttentionSettlement';
+import { terminateHostBoundAiSession } from './aiServiceQueuedChainSettlement';
 
 export interface SettleOrphanedPromptTurnArgs {
   ownership: PendingPromptActionOwnership;
@@ -18,14 +19,19 @@ export interface SettleOrphanedPromptTurnArgs {
 export interface SettleOrphanedPromptTurnDeps {
   settleTerminal: typeof settleTerminalAttentionBeforeContinuation;
   ownsCurrentGeneration: (ownership: PendingPromptActionOwnership) => boolean;
-  endSession: (sessionId: string, attentionGeneration: string) => Promise<void>;
+  terminateSession: (ownership: PendingPromptActionOwnership) => Promise<boolean>;
 }
 
 const defaultDeps: SettleOrphanedPromptTurnDeps = {
   settleTerminal: settleTerminalAttentionBeforeContinuation,
   ownsCurrentGeneration: promptActionOwnsCurrentGeneration,
-  endSession: (sessionId, attentionGeneration) =>
-    getSessionStateManager().endSession(sessionId, { attentionGeneration }),
+  terminateSession: (ownership) => terminateHostBoundAiSession(
+    ownership.sessionId,
+    () => getSessionStateManager().endSession(ownership.sessionId, {
+      attentionGeneration: ownership.attentionGeneration!,
+    }),
+    () => promptActionOwnsCurrentGeneration(ownership),
+  ),
 };
 
 /**
@@ -62,8 +68,7 @@ export async function settleOrphanedPromptTurn(
       ) {
         return false;
       }
-      await deps.endSession(ownership.sessionId, ownership.attentionGeneration!);
-      return true;
+      return deps.terminateSession(ownership);
     },
   );
 

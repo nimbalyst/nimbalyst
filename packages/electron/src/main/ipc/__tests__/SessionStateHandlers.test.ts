@@ -1,5 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
-import { pushExecutionStateToMobile } from '../SessionStateHandlers';
+
+const terminalMocks = vi.hoisted(() => ({
+  revoke: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../mcp/httpServer', () => ({
+  revokeHostBoundMcpAuthority: terminalMocks.revoke,
+}));
+import {
+  pushExecutionStateToMobile,
+  registerHostBoundSessionEndHandler,
+} from '../SessionStateHandlers';
 import type { SessionStateEvent } from '@nimbalyst/runtime/ai/server/types/SessionState';
 
 function makeEvent(type: SessionStateEvent['type'], sessionId = 's1'): SessionStateEvent {
@@ -56,5 +67,60 @@ describe('pushExecutionStateToMobile', () => {
     pushExecutionStateToMobile(makeEvent('session:completed'), provider as any);
     expect(provider.pushChange).toHaveBeenCalledTimes(1);
     expect(provider.pushChange.mock.calls[0][1].metadata.isExecuting).toBe(false);
+  });
+});
+
+describe('explicit host-bound session end registration', () => {
+  it('routes the real registered renderer terminal callback through the ordered capability boundary', async () => {
+    const order: string[] = [];
+    terminalMocks.revoke.mockImplementationOnce(async () => { order.push('revoked'); });
+    const state = { attentionGeneration: 'current-turn' };
+    const stateManager = {
+      getSessionState: vi.fn(() => state),
+      endSession: vi.fn(async () => { order.push('ended'); }),
+    };
+    let handler!: (_event: unknown, sessionId: string) => Promise<unknown>;
+    const register = vi.fn((channel: string, callback: typeof handler) => {
+      expect(channel).toBe('ai-session-state:end');
+      handler = callback;
+    });
+
+    registerHostBoundSessionEndHandler(stateManager as any, register as any);
+    await expect(handler({}, 'renderer-ended-session')).resolves.toEqual({ success: true });
+    expect(stateManager.endSession).toHaveBeenCalledWith('renderer-ended-session', {
+      attentionGeneration: 'current-turn',
+    });
+    expect(terminalMocks.revoke).toHaveBeenCalledWith('renderer-ended-session');
+    expect(order).toEqual(['revoked', 'ended']);
+  });
+
+  it('does not let delayed generation A revocation terminate replacement B', async () => {
+    terminalMocks.revoke.mockClear();
+    let releaseRevocation!: () => void;
+    terminalMocks.revoke.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releaseRevocation = resolve; }),
+    );
+    let state = { attentionGeneration: 'turn-a' };
+    const stateManager = {
+      getSessionState: vi.fn(() => state),
+      endSession: vi.fn(async () => undefined),
+    };
+    let handler!: (_event: unknown, sessionId: string) => Promise<unknown>;
+    registerHostBoundSessionEndHandler(
+      stateManager as any,
+      ((_channel: string, callback: typeof handler) => { handler = callback; }) as any,
+    );
+
+    const staleEnd = handler({}, 'renderer-ended-session');
+    await vi.waitFor(() => expect(terminalMocks.revoke).toHaveBeenCalled());
+    state = { attentionGeneration: 'turn-b' };
+    releaseRevocation();
+
+    await expect(staleEnd).resolves.toEqual({
+      success: false,
+      error: 'session turn is no longer active',
+    });
+    expect(stateManager.endSession).not.toHaveBeenCalled();
+    expect(state).toEqual({ attentionGeneration: 'turn-b' });
   });
 });

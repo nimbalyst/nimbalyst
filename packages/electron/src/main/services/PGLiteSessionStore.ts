@@ -3,6 +3,8 @@
  */
 
 import { toMillis } from '../utils/timestampUtils';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
 import {
   computeSessionPhaseTransition,
@@ -19,6 +21,10 @@ import type {
   ChatSession,
   AgentMessage
 } from '@nimbalyst/runtime';
+import type {
+  SessionSyncPublicationObligation,
+  SessionVisibilityStoreMutation,
+} from '@nimbalyst/runtime/ai/adapters/sessionStore';
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
@@ -27,6 +33,9 @@ type PGliteLike = {
   transaction?<T = any>(
     statements: Array<{ sql: string; params?: any[]; expectedRowCount?: 1 }>,
   ): Promise<Array<{ rows: T[] }>>;
+  getEngine?(): 'pglite' | 'sqlite';
+  /** Present on the production SQLite adapter; used only for dialect selection. */
+  searchAgentMessages?: (...args: any[]) => unknown;
   searchTranscriptEventSessions?(
     query: string,
     opts?: {
@@ -45,6 +54,28 @@ type PGliteLike = {
 
 type EnsureReadyFn = () => Promise<void>;
 
+/**
+ * Claim the canonical commit-time visibility authority in the active session
+ * database. The filesystem owner record is discovery/recovery metadata only;
+ * this row is the sole nonce consulted by protected mutation statements.
+ */
+export async function claimVisibilityStorageDatabaseFence(
+  db: Pick<PGliteLike, 'query'>,
+  rootIdentity: string,
+  ownerId: string,
+): Promise<void> {
+  await db.query(`CREATE TABLE IF NOT EXISTS session_visibility_storage_fence (
+    root_identity TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL
+  )`);
+  await db.query(
+    `INSERT INTO session_visibility_storage_fence (root_identity, owner_id)
+     VALUES ($1, $2)
+     ON CONFLICT (root_identity) DO UPDATE SET owner_id = EXCLUDED.owner_id`,
+    [rootIdentity, ownerId],
+  );
+}
+
 function buildSessionArchiveFilter(includeArchived: boolean, sessionAlias = 's', worktreeAlias = 'w'): string {
   if (includeArchived) {
     return '';
@@ -57,6 +88,57 @@ function buildSessionArchiveFilter(includeArchived: boolean, sessionAlias = 's',
 // Shared with other JSON-typed column readers; see ../utils/jsonColumn.ts
 // for the metadata-corruption postmortem.
 const normalizeJsonObject = parseJsonObjectColumn;
+const VISIBILITY_MUTATION_LEDGER_KEY = '__nimbalystVisibilityMutationIds';
+const SYNC_PUBLICATION_OBLIGATION_KEY = '__nimbalystSyncPublicationObligation';
+const INTERNAL_SYNC_PUBLICATION = Symbol('nimbalystSyncPublicationObligation');
+const HOST_ONLY_METADATA_KEYS = [
+  VISIBILITY_MUTATION_LEDGER_KEY,
+  SYNC_PUBLICATION_OBLIGATION_KEY,
+] as const;
+
+function isSQLiteStoreAdapter(db: PGliteLike): boolean {
+  return db.getEngine?.() === 'sqlite' || typeof db.searchAgentMessages === 'function';
+}
+
+function publicSessionMetadata(value: unknown): Record<string, unknown> {
+  const metadata = { ...normalizeJsonObject(value) };
+  for (const key of HOST_ONLY_METADATA_KEYS) delete metadata[key];
+  return metadata;
+}
+
+function visibilityMutationRecords(value: unknown): Record<string, string | null> {
+  const ledger = normalizeJsonObject(value)[VISIBILITY_MUTATION_LEDGER_KEY];
+  if (Array.isArray(ledger)) {
+    return Object.fromEntries(
+      ledger.filter((id): id is string => typeof id === 'string').map((id) => [id, null]),
+    );
+  }
+  if (!ledger || typeof ledger !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(ledger).filter((entry): entry is [string, string] => (
+      typeof entry[0] === 'string' && typeof entry[1] === 'string'
+    )),
+  );
+}
+
+function normalizeWorkspaceComparisonPath(value: string): string {
+  const resolved = path.resolve(value.trim()).replace(/\\/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function visibilityMutationFingerprint(
+  sessionId: string,
+  mutation: SessionVisibilityStoreMutation,
+): string {
+  return createHash('sha256').update(JSON.stringify({
+    sessionId,
+    operation: mutation.operation,
+    workspaceComparisonPath: mutation.workspaceComparisonPath,
+    expected: mutation.expected,
+    after: mutation.after,
+    destinationSessionId: mutation.destinationSessionId ?? null,
+  })).digest('hex');
+}
 
 /**
  * Parse a TEXT column that's supposed to hold JSON back into the value the
@@ -511,7 +593,7 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
       createdAt: toMillis(row.created_at)!,
       // Sync clients (mobile, peer devices) expect a parsed object here.
       // See `parseJsonColumn` for the SQLite/PGLite shape difference.
-      metadata: normalizeJsonObject(row.metadata),
+      metadata: publicSessionMetadata(row.metadata),
       messages: undefined as SyncedMessage[] | undefined,
     };
   });
@@ -661,7 +743,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
     }
   };
 
-  return {
+  const store: SessionStore = {
     async ensureReady(): Promise<void> {
       await ensureReady();
     },
@@ -678,6 +760,30 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       const updatedAt = new Date(updatedAtMs);
 
       const branchedAt = payload.branchedAt ? new Date(payload.branchedAt) : null;
+      const conflictMetadata = isSQLiteStoreAdapter(db)
+        ? `json_patch(EXCLUDED.metadata, json_object(
+            '${VISIBILITY_MUTATION_LEDGER_KEY}', json_extract(ai_sessions.metadata, '$.${VISIBILITY_MUTATION_LEDGER_KEY}'),
+            '${SYNC_PUBLICATION_OBLIGATION_KEY}', COALESCE(
+              json_extract(EXCLUDED.metadata, '$.${SYNC_PUBLICATION_OBLIGATION_KEY}'),
+              json_extract(ai_sessions.metadata, '$.${SYNC_PUBLICATION_OBLIGATION_KEY}')
+            )
+          ))`
+        : `(EXCLUDED.metadata::jsonb - '${VISIBILITY_MUTATION_LEDGER_KEY}' - '${SYNC_PUBLICATION_OBLIGATION_KEY}') ||
+          CASE WHEN ai_sessions.metadata ? '${VISIBILITY_MUTATION_LEDGER_KEY}'
+            THEN jsonb_build_object('${VISIBILITY_MUTATION_LEDGER_KEY}', ai_sessions.metadata -> '${VISIBILITY_MUTATION_LEDGER_KEY}')
+            ELSE '{}'::jsonb END ||
+          CASE WHEN EXCLUDED.metadata ? '${SYNC_PUBLICATION_OBLIGATION_KEY}'
+            THEN jsonb_build_object('${SYNC_PUBLICATION_OBLIGATION_KEY}', EXCLUDED.metadata -> '${SYNC_PUBLICATION_OBLIGATION_KEY}')
+            WHEN ai_sessions.metadata ? '${SYNC_PUBLICATION_OBLIGATION_KEY}'
+            THEN jsonb_build_object('${SYNC_PUBLICATION_OBLIGATION_KEY}', ai_sessions.metadata -> '${SYNC_PUBLICATION_OBLIGATION_KEY}')
+            ELSE '{}'::jsonb END`;
+      const publication = (payload as CreateSessionPayload & {
+        [INTERNAL_SYNC_PUBLICATION]?: SessionSyncPublicationObligation;
+      })[INTERNAL_SYNC_PUBLICATION];
+      const insertMetadata = {
+        ...publicSessionMetadata((payload as any).metadata ?? {}),
+        ...(publication ? { [SYNC_PUBLICATION_OBLIGATION_KEY]: publication } : {}),
+      };
 
       await db.query(
         `INSERT INTO ai_sessions (
@@ -694,13 +800,10 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           $21, $22, $23
         )
         ON CONFLICT (id) DO UPDATE SET
-          workspace_id = EXCLUDED.workspace_id,
           file_path = EXCLUDED.file_path,
           worktree_id = EXCLUDED.worktree_id,
-          parent_session_id = EXCLUDED.parent_session_id,
           provider = EXCLUDED.provider,
           model = EXCLUDED.model,
-          title = EXCLUDED.title,
           session_type = EXCLUDED.session_type,
           mode = EXCLUDED.mode,
           agent_role = EXCLUDED.agent_role,
@@ -709,8 +812,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           provider_config = EXCLUDED.provider_config,
           provider_session_id = EXCLUDED.provider_session_id,
           draft_input = EXCLUDED.draft_input,
-          metadata = EXCLUDED.metadata,
-          has_been_named = EXCLUDED.has_been_named,
+          metadata = ${conflictMetadata},
           updated_at = EXCLUDED.updated_at,
           branched_from_session_id = EXCLUDED.branched_from_session_id,
           branch_point_message_id = EXCLUDED.branch_point_message_id,
@@ -733,7 +835,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           payload.providerConfig ?? null,
           payload.providerSessionId ?? null,
           null,
-          (payload as any).metadata ?? {},
+          insertMetadata,
           (payload as any).hasBeenNamed ?? false,
           createdAt,
           updatedAt,
@@ -745,6 +847,108 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
 
       // TODO: Debug logging - uncomment if needed
       // console.log('[PGLiteSessionStore] Session created successfully in database');
+    },
+
+    async createWithSyncPublicationObligation(
+      payload: CreateSessionPayload,
+      obligation: SessionSyncPublicationObligation,
+    ): Promise<void> {
+      const internalPayload = {
+        ...payload,
+        [INTERNAL_SYNC_PUBLICATION]: {
+          ...obligation,
+          sessionId: payload.id,
+          workspaceId: payload.workspaceId,
+        },
+      } as CreateSessionPayload;
+      await store.create(internalPayload);
+    },
+
+    async listSyncPublicationObligations(
+      limit: number,
+    ): Promise<SessionSyncPublicationObligation[]> {
+      await ensureReady();
+      const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+      const predicate = isSQLiteStoreAdapter(db)
+        ? `CASE WHEN json_valid(metadata) THEN
+             json_type(metadata, '$.${SYNC_PUBLICATION_OBLIGATION_KEY}') = 'object'
+             AND json_type(metadata, '$.${SYNC_PUBLICATION_OBLIGATION_KEY}.obligationId') = 'text'
+             AND json_type(metadata, '$.${SYNC_PUBLICATION_OBLIGATION_KEY}.workspaceId') = 'text'
+             AND json_type(metadata, '$.${SYNC_PUBLICATION_OBLIGATION_KEY}.createdAt') IN ('integer', 'real')
+           ELSE FALSE END`
+        : `metadata ? '${SYNC_PUBLICATION_OBLIGATION_KEY}'
+           AND jsonb_typeof(metadata -> '${SYNC_PUBLICATION_OBLIGATION_KEY}') = 'object'
+           AND jsonb_typeof(metadata -> '${SYNC_PUBLICATION_OBLIGATION_KEY}' -> 'obligationId') = 'string'
+           AND jsonb_typeof(metadata -> '${SYNC_PUBLICATION_OBLIGATION_KEY}' -> 'workspaceId') = 'string'
+           AND jsonb_typeof(metadata -> '${SYNC_PUBLICATION_OBLIGATION_KEY}' -> 'createdAt') = 'number'`;
+      await db.query(`CREATE TABLE IF NOT EXISTS session_sync_publication_cursor (
+        cursor_name TEXT PRIMARY KEY,
+        last_session_id TEXT NOT NULL
+      )`);
+      const cursorName = 'create-publication-v1';
+      const cursorResult = await db.query<{ last_session_id: string }>(
+        'SELECT last_session_id FROM session_sync_publication_cursor WHERE cursor_name = $1',
+        [cursorName],
+      );
+      const cursor = cursorResult.rows[0]?.last_session_id ?? '';
+      let { rows } = await db.query<{ id: string; metadata: unknown }>(
+        `SELECT id, metadata FROM ai_sessions
+         WHERE id > $1 AND ${predicate}
+         ORDER BY id LIMIT $2`,
+        [cursor, boundedLimit],
+      );
+      if (rows.length === 0 && cursor) {
+        ({ rows } = await db.query<{ id: string; metadata: unknown }>(
+          `SELECT id, metadata FROM ai_sessions
+           WHERE ${predicate}
+           ORDER BY id LIMIT $1`,
+          [boundedLimit],
+        ));
+      }
+      if (rows.length > 0) {
+        await db.query(
+          `INSERT INTO session_sync_publication_cursor (cursor_name, last_session_id)
+           VALUES ($1, $2)
+           ON CONFLICT (cursor_name) DO UPDATE SET last_session_id = EXCLUDED.last_session_id`,
+          [cursorName, rows[rows.length - 1].id],
+        );
+      }
+      return rows.flatMap((row) => {
+        const value = normalizeJsonObject(row.metadata)[SYNC_PUBLICATION_OBLIGATION_KEY];
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+        const candidate = value as Partial<SessionSyncPublicationObligation>;
+        if (
+          typeof candidate.obligationId !== 'string'
+          || typeof candidate.workspaceId !== 'string'
+          || typeof candidate.createdAt !== 'number'
+        ) return [];
+        return [{
+          obligationId: candidate.obligationId.slice(0, 200),
+          sessionId: row.id,
+          workspaceId: candidate.workspaceId,
+          createdAt: candidate.createdAt,
+        }];
+      });
+    },
+
+    async clearSyncPublicationObligation(
+      sessionId: string,
+      obligationId: string,
+    ): Promise<boolean> {
+      await ensureReady();
+      const sql = isSQLiteStoreAdapter(db)
+        ? `UPDATE ai_sessions
+           SET metadata = json_remove(metadata, '$.${SYNC_PUBLICATION_OBLIGATION_KEY}')
+           WHERE id = $1
+             AND json_extract(metadata, '$.${SYNC_PUBLICATION_OBLIGATION_KEY}.obligationId') = $2
+           RETURNING id`
+        : `UPDATE ai_sessions
+           SET metadata = metadata - '${SYNC_PUBLICATION_OBLIGATION_KEY}'
+           WHERE id = $1
+             AND metadata -> '${SYNC_PUBLICATION_OBLIGATION_KEY}' ->> 'obligationId' = $2
+           RETURNING id`;
+      const { rows } = await db.query<{ id: string }>(sql, [sessionId, obligationId]);
+      return rows.length === 1;
     },
 
 
@@ -795,13 +999,15 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             `[PGLiteSessionStore] updateMetadata refused non-object metadata for session ${sessionId}: type=${typeof incoming}, isArray=${Array.isArray(incoming)}`,
           );
         } else {
-          const normalizedIncoming = normalizeSessionPhaseMetadataUpdate(incoming);
+          const normalizedIncoming = { ...normalizeSessionPhaseMetadataUpdate(incoming) };
+          for (const key of HOST_ONLY_METADATA_KEYS) delete normalizedIncoming[key];
           const { rows } = await db.query<{ metadata: unknown }>(
             `SELECT metadata FROM ai_sessions WHERE id = $1`,
             [sessionId],
           );
           const existingMetadata = normalizeJsonObject(rows[0]?.metadata);
           const merged: Record<string, any> = { ...existingMetadata, ...normalizedIncoming };
+          for (const key of HOST_ONLY_METADATA_KEYS) delete merged[key];
           // Record workflow-phase transitions into metadata.activity[] so the
           // session's lifecycle history is self-contained and renderable on the
           // project-graph timeline (see session/sessionPhaseTransition.ts). This
@@ -819,7 +1025,21 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             );
             if (transition.changed) merged.activity = transition.metadata.activity;
           }
-          updates.push(`metadata = $${values.length + 1}`);
+          const parameter = `$${values.length + 1}`;
+          if (isSQLiteStoreAdapter(db)) {
+            updates.push(`metadata = json_patch(${parameter}, json_object(
+              '${VISIBILITY_MUTATION_LEDGER_KEY}', json_extract(metadata, '$.${VISIBILITY_MUTATION_LEDGER_KEY}'),
+              '${SYNC_PUBLICATION_OBLIGATION_KEY}', json_extract(metadata, '$.${SYNC_PUBLICATION_OBLIGATION_KEY}')
+            ))`);
+          } else {
+            updates.push(`metadata = (${parameter}::jsonb - '${VISIBILITY_MUTATION_LEDGER_KEY}' - '${SYNC_PUBLICATION_OBLIGATION_KEY}') ||
+              CASE WHEN metadata ? '${VISIBILITY_MUTATION_LEDGER_KEY}'
+                THEN jsonb_build_object('${VISIBILITY_MUTATION_LEDGER_KEY}', metadata -> '${VISIBILITY_MUTATION_LEDGER_KEY}')
+                ELSE '{}'::jsonb END ||
+              CASE WHEN metadata ? '${SYNC_PUBLICATION_OBLIGATION_KEY}'
+                THEN jsonb_build_object('${SYNC_PUBLICATION_OBLIGATION_KEY}', metadata -> '${SYNC_PUBLICATION_OBLIGATION_KEY}')
+                ELSE '{}'::jsonb END`);
+          }
           values.push(JSON.stringify(merged));
         }
       }
@@ -849,6 +1069,128 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       );
     },
 
+    async applyVisibilityMutation(
+      sessionId: string,
+      mutation: SessionVisibilityStoreMutation,
+    ): Promise<boolean> {
+      await ensureReady();
+      const { rows } = await db.query<any>(
+        `SELECT metadata, is_pinned, parent_session_id, title, has_been_named, workspace_id
+         FROM ai_sessions WHERE id = $1`,
+        [sessionId],
+      );
+      const current = rows[0];
+      if (
+        !current ||
+        normalizeWorkspaceComparisonPath(current.workspace_id) !== mutation.workspaceComparisonPath
+      ) return false;
+
+      const rawMetadata = current.metadata;
+      const existingMetadata = normalizeJsonObject(rawMetadata);
+      const records = visibilityMutationRecords(existingMetadata);
+      const fingerprint = visibilityMutationFingerprint(sessionId, mutation);
+      if (Object.prototype.hasOwnProperty.call(records, mutation.mutationId)) {
+        return records[mutation.mutationId] === fingerprint;
+      }
+      const nextMetadata = {
+        ...existingMetadata,
+        [VISIBILITY_MUTATION_LEDGER_KEY]: { ...records, [mutation.mutationId]: fingerprint },
+      };
+      const sqlite = isSQLiteStoreAdapter(db);
+      const updates: string[] = [];
+      const predicates: string[] = ['id = $1', 'workspace_id = $2'];
+      const values: unknown[] = [sessionId, current.workspace_id];
+      const addValue = (value: unknown): string => {
+        values.push(value);
+        return `$${values.length}`;
+      };
+      const same = (column: string, value: unknown) => {
+        const parameter = addValue(value);
+        predicates.push(sqlite ? `${column} IS ${parameter}` : `${column} IS NOT DISTINCT FROM ${parameter}`);
+      };
+
+      if (mutation.expected.isPinned !== undefined) same('is_pinned', mutation.expected.isPinned);
+      if (mutation.expected.parentSessionId !== undefined) same('parent_session_id', mutation.expected.parentSessionId);
+      if (mutation.expected.title !== undefined) same('title', mutation.expected.title);
+      if (mutation.expected.hasBeenNamed !== undefined) same('has_been_named', mutation.expected.hasBeenNamed);
+      if (mutation.after.isPinned !== undefined) updates.push(`is_pinned = ${addValue(mutation.after.isPinned)}`);
+      if (mutation.after.parentSessionId !== undefined) updates.push(`parent_session_id = ${addValue(mutation.after.parentSessionId)}`);
+      if (mutation.after.title !== undefined) updates.push(`title = ${addValue(mutation.after.title)}`);
+      if (mutation.after.hasBeenNamed !== undefined) updates.push(`has_been_named = ${addValue(mutation.after.hasBeenNamed)}`);
+
+      const oldMetadataValue = sqlite
+        ? (rawMetadata === null || rawMetadata === undefined
+            ? null
+            : typeof rawMetadata === 'string' ? rawMetadata : JSON.stringify(existingMetadata))
+        : (rawMetadata === null || rawMetadata === undefined ? null : JSON.stringify(existingMetadata));
+      const oldMetadataParameter = addValue(oldMetadataValue);
+      predicates.push(sqlite
+        ? `metadata IS ${oldMetadataParameter}`
+        : `metadata IS NOT DISTINCT FROM ${oldMetadataParameter}::jsonb`);
+      const nextMetadataParameter = addValue(JSON.stringify(nextMetadata));
+      updates.push(sqlite
+        ? `metadata = ${nextMetadataParameter}`
+        : `metadata = ${nextMetadataParameter}::jsonb`);
+
+      if (mutation.destinationSessionId) {
+        const destinationId = addValue(mutation.destinationSessionId);
+        const destinationWorkspace = addValue(mutation.workspaceComparisonPath);
+        const destinationComparison = process.platform === 'win32'
+          ? `LOWER(REPLACE(RTRIM(destination.workspace_id, '/\\'), '\\', '/'))`
+          : `RTRIM(destination.workspace_id, '/')`;
+        predicates.push(`EXISTS (
+          SELECT 1 FROM ai_sessions destination
+          WHERE destination.id = ${destinationId}
+            AND ${destinationComparison} = ${destinationWorkspace}
+            AND destination.session_type = 'workstream'
+            AND destination.parent_session_id IS NULL
+            AND destination.worktree_id IS NULL
+            AND (destination.is_archived = FALSE OR destination.is_archived IS NULL)
+        )`);
+      }
+
+      // The canonical physical-root owner nonce participates in the same
+      // statement as the visibility CAS. owner.json is discovery-only, so no
+      // second live-authority fact can diverge between preflight and commit.
+      const storageFence = (mutation as any)[
+        Symbol.for('nimbalyst.visibility-storage-fence')
+      ] as {
+        rootIdentity: string;
+        ownerId: string;
+      } | undefined;
+      if (storageFence) {
+        const fenceRoot = addValue(storageFence.rootIdentity);
+        const fenceOwner = addValue(storageFence.ownerId);
+        predicates.push(`EXISTS (
+          SELECT 1 FROM session_visibility_storage_fence storage_fence
+          WHERE storage_fence.root_identity = ${fenceRoot}
+            AND storage_fence.owner_id = ${fenceOwner}
+        )`);
+      }
+      const result = await db.query<{ applied: number }>(
+        `UPDATE ai_sessions SET ${updates.join(', ')}
+         WHERE ${predicates.join(' AND ')}
+         RETURNING 1 AS applied`,
+        values,
+      );
+      return result.rows.length === 1;
+    },
+
+    async hasVisibilityMutation(
+      sessionId: string,
+      mutationId: string,
+      mutationIdentity?: string,
+    ): Promise<boolean> {
+      await ensureReady();
+      const { rows } = await db.query<{ metadata: unknown }>(
+        'SELECT metadata FROM ai_sessions WHERE id = $1',
+        [sessionId],
+      );
+      const records = visibilityMutationRecords(rows[0]?.metadata);
+      if (!Object.prototype.hasOwnProperty.call(records, mutationId)) return false;
+      return mutationIdentity === undefined || records[mutationId] === mutationIdentity;
+    },
+
     async get(sessionId: string): Promise<ChatSession | null> {
       await ensureReady();
       const { rows } = await db.query<any>(
@@ -872,7 +1214,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       // Parse JSON columns at the boundary so downstream callers (e.g.
       // SessionManager.updateSessionTokenUsage) can safely spread them.
       // See `parseJsonColumn` for the SQLite-vs-PGLite read-shape mismatch.
-      const metadata = normalizeJsonObject(row.metadata);
+      const metadata = publicSessionMetadata(row.metadata);
 
       return {
         id: row.id,
@@ -936,7 +1278,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
 
       return rows.map((row: any) => {
         // Parse JSON columns at the boundary -- see `parseJsonColumn`.
-        const metadata = normalizeJsonObject(row.metadata);
+        const metadata = publicSessionMetadata(row.metadata);
         return {
           id: row.id,
           provider: row.provider,
@@ -1022,7 +1364,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         // etc. all read as undefined under the SQLite backend (because
         // `metadata` is a raw JSON string), so kanban tags/phase disappear
         // from the session list view.
-        const metadata = normalizeJsonObject(row.metadata);
+        const metadata = publicSessionMetadata(row.metadata);
         return {
           id: row.id,
           provider: row.provider,
@@ -1374,4 +1716,5 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
     // Note: claimQueuedPrompt has been moved to the new queued_prompts table
     // See PGLiteQueuedPromptsStore.ts for the new implementation
   };
+  return store;
 }

@@ -44,6 +44,9 @@ export const INTERNAL_MCP_TOOLS: readonly string[] = [
   'mcp__nimbalyst-host__get_workstream_overview',
   'mcp__nimbalyst-host__list_recent_sessions',
   'mcp__nimbalyst-host__get_workstream_edited_files',
+  'mcp__nimbalyst-host__session_set_pinned',
+  'mcp__nimbalyst-host__session_set_workstream',
+  'mcp__nimbalyst-host__session_rename',
 ];
 
 export const TEAM_TOOLS: readonly string[] = [

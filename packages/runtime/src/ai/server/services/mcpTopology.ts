@@ -151,6 +151,9 @@ export const HOST_TOOLS: readonly string[] = [
   'get_workstream_overview',
   'get_workstream_edited_files',
   'list_recent_sessions',
+  'session_set_pinned',
+  'session_set_workstream',
+  'session_rename',
   'schedule_wakeup',
   'update_session_board',
   // Child-session orchestration (was nimbalyst-meta-agent)

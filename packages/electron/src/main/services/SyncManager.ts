@@ -75,6 +75,9 @@ interface SyncManagerState {
   syncing: boolean;
   error: string | null;
   sessionKeepAliveInterval: ReturnType<typeof setInterval> | null;
+  syncedSessionStore: SessionStore | null;
+  generation: number;
+  startupTimers: Set<ReturnType<typeof setTimeout>>;
 }
 
 const state: SyncManagerState = {
@@ -86,12 +89,62 @@ const state: SyncManagerState = {
   syncing: false,
   error: null,
   sessionKeepAliveInterval: null,
+  syncedSessionStore: null,
+  generation: 0,
+  startupTimers: new Set(),
 };
 
+let syncLifecycleGeneration = 0;
+let activeStoreDisposal: Promise<void> | null = null;
+
+function isCurrentSyncGeneration(
+  generation: number,
+  provider: import('@nimbalyst/runtime/sync').SyncProvider,
+): boolean {
+  return state.generation === generation && state.provider === provider;
+}
+
+function scheduleSyncGenerationTask(
+  generation: number,
+  provider: import('@nimbalyst/runtime/sync').SyncProvider,
+  delayMs: number,
+  task: () => void | Promise<void>,
+): void {
+  const timer = setTimeout(() => {
+    state.startupTimers.delete(timer);
+    if (!isCurrentSyncGeneration(generation, provider)) return;
+    void Promise.resolve(task()).catch((error) => {
+      if (isCurrentSyncGeneration(generation, provider)) {
+        logger.main.warn('[SyncManager] Generation-owned startup task failed:', error);
+      }
+    });
+  }, delayMs);
+  state.startupTimers.add(timer);
+}
+
+async function disposeActiveSyncedSessionStore(): Promise<void> {
+  if (activeStoreDisposal) return activeStoreDisposal;
+  const activeStore = state.syncedSessionStore;
+  state.syncedSessionStore = null;
+  if (!activeStore?.dispose) return;
+  const disposal = Promise.resolve().then(() => activeStore.dispose!()).catch((error) => {
+    logger.main.warn('[SyncManager] Failed to dispose synced session store:', error);
+  });
+  activeStoreDisposal = disposal;
+  try {
+    await disposal;
+  } finally {
+    if (activeStoreDisposal === disposal) activeStoreDisposal = null;
+  }
+}
+
 // Guard against overlapping incremental syncs (initial + triggered) and enforce minimum interval
-let incrementalSyncInFlight = false;
+let incrementalSyncOwnerGeneration: number | null = null;
 let lastIncrementalSyncAt = 0;
 const MIN_INCREMENTAL_SYNC_INTERVAL = 5000; // 5 seconds minimum between syncs
+let reinitializeRequestGeneration = 0;
+let activeReinitializeCancellation: (() => void) | null = null;
+let activeReinitializeGeneration: number | null = null;
 
 // Must match SERVER_TTL (IndexRoom.ts SESSION_TTL_MS = 30 days).
 // Sessions older than this that are missing from the server were TTL-expired;
@@ -302,8 +355,14 @@ function getDeviceInfo(userId: string): DeviceInfo {
  * Initialize sync if configured.
  * Returns a wrapped session store if sync is enabled, or the original store if not.
  */
-export async function initializeSync(baseStore: SessionStore): Promise<SessionStore> {
+export async function initializeSync(
+  baseStore: SessionStore,
+  lifetimeStillCurrent: () => boolean = () => true,
+): Promise<SessionStore> {
   logger.main.info('[SyncManager] initializeSync called');
+  if (!lifetimeStillCurrent()) return baseStore;
+  const generation = ++syncLifecycleGeneration;
+  state.generation = generation;
 
   // Label every sync WebSocket connection with this client build so the server
   // can attribute connect/disconnect telemetry to a platform + version.
@@ -366,6 +425,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     // (NIM-859). resolvePersonalUserId() falls back to the cached value when it
     // can't reach the server, so offline init is unchanged.
     let personalUserId = await resolvePersonalUserId(serverUrl);
+    if (!lifetimeStillCurrent()) return baseStore;
     if (!personalUserId) {
       personalUserId = getPersonalUserId();
     }
@@ -395,6 +455,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     // CollabV3 uses the encryption key seed from CredentialService for E2E encryption
     // Use personalUserId for salt to ensure same encryption key across devices
     const encryptionKey = await deriveEncryptionKey(credentials.encryptionKeySeed, `nimbalyst:${personalUserId}`);
+    if (!lifetimeStillCurrent()) return baseStore;
     state.encryptionKey = encryptionKey;
 
     // Cache user ID for dynamic device info callback
@@ -558,8 +619,10 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
       clearInterval(state.sessionKeepAliveInterval);
     }
     state.sessionKeepAliveInterval = setInterval(async () => {
+      if (!isCurrentSyncGeneration(generation, provider)) return;
       try {
         const { refreshSession: doRefresh } = await import('./StytchAuthService');
+        if (!isCurrentSyncGeneration(generation, provider)) return;
         await doRefresh(serverUrl);
       } catch {
         // Refresh failure is non-fatal here -- just means the session token
@@ -576,14 +639,20 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     const syncedStore = createSyncedSessionStore(baseStore, provider, {
       autoConnect: true,
     });
+    if (!lifetimeStillCurrent()) {
+      provider.disconnectAll();
+      return baseStore;
+    }
+    state.syncedSessionStore = syncedStore;
 
     // Sync existing sessions and projects to index using delta sync
     // logger.main.info('[SyncManager] Setting up incremental sync...');
-    setTimeout(async () => {
+    scheduleSyncGenerationTask(generation, provider, 2000, async () => {
+      if (incrementalSyncOwnerGeneration !== null) return;
       const syncStart = performance.now();
       // logger.main.info('[SyncManager] Starting initial incremental sync...');
       // Prevent triggered syncs from overlapping with the initial sync
-      incrementalSyncInFlight = true;
+      incrementalSyncOwnerGeneration = generation;
       try {
         if (!provider.syncSessionsToIndex || !provider.fetchIndex) {
           logger.main.warn('[SyncManager] Provider missing required sync methods');
@@ -599,6 +668,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
             'SyncManager.fetchIndex',
             () => provider.fetchIndex!(),
           );
+          if (!isCurrentSyncGeneration(generation, provider)) return;
           const fetchTime = performance.now() - fetchStart;
           // logger.main.info(`[SyncManager] Server has ${serverIndex.sessions.length} sessions (fetch took ${fetchTime.toFixed(1)}ms)`);
         } catch (fetchError) {
@@ -620,6 +690,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
           'SyncManager.getAllSessionsForSync',
           () => getAllSessionsForSync(false), // No messages yet
         );
+        if (!isCurrentSyncGeneration(generation, provider)) return;
         const localTime = performance.now() - localStart;
         // logger.main.info(`[SyncManager] Local has ${allLocalSessions.length} sessions (query took ${localTime.toFixed(1)}ms)`);
 
@@ -744,6 +815,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
             : undefined;
 
           const { getSessionMessagesForSyncBatch } = await import('./PGLiteSessionStore');
+          if (!isCurrentSyncGeneration(generation, provider)) return;
 
           // logger.main.info(`[SyncManager] Syncing ${sessionsNeedingIndexUpdate.length} sessions (${sessionsNeedingMessageSync.length} need message sync, messages will load lazily)`);
           provider.syncSessionsToIndex(sessionsNeedingIndexUpdate, {
@@ -758,6 +830,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         // Clear the local cache and re-sync affected sessions to push isExecuting:false.
         const staleExecutingSessions = serverIndex.sessions.filter(s => s.isExecuting);
         if (staleExecutingSessions.length > 0) {
+          if (!isCurrentSyncGeneration(generation, provider)) return;
           logger.main.info(`[SyncManager] Clearing stale isExecuting for ${staleExecutingSessions.length} sessions`);
           // Clear isExecuting in the provider's local cache so syncSessionsToIndex
           // builds entries with isExecuting:false
@@ -778,15 +851,20 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
       } catch (error) {
         logger.main.warn('[SyncManager] Failed to sync sessions:', error);
       } finally {
-        incrementalSyncInFlight = false;
-        lastIncrementalSyncAt = Date.now();
+        if (incrementalSyncOwnerGeneration === generation) {
+          incrementalSyncOwnerGeneration = null;
+          if (isCurrentSyncGeneration(generation, provider)) {
+            lastIncrementalSyncAt = Date.now();
+          }
+        }
       }
-    }, 2000); // Wait for index connection
+    }); // Wait for index connection
 
     // Sync current OpenAI API key to mobile (in case mobile connects after key was set)
-    setTimeout(async () => {
+    scheduleSyncGenerationTask(generation, provider, 3000, async () => {
       try {
         const Store = (await import('electron-store')).default;
+        if (!isCurrentSyncGeneration(generation, provider)) return;
         const aiStore = new Store({ name: 'ai-settings' });
         const apiKeys = aiStore.get('apiKeys', {}) as Record<string, string>;
         const openaiKey = apiKeys['openai'];
@@ -798,7 +876,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
       } catch (error) {
         logger.main.warn('[SyncManager] Failed to sync initial settings:', error);
       }
-    }, 3000); // Wait a bit for index connection to be established
+    }); // Wait a bit for index connection to be established
 
     // Sync settings whenever a mobile device connects (joins or reconnects)
     // Track which mobile devices are currently connected so we can detect when one joins
@@ -806,6 +884,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     let isFirstCallback = true;
     if (provider.onDeviceStatusChange) {
       provider.onDeviceStatusChange((devices) => {
+        if (!isCurrentSyncGeneration(generation, provider)) return;
         const mobileDevices = devices.filter(d => d.type === 'mobile');
         const currentMobileIds = new Set(mobileDevices.map(d => d.deviceId));
 
@@ -816,9 +895,10 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
             // On first callback, add a small delay to ensure WebSocket is fully ready
             // This handles the case where mobile connected before desktop registered the listener
             const delay = isFirstCallback ? 1000 : 0;
-            setTimeout(() => {
+            scheduleSyncGenerationTask(generation, provider, delay, () => {
               // Sync settings to the mobile device
               import('electron-store').then(({ default: Store }) => {
+                if (!isCurrentSyncGeneration(generation, provider)) return;
                 const aiStore = new Store({ name: 'ai-settings' });
                 const apiKeys = aiStore.get('apiKeys', {}) as Record<string, string>;
                 const openaiKey = apiKeys['openai'];
@@ -829,7 +909,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
               }).catch((err) => {
                 logger.main.warn('[SyncManager] Failed to sync settings to device:', err);
               });
-            }, delay);
+            });
           }
         }
 
@@ -843,6 +923,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
       try {
         const projectFileSync = getProjectFileSyncService();
         await projectFileSync.initialize();
+        if (!isCurrentSyncGeneration(generation, provider) || !lifetimeStillCurrent()) return baseStore;
         logger.main.info('[SyncManager] ProjectFileSyncService initialized (alpha channel)');
 
         // Kick off project file sync for all already-open workspaces.
@@ -857,16 +938,20 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
           }
         }
       } catch (err) {
-        logger.main.warn('[SyncManager] ProjectFileSyncService failed to initialize (non-fatal):', err);
+        if (isCurrentSyncGeneration(generation, provider) && lifetimeStillCurrent()) {
+          logger.main.warn('[SyncManager] ProjectFileSyncService failed to initialize (non-fatal):', err);
+        }
       }
     }
 
     // Mark as connected
+    if (!isCurrentSyncGeneration(generation, provider) || !lifetimeStillCurrent()) return baseStore;
     updateSyncStatus({ connected: true, syncing: false, error: null });
 
     logger.main.info('[SyncManager] Session sync initialized successfully');
     return syncedStore;
   } catch (error) {
+    if (!lifetimeStillCurrent()) return baseStore;
     logger.main.error('[SyncManager] Failed to initialize sync:', error);
     updateSyncStatus({ connected: false, syncing: false, error: String(error) });
     // Return base store on failure - sync is optional
@@ -957,8 +1042,35 @@ export function getPersonalDocSyncConfig(): {
 /**
  * Shutdown sync and disconnect all sessions.
  */
-export function shutdownSync(): void {
+export async function shutdownSync(
+  owningReinitializeGeneration?: number,
+): Promise<void> {
+  if (
+    activeReinitializeGeneration !== null &&
+    activeReinitializeGeneration !== owningReinitializeGeneration
+  ) {
+    activeReinitializeCancellation?.();
+  }
+  // Invalidate every captured callback before awaiting decorator disposal.
+  // Late generation-A work can therefore neither touch provider B nor clear
+  // B's module-global in-flight ownership.
+  const shutdownGeneration = ++syncLifecycleGeneration;
+  state.generation = shutdownGeneration;
+  for (const timer of state.startupTimers) clearTimeout(timer);
+  state.startupTimers.clear();
+  incrementalSyncOwnerGeneration = null;
+  lastIncrementalSyncAt = 0;
   shutdownSleepPrevention();
+
+  // Mark the old decorator disposed before disconnecting its provider or
+  // constructing a replacement. In-flight work is safely abandoned by the
+  // decorator/provider post-await generation checks.
+  await disposeActiveSyncedSessionStore();
+
+  // A newer shutdown/reinitialize may have retired this owner while its
+  // decorator disposal was pending. All remaining module-global/provider
+  // cleanup belongs to the newer generation in that case.
+  if (state.generation !== shutdownGeneration) return;
 
   if (state.sessionKeepAliveInterval) {
     clearInterval(state.sessionKeepAliveInterval);
@@ -989,9 +1101,49 @@ export function shutdownSync(): void {
  * Reinitialize sync with new configuration.
  * Useful when settings change.
  */
-export async function reinitializeSync(baseStore: SessionStore): Promise<SessionStore> {
-  shutdownSync();
-  return initializeSync(baseStore);
+export async function reinitializeSync(
+  baseStore: SessionStore,
+  lifetimeStillCurrent: () => boolean = () => true,
+): Promise<SessionStore> {
+  const requestGeneration = ++reinitializeRequestGeneration;
+  activeReinitializeCancellation?.();
+  let cancelled = false;
+  let cancel!: () => void;
+  const cancellation = new Promise<void>((resolve) => {
+    cancel = () => {
+      cancelled = true;
+      resolve();
+    };
+  });
+  activeReinitializeCancellation = cancel;
+  activeReinitializeGeneration = requestGeneration;
+  const requestStillCurrent = () => (
+    !cancelled &&
+    activeReinitializeGeneration === requestGeneration &&
+    lifetimeStillCurrent()
+  );
+  const operation = (async () => {
+    await shutdownSync(requestGeneration);
+    if (!requestStillCurrent()) return baseStore;
+    return initializeSync(baseStore, requestStillCurrent);
+  })();
+  try {
+    const outcome = await Promise.race([
+      operation.then(
+        (store) => ({ kind: 'store' as const, store }),
+        (error) => ({ kind: 'error' as const, error }),
+      ),
+      cancellation.then(() => ({ kind: 'cancelled' as const })),
+    ]);
+    if (outcome.kind === 'cancelled') return baseStore;
+    if (outcome.kind === 'error') throw outcome.error;
+    return outcome.store;
+  } finally {
+    if (activeReinitializeGeneration === requestGeneration) {
+      activeReinitializeGeneration = null;
+      activeReinitializeCancellation = null;
+    }
+  }
 }
 
 /**
@@ -1000,6 +1152,7 @@ export async function reinitializeSync(baseStore: SessionStore): Promise<Session
  */
 export async function triggerIncrementalSync(): Promise<void> {
   const provider = state.provider;
+  const generation = state.generation;
   if (!provider) {
     logger.main.warn('[SyncManager] Cannot trigger sync - provider not initialized');
     return;
@@ -1011,7 +1164,7 @@ export async function triggerIncrementalSync(): Promise<void> {
   }
 
   // Skip if a sync is already in flight
-  if (incrementalSyncInFlight) {
+  if (incrementalSyncOwnerGeneration !== null) {
     logger.main.debug('[SyncManager] Incremental sync already in flight, skipping');
     return;
   }
@@ -1023,7 +1176,7 @@ export async function triggerIncrementalSync(): Promise<void> {
     return;
   }
 
-  incrementalSyncInFlight = true;
+  incrementalSyncOwnerGeneration = generation;
   lastIncrementalSyncAt = now;
 
   const syncStart = performance.now();
@@ -1035,6 +1188,7 @@ export async function triggerIncrementalSync(): Promise<void> {
     let serverIndex: Awaited<ReturnType<NonNullable<typeof provider.fetchIndex>>>;
     try {
       serverIndex = await provider.fetchIndex();
+      if (!isCurrentSyncGeneration(generation, provider)) return;
       const fetchTime = performance.now() - fetchStart;
       // logger.main.info(`[SyncManager] Triggered sync: server has ${serverIndex.sessions.length} sessions (fetch took ${fetchTime.toFixed(1)}ms)`);
     } catch (fetchError) {
@@ -1044,7 +1198,9 @@ export async function triggerIncrementalSync(): Promise<void> {
       // Attempt to reconnect in background so the next sync has a live connection
       if (provider.reconnectIndex) {
         provider.reconnectIndex().catch(err => {
-          logger.main.debug('[SyncManager] Background reconnect attempt failed:', err);
+          if (isCurrentSyncGeneration(generation, provider)) {
+            logger.main.debug('[SyncManager] Background reconnect attempt failed:', err);
+          }
         });
       }
       return;
@@ -1059,6 +1215,7 @@ export async function triggerIncrementalSync(): Promise<void> {
     const localStart = performance.now();
     const { getAllSessionsForSync } = await import('./PGLiteSessionStore');
     const allLocalSessions = await getAllSessionsForSync(false);
+    if (!isCurrentSyncGeneration(generation, provider)) return;
     const localTime = performance.now() - localStart;
     // logger.main.info(`[SyncManager] Triggered sync: local has ${allLocalSessions.length} sessions (query took ${localTime.toFixed(1)}ms)`);
 
@@ -1150,6 +1307,7 @@ export async function triggerIncrementalSync(): Promise<void> {
         : undefined;
 
       const { getSessionMessagesForSyncBatch } = await import('./PGLiteSessionStore');
+      if (!isCurrentSyncGeneration(generation, provider)) return;
 
       // logger.main.info(`[SyncManager] Syncing ${sessionsNeedingIndexUpdate.length} sessions (${sessionsNeedingMessageSync.length} need message sync, messages will load lazily)`);
       provider.syncSessionsToIndex(sessionsNeedingIndexUpdate, {
@@ -1164,7 +1322,9 @@ export async function triggerIncrementalSync(): Promise<void> {
   } catch (error) {
     logger.main.error('[SyncManager] Triggered sync failed:', error);
   } finally {
-    incrementalSyncInFlight = false;
+    if (incrementalSyncOwnerGeneration === generation) {
+      incrementalSyncOwnerGeneration = null;
+    }
   }
 }
 

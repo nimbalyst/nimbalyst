@@ -948,6 +948,98 @@ export const sessionChildrenAtom = atomFamily((_sessionId: string) =>
 );
 
 /**
+ * Parents whose hierarchy caches have been populated in this renderer. Atom
+ * families cannot enumerate retained keys, so this index lets convergence
+ * repair stale caches even after their registry entry has been evicted.
+ */
+export const sessionHierarchyParentIdsAtom = atom<Set<string>>(new Set());
+
+interface SessionHierarchyWorkspaceSnapshot {
+  parents: Map<string, {
+    sessionChildren: string[];
+    workstreamChildren: string[];
+    activeChildId: string | null;
+  }>;
+}
+
+/** Hierarchy-only cache snapshots keyed by the exact renderer workspace. */
+const sessionHierarchyWorkspaceSnapshotsAtom = atom<
+  Map<string, SessionHierarchyWorkspaceSnapshot>
+>(new Map());
+
+/**
+ * Fence atom-family hierarchy state at a workspace switch. Retained families
+ * are snapshotted under the old exact workspace, cleared before the new view
+ * is active, and restored with their parent index when that workspace returns.
+ * This prevents same-ID cross-workspace bleed while keeping every evicted
+ * parent discoverable for convergence proof.
+ */
+export const switchSessionHierarchyWorkspaceAtom = atom(
+  null,
+  (get, set, {
+    previousWorkspacePath,
+    nextWorkspacePath,
+  }: {
+    previousWorkspacePath: string | null;
+    nextWorkspacePath: string | null;
+  }) => {
+    const snapshots = new Map(get(sessionHierarchyWorkspaceSnapshotsAtom));
+    const currentParents = new Set(get(sessionHierarchyParentIdsAtom));
+    if (previousWorkspacePath) {
+      const parents = new Map<string, {
+        sessionChildren: string[];
+        workstreamChildren: string[];
+        activeChildId: string | null;
+      }>();
+      for (const parentId of currentParents) {
+        const workstream = get(workstreamStateAtom(parentId));
+        const sessionChildren = [...get(sessionChildrenAtom(parentId))];
+        const workstreamChildren = [...workstream.childSessionIds];
+        parents.set(parentId, {
+          sessionChildren,
+          workstreamChildren,
+          activeChildId: workstream.activeChildId,
+        });
+        set(sessionChildrenAtom(parentId), []);
+        set(workstreamStateAtom(parentId), {
+          childSessionIds: [],
+          activeChildId: null,
+        });
+        for (const childId of new Set([...sessionChildren, ...workstreamChildren])) {
+          if (get(sessionParentIdAtom(childId)) === parentId) {
+            set(sessionParentIdAtom(childId), null);
+          }
+        }
+      }
+      snapshots.set(previousWorkspacePath, { parents });
+    }
+
+    const restoredParents = previousWorkspacePath === null
+      ? new Set(currentParents)
+      : new Set<string>();
+    const restored = nextWorkspacePath ? snapshots.get(nextWorkspacePath) : undefined;
+    if (restored) {
+      for (const [parentId, cached] of restored.parents) {
+        restoredParents.add(parentId);
+        set(sessionChildrenAtom(parentId), [...cached.sessionChildren]);
+        set(workstreamStateAtom(parentId), {
+          childSessionIds: [...cached.workstreamChildren],
+          activeChildId: cached.activeChildId,
+        });
+        for (const childId of new Set([
+          ...cached.sessionChildren,
+          ...cached.workstreamChildren,
+        ])) {
+          set(sessionParentIdAtom(childId), parentId);
+        }
+      }
+    }
+    set(sessionHierarchyWorkspaceSnapshotsAtom, snapshots);
+    set(sessionHierarchyParentIdsAtom, restoredParents);
+  },
+);
+
+/**
  * Currently active child session within a parent.
  * Used for tab selection within a parent session view.
  * null means the parent session itself is active.
@@ -1081,6 +1173,112 @@ export const sessionParentIdAtom = atomFamily((_sessionId: string) =>
 );
 
 /**
+ * Apply the authoritative correlated reparent event from main. This updates
+ * every hierarchy cache in one Jotai transaction and deliberately leaves
+ * active session/child selection untouched.
+ */
+export const applySessionReparentedAtom = atom(
+  null,
+  (get, set, {
+    sessionId,
+    oldParentSessionId,
+    newParentSessionId,
+  }: {
+    sessionId: string;
+    oldParentSessionId: string | null;
+    newParentSessionId: string | null;
+  }) => {
+    const registry = new Map(get(sessionRegistryAtom));
+    const target = registry.get(sessionId);
+    const loadedSession = get(sessionStoreAtom(sessionId));
+    const knownParents = new Set(get(sessionHierarchyParentIdsAtom));
+    const observedParents = new Set<string>();
+    for (const candidate of [
+      oldParentSessionId,
+      get(sessionParentIdAtom(sessionId)),
+      loadedSession?.parentSessionId ?? null,
+      target?.parentSessionId ?? null,
+    ]) {
+      if (candidate) {
+        observedParents.add(candidate);
+        knownParents.add(candidate);
+      }
+    }
+    for (const [candidateId, candidate] of registry) {
+      if (candidate.sessionType !== 'workstream') continue;
+      knownParents.add(candidateId);
+    }
+    for (const candidateId of knownParents) {
+      if (
+        get(sessionChildrenAtom(candidateId)).includes(sessionId) ||
+        get(workstreamStateAtom(candidateId)).childSessionIds.includes(sessionId)
+      ) {
+        observedParents.add(candidateId);
+      }
+    }
+    if (newParentSessionId) knownParents.add(newParentSessionId);
+    set(sessionHierarchyParentIdsAtom, knownParents);
+
+    set(sessionParentIdAtom(sessionId), newParentSessionId);
+    if (loadedSession) {
+      set(sessionStoreAtom(sessionId), {
+        ...loadedSession,
+        parentSessionId: newParentSessionId,
+      });
+    }
+
+    let newChildren: string[] | null = null;
+    for (const observedParentId of observedParents) {
+      if (observedParentId === newParentSessionId) continue;
+      const observedState = get(workstreamStateAtom(observedParentId));
+      const remainingChildren = Array.from(new Set([
+        ...get(sessionChildrenAtom(observedParentId)),
+        ...observedState.childSessionIds,
+      ])).filter((id) => id !== sessionId);
+      set(sessionChildrenAtom(observedParentId), remainingChildren);
+      set(workstreamStateAtom(observedParentId), {
+        childSessionIds: remainingChildren,
+        ...(observedState.activeChildId === sessionId && {
+          activeChildId: remainingChildren[0] ?? null,
+        }),
+      });
+      const observedParent = registry.get(observedParentId);
+      if (observedParent) {
+        registry.set(observedParentId, {
+          ...observedParent,
+          childCount: remainingChildren.length,
+        });
+      }
+    }
+    if (newParentSessionId) {
+      const current = get(sessionChildrenAtom(newParentSessionId));
+      const currentWorkstream = get(workstreamStateAtom(newParentSessionId));
+      newChildren = Array.from(new Set([
+        ...current.filter((id) => id !== sessionId),
+        ...currentWorkstream.childSessionIds.filter((id) => id !== sessionId),
+        sessionId,
+      ]));
+      set(sessionChildrenAtom(newParentSessionId), newChildren);
+      set(workstreamStateAtom(newParentSessionId), { childSessionIds: newChildren });
+    }
+
+    if (target) {
+      registry.set(sessionId, { ...target, parentSessionId: newParentSessionId });
+    }
+    if (newParentSessionId) {
+      const newParent = registry.get(newParentSessionId);
+      if (newParent) {
+        registry.set(newParentSessionId, {
+          ...newParent,
+          childCount: newChildren?.length ?? get(sessionChildrenAtom(newParentSessionId)).length,
+        });
+      }
+    }
+    set(sessionRegistryAtom, registry);
+  },
+);
+
+/**
  * Load child sessions for a parent session.
  * Called when opening a parent session that has children.
  */
@@ -1102,6 +1300,9 @@ export const loadSessionChildrenAtom = atom(
       );
       // console.log('[loadSessionChildrenAtom] IPC result:', result);
       if (result.success && Array.isArray(result.children)) {
+        const knownParents = new Set(get(sessionHierarchyParentIdsAtom));
+        knownParents.add(parentSessionId);
+        set(sessionHierarchyParentIdsAtom, knownParents);
         const childIds = result.children.map((c: any) => c.id);
         // console.log('[loadSessionChildrenAtom] Setting children:', childIds);
         set(sessionChildrenAtom(parentSessionId), childIds);
@@ -1231,6 +1432,9 @@ export const createChildSessionAtom = atom(
 
       if (result.success && result.sessionId) {
         // Add to children list
+        const knownParents = new Set(get(sessionHierarchyParentIdsAtom));
+        knownParents.add(parentSessionId);
+        set(sessionHierarchyParentIdsAtom, knownParents);
         const children = get(sessionChildrenAtom(parentSessionId));
         const newChildren = [...children, result.sessionId];
         set(sessionChildrenAtom(parentSessionId), newChildren);
@@ -1330,59 +1534,11 @@ export const reparentSessionAtom = atom(
         return false;
       }
 
-      // Update atoms
-      // 1. Update dragged session's parent
-      set(sessionParentIdAtom(sessionId), newParentId);
-
-      // 2. Remove from old parent's children (if had a parent)
-      if (oldParentId) {
-        const oldChildren = get(sessionChildrenAtom(oldParentId));
-        const newOldChildren = oldChildren.filter(id => id !== sessionId);
-        set(sessionChildrenAtom(oldParentId), newOldChildren);
-
-        // Update old parent's workstream state
-        set(workstreamStateAtom(oldParentId), {
-          childSessionIds: newOldChildren,
-        });
-      }
-
-      // 3. Add to new parent's children (if has a new parent)
-      if (newParentId) {
-        const newChildren = get(sessionChildrenAtom(newParentId));
-        const updatedNewChildren = [...newChildren, sessionId];
-        set(sessionChildrenAtom(newParentId), updatedNewChildren);
-
-        // Update new parent's workstream state
-        set(workstreamStateAtom(newParentId), {
-          childSessionIds: updatedNewChildren,
-        });
-
-        // Make the reparented session the active child in the new parent and mark as read
-        set(setWorkstreamActiveChildAtom, { workstreamId: newParentId, childId: sessionId });
-        set(markSessionReadAtom, sessionId);
-      }
-
-      // 4. Update session list
-      set(updateSessionFullAtom, {
-        id: sessionId,
-        parentSessionId: newParentId,
+      set(applySessionReparentedAtom, {
+        sessionId,
+        oldParentSessionId: result.before?.workstreamId ?? oldParentId,
+        newParentSessionId: result.after?.workstreamId ?? newParentId,
       });
-
-      // Update child counts in session list
-      if (oldParentId) {
-        const oldChildren = get(sessionChildrenAtom(oldParentId));
-        set(updateSessionFullAtom, {
-          id: oldParentId,
-          childCount: oldChildren.length,
-        });
-      }
-      if (newParentId) {
-        const newChildren = get(sessionChildrenAtom(newParentId));
-        set(updateSessionFullAtom, {
-          id: newParentId,
-          childCount: newChildren.length,
-        });
-      }
 
       return true;
     } catch (error) {
@@ -1593,6 +1749,9 @@ export const convertToWorkstreamAtom = atom(
           updatedAt: Date.now(),
         } as SessionData);
       }
+      const knownParents = new Set(get(sessionHierarchyParentIdsAtom));
+      knownParents.add(parentSessionId);
+      set(sessionHierarchyParentIdsAtom, knownParents);
       set(sessionChildrenAtom(parentSessionId), children);
 
       // Set the active child and mark as read

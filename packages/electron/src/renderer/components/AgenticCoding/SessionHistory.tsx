@@ -72,6 +72,39 @@ import './SessionHistory.css';
 // SessionItem is the shared SessionMeta type from the store atoms.
 type SessionItem = SessionMeta;
 
+type SessionPinReceipt = {
+  success?: boolean;
+  ok?: boolean;
+  after?: { pinned?: unknown };
+};
+
+/** Production pin caller shared with its focused regression test. */
+export async function commitSessionPinFromAuthoritativeReceipt(args: {
+  sessionId: string;
+  requestedPinned: boolean;
+  invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
+  updateSessionStore: (update: { sessionId: string; updates: { isPinned: boolean } }) => void;
+  updateVisibleSessions: (sessionId: string, isPinned: boolean) => void;
+  reload: () => Promise<void>;
+}): Promise<boolean> {
+  const receipt = await args.invoke(
+    'sessions:update-pinned',
+    args.sessionId,
+    args.requestedPinned,
+  ) as SessionPinReceipt;
+  const authoritativePinned = receipt?.after?.pinned;
+  if (receipt?.success !== true || receipt.ok !== true || typeof authoritativePinned !== 'boolean') {
+    await args.reload();
+    return false;
+  }
+  args.updateSessionStore({
+    sessionId: args.sessionId,
+    updates: { isPinned: authoritativePinned },
+  });
+  args.updateVisibleSessions(args.sessionId, authoritativePinned);
+  return true;
+}
+
 interface WorktreeData {
   id: string;
   name: string;
@@ -1761,15 +1794,23 @@ const SessionHistoryComponent: React.FC = () => {
   // Toggle pin status for a session
   const handleSessionPinToggle = useCallback(async (sessionId: string, isPinned: boolean) => {
     try {
-      await window.electronAPI.invoke('sessions:update-pinned', sessionId, isPinned);
-      // Update atom state (optimistic update)
-      updateSessionStore({ sessionId, updates: { isPinned } });
-      // Also update filtered list for immediate feedback
-      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, isPinned } : s));
+      await commitSessionPinFromAuthoritativeReceipt({
+        sessionId,
+        requestedPinned: isPinned,
+        invoke: window.electronAPI.invoke.bind(window.electronAPI),
+        updateSessionStore,
+        updateVisibleSessions: (id, authoritativePinned) => {
+          setSessions(prev => prev.map(s => (
+            s.id === id ? { ...s, isPinned: authoritativePinned } : s
+          )));
+        },
+        reload: loadAllSessions,
+      });
     } catch (error) {
       console.error('[SessionHistory] Failed to toggle session pin:', error);
+      await loadAllSessions();
     }
-  }, [updateSessionStore]);
+  }, [loadAllSessions, updateSessionStore]);
 
   // Toggle pin status for a worktree
   const handleWorktreePinToggle = useCallback(async (worktreeId: string, isPinned: boolean) => {

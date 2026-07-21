@@ -16,7 +16,15 @@ import { getSessionStateManager } from "@nimbalyst/runtime/ai/server/SessionStat
 import { getMostRecentlyFocusedWorkspaceWindow, windowStates, windowFocusOrder } from "../window/WindowManager";
 import { windows } from "../window/windowState";
 import { workspaceToWindowMap } from "./mcpWorkspaceResolver";
-import { requireMcpAuth } from "./mcpAuth";
+import {
+  authorizeMcpSessionRequest,
+  authorizeMcpTransportRequest,
+  canonicalizeMcpWorkspacePath,
+  getMcpSessionAuthority,
+  requireMcpAuth,
+  revokeMcpSessionCredentials,
+  type McpSessionAuthority,
+} from "./mcpAuth";
 import { getAllowedClipOrigin, hasAllowedClipContentType } from "./clipRequestGuards";
 import {
   handleHostControlRequest,
@@ -100,6 +108,9 @@ import { handleExtensionTool } from "./tools/extensionToolHandler";
 import { settingsToolSchemas, dispatchSettingsTool } from "./settingsServer";
 import {
   SESSION_CONTEXT_TOOL_SCHEMAS,
+  SESSION_VISIBILITY_TOOL_NAMES,
+  deriveHostBoundSessionVisibilityAuthority,
+  dispatchHostBoundSessionVisibilityTool,
   dispatchSessionContextTool,
 } from "./sessionContextServer";
 import { META_AGENT_TOOL_DEFS, dispatchMetaAgentTool } from "./metaAgentServer";
@@ -128,17 +139,60 @@ export {
 
 let mcpServer: Server | null = null;
 
-// Store active SSE transports by session ID
-const activeTransports = new Map<string, SSEServerTransport>();
+interface SseTransportMetadata {
+  transport: SSEServerTransport;
+  nimbalystSessionId?: string;
+  authority: Readonly<McpSessionAuthority> | null;
+}
+
+// Store active SSE transports by protocol session ID with their immutable
+// authenticated actor/workspace registration.
+const activeTransports = new Map<string, SseTransportMetadata>();
 
 interface StreamableTransportMetadata {
   transport: StreamableHTTPServerTransport;
   nimbalystSessionId?: string;
+  authority: Readonly<McpSessionAuthority> | null;
 }
 const activeStreamableTransports = new Map<
   string,
   StreamableTransportMetadata
 >();
+
+/** Narrow production-router harness used by boundary tests. It seeds the same
+ * map read by the real GET/POST/DELETE handlers; no helper response path is
+ * involved.
+ */
+export function registerStreamableTransportForTest(
+  sessionId: string,
+  metadata: {
+    authority: Readonly<McpSessionAuthority> | null;
+    nimbalystSessionId?: string;
+    transport: Pick<StreamableHTTPServerTransport, 'handleRequest' | 'close'>;
+  },
+): void {
+  activeStreamableTransports.set(sessionId, {
+    authority: metadata.authority,
+    nimbalystSessionId: metadata.nimbalystSessionId,
+    transport: metadata.transport as StreamableHTTPServerTransport,
+  });
+}
+
+/** Production-router harness for the legacy SSE POST branch. */
+export function registerLegacyTransportForTest(
+  sessionId: string,
+  metadata: {
+    authority: Readonly<McpSessionAuthority> | null;
+    nimbalystSessionId?: string;
+    transport: Pick<SSEServerTransport, 'handlePostMessage' | 'close'>;
+  },
+): void {
+  activeTransports.set(sessionId, {
+    authority: metadata.authority,
+    nimbalystSessionId: metadata.nimbalystSessionId,
+    transport: metadata.transport as SSEServerTransport,
+  });
+}
 
 // Store MCP Server instances by Nimbalyst session ID
 // Used to send notifications (e.g., tools/list_changed) when document state changes
@@ -167,7 +221,134 @@ export { documentStateBySession };
  * Wraps the resolver's version to inject the server map for tool list notifications.
  */
 export function updateDocumentState(state: any, sessionId?: string) {
+  const effectiveSessionId = sessionId ?? 'default';
+  const previousWorkspacePath = documentStateBySession.get(effectiveSessionId)?.workspacePath;
   _updateDocumentState(state, sessionId, serverByNimbalystSession);
+  if (
+    typeof previousWorkspacePath === 'string' &&
+    typeof state?.workspacePath === 'string' &&
+    previousWorkspacePath.trim() !== state.workspacePath.trim()
+  ) {
+    // Map removal is synchronous inside this helper. Close completion is best
+    // effort, but a path-return race cannot find the stale transport again.
+    void closeHostBoundMcpTransports(effectiveSessionId);
+  }
+}
+
+async function closeHostBoundMcpTransports(sessionId: string): Promise<void> {
+  serverByNimbalystSession.delete(sessionId);
+  const closes: Promise<unknown>[] = [];
+  const closeIsolated = (transport: { close(): unknown }) => {
+    try {
+      closes.push(Promise.resolve(transport.close()).catch(() => undefined));
+    } catch {
+      // A transport may throw before returning a promise. Its registration is
+      // already removed; continue closing every other matching transport.
+    }
+  };
+  for (const [transportId, metadata] of activeTransports) {
+    if (metadata.nimbalystSessionId !== sessionId) continue;
+    activeTransports.delete(transportId);
+    closeIsolated(metadata.transport);
+  }
+  for (const [transportId, metadata] of activeStreamableTransports) {
+    if (metadata.nimbalystSessionId !== sessionId) continue;
+    activeStreamableTransports.delete(transportId);
+    closeIsolated(metadata.transport);
+  }
+  await Promise.all(closes);
+}
+
+/**
+ * Remove host ownership when the production session lifecycle deletes a
+ * session. Bound transports are closed as part of the same revocation so no
+ * already-established connection can keep a stale tool server alive.
+ */
+export async function revokeHostBoundMcpAuthority(sessionId: string): Promise<void> {
+  documentStateBySession.delete(sessionId);
+  revokeMcpSessionCredentials(sessionId);
+  await closeHostBoundMcpTransports(sessionId);
+}
+
+export interface HostBoundMcpAuthority {
+  actorSessionId: string;
+  workspacePath: string;
+}
+
+/**
+ * Resolve visibility authority exclusively from host-owned document state.
+ * Query parameters remain routing hints for legacy tools; they never become
+ * session-context mutation authority. The host stores the canonical project
+ * path here even when the provider cwd/query path is a worktree.
+ */
+export function resolveHostBoundMcpAuthority(
+  requestedSessionId: string | undefined,
+  untrustedWorkspacePath?: string,
+): HostBoundMcpAuthority | null {
+  if (!requestedSessionId) return null;
+  const state = documentStateBySession.get(requestedSessionId);
+  return deriveHostBoundSessionVisibilityAuthority(
+    requestedSessionId,
+    state,
+    untrustedWorkspacePath,
+  );
+}
+
+type TransportAuthorityValidation = 'authorized' | 'request-denied' | 'host-revoked';
+
+function validateTransportAuthority(
+  req: IncomingMessage,
+  metadata: Readonly<Pick<StreamableTransportMetadata, 'authority' | 'nimbalystSessionId'>>,
+): TransportAuthorityValidation {
+  if (!metadata.authority) {
+    return authorizeMcpTransportRequest(req, null, null) ? 'authorized' : 'request-denied';
+  }
+  if (!metadata.nimbalystSessionId) return 'host-revoked';
+  const currentHostAuthority = resolveHostBoundMcpAuthority(
+    metadata.nimbalystSessionId,
+  );
+  if (
+    !currentHostAuthority ||
+    currentHostAuthority.actorSessionId !== metadata.authority.actorSessionId ||
+    canonicalizeMcpWorkspacePath(currentHostAuthority.workspacePath) !==
+      metadata.authority.workspaceComparisonPath ||
+    currentHostAuthority.workspacePath.trim() !== metadata.authority.workspacePath
+  ) {
+    return 'host-revoked';
+  }
+  return authorizeMcpTransportRequest(req, metadata.authority, currentHostAuthority)
+    ? 'authorized'
+    : 'request-denied';
+}
+
+async function invalidateLegacyTransport(
+  transportId: string,
+  metadata: SseTransportMetadata,
+): Promise<void> {
+  if (activeTransports.get(transportId) !== metadata) return;
+  activeTransports.delete(transportId);
+  // Refusal latency must not depend on SDK/socket shutdown. The microtask
+  // contains both synchronous throws and asynchronous rejection, while the
+  // authoritative mapping is already gone before close is attempted.
+  void Promise.resolve()
+    .then(() => metadata.transport.close())
+    .catch(() => undefined);
+}
+
+async function invalidateStreamableTransport(
+  transportId: string,
+  metadata: StreamableTransportMetadata,
+): Promise<void> {
+  if (activeStreamableTransports.get(transportId) !== metadata) return;
+  activeStreamableTransports.delete(transportId);
+  void Promise.resolve()
+    .then(() => metadata.transport.close())
+    .catch(() => undefined);
+}
+
+function rejectMcpAuthorityConflict(res: ServerResponse): void {
+  res.writeHead(404);
+  res.end("Not found");
 }
 
 /**
@@ -198,7 +379,8 @@ setBackendToolsChangeNotifier((_workspacePath: string) => {
 
 export async function cleanupMcpServer() {
   // Close all active SSE transports
-  for (const [sessionId, transport] of activeTransports.entries()) {
+  for (const [sessionId, metadata] of activeTransports.entries()) {
+    const { transport } = metadata;
     try {
       if (transport.onclose) {
         transport.onclose();
@@ -375,6 +557,7 @@ const SETTINGS_TOOL_NAMES = new Set(settingsToolSchemas.map((t) => t.name));
 const SESSION_CONTEXT_TOOL_NAMES = new Set(
   SESSION_CONTEXT_TOOL_SCHEMAS.map((t) => t.name)
 );
+const SESSION_VISIBILITY_TOOL_NAME_SET = new Set<string>(SESSION_VISIBILITY_TOOL_NAMES);
 const META_AGENT_TOOL_NAMES = new Set(META_AGENT_TOOL_DEFS.map((t) => t.name));
 
 // ---- MCP Server Factory ----
@@ -387,8 +570,16 @@ function createSharedMcpServer(
   // (set for the meta-agent profile and when the settings kill-switch is on)
   // while still serving session-context + meta-agent. Session-context and
   // meta-agent are unaffected.
-  excludeHostSettings: boolean = false
+  excludeHostSettings: boolean = false,
+  hostBoundAuthority: HostBoundMcpAuthority | null = null,
 ): Server {
+  // Capture the authenticated connection authority once. Tool arguments can
+  // never replace the actor or canonical workspace used by session-context
+  // reads and visibility mutations.
+  const connectionAuthority = Object.freeze({
+    actorSessionId: hostBoundAuthority?.actorSessionId,
+    workspacePath: hostBoundAuthority?.workspacePath,
+  });
   // Name the server after the endpoint it serves so multi-endpoint logs are
   // distinguishable. The SDK namespaces tools by the client's config-key, not
   // this self-reported name.
@@ -627,7 +818,19 @@ function createSharedMcpServer(
             return dispatchSettingsTool(name, args, sessionId ?? "", workspacePath);
           }
           if (SESSION_CONTEXT_TOOL_NAMES.has(toolName)) {
-            return dispatchSessionContextTool(name, args, sessionId ?? "", workspacePath ?? "");
+            if (SESSION_VISIBILITY_TOOL_NAME_SET.has(toolName)) {
+              return dispatchHostBoundSessionVisibilityTool(
+                name,
+                args,
+                connectionAuthority,
+              );
+            }
+            return dispatchSessionContextTool(
+              name,
+              args,
+              connectionAuthority.actorSessionId ?? "",
+              connectionAuthority.workspacePath ?? "",
+            );
           }
           if (META_AGENT_TOOL_NAMES.has(toolName)) {
             const text = await dispatchMetaAgentTool(
@@ -975,8 +1178,15 @@ async function tryCreateServer(
           if (mcpSessionIdHeader) {
             const metadata = activeStreamableTransports.get(mcpSessionIdHeader);
             if (!metadata) {
-              res.writeHead(404);
-              res.end("Streamable session not found");
+              rejectMcpAuthorityConflict(res);
+              return;
+            }
+            const authorityValidation = validateTransportAuthority(req, metadata);
+            if (authorityValidation !== 'authorized') {
+              if (authorityValidation === 'host-revoked') {
+                await invalidateStreamableTransport(mcpSessionIdHeader, metadata);
+              }
+              rejectMcpAuthorityConflict(res);
               return;
             }
 
@@ -1012,19 +1222,35 @@ async function tryCreateServer(
             return;
           }
 
-          registerWorkspaceMappingForConnection(workspacePath);
+          const registeredHostAuthority = resolveHostBoundMcpAuthority(sessionId, workspacePath);
+          const suppliedScopedAuthority = getMcpSessionAuthority(req);
+          const authenticatedAuthority = sessionId
+            ? authorizeMcpSessionRequest(req, sessionId, registeredHostAuthority)
+            : null;
+          if ((sessionId || suppliedScopedAuthority) && !authenticatedAuthority) {
+            rejectMcpAuthorityConflict(res);
+            return;
+          }
+          const hostBoundAuthority = authenticatedAuthority;
+          const effectiveWorkspacePath = hostBoundAuthority?.workspacePath ?? workspacePath;
+          registerWorkspaceMappingForConnection(effectiveWorkspacePath);
 
           const server = createSharedMcpServer(
-            workspacePath,
+            effectiveWorkspacePath,
             sessionId,
             mcpEndpoint ?? { kind: "legacy" },
-            parsedUrl.query.hostExcludeSettings === "1"
+            parsedUrl.query.hostExcludeSettings === "1",
+            hostBoundAuthority,
           );
 
           // Create SSE transport. The message path must match this endpoint so
           // the client POSTs follow-ups back to the same /mcp[/...] path.
           const transport = new SSEServerTransport(pathname || "/mcp", res);
-          activeTransports.set(transport.sessionId, transport);
+          activeTransports.set(transport.sessionId, {
+            transport,
+            nimbalystSessionId: sessionId,
+            authority: authenticatedAuthority,
+          });
 
           // SSE keepalive: send periodic comment pings to prevent the
           // TCP connection from going idle during long-running MCP tool
@@ -1046,11 +1272,11 @@ async function tryCreateServer(
           if (sessionId) {
             serverByNimbalystSession.set(sessionId, server);
           }
-          if (workspacePath) {
-            if (!serversByWorkspace.has(workspacePath)) {
-              serversByWorkspace.set(workspacePath, new Set());
+          if (effectiveWorkspacePath) {
+            if (!serversByWorkspace.has(effectiveWorkspacePath)) {
+              serversByWorkspace.set(effectiveWorkspacePath, new Set());
             }
-            serversByWorkspace.get(workspacePath)!.add(server);
+            serversByWorkspace.get(effectiveWorkspacePath)!.add(server);
           }
 
           server
@@ -1062,8 +1288,8 @@ async function tryCreateServer(
                 if (sessionId) {
                   serverByNimbalystSession.delete(sessionId);
                 }
-                if (workspacePath) {
-                  serversByWorkspace.get(workspacePath)?.delete(server);
+                if (effectiveWorkspacePath) {
+                  serversByWorkspace.get(effectiveWorkspacePath)?.delete(server);
                 }
               };
             })
@@ -1074,8 +1300,8 @@ async function tryCreateServer(
               if (sessionId) {
                 serverByNimbalystSession.delete(sessionId);
               }
-              if (workspacePath) {
-                serversByWorkspace.get(workspacePath)?.delete(server);
+              if (effectiveWorkspacePath) {
+                serversByWorkspace.get(effectiveWorkspacePath)?.delete(server);
               }
               if (!res.headersSent) {
                 res.writeHead(500);
@@ -1094,13 +1320,21 @@ async function tryCreateServer(
             return;
           }
 
-          const legacyTransport = legacyTransportSessionId
+          const legacyMetadata = legacyTransportSessionId
             ? activeTransports.get(legacyTransportSessionId)
             : undefined;
 
-          if (legacyTransport && !mcpSessionIdHeader) {
+          if (legacyMetadata && !mcpSessionIdHeader) {
+            const authorityValidation = validateTransportAuthority(req, legacyMetadata);
+            if (authorityValidation !== 'authorized') {
+              if (authorityValidation === 'host-revoked') {
+                await invalidateLegacyTransport(legacyTransportSessionId!, legacyMetadata);
+              }
+              rejectMcpAuthorityConflict(res);
+              return;
+            }
             try {
-              await legacyTransport.handlePostMessage(req, res);
+              await legacyMetadata.transport.handlePostMessage(req, res);
             } catch (error) {
               console.error(
                 "[MCP Server] Error handling legacy SSE POST message:",
@@ -1122,8 +1356,7 @@ async function tryCreateServer(
             legacyTransportSessionId &&
             !isInitializePayload(parsedBody)
           ) {
-            res.writeHead(404);
-            res.end("Session not found");
+            rejectMcpAuthorityConflict(res);
             return;
           }
 
@@ -1133,9 +1366,19 @@ async function tryCreateServer(
               : undefined;
 
           if (mcpSessionIdHeader && !streamableMetadata) {
-            res.writeHead(404);
-            res.end("Streamable session not found");
+            rejectMcpAuthorityConflict(res);
             return;
+          }
+
+          if (streamableMetadata) {
+            const authorityValidation = validateTransportAuthority(req, streamableMetadata);
+            if (authorityValidation !== 'authorized') {
+              if (authorityValidation === 'host-revoked' && mcpSessionIdHeader) {
+                await invalidateStreamableTransport(mcpSessionIdHeader, streamableMetadata);
+              }
+              rejectMcpAuthorityConflict(res);
+              return;
+            }
           }
 
           if (!streamableMetadata) {
@@ -1163,19 +1406,34 @@ async function tryCreateServer(
               return;
             }
 
-            registerWorkspaceMappingForConnection(workspacePath);
+            const registeredHostAuthority = resolveHostBoundMcpAuthority(
+              nimbalystSessionId,
+              workspacePath,
+            );
+            const suppliedScopedAuthority = getMcpSessionAuthority(req);
+            const authenticatedAuthority = nimbalystSessionId
+              ? authorizeMcpSessionRequest(req, nimbalystSessionId, registeredHostAuthority)
+              : null;
+            if ((nimbalystSessionId || suppliedScopedAuthority) && !authenticatedAuthority) {
+              rejectMcpAuthorityConflict(res);
+              return;
+            }
+            const hostBoundAuthority = authenticatedAuthority;
+            const effectiveWorkspacePath = hostBoundAuthority?.workspacePath ?? workspacePath;
+            registerWorkspaceMappingForConnection(effectiveWorkspacePath);
 
             const server = createSharedMcpServer(
-              workspacePath,
+              effectiveWorkspacePath,
               nimbalystSessionId,
               mcpEndpoint ?? { kind: "legacy" },
-              parsedUrl.query.hostExcludeSettings === "1"
+              parsedUrl.query.hostExcludeSettings === "1",
+              hostBoundAuthority,
             );
-            if (workspacePath) {
-              if (!serversByWorkspace.has(workspacePath)) {
-                serversByWorkspace.set(workspacePath, new Set());
+            if (effectiveWorkspacePath) {
+              if (!serversByWorkspace.has(effectiveWorkspacePath)) {
+                serversByWorkspace.set(effectiveWorkspacePath, new Set());
               }
-              serversByWorkspace.get(workspacePath)!.add(server);
+              serversByWorkspace.get(effectiveWorkspacePath)!.add(server);
             }
 
             const transport = new StreamableHTTPServerTransport({
@@ -1184,6 +1442,7 @@ async function tryCreateServer(
                 activeStreamableTransports.set(streamableSessionId, {
                   transport,
                   nimbalystSessionId,
+                  authority: authenticatedAuthority,
                 });
                 if (nimbalystSessionId) {
                   serverByNimbalystSession.set(nimbalystSessionId, server);
@@ -1199,8 +1458,8 @@ async function tryCreateServer(
               if (nimbalystSessionId) {
                 serverByNimbalystSession.delete(nimbalystSessionId);
               }
-              if (workspacePath) {
-                serversByWorkspace.get(workspacePath)?.delete(server);
+              if (effectiveWorkspacePath) {
+                serversByWorkspace.get(effectiveWorkspacePath)?.delete(server);
               }
             };
 
@@ -1209,7 +1468,11 @@ async function tryCreateServer(
             };
 
             await server.connect(transport);
-            streamableMetadata = { transport, nimbalystSessionId };
+            streamableMetadata = {
+              transport,
+              nimbalystSessionId,
+              authority: authenticatedAuthority,
+            };
           }
 
           try {
@@ -1238,8 +1501,15 @@ async function tryCreateServer(
 
           const metadata = activeStreamableTransports.get(mcpSessionIdHeader);
           if (!metadata) {
-            res.writeHead(404);
-            res.end("Streamable session not found");
+            rejectMcpAuthorityConflict(res);
+            return;
+          }
+          const authorityValidation = validateTransportAuthority(req, metadata);
+          if (authorityValidation !== 'authorized') {
+            if (authorityValidation === 'host-revoked') {
+              await invalidateStreamableTransport(mcpSessionIdHeader, metadata);
+            }
+            rejectMcpAuthorityConflict(res);
             return;
           }
 

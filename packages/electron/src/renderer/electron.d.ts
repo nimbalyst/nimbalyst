@@ -142,6 +142,13 @@ interface SemanticSearchResult {
   signals: { dense: boolean; sparse: boolean };
 }
 
+interface SessionReparentedEvent {
+  workspacePath: string;
+  sessionId: string;
+  oldParentSessionId: string | null;
+  newParentSessionId: string | null;
+}
+
 interface ElectronAPI {
   team: {
     getKeyCustodyStatus: (orgId: string) => Promise<{ success: boolean; mode?: 'legacy-e2e' | 'server-managed'; error?: string }>;
@@ -1645,7 +1652,14 @@ interface ElectronAPI {
   // Generic IPC methods for services
   invoke: (channel: string, ...args: any[]) => Promise<any>;
   send: (channel: string, ...args: any[]) => void;
-  on: (channel: string, callback: (...args: any[]) => void) => () => void;
+  on(channel: 'sessions:session-reparented', callback: (data: SessionReparentedEvent) => void): () => void;
+  on(channel: 'sessions:visibility-delivery', callback: (data: {
+    auditId: string;
+    workspaceId: string;
+    workspacePath: string;
+    targetSessionId: string;
+  }) => void): () => void;
+  on(channel: string, callback: (...args: any[]) => void): () => void;
   off: (channel: string, callback: (...args: any[]) => void) => void;
 }
 
