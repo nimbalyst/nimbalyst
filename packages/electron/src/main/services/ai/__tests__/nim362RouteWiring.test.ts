@@ -44,6 +44,24 @@ function expectGuardBefore(block: string, guard: string, sideEffects: string[]):
   }
 }
 
+function expectClaimedCallbackOwnsEffect(
+  block: string,
+  guard: string,
+  callbackName: string,
+  sideEffect: string,
+): void {
+  const guardIndex = block.indexOf(guard);
+  const sideEffectIndex = block.indexOf(sideEffect);
+  expect(guardIndex, `missing ownership guard ${guard}`).toBeGreaterThanOrEqual(0);
+  expect(sideEffectIndex, `missing side-effect marker ${sideEffect}`).toBeGreaterThanOrEqual(0);
+  if (guardIndex < sideEffectIndex) return;
+
+  const callbackIndex = block.indexOf(`const ${callbackName} = async`);
+  expect(callbackIndex, `missing guarded callback ${callbackName}`).toBeGreaterThanOrEqual(0);
+  expect(callbackIndex, `${callbackName} must contain ${sideEffect}`).toBeLessThan(sideEffectIndex);
+  expect(block).toContain(`${guard}(sessionId, promptId, ${callbackName})`);
+}
+
 describe('NIM-362 route wiring', () => {
   it('wires ai:updateSessionMetadata through the guarded route implementation', () => {
     expect(handlerBlock(aiServiceSource, 'ai:updateSessionMetadata'))
@@ -125,9 +143,12 @@ describe('NIM-362 route wiring', () => {
     const start = aiServiceSource.indexOf('public async respondToInteractivePrompt');
     const end = aiServiceSource.indexOf('\n  /**', start + 20);
     const block = aiServiceSource.slice(start, end);
-    expect(block).toContain('runClaimedPendingPromptAction');
-    expect(block.indexOf('runClaimedPendingPromptAction'))
-      .toBeLessThan(block.indexOf('INSERT INTO ai_agent_messages'));
+    expectClaimedCallbackOwnsEffect(
+      block,
+      'runClaimedPendingPromptAction',
+      'performResponse',
+      'INSERT INTO ai_agent_messages',
+    );
   });
 
   it('routes an orphaned git proposal through exact-generation terminal settlement', () => {
