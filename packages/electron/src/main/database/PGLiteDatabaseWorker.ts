@@ -65,6 +65,17 @@ export function raceWithTimeout<T>(work: Promise<T>, timeoutMs: number): Promise
  */
 export const INIT_TIMEOUT_MS = 120_000;
 
+export function resolveCheckedInPGLiteWorkerPath(): string {
+  return path.join(getPackageRoot(), 'src', 'main', 'database', 'worker.js');
+}
+
+export interface PGLiteDatabaseWorkerOptions {
+  /** Explicit source-byte seam for isolated schema regressions; production omits it. */
+  workerPathOverride?: string;
+  /** Owned, absolute test root; production must omit this. */
+  userDataPathOverride?: string;
+}
+
 // Helper to categorize database errors
 function categorizeDBError(error: any): string {
   const message = error?.message?.toLowerCase() || String(error).toLowerCase();
@@ -231,6 +242,27 @@ export class PGLiteDatabaseWorker {
   private statsInterval: ReturnType<typeof setInterval> | null = null;
   private lastExecMs: number | undefined;
 
+  constructor(private readonly options: PGLiteDatabaseWorkerOptions = {}) {}
+
+  private resolveUserDataPath(): string {
+    const liveRoot = path.resolve(app.getPath('userData'));
+    const override = this.options.userDataPathOverride;
+    if (override === undefined) {
+      return process.env.NIMBALYST_USER_DATA_PATH
+        || (process.env.PLAYWRIGHT === '1' ? path.join(app.getPath('temp'), 'nimbalyst-test-db') : null)
+        || app.getPath('userData');
+    }
+    if (!override || !path.isAbsolute(override)) {
+      throw new Error('pglite_worker_user_data_override_invalid');
+    }
+    const normalized = path.resolve(override);
+    const comparable = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+    if (comparable(normalized) === comparable(liveRoot)) {
+      throw new Error('pglite_worker_user_data_override_live_root');
+    }
+    return normalized;
+  }
+
   // ============================================================================
   // Helper methods for dialogs and common operations
   // ============================================================================
@@ -297,7 +329,7 @@ export class PGLiteDatabaseWorker {
    * Delete the database directory for a fresh start
    */
   private async deleteDatabaseDirectory(): Promise<void> {
-    const dataDir = path.join(app.getPath('userData'), 'pglite-db');
+    const dataDir = path.join(this.resolveUserDataPath(), 'pglite-db');
     if (fs.existsSync(dataDir)) {
       fs.rmSync(dataDir, { recursive: true, force: true });
       logger.main.info('[PGLite Worker] Deleted database directory');
@@ -342,7 +374,9 @@ export class PGLiteDatabaseWorker {
   private createWorker(): void {
     // Create worker thread - use the bundled worker
     let workerPath: string;
-    if (app.isPackaged) {
+    if (this.options.workerPathOverride) {
+      workerPath = this.options.workerPathOverride;
+    } else if (app.isPackaged) {
       workerPath = path.join(process.resourcesPath, 'worker.bundle.js');
     } else {
       // The worker bundle is always built to the primary out/ directory under the package root.
@@ -352,9 +386,7 @@ export class PGLiteDatabaseWorker {
     // Use test-specific userData path to avoid touching production database
     // NIMBALYST_USER_DATA_PATH: custom path (for manual testing of packaged builds)
     // PLAYWRIGHT=1: use temp directory (for automated tests)
-    const userDataPath = process.env.NIMBALYST_USER_DATA_PATH
-      || (process.env.PLAYWRIGHT === '1' ? path.join(app.getPath('temp'), 'nimbalyst-test-db') : null)
-      || app.getPath('userData');
+    const userDataPath = this.resolveUserDataPath();
 
     logger.main.info('[PGLite] createWorker() called', {
       existingWorker: !!this.worker,
@@ -948,11 +980,19 @@ export class PGLiteDatabaseWorker {
     }
   }
 
-  async runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void> {
+  runTransaction<T = any>(
+    statements: Array<{ sql: string; params?: any[]; expectedRowCount?: 1 }>,
+  ): Promise<Array<{ rows: T[] }>>;
+  runTransaction(
+    statements: Array<{ sql: string; params?: any[] }>,
+  ): Promise<void>;
+  async runTransaction<T = any>(
+    statements: Array<{ sql: string; params?: any[]; expectedRowCount?: 1 }>,
+  ): Promise<Array<{ rows: T[] }> | void> {
     if (!this.initialized) {
       throw new Error('Database not initialized. Call initialize() first.');
     }
-    await this.sendMessage('transaction', { statements });
+    return await this.sendMessage('transaction', { statements });
   }
 
   /**
@@ -995,10 +1035,21 @@ export class PGLiteDatabaseWorker {
    * Begin a transaction
    * Note: Transactions in worker threads are more complex - simplified for now
    */
-  async transaction<T>(fn: (tx: any) => Promise<T>): Promise<T> {
+  /**
+   * Statement-array transaction parity with StoreDbAdapter. Keep the legacy
+   * callback overload below unchanged; it is not the atomic worker batch.
+   */
+  async transaction<T = any>(
+    statements: Array<{ sql: string; params?: any[]; expectedRowCount?: 1 }>,
+  ): Promise<Array<{ rows: T[] }>>;
+  async transaction<T>(fn: (tx: any) => Promise<T>): Promise<T>;
+  async transaction<T>(
+    arg: Array<{ sql: string; params?: any[]; expectedRowCount?: 1 }> | ((tx: any) => Promise<T>),
+  ): Promise<T | Array<{ rows: T[] }>> {
+    if (Array.isArray(arg)) return this.runTransaction<T>(arg);
     // For now, just execute the function
     // Real transaction support would need message batching
-    return await fn({
+    return await arg({
       query: (sql: string, params?: any[]) => this.query(sql, params),
       exec: (sql: string) => this.exec(sql)
     });
@@ -1171,6 +1222,7 @@ export interface AppDatabase {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
   queryReadOnly<T = any>(sql: string, params?: any[], timeoutMs?: number): Promise<{ rows: T[] }>;
   exec(sql: string, timeoutMs?: number): Promise<void>;
+  runTransaction<T = any>(statements: Array<{ sql: string; params?: any[]; expectedRowCount?: 1 }>): Promise<Array<{ rows: T[] }>>;
   runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void>;
   close(): Promise<void>;
   getStats(): Promise<any>;
@@ -1246,7 +1298,15 @@ class ActiveDatabaseFacade implements AppDatabase {
     return this.active.exec(sql, timeoutMs);
   }
 
-  runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void> {
+  runTransaction<T = any>(
+    statements: Array<{ sql: string; params?: any[]; expectedRowCount?: 1 }>,
+  ): Promise<Array<{ rows: T[] }>>;
+  runTransaction(
+    statements: Array<{ sql: string; params?: any[] }>,
+  ): Promise<void>;
+  runTransaction<T = any>(
+    statements: Array<{ sql: string; params?: any[]; expectedRowCount?: 1 }>,
+  ): Promise<Array<{ rows: T[] }> | void> {
     return this.active.runTransaction(statements);
   }
 

@@ -1,11 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
+import { PGlite } from '@electric-sql/pglite';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   handleInjectAttentionReply,
   type AttentionEventLike,
   type AttentionReplyDependencies,
   type InjectAttentionReplyRequest,
 } from '../AttentionReplyInjectionService';
-import type { HostControlReceiptRow } from '../HostControlReceiptsStore';
+import type {
+  HostControlReceiptMutationAuthority,
+  HostControlReceiptRow,
+} from '../HostControlReceiptsStore';
+import { createHostControlReceiptsStore } from '../HostControlReceiptsStore';
 
 const questionText = 'Which deployment ring?';
 const validRequest: InjectAttentionReplyRequest = {
@@ -38,35 +46,95 @@ function row(overrides: Partial<HostControlReceiptRow> = {}): HostControlReceipt
     eventIdentity: 'prompt-1',
     attentionGeneration: 'generation-1',
     state: 'reserved',
+    reservationOwner: 'owner-1',
+    leaseExpiresAt: Date.parse('2026-07-20T10:00:30.000Z'),
+    mutationId: 'mutation-1',
+    mutationFence: 1,
+    mutationState: 'not_started',
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
   };
 }
 
-function makeDeps(event: AttentionEventLike | null = validEvent): AttentionReplyDependencies & {
-  getPendingInteractiveEvent: ReturnType<typeof vi.fn>;
-  respondToInteractivePrompt: ReturnType<typeof vi.fn>;
-  reserveReceipt: ReturnType<typeof vi.fn>;
-  finalizeReceipt: ReturnType<typeof vi.fn>;
-} {
+function testMutationAuthority(
+  begin: HostControlReceiptMutationAuthority['begin'],
+  recordApplied: HostControlReceiptMutationAuthority['recordApplied'],
+  verify = true,
+  verifyCleanup = true,
+): HostControlReceiptMutationAuthority {
   return {
-    getPendingInteractiveEvent: vi.fn(async () => event),
-    respondToInteractivePrompt: vi.fn(async () => ({
+    begin,
+    recordApplied,
+    verify: vi.fn(async () => verify),
+    verifyCleanup: vi.fn(async () => verifyCleanup),
+    enterNative: async <T>(_generation: string, action: () => Promise<T>) => ({
+      owned: true as const,
+      value: await action(),
+    }),
+    claimCleanupStep: vi.fn(async () => ({ status: 'claimed' as const })),
+    metadataCleanupAuthority: vi.fn((step, attentionGeneration) => ({
+      receiptId: 'receipt-1',
+      reservationOwner: 'owner-1',
+      mutationId: 'mutation-1',
+      mutationFence: 1,
+      attentionGeneration,
+      step,
+    })),
+  };
+}
+
+type TestAttentionReplyDependencies = Omit<
+  AttentionReplyDependencies,
+  'getPendingInteractiveEvent' | 'respondToInteractivePrompt' | 'reserveReceipt' | 'finalizeReceipt'
+> & {
+  getPendingInteractiveEvent: Mock<AttentionReplyDependencies['getPendingInteractiveEvent']>;
+  respondToInteractivePrompt: Mock<AttentionReplyDependencies['respondToInteractivePrompt']>;
+  reserveReceipt: Mock<AttentionReplyDependencies['reserveReceipt']>;
+  finalizeReceipt: Mock<AttentionReplyDependencies['finalizeReceipt']>;
+  beginMutation: Mock<HostControlReceiptMutationAuthority['begin']>;
+  recordMutation: Mock<HostControlReceiptMutationAuthority['recordApplied']>;
+};
+
+function makeDeps(event: AttentionEventLike | null = validEvent): TestAttentionReplyDependencies {
+  const beginMutation = vi.fn<HostControlReceiptMutationAuthority['begin']>(async (_now, generation) => ({
+    started: true,
+    row: row({ mutationState: 'unknown', attentionGeneration: generation }),
+  }));
+  const recordMutation = vi.fn<HostControlReceiptMutationAuthority['recordApplied']>(async (
+    certainty,
+    receipt,
+  ) => row({
+    mutationState: certainty,
+    mutationReceipt: receipt,
+  }));
+  return {
+    getPendingInteractiveEvent: vi.fn<AttentionReplyDependencies['getPendingInteractiveEvent']>(async () => event),
+    respondToInteractivePrompt: vi.fn<AttentionReplyDependencies['respondToInteractivePrompt']>(async () => ({
       success: true,
       attentionCancelledCount: 1,
+      eventCleared: true,
+      nativeCertainty: 'applied' as const,
+      nativeEntered: true,
+      cleanupVerified: true,
     })),
-    reserveReceipt: vi.fn(async (input) => ({
+    reserveReceipt: vi.fn<AttentionReplyDependencies['reserveReceipt']>(async (input) => ({
       row: row({
         reservationKey: input.reservationKey,
         requestDigest: input.requestDigest,
       }),
       isNewReservation: true,
+      status: 'new' as const,
+      mutationAuthority: testMutationAuthority(beginMutation, recordMutation),
     })),
-    finalizeReceipt: vi.fn(async (input) => row({
+    finalizeReceipt: vi.fn<AttentionReplyDependencies['finalizeReceipt']>(async (input) => row({
       state: input.state,
       receipt: input.receipt,
     })),
+    now: vi.fn(() => Date.parse('2026-07-20T10:00:00.000Z')),
+    createReservationOwner: vi.fn(() => 'owner-1'),
+    beginMutation,
+    recordMutation,
   };
 }
 
@@ -101,6 +169,19 @@ describe('handleInjectAttentionReply', () => {
       .toBeLessThan(deps.respondToInteractivePrompt.mock.invocationCallOrder[0]);
   });
 
+  it('terminalizes a generationless legacy request without event lookup or native mutation', async () => {
+    const deps = makeDeps();
+    const result = await handleInjectAttentionReply(deps, {
+      ...validRequest,
+      attentionGeneration: undefined,
+    });
+
+    expect(result).toMatchObject({ status: 200, receipt: { outcome: 'already_resolved' } });
+    expect(deps.reserveReceipt).toHaveBeenCalledOnce();
+    expect(deps.getPendingInteractiveEvent).not.toHaveBeenCalled();
+    expect(deps.respondToInteractivePrompt).not.toHaveBeenCalled();
+  });
+
   it('returns a bounded conflict for a different digest under the same watch key', async () => {
     const seen = new Map<string, string>();
     const deps = makeDeps();
@@ -108,7 +189,12 @@ describe('handleInjectAttentionReply', () => {
       const prior = seen.get(input.reservationKey);
       if (prior && prior !== input.requestDigest) throw new Error('idempotency_conflict');
       seen.set(input.reservationKey, input.requestDigest);
-      return { row: row({ requestDigest: input.requestDigest }), isNewReservation: !prior };
+      return {
+        row: row({ requestDigest: input.requestDigest }),
+        isNewReservation: !prior,
+        status: prior ? 'busy' as const : 'new' as const,
+        mutationAuthority: testMutationAuthority(deps.beginMutation, deps.recordMutation),
+      };
     });
 
     await handleInjectAttentionReply(deps, validRequest);
@@ -138,7 +224,11 @@ describe('handleInjectAttentionReply', () => {
       receipt: {
         outcome: 'already_resolved',
         verified: true,
-        receipt: { route: 'host-attention-answer', event_cleared: true },
+        receipt: {
+          route: 'host-attention-answer',
+          event_cleared: false,
+          event_not_current: true,
+        },
       },
     });
     expect(deps.respondToInteractivePrompt).not.toHaveBeenCalled();
@@ -275,26 +365,337 @@ describe('handleInjectAttentionReply', () => {
         receipt: { route: 'host-attention-answer', event_cleared: true },
       },
     });
-    expect(deps.respondToInteractivePrompt).toHaveBeenCalledWith({
+    expect(deps.respondToInteractivePrompt).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'session-1',
       promptId: 'prompt-1',
       promptType: 'ask_user_question_request',
       response: { answers: { [questionText]: 'Canary' }, cancelled: false },
       respondedBy: 'telegram',
+      expectedAttentionGeneration: 'generation-1',
+      expectedPromptIdentity: 'prompt-1',
+      onNativeMutationApplied: expect.any(Function),
+    }));
+  });
+
+  it('returns only the exact durable row won by finalization', async () => {
+    const deps = makeDeps();
+    const persistedWinner = {
+      outcome: 'already_resolved',
+      verified: true,
+      receipt: {
+        route: 'host-attention-answer',
+        event_cleared: false,
+        event_not_current: true,
+      },
+    };
+    deps.finalizeReceipt.mockResolvedValueOnce(row({
+      state: 'already_resolved',
+      receipt: persistedWinner,
+    }));
+
+    await expect(handleInjectAttentionReply(deps, validRequest)).resolves.toEqual({
+      status: 200,
+      receipt: persistedWinner,
     });
   });
 
   it('maps an atomically stale native response to verified already_resolved', async () => {
     const deps = makeDeps();
-    deps.respondToInteractivePrompt.mockResolvedValue({ success: false, staleAction: true });
+    deps.respondToInteractivePrompt.mockResolvedValue({
+      success: false,
+      staleAction: true,
+      nativeCertainty: 'not_applied',
+      nativeEntered: false,
+      cleanupVerified: false,
+    });
 
     const result = await handleInjectAttentionReply(deps, validRequest);
 
     expect(result.receipt).toEqual({
       outcome: 'already_resolved',
       verified: true,
-      receipt: { route: 'host-attention-answer', event_cleared: true },
+      receipt: {
+        route: 'host-attention-answer',
+        event_cleared: false,
+        event_not_current: true,
+      },
     });
+  });
+
+  it('reconciles an expired unknown-outcome row without a second native mutation', async () => {
+    const deps = makeDeps();
+    deps.reserveReceipt.mockResolvedValueOnce({
+      row: row({
+        reservationOwner: 'owner-1',
+        mutationState: 'unknown',
+        mutationStartedAt: Date.parse('2026-07-20T09:59:00.000Z'),
+      }),
+      isNewReservation: false,
+      status: 'taken_over',
+      mutationAuthority: testMutationAuthority(deps.beginMutation, deps.recordMutation),
+    });
+
+    const result = await handleInjectAttentionReply(deps, validRequest);
+
+    expect(result).toEqual({
+      status: 500,
+      receipt: {
+        outcome: 'failed',
+        verified: false,
+        errorClass: 'mutation_outcome_unconfirmed',
+      },
+    });
+    expect(deps.getPendingInteractiveEvent).not.toHaveBeenCalled();
+    expect(deps.respondToInteractivePrompt).not.toHaveBeenCalled();
+    expect(deps.finalizeReceipt).toHaveBeenCalledOnce();
+  });
+
+  it('reconstructs an applied mutation receipt after owner loss without answering again', async () => {
+    const deps = makeDeps();
+    const injectedReceipt = {
+      outcome: 'injected',
+      verified: true,
+      receipt: { route: 'host-attention-answer', event_cleared: true },
+    };
+    deps.reserveReceipt.mockResolvedValueOnce({
+      row: row({
+        reservationOwner: 'owner-1',
+        mutationState: 'applied',
+        mutationReceipt: { state: 'injected', status: 200, receipt: injectedReceipt },
+      }),
+      isNewReservation: false,
+      status: 'taken_over',
+      mutationAuthority: testMutationAuthority(deps.beginMutation, deps.recordMutation),
+    });
+
+    const result = await handleInjectAttentionReply(deps, validRequest);
+
+    expect(result).toEqual({ status: 200, receipt: injectedReceipt });
+    expect(deps.respondToInteractivePrompt).not.toHaveBeenCalled();
+    expect(deps.finalizeReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      state: 'injected',
+      reservationOwner: 'owner-1',
+    }));
+  });
+
+  it('replays an applied fact through cleanup-only reconciliation without a second native answer', async () => {
+    const deps = makeDeps();
+    deps.reserveReceipt.mockResolvedValueOnce({
+      row: row({
+        mutationState: 'applied',
+        mutationReceipt: {
+          nativeCertainty: 'applied',
+          nativeEntered: true,
+          cleanupVerified: false,
+          success: true,
+        },
+      }),
+      isNewReservation: false,
+      status: 'reconcile',
+      mutationAuthority: testMutationAuthority(
+        deps.beginMutation,
+        deps.recordMutation,
+        false,
+        true,
+      ),
+    });
+
+    const result = await handleInjectAttentionReply(deps, validRequest);
+
+    expect(result).toEqual({
+      status: 200,
+      receipt: {
+        outcome: 'injected',
+        verified: true,
+        receipt: { route: 'host-attention-answer', event_cleared: true },
+      },
+    });
+    expect(deps.beginMutation).not.toHaveBeenCalled();
+    expect(deps.respondToInteractivePrompt).toHaveBeenCalledOnce();
+    expect(deps.respondToInteractivePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      reconcileAppliedOnly: true,
+      assertMutationFence: undefined,
+      assertCleanupFence: expect.any(Function),
+      onNativeMutationApplied: undefined,
+    }));
+  });
+
+  it('does not misclassify lost applied-cleanup authority as already_resolved', async () => {
+    const deps = makeDeps();
+    deps.reserveReceipt.mockResolvedValueOnce({
+      row: row({
+        mutationState: 'applied',
+        mutationReceipt: {
+          nativeCertainty: 'applied',
+          nativeEntered: true,
+          cleanupVerified: false,
+        },
+      }),
+      isNewReservation: false,
+      status: 'reconcile',
+      mutationAuthority: testMutationAuthority(
+        deps.beginMutation,
+        deps.recordMutation,
+        false,
+        false,
+      ),
+    });
+    deps.respondToInteractivePrompt.mockResolvedValueOnce({
+      success: false,
+      staleAction: true,
+      nativeCertainty: 'applied',
+      nativeEntered: true,
+      cleanupVerified: false,
+    });
+
+    const result = await handleInjectAttentionReply(deps, validRequest);
+
+    expect(result).toEqual({
+      status: 500,
+      receipt: {
+        outcome: 'failed',
+        verified: false,
+        errorClass: 'mutation_cleanup_incomplete',
+      },
+    });
+    expect(result.receipt).not.toMatchObject({ outcome: 'already_resolved' });
+  });
+
+  it('routes event-absent applied recovery through cleanup-only AIService instead of terminalizing early', async () => {
+    const deps = makeDeps(null);
+    deps.respondToInteractivePrompt.mockResolvedValueOnce({
+      success: true,
+      attentionCancelledCount: 0,
+      eventCleared: false,
+      nativeCertainty: 'applied',
+      nativeEntered: true,
+      cleanupVerified: true,
+    });
+    deps.reserveReceipt.mockResolvedValueOnce({
+      row: row({
+        mutationState: 'applied',
+        mutationReceipt: {
+          nativeCertainty: 'applied',
+          nativeEntered: true,
+          cleanupVerified: false,
+        },
+      }),
+      isNewReservation: false,
+      status: 'reconcile',
+      mutationAuthority: testMutationAuthority(deps.beginMutation, deps.recordMutation),
+    });
+
+    const result = await handleInjectAttentionReply(deps, validRequest);
+
+    expect(deps.respondToInteractivePrompt).toHaveBeenCalledOnce();
+    expect(deps.respondToInteractivePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      promptId: 'prompt-1',
+      expectedAttentionGeneration: 'generation-1',
+      expectedPromptIdentity: 'prompt-1',
+      reconcileAppliedOnly: true,
+      onNativeMutationApplied: undefined,
+    }));
+    expect(result).toEqual({
+      status: 200,
+      receipt: {
+        outcome: 'injected',
+        verified: true,
+        receipt: {
+          route: 'host-attention-answer', event_cleared: false, event_not_current: true,
+        },
+      },
+    });
+  });
+
+  it('takes over a real durable reserved row after process loss and terminalizes replacement B once', async () => {
+    const db = new PGlite();
+    const authorityDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jean-real-ledger-authority-'));
+    await (db as unknown as { waitReady: Promise<void> }).waitReady;
+    try {
+      await db.exec(`
+        CREATE TABLE host_control_receipts (
+          id TEXT PRIMARY KEY, reservation_key TEXT NOT NULL UNIQUE,
+          request_digest TEXT NOT NULL, operation TEXT NOT NULL,
+          session_id TEXT NOT NULL, event_identity TEXT NOT NULL,
+          attention_generation TEXT, state TEXT NOT NULL,
+          reservation_owner TEXT, lease_expires_at TIMESTAMPTZ,
+          mutation_id TEXT, mutation_fence INTEGER NOT NULL DEFAULT 0,
+          mutation_state TEXT NOT NULL DEFAULT 'not_started',
+          mutation_started_at TIMESTAMPTZ, mutation_applied_at TIMESTAMPTZ,
+          mutation_receipt JSONB,
+          cleanup_prompt_state TEXT NOT NULL DEFAULT 'pending',
+          cleanup_prompt_fence INTEGER NOT NULL DEFAULT 0,
+          cleanup_attention_state TEXT NOT NULL DEFAULT 'pending',
+          cleanup_attention_fence INTEGER NOT NULL DEFAULT 0,
+          cleanup_attention_result TEXT,
+          cleanup_terminal_state TEXT NOT NULL DEFAULT 'pending',
+          cleanup_terminal_fence INTEGER NOT NULL DEFAULT 0,
+          receipt JSONB,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE host_control_store_identity (
+          singleton INTEGER PRIMARY KEY,
+          store_id TEXT NOT NULL UNIQUE,
+          authority_root TEXT NOT NULL
+        );
+      `);
+      await db.query(
+        `INSERT INTO host_control_store_identity (singleton, store_id, authority_root)
+         VALUES (1, $1, $2)`,
+        ['jean-real-ledger', authorityDir],
+      );
+      const store = createHostControlReceiptsStore(db);
+      let now = Date.now() + 60_000;
+      const owner1Deps = makeDeps();
+      owner1Deps.reserveReceipt.mockImplementation(async (input) => {
+        const reserved = await store.reserveReceipt(input);
+        await reserved.mutationAuthority!.begin(new Date(now), 'generation-1');
+        throw new Error('simulated_process_loss');
+      });
+      owner1Deps.finalizeReceipt.mockImplementation((input) => store.finalizeReceipt(input));
+      owner1Deps.createReservationOwner = () => 'owner-1';
+      owner1Deps.now = () => now;
+      await expect(handleInjectAttentionReply(owner1Deps, validRequest))
+        .resolves.toMatchObject({ status: 500 });
+
+      const stranded = await store.getByReservationKey('attention-reply:watch-1');
+      expect(stranded).toMatchObject({
+        state: 'reserved',
+        reservationOwner: 'owner-1',
+        mutationState: 'unknown',
+        mutationFence: 1,
+      });
+
+      await db.query(
+        `UPDATE host_control_receipts SET lease_expires_at = NOW()
+         WHERE reservation_key = 'attention-reply:watch-1'`,
+      );
+      now += 120_000;
+      const owner2Deps = makeDeps({ ...validEvent, attentionGeneration: 'generation-b' });
+      owner2Deps.reserveReceipt.mockImplementation((input) => store.reserveReceipt(input));
+      owner2Deps.finalizeReceipt.mockImplementation((input) => store.finalizeReceipt(input));
+      owner2Deps.createReservationOwner = () => 'owner-2';
+      owner2Deps.now = () => now;
+      const reconciled = await handleInjectAttentionReply(owner2Deps, validRequest);
+      const replay = await handleInjectAttentionReply(owner2Deps, validRequest);
+
+      expect(reconciled).toEqual(replay);
+      expect(reconciled).toMatchObject({
+        status: 500,
+        receipt: { outcome: 'failed', errorClass: 'mutation_outcome_unconfirmed' },
+      });
+      expect(owner2Deps.respondToInteractivePrompt).not.toHaveBeenCalled();
+      expect(await store.getByReservationKey('attention-reply:watch-1')).toMatchObject({
+        state: 'failed',
+        reservationOwner: undefined,
+        leaseExpiresAt: undefined,
+        mutationFence: 2,
+      });
+    } finally {
+      await db.close();
+      fs.rmSync(authorityDir, { recursive: true, force: true });
+    }
   });
 
   it('does not expose answer or question text in failed receipts or errors', async () => {

@@ -22,6 +22,11 @@ import type {
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
+  /** Native worker-backed statement batch; each backend commits the whole
+   * array atomically and returns every statement result. */
+  transaction?<T = any>(
+    statements: Array<{ sql: string; params?: any[]; expectedRowCount?: 1 }>,
+  ): Promise<Array<{ rows: T[] }>>;
   searchTranscriptEventSessions?(
     query: string,
     opts?: {
@@ -83,6 +88,327 @@ function parseJsonColumn(value: unknown): unknown {
 // Module-level reference for standalone functions
 let moduleDb: PGliteLike | null = null;
 let moduleEnsureReady: EnsureReadyFn | null = null;
+
+export interface HostControlMetadataCleanupAuthority {
+  receiptId: string;
+  reservationOwner: string;
+  mutationId: string;
+  mutationFence: number;
+  attentionGeneration: string;
+  step: 'prompt' | 'attention';
+}
+
+export type HostControlAttentionCleanupResult = 'settled' | 'already_absent';
+export type HostControlPromptCleanupResult = 'cleared' | 'already_absent';
+
+export interface HostControlAttentionOccurrence {
+  eventIdentity: string;
+  attentionGeneration: string;
+}
+
+function isExactPendingAttention(
+  value: unknown,
+  occurrence: HostControlAttentionOccurrence,
+): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const event = value as Record<string, unknown>;
+  return event.kind === 'interactive_prompt'
+    && event.status === 'pending'
+    && event.attentionGeneration === occurrence.attentionGeneration
+    && (event.promptId === occurrence.eventIdentity || event.toolUseId === occurrence.eventIdentity);
+}
+
+function validateAttentionTransition(
+  expected: Record<string, unknown>,
+  next: Record<string, unknown>,
+  occurrence: HostControlAttentionOccurrence,
+  result: HostControlAttentionCleanupResult,
+): void {
+  const before = Array.isArray(expected.attentionEvents) ? expected.attentionEvents : [];
+  const after = Array.isArray(next.attentionEvents) ? next.attentionEvents : [];
+  if (result === 'already_absent') {
+    if (before.some((event) => isExactPendingAttention(event, occurrence))
+      || JSON.stringify(expected) !== JSON.stringify(next)) {
+      throw new Error('host_control_attention_absence_transition_invalid');
+    }
+    return;
+  }
+  if (!before.some((event) => isExactPendingAttention(event, occurrence))
+    || after.length !== before.length
+    || after.some((event) => isExactPendingAttention(event, occurrence))) {
+    throw new Error('host_control_attention_settlement_transition_invalid');
+  }
+  for (let index = 0; index < before.length; index += 1) {
+    if (!isExactPendingAttention(before[index], occurrence)
+      && JSON.stringify(before[index]) !== JSON.stringify(after[index])) {
+      throw new Error('host_control_attention_nonoccurrence_mutated');
+    }
+  }
+  for (const key of new Set([...Object.keys(expected), ...Object.keys(next)])) {
+    if (key !== 'attentionEvents' && key !== 'attentionSummary'
+      && JSON.stringify(expected[key]) !== JSON.stringify(next[key])) {
+      throw new Error('host_control_attention_unrelated_metadata_mutated');
+    }
+  }
+}
+
+function validatePromptTransition(
+  expected: Record<string, unknown>,
+  next: Record<string, unknown>,
+  eventIdentity: string,
+  attentionGeneration: string,
+  result: HostControlPromptCleanupResult,
+): void {
+  const exactA = expected.hasPendingPrompt === true
+    && expected.pendingPromptId === eventIdentity
+    && expected.pendingPromptGeneration === attentionGeneration;
+  if (result === 'already_absent') {
+    if (exactA || JSON.stringify(expected) !== JSON.stringify(next)) {
+      throw new Error('host_control_prompt_absence_transition_invalid');
+    }
+    return;
+  }
+  if (!exactA
+    || next.hasPendingPrompt !== false
+    || next.pendingPromptId !== null
+    || next.pendingPromptGeneration !== null) {
+    throw new Error('host_control_prompt_clear_transition_invalid');
+  }
+  for (const key of new Set([...Object.keys(expected), ...Object.keys(next)])) {
+    if (!['hasPendingPrompt', 'pendingPromptId', 'pendingPromptGeneration'].includes(key)
+      && JSON.stringify(expected[key]) !== JSON.stringify(next[key])) {
+      throw new Error('host_control_prompt_unrelated_metadata_mutated');
+    }
+  }
+}
+
+/**
+ * Commit one optimistic session-metadata transition only while the exact Jean
+ * cleanup step and lease are current in the same database statement. This is
+ * deliberately outside the runtime SessionStore contract: it is a narrow host
+ * control authority seam, not a general metadata update API.
+ */
+export async function compareUpdateSessionMetadataWithHostControlAuthority(input: {
+  sessionId: string;
+  expectedMetadata: Record<string, unknown>;
+  nextMetadata: Record<string, unknown>;
+  authority: HostControlMetadataCleanupAuthority;
+  /** Required only for the attention phase, whose effect and replay fact
+   * must be committed by the same guarded transaction. */
+  attentionResult?: HostControlAttentionCleanupResult;
+  attentionOccurrence?: HostControlAttentionOccurrence;
+  promptResult?: HostControlPromptCleanupResult;
+  promptEventIdentity?: string;
+}): Promise<boolean> {
+  if (!moduleDb) throw new Error('session_store_not_initialized');
+  if (moduleEnsureReady) await moduleEnsureReady();
+  const cleanupStateColumn = input.authority.step === 'prompt'
+    ? 'cleanup_prompt_state'
+    : 'cleanup_attention_state';
+  const cleanupFenceColumn = input.authority.step === 'prompt'
+    ? 'cleanup_prompt_fence'
+    : 'cleanup_attention_fence';
+  const mutationStatePredicate = input.authority.step === 'attention' || input.authority.step === 'prompt'
+    ? "h.mutation_state = 'applied'"
+    : "h.mutation_state IN ('applied', 'not_applied')";
+  const metadataParams = [
+    input.sessionId,
+    JSON.stringify(input.nextMetadata),
+    JSON.stringify(input.expectedMetadata),
+    input.authority.receiptId,
+    input.authority.reservationOwner,
+    input.authority.mutationId,
+    input.authority.mutationFence,
+    input.authority.attentionGeneration,
+  ];
+  const metadataUpdate = `UPDATE ai_sessions
+    SET metadata = $2
+    WHERE id = $1
+      AND metadata = $3
+      AND EXISTS (
+        SELECT 1 FROM host_control_receipts h
+        WHERE h.id = $4
+          AND h.reservation_owner = $5
+          AND h.mutation_id = $6
+          AND h.mutation_fence = $7
+          AND h.attention_generation = $8
+          AND h.state = 'reserved'
+          AND ${mutationStatePredicate}
+          AND h.${cleanupStateColumn} = 'claimed'
+          AND h.${cleanupFenceColumn} = $7
+          AND h.lease_expires_at > NOW()
+      )
+    RETURNING id`;
+
+  // I3-R/I3-Z: exact-A settlement and proved A-absence each pair their
+  // metadata CAS with the immutable replay fact in one guarded native batch.
+  // Each required row count is checked *inside* that callback, so a second
+  // authority miss throws and rolls back the first statement.
+  if (input.authority.step === 'attention' || input.authority.step === 'prompt') {
+    if (!moduleDb.transaction) {
+      throw new Error('session_store_atomic_transaction_unavailable');
+    }
+    if (input.authority.step === 'prompt') {
+      if (!input.promptResult || !input.promptEventIdentity) {
+        throw new Error('host_control_prompt_result_required');
+      }
+      validatePromptTransition(
+        input.expectedMetadata,
+        input.nextMetadata,
+        input.promptEventIdentity,
+        input.authority.attentionGeneration,
+        input.promptResult,
+      );
+      const expectedSerialized = JSON.stringify(input.expectedMetadata);
+      const nextSerialized = JSON.stringify(input.nextMetadata);
+      const unchanged = input.promptResult === 'already_absent';
+      const promptSessionUpdate = unchanged
+        ? `UPDATE ai_sessions SET metadata = metadata
+              WHERE id = $1 AND metadata = $2
+                AND EXISTS (SELECT 1 FROM host_control_receipts h
+                  WHERE h.id = $3 AND h.reservation_owner = $4 AND h.mutation_id = $5
+                    AND h.mutation_fence = $6 AND h.attention_generation = $7
+                    AND h.event_identity = $8 AND h.state = 'reserved' AND h.mutation_state = 'applied'
+                    AND h.cleanup_prompt_state = 'claimed' AND h.cleanup_prompt_fence = $6
+                    AND h.lease_expires_at > NOW()) RETURNING id`
+        : `UPDATE ai_sessions SET metadata = $2
+              WHERE id = $1 AND metadata = $3
+                AND EXISTS (SELECT 1 FROM host_control_receipts h
+                  WHERE h.id = $4 AND h.reservation_owner = $5 AND h.mutation_id = $6
+                    AND h.mutation_fence = $7 AND h.attention_generation = $8
+                    AND h.event_identity = $9 AND h.state = 'reserved' AND h.mutation_state = 'applied'
+                    AND h.cleanup_prompt_state = 'claimed' AND h.cleanup_prompt_fence = $7
+                    AND h.lease_expires_at > NOW()) RETURNING id`;
+      const results = await moduleDb.transaction<{ id: string }>([
+        {
+          sql: promptSessionUpdate,
+          params: unchanged
+            ? [input.sessionId, expectedSerialized, input.authority.receiptId, input.authority.reservationOwner, input.authority.mutationId, input.authority.mutationFence, input.authority.attentionGeneration, input.promptEventIdentity]
+            : [input.sessionId, nextSerialized, expectedSerialized, input.authority.receiptId, input.authority.reservationOwner, input.authority.mutationId, input.authority.mutationFence, input.authority.attentionGeneration, input.promptEventIdentity],
+          expectedRowCount: 1,
+        },
+        {
+          sql: `UPDATE host_control_receipts SET cleanup_prompt_state = 'complete', updated_at = NOW()
+                WHERE id = $1 AND reservation_owner = $2 AND mutation_id = $3 AND mutation_fence = $4
+                  AND attention_generation = $5 AND event_identity = $6 AND state = 'reserved'
+                  AND mutation_state = 'applied' AND cleanup_prompt_state = 'claimed'
+                  AND cleanup_prompt_fence = $4 AND lease_expires_at > NOW()
+                  AND EXISTS (SELECT 1 FROM ai_sessions s WHERE s.id = $7 AND s.metadata = $8) RETURNING id`,
+          params: [input.authority.receiptId, input.authority.reservationOwner, input.authority.mutationId, input.authority.mutationFence, input.authority.attentionGeneration, input.promptEventIdentity, input.sessionId, unchanged ? expectedSerialized : nextSerialized],
+          expectedRowCount: 1,
+        },
+      ]);
+      return results[0]?.rows.length === 1 && results[1]?.rows.length === 1;
+    }
+    if (
+      input.attentionResult !== 'settled'
+      && input.attentionResult !== 'already_absent'
+    ) {
+      throw new Error('host_control_attention_result_required');
+    }
+    const occurrence = input.attentionOccurrence;
+    if (!occurrence || !occurrence.eventIdentity
+      || occurrence.attentionGeneration !== input.authority.attentionGeneration) {
+      throw new Error('host_control_attention_occurrence_required');
+    }
+    validateAttentionTransition(
+      input.expectedMetadata,
+      input.nextMetadata,
+      occurrence,
+      input.attentionResult,
+    );
+    const isAlreadyAbsent = input.attentionResult === 'already_absent';
+    const expectedSerialized = JSON.stringify(input.expectedMetadata);
+    const nextSerialized = JSON.stringify(input.nextMetadata);
+    const settledMetadataUpdate = `${metadataUpdate.replace(
+      'AND h.state = \'reserved\'',
+      "AND h.event_identity = $9\n          AND h.state = 'reserved'",
+    )}`;
+    const sessionUpdate = isAlreadyAbsent
+      ? `UPDATE ai_sessions
+         SET metadata = metadata
+         WHERE id = $1
+           AND metadata = $2
+           AND EXISTS (
+             SELECT 1 FROM host_control_receipts h
+             WHERE h.id = $3
+               AND h.reservation_owner = $4
+               AND h.mutation_id = $5
+               AND h.mutation_fence = $6
+               AND h.attention_generation = $7
+               AND h.event_identity = $8
+               AND h.state = 'reserved'
+               AND h.mutation_state = 'applied'
+               AND h.cleanup_attention_state = 'claimed'
+               AND h.cleanup_attention_fence = $6
+               AND h.lease_expires_at > NOW()
+           )
+         RETURNING id`
+      : settledMetadataUpdate;
+    const sessionParams = isAlreadyAbsent
+      ? [
+        input.sessionId,
+        expectedSerialized,
+        input.authority.receiptId,
+        input.authority.reservationOwner,
+        input.authority.mutationId,
+        input.authority.mutationFence,
+        input.authority.attentionGeneration,
+        occurrence.eventIdentity,
+      ]
+      : [...metadataParams, occurrence.eventIdentity];
+    const metadataForReceipt = isAlreadyAbsent ? expectedSerialized : nextSerialized;
+    const results = await moduleDb.transaction<{ id: string }>([
+      { sql: sessionUpdate, params: sessionParams, expectedRowCount: 1 },
+      {
+        sql: `UPDATE host_control_receipts
+              SET cleanup_attention_state = 'complete',
+                  cleanup_attention_result = $9,
+                  updated_at = NOW()
+              WHERE id = $1
+                AND reservation_owner = $2
+                AND mutation_id = $3
+                AND mutation_fence = $4
+                AND state = 'reserved'
+                AND mutation_state = 'applied'
+                AND attention_generation = $5
+                AND event_identity = $8
+                AND cleanup_attention_state = 'claimed'
+                AND cleanup_attention_fence = $4
+                AND lease_expires_at > NOW()
+                AND EXISTS (
+                  SELECT 1 FROM ai_sessions s
+                  WHERE s.id = $6 AND s.metadata = $7
+                )
+              RETURNING id`,
+        params: [
+          input.authority.receiptId,
+          input.authority.reservationOwner,
+          input.authority.mutationId,
+          input.authority.mutationFence,
+          input.authority.attentionGeneration,
+          input.sessionId,
+          metadataForReceipt,
+          occurrence.eventIdentity,
+          input.attentionResult,
+        ],
+        expectedRowCount: 1,
+      },
+    ]);
+    const metadataCommitted = results[0]?.rows.length === 1;
+    const receiptCommitted = results[1]?.rows.length === 1;
+    if (metadataCommitted !== receiptCommitted) {
+      // The predicates are intentionally equivalent under one transaction.
+      // Treat an impossible asymmetric backend result as a hard failure rather
+      // than inventing an attention-cleanup result for replay.
+      throw new Error('host_control_attention_settlement_atomicity_violation');
+    }
+    return metadataCommitted;
+  }
+
+  const result = await moduleDb.query<{ id: string }>(metadataUpdate, metadataParams);
+  return result.rows.length === 1;
+}
 
 /**
  * Get the database instance for direct queries (e.g., migrations)

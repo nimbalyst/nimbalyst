@@ -11,6 +11,10 @@ import { AISessionsRepository } from '@nimbalyst/runtime';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getSyncProvider } from '../SyncManager';
 import { logger } from '../../utils/logger';
+import {
+  compareUpdateSessionMetadataWithHostControlAuthority,
+  type HostControlMetadataCleanupAuthority,
+} from '../PGLiteSessionStore';
 
 export interface PendingPromptPersistenceOptions {
   /** Identity to persist when opening a prompt. */
@@ -21,6 +25,8 @@ export interface PendingPromptPersistenceOptions {
   expectedPromptId?: string;
   /** Clear only if this is still the prompt opened by the settled turn. */
   expectedGeneration?: string;
+  /** Exact durable Jean cleanup claim consumed by the local metadata UPDATE. */
+  durableCleanupAuthority?: HostControlMetadataCleanupAuthority;
 }
 
 export interface PendingPromptPersistenceStep {
@@ -82,6 +88,53 @@ export function readPendingPromptIdentity(metadata: unknown): {
     ...(typeof promptId === 'string' && promptId ? { promptId } : {}),
     ...(typeof generation === 'string' && generation ? { generation } : {}),
   };
+}
+
+/**
+ * Consume a claimed Jean prompt-cleanup phase without re-entering the
+ * per-session serializer. This narrow entry is intentionally unavailable to
+ * ordinary prompt writers: it couples the exact-A metadata transition to the
+ * durable receipt phase in one native transaction.
+ */
+export async function completeAppliedJeanPromptCleanup(input: {
+  sessionId: string;
+  eventIdentity: string;
+  attentionGeneration: string;
+  durableCleanupAuthority: HostControlMetadataCleanupAuthority;
+}): Promise<'complete' | 'not_owned' | 'invalid_state'> {
+  if (!input.sessionId || !input.eventIdentity || !input.attentionGeneration
+    || input.durableCleanupAuthority.step !== 'prompt'
+    || input.durableCleanupAuthority.attentionGeneration !== input.attentionGeneration) {
+    return 'invalid_state';
+  }
+  const session = await AISessionsRepository.get(input.sessionId);
+  const expectedMetadata = session?.metadata && typeof session.metadata === 'object'
+    && !Array.isArray(session.metadata) ? session.metadata as Record<string, unknown> : null;
+  if (!expectedMetadata) return 'invalid_state';
+  const pending = readPendingPromptIdentity(expectedMetadata);
+  const exactA = pending.hasPendingPrompt
+    && pending.promptId === input.eventIdentity
+    && pending.generation === input.attentionGeneration;
+  if (pending.hasPendingPrompt && (!pending.promptId || !pending.generation)) return 'invalid_state';
+  const nextMetadata = exactA ? {
+    ...expectedMetadata,
+    hasPendingPrompt: false,
+    pendingPromptId: null,
+    pendingPromptGeneration: null,
+  } : expectedMetadata;
+  try {
+    const committed = await compareUpdateSessionMetadataWithHostControlAuthority({
+      sessionId: input.sessionId,
+      expectedMetadata,
+      nextMetadata,
+      authority: input.durableCleanupAuthority,
+      promptResult: exactA ? 'cleared' : 'already_absent',
+      promptEventIdentity: input.eventIdentity,
+    });
+    return committed ? 'complete' : 'not_owned';
+  } catch {
+    return 'not_owned';
+  }
 }
 
 function boundedGeneration(value: unknown): string | null {
@@ -285,14 +338,35 @@ async function setSessionPendingPromptInternal(
       skippedReason: null,
     };
     try {
-      await AISessionsRepository.updateMetadata(sessionId, {
-        metadata: {
-          hasPendingPrompt,
-          pendingPromptId: promptId,
-          pendingPromptGeneration: generation,
-        },
-      });
-      local.succeeded = true;
+      if (options.durableCleanupAuthority) {
+        if (
+          hasPendingPrompt
+          || !options.expectedPromptId
+          || !expectedGeneration
+        ) {
+          local.skippedReason = 'durable_cleanup_occurrence_mismatch';
+        } else {
+          const result = await completeAppliedJeanPromptCleanup({
+            sessionId,
+            eventIdentity: options.expectedPromptId,
+            attentionGeneration: expectedGeneration,
+            durableCleanupAuthority: options.durableCleanupAuthority,
+          });
+          local.succeeded = result === 'complete';
+          if (!local.succeeded) local.skippedReason = result === 'invalid_state'
+            ? 'durable_cleanup_occurrence_mismatch'
+            : 'durable_cleanup_authority_lost';
+        }
+      } else {
+        await AISessionsRepository.updateMetadata(sessionId, {
+          metadata: {
+            hasPendingPrompt,
+            pendingPromptId: promptId,
+            pendingPromptGeneration: generation,
+          },
+        });
+        local.succeeded = true;
+      }
     } catch (error) {
       local.skippedReason = 'local_persistence_failed';
       local.error = boundedError(error);
@@ -308,6 +382,9 @@ async function setSessionPendingPromptInternal(
       skippedReason: null,
     };
     try {
+      if (options.durableCleanupAuthority) {
+        sync.skippedReason = 'durable_cleanup_local_only';
+      } else {
       const provider = getSyncProvider();
       if (!provider) {
         sync.skippedReason = 'sync_provider_unavailable';
@@ -328,6 +405,7 @@ async function setSessionPendingPromptInternal(
         // Legacy providers expose no write receipt. Preserve their best-effort
         // push without claiming the encrypted index frame was accepted.
         sync.skippedReason = 'sync_write_result_unavailable';
+      }
       }
     } catch (error) {
       sync.skippedReason = 'sync_push_failed';
@@ -407,7 +485,9 @@ export async function runOwnedPendingPromptAction<T>(
   promptId: string,
   action: (state: {
     ownership: PendingPromptActionOwnership;
-    clearPrompt: () => Promise<PendingPromptPersistenceResult>;
+    clearPrompt: (
+      durableCleanupAuthority?: HostControlMetadataCleanupAuthority,
+    ) => Promise<PendingPromptPersistenceResult>;
   }) => Promise<T> | T,
 ): Promise<OwnedPendingPromptActionResult<T>> {
   return withSessionLock(sessionId, async () => {
@@ -421,12 +501,13 @@ export async function runOwnedPendingPromptAction<T>(
       return { ownership, owned: false };
     }
     let promptClear: PendingPromptPersistenceResult | undefined;
-    const clearPrompt = async () => {
+    const clearPrompt = async (durableCleanupAuthority?: HostControlMetadataCleanupAuthority) => {
       if (!promptClear) {
         promptClear = promptActionOwnsCurrentGeneration(ownership)
           ? await setSessionPendingPromptInternal(sessionId, false, {
               expectedPromptId: ownership.promptId,
               expectedGeneration: ownership.attentionGeneration!,
+              ...(durableCleanupAuthority ? { durableCleanupAuthority } : {}),
             }, false)
           : rejectedPromptActionClear(ownership, 'newer_prompt_is_pending');
       }

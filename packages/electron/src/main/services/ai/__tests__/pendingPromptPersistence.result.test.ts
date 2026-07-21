@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   updateMetadata: vi.fn(),
   pushChange: vi.fn(),
   pushMetadataChangeWithResult: vi.fn(),
+  guardedMetadataUpdate: vi.fn(),
 }));
 
 vi.mock('@nimbalyst/runtime', () => ({
@@ -21,6 +22,9 @@ vi.mock('../../SyncManager', () => ({
 }));
 vi.mock('../../../utils/logger', () => ({
   logger: { main: { warn: vi.fn() } },
+}));
+vi.mock('../../PGLiteSessionStore', () => ({
+  compareUpdateSessionMetadataWithHostControlAuthority: mocks.guardedMetadataUpdate,
 }));
 
 import {
@@ -45,6 +49,10 @@ describe('pendingPromptPersistence structured result and identity guard', () => 
       indexFrameWritten: true,
       skippedReason: null,
     });
+    mocks.guardedMetadataUpdate.mockImplementation(async ({ nextMetadata }) => {
+      metadata = nextMetadata;
+      return true;
+    });
   });
 
   it('reports local persistence and sync acceptance separately', async () => {
@@ -60,6 +68,40 @@ describe('pendingPromptPersistence structured result and identity guard', () => 
     expect(metadata).toMatchObject({ hasPendingPrompt: true, pendingPromptId: 'prompt-1' });
     expect(mocks.pushMetadataChangeWithResult).toHaveBeenCalledWith('session-1', {
       hasPendingPrompt: true,
+    });
+  });
+
+  it('commits a Jean clear through the durable cleanup CAS and emits no unguarded sync write', async () => {
+    metadata = {
+      hasPendingPrompt: true,
+      pendingPromptId: 'prompt-a',
+      pendingPromptGeneration: 'generation-a',
+    };
+    const authority = {
+      receiptId: 'receipt-a',
+      reservationOwner: 'owner-a',
+      mutationId: 'mutation-a',
+      mutationFence: 3,
+      attentionGeneration: 'generation-a',
+      step: 'prompt' as const,
+    };
+
+    const result = await setSessionPendingPrompt('session-1', false, {
+      expectedPromptId: 'prompt-a',
+      expectedGeneration: 'generation-a',
+      durableCleanupAuthority: authority,
+    });
+
+    expect(mocks.guardedMetadataUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      authority,
+      nextMetadata: expect.objectContaining({ hasPendingPrompt: false }),
+    }));
+    expect(mocks.updateMetadata).not.toHaveBeenCalled();
+    expect(mocks.pushMetadataChangeWithResult).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      local: { succeeded: true },
+      sync: { attempted: false, skippedReason: 'durable_cleanup_local_only' },
     });
   });
 

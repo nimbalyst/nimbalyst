@@ -7,6 +7,26 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { toMillis } from '../utils/timestampUtils';
+import {
+  hostControlMutationCoordinator,
+  type HostControlMutationCoordinator,
+  type HostControlStoreIdentity,
+} from './HostControlMutationCoordinator';
+
+export function interruptOperationLockKey(priorityRowId: string): string {
+  return `priority-interrupt:${priorityRowId}`;
+}
+
+export interface QueuedPromptsStoreOptions {
+  /** Testable crash/race seam: durable CAS committed, fence not published yet. */
+  afterInterruptReservationCommitted?: (input: {
+    row: QueuedPrompt;
+    takenOver: boolean;
+  }) => Promise<void> | void;
+  mutationCoordinator?: HostControlMutationCoordinator;
+  /** Overrides the durable identity lookup only for adapter-backed tests. */
+  storeIdentity?: HostControlStoreIdentity;
+}
 
 export interface QueuedPrompt {
   id: string;
@@ -32,6 +52,16 @@ export interface QueuedPrompt {
   requestDigest?: string;
   controlOperation?: string;
   interruptTargetGeneration?: string;
+  interruptReservationOwner?: string;
+  interruptLeaseExpiresAt?: number;
+  interruptOperationId?: string;
+  interruptFence?: number;
+  interruptApplicationState?: 'not_started' | 'unknown' | 'not_applied' | 'applied' | 'legacy_unknown';
+  interruptStartedAt?: number;
+  interruptAppliedAt?: number;
+  interruptApplicationReceipt?: unknown;
+  interruptCleanupState?: 'pending' | 'claimed' | 'complete';
+  interruptCleanupFence?: number;
   interruptReceipt?: unknown;
 }
 
@@ -72,10 +102,71 @@ export interface QueuedPromptsStore {
   reserveInterrupt(input: {
     id: string;
     expectedGeneration: string;
-  }): Promise<{ reserved: boolean; row: QueuedPrompt }>;
+    reservationOwner: string;
+    now: Date;
+    leaseExpiresAt: Date;
+  }): Promise<{ reserved: boolean; takenOver: boolean; row: QueuedPrompt }>;
+
+  /** Fence one owner before it invokes the generation-bound native interrupt. */
+  beginInterruptApplication(input: {
+    id: string;
+    expectedGeneration: string;
+    reservationOwner: string;
+    operationId: string;
+    fence: number;
+    now: Date;
+  }): Promise<{ started: boolean; row: QueuedPrompt }>;
+
+  /** Re-read the exact live unknown-outcome fence immediately before native entry. */
+  verifyInterruptApplication(input: {
+    id: string;
+    expectedGeneration: string;
+    reservationOwner: string;
+    operationId: string;
+    fence: number;
+    now: Date;
+  }): Promise<boolean>;
+
+  /** Database-current-time verification and native entry under the OS lock. */
+  enterInterruptApplication?<T>(input: {
+    id: string;
+    expectedGeneration: string;
+    reservationOwner: string;
+    operationId: string;
+    fence: number;
+  }, action: () => Promise<T>): Promise<{ owned: true; value: T } | { owned: false }>;
+
+  /** Persist the native result before the caller is allowed to finalize. */
+  recordInterruptApplication(input: {
+    id: string;
+    expectedGeneration: string;
+    reservationOwner: string;
+    operationId: string;
+    fence: number;
+    certainty: 'not_applied' | 'applied';
+    receipt: unknown;
+    appliedAt: Date;
+  }): Promise<QueuedPrompt>;
+
+  /** Claim the durable receipt-only cleanup phase without re-entering native code. */
+  claimInterruptCleanup(input: {
+    id: string;
+    expectedGeneration: string;
+    reservationOwner: string;
+    operationId: string;
+    fence: number;
+  }): Promise<boolean>;
 
   /** Persist one bounded interrupt attempt receipt. */
-  recordInterruptReceipt(input: { id: string; receipt: unknown }): Promise<QueuedPrompt>;
+  recordInterruptReceipt(input: {
+    id: string;
+    expectedGeneration: string;
+    reservationOwner: string;
+    operationId: string;
+    fence: number;
+    receipt: unknown;
+    finalizedAt: Date;
+  }): Promise<QueuedPrompt>;
 
   /** List all queued prompts for a session */
   listForSession(sessionId: string, options?: { includeCompleted?: boolean }): Promise<QueuedPrompt[]>;
@@ -201,6 +292,15 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     }
   }
 
+  let interruptApplicationReceipt = row.interrupt_application_receipt;
+  if (typeof interruptApplicationReceipt === 'string') {
+    try {
+      interruptApplicationReceipt = JSON.parse(interruptApplicationReceipt);
+    } catch {
+      interruptApplicationReceipt = undefined;
+    }
+  }
+
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -219,19 +319,69 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     requestDigest: row.request_digest || undefined,
     controlOperation: row.control_operation || undefined,
     interruptTargetGeneration: row.interrupt_target_generation || undefined,
+    interruptReservationOwner: row.interrupt_reservation_owner || undefined,
+    interruptLeaseExpiresAt: toMillis(row.interrupt_lease_expires_at) ?? undefined,
+    interruptOperationId: row.interrupt_operation_id || undefined,
+    interruptFence: Number(row.interrupt_fence ?? 0),
+    interruptApplicationState: row.interrupt_application_state ?? 'not_started',
+    interruptStartedAt: toMillis(row.interrupt_started_at) ?? undefined,
+    interruptAppliedAt: toMillis(row.interrupt_applied_at) ?? undefined,
+    interruptApplicationReceipt,
+    interruptCleanupState: row.interrupt_cleanup_state ?? 'pending',
+    interruptCleanupFence: Number(row.interrupt_cleanup_fence ?? 0),
     interruptReceipt,
   };
 }
 
+function serializeInterruptReceipt(receipt: unknown): string {
+  let serializedReceipt: string;
+  try {
+    const serialized = JSON.stringify(receipt);
+    if (serialized === undefined) throw new Error('receipt is not JSON-serializable');
+    serializedReceipt = serialized;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot record interrupt receipt: ${message}`);
+  }
+  const receiptSizeBytes = Buffer.byteLength(serializedReceipt, 'utf8');
+  if (receiptSizeBytes > 4096) {
+    throw new Error(
+      `Cannot record interrupt receipt: serialized receipt exceeds 4096 bytes (${receiptSizeBytes} bytes)`,
+    );
+  }
+  return serializedReceipt;
+}
+
 export function createPGLiteQueuedPromptsStore(
   db: PGliteLike,
-  ensureDbReady?: EnsureReadyFn
+  ensureDbReady?: EnsureReadyFn,
+  options?: QueuedPromptsStoreOptions,
 ): QueuedPromptsStore {
+  const coordinator = options?.mutationCoordinator ?? hostControlMutationCoordinator;
   const ensureReady = async () => {
     if (ensureDbReady) {
       await ensureDbReady();
     }
   };
+  let storeIdentityPromise: Promise<HostControlStoreIdentity> | undefined;
+  const resolveStoreIdentity = (): Promise<HostControlStoreIdentity> => {
+    if (options?.storeIdentity) return Promise.resolve(options.storeIdentity);
+    storeIdentityPromise ??= (async () => {
+      await ensureReady();
+      const result = await db.query<{ store_id: string; authority_root: string }>(
+        'SELECT store_id, authority_root FROM host_control_store_identity WHERE singleton = 1',
+      );
+      const row = result.rows[0];
+      if (!row?.store_id || !row?.authority_root) {
+        throw new Error('host_control_store_identity_missing');
+      }
+      return { storeId: row.store_id, authorityRoot: row.authority_root };
+    })();
+    return storeIdentityPromise;
+  };
+  const withOperationLock = async <T>(operationKey: string, action: () => Promise<T>): Promise<T> => (
+    coordinator.withOperationLock(await resolveStoreIdentity(), operationKey, action)
+  );
 
   return {
     async create(input: CreateQueuedPromptInput): Promise<QueuedPrompt> {
@@ -323,65 +473,309 @@ export function createPGLiteQueuedPromptsStore(
       return rows.length > 0 ? rowToQueuedPrompt(rows[0]) : null;
     },
 
-    async reserveInterrupt(input): Promise<{ reserved: boolean; row: QueuedPrompt }> {
+    async reserveInterrupt(input) {
       await ensureReady();
+      return withOperationLock(interruptOperationLockKey(input.id), async () => {
+        const operationId = `priority-interrupt:${createHash('sha256')
+          .update(`${input.id}\0${input.expectedGeneration}`)
+          .digest('hex')}`;
 
-      const { rows } = await db.query<any>(
+        const { rows } = await db.query<any>(
         `UPDATE queued_prompts
-         SET interrupt_target_generation = $2
-         WHERE id = $1 AND interrupt_target_generation IS NULL
+         SET interrupt_target_generation = $2,
+             interrupt_reservation_owner = $3,
+             interrupt_lease_expires_at = $5,
+             interrupt_operation_id = $6,
+             interrupt_fence = interrupt_fence + 1
+         WHERE id = $1
+           AND interrupt_target_generation IS NULL
+           AND interrupt_receipt IS NULL
          RETURNING *`,
-        [input.id, input.expectedGeneration]
+        [
+          input.id,
+          input.expectedGeneration,
+          input.reservationOwner,
+          input.now,
+          input.leaseExpiresAt,
+          operationId,
+        ],
       );
 
-      if (rows.length > 0) {
-        return { reserved: true, row: rowToQueuedPrompt(rows[0]) };
-      }
+        if (rows.length > 0) {
+          const row = rowToQueuedPrompt(rows[0]);
+          await options?.afterInterruptReservationCommitted?.({ row, takenOver: false });
+          return { reserved: true, takenOver: false, row };
+        }
 
-      const current = await db.query<any>(
+        const observedResult = await db.query<any>(
+        `SELECT * FROM queued_prompts WHERE id = $1`,
+        [input.id],
+      );
+        if (observedResult.rows.length === 0) {
+          throw new Error(`Cannot reserve interrupt: queued prompt ${input.id} does not exist`);
+        }
+        const observed = rowToQueuedPrompt(observedResult.rows[0]);
+        if (
+        observed.interruptReceipt !== undefined
+        || observed.interruptTargetGeneration !== input.expectedGeneration
+        || observed.interruptLeaseExpiresAt === undefined
+        || !observed.interruptReservationOwner
+        || !observed.interruptOperationId
+        ) {
+          return { reserved: false, takenOver: false, row: observed };
+        }
+
+        const takeover = await db.query<any>(
+        `UPDATE queued_prompts
+         SET interrupt_reservation_owner = $3,
+             interrupt_lease_expires_at = $5,
+             interrupt_fence = $10,
+             interrupt_cleanup_state = CASE
+               WHEN interrupt_cleanup_state = 'claimed' THEN 'pending'
+               ELSE interrupt_cleanup_state
+             END
+         WHERE id = $1
+           AND interrupt_target_generation = $2
+           AND interrupt_receipt IS NULL
+           AND interrupt_reservation_owner = $6
+           AND interrupt_lease_expires_at = $7
+           AND interrupt_operation_id = $8
+           AND interrupt_fence = $9
+           AND interrupt_application_state = $11
+           AND interrupt_lease_expires_at <= NOW()
+         RETURNING *`,
+        [
+          input.id,
+          input.expectedGeneration,
+          input.reservationOwner,
+          input.now,
+          input.leaseExpiresAt,
+          observed.interruptReservationOwner,
+          new Date(observed.interruptLeaseExpiresAt),
+          observed.interruptOperationId,
+          observed.interruptFence ?? 0,
+          (observed.interruptFence ?? 0) + 1,
+          observed.interruptApplicationState ?? 'not_started',
+        ],
+      );
+        if (takeover.rows.length > 0) {
+          const row = rowToQueuedPrompt(takeover.rows[0]);
+          await options?.afterInterruptReservationCommitted?.({ row, takenOver: true });
+          return { reserved: true, takenOver: true, row };
+        }
+
+        const current = await db.query<any>(
         `SELECT * FROM queued_prompts WHERE id = $1`,
         [input.id]
       );
-      if (current.rows.length === 0) {
-        throw new Error(`Cannot reserve interrupt: queued prompt ${input.id} does not exist`);
-      }
+        if (current.rows.length === 0) {
+          throw new Error(`Cannot reserve interrupt: queued prompt ${input.id} does not exist`);
+        }
+        const row = rowToQueuedPrompt(current.rows[0]);
+        return { reserved: false, takenOver: false, row };
+      });
+    },
 
-      return { reserved: false, row: rowToQueuedPrompt(current.rows[0]) };
+    async beginInterruptApplication(input) {
+      await ensureReady();
+      const result = await db.query<any>(
+        `UPDATE queued_prompts
+         SET interrupt_application_state = 'unknown',
+             interrupt_started_at = $4
+         WHERE id = $1
+           AND interrupt_target_generation = $2
+           AND interrupt_reservation_owner = $3
+           AND interrupt_operation_id = $5
+           AND interrupt_fence = $6
+           AND interrupt_application_state = 'not_started'
+           AND interrupt_receipt IS NULL
+           AND interrupt_lease_expires_at > NOW()
+         RETURNING *`,
+        [
+          input.id,
+          input.expectedGeneration,
+          input.reservationOwner,
+          input.now,
+          input.operationId,
+          input.fence,
+        ],
+      );
+      if (result.rows.length > 0) {
+        return { started: true, row: rowToQueuedPrompt(result.rows[0]) };
+      }
+      const current = await db.query<any>('SELECT * FROM queued_prompts WHERE id = $1', [input.id]);
+      if (current.rows.length === 0) {
+        throw new Error(`Cannot begin interrupt: queued prompt ${input.id} does not exist`);
+      }
+      return { started: false, row: rowToQueuedPrompt(current.rows[0]) };
+    },
+
+    async recordInterruptApplication(input) {
+      await ensureReady();
+      const serializedReceipt = serializeInterruptReceipt(input.receipt);
+      const result = await db.query<any>(
+        `UPDATE queued_prompts
+         SET interrupt_application_state = $8,
+             interrupt_application_receipt = $4,
+             interrupt_applied_at = $5
+         WHERE id = $1
+           AND interrupt_target_generation = $2
+           AND interrupt_reservation_owner = $3
+           AND interrupt_operation_id = $6
+           AND interrupt_fence = $7
+           AND interrupt_application_state = 'unknown'
+           AND interrupt_receipt IS NULL
+           AND interrupt_lease_expires_at > NOW()
+         RETURNING *`,
+        [
+          input.id,
+          input.expectedGeneration,
+          input.reservationOwner,
+          serializedReceipt,
+          input.appliedAt,
+          input.operationId,
+          input.fence,
+          input.certainty,
+        ],
+      );
+      if (result.rows.length > 0) return rowToQueuedPrompt(result.rows[0]);
+      const current = await db.query<any>('SELECT * FROM queued_prompts WHERE id = $1', [input.id]);
+      if (current.rows.length === 0) {
+        throw new Error(`Cannot record interrupt application: queued prompt ${input.id} does not exist`);
+      }
+      const row = rowToQueuedPrompt(current.rows[0]);
+      if (
+        row.interruptApplicationState === input.certainty
+        && row.interruptOperationId === input.operationId
+        && row.interruptFence === input.fence
+      ) {
+        const persisted = JSON.stringify(row.interruptApplicationReceipt);
+        if (persisted === serializedReceipt) return row;
+        throw new Error('interrupt_application_receipt_conflict');
+      }
+      throw new Error('interrupt_application_ownership_lost');
+    },
+
+    async verifyInterruptApplication(input) {
+      await ensureReady();
+      const result = await db.query<{ one: number }>(
+        `SELECT 1 AS one
+         FROM queued_prompts
+         WHERE id = $1
+           AND interrupt_target_generation = $2
+           AND interrupt_reservation_owner = $3
+           AND interrupt_operation_id = $4
+           AND interrupt_fence = $5
+           AND interrupt_application_state = 'unknown'
+           AND interrupt_receipt IS NULL
+           AND interrupt_lease_expires_at > NOW()`,
+        [
+          input.id,
+          input.expectedGeneration,
+          input.reservationOwner,
+          input.operationId,
+          input.fence,
+        ],
+      );
+      return result.rows.length === 1;
+    },
+
+    async enterInterruptApplication(input, action) {
+      await ensureReady();
+      return withOperationLock(interruptOperationLockKey(input.id), async () => {
+        const result = await db.query<{ one: number }>(
+          `SELECT 1 AS one
+           FROM queued_prompts
+           WHERE id = $1
+             AND interrupt_target_generation = $2
+             AND interrupt_reservation_owner = $3
+             AND interrupt_operation_id = $4
+             AND interrupt_fence = $5
+             AND interrupt_application_state = 'unknown'
+             AND interrupt_receipt IS NULL
+             AND interrupt_lease_expires_at > NOW()`,
+          [
+            input.id,
+            input.expectedGeneration,
+            input.reservationOwner,
+            input.operationId,
+            input.fence,
+          ],
+        );
+        if (result.rows.length !== 1) return { owned: false as const };
+        return { owned: true as const, value: await action() };
+      });
+    },
+
+    async claimInterruptCleanup(input) {
+      await ensureReady();
+      return withOperationLock(interruptOperationLockKey(input.id), async () => {
+        const result = await db.query<any>(
+          `UPDATE queued_prompts
+           SET interrupt_cleanup_state = 'claimed',
+               interrupt_cleanup_fence = $5
+           WHERE id = $1
+             AND interrupt_target_generation = $2
+             AND interrupt_reservation_owner = $3
+             AND interrupt_operation_id = $4
+             AND interrupt_fence = $5
+             AND interrupt_receipt IS NULL
+             AND interrupt_lease_expires_at > NOW()
+             AND (
+               interrupt_cleanup_state = 'pending'
+               OR (interrupt_cleanup_state = 'claimed' AND interrupt_cleanup_fence = $5)
+             )
+           RETURNING *`,
+          [
+            input.id,
+            input.expectedGeneration,
+            input.reservationOwner,
+            input.operationId,
+            input.fence,
+          ],
+        );
+        return result.rows.length === 1;
+      });
     },
 
     async recordInterruptReceipt(input): Promise<QueuedPrompt> {
       await ensureReady();
-
-      let serializedReceipt: string;
-      try {
-        const serialized = JSON.stringify(input.receipt);
-        if (serialized === undefined) {
-          throw new Error('receipt is not JSON-serializable');
-        }
-        serializedReceipt = serialized;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Cannot record interrupt receipt: ${message}`);
-      }
-
-      const receiptSizeBytes = Buffer.byteLength(serializedReceipt, 'utf8');
-      if (receiptSizeBytes > 4096) {
-        throw new Error(`Cannot record interrupt receipt: serialized receipt exceeds 4096 bytes (${receiptSizeBytes} bytes)`);
-      }
+      const serializedReceipt = serializeInterruptReceipt(input.receipt);
 
       const { rows } = await db.query<any>(
         `UPDATE queued_prompts
-         SET interrupt_receipt = $2
+         SET interrupt_receipt = $2,
+             interrupt_reservation_owner = NULL,
+             interrupt_lease_expires_at = NULL,
+             interrupt_cleanup_state = 'complete'
          WHERE id = $1
+           AND interrupt_target_generation = $3
+           AND interrupt_reservation_owner = $4
+           AND interrupt_operation_id = $5
+           AND interrupt_fence = $6
+           AND interrupt_receipt IS NULL
+           AND interrupt_cleanup_state = 'claimed'
+           AND interrupt_cleanup_fence = $6
+           AND interrupt_lease_expires_at > NOW()
          RETURNING *`,
-        [input.id, serializedReceipt]
+        [
+          input.id,
+          serializedReceipt,
+          input.expectedGeneration,
+          input.reservationOwner,
+          input.operationId,
+          input.fence,
+        ],
       );
 
-      if (rows.length === 0) {
+      if (rows.length > 0) return rowToQueuedPrompt(rows[0]);
+      const current = await db.query<any>('SELECT * FROM queued_prompts WHERE id = $1', [input.id]);
+      if (current.rows.length === 0) {
         throw new Error(`Cannot record interrupt receipt: queued prompt ${input.id} does not exist`);
       }
-
-      return rowToQueuedPrompt(rows[0]);
+      const row = rowToQueuedPrompt(current.rows[0]);
+      if (row.interruptReceipt !== undefined) return row;
+      throw new Error('interrupt_receipt_ownership_lost');
     },
 
     async listForSession(

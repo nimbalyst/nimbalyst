@@ -16,6 +16,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import type { Database as SqliteDatabase } from 'better-sqlite3';
 
 export interface Migration {
@@ -35,33 +36,61 @@ export interface MigrationResult {
 function runIdempotentAdditiveSqlMigration(
   db: SqliteDatabase,
   sqlFile: string,
-  tableName: string,
+  tableNames: readonly string[],
 ): void {
   const statements = fs.readFileSync(sqlFile, 'utf-8')
     .split(';')
     .map((statement) => statement.trim())
     .filter(Boolean);
-  let columns: Set<string> | null = null;
+  const allowedTables = new Set(tableNames);
+  const columnsByTable = new Map<string, Set<string>>();
 
   for (const statement of statements) {
     const addColumn = statement.match(
-      new RegExp(`\\bALTER\\s+TABLE\\s+${tableName}\\s+ADD\\s+COLUMN\\s+([A-Za-z_][A-Za-z0-9_]*)`, 'i'),
+      /\bALTER\s+TABLE\s+([A-Za-z_][A-Za-z0-9_]*)\s+ADD\s+COLUMN\s+([A-Za-z_][A-Za-z0-9_]*)/i,
     );
     if (addColumn) {
-      columns ??= new Set(
-        (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>)
-          .map((column) => column.name),
-      );
-      if (columns.has(addColumn[1])) {
+      const [, tableName, columnName] = addColumn;
+      if (!allowedTables.has(tableName)) {
+        throw new Error(
+          `Unexpected ALTER TABLE ${tableName} in additive migration ${path.basename(sqlFile)}`,
+        );
+      }
+      let columns = columnsByTable.get(tableName);
+      if (!columns) {
+        columns = new Set(
+          (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>)
+            .map((column) => column.name),
+        );
+        columnsByTable.set(tableName, columns);
+      }
+      if (columns.has(columnName)) {
         continue;
       }
     }
 
     db.exec(`${statement};`);
     if (addColumn) {
-      columns!.add(addColumn[1]);
+      columnsByTable.get(addColumn[1])!.add(addColumn[2]);
     }
   }
+}
+
+function ensureHostControlStoreIdentity(db: SqliteDatabase, schemaDir: string): void {
+  const identityTable = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'host_control_store_identity'`,
+  ).get();
+  if (!identityTable) return;
+  const storeId = randomUUID();
+  const databaseName = (db as SqliteDatabase & { name?: string }).name;
+  const authorityRoot = databaseName && databaseName !== ':memory:'
+    ? `${fs.realpathSync.native(databaseName)}.host-control-authority-v3`
+    : path.join(path.resolve(schemaDir), `.host-control-memory-${storeId}`);
+  db.prepare(
+    `INSERT INTO host_control_store_identity (singleton, store_id, authority_root)
+     VALUES (1, ?, ?)
+     ON CONFLICT(singleton) DO NOTHING`,
+  ).run(storeId, authorityRoot);
 }
 
 /**
@@ -204,13 +233,25 @@ export function getMigrations(schemaDir: string): Migration[] {
       run: (db) => runIdempotentAdditiveSqlMigration(
         db,
         path.join(schemaDir, '0026_queued_prompt_priority_control.sql'),
-        'queued_prompts',
+        ['queued_prompts'],
       ),
     },
     {
       version: 27,
       name: 'host_control_receipts',
       sqlFile: path.join(schemaDir, '0027_host_control_receipts.sql'),
+    },
+    {
+      version: 28,
+      name: 'host_control_mutation_reconciliation',
+      run: (db) => {
+        runIdempotentAdditiveSqlMigration(
+          db,
+          path.join(schemaDir, '0028_host_control_mutation_reconciliation.sql'),
+          ['queued_prompts', 'host_control_receipts'],
+        );
+        ensureHostControlStoreIdentity(db, schemaDir);
+      },
     },
   ];
 }

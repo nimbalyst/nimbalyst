@@ -18,6 +18,8 @@
 const { parentPort, workerData } = require('worker_threads');
 const { PGlite } = require('@electric-sql/pglite');
 const path = require('path');
+const fs = require('fs');
+const { randomUUID } = require('crypto');
 const inspector = require('node:inspector');
 const { performance } = require('node:perf_hooks');
 const { serializeWorkerError } = require('./workerErrorSerialization');
@@ -1689,6 +1691,18 @@ class PGLiteWorker {
           request_digest TEXT,
           control_operation TEXT,
           interrupt_target_generation TEXT,
+          interrupt_reservation_owner TEXT,
+          interrupt_lease_expires_at TIMESTAMPTZ,
+          interrupt_operation_id TEXT,
+          interrupt_fence INTEGER NOT NULL DEFAULT 0,
+          interrupt_application_state TEXT NOT NULL DEFAULT 'not_started'
+            CHECK (interrupt_application_state IN ('not_started', 'unknown', 'not_applied', 'applied', 'legacy_unknown')),
+          interrupt_started_at TIMESTAMPTZ,
+          interrupt_applied_at TIMESTAMPTZ,
+          interrupt_application_receipt JSONB,
+          interrupt_cleanup_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (interrupt_cleanup_state IN ('pending', 'claimed', 'complete')),
+          interrupt_cleanup_fence INTEGER NOT NULL DEFAULT 0,
           interrupt_receipt JSONB,
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
           claimed_at TIMESTAMPTZ,
@@ -1716,7 +1730,43 @@ class PGLiteWorker {
         ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS request_digest TEXT;
         ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS control_operation TEXT;
         ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_target_generation TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_reservation_owner TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_lease_expires_at TIMESTAMPTZ;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_operation_id TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_fence INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_application_state TEXT NOT NULL DEFAULT 'not_started'
+          CHECK (interrupt_application_state IN ('not_started', 'unknown', 'not_applied', 'applied', 'legacy_unknown'));
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_started_at TIMESTAMPTZ;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_applied_at TIMESTAMPTZ;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_application_receipt JSONB;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_cleanup_state TEXT NOT NULL DEFAULT 'pending'
+          CHECK (interrupt_cleanup_state IN ('pending', 'claimed', 'complete'));
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_cleanup_fence INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_receipt JSONB;
+      `);
+      await this.db.exec(`
+        UPDATE queued_prompts
+        SET interrupt_operation_id = COALESCE(
+              interrupt_operation_id,
+              'legacy-interrupt:' || id || ':' || COALESCE(interrupt_target_generation, 'missing')
+            ),
+            interrupt_reservation_owner = COALESCE(interrupt_reservation_owner, 'legacy-orphan'),
+            interrupt_lease_expires_at = COALESCE(interrupt_lease_expires_at, TIMESTAMPTZ '1970-01-01 00:00:00+00'),
+            interrupt_application_state = 'legacy_unknown'
+        WHERE interrupt_target_generation IS NOT NULL
+          AND interrupt_receipt IS NULL
+          AND interrupt_operation_id IS NULL
+          AND interrupt_reservation_owner IS NULL
+          AND interrupt_lease_expires_at IS NULL
+          AND interrupt_fence = 0
+          AND interrupt_application_state = 'not_started';
+        UPDATE queued_prompts
+        SET interrupt_operation_id = COALESCE(
+              interrupt_operation_id,
+              'legacy-interrupt:' || id || ':' || COALESCE(interrupt_target_generation, 'missing')
+            )
+        WHERE interrupt_receipt IS NOT NULL
+          AND interrupt_operation_id IS NULL;
       `);
       await this.db.exec(`
         CREATE INDEX IF NOT EXISTS idx_queued_prompts_pending_priority
@@ -1746,12 +1796,83 @@ class PGLiteWorker {
           event_identity TEXT NOT NULL,
           attention_generation TEXT,
           state TEXT NOT NULL CHECK (state IN ('reserved', 'injected', 'already_resolved', 'failed')),
+          reservation_owner TEXT,
+          lease_expires_at TIMESTAMPTZ,
+          mutation_id TEXT,
+          mutation_fence INTEGER NOT NULL DEFAULT 0,
+          mutation_state TEXT NOT NULL DEFAULT 'not_started'
+            CHECK (mutation_state IN ('not_started', 'unknown', 'not_applied', 'applied', 'legacy_unknown')),
+          mutation_started_at TIMESTAMPTZ,
+          mutation_applied_at TIMESTAMPTZ,
+          mutation_receipt JSONB,
+          cleanup_prompt_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (cleanup_prompt_state IN ('pending', 'claimed', 'complete')),
+          cleanup_prompt_fence INTEGER NOT NULL DEFAULT 0,
+          cleanup_attention_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (cleanup_attention_state IN ('pending', 'claimed', 'complete')),
+          cleanup_attention_fence INTEGER NOT NULL DEFAULT 0,
+          cleanup_attention_result TEXT
+            CHECK (cleanup_attention_result IN ('settled', 'already_absent')),
+          cleanup_terminal_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (cleanup_terminal_state IN ('pending', 'claimed', 'complete')),
+          cleanup_terminal_fence INTEGER NOT NULL DEFAULT 0,
           receipt JSONB,
           created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_host_control_receipts_session
           ON host_control_receipts(session_id, created_at);
+
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS reservation_owner TEXT;
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS mutation_id TEXT;
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS mutation_fence INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS mutation_state TEXT NOT NULL DEFAULT 'not_started'
+          CHECK (mutation_state IN ('not_started', 'unknown', 'not_applied', 'applied', 'legacy_unknown'));
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS mutation_started_at TIMESTAMPTZ;
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS mutation_applied_at TIMESTAMPTZ;
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS mutation_receipt JSONB;
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS cleanup_prompt_state TEXT NOT NULL DEFAULT 'pending'
+          CHECK (cleanup_prompt_state IN ('pending', 'claimed', 'complete'));
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS cleanup_prompt_fence INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS cleanup_attention_state TEXT NOT NULL DEFAULT 'pending'
+          CHECK (cleanup_attention_state IN ('pending', 'claimed', 'complete'));
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS cleanup_attention_fence INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS cleanup_attention_result TEXT
+          CHECK (cleanup_attention_result IN ('settled', 'already_absent'));
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS cleanup_terminal_state TEXT NOT NULL DEFAULT 'pending'
+          CHECK (cleanup_terminal_state IN ('pending', 'claimed', 'complete'));
+        ALTER TABLE host_control_receipts ADD COLUMN IF NOT EXISTS cleanup_terminal_fence INTEGER NOT NULL DEFAULT 0;
+
+        CREATE TABLE IF NOT EXISTS host_control_store_identity (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          store_id TEXT NOT NULL UNIQUE,
+          authority_root TEXT NOT NULL
+        );
+
+        UPDATE host_control_receipts
+        SET cleanup_attention_state = 'pending',
+            cleanup_attention_fence = 0
+        WHERE state = 'reserved'
+          AND mutation_state = 'applied'
+          AND cleanup_attention_state = 'complete'
+          AND cleanup_attention_result IS NULL;
+
+        UPDATE host_control_receipts
+        SET mutation_id = COALESCE(mutation_id, 'legacy-host-mutation:' || id),
+            reservation_owner = COALESCE(reservation_owner, 'legacy-orphan'),
+            lease_expires_at = COALESCE(lease_expires_at, TIMESTAMPTZ '1970-01-01 00:00:00+00'),
+            mutation_state = 'legacy_unknown'
+        WHERE state = 'reserved'
+          AND mutation_id IS NULL
+          AND reservation_owner IS NULL
+          AND lease_expires_at IS NULL
+          AND mutation_fence = 0
+          AND mutation_state = 'not_started';
+        UPDATE host_control_receipts
+        SET mutation_id = COALESCE(mutation_id, 'legacy-host-mutation:' || id)
+        WHERE state <> 'reserved'
+          AND mutation_id IS NULL;
 
         CREATE TABLE IF NOT EXISTS native_winner_outbox (
           id TEXT PRIMARY KEY,
@@ -1770,6 +1891,13 @@ class PGLiteWorker {
         CREATE INDEX IF NOT EXISTS idx_native_winner_outbox_pending
           ON native_winner_outbox(created_at, id) WHERE state = 'pending';
       `);
+      const canonicalDataDir = fs.realpathSync.native(this.dataDir);
+      await this.db.query(
+        `INSERT INTO host_control_store_identity (singleton, store_id, authority_root)
+         VALUES (1, $1, $2)
+         ON CONFLICT (singleton) DO NOTHING`,
+        [randomUUID(), `${canonicalDataDir}.host-control-authority-v3`],
+      );
       console.log('[PGLite Worker] host control receipt tables created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create host control receipt tables:', error);
@@ -3075,20 +3203,41 @@ class PGLiteWorker {
     if (!Array.isArray(statements) || statements.length === 0) {
       throw new Error('transaction requires at least one statement');
     }
+    for (const [index, statement] of statements.entries()) {
+      if (!statement || typeof statement.sql !== 'string') {
+        throw new Error(`transaction statement ${index} sql must be a string`);
+      }
+      if (
+        statement.expectedRowCount !== undefined
+        && statement.expectedRowCount !== 1
+      ) {
+        throw new Error(`transaction statement ${index} has invalid expected row count`);
+      }
+      if (statement.expectedRowCount === 1 && !/\bRETURNING\b/i.test(statement.sql)) {
+        throw new Error(`transaction statement ${index} requires RETURNING`);
+      }
+    }
     this.activeOps++;
     try {
       const execStart = performance.now();
-      await this.db.transaction(async (tx) => {
-        for (const statement of statements) {
-          if (!statement || typeof statement.sql !== 'string') {
-            throw new Error('transaction statement sql must be a string');
+      const results = await this.db.transaction(async (tx) => {
+        const transactionResults = [];
+        for (const [index, statement] of statements.entries()) {
+          const result = await tx.query(statement.sql, statement.params);
+          const rows = Array.isArray(result?.rows) ? result.rows : [];
+          if (statement.expectedRowCount === 1 && rows.length !== 1) {
+            throw new Error(
+              `transaction expected row count mismatch at statement ${index}: expected 1, got ${rows.length}`,
+            );
           }
-          await tx.query(statement.sql, statement.params);
+          transactionResults.push(result);
         }
+        return transactionResults;
       });
       return {
         id: message.id,
         success: true,
+        data: results,
         execMs: performance.now() - execStart,
       };
     } finally {

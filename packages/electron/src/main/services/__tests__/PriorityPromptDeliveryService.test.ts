@@ -67,13 +67,49 @@ function createFakes(options: {
   const interruptCurrentTurnForSession = vi.fn().mockResolvedValue({
     success: true,
     method: 'graceful-interrupt',
+    nativeCertainty: 'applied',
+    nativeEntered: true,
   });
   const queueStore = {
     createPriorityControlQueuedPrompt: vi.fn().mockResolvedValue(initialRow),
     reserveInterrupt: vi.fn().mockResolvedValue({
       reserved: true,
-      row: queuedRow({ interruptTargetGeneration: 'generation-a' }),
+      takenOver: false,
+      row: queuedRow({
+        interruptTargetGeneration: 'generation-a',
+        interruptReservationOwner: 'owner-a',
+        interruptLeaseExpiresAt: Date.parse('2026-07-20T10:00:30.000Z'),
+        interruptOperationId: 'operation-a',
+        interruptFence: 1,
+        interruptApplicationState: 'not_started',
+      }),
     }),
+    beginInterruptApplication: vi.fn().mockResolvedValue({
+      started: true,
+      row: queuedRow({
+        interruptTargetGeneration: 'generation-a',
+        interruptReservationOwner: 'owner-a',
+        interruptOperationId: 'operation-a',
+        interruptFence: 1,
+        interruptApplicationState: 'unknown',
+      }),
+    }),
+    verifyInterruptApplication: vi.fn().mockResolvedValue(true),
+    enterInterruptApplication: vi.fn(async (_input, action) => ({
+      owned: true as const,
+      value: await action(),
+    })),
+    recordInterruptApplication: vi.fn().mockImplementation(async (
+      application: { receipt: unknown },
+    ) => queuedRow({
+      interruptTargetGeneration: 'generation-a',
+      interruptReservationOwner: 'owner-a',
+      interruptOperationId: 'operation-a',
+      interruptFence: 1,
+      interruptApplicationState: 'applied',
+      interruptApplicationReceipt: application.receipt,
+    })),
+    claimInterruptCleanup: vi.fn().mockResolvedValue(true),
     recordInterruptReceipt: vi.fn().mockResolvedValue(
       queuedRow({
         interruptTargetGeneration: 'generation-a',
@@ -92,6 +128,8 @@ function createFakes(options: {
     getSessionStatus,
     interruptCurrentTurnForSession,
     triggerQueuedPromptProcessingForSession: vi.fn().mockResolvedValue(true),
+    now: vi.fn(() => Date.parse('2026-07-20T10:00:00.000Z')),
+    createInterruptReservationOwner: vi.fn(() => 'owner-a'),
   };
   return { deps, queueStore, interruptCurrentTurnForSession, getSessionStatus };
 }
@@ -224,6 +262,8 @@ describe('createPriorityPromptDeliveryService', () => {
       success: false,
       error: 'e'.repeat(2_000),
       method: 'graceful-interrupt',
+      nativeCertainty: 'applied',
+      nativeEntered: true,
     });
     const service = createPriorityPromptDeliveryService(deps);
 
@@ -233,10 +273,24 @@ describe('createPriorityPromptDeliveryService', () => {
     expect(queueStore.reserveInterrupt).toHaveBeenCalledWith({
       id: 'control-row-1',
       expectedGeneration: 'generation-a',
+      reservationOwner: 'owner-a',
+      now: new Date('2026-07-20T10:00:00.000Z'),
+      leaseExpiresAt: new Date('2026-07-20T10:00:30.000Z'),
     });
-    expect(interruptCurrentTurnForSession).toHaveBeenCalledWith(input.sessionId, {
+    expect(interruptCurrentTurnForSession).toHaveBeenCalledWith(input.sessionId, expect.objectContaining({
       expectedGeneration: 'generation-a',
       priorityRowId: 'control-row-1',
+      assertInterruptFence: expect.any(Function),
+    }));
+    const nativeOptions = interruptCurrentTurnForSession.mock.calls[0][1]!;
+    await expect(nativeOptions.assertInterruptFence!()).resolves.toBe(true);
+    expect(queueStore.verifyInterruptApplication).toHaveBeenCalledWith({
+      id: 'control-row-1',
+      expectedGeneration: 'generation-a',
+      reservationOwner: 'owner-a',
+      operationId: 'operation-a',
+      fence: 1,
+      now: new Date('2026-07-20T10:00:00.000Z'),
     });
     expect(queueStore.recordInterruptReceipt).toHaveBeenCalledTimes(1);
     const receipt = queueStore.recordInterruptReceipt.mock.calls[0][0].receipt as Record<string, unknown>;
@@ -244,10 +298,14 @@ describe('createPriorityPromptDeliveryService', () => {
       method: 'graceful-interrupt',
       generation: 'generation-a',
       success: false,
+      certainty: 'applied',
+      nativeEntered: true,
       error: 'e'.repeat(1_000),
       attemptedAt: expect.any(String),
       resultAt: expect.any(String),
     });
+    expect(queueStore.recordInterruptApplication.mock.invocationCallOrder[0])
+      .toBeLessThan(queueStore.recordInterruptReceipt.mock.invocationCallOrder[0]);
     expect(JSON.stringify(receipt)).not.toContain(input.prompt);
     expect(receipt).not.toHaveProperty('prompt');
     expect(deps.triggerQueuedPromptProcessingForSession).toHaveBeenCalledWith(
@@ -274,6 +332,40 @@ describe('createPriorityPromptDeliveryService', () => {
       },
     });
   });
+
+  it.each([
+    ['not_applied', false, true],
+    ['unknown', true, false],
+  ] as const)(
+    'records honest %s native certainty without inventing an applied fact',
+    async (nativeCertainty, nativeEntered, recordsApplicationFact) => {
+      const { deps, queueStore, interruptCurrentTurnForSession } = createFakes({
+        initialStatus: 'running',
+        finalStatus: 'running',
+      });
+      interruptCurrentTurnForSession.mockResolvedValueOnce({
+        success: false,
+        error: nativeCertainty === 'unknown' ? 'transport lost after entry' : 'fence rejected',
+        nativeCertainty,
+        nativeEntered,
+      });
+
+      const result = await createPriorityPromptDeliveryService(deps).deliverPriorityPrompt(input);
+
+      expect(result.interrupt).toMatchObject({ attempted: nativeEntered, success: false });
+      expect(queueStore.recordInterruptApplication).toHaveBeenCalledTimes(
+        recordsApplicationFact ? 1 : 0,
+      );
+      if (recordsApplicationFact) {
+        expect(queueStore.recordInterruptApplication).toHaveBeenCalledWith(
+          expect.objectContaining({ certainty: 'not_applied' }),
+        );
+      }
+      expect(queueStore.recordInterruptReceipt).toHaveBeenCalledWith(expect.objectContaining({
+        receipt: expect.objectContaining({ certainty: nativeCertainty, nativeEntered }),
+      }));
+    },
+  );
 
   it('dispatches an idle row without reserving or interrupting', async () => {
     const { deps, queueStore, interruptCurrentTurnForSession } = createFakes({
@@ -339,10 +431,7 @@ describe('createPriorityPromptDeliveryService', () => {
   it('replays a stored terminal interrupt receipt without interrupting again', async () => {
     const { deps, queueStore, interruptCurrentTurnForSession } = createFakes({
       initialStatus: 'running',
-    });
-    queueStore.reserveInterrupt.mockResolvedValueOnce({
-      reserved: false,
-      row: queuedRow({
+      initialRow: queuedRow({
         interruptTargetGeneration: 'generation-a',
         interruptReceipt: {
           method: 'terminal-ctrl-c',
@@ -368,11 +457,47 @@ describe('createPriorityPromptDeliveryService', () => {
       error: null,
     });
     expect(interruptCurrentTurnForSession).not.toHaveBeenCalled();
+    expect(queueStore.reserveInterrupt).not.toHaveBeenCalled();
     expect(queueStore.recordInterruptReceipt).not.toHaveBeenCalled();
-    expect(deps.triggerQueuedPromptProcessingForSession).toHaveBeenCalledTimes(1);
+    expect(deps.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
   });
 
-  it('reports an unverified reservation and preserves fresh post-trigger verification', async () => {
+  it.each(['idle', 'waiting_for_input', 'error', undefined] as const)(
+    'replays the identical durable receipt before volatile %s routing',
+    async (volatileStatus) => {
+      const durableReceipt = {
+        method: null,
+        error: 'application outcome unknown',
+        success: false,
+        generation: 'generation-a',
+        attemptedAt: '2026-07-20T00:00:00.000Z',
+        resultAt: '2026-07-20T00:00:01.000Z',
+      };
+      const { deps, queueStore, interruptCurrentTurnForSession } = createFakes({
+        initialRow: queuedRow({
+          interruptTargetGeneration: 'generation-a',
+          interruptReceipt: durableReceipt,
+        }),
+      });
+      vi.mocked(deps.getSessionStatus).mockReset().mockResolvedValue(volatileStatus);
+      const result = await createPriorityPromptDeliveryService(deps)
+        .deliverPriorityPrompt(input);
+
+      expect(result.action).toBe('interrupt_already_reserved');
+      expect(result.interrupt).toMatchObject({
+        generation: durableReceipt.generation,
+        success: durableReceipt.success,
+        method: durableReceipt.method,
+        error: durableReceipt.error,
+        attempted: false,
+      });
+      expect(queueStore.reserveInterrupt).not.toHaveBeenCalled();
+      expect(interruptCurrentTurnForSession).not.toHaveBeenCalled();
+      expect(deps.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reports an unexpired owner lease and preserves fresh post-trigger verification', async () => {
     const finalRow = queuedRow({
       status: 'executing',
       claimedAt: 10,
@@ -385,8 +510,13 @@ describe('createPriorityPromptDeliveryService', () => {
     });
     queueStore.reserveInterrupt.mockResolvedValueOnce({
       reserved: false,
+      takenOver: false,
       row: queuedRow({
         interruptTargetGeneration: 'generation-a',
+        interruptReservationOwner: 'other-owner',
+        interruptLeaseExpiresAt: Date.parse('2026-07-20T10:00:30.000Z'),
+        interruptOperationId: 'operation-a',
+        interruptFence: 1,
         interruptReceipt: undefined,
       }),
     });
@@ -395,14 +525,14 @@ describe('createPriorityPromptDeliveryService', () => {
     const result = await service.deliverPriorityPrompt(input);
 
     expect(result).toMatchObject({
-      action: 'reservation_unverified',
+      action: 'interrupt_reservation_in_progress',
       interrupt: {
         generation: 'generation-a',
         reserved: false,
         attempted: false,
         success: null,
         method: null,
-        error: 'reservation exists without a terminal receipt; delivery unverified',
+        error: 'interrupt reservation is owned by an unexpired lease',
       },
       verification: {
         row: { id: finalRow.id, status: 'executing' },
@@ -416,6 +546,94 @@ describe('createPriorityPromptDeliveryService', () => {
     expect(deps.triggerQueuedPromptProcessingForSession).toHaveBeenCalledTimes(1);
     expect(queueStore.get).toHaveBeenCalledWith('control-row-1');
     expect(getSessionStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it('takes over a crash before native intent and applies the same stable A operation once', async () => {
+    const { deps, queueStore, interruptCurrentTurnForSession } = createFakes({
+      initialStatus: 'running',
+    });
+    deps.onInterruptReconciliationPoint = vi.fn(async (point) => {
+      if (point === 'after_interrupt_reserved') throw new Error('simulated_process_loss');
+    });
+    const service = createPriorityPromptDeliveryService(deps);
+
+    await expect(service.deliverPriorityPrompt(input)).rejects.toThrow('simulated_process_loss');
+    expect(interruptCurrentTurnForSession).not.toHaveBeenCalled();
+
+    deps.onInterruptReconciliationPoint = undefined;
+    vi.mocked(deps.getSessionStatus).mockResolvedValue('running');
+    queueStore.reserveInterrupt.mockResolvedValueOnce({
+      reserved: true,
+      takenOver: true,
+      row: queuedRow({
+        interruptTargetGeneration: 'generation-a',
+        interruptReservationOwner: 'owner-a',
+        interruptOperationId: 'operation-a',
+        interruptFence: 2,
+        interruptApplicationState: 'not_started',
+      }),
+    });
+    const replay = await service.deliverPriorityPrompt(input);
+
+    expect(replay).toMatchObject({
+      action: 'interrupt_attempted',
+      interrupt: {
+        generation: 'generation-a',
+        attempted: true,
+        success: true,
+      },
+    });
+    expect(interruptCurrentTurnForSession).toHaveBeenCalledOnce();
+    expect(queueStore.recordInterruptReceipt).toHaveBeenCalledOnce();
+  });
+
+  it('reconstructs an applied A result after process loss without reapplying it to B', async () => {
+    const { deps, queueStore, interruptCurrentTurnForSession } = createFakes({
+      initialStatus: 'running',
+    });
+    deps.onInterruptReconciliationPoint = vi.fn(async (point) => {
+      if (point === 'after_interrupt_application_recorded') {
+        throw new Error('simulated_process_loss');
+      }
+    });
+    const service = createPriorityPromptDeliveryService(deps);
+
+    await expect(service.deliverPriorityPrompt(input)).rejects.toThrow('simulated_process_loss');
+    expect(interruptCurrentTurnForSession).toHaveBeenCalledOnce();
+    queueStore.recordInterruptReceipt.mockClear();
+    deps.onInterruptReconciliationPoint = undefined;
+    vi.mocked(deps.getSessionStatus).mockResolvedValue('running');
+    vi.mocked(deps.getCurrentAttentionGeneration).mockResolvedValue('generation-b');
+    queueStore.reserveInterrupt.mockResolvedValueOnce({
+      reserved: true,
+      takenOver: true,
+      row: queuedRow({
+        interruptTargetGeneration: 'generation-a',
+        interruptReservationOwner: 'owner-a',
+        interruptOperationId: 'operation-a',
+        interruptFence: 2,
+        interruptApplicationState: 'applied',
+        interruptApplicationReceipt: {
+          method: 'graceful-interrupt',
+          error: null,
+          success: true,
+          generation: 'generation-a',
+          certainty: 'applied',
+          nativeEntered: true,
+          attemptedAt: '2026-07-20T10:00:00.000Z',
+          resultAt: '2026-07-20T10:00:00.000Z',
+        },
+      }),
+    });
+
+    const replay = await service.deliverPriorityPrompt(input);
+
+    expect(replay).toMatchObject({
+      action: 'interrupt_reservation_reconciled',
+      interrupt: { generation: 'generation-a', attempted: true, success: true },
+    });
+    expect(interruptCurrentTurnForSession).toHaveBeenCalledOnce();
+    expect(queueStore.recordInterruptReceipt).toHaveBeenCalledOnce();
   });
 
   it('fails closed on a running session with no current generation', async () => {

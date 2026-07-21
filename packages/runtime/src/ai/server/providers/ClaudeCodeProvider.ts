@@ -28,6 +28,10 @@ export interface McpServerStatusInfo {
 import { parse as parseShellCommand } from 'shell-quote';
 
 import { BaseAgentProvider } from './BaseAgentProvider';
+import type {
+  BoundInteractiveMutationAuthority,
+  InteractiveMutationAcknowledgement,
+} from '../AIProvider';
 import {
   DocumentContext,
   ProviderConfig,
@@ -58,7 +62,10 @@ import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgent
 import { SessionManager } from '../SessionManager';
 import { parseBashForFileOps, hasShellChainingOperators, splitOnShellOperators } from '../permissions/BashCommandAnalyzer';
 
-import { ToolPermissionService } from '../permissions/ToolPermissionService';
+import {
+  ToolPermissionService,
+  permissionResultMatchesPendingMutation,
+} from '../permissions/ToolPermissionService';
 import { AgentToolHooks } from '../permissions/AgentToolHooks';
 import { McpConfigService } from '../services/McpConfigService';
 import { getMcpConfigService, isInternalMcpServerEnabled, areTrackerToolsEnabled, resolveTrackersWorkspacePath } from '../services/mcpServerConfig';
@@ -3139,8 +3146,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     requestId: string,
     response: { approved: boolean; clearContext?: boolean; feedback?: string },
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
-  ): void {
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop',
+    authority?: BoundInteractiveMutationAuthority,
+  ): void | InteractiveMutationAcknowledgement | Promise<InteractiveMutationAcknowledgement> {
     const pending = this.pendingExitPlanModeConfirmations.get(requestId);
     if (pending) {
       pending.resolve(response);
@@ -3159,6 +3167,11 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         timestamp: Date.now(),
       });
 
+      // Jean already owns the exact pending occurrence and receives this
+      // positive bound acknowledgement synchronously. Do not publish a raw
+      // requestId row that replacement generation B could poll later.
+      if (authority) return { outcome: 'acknowledged', authority };
+
       // Mobile response handlers persist the durable response before invoking
       // the provider so stale-response cutoffs remain correct. Desktop callers
       // still rely on the provider-owned write here.
@@ -3172,19 +3185,22 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           respondedAt: Date.now(),
           respondedBy,
         };
-        this.logAgentMessage(
+        const persisted = this.logAgentMessage(
           sessionId,
           'claude-code',
           'output',
           JSON.stringify(responseContent),
           { messageType: 'exit_plan_mode_response' }
-        ).catch(err => {
+        );
+        persisted.catch(err => {
           console.error('[CLAUDE-CODE] Failed to persist ExitPlanMode response:', err);
         });
       }
       // TODO: Debug logging - uncomment if needed
+      return undefined;
     } else {
       console.warn(`[CLAUDE-CODE] No pending ExitPlanMode confirmation found for requestId: ${requestId}`);
+      return authority ? { outcome: 'not_found', authority } : undefined;
     }
   }
 
@@ -3208,17 +3224,22 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     questionId: string,
     answers: Record<string, string>,
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
-  ): boolean {
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop',
+    authority?: BoundInteractiveMutationAuthority,
+  ): boolean | InteractiveMutationAcknowledgement | Promise<InteractiveMutationAcknowledgement> {
     const pending = this.pendingAskUserQuestions.get(questionId);
     if (pending) {
       pending.resolve(answers);
       this.pendingAskUserQuestions.delete(questionId);
 
+      // The exact provider waiter is the acknowledgement for Jean. Suppress
+      // the reusable raw-ID transcript result; no fallback may outlive A.
+      if (authority) return { outcome: 'acknowledged', authority };
+
       // Log as nimbalyst_tool_result to complete the tool call
       // This sets toolCall.result which changes widget from interactive to completed
       if (sessionId) {
-        this.logAgentMessage(
+        const persisted = this.logAgentMessage(
           sessionId,
           'claude-code',
           'output',
@@ -3227,14 +3248,15 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             tool_use_id: questionId,
             result: JSON.stringify({ answers, respondedAt: Date.now(), respondedBy })
           })
-        ).catch(err => {
+        );
+        persisted.catch(err => {
           console.error('[CLAUDE-CODE] Failed to persist AskUserQuestion response:', err);
         });
       }
       return true;
     } else {
       console.warn(`[CLAUDE-CODE] No pending AskUserQuestion found for questionId: ${questionId}`);
-      return false;
+      return authority ? { outcome: 'not_found', authority } : false;
     }
   }
 
@@ -3272,67 +3294,44 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     requestId: string,
     response: { decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' },
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
-  ): void {
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop',
+    authority?: BoundInteractiveMutationAuthority,
+  ): void | InteractiveMutationAcknowledgement | Promise<InteractiveMutationAcknowledgement> {
     // Try ToolPermissionService first (primary path when service is available)
-    if (this.permissionService) {
-      this.permissionService.resolvePermission(requestId, response);
-    }
+    const serviceResolved = this.permissionService?.resolvePermission(requestId, response) ?? false;
 
     // Also check the inline pending map (used by AgentToolHooks compound bash checks,
     // including those from teammate sessions which create promises in this map)
-    if (this.permissions.pendingToolPermissions.has(requestId)) {
-      this.permissions.resolveToolPermission(
+    const inlineResolved = this.permissions.pendingToolPermissions.has(requestId)
+      ? this.permissions.resolveToolPermission(
         requestId,
         response,
-        (_reqId, resp, by) => {
-          if (sessionId) {
-            this.logAgentMessage(
-              sessionId,
-              'claude-code',
-              'output',
-              this.createPermissionResultMessage(_reqId, resp, by)
-            ).catch(err => {
-              console.error('[CLAUDE-CODE] Failed to persist permission response:', err);
-            });
-          }
-        },
-        respondedBy
-      );
-      return;
+        undefined,
+        respondedBy,
+      )
+      : false;
+    if (!serviceResolved && !inlineResolved) {
+      return authority ? { outcome: 'not_found', authority } : undefined;
     }
 
-    // Persist the response as nimbalyst_tool_result for widget rendering
-    if (this.permissionService && sessionId) {
-      this.logAgentMessage(
+    // The exact pending waiter is the durable host mutation acknowledgement.
+    // Do not start a transcript write that could commit after fence handoff.
+    if (authority) return { outcome: 'acknowledged', authority };
+
+    // Renderer/mobile legacy responses keep their established transcript row.
+    if (sessionId) {
+      const persisted = this.logAgentMessage(
         sessionId,
         'claude-code',
         'output',
-        this.createPermissionResultMessage(requestId, response, respondedBy)
-      ).catch(err => {
+        this.createPermissionResultMessage(requestId, response, respondedBy, authority),
+      );
+      persisted.catch(err => {
         console.error('[CLAUDE-CODE] Failed to persist permission response:', err);
       });
       return;
     }
-
-    // Fallback: resolve via the mixin's pending map (for tests or when service not available)
-    this.permissions.resolveToolPermission(
-      requestId,
-      response,
-      (_reqId, resp, by) => {
-        if (sessionId) {
-          this.logAgentMessage(
-            sessionId,
-            'claude-code',
-            'output',
-            this.createPermissionResultMessage(_reqId, resp, by)
-          ).catch(err => {
-            console.error('[CLAUDE-CODE] Failed to persist permission response:', err);
-          });
-        }
-      },
-      respondedBy
-    );
+    return undefined;
   }
 
   /**
@@ -3408,9 +3407,12 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             const content = JSON.parse(msg.content);
             // Check for new nimbalyst_tool_result format
             if (content.type === 'nimbalyst_tool_result' && content.tool_use_id === requestId) {
+              const pending = this.permissions.pendingToolPermissions.get(requestId);
+              if (!pending || !permissionResultMatchesPendingMutation(content, pending.request)) {
+                continue;
+              }
               // Found a response - parse the result and resolve
               const result = typeof content.result === 'string' ? JSON.parse(content.result) : content.result;
-              const pending = this.permissions.pendingToolPermissions.get(requestId);
               if (pending && result.decision) {
                 pending.resolve({
                   decision: result.decision,
@@ -3429,7 +3431,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             // Legacy: also check for permission_response (for backwards compatibility)
             if (content.type === 'permission_response' && content.requestId === requestId) {
               const pending = this.permissions.pendingToolPermissions.get(requestId);
-              if (pending) {
+              if (pending && permissionResultMatchesPendingMutation(content, pending.request)) {
                 pending.resolve({
                   decision: content.decision,
                   scope: content.scope

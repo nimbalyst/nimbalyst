@@ -12,7 +12,11 @@
  * - Static injection points for trust checking, pattern persistence, etc.
  */
 
-import { BaseAIProvider } from '../AIProvider';
+import {
+  BaseAIProvider,
+  type BoundInteractiveMutationAuthority,
+  type InteractiveMutationAcknowledgement,
+} from '../AIProvider';
 import { ProviderCapabilities } from '../types';
 import { AISessionsRepository } from '../../../storage/repositories/AISessionsRepository';
 import type { MetaAgentWorkflowPreset } from '../../prompt';
@@ -26,6 +30,27 @@ import {
 } from './ProviderPermissionMixin';
 import { ProviderSessionManager, ProviderSessionData } from './ProviderSessionManager';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
+import { permissionResultMatchesPendingMutation } from '../permissions/ToolPermissionService';
+
+export function serializeProviderPermissionResult(
+  requestId: string,
+  response: PermissionDecision,
+  respondedBy: 'desktop' | 'mobile' | 'telegram',
+  authority?: BoundInteractiveMutationAuthority,
+  respondedAt = Date.now(),
+): string {
+  return JSON.stringify({
+    type: 'nimbalyst_tool_result',
+    tool_use_id: requestId,
+    ...(authority ? { mutation_authority: authority } : {}),
+    result: JSON.stringify({
+      decision: response.decision,
+      scope: response.scope,
+      respondedAt,
+      respondedBy,
+    }),
+  });
+}
 
 export abstract class BaseAgentProvider extends BaseAIProvider {
   // Tools auto-allowed for the meta-agent profile. Child-session orchestration
@@ -126,22 +151,26 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
     requestId: string,
     response: PermissionDecision,
     sessionId?: string,
-    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
-  ): void {
-    this.permissions.resolveToolPermission(
+    respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop',
+    authority?: BoundInteractiveMutationAuthority,
+  ): void | InteractiveMutationAcknowledgement | Promise<InteractiveMutationAcknowledgement> {
+    const resolved = this.permissions.resolveToolPermission(
       requestId,
       response,
-      (reqId, resp, by) => {
-        if (sessionId) {
-          void this.logAgentMessageBestEffort(
-            sessionId,
-            'output',
-            this.createPermissionResultMessage(reqId, resp, by)
-          );
-        }
-      },
-      respondedBy
+      undefined,
+      respondedBy,
     );
+    if (!resolved) {
+      return authority ? { outcome: 'not_found', authority } : undefined;
+    }
+    if (authority) {
+      return { outcome: 'acknowledged', authority };
+    }
+    if (sessionId) {
+      const content = this.createPermissionResultMessage(requestId, response, respondedBy, authority);
+      void this.logAgentMessageBestEffort(sessionId, 'output', content);
+    }
+    return undefined;
   }
 
   /**
@@ -203,6 +232,10 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
 
             // Primary: nimbalyst_tool_result format
             if (content.type === 'nimbalyst_tool_result' && content.tool_use_id === requestId) {
+              const pending = this.permissions.pendingToolPermissions.get(requestId);
+              if (!pending || !permissionResultMatchesPendingMutation(content, pending.request)) {
+                continue;
+              }
               const result = typeof content.result === 'string' ? JSON.parse(content.result) : content.result;
 
               if (!BaseAgentProvider.isValidPermissionResponse(result)) {
@@ -210,36 +243,34 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
                 continue;
               }
 
-              const pending = this.permissions.pendingToolPermissions.get(requestId);
-              if (pending) {
-                pending.resolve({ decision: result.decision, scope: result.scope });
-                this.permissions.pendingToolPermissions.delete(requestId);
-                this.logSecurity('[BaseAgentProvider] Found nimbalyst_tool_result response', {
-                  requestId,
-                  decision: result.decision,
-                  scope: result.scope,
-                });
-              }
+              pending.resolve({ decision: result.decision, scope: result.scope });
+              this.permissions.pendingToolPermissions.delete(requestId);
+              this.logSecurity('[BaseAgentProvider] Found nimbalyst_tool_result response', {
+                requestId,
+                decision: result.decision,
+                scope: result.scope,
+              });
               return;
             }
 
             // Legacy: permission_response format (for backwards compatibility)
             if (content.type === 'permission_response' && content.requestId === requestId) {
+              const pending = this.permissions.pendingToolPermissions.get(requestId);
+              if (!pending || !permissionResultMatchesPendingMutation(content, pending.request)) {
+                continue;
+              }
               if (!BaseAgentProvider.isValidPermissionResponse(content)) {
                 this.logSecurity('[BaseAgentProvider] Invalid legacy permission response format', { requestId, content });
                 continue;
               }
 
-              const pending = this.permissions.pendingToolPermissions.get(requestId);
-              if (pending) {
-                pending.resolve({ decision: content.decision, scope: content.scope });
-                this.permissions.pendingToolPermissions.delete(requestId);
-                this.logSecurity('[BaseAgentProvider] Found legacy permission_response', {
-                  requestId,
-                  decision: content.decision,
-                  scope: content.scope,
-                });
-              }
+              pending.resolve({ decision: content.decision, scope: content.scope });
+              this.permissions.pendingToolPermissions.delete(requestId);
+              this.logSecurity('[BaseAgentProvider] Found legacy permission_response', {
+                requestId,
+                decision: content.decision,
+                scope: content.scope,
+              });
               return;
             }
           } catch {
@@ -360,18 +391,10 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
   protected createPermissionResultMessage(
     requestId: string,
     response: PermissionDecision,
-    respondedBy: 'desktop' | 'mobile' | 'telegram'
+    respondedBy: 'desktop' | 'mobile' | 'telegram',
+    authority?: BoundInteractiveMutationAuthority,
   ): string {
-    return JSON.stringify({
-      type: 'nimbalyst_tool_result',
-      tool_use_id: requestId,
-      result: JSON.stringify({
-        decision: response.decision,
-        scope: response.scope,
-        respondedAt: Date.now(),
-        respondedBy
-      })
-    });
+    return serializeProviderPermissionResult(requestId, response, respondedBy, authority);
   }
 
   /**

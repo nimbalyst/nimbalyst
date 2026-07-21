@@ -21,6 +21,23 @@ import {
 import { extractSearchable } from './transcript/searchableTextExtractor';
 
 /**
+ * Immutable authority carried by a host-controlled interactive mutation.
+ * Raw provider prompt IDs are reusable, so they are never sufficient proof.
+ */
+export interface BoundInteractiveMutationAuthority {
+  mutationId: string;
+  mutationFence: number;
+  attentionGeneration: string;
+  promptOccurrence: string;
+  answerDigest: string;
+}
+
+export type InteractiveMutationAcknowledgement = {
+  outcome: 'acknowledged' | 'not_found' | 'entered_unproven';
+  authority: BoundInteractiveMutationAuthority;
+};
+
+/**
  * Interface for providers that support the AskUserQuestion tool
  * Implemented by agent providers that can pause for user input.
  */
@@ -33,8 +50,9 @@ export interface AskUserQuestionProvider {
     questionId: string,
     answers: Record<string, string>,
     sessionId?: string,
-    respondedBy?: 'desktop' | 'mobile' | 'telegram'
-  ): boolean;
+    respondedBy?: 'desktop' | 'mobile' | 'telegram',
+    authority?: BoundInteractiveMutationAuthority
+  ): boolean | InteractiveMutationAcknowledgement | Promise<boolean | InteractiveMutationAcknowledgement>;
 
   /**
    * Reject a pending AskUserQuestion request (e.g., on cancel/abort)
@@ -62,8 +80,9 @@ export interface ExitPlanModeConfirmationProvider {
     requestId: string,
     response: { approved: boolean; clearContext?: boolean; feedback?: string },
     sessionId?: string,
-    respondedBy?: 'desktop' | 'mobile' | 'telegram'
-  ): void;
+    respondedBy?: 'desktop' | 'mobile' | 'telegram',
+    authority?: BoundInteractiveMutationAuthority
+  ): void | InteractiveMutationAcknowledgement | Promise<void | InteractiveMutationAcknowledgement>;
 }
 
 /**
@@ -84,8 +103,9 @@ export interface ToolPermissionProvider {
     requestId: string,
     response: { decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' },
     sessionId?: string,
-    respondedBy?: 'desktop' | 'mobile' | 'telegram'
-  ): void;
+    respondedBy?: 'desktop' | 'mobile' | 'telegram',
+    authority?: BoundInteractiveMutationAuthority
+  ): void | InteractiveMutationAcknowledgement | Promise<void | InteractiveMutationAcknowledgement>;
 }
 
 /**

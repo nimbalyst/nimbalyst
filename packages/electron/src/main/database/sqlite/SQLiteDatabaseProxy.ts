@@ -41,6 +41,7 @@ import type {
   MigrationPreflightResult,
   DryRunStatusResult,
   PgliteReadRequestPayload,
+  TransactionPayload,
   WorkerControlRequestPayload,
 } from './worker/workerProtocol';
 import type { MigrationSummary } from './PGLiteToSQLiteMigrator';
@@ -240,8 +241,16 @@ export class SQLiteDatabaseProxy {
     await this.send('exec', { sql });
   }
 
-  async runTransaction(statements: Array<{ sql: string; params?: unknown[] }>): Promise<void> {
-    await this.send('transaction', { statements });
+  runTransaction<T = unknown>(
+    statements: TransactionPayload['statements'],
+  ): Promise<Array<QueryResult<T>>>;
+  runTransaction(
+    statements: Array<{ sql: string; params?: unknown[] }>,
+  ): Promise<void>;
+  async runTransaction<T = unknown>(
+    statements: TransactionPayload['statements'],
+  ): Promise<Array<QueryResult<T>> | void> {
+    return (await this.send('transaction', { statements })) as Array<QueryResult<T>>;
   }
 
   async getStats(): Promise<unknown> {

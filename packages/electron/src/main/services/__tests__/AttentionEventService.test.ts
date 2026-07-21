@@ -334,6 +334,92 @@ describe('AttentionEventService', () => {
     expect(harness.session.metadata.attentionSummary).toEqual({ pending: false });
   });
 
+  it('persists Jean attention settlement only through the durable commit-time CAS', async () => {
+    await harness.service.armInteractivePrompt(WORKSPACE, {
+      sessionId: SESSION_ID,
+      promptType: 'AskUserQuestion',
+      promptId: 'question-guarded',
+      attentionGeneration: 'generation-a',
+    });
+    const guardedUpdate = vi.fn(async ({ nextMetadata }) => {
+      harness.session.metadata = nextMetadata;
+      return true;
+    });
+    const ordinaryUpdate = vi.fn();
+    const service = new AttentionEventService({
+      getSession: async () => harness.session,
+      updateSessionMetadata: ordinaryUpdate,
+      pushAttentionSummary: vi.fn(),
+      now: () => new Date('2026-07-18T10:05:00.000Z'),
+      compareUpdateSessionMetadataWithHostControlAuthority: guardedUpdate,
+    });
+    const authority = {
+      receiptId: 'receipt-a',
+      reservationOwner: 'owner-a',
+      mutationId: 'mutation-a',
+      mutationFence: 7,
+      attentionGeneration: 'generation-a',
+      step: 'attention' as const,
+    };
+
+    await expect(service.cancelInteractivePrompt(
+      SESSION_ID,
+      'question-guarded',
+      'answered',
+      { expectedGeneration: 'generation-a', durableCleanupAuthority: authority },
+    )).resolves.toEqual({
+      attentionCancelledCount: 1,
+      attentionResult: 'settled',
+    });
+
+    expect(guardedUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: SESSION_ID,
+      authority,
+    }));
+    expect(ordinaryUpdate).not.toHaveBeenCalled();
+    expect(harness.session.metadata.attentionEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        promptId: 'question-guarded',
+        attentionGeneration: 'generation-a',
+        status: 'cancelled',
+      }),
+    ]));
+  });
+
+  it('rejects missing or mismatched durable generations before an A receipt can touch same-ID B', async () => {
+    await harness.service.armInteractivePrompt(WORKSPACE, {
+      sessionId: SESSION_ID,
+      promptType: 'AskUserQuestion',
+      promptId: 'reused-id',
+      attentionGeneration: 'generation-b',
+    });
+    const before = structuredClone(harness.session.metadata);
+    const guardedUpdate = vi.fn(async () => true);
+    const service = new AttentionEventService({
+      getSession: async () => harness.session,
+      updateSessionMetadata: vi.fn(),
+      pushAttentionSummary: vi.fn(),
+      now: () => new Date('2026-07-21T00:00:00.000Z'),
+      compareUpdateSessionMetadataWithHostControlAuthority: guardedUpdate,
+    });
+    const authority = {
+      receiptId: 'receipt-a', reservationOwner: 'owner-a', mutationId: 'mutation-a',
+      mutationFence: 1, attentionGeneration: 'generation-a', step: 'attention' as const,
+    };
+
+    await expect(service.cancelInteractivePrompt(
+      SESSION_ID, 'reused-id', 'answered',
+      { expectedGeneration: 'generation-b', durableCleanupAuthority: authority },
+    )).rejects.toThrow('host_control_attention_generation_authority_mismatch');
+    await expect(service.cancelInteractivePrompt(
+      SESSION_ID, 'reused-id', 'answered',
+      { durableCleanupAuthority: authority } as any,
+    )).rejects.toThrow('expectedGeneration');
+
+    expect(guardedUpdate).not.toHaveBeenCalled();
+    expect(harness.session.metadata).toEqual(before);
+  });
+
   it('does not clear an interactive prompt whose identity merely has the same suffix', async () => {
     const armed = await harness.service.armInteractivePrompt(WORKSPACE, {
       sessionId: SESSION_ID,

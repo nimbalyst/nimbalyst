@@ -68,7 +68,13 @@ class RepositoryManager {
       const sqliteDatabase = database.getActiveSQLiteDatabase();
       const dbAdapter = sqliteDatabase
         ? createSQLiteStoreAdapter(sqliteDatabase)
-        : { query: database.query.bind(database) };
+        : {
+          query: database.query.bind(database),
+          // Preserve the native result-bearing worker batch for the I3
+          // metadata/receipt settlement; do not route it through the legacy
+          // callback-style PGLite transaction helper.
+          transaction: database.runTransaction.bind(database),
+        };
 
       // Create base session store
       this.baseSessionStore = createPGLiteSessionStore(

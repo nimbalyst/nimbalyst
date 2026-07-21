@@ -84,14 +84,16 @@ export class ProviderPermissionMixin {
     response: PermissionDecision,
     onPersist?: (requestId: string, response: PermissionDecision, respondedBy: 'desktop' | 'mobile' | 'telegram') => void,
     respondedBy: 'desktop' | 'mobile' | 'telegram' = 'desktop'
-  ): void {
+  ): boolean {
     const pending = this.pendingToolPermissions.get(requestId);
     if (pending) {
       pending.resolve(response);
       this.pendingToolPermissions.delete(requestId);
       onPersist?.(requestId, response, respondedBy);
+      return true;
     } else {
       console.warn(`[ProviderPermission] No pending permission found for requestId: ${requestId}`);
+      return false;
     }
   }
 

@@ -85,6 +85,7 @@ describe('runMigrations', () => {
     fs.writeFileSync(path.join(tmp, '0025_account_org_bindings.sql'), '-- noop\n');
     fs.writeFileSync(path.join(tmp, '0026_queued_prompt_priority_control.sql'), '-- noop\n');
     fs.writeFileSync(path.join(tmp, '0027_host_control_receipts.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0028_host_control_mutation_reconciliation.sql'), '-- noop\n');
 
     const db = new FakeDb();
     // Hack: inject our own migration list via reflection-equivalent. Re-using
@@ -98,13 +99,13 @@ describe('runMigrations', () => {
     // a stand-in implementation; for now, test the file-backed path with the
     // bundled migrations.
     const result = runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
-    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]);
+    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]);
     expect(result.skipped).toEqual([]);
 
     // Second invocation: nothing to apply, all skipped.
     const result2 = runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(result2.applied).toEqual([]);
-    expect(result2.skipped).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]);
+    expect(result2.skipped).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]);
 
     // Anti-flake: unused locals lint silencer.
     void customs;
@@ -219,6 +220,10 @@ describe('runMigrations', () => {
       path.join(tmp, '0027_host_control_receipts.sql'),
       '-- noop\n',
     );
+    fs.writeFileSync(
+      path.join(tmp, '0028_host_control_mutation_reconciliation.sql'),
+      '-- noop\n',
+    );
     const db = new FakeDb();
     runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(db.execs.some((s) => s.includes('CREATE TABLE foo'))).toBe(true);
@@ -227,7 +232,7 @@ describe('runMigrations', () => {
 });
 
 describe('runMigrations against the real schema dir', () => {
-  it('applies the bundled schema through version 27 with host-control receipt parity', async () => {
+  it('applies the bundled schema through version 28 with reconciliation parity', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-mig-real-'));
     const schemaDir = path.resolve(__dirname, '..', 'schemas');
     const sqlite = new SQLiteDatabase({
@@ -246,6 +251,7 @@ describe('runMigrations against the real schema dir', () => {
       expect(versions.map((v) => v.version)).toContain(3);
       expect(versions.map((v) => v.version)).toContain(26);
       expect(versions.map((v) => v.version)).toContain(27);
+      expect(versions.map((v) => v.version)).toContain(28);
 
       const cols = handle
         .prepare(`PRAGMA table_info(ai_agent_messages)`)
@@ -287,6 +293,14 @@ describe('runMigrations against the real schema dir', () => {
           'request_digest',
           'control_operation',
           'interrupt_target_generation',
+          'interrupt_reservation_owner',
+          'interrupt_lease_expires_at',
+          'interrupt_operation_id',
+          'interrupt_fence',
+          'interrupt_application_state',
+          'interrupt_started_at',
+          'interrupt_applied_at',
+          'interrupt_application_receipt',
           'interrupt_receipt',
         ]),
       );
@@ -328,9 +342,24 @@ describe('runMigrations against the real schema dir', () => {
         .all() as Array<{ name: string }>;
       expect(receiptColumns.map((column) => column.name)).toEqual([
         'id', 'reservation_key', 'request_digest', 'operation', 'session_id',
-        'event_identity', 'attention_generation', 'state', 'receipt',
+        'event_identity', 'attention_generation', 'state', 'reservation_owner',
+        'lease_expires_at', 'mutation_id', 'mutation_fence',
+        'mutation_state', 'mutation_started_at',
+        'mutation_applied_at', 'mutation_receipt',
+        'cleanup_prompt_state', 'cleanup_prompt_fence',
+        'cleanup_attention_state', 'cleanup_attention_fence',
+        'cleanup_attention_result',
+        'cleanup_terminal_state', 'cleanup_terminal_fence', 'receipt',
         'created_at', 'updated_at',
       ]);
+      const storeIdentity = handle.prepare(`
+        SELECT store_id, authority_root FROM host_control_store_identity WHERE singleton = 1
+      `).get() as { store_id: string; authority_root: string };
+      expect(storeIdentity.store_id).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(path.isAbsolute(storeIdentity.authority_root)).toBe(true);
+      expect(storeIdentity.authority_root).toBe(
+        `${fs.realpathSync.native(handle.name)}.host-control-authority-v3`,
+      );
       handle.prepare(`
         INSERT INTO host_control_receipts(
           id, reservation_key, request_digest, operation, session_id,
@@ -370,11 +399,11 @@ describe('runMigrations against the real schema dir', () => {
       handle.exec(`
         DROP TABLE native_winner_outbox;
         DROP TABLE host_control_receipts;
-        DELETE FROM _migrations WHERE version = 27;
+        DELETE FROM _migrations WHERE version IN (27, 28);
       `);
 
       const upgraded = runMigrations(handle, schemaDir);
-      expect(upgraded.applied).toEqual([27]);
+      expect(upgraded.applied).toEqual([27, 28]);
       expect(handle.prepare(`
         SELECT name FROM sqlite_master
         WHERE type = 'table' AND name IN ('host_control_receipts', 'native_winner_outbox')
@@ -387,6 +416,247 @@ describe('runMigrations against the real schema dir', () => {
       const rerun = runMigrations(handle, schemaDir);
       expect(rerun.applied).toEqual([]);
       expect(rerun.skipped).toContain(27);
+      expect(rerun.skipped).toContain(28);
+    } finally {
+      await sqlite.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a version-27 schema across both reconciliation tables idempotently', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-mig-v27-'));
+    const schemaDir = path.resolve(__dirname, '..', 'schemas');
+    const sqlite = new SQLiteDatabase({
+      dbDir: tmpDir,
+      schemaDir,
+      slowQueryThresholdMs: 1000,
+      sampleRate: 0,
+    });
+    try {
+      await sqlite.initialize();
+      const handle = sqlite.getRawHandle()!;
+      handle.exec(`
+        DROP TABLE queued_prompts;
+        DROP TABLE host_control_receipts;
+        CREATE TABLE queued_prompts (
+          id TEXT PRIMARY KEY,
+          interrupt_target_generation TEXT,
+          interrupt_receipt TEXT
+        );
+        CREATE TABLE host_control_receipts (
+          id TEXT PRIMARY KEY,
+          reservation_key TEXT NOT NULL UNIQUE,
+          request_digest TEXT NOT NULL,
+          operation TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          event_identity TEXT NOT NULL,
+          attention_generation TEXT,
+          state TEXT NOT NULL,
+          receipt TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO queued_prompts(id, interrupt_target_generation, interrupt_receipt)
+          VALUES ('legacy-unreserved', NULL, NULL);
+        INSERT INTO queued_prompts(id, interrupt_target_generation, interrupt_receipt)
+          VALUES ('legacy-unknown', 'generation-a', NULL);
+        INSERT INTO queued_prompts(id, interrupt_target_generation, interrupt_receipt)
+          VALUES ('legacy-terminal', 'generation-a', '{"success":false}');
+        INSERT INTO host_control_receipts(
+          id, reservation_key, request_digest, operation, session_id,
+          event_identity, attention_generation, state, receipt, created_at, updated_at)
+          VALUES (
+            'legacy-host-reserved', 'attention-reply:legacy-reserved', 'digest-a',
+            'inject_attention_reply', 'session-a', 'prompt-a', NULL, 'reserved', NULL,
+            '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z'
+          );
+        INSERT INTO host_control_receipts(
+          id, reservation_key, request_digest, operation, session_id,
+          event_identity, attention_generation, state, receipt, created_at, updated_at)
+          VALUES (
+            'legacy-host-terminal', 'attention-reply:legacy-terminal', 'digest-b',
+            'inject_attention_reply', 'session-b', 'prompt-b', 'generation-b', 'failed',
+            '{"outcome":"failed","verified":false}',
+            '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z'
+          );
+        DELETE FROM _migrations WHERE version = 28;
+      `);
+
+      const upgraded = runMigrations(handle, schemaDir);
+      expect(upgraded.applied).toEqual([28]);
+      expect((handle.prepare('PRAGMA table_info(queued_prompts)').all() as Array<{ name: string }>)
+        .map((column) => column.name)).toEqual(expect.arrayContaining([
+          'interrupt_reservation_owner',
+          'interrupt_lease_expires_at',
+          'interrupt_operation_id',
+          'interrupt_fence',
+          'interrupt_application_state',
+          'interrupt_started_at',
+          'interrupt_applied_at',
+          'interrupt_application_receipt',
+          'interrupt_cleanup_state',
+          'interrupt_cleanup_fence',
+        ]));
+      expect((handle.prepare('PRAGMA table_info(host_control_receipts)').all() as Array<{ name: string }>)
+        .map((column) => column.name)).toEqual(expect.arrayContaining([
+          'reservation_owner',
+          'lease_expires_at',
+          'mutation_id',
+          'mutation_fence',
+          'mutation_state',
+          'mutation_started_at',
+          'mutation_applied_at',
+          'mutation_receipt',
+          'cleanup_prompt_state',
+          'cleanup_prompt_fence',
+          'cleanup_attention_state',
+          'cleanup_attention_fence',
+          'cleanup_attention_result',
+          'cleanup_terminal_state',
+          'cleanup_terminal_fence',
+        ]));
+
+      expect(handle.prepare(`
+        SELECT interrupt_application_state AS state,
+               interrupt_reservation_owner AS owner,
+               interrupt_lease_expires_at AS expiry,
+               interrupt_operation_id AS operation_id,
+               interrupt_fence AS fence
+        FROM queued_prompts WHERE id = 'legacy-unknown'
+      `).get()).toEqual({
+        state: 'legacy_unknown',
+        owner: 'legacy-orphan',
+        expiry: '1970-01-01T00:00:00.000Z',
+        operation_id: 'legacy-interrupt:legacy-unknown:generation-a',
+        fence: 0,
+      });
+      expect(handle.prepare(`
+        SELECT interrupt_application_state AS state,
+               interrupt_operation_id AS operation_id,
+               interrupt_receipt AS receipt
+        FROM queued_prompts WHERE id = 'legacy-terminal'
+      `).get()).toEqual({
+        state: 'not_started',
+        operation_id: 'legacy-interrupt:legacy-terminal:generation-a',
+        receipt: '{"success":false}',
+      });
+      expect(handle.prepare(`
+        SELECT reservation_owner AS owner, lease_expires_at AS expiry,
+               mutation_id, mutation_fence AS fence, mutation_state AS state
+        FROM host_control_receipts WHERE id = 'legacy-host-reserved'
+      `).get()).toEqual({
+        owner: 'legacy-orphan',
+        expiry: '1970-01-01T00:00:00.000Z',
+        mutation_id: 'legacy-host-mutation:legacy-host-reserved',
+        fence: 0,
+        state: 'legacy_unknown',
+      });
+      expect(handle.prepare(`
+        SELECT state, receipt, reservation_owner AS owner, mutation_id
+        FROM host_control_receipts WHERE id = 'legacy-host-terminal'
+      `).get()).toEqual({
+        state: 'failed',
+        receipt: '{"outcome":"failed","verified":false}',
+        owner: null,
+        mutation_id: 'legacy-host-mutation:legacy-host-terminal',
+      });
+
+      handle.exec(`
+        INSERT INTO queued_prompts(
+          id, interrupt_target_generation, interrupt_reservation_owner,
+          interrupt_lease_expires_at, interrupt_operation_id, interrupt_fence,
+          interrupt_application_state, interrupt_cleanup_state,
+          interrupt_cleanup_fence, interrupt_receipt)
+        VALUES (
+          'modern-unknown', 'generation-modern', 'modern-owner',
+          '2026-07-20T10:00:00.000Z', 'priority-interrupt:modern', 9,
+          'unknown', 'claimed', 9, NULL
+        );
+        INSERT INTO host_control_receipts(
+          id, reservation_key, request_digest, operation, session_id,
+          event_identity, attention_generation, state, receipt, created_at, updated_at,
+          reservation_owner, lease_expires_at, mutation_id, mutation_fence, mutation_state,
+          cleanup_prompt_state, cleanup_prompt_fence,
+          cleanup_attention_state, cleanup_attention_fence,
+          cleanup_terminal_state, cleanup_terminal_fence)
+        VALUES (
+          'modern-host-applied', 'attention-reply:modern', 'digest-modern',
+          'inject_attention_reply', 'session-modern', 'prompt-modern',
+          'generation-modern', 'reserved', NULL,
+          '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z',
+          'modern-host-owner', '2026-07-20T10:00:00.000Z',
+          'host-mutation:modern', 11, 'applied', 'complete', 11, 'claimed', 11,
+          'claimed', 11
+        );
+        DELETE FROM _migrations WHERE version = 28;
+      `);
+      expect(runMigrations(handle, schemaDir).applied).toEqual([28]);
+      expect(handle.prepare(`
+        SELECT mutation_id, mutation_fence, mutation_state,
+               cleanup_attention_state, cleanup_attention_fence
+        FROM host_control_receipts WHERE id = 'modern-host-applied'
+      `).get()).toEqual({
+        mutation_id: 'host-mutation:modern',
+        mutation_fence: 11,
+        mutation_state: 'applied',
+        cleanup_attention_state: 'claimed',
+        cleanup_attention_fence: 11,
+      });
+      const identityBeforeRerun = handle.prepare(`
+        SELECT store_id, authority_root FROM host_control_store_identity WHERE singleton = 1
+      `).get();
+      handle.prepare(`
+        UPDATE host_control_receipts
+        SET cleanup_attention_state = 'complete', cleanup_attention_result = NULL
+        WHERE id = 'modern-host-applied'
+      `).run();
+      handle.prepare('DELETE FROM _migrations WHERE version = 28').run();
+      expect(runMigrations(handle, schemaDir).applied).toEqual([28]);
+      expect(handle.prepare(`
+        SELECT cleanup_attention_state, cleanup_attention_result
+        FROM host_control_receipts WHERE id = 'modern-host-applied'
+      `).get()).toEqual({
+        cleanup_attention_state: 'pending',
+        cleanup_attention_result: null,
+      });
+      expect(handle.prepare(`
+        SELECT store_id, authority_root FROM host_control_store_identity WHERE singleton = 1
+      `).get()).toEqual(identityBeforeRerun);
+      expect(handle.prepare(`
+        SELECT interrupt_reservation_owner AS owner,
+               interrupt_operation_id AS operation_id,
+               interrupt_fence AS fence,
+               interrupt_application_state AS state,
+               interrupt_cleanup_state AS cleanup_state,
+               interrupt_cleanup_fence AS cleanup_fence
+        FROM queued_prompts WHERE id = 'modern-unknown'
+      `).get()).toEqual({
+        owner: 'modern-owner',
+        operation_id: 'priority-interrupt:modern',
+        fence: 9,
+        state: 'unknown',
+        cleanup_state: 'claimed',
+        cleanup_fence: 9,
+      });
+      expect(handle.prepare(`
+        SELECT reservation_owner AS owner, mutation_id,
+               mutation_fence AS fence, mutation_state AS state,
+               cleanup_prompt_state, cleanup_prompt_fence,
+               cleanup_attention_state, cleanup_attention_fence,
+               cleanup_terminal_state, cleanup_terminal_fence
+        FROM host_control_receipts WHERE id = 'modern-host-applied'
+      `).get()).toEqual({
+        owner: 'modern-host-owner',
+        mutation_id: 'host-mutation:modern',
+        fence: 11,
+        state: 'applied',
+        cleanup_prompt_state: 'complete',
+        cleanup_prompt_fence: 11,
+        cleanup_attention_state: 'pending',
+        cleanup_attention_fence: 0,
+        cleanup_terminal_state: 'claimed',
+        cleanup_terminal_fence: 11,
+      });
     } finally {
       await sqlite.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -443,6 +713,10 @@ describe('runMigrations against the real schema dir', () => {
       path.resolve(__dirname, '..', 'schemas', '0027_host_control_receipts.sql'),
       path.join(schemaDir, '0027_host_control_receipts.sql'),
     );
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', 'schemas', '0028_host_control_mutation_reconciliation.sql'),
+      path.join(schemaDir, '0028_host_control_mutation_reconciliation.sql'),
+    );
 
     const sqlite = new SQLiteDatabase({
       dbDir: path.join(tmpDir, 'db'),
@@ -494,7 +768,7 @@ describe('runMigrations against the real schema dir', () => {
       expect(rerun.applied).toEqual([]);
       expect(rerun.skipped).toEqual([
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
-        14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+        14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
       ]);
     } finally {
       await sqlite.close();

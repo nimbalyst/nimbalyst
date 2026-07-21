@@ -57,6 +57,89 @@ describe('SQLiteStoreAdapter', () => {
     expect(rows).toEqual([{ id: 's1', title: 'Hello' }]);
   });
 
+  it('returns every statement result and rolls back the whole batch on failure', async () => {
+    const adapter = createSQLiteStoreAdapter(db);
+    const results = await adapter.transaction<{ id: string }>([
+      {
+        sql: `INSERT INTO ai_sessions (id, workspace_id, title, provider)
+              VALUES ($1, $2, $3, $4) RETURNING id`,
+        params: ['transaction-s1', 'ws1', 'Transactional', 'claude'],
+      },
+      {
+        sql: 'SELECT id FROM ai_sessions WHERE id = $1',
+        params: ['transaction-s1'],
+      },
+    ]);
+    expect(results).toEqual([
+      { rows: [{ id: 'transaction-s1' }] },
+      { rows: [{ id: 'transaction-s1' }] },
+    ]);
+
+    await expect(adapter.transaction([
+      {
+        sql: `INSERT INTO ai_sessions (id, workspace_id, title, provider)
+              VALUES ($1, $2, $3, $4)`,
+        params: ['rollback-s1', 'ws1', 'first', 'claude'],
+      },
+      {
+        sql: `INSERT INTO ai_sessions (id, workspace_id, title, provider)
+              VALUES ($1, $2, $3, $4)`,
+        params: ['rollback-s1', 'ws1', 'duplicate', 'claude'],
+      },
+    ])).rejects.toThrow();
+    const rolledBack = await adapter.query<{ id: string }>(
+      'SELECT id FROM ai_sessions WHERE id = $1',
+      ['rollback-s1'],
+    );
+    expect(rolledBack.rows).toEqual([]);
+  });
+
+  it('rolls back a successful prefix when a guarded RETURNING CAS affects zero rows', async () => {
+    const adapter = createSQLiteStoreAdapter(db);
+
+    await expect(adapter.transaction([
+      {
+        sql: `INSERT INTO ai_sessions (id, workspace_id, title, provider)
+              VALUES ($1, $2, $3, $4) RETURNING id`,
+        params: ['guarded-prefix', 'ws1', 'must roll back', 'claude'],
+        expectedRowCount: 1,
+      },
+      {
+        sql: `UPDATE ai_sessions SET title = $1 WHERE id = $2 RETURNING id`,
+        params: ['never written', 'missing-session'],
+        expectedRowCount: 1,
+      },
+    ])).rejects.toThrow('transaction expected row count mismatch at statement 1: expected 1, got 0');
+
+    await expect(adapter.query<{ id: string }>(
+      'SELECT id FROM ai_sessions WHERE id = $1',
+      ['guarded-prefix'],
+    )).resolves.toEqual({ rows: [] });
+  });
+
+  it('rejects a guarded write without RETURNING before its prefix can commit', async () => {
+    const adapter = createSQLiteStoreAdapter(db);
+
+    await expect(adapter.transaction([
+      {
+        sql: `INSERT INTO ai_sessions (id, workspace_id, title, provider)
+              VALUES ($1, $2, $3, $4) RETURNING id`,
+        params: ['guarded-nonreader-prefix', 'ws1', 'must roll back', 'claude'],
+        expectedRowCount: 1,
+      },
+      {
+        sql: 'UPDATE ai_sessions SET title = $1 WHERE id = $2',
+        params: ['no returning', 'guarded-nonreader-prefix'],
+        expectedRowCount: 1,
+      },
+    ])).rejects.toThrow('transaction statement 1 requires RETURNING');
+
+    await expect(adapter.query<{ id: string }>(
+      'SELECT id FROM ai_sessions WHERE id = $1',
+      ['guarded-nonreader-prefix'],
+    )).resolves.toEqual({ rows: [] });
+  });
+
   it('handles NOW() in SET and WHERE clauses', async () => {
     const adapter = createSQLiteStoreAdapter(db);
     await adapter.query(

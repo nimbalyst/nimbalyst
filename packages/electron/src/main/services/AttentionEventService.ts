@@ -3,6 +3,11 @@ import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AI
 import type { AttentionSummary } from '@nimbalyst/runtime/sync/types';
 import type { SessionStateEvent } from '@nimbalyst/runtime/ai/server/types/SessionState';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
+import {
+  compareUpdateSessionMetadataWithHostControlAuthority,
+  type HostControlAttentionCleanupResult,
+  type HostControlMetadataCleanupAuthority,
+} from './PGLiteSessionStore';
 
 const ATTENTION_METADATA_KEY = 'attentionEvents';
 const MAX_ATTENTION_EVENTS_PER_SESSION = 100;
@@ -68,6 +73,11 @@ export interface AttentionEvent {
   cancelledAt?: string;
   cancelReason?: AttentionCancelReason;
   cancelDetail?: string;
+}
+
+export interface DurableAttentionCancellationOutcome {
+  attentionCancelledCount: number;
+  attentionResult: HostControlAttentionCleanupResult;
 }
 
 export interface ArmAttentionArgs {
@@ -150,6 +160,7 @@ export interface AttentionEventServiceDeps {
   pushAttentionSummary: (sessionId: string, summary: AttentionSummary) => Promise<void>;
   now: () => Date;
   notifyUserJson?: AttentionNotifyUserJson;
+  compareUpdateSessionMetadataWithHostControlAuthority: typeof compareUpdateSessionMetadataWithHostControlAuthority;
 }
 
 export class AttentionEventService {
@@ -190,6 +201,9 @@ export class AttentionEventService {
         }),
       now: deps.now ?? (() => new Date()),
       notifyUserJson: deps.notifyUserJson,
+      compareUpdateSessionMetadataWithHostControlAuthority:
+        deps.compareUpdateSessionMetadataWithHostControlAuthority
+        ?? compareUpdateSessionMetadataWithHostControlAuthority,
     };
     this.notifyUserJsonFn = deps.notifyUserJson ?? null;
   }
@@ -344,15 +358,41 @@ export class AttentionEventService {
     sessionId: string,
     promptIdentity: string,
     reason: Extract<AttentionCancelReason, 'answered' | 'cancelled' | 'superseded' | 'provider_limit'>,
-    options: { expectedGeneration?: string } = {},
-  ): Promise<number> {
+    options: {
+      expectedGeneration: string;
+      durableCleanupAuthority: HostControlMetadataCleanupAuthority;
+    },
+  ): Promise<DurableAttentionCancellationOutcome>;
+  async cancelInteractivePrompt(
+    sessionId: string,
+    promptIdentity: string,
+    reason: Extract<AttentionCancelReason, 'answered' | 'cancelled' | 'superseded' | 'provider_limit'>,
+    options?: {
+      expectedGeneration?: string;
+      durableCleanupAuthority?: undefined;
+    },
+  ): Promise<number>;
+  async cancelInteractivePrompt(
+    sessionId: string,
+    promptIdentity: string,
+    reason: Extract<AttentionCancelReason, 'answered' | 'cancelled' | 'superseded' | 'provider_limit'>,
+    options: {
+      expectedGeneration?: string;
+      durableCleanupAuthority?: HostControlMetadataCleanupAuthority;
+    } = {},
+  ): Promise<number | DurableAttentionCancellationOutcome> {
     const boundedSessionId = this.requireBoundedString(sessionId, 'sessionId', 200);
     const boundedIdentity = this.requireBoundedString(promptIdentity, 'promptIdentity', 300);
-    const expectedGeneration = this.optionalBoundedString(
-      options.expectedGeneration,
-      'expectedGeneration',
-      300,
-    );
+    const isDurable = !!options.durableCleanupAuthority;
+    const expectedGeneration = isDurable
+      ? this.requireBoundedString(options.expectedGeneration, 'expectedGeneration', 300)
+      : this.optionalBoundedString(options.expectedGeneration, 'expectedGeneration', 300);
+    if (isDurable && (
+      options.durableCleanupAuthority!.step !== 'attention'
+      || expectedGeneration !== options.durableCleanupAuthority!.attentionGeneration
+    )) {
+      throw new Error('host_control_attention_generation_authority_mismatch');
+    }
     return this.withSessionLock(boundedSessionId, async () => {
       const session = await this.deps.getSession(boundedSessionId);
       if (!session) return 0;
@@ -364,7 +404,42 @@ export class AttentionEventService {
           (event.promptId === boundedIdentity || event.toolUseId === boundedIdentity),
         reason,
       );
-      if (count > 0) await this.persistEvents(boundedSessionId, events);
+      if (options.durableCleanupAuthority) {
+        const expectedMetadata = session.metadata && typeof session.metadata === 'object'
+          && !Array.isArray(session.metadata)
+          ? session.metadata as Record<string, unknown>
+          : {};
+        const attentionResult: HostControlAttentionCleanupResult = count > 0
+          ? 'settled'
+          : 'already_absent';
+        // For a proved A-absence, preserve the entire exact snapshot. This
+        // deliberately leaves a same-ID generation-B event byte-for-byte
+        // intact rather than rebuilding its summary or guessing a count.
+        const nextMetadata = attentionResult === 'already_absent'
+          ? expectedMetadata
+          : {
+            ...expectedMetadata,
+            [ATTENTION_METADATA_KEY]: events.slice(-MAX_ATTENTION_EVENTS_PER_SESSION),
+            attentionSummary: this.buildAttentionSummary(events.slice(-MAX_ATTENTION_EVENTS_PER_SESSION)),
+          };
+        const committed = await this.deps.compareUpdateSessionMetadataWithHostControlAuthority({
+          sessionId: boundedSessionId,
+          expectedMetadata,
+          nextMetadata,
+          authority: options.durableCleanupAuthority,
+          attentionResult,
+          attentionOccurrence: {
+            eventIdentity: boundedIdentity,
+            attentionGeneration: expectedGeneration!,
+          },
+        });
+        if (!committed) {
+          throw new Error('host_control_attention_cleanup_not_committed');
+        }
+        return { attentionCancelledCount: count, attentionResult };
+      }
+      if (count === 0) return 0;
+      await this.persistEvents(boundedSessionId, events);
       return count;
     });
   }

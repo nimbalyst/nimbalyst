@@ -150,7 +150,11 @@ export interface ExecPayload {
 }
 
 export interface TransactionPayload {
-  statements: Array<{ sql: string; params?: unknown[] }>;
+  statements: Array<{
+    sql: string;
+    params?: unknown[];
+    expectedRowCount?: 1;
+  }>;
 }
 
 // ============================================================================

@@ -27,6 +27,10 @@ import { CLAUDE_CODE_SAFE_FALLBACK_MODEL } from '@nimbalyst/runtime/ai/modelCons
 import { reconcileClaudeCodeModels } from './claudeCodeModelReconcile';
 import { isModelEnabled } from './modelEnablementFilter';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
+import type {
+  BoundInteractiveMutationAuthority,
+  InteractiveMutationAcknowledgement,
+} from '@nimbalyst/runtime/ai/server/AIProvider';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { parseThinkingMode, resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
@@ -89,6 +93,8 @@ import { DocumentContextService, type RawDocumentContext, type PreparedDocumentC
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import {
   runClaimedPendingPromptAction,
+  runOwnedPendingPromptAction,
+  readPendingPromptIdentity,
   setSessionPendingPrompt,
   type PendingPromptPersistenceResult,
 } from './pendingPromptPersistence';
@@ -97,6 +103,12 @@ import {
   schedulePromptOwnedCurrentAction,
 } from './promptActionExecution';
 import { attentionEventService } from '../AttentionEventService';
+import type { HostControlReceiptMutationAuthority } from '../HostControlReceiptsStore';
+import { appliedJeanCleanupResumer } from './JeanAppliedCleanupResumer';
+import type {
+  HostControlAttentionCleanupResult,
+  HostControlMetadataCleanupAuthority,
+} from '../PGLiteSessionStore';
 import {
   retryPendingNativeWinnerNotifications,
   settleConfiguredInteractiveAttentionAfterResponse,
@@ -171,6 +183,66 @@ function scheduleMobileSettingsSync(): void {
       syncSettingsToMobile(apiKeys['openai']);
     }).catch(() => { /* sync manager may not be available */ });
   }, 500);
+}
+
+type JeanOwnedActionRunner = <T>(
+  sessionId: string,
+  promptId: string,
+  action: (state: {
+    ownership: { promptId: string; attentionGeneration: string | null };
+    clearPrompt: (
+      durableCleanupAuthority?: HostControlMetadataCleanupAuthority,
+    ) => Promise<PendingPromptPersistenceResult>;
+  }) => Promise<T>,
+) => Promise<{ owned: boolean; value?: T }>;
+
+export async function runJeanGenerationBoundMutation<T>(input: {
+  sessionId: string;
+  promptId: string;
+  expectedPromptIdentity: string;
+  expectedAttentionGeneration: string;
+  beforeNativeMutation?: () => Promise<void>;
+  runOwnedAction?: JeanOwnedActionRunner;
+  action(state: {
+    ownership: { promptId: string; attentionGeneration: string | null };
+    clearPrompt: (
+      durableCleanupAuthority?: HostControlMetadataCleanupAuthority,
+    ) => Promise<PendingPromptPersistenceResult>;
+  }): Promise<T>;
+}): Promise<{
+  claimed: boolean;
+  value?: T;
+  promptClear?: PendingPromptPersistenceResult;
+}> {
+  // This hook is deliberately before the shared session lock. The race matrix
+  // can install replacement B here; the lock then captures and compares B
+  // before any compare-clear or provider/waiter mutation is allowed.
+  await input.beforeNativeMutation?.();
+  const runOwned = input.runOwnedAction
+    ?? (runOwnedPendingPromptAction as JeanOwnedActionRunner);
+  const owned = await runOwned(
+    input.sessionId,
+    input.promptId,
+    async ({ ownership, clearPrompt }) => {
+      if (
+        ownership.promptId !== input.expectedPromptIdentity
+        || ownership.attentionGeneration !== input.expectedAttentionGeneration
+      ) {
+        return { matched: false as const };
+      }
+      return {
+        matched: true as const,
+        value: await input.action({ ownership, clearPrompt }),
+      };
+    },
+  );
+  if (!owned.owned || !owned.value?.matched) {
+    return { claimed: false };
+  }
+  return {
+    claimed: true,
+    value: owned.value.value,
+  };
 }
 
 export class AIService {
@@ -324,8 +396,8 @@ export class AIService {
     return runInterruptCurrentTurnForSession(
       {
         getSession: (id) => AISessionsRepository.get(id),
-        setSessionPendingPrompt: (id, hasPendingPrompt) =>
-          setSessionPendingPrompt(id, hasPendingPrompt),
+        setSessionPendingPrompt: (id, hasPendingPrompt, promptOptions) =>
+          setSessionPendingPrompt(id, hasPendingPrompt, promptOptions),
         cancelAllAttentionForSession: (id, reason) =>
           attentionEventService.cancelAllForSession(id, reason),
         isTerminalActive: (id) => terminalManager.isTerminalActive(id),
@@ -354,24 +426,108 @@ export class AIService {
     promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
     response: any;
     respondedBy?: 'desktop' | 'mobile' | 'telegram';
+    expectedAttentionGeneration?: string;
+    expectedPromptIdentity?: string;
+    mutationAuthority?: BoundInteractiveMutationAuthority;
+    durableMutationAuthority?: HostControlReceiptMutationAuthority;
+    beforeNativeMutation?: () => Promise<void>;
+    beforeNativeEntry?: () => Promise<void>;
+    afterPromptCleanupCompleted?: () => Promise<void>;
+    afterAttentionCleanupCommitted?: () => Promise<void>;
+    afterAttentionCleanupCompleted?: () => Promise<void>;
+    afterNativeApplicationRecorded?: () => Promise<void>;
+    assertMutationFence?: () => Promise<boolean>;
+    assertCleanupFence?: () => Promise<boolean>;
+    reconcileAppliedOnly?: boolean;
+    onNativeMutationApplied?: (result: {
+      success: boolean;
+      error?: string;
+      promptClear?: PendingPromptPersistenceResult;
+      attentionCancelledCount?: number;
+      eventCleared?: boolean;
+      terminalUnconfirmed?: boolean;
+      nativeCertainty: 'applied';
+      nativeEntered: true;
+      cleanupVerified: false;
+    }) => Promise<void>;
   }): Promise<{
     success: boolean;
     error?: string;
     promptClear?: PendingPromptPersistenceResult;
     staleAction?: boolean;
     attentionCancelledCount?: number;
+    eventCleared?: boolean;
+    terminalUnconfirmed?: boolean;
+    nativeCertainty?: 'not_applied' | 'unknown' | 'applied';
+    nativeEntered?: boolean;
+    cleanupVerified?: boolean;
+    appliedCleanupPending?: boolean;
   }> {
-    const { sessionId, promptId, promptType, response, respondedBy = 'desktop' } = params;
+    const {
+      sessionId,
+      promptId,
+      promptType,
+      response,
+      respondedBy = 'desktop',
+      expectedAttentionGeneration,
+      expectedPromptIdentity,
+    } = params;
     try {
       await retryPendingNativeWinnerNotifications();
     } catch (error) {
       logger.main.warn('[AIService] Native-winner notification retry failed:', error);
     }
+    const jeanMutation = Boolean(expectedAttentionGeneration && expectedPromptIdentity);
+    const resumeAppliedJeanCleanup = async () => {
+      if (!expectedAttentionGeneration || !expectedPromptIdentity || !params.durableMutationAuthority) {
+        return null;
+      }
+      const authority = params.durableMutationAuthority.metadataCleanupAuthority('prompt', expectedAttentionGeneration);
+      return appliedJeanCleanupResumer.resume({
+        identity: {
+          sessionId, eventIdentity: expectedPromptIdentity, attentionGeneration: expectedAttentionGeneration,
+          receiptId: authority.receiptId, reservationOwner: authority.reservationOwner,
+          mutationId: authority.mutationId, mutationFence: authority.mutationFence,
+        },
+        mutationAuthority: params.durableMutationAuthority,
+        cancelReason: response?.cancelled === true ? 'cancelled' : 'answered',
+        hooks: {
+          afterPromptPhaseCommitted: params.afterPromptCleanupCompleted,
+          afterAttentionMetadataCommitted: params.afterAttentionCleanupCommitted,
+          afterAttentionPhaseObserved: params.afterAttentionCleanupCompleted,
+        },
+      });
+    };
+    // A reconstructed applied mutation already has its immutable native
+    // winner. Resume its authority-bound cleanup before the ordinary response
+    // path's repository/session preflight; that preflight belongs to a new
+    // native response and must not prevent an existing winner from reaching
+    // its prompt/attention/terminal CAS sequence.
+    if (params.reconcileAppliedOnly) {
+      const cleaned = await resumeAppliedJeanCleanup();
+      if (!cleaned || cleaned.status !== 'complete') return {
+        success: false, error: 'Applied Jean cleanup authority is unavailable', staleAction: true,
+        nativeCertainty: 'applied', nativeEntered: true, cleanupVerified: false,
+      };
+      return {
+        success: true, attentionCancelledCount: cleaned.attentionCancelledCount,
+        eventCleared: cleaned.eventCleared, nativeCertainty: 'applied', nativeEntered: true,
+        cleanupVerified: true,
+      };
+    }
     const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
     const { database } = await import('../../database/PGLiteDatabaseWorker');
     const session = await AISessionsRepository.get(sessionId);
     if (!session) {
-      return { success: false, error: 'Session not found' };
+      return {
+        success: false,
+        error: 'Session not found',
+        ...(expectedAttentionGeneration && expectedPromptIdentity ? {
+          nativeCertainty: 'not_applied' as const,
+          nativeEntered: false,
+          cleanupVerified: false,
+        } : {}),
+      };
     }
     let responseContent: Record<string, unknown>;
     if (promptType === 'permission_request') {
@@ -404,23 +560,137 @@ export class AIService {
       };
     }
 
-    const claimed = await runClaimedPendingPromptAction(
-      sessionId,
-      promptId,
-      async ({ ownership, promptClear }) => {
-        await database.query(
-          `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false],
-        );
+    const performResponse = async ({ ownership, promptClear, clearPrompt }: {
+      ownership: { promptId: string; attentionGeneration: string | null };
+      promptClear?: PendingPromptPersistenceResult;
+      clearPrompt?: (
+        durableCleanupAuthority?: HostControlMetadataCleanupAuthority,
+      ) => Promise<PendingPromptPersistenceResult>;
+    }) => {
+        // Desktop/mobile responses retain their established durable raw-message
+        // channel. Jean never publishes an unbound raw-ID response; provider
+        // results either carry full mutation authority or are suppressed.
+        let exactResponseRecordPersisted = false;
+        if (!jeanMutation) {
+          await database.query(
+            `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false],
+          );
+          exactResponseRecordPersisted = true;
+        }
+
+        if (
+          jeanMutation
+          && !params.reconcileAppliedOnly
+          && params.assertMutationFence
+          && !await params.assertMutationFence()
+        ) {
+          return {
+            success: false,
+            error: 'Durable mutation fence is no longer owned',
+            promptClear,
+            staleAction: true,
+            nativeCertainty: 'not_applied' as const,
+            nativeEntered: false,
+            cleanupVerified: false,
+          };
+        }
+
+        // This synchronous predicate is intentionally the final statement
+        // before each provider/waiter mutation. The prompt lock still owns the
+        // captured occurrence; active generation must also remain exact.
+        const ownsJeanNativeBoundary = () => {
+          if (!expectedAttentionGeneration || !expectedPromptIdentity) return true;
+          const active = getSessionStateManager().getSessionState(sessionId);
+          return Boolean(
+            active
+            && active.attentionGeneration === expectedAttentionGeneration
+            && ownership.promptId === expectedPromptIdentity
+            && ownership.attentionGeneration === expectedAttentionGeneration,
+          );
+        };
+        const exactProviderAcknowledgement = (
+          value: unknown,
+        ): InteractiveMutationAcknowledgement['outcome'] | null => {
+          const expected = params.mutationAuthority;
+          if (!expected || typeof value !== 'object' || value === null) return null;
+          const acknowledgement = value as Partial<InteractiveMutationAcknowledgement>;
+          const authority = acknowledgement.authority;
+          if (
+            (acknowledgement.outcome !== 'acknowledged'
+              && acknowledgement.outcome !== 'not_found'
+              && acknowledgement.outcome !== 'entered_unproven')
+            || !authority
+            || authority.mutationId !== expected.mutationId
+            || authority.mutationFence !== expected.mutationFence
+            || authority.attentionGeneration !== expected.attentionGeneration
+            || authority.promptOccurrence !== expected.promptOccurrence
+            || authority.answerDigest !== expected.answerDigest
+          ) return null;
+          return acknowledgement.outcome;
+        };
+        const atJeanNativeEntry = async <T>(
+          action: () => Promise<T>,
+          invokeTestHook = true,
+        ): Promise<{ owned: true; value: T } | { owned: false }> => {
+          if (invokeTestHook) await params.beforeNativeEntry?.();
+          if (!ownsJeanNativeBoundary()) return { owned: false as const };
+          if (jeanMutation && params.durableMutationAuthority && expectedAttentionGeneration) {
+            const entered = await params.durableMutationAuthority.enterNative(
+              expectedAttentionGeneration,
+              async () => {
+                if (!ownsJeanNativeBoundary()) return { boundaryOwned: false as const };
+                return { boundaryOwned: true as const, value: await action() };
+              },
+            );
+            if (!entered.owned || !entered.value.boundaryOwned) return { owned: false as const };
+            return { owned: true as const, value: entered.value.value };
+          }
+          if (
+            jeanMutation
+            && params.assertMutationFence
+            && !await params.assertMutationFence()
+          ) return { owned: false as const };
+          return { owned: true as const, value: await action() };
+        };
+        const notAppliedBoundary = (error = 'Exact prompt generation no longer owns native mutation') => ({
+          success: false,
+          error,
+          promptClear,
+          staleAction: true as const,
+          nativeCertainty: 'not_applied' as const,
+          nativeEntered: false,
+          cleanupVerified: false,
+        });
 
         let attentionSettled = false;
         let attentionCancelledCount = 0;
-        const finishPromptResponse = async (success: boolean, error?: string) => {
+        let attentionCleanupResult: HostControlAttentionCleanupResult | undefined;
+        let exactPromptClear = promptClear;
+        const settleExactAttention = async (
+          durableCleanupAuthority?: HostControlMetadataCleanupAuthority,
+        ) => {
           if (!attentionSettled) {
             attentionSettled = true;
             const cancelReason = response?.cancelled === true ? 'cancelled' : 'answered';
-            attentionCancelledCount = await settleConfiguredInteractiveAttentionAfterResponse(
+            if (jeanMutation && durableCleanupAuthority) {
+              const durableGeneration = ownership.attentionGeneration;
+              if (!durableGeneration || durableGeneration !== durableCleanupAuthority.attentionGeneration) {
+                throw new Error('host_control_attention_generation_authority_mismatch');
+              }
+              const outcome = await attentionEventService.cancelInteractivePrompt(
+                sessionId,
+                promptId,
+                cancelReason,
+                {
+                  expectedGeneration: durableGeneration,
+                  durableCleanupAuthority,
+                },
+              );
+              attentionCancelledCount = outcome.attentionCancelledCount;
+              attentionCleanupResult = outcome.attentionResult;
+            } else attentionCancelledCount = await settleConfiguredInteractiveAttentionAfterResponse(
               (settleSessionId, eventIdentity, reason, options) =>
                 attentionEventService.cancelInteractivePrompt(
                   settleSessionId,
@@ -443,47 +713,167 @@ export class AIService {
               },
             );
           }
+        };
+        const clearExactOccurrenceAndSettle = async (settleAttention = true) => {
+          // Jean cleanup is deliberately post-lock in AppliedJeanCleanupResumer.
+          // This retained helper owns only the established desktop/mobile path.
+          exactPromptClear = clearPrompt ? await clearPrompt() : promptClear;
+          if (
+            !exactPromptClear
+            || exactPromptClear.superseded
+            || !exactPromptClear.local.succeeded
+          ) {
+            return {
+              success: false,
+              error: 'Exact prompt occurrence could not be compare-cleared',
+              promptClear: exactPromptClear,
+              staleAction: true as const,
+              cleanupVerified: false,
+            };
+          }
+          if (settleAttention) {
+            await settleExactAttention();
+          }
+          return {
+            success: true,
+            promptClear: exactPromptClear,
+            attentionCancelledCount,
+            eventCleared: attentionCancelledCount > 0,
+            cleanupVerified: true,
+          };
+        };
+
+        if (!jeanMutation) {
+          const cleared = await clearExactOccurrenceAndSettle(false);
+          if (!cleared.success) return cleared;
+        }
+
+        const finishPromptResponse = async (
+          success: boolean,
+          error: string | undefined,
+          certainty: 'not_applied' | 'unknown' | 'applied',
+          nativeEntered: boolean,
+        ) => {
+          if (certainty !== 'applied') {
+            return {
+              success,
+              ...(error ? { error } : {}),
+              promptClear: exactPromptClear,
+              nativeCertainty: certainty,
+              nativeEntered,
+              cleanupVerified: false,
+              ...(certainty === 'unknown' ? { terminalUnconfirmed: true as const } : {}),
+            };
+          }
+          if (jeanMutation) {
+            await params.onNativeMutationApplied?.({
+              success,
+              ...(error ? { error } : {}),
+              promptClear: exactPromptClear,
+              attentionCancelledCount: 0,
+              nativeCertainty: 'applied',
+              nativeEntered: true,
+              cleanupVerified: false,
+            });
+            return {
+              success,
+              ...(error ? { error } : {}),
+              nativeCertainty: 'applied' as const,
+              nativeEntered: true,
+              cleanupVerified: false,
+              appliedCleanupPending: true,
+            };
+          }
+          await settleExactAttention();
           return {
             success,
             ...(error ? { error } : {}),
-            promptClear,
+            promptClear: exactPromptClear,
             attentionCancelledCount,
+            nativeCertainty: 'applied' as const,
+            nativeEntered: true,
+            cleanupVerified: true,
           };
         };
 
         if (promptType === 'permission_request') {
           const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-          if (!provider) return finishPromptResponse(false, 'Provider not found');
+          if (!provider) return finishPromptResponse(false, 'Provider not found', 'not_applied', false);
           if (typeof (provider as any).resolveToolPermission !== 'function') {
-            return finishPromptResponse(false, 'Provider does not support tool permission responses');
+            return finishPromptResponse(false, 'Provider does not support tool permission responses', 'not_applied', false);
           }
           try {
-            (provider as any).resolveToolPermission(promptId, response, sessionId, respondedBy);
+            const entry = await atJeanNativeEntry(() => (provider as any).resolveToolPermission(
+                promptId,
+                response,
+                sessionId,
+                respondedBy,
+                params.mutationAuthority,
+              ));
+            if (!entry.owned) return notAppliedBoundary();
+            const acknowledgement = entry.value;
+            if (jeanMutation && params.mutationAuthority) {
+              const outcome = exactProviderAcknowledgement(acknowledgement);
+              if (outcome === 'acknowledged') {
+                return finishPromptResponse(true, undefined, 'applied', true);
+              }
+              if (outcome === 'not_found') {
+                return finishPromptResponse(false, 'Permission request not found', 'not_applied', false);
+              }
+              return finishPromptResponse(
+                false,
+                'Permission mutation entered without exact acknowledgement',
+                'unknown',
+                true,
+              );
+            }
           } catch (error) {
-            return finishPromptResponse(false, error instanceof Error ? error.message : String(error));
+            return finishPromptResponse(false, error instanceof Error ? error.message : String(error), 'unknown', true);
           }
-          return finishPromptResponse(true);
+          return finishPromptResponse(true, undefined, 'applied', true);
         }
 
         if (promptType === 'ask_user_question_request') {
           try {
             const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-            const resolved = provider && isAskUserQuestionProvider(provider)
-              ? provider.resolveAskUserQuestion(promptId, response.answers || response, sessionId, respondedBy)
-              : false;
-            const { rows: askRequestRows } = await database.query<{ id: string }>(
-              `SELECT id
-               FROM ai_agent_messages
-               WHERE session_id = $1
-                 AND content LIKE '%"type":"ask_user_question_request"%'
-                 AND content LIKE $2
-               LIMIT 1`,
-              [sessionId, `%"questionId":"${promptId}"%`],
-            );
-            const hasPersistedQuestionRequest = askRequestRows.length > 0;
+            const providerEntry = await atJeanNativeEntry(async () => (
+              provider && isAskUserQuestionProvider(provider)
+                ? provider.resolveAskUserQuestion(
+                    promptId,
+                    response.answers || response,
+                    sessionId,
+                    respondedBy,
+                    params.mutationAuthority,
+                  )
+                : Promise.resolve(false)
+            ));
+            if (!providerEntry.owned) return notAppliedBoundary();
+            const resolved = providerEntry.value;
+            if (jeanMutation && params.mutationAuthority) {
+              const providerOutcome = exactProviderAcknowledgement(resolved);
+              if (providerOutcome === 'acknowledged') {
+                return finishPromptResponse(true, undefined, 'applied', true);
+              }
+              if (providerOutcome === 'entered_unproven' || resolved === true) {
+                return finishPromptResponse(
+                  false,
+                  'Question mutation entered without exact acknowledgement',
+                  'unknown',
+                  true,
+                );
+              }
+              if (providerOutcome !== 'not_found' && resolved !== false) {
+                return finishPromptResponse(
+                  false,
+                  'Question mutation acknowledgement was not bound',
+                  'unknown',
+                  true,
+                );
+              }
+            }
             const askUserQuestionChannel = `ask-user-question-response:${sessionId}:${promptId}`;
-            const hasAskUserQuestionWaiter = ipcMain.listenerCount(askUserQuestionChannel) > 0;
-            if (hasAskUserQuestionWaiter) {
+            const exactWaiterEntry = await atJeanNativeEntry(async () => {
+              if (ipcMain.listenerCount(askUserQuestionChannel) === 0) return false;
               ipcMain.emit(askUserQuestionChannel, {} as any, {
                 questionId: promptId,
                 answers: response.answers || response,
@@ -491,43 +881,101 @@ export class AIService {
                 respondedBy,
                 sessionId,
               });
-            }
+              return true;
+            }, false);
+            if (!exactWaiterEntry.owned) return notAppliedBoundary();
+            const exactWaiterStillOwned = exactWaiterEntry.value;
             const sessionFallbackChannel = `ask-user-question:${sessionId}`;
-            const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
-            if (hasSessionFallbackWaiter) {
-              ipcMain.emit(sessionFallbackChannel, {} as any, {
-                questionId: promptId,
-                answers: response.answers || response,
-                cancelled: response.cancelled || false,
-                respondedBy,
-                sessionId,
-              });
-            }
+            const fallbackWaiterEntry = exactWaiterStillOwned
+              ? { owned: true as const, value: false }
+              : await atJeanNativeEntry(async () => {
+                  if (ipcMain.listenerCount(sessionFallbackChannel) === 0) return false;
+                  ipcMain.emit(sessionFallbackChannel, {} as any, {
+                    questionId: promptId,
+                    answers: response.answers || response,
+                    cancelled: response.cancelled || false,
+                    respondedBy,
+                    sessionId,
+                  });
+                  return true;
+                }, false);
+            if (!fallbackWaiterEntry.owned) return notAppliedBoundary();
+            const fallbackWaiterStillOwned = fallbackWaiterEntry.value;
             const handled = Boolean(
-              resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter || hasPersistedQuestionRequest,
+              (!jeanMutation && resolved)
+              || exactWaiterStillOwned
+              || fallbackWaiterStillOwned
+              || exactResponseRecordPersisted,
             );
-            return finishPromptResponse(handled, handled ? undefined : 'Question not found');
+            return finishPromptResponse(
+              handled,
+              handled ? undefined : 'Question not found',
+              handled ? 'applied' : 'not_applied',
+              handled,
+            );
           } catch (error) {
-            return finishPromptResponse(false, error instanceof Error ? error.message : String(error));
+            return finishPromptResponse(false, error instanceof Error ? error.message : String(error), 'unknown', true);
           }
         }
 
         const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-        if (!provider) return finishPromptResponse(false, 'Provider not found');
+        if (!provider) return finishPromptResponse(false, 'Provider not found', 'not_applied', false);
         if (typeof (provider as any).resolveExitPlanModeConfirmation !== 'function') {
-          return finishPromptResponse(false, 'Provider does not support ExitPlanMode responses');
+          return finishPromptResponse(false, 'Provider does not support ExitPlanMode responses', 'not_applied', false);
         }
         try {
-          (provider as any).resolveExitPlanModeConfirmation(promptId, response, sessionId, respondedBy);
-          if (response.approved) {
+          const entry = await atJeanNativeEntry(async () => {
+            const acknowledgement = await (provider as any).resolveExitPlanModeConfirmation(
+              promptId,
+              response,
+              sessionId,
+              respondedBy,
+              params.mutationAuthority,
+            );
+            const outcome = jeanMutation && params.mutationAuthority
+              ? exactProviderAcknowledgement(acknowledgement)
+              : null;
+            // Jean's acknowledgement is interpreted before the mode effect,
+            // inside the same durable native-entry authority interval.
+            if (jeanMutation && outcome === 'acknowledged' && response.approved && respondedBy !== 'telegram') {
+              await AISessionsRepository.updateMetadata(sessionId, { mode: 'agent' });
+            }
+            return { acknowledgement, outcome };
+          });
+          if (!entry.owned) return notAppliedBoundary();
+          const { acknowledgement, outcome } = entry.value;
+          if (jeanMutation && params.mutationAuthority) {
+            if (outcome === 'not_found') {
+              return finishPromptResponse(false, 'ExitPlanMode request not found', 'not_applied', false);
+            }
+            if (outcome !== 'acknowledged') {
+              return finishPromptResponse(
+                false,
+                'ExitPlanMode mutation entered without exact acknowledgement',
+                'unknown',
+                true,
+              );
+            }
+          }
+          if (!jeanMutation && response.approved && respondedBy !== 'telegram') {
             await AISessionsRepository.updateMetadata(sessionId, { mode: 'agent' });
           }
         } catch (error) {
-          return finishPromptResponse(false, error instanceof Error ? error.message : String(error));
+          return finishPromptResponse(false, error instanceof Error ? error.message : String(error), 'unknown', true);
         }
-        return finishPromptResponse(true);
-      },
-    );
+        return finishPromptResponse(true, undefined, 'applied', true);
+    };
+
+    const claimed = expectedAttentionGeneration && expectedPromptIdentity
+      ? await runJeanGenerationBoundMutation({
+          sessionId,
+          promptId,
+          expectedAttentionGeneration,
+          expectedPromptIdentity,
+          beforeNativeMutation: params.beforeNativeMutation,
+          action: ({ ownership, clearPrompt }) => performResponse({ ownership, clearPrompt }),
+        })
+      : await runClaimedPendingPromptAction(sessionId, promptId, performResponse);
 
     if (!claimed.claimed || !claimed.value) {
       return {
@@ -535,6 +983,25 @@ export class AIService {
         error: 'Prompt action is stale or no longer owns the current turn',
         promptClear: claimed.promptClear,
         staleAction: true,
+        nativeCertainty: 'not_applied',
+        nativeEntered: false,
+        cleanupVerified: false,
+      };
+    }
+    if ('appliedCleanupPending' in claimed.value && claimed.value.appliedCleanupPending) {
+      await params.afterNativeApplicationRecorded?.();
+      const cleaned = await resumeAppliedJeanCleanup();
+      if (!cleaned || cleaned.status !== 'complete') return {
+        ...claimed.value,
+        success: false,
+        cleanupVerified: false,
+        staleAction: true,
+      };
+      return {
+        ...claimed.value,
+        attentionCancelledCount: cleaned.attentionCancelledCount,
+        eventCleared: cleaned.eventCleared,
+        cleanupVerified: true,
       };
     }
     return claimed.value;

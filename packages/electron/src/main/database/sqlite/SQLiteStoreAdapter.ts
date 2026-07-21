@@ -25,6 +25,19 @@ import type { SQLiteDatabaseProxy } from './SQLiteDatabaseProxy';
  */
 type AnySqlite = SQLiteDatabase | SQLiteDatabaseProxy;
 
+interface ResultBearingTransactionDatabase {
+  runTransaction<T = unknown>(
+    statements: StoreDbTransactionStatement[],
+  ): Promise<Array<{ rows: T[] }>>;
+}
+
+export interface StoreDbTransactionStatement {
+  sql: string;
+  params?: unknown[];
+  /** Exactly-one-row CAS guard. Enforced by the native transaction callback. */
+  expectedRowCount?: 1;
+}
+
 export interface SQLiteStoreAdapterOptions {
   /**
    * Optional logger for translation warnings (e.g. "saw FTS construct that
@@ -42,6 +55,16 @@ export interface SQLiteStoreAdapterOptions {
  */
 export interface StoreDbAdapter {
   query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+
+  /**
+   * Execute an ordered statement batch in the backend's native transaction
+   * and retain each statement's rows. This is intentionally a statement-array
+   * API rather than the PGLite callback-style transaction helper: it has the
+   * same atomic semantics on the SQLite and PGLite worker backends.
+   */
+  transaction<T = unknown>(
+    statements: StoreDbTransactionStatement[],
+  ): Promise<Array<{ rows: T[] }>>;
 
   /**
    * Full-text search over `ai_agent_messages.content`. Returns ranked
@@ -104,6 +127,13 @@ export function createSQLiteStoreAdapter(
       // internally via dialectTranslator. This adapter is a thin pass-through
       // whose value is the FTS helpers below, not query rewriting.
       return db.query<T>(sql, params);
+    },
+
+    async transaction<T = unknown>(
+      statements: StoreDbTransactionStatement[],
+    ): Promise<Array<{ rows: T[] }>> {
+      const resultBearingDb: ResultBearingTransactionDatabase = db;
+      return resultBearingDb.runTransaction<T>(statements);
     },
 
     async searchAgentMessages(query, opts) {

@@ -280,21 +280,55 @@ export class SQLiteDatabase {
     await this.runWriteExec(sql);
   }
 
-  async runTransaction(statements: Array<{ sql: string; params?: unknown[] }>): Promise<void> {
+  runTransaction<T = unknown>(
+    statements: Array<{ sql: string; params?: unknown[]; expectedRowCount?: 1 }>,
+  ): Promise<Array<{ rows: T[] }>>;
+  runTransaction(
+    statements: Array<{ sql: string; params?: unknown[] }>,
+  ): Promise<void>;
+  async runTransaction<T = unknown>(
+    statements: Array<{ sql: string; params?: unknown[]; expectedRowCount?: 1 }>,
+  ): Promise<Array<{ rows: T[] }> | void> {
     if (!this.initialized || !this.db) {
       throw new Error('SQLiteDatabase not initialized. Call initialize() first.');
     }
     if (statements.length === 0) throw new Error('transaction requires at least one statement');
+    for (const [index, statement] of statements.entries()) {
+      if (!statement || typeof statement.sql !== 'string') {
+        throw new Error(`transaction statement ${index} sql must be a string`);
+      }
+      if (
+        statement.expectedRowCount !== undefined
+        && statement.expectedRowCount !== 1
+      ) {
+        throw new Error(`transaction statement ${index} has invalid expected row count`);
+      }
+    }
     const db = this.db;
     const run = db.transaction(() => {
+      const results: Array<{ rows: T[] }> = [];
       for (const statement of statements) {
         const adapted = adaptSqlForSQLite(statement.sql, statement.params ?? []);
         const prepared = db.prepare(adapted.sql);
-        if (stmtReturnsRows(prepared)) prepared.all(...adapted.params);
-        else prepared.run(...adapted.params);
+        if (stmtReturnsRows(prepared)) {
+          const rows = prepared.all(...adapted.params) as T[];
+          if (statement.expectedRowCount === 1 && rows.length !== 1) {
+            throw new Error(
+              `transaction expected row count mismatch at statement ${results.length}: expected 1, got ${rows.length}`,
+            );
+          }
+          results.push({ rows });
+        } else {
+          if (statement.expectedRowCount === 1) {
+            throw new Error(`transaction statement ${results.length} requires RETURNING`);
+          }
+          prepared.run(...adapted.params);
+          results.push({ rows: [] });
+        }
       }
+      return results;
     });
-    run();
+    return run();
   }
 
   /**

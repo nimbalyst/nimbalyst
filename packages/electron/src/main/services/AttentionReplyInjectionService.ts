@@ -1,5 +1,7 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type {
+  HostControlReceiptReservation,
+  HostControlReceiptMutationAuthority,
   HostControlReceiptRow,
   HostControlReceiptState,
 } from './HostControlReceiptsStore';
@@ -42,12 +44,37 @@ export interface AttentionReplyDependencies {
     promptType: AttentionReplyPromptType;
     response: unknown;
     respondedBy: 'telegram';
+    expectedAttentionGeneration: string;
+    expectedPromptIdentity: string;
+    mutationAuthority: {
+      mutationId: string;
+      mutationFence: number;
+      attentionGeneration: string;
+      promptOccurrence: string;
+      answerDigest: string;
+    };
+    durableMutationAuthority: HostControlReceiptMutationAuthority;
+    beforeNativeMutation?: () => Promise<void>;
+    beforeNativeEntry?: () => Promise<void>;
+    afterNativeApplicationRecorded?: () => Promise<void>;
+    afterPromptCleanupCompleted?: () => Promise<void>;
+    afterAttentionCleanupCommitted?: () => Promise<void>;
+    afterAttentionCleanupCompleted?: () => Promise<void>;
+    assertMutationFence?: () => Promise<boolean>;
+    assertCleanupFence?: () => Promise<boolean>;
+    reconcileAppliedOnly?: boolean;
+    onNativeMutationApplied?: (result: AppliedNativeAttentionReplyResult) => Promise<void>;
   }): Promise<{
     success: boolean;
     error?: string;
     promptClear?: unknown;
     staleAction?: boolean;
     attentionCancelledCount?: number;
+    eventCleared?: boolean;
+    terminalUnconfirmed?: boolean;
+    nativeCertainty?: 'not_applied' | 'unknown' | 'applied';
+    nativeEntered?: boolean;
+    cleanupVerified?: boolean;
   }>;
   reserveReceipt(input: {
     reservationKey: string;
@@ -56,12 +83,51 @@ export interface AttentionReplyDependencies {
     sessionId: string;
     eventIdentity: string;
     attentionGeneration?: string;
-  }): Promise<{ row: HostControlReceiptRow; isNewReservation: boolean }>;
+    reservationOwner: string;
+    now: Date;
+    leaseExpiresAt: Date;
+  }): Promise<HostControlReceiptReservation>;
   finalizeReceipt(input: {
     id: string;
+    reservationKey: string;
+    reservationOwner: string;
+    mutationId: string;
+    mutationFence: number;
     state: Exclude<HostControlReceiptState, 'reserved'>;
     receipt: Record<string, unknown>;
+    now: Date;
   }): Promise<HostControlReceiptRow>;
+  now?: () => number;
+  createReservationOwner?: () => string;
+  reservationLeaseMs?: number;
+  onJeanReconciliationPoint?: (
+    point:
+      | 'before_jean_native_mutation'
+      | 'after_jean_fence_verified'
+      | 'after_jean_application_recorded'
+      | 'after_jean_prompt_cleanup_completed'
+      | 'after_jean_attention_metadata_committed'
+      | 'after_jean_attention_cleanup_completed',
+  ) => Promise<void> | void;
+}
+
+export interface NativeAttentionReplyResult {
+  success: boolean;
+  error?: string;
+  promptClear?: unknown;
+  staleAction?: boolean;
+  attentionCancelledCount?: number;
+  eventCleared?: boolean;
+  terminalUnconfirmed?: boolean;
+  nativeCertainty?: 'not_applied' | 'unknown' | 'applied';
+  nativeEntered?: boolean;
+  cleanupVerified?: boolean;
+}
+
+export interface AppliedNativeAttentionReplyResult extends NativeAttentionReplyResult {
+  nativeCertainty: 'applied';
+  nativeEntered: true;
+  cleanupVerified: false;
 }
 
 export interface AttentionReplyResult {
@@ -74,6 +140,7 @@ const SESSION_MAX_CHARS = 200;
 const PROMPT_ID_MAX_CHARS = 300;
 const ANSWER_MAX_CHARS = 2_000;
 const MAX_STRUCTURED_ANSWERS = 32;
+const DEFAULT_RESERVATION_LEASE_MS = 30_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -92,13 +159,17 @@ function failure(status: number, errorClass: string): AttentionReplyResult {
   };
 }
 
-function success(outcome: 'injected' | 'already_resolved'): Record<string, unknown> {
+function success(
+  outcome: 'injected' | 'already_resolved',
+  eventCleared = outcome === 'injected',
+): Record<string, unknown> {
   return {
     outcome,
     verified: true,
     receipt: {
       route: 'host-attention-answer',
-      event_cleared: true,
+      event_cleared: eventCleared,
+      ...(!eventCleared ? { event_not_current: true } : {}),
     },
   };
 }
@@ -213,7 +284,65 @@ function expectedEventPromptType(promptType: AttentionReplyPromptType): string {
 function statusForReplay(row: HostControlReceiptRow): number {
   if (row.state === 'injected' || row.state === 'already_resolved') return 200;
   const errorClass = row.receipt?.errorClass;
-  return errorClass === 'internal_error' ? 500 : 422;
+  return typeof errorClass === 'string' && (
+    errorClass === 'internal_error'
+    || errorClass === 'event_lookup_failed'
+    || errorClass.startsWith('mutation_')
+    || errorClass.startsWith('native_')
+  ) ? 500 : 422;
+}
+
+interface StoredMutationResolution {
+  state: Exclude<HostControlReceiptState, 'reserved'>;
+  status: number;
+  receipt: Record<string, unknown>;
+}
+
+function resolutionForNativeResult(
+  result: NativeAttentionReplyResult,
+): StoredMutationResolution {
+  if (result.nativeCertainty === 'unknown' || result.terminalUnconfirmed === true) {
+    return {
+      state: 'failed',
+      status: 500,
+      receipt: failure(500, 'native_outcome_unknown').receipt,
+    };
+  }
+  if (result.staleAction === true) {
+    if (result.nativeCertainty === 'applied') {
+      return {
+        state: 'failed',
+        status: 500,
+        receipt: failure(500, 'mutation_cleanup_incomplete').receipt,
+      };
+    }
+    return { state: 'already_resolved', status: 200, receipt: success('already_resolved') };
+  }
+  if (
+    result.nativeCertainty === 'applied'
+    && result.cleanupVerified === true
+    && result.success === true
+  ) {
+    return {
+      state: 'injected',
+      status: 200,
+      receipt: success('injected', result.eventCleared === true),
+    };
+  }
+  return { state: 'failed', status: 422, receipt: failure(422, 'native_response_failed').receipt };
+}
+
+function parseStoredMutationResolution(
+  value: Record<string, unknown> | undefined,
+): StoredMutationResolution | null {
+  if (!value || !isRecord(value.receipt)) return null;
+  const state = value.state;
+  const status = value.status;
+  if (
+    (state !== 'injected' && state !== 'already_resolved' && state !== 'failed')
+    || typeof status !== 'number'
+  ) return null;
+  return { state, status, receipt: value.receipt };
 }
 
 export async function handleInjectAttentionReply(
@@ -265,15 +394,23 @@ export async function handleInjectAttentionReply(
     },
   });
 
+  const nowMs = deps.now?.() ?? Date.now();
+  const reservationKey = `attention-reply:${watchId}`;
+  const reservationOwner = deps.createReservationOwner?.() ?? `attention-reply-owner:${randomUUID()}`;
+  const leaseMs = Math.max(1, deps.reservationLeaseMs ?? DEFAULT_RESERVATION_LEASE_MS);
+
   let reservation: Awaited<ReturnType<AttentionReplyDependencies['reserveReceipt']>>;
   try {
     reservation = await deps.reserveReceipt({
-      reservationKey: `attention-reply:${watchId}`,
+      reservationKey,
       requestDigest,
       operation: 'inject_attention_reply',
       sessionId,
       eventIdentity,
       attentionGeneration: boundedAttentionGeneration,
+      reservationOwner,
+      now: new Date(nowMs),
+      leaseExpiresAt: new Date(nowMs + leaseMs),
     });
   } catch (error) {
     const errorClass = error instanceof Error && error.message.includes('idempotency_conflict')
@@ -282,28 +419,129 @@ export async function handleInjectAttentionReply(
     return failure(errorClass === 'idempotency_conflict' ? 409 : 500, errorClass);
   }
 
-  if (!reservation.isNewReservation) {
-    if (reservation.row.state === 'reserved' || !reservation.row.receipt) {
-      return failure(409, 'attempt_in_progress');
+  const reservationStatus = reservation.status ?? (
+    reservation.isNewReservation
+      ? 'new'
+      : reservation.row.state === 'reserved' ? 'busy' : 'replay'
+  );
+  // Backward-compatible injected test seams may predate the durable authority.
+  // Production reservations always supply the store-backed implementation.
+  const mutationAuthority: HostControlReceiptMutationAuthority = reservation.mutationAuthority ?? {
+    begin: async (_now: Date, generation: string) => ({
+      started: true,
+      row: { ...reservation.row, mutationState: 'unknown' as const, attentionGeneration: generation },
+    }),
+    recordApplied: async (
+      certainty: 'not_applied' | 'applied',
+      receipt: Record<string, unknown>,
+    ) => ({
+      ...reservation.row,
+      mutationState: certainty,
+      mutationReceipt: receipt,
+    }),
+    verify: async () => true,
+    verifyCleanup: async () => true,
+    enterNative: async <T>(_generation: string, action: () => Promise<T>) => ({
+      owned: true as const,
+      value: await action(),
+    }),
+    claimCleanupStep: async () => ({ status: 'claimed' as const }),
+    metadataCleanupAuthority: (step: 'prompt' | 'attention', attentionGeneration: string) => ({
+      receiptId: reservation.row.id,
+      reservationOwner,
+      mutationId: reservation.row.mutationId ?? `compat-mutation:${reservation.row.id}`,
+      mutationFence: reservation.row.mutationFence ?? 1,
+      attentionGeneration,
+      step,
+    }),
+  };
+
+  if (reservationStatus === 'replay') {
+    if (!reservation.row.receipt) {
+      return failure(500, 'receipt_missing');
     }
     return {
       status: statusForReplay(reservation.row),
       receipt: reservation.row.receipt,
     };
   }
+  if (reservationStatus === 'busy') {
+    return failure(409, 'attempt_in_progress');
+  }
 
+  const mutationId = reservation.row.mutationId
+    ?? (!reservation.mutationAuthority ? `compat-mutation:${reservation.row.id}` : undefined);
+  const mutationFence = reservation.row.mutationFence
+    ?? (!reservation.mutationAuthority ? 1 : undefined);
+  if (!mutationId || mutationFence === undefined) {
+    return failure(500, 'mutation_identity_missing');
+  }
   const finalize = async (
     state: Exclude<HostControlReceiptState, 'reserved'>,
     receipt: Record<string, unknown>,
-    status: number,
+    _status: number,
   ): Promise<AttentionReplyResult> => {
     try {
-      await deps.finalizeReceipt({ id: reservation.row.id, state, receipt });
-      return { status, receipt };
+      // A lost claimant still calls finalizeReceipt so the store can return the
+      // exact persisted terminal winner; a reserved loser cannot mutate because
+      // the UPDATE also consumes the claimed terminal step and DB-time lease.
+      await mutationAuthority.claimCleanupStep('terminal', boundedAttentionGeneration ?? 'legacy');
+      const finalized = await deps.finalizeReceipt({
+        id: reservation.row.id,
+        reservationKey,
+        reservationOwner,
+        mutationId,
+        mutationFence,
+        state,
+        receipt,
+        now: new Date(deps.now?.() ?? Date.now()),
+      });
+      if (!finalized.receipt || finalized.state === 'reserved') {
+        return failure(500, 'receipt_missing');
+      }
+      return {
+        status: statusForReplay(finalized),
+        receipt: finalized.receipt,
+      };
     } catch {
       return failure(500, 'receipt_finalize_failed');
     }
   };
+
+  // Legacy 0027 requests/rows may lack a generation. They may replay or
+  // converge, but absence is never authority to infer the current turn.
+  if (!boundedAttentionGeneration) {
+    return finalize('already_resolved', success('already_resolved'), 200);
+  }
+
+  let reconcileAppliedOnly = false;
+  if (
+    reservationStatus === 'taken_over'
+    || reservationStatus === 'same_owner'
+    || reservationStatus === 'reconcile'
+  ) {
+    if (reservation.row.mutationState === 'applied') {
+      const stored = parseStoredMutationResolution(reservation.row.mutationReceipt);
+      if (stored) return finalize(stored.state, stored.receipt, stored.status);
+      // A returned native effect is an immutable durable winner. If the owner
+      // died before exact-A cleanup/finalization, replay performs cleanup only;
+      // it never invokes the provider/waiter a second time.
+      reconcileAppliedOnly = true;
+    }
+    if (reservation.row.mutationState === 'unknown') {
+      // The old owner crossed the no-retry fence. A process loss after that
+      // point is terminally failed instead of risking a second native answer.
+      return finalize('failed', failure(500, 'mutation_outcome_unconfirmed').receipt, 500);
+    }
+    if (reservation.row.mutationState === 'not_applied') {
+      const stored = parseStoredMutationResolution(reservation.row.mutationReceipt);
+      if (stored) return finalize(stored.state, stored.receipt, stored.status);
+      return finalize('failed', failure(500, 'mutation_receipt_missing').receipt, 500);
+    }
+    if (reservation.row.mutationState === 'legacy_unknown') {
+      return finalize('already_resolved', success('already_resolved'), 200);
+    }
+  }
 
   let event: AttentionEventLike | null;
   try {
@@ -314,45 +552,147 @@ export async function handleInjectAttentionReply(
   const identityMatches = Boolean(event && (
     event.promptId === eventIdentity || event.toolUseId === eventIdentity
   ));
+  const exactEventMatches = Boolean(
+    event
+    && event.status === 'pending'
+    && event.kind === 'interactive_prompt'
+    && event.sessionId === sessionId
+    && identityMatches
+    && event.promptType === expectedEventPromptType(promptType)
+    && (boundedAttentionGeneration === undefined
+      || event.attentionGeneration === boundedAttentionGeneration),
+  );
   if (
-    !event
-    || event.status !== 'pending'
-    || event.kind !== 'interactive_prompt'
-    || event.sessionId !== sessionId
-    || !identityMatches
-    || event.promptType !== expectedEventPromptType(promptType)
-    || (boundedAttentionGeneration !== undefined
-      && event.attentionGeneration !== boundedAttentionGeneration)
+    !exactEventMatches
+    && !reconcileAppliedOnly
   ) {
     return finalize('already_resolved', success('already_resolved'), 200);
   }
 
-  const response = normalizeForEvent(promptType, answer, event);
+  // Applied-only recovery never re-enters a provider/waiter. When A's event is
+  // already absent (or replacement B reuses the raw ID), it still routes through
+  // AIService so the durable prompt/attention phases are completed in order.
+  const response = exactEventMatches
+    ? normalizeForEvent(promptType, answer, event!)
+    : { cancelled: false };
   if (!response) {
     return finalize('failed', failure(422, 'ambiguous_or_incomplete_answer').receipt, 422);
   }
 
+  const capturedGeneration = boundedString(
+    exactEventMatches ? event!.attentionGeneration : boundedAttentionGeneration,
+    PROMPT_ID_MAX_CHARS,
+  );
+  if (!capturedGeneration) {
+    return finalize('already_resolved', success('already_resolved'), 200);
+  }
+
+  if (!reconcileAppliedOnly) {
+    let mutationStart: Awaited<ReturnType<HostControlReceiptMutationAuthority['begin']>>;
+    try {
+      mutationStart = await mutationAuthority.begin(
+        new Date(deps.now?.() ?? Date.now()),
+        capturedGeneration,
+      );
+    } catch {
+      return finalize('failed', failure(500, 'mutation_fence_failed').receipt, 500);
+    }
+    if (!mutationStart.started) {
+      if (mutationStart.row.mutationState === 'applied') {
+        const stored = parseStoredMutationResolution(mutationStart.row.mutationReceipt);
+        if (stored) return finalize(stored.state, stored.receipt, stored.status);
+      }
+      return finalize('failed', failure(500, 'mutation_fence_unavailable').receipt, 500);
+    }
+  }
+
   let result: Awaited<ReturnType<AttentionReplyDependencies['respondToInteractivePrompt']>>;
+  let mutationRecorded = reconcileAppliedOnly;
   try {
     result = await deps.respondToInteractivePrompt({
       sessionId,
-      promptId: event.promptId ?? event.toolUseId!,
+      promptId: exactEventMatches ? (event!.promptId ?? event!.toolUseId!) : eventIdentity,
       promptType,
       response,
       respondedBy: 'telegram',
+      expectedAttentionGeneration: capturedGeneration,
+      expectedPromptIdentity: eventIdentity,
+      mutationAuthority: {
+        mutationId,
+        mutationFence,
+        attentionGeneration: capturedGeneration,
+        promptOccurrence: exactEventMatches ? event!.id : `reconcile:${mutationId}`,
+        answerDigest: sha256(response),
+      },
+      durableMutationAuthority: mutationAuthority,
+      reconcileAppliedOnly,
+      assertMutationFence: reconcileAppliedOnly
+        ? undefined
+        : () => mutationAuthority.verify(capturedGeneration),
+      assertCleanupFence: () => mutationAuthority.verifyCleanup(capturedGeneration),
+      beforeNativeMutation: deps.onJeanReconciliationPoint
+        ? () => Promise.resolve(
+            deps.onJeanReconciliationPoint!('before_jean_native_mutation'),
+          )
+        : undefined,
+      beforeNativeEntry: deps.onJeanReconciliationPoint
+        ? () => Promise.resolve(
+            deps.onJeanReconciliationPoint!('after_jean_fence_verified'),
+          )
+        : undefined,
+      afterPromptCleanupCompleted: deps.onJeanReconciliationPoint
+        ? () => Promise.resolve(
+            deps.onJeanReconciliationPoint!('after_jean_prompt_cleanup_completed'),
+          )
+        : undefined,
+      afterAttentionCleanupCommitted: deps.onJeanReconciliationPoint
+        ? () => Promise.resolve(
+            deps.onJeanReconciliationPoint!('after_jean_attention_metadata_committed'),
+          )
+        : undefined,
+      afterAttentionCleanupCompleted: deps.onJeanReconciliationPoint
+        ? () => Promise.resolve(
+            deps.onJeanReconciliationPoint!('after_jean_attention_cleanup_completed'),
+          )
+        : undefined,
+      afterNativeApplicationRecorded: deps.onJeanReconciliationPoint
+        ? () => Promise.resolve(
+            deps.onJeanReconciliationPoint!('after_jean_application_recorded'),
+          )
+        : undefined,
+      onNativeMutationApplied: reconcileAppliedOnly ? undefined : async (nativeResult) => {
+        await mutationAuthority.recordApplied(
+          'applied',
+          {
+            nativeCertainty: 'applied',
+            nativeEntered: true,
+            cleanupVerified: false,
+            success: nativeResult.success,
+          },
+          new Date(deps.now?.() ?? Date.now()),
+        );
+        mutationRecorded = true;
+      },
     });
   } catch {
     return finalize('failed', failure(500, 'internal_error').receipt, 500);
   }
 
-  if (result.staleAction === true) {
-    return finalize('already_resolved', success('already_resolved'), 200);
+  const resolution = resolutionForNativeResult(result);
+  if (!mutationRecorded && result.nativeCertainty !== 'unknown') {
+    try {
+      await mutationAuthority.recordApplied(
+        result.nativeCertainty === 'applied' ? 'applied' : 'not_applied',
+        {
+          state: resolution.state,
+          status: resolution.status,
+          receipt: resolution.receipt,
+        },
+        new Date(deps.now?.() ?? Date.now()),
+      );
+    } catch {
+      return finalize('failed', failure(500, 'mutation_receipt_failed').receipt, 500);
+    }
   }
-  if (result.success === true && (result.attentionCancelledCount ?? 0) > 0) {
-    return finalize('injected', success('injected'), 200);
-  }
-  if (result.success === true && result.attentionCancelledCount === 0) {
-    return finalize('already_resolved', success('already_resolved'), 200);
-  }
-  return finalize('failed', failure(422, 'native_response_failed').receipt, 422);
+  return finalize(resolution.state, resolution.receipt, resolution.status);
 }

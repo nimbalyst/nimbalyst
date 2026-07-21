@@ -22,6 +22,47 @@ import {
   PendingPermission,
 } from '../providers/ProviderPermissionMixin';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
+import type { BoundInteractiveMutationAuthority } from '../AIProvider';
+
+function isBoundMutationAuthority(value: unknown): value is BoundInteractiveMutationAuthority {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.mutationId === 'string'
+    && Number.isSafeInteger(record.mutationFence)
+    && typeof record.attentionGeneration === 'string'
+    && typeof record.promptOccurrence === 'string'
+    && typeof record.answerDigest === 'string';
+}
+
+function sameBoundMutation(
+  left: BoundInteractiveMutationAuthority,
+  right: BoundInteractiveMutationAuthority,
+): boolean {
+  return left.mutationId === right.mutationId
+    && left.mutationFence === right.mutationFence
+    && left.attentionGeneration === right.attentionGeneration
+    && left.promptOccurrence === right.promptOccurrence
+    && left.answerDigest === right.answerDigest;
+}
+
+/**
+ * A generation-bound provider result is deliberately invisible to a raw-ID
+ * poller unless the pending request carries the identical immutable binding.
+ */
+export function permissionResultMatchesPendingMutation(
+  content: Record<string, unknown>,
+  pendingRequest: unknown,
+): boolean {
+  const resultAuthority = content.mutation_authority;
+  const pendingAuthority = typeof pendingRequest === 'object' && pendingRequest !== null
+    ? (pendingRequest as Record<string, unknown>).mutationAuthority
+    : undefined;
+  if (resultAuthority === undefined && pendingAuthority === undefined) return true;
+  if (!isBoundMutationAuthority(resultAuthority) || !isBoundMutationAuthority(pendingAuthority)) {
+    return false;
+  }
+  return sameBoundMutation(resultAuthority, pendingAuthority);
+}
 
 /**
  * Configuration options for ToolPermissionService
@@ -116,6 +157,9 @@ export interface PermissionRequest {
    * Tool input parameters (optional, for pattern generation)
    */
   toolInput?: any;
+
+  /** Exact host-control mutation binding; absent on legacy/renderer requests. */
+  mutationAuthority?: BoundInteractiveMutationAuthority;
 }
 
 /**
@@ -240,7 +284,7 @@ export class ToolPermissionService {
    * @param requestId - Request ID to resolve
    * @param decision - User's decision
    */
-  resolvePermission(requestId: string, decision: PermissionDecision): void {
+  resolvePermission(requestId: string, decision: PermissionDecision): boolean {
     const pending = this.pendingPermissions.get(requestId);
     if (pending) {
       pending.resolve(decision);
@@ -250,8 +294,10 @@ export class ToolPermissionService {
         decision: decision.decision,
         scope: decision.scope,
       });
+      return true;
     } else {
       this.securityLogger('[ToolPermissionService] No pending permission found', { requestId });
+      return false;
     }
   }
 
@@ -356,6 +402,7 @@ export class ToolPermissionService {
     signal: AbortSignal;
     /** Name of the teammate requesting permission (undefined for lead agent) */
     teammateName?: string;
+    mutationAuthority?: BoundInteractiveMutationAuthority;
   }): Promise<PermissionDecision> {
     const {
       requestId,
@@ -371,6 +418,7 @@ export class ToolPermissionService {
       warnings = [],
       signal,
       teammateName,
+      mutationAuthority,
     } = options;
 
     const pathForTrust = permissionsPath || workspacePath;
@@ -462,6 +510,7 @@ export class ToolPermissionService {
       }],
       hasDestructiveActions: isDestructive,
       createdAt: Date.now(),
+      ...(mutationAuthority ? { mutationAuthority } : {}),
     };
 
     // Create promise that will be resolved when user responds
@@ -613,6 +662,10 @@ export class ToolPermissionService {
 
             // Primary: nimbalyst_tool_result format
             if (content.type === 'nimbalyst_tool_result' && content.tool_use_id === requestId) {
+              const pending = this.pendingPermissions.get(requestId);
+              if (!pending || !permissionResultMatchesPendingMutation(content, pending.request)) {
+                continue;
+              }
               const result = typeof content.result === 'string' ? JSON.parse(content.result) : content.result;
 
               if (!this.isValidPermissionResponse(result)) {
@@ -623,21 +676,22 @@ export class ToolPermissionService {
                 continue;
               }
 
-              const pending = this.pendingPermissions.get(requestId);
-              if (pending) {
-                pending.resolve({ decision: result.decision, scope: result.scope });
-                this.pendingPermissions.delete(requestId);
-                this.securityLogger('[ToolPermissionService] Found nimbalyst_tool_result response', {
-                  requestId,
-                  decision: result.decision,
-                  scope: result.scope,
-                });
-              }
+              pending.resolve({ decision: result.decision, scope: result.scope });
+              this.pendingPermissions.delete(requestId);
+              this.securityLogger('[ToolPermissionService] Found nimbalyst_tool_result response', {
+                requestId,
+                decision: result.decision,
+                scope: result.scope,
+              });
               return;
             }
 
             // Legacy: permission_response format (for backwards compatibility)
             if (content.type === 'permission_response' && content.requestId === requestId) {
+              const pending = this.pendingPermissions.get(requestId);
+              if (!pending || !permissionResultMatchesPendingMutation(content, pending.request)) {
+                continue;
+              }
               if (!this.isValidPermissionResponse(content)) {
                 this.securityLogger('[ToolPermissionService] Invalid legacy permission response format', {
                   requestId,
@@ -646,16 +700,13 @@ export class ToolPermissionService {
                 continue;
               }
 
-              const pending = this.pendingPermissions.get(requestId);
-              if (pending) {
-                pending.resolve({ decision: content.decision, scope: content.scope });
-                this.pendingPermissions.delete(requestId);
-                this.securityLogger('[ToolPermissionService] Found legacy permission_response', {
-                  requestId,
-                  decision: content.decision,
-                  scope: content.scope,
-                });
-              }
+              pending.resolve({ decision: content.decision, scope: content.scope });
+              this.pendingPermissions.delete(requestId);
+              this.securityLogger('[ToolPermissionService] Found legacy permission_response', {
+                requestId,
+                decision: content.decision,
+                scope: content.scope,
+              });
               return;
             }
           } catch {

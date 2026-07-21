@@ -360,8 +360,7 @@ async function handle(req: RequestEnvelope): Promise<unknown> {
 
     case 'transaction': {
       const { statements } = req.payload as TransactionPayload;
-      await ensureInitialized().runTransaction(statements);
-      return { ok: true };
+      return ensureInitialized().runTransaction(statements);
     }
 
     case 'getStats':
