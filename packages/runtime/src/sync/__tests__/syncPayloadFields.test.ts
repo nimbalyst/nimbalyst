@@ -68,15 +68,20 @@ describe('SYNC_RELEVANT_FIELDS.metadataKeys', () => {
   });
 });
 
+// Source-inspection contract is newline-independent: the Swift/TS sources checked here may be
+// checked out with CRLF line endings depending on git config, but the regexes below hard-code LF
+// boundaries. Normalize once at read time rather than making every regex CRLF-tolerant.
+function readNormalized(url: URL): string {
+  return readFileSync(url, 'utf8').replace(/\r\n/g, '\n');
+}
+
 describe('opaque client metadata field parity', () => {
-  const runtimeSource = readFileSync(new URL('../CollabV3Sync.ts', import.meta.url), 'utf8');
-  const iosProtocolSource = readFileSync(
+  const runtimeSource = readNormalized(new URL('../CollabV3Sync.ts', import.meta.url));
+  const iosProtocolSource = readNormalized(
     new URL('../../../../ios/NimbalystNative/Sources/Sync/SyncProtocol.swift', import.meta.url),
-    'utf8',
   );
-  const iosSyncManagerSource = readFileSync(
+  const iosSyncManagerSource = readNormalized(
     new URL('../../../../ios/NimbalystNative/Sources/Sync/SyncManager.swift', import.meta.url),
-    'utf8',
   );
 
   it('keeps the complete eight-field runtime shape in the iOS wire model and whole-blob draft builder', () => {
