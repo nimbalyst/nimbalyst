@@ -209,6 +209,10 @@ describe('runMigrations', () => {
       path.join(tmp, '0025_account_org_bindings.sql'),
       '-- noop\n',
     );
+    fs.writeFileSync(
+      path.join(tmp, '0026_session_files_dedupe.sql'),
+      '-- noop\n',
+    );
     const db = new FakeDb();
     runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(db.execs.some((s) => s.includes('CREATE TABLE foo'))).toBe(true);

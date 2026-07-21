@@ -37,6 +37,13 @@ export function createPGLiteSessionFileStore(db: PGliteLike, ensureDbReady?: Ens
       await ensureReady();
     },
 
+    /**
+     * Idempotent per (sessionId, filePath, linkType): a repeat attribution for a
+     * file the session already touched refreshes the existing row instead of
+     * appending another one. Without this the table grows once per edit, and
+     * getFilesBySession ships the whole duplicate set to the renderer on every
+     * session-files:updated event.
+     */
     async addFileLink(link: Omit<FileLink, 'id'>): Promise<FileLink> {
       await ensureReady();
 
@@ -51,6 +58,10 @@ export function createPGLiteSessionFileStore(db: PGliteLike, ensureDbReady?: Ens
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7
         )
+        ON CONFLICT (session_id, file_path, link_type) DO UPDATE SET
+          workspace_id = EXCLUDED.workspace_id,
+          timestamp = EXCLUDED.timestamp,
+          metadata = EXCLUDED.metadata
         RETURNING id, session_id, workspace_id, file_path, link_type, timestamp, metadata`,
         [
           id,

@@ -166,6 +166,11 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'account_org_bindings',
       sqlFile: path.join(schemaDir, '0025_account_org_bindings.sql'),
     },
+    {
+      version: 26,
+      name: 'session_files_dedupe',
+      sqlFile: path.join(schemaDir, '0026_session_files_dedupe.sql'),
+    },
   ];
 }
 
