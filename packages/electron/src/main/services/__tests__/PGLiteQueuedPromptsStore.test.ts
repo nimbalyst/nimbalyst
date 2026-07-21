@@ -56,10 +56,11 @@ type QueuedPromptRow = {
 };
 
 /** Stateful query-interface stub used for queue ordering/idempotency behavior tests. */
-function createQueueDbStub(options?: { createdAtBase?: number }): DbStub {
+function createQueueDbStub(options?: { createdAtBase?: number; now?: () => number }): DbStub {
   const rows: QueuedPromptRow[] = [];
   let timestampOffset = 0;
   const oldBase = options?.createdAtBase ?? Date.now() - 60_000;
+  const databaseNow = options?.now ?? (() => Date.parse('2026-07-20T10:00:00.000Z'));
 
   const query: DbStub['query'] = async <T = any>(sql: string, params?: any[]) => {
     if (sql.includes('INSERT INTO queued_prompts') && sql.includes('ON CONFLICT')) {
@@ -166,28 +167,28 @@ function createQueueDbStub(options?: { createdAtBase?: number }): DbStub {
       if (!row) return { rows: [] };
       row.interrupt_target_generation = params![1];
       row.interrupt_reservation_owner = params![2];
-      row.interrupt_lease_expires_at = params![4];
-      row.interrupt_operation_id = params![5];
+      row.interrupt_lease_expires_at = params![3];
+      row.interrupt_operation_id = params![4];
       row.interrupt_fence += 1;
       return { rows: [structuredClone(row)] as T[] };
     }
 
     if (sql.includes('SET interrupt_reservation_owner = $3')) {
-      const now = (params![3] as Date).getTime();
       const row = rows.find((candidate) => (
         candidate.id === params![0]
         && candidate.interrupt_receipt === null
         && candidate.interrupt_lease_expires_at !== null
-        && candidate.interrupt_lease_expires_at.getTime() <= now
-        && candidate.interrupt_reservation_owner === params![5]
-        && candidate.interrupt_operation_id === params![7]
-        && candidate.interrupt_fence === params![8]
-        && candidate.interrupt_application_state === params![10]
+        && candidate.interrupt_lease_expires_at.getTime() <= databaseNow()
+        && candidate.interrupt_reservation_owner === params![4]
+        && candidate.interrupt_lease_expires_at.getTime() === (params![5] as Date).getTime()
+        && candidate.interrupt_operation_id === params![6]
+        && candidate.interrupt_fence === params![7]
+        && candidate.interrupt_application_state === params![9]
       ));
       if (!row) return { rows: [] };
       row.interrupt_reservation_owner = params![2];
-      row.interrupt_lease_expires_at = params![4];
-      row.interrupt_fence = params![9];
+      row.interrupt_lease_expires_at = params![3];
+      row.interrupt_fence = params![8];
       if (row.interrupt_cleanup_state === 'claimed') row.interrupt_cleanup_state = 'pending';
       return { rows: [structuredClone(row)] as T[] };
     }
@@ -201,7 +202,7 @@ function createQueueDbStub(options?: { createdAtBase?: number }): DbStub {
         && candidate.interrupt_fence === params![5]
         && candidate.interrupt_application_state === 'not_started'
         && candidate.interrupt_receipt === null
-        && candidate.interrupt_lease_expires_at!.getTime() > (params![3] as Date).getTime()
+        && candidate.interrupt_lease_expires_at!.getTime() > databaseNow()
       ));
       if (!row) return { rows: [] };
       row.interrupt_application_state = 'unknown';
@@ -218,7 +219,7 @@ function createQueueDbStub(options?: { createdAtBase?: number }): DbStub {
         && candidate.interrupt_fence === params![6]
         && candidate.interrupt_application_state === 'unknown'
         && candidate.interrupt_receipt === null
-        && candidate.interrupt_lease_expires_at!.getTime() > (params![4] as Date).getTime()
+        && candidate.interrupt_lease_expires_at!.getTime() > databaseNow()
       ));
       if (!row) return { rows: [] };
       row.interrupt_application_state = params![7];
@@ -235,6 +236,8 @@ function createQueueDbStub(options?: { createdAtBase?: number }): DbStub {
         && candidate.interrupt_operation_id === params![3]
         && candidate.interrupt_fence === params![4]
         && candidate.interrupt_receipt === null
+        && candidate.interrupt_lease_expires_at !== null
+        && candidate.interrupt_lease_expires_at.getTime() > databaseNow()
       ));
       if (!row) return { rows: [] };
       row.interrupt_cleanup_state = 'claimed';
@@ -252,6 +255,8 @@ function createQueueDbStub(options?: { createdAtBase?: number }): DbStub {
         && candidate.interrupt_receipt === null
         && candidate.interrupt_cleanup_state === 'claimed'
         && candidate.interrupt_cleanup_fence === params![5]
+        && candidate.interrupt_lease_expires_at !== null
+        && candidate.interrupt_lease_expires_at.getTime() > databaseNow()
       ));
       if (!row) return { rows: [] };
       row.interrupt_receipt = params![1];
@@ -525,7 +530,8 @@ describe('PGLiteQueuedPromptsStore priority control queue', () => {
   });
 
   it('allows exactly one deterministic takeover after the interrupt lease expires', async () => {
-    const db = createQueueDbStub();
+    let databaseNow = Date.parse('2026-07-20T10:00:00.000Z');
+    const db = createQueueDbStub({ now: () => databaseNow });
     const store = createPGLiteQueuedPromptsStore(db);
     const control = await store.createPriorityControlQueuedPrompt({
       sessionId: 'session-1',
@@ -537,6 +543,7 @@ describe('PGLiteQueuedPromptsStore priority control queue', () => {
     await store.reserveInterrupt(interruptReservation(control.id, 'dead-owner'));
 
     const takeoverAt = Date.parse('2026-07-20T10:00:01.000Z');
+    databaseNow = takeoverAt;
     const results = await Promise.all([
       store.reserveInterrupt(interruptReservation(control.id, 'takeover-a', takeoverAt)),
       store.reserveInterrupt(interruptReservation(control.id, 'takeover-b', takeoverAt)),
@@ -1199,7 +1206,7 @@ describe('QueuedPromptsStore interrupt leases across both database adapters', ()
       );
       const productionUpgrade = workerSource.match(
         /ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_reservation_owner[\s\S]*?UPDATE queued_prompts[\s\S]*?AND interrupt_operation_id IS NULL;/,
-      )?.[0];
+      )?.[0].replace(/`\);\s*await this\.db\.exec\(`/g, '');
       expect(productionUpgrade).toBeTruthy();
       await legacy.exec(productionUpgrade!);
       const result = await legacy.query<any>(`

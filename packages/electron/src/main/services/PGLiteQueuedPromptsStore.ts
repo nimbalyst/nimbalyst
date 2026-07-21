@@ -329,7 +329,7 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     interruptApplicationReceipt,
     interruptCleanupState: row.interrupt_cleanup_state ?? 'pending',
     interruptCleanupFence: Number(row.interrupt_cleanup_fence ?? 0),
-    interruptReceipt,
+    interruptReceipt: interruptReceipt === null ? undefined : interruptReceipt,
   };
 }
 
@@ -484,8 +484,8 @@ export function createPGLiteQueuedPromptsStore(
         `UPDATE queued_prompts
          SET interrupt_target_generation = $2,
              interrupt_reservation_owner = $3,
-             interrupt_lease_expires_at = $5,
-             interrupt_operation_id = $6,
+             interrupt_lease_expires_at = $4,
+             interrupt_operation_id = $5,
              interrupt_fence = interrupt_fence + 1
          WHERE id = $1
            AND interrupt_target_generation IS NULL
@@ -495,7 +495,6 @@ export function createPGLiteQueuedPromptsStore(
           input.id,
           input.expectedGeneration,
           input.reservationOwner,
-          input.now,
           input.leaseExpiresAt,
           operationId,
         ],
@@ -528,8 +527,8 @@ export function createPGLiteQueuedPromptsStore(
         const takeover = await db.query<any>(
         `UPDATE queued_prompts
          SET interrupt_reservation_owner = $3,
-             interrupt_lease_expires_at = $5,
-             interrupt_fence = $10,
+             interrupt_lease_expires_at = $4,
+             interrupt_fence = $9,
              interrupt_cleanup_state = CASE
                WHEN interrupt_cleanup_state = 'claimed' THEN 'pending'
                ELSE interrupt_cleanup_state
@@ -537,18 +536,17 @@ export function createPGLiteQueuedPromptsStore(
          WHERE id = $1
            AND interrupt_target_generation = $2
            AND interrupt_receipt IS NULL
-           AND interrupt_reservation_owner = $6
-           AND interrupt_lease_expires_at = $7
-           AND interrupt_operation_id = $8
-           AND interrupt_fence = $9
-           AND interrupt_application_state = $11
+           AND interrupt_reservation_owner = $5
+           AND interrupt_lease_expires_at = $6
+           AND interrupt_operation_id = $7
+           AND interrupt_fence = $8
+           AND interrupt_application_state = $10
            AND interrupt_lease_expires_at <= NOW()
          RETURNING *`,
         [
           input.id,
           input.expectedGeneration,
           input.reservationOwner,
-          input.now,
           input.leaseExpiresAt,
           observed.interruptReservationOwner,
           new Date(observed.interruptLeaseExpiresAt),

@@ -211,6 +211,9 @@ describe('handleHostControlRequest', () => {
       respondToInteractivePrompt: vi.fn(async () => ({
         success: true,
         attentionCancelledCount: 1,
+        eventCleared: true,
+        nativeCertainty: 'applied' as const,
+        cleanupVerified: true,
       })),
       reserveReceipt: vi.fn(async (input) => ({
         isNewReservation: true,

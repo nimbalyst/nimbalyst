@@ -155,13 +155,33 @@ describe('MetaAgentService send_prompt_now delivery', () => {
         rowsByIdempotencyKey.set(input.idempotencyKey, row);
         return row;
       }),
-      reserveInterrupt: vi.fn(async ({ id, expectedGeneration }: any) => {
+      reserveInterrupt: vi.fn(async ({ id, expectedGeneration, reservationOwner }: any) => {
         const row = [...rowsByIdempotencyKey.values()].find((candidate) => candidate.id === id);
         if (row.interruptTargetGeneration) {
           return { reserved: false, row };
         }
         row.interruptTargetGeneration = expectedGeneration;
+        row.interruptReservationOwner = reservationOwner;
+        row.interruptOperationId = `interrupt:${id}:${expectedGeneration}`;
+        row.interruptFence = 1;
+        row.interruptApplicationState = 'not_started';
         return { reserved: true, row };
+      }),
+      beginInterruptApplication: vi.fn(async ({ id }: any) => ({
+        started: true,
+        row: [...rowsByIdempotencyKey.values()].find((candidate) => candidate.id === id),
+      })),
+      verifyInterruptApplication: vi.fn(async () => true),
+      recordInterruptApplication: vi.fn(async ({ id, certainty, receipt }: any) => {
+        const row = [...rowsByIdempotencyKey.values()].find((candidate) => candidate.id === id);
+        row.interruptApplicationState = certainty;
+        row.interruptApplicationReceipt = receipt;
+        return row;
+      }),
+      claimInterruptCleanup: vi.fn(async ({ id }: any) => {
+        const row = [...rowsByIdempotencyKey.values()].find((candidate) => candidate.id === id);
+        row.interruptCleanupState = 'complete';
+        return true;
       }),
       recordInterruptReceipt: vi.fn(async ({ id, receipt }: any) => {
         const row = [...rowsByIdempotencyKey.values()].find((candidate) => candidate.id === id);
@@ -182,6 +202,8 @@ describe('MetaAgentService send_prompt_now delivery', () => {
       interruptCurrentTurnForSession: vi.fn(async () => ({
         success: true,
         method: 'provider-interrupt',
+        nativeCertainty: 'applied',
+        nativeEntered: true,
       })),
       triggerQueuedPromptProcessingForSession: vi.fn(async () => true),
     };
