@@ -713,6 +713,9 @@ export function createHostControlMutationCoordinator(
       if (!isBoundedString(ownerIdentity)) {
         throw new Error(`host_control_mutation_owner_identity_unavailable:${namespace.operationDigest.slice(0, 12)}`);
       }
+      const getClaimProcessIdentity = (pid: number): Promise<string | null> => (
+        pid === ownerPid ? Promise.resolve(ownerIdentity) : getProcessIdentity(pid)
+      );
       const recover = (path: string, name: string) => recoverMalformed({
         path,
         name,
@@ -751,7 +754,7 @@ export function createHostControlMutationCoordinator(
         assertBeforeDeadline(now, startedAt, acquireTimeoutMs, namespace.operationDigest);
 
         let scan = await scanClaims({
-          namespace, epoch, names, recover, isProcessAlive, getProcessIdentity,
+          namespace, epoch, names, recover, isProcessAlive, getProcessIdentity: getClaimProcessIdentity,
         });
         assertBeforeDeadline(now, startedAt, acquireTimeoutMs, namespace.operationDigest);
         if (scan.highestSequence >= MAX_SEQUENCE) {
@@ -823,7 +826,7 @@ export function createHostControlMutationCoordinator(
               || currentEpoch.token !== epoch.token
             ) break;
             scan = await scanClaims({
-              namespace, epoch, names, recover, isProcessAlive, getProcessIdentity,
+              namespace, epoch, names, recover, isProcessAlive, getProcessIdentity: getClaimProcessIdentity,
             });
             assertBeforeDeadline(now, startedAt, acquireTimeoutMs, namespace.operationDigest);
             const winner = [...scan.active].sort((left, right) => left.sequence - right.sequence)[0];

@@ -29,6 +29,11 @@ class FakeDb {
   }
 
   prepare(sql: string) {
+    if (/SELECT 1 FROM sqlite_master.+host_control_store_identity/i.test(sql)) {
+      return {
+        get: () => undefined,
+      };
+    }
     if (/SELECT version FROM _migrations/i.test(sql)) {
       return {
         all: () => this.migrations.map((m) => ({ version: m.version })),

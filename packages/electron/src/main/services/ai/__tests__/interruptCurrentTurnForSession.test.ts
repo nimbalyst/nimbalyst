@@ -176,7 +176,7 @@ describe('runInterruptCurrentTurnForSession', () => {
     const { deps, provider } = createFakes('claude-code');
     vi.mocked(deps.getSessionStatus)
       .mockReturnValueOnce('running')
-      .mockReturnValueOnce('waiting_for_input');
+      .mockReturnValue('waiting_for_input');
 
     const result = await runInterruptCurrentTurnForSession(deps, SESSION_ID, {
       expectedGeneration: 'generation-a',
@@ -191,7 +191,7 @@ describe('runInterruptCurrentTurnForSession', () => {
       nativeEntered: false,
     });
     expect(deps.getSession).toHaveBeenCalledWith(SESSION_ID);
-    expect(deps.getSessionStatus).toHaveBeenCalledTimes(2);
+    expect(deps.getSessionStatus).toHaveBeenCalledTimes(3);
     expect(deps.setSessionPendingPrompt).not.toHaveBeenCalled();
     expect(deps.cancelAllAttentionForSession).not.toHaveBeenCalled();
     expect(deps.isTerminalActive).not.toHaveBeenCalled();
