@@ -5,7 +5,27 @@ set -eu
 # when the outgoing commits touch any manifest. This is exactly the check
 # CI's `npm ci` performs; without it, lockfile drift is only discovered
 # after pushing (2026-07-07 incident: npm 10/11 override-shape mismatch).
-base=$(git merge-base HEAD origin/main 2>/dev/null || echo HEAD~1)
+base=""
+
+# Prefer an explicit push baseline, then the branch's real upstream. The local
+# origin/main ref may lag long-lived integration branches by weeks, which makes
+# every later push look as though it changed a manifest and needlessly reruns
+# npm ci --dry-run. Invalid or unavailable candidates fall through safely.
+if [ -n "${NIMBALYST_PUSH_BASE_REF:-}" ]; then
+  base=$(git merge-base HEAD "$NIMBALYST_PUSH_BASE_REF" 2>/dev/null || true)
+fi
+if [ -z "$base" ]; then
+  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+  if [ -n "$upstream" ]; then
+    base=$(git merge-base HEAD "$upstream" 2>/dev/null || true)
+  fi
+fi
+if [ -z "$base" ]; then
+  base=$(git merge-base HEAD origin/main 2>/dev/null || true)
+fi
+if [ -z "$base" ]; then
+  base=$(git rev-parse HEAD~1)
+fi
 if ! git diff --quiet "$base" HEAD -- package-lock.json 'package.json' '*/package.json' 2>/dev/null; then
   echo "[pre-push] Manifest/lockfile changed; validating lockfile sync (npm ci --dry-run)..."
   if ! npm ci --dry-run >/dev/null 2>&1; then
