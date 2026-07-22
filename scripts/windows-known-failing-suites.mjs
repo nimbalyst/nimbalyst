@@ -6,6 +6,15 @@
  * MigrationOrchestrator.fixtureRoundtrip.test.ts,
  * ElectronFileSystemService.security.test.ts).
  *
+ * Two more suites added 2026-07-22 after NIM-364 V12 integration surfaced them
+ * as full-suite-only Windows concurrency flakes on this same
+ * SQLite/PGLite-worker-contention pattern: both were independently isolated
+ * (single-file `vitest run`, no other suite present) and passed 100% clean --
+ * `attentionReplyGenerationBoundary.test.ts` 18/18, `AttentionReplyInjectionService.test.ts`
+ * 32/32 -- confirming they only fail under full concurrent worker load, never
+ * on their own. See `_pending/v12_nim364_two_failure_isolation_terminal_20260722.md`
+ * and `_pending/v12_nim364_native_abi_rebuild_integration_terminal_20260722.md`.
+ *
  * CI runs Ubuntu only (no Windows runner exists in .github/workflows/ci.yml),
  * so these suites were never covered on Windows by CI either way -- this
  * exclusion does not reduce actual Windows test coverage, it only stops a
@@ -34,4 +43,6 @@ export const WINDOWS_KNOWN_FAILING_SUITES = [
   'packages/electron/src/main/services/ai/__tests__/claudeCliJsonlPath.test.ts',
   'packages/electron/src/main/utils/__tests__/aiSettingsMerge.test.ts',
   'packages/runtime/src/ai/server/providers/__tests__/spawnCrashDiagnostics.test.ts',
+  'packages/electron/src/main/services/ai/__tests__/attentionReplyGenerationBoundary.test.ts',
+  'packages/electron/src/main/services/__tests__/AttentionReplyInjectionService.test.ts',
 ];
