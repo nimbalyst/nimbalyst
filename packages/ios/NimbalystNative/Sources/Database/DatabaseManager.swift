@@ -402,16 +402,11 @@ public final class DatabaseManager: @unchecked Sendable {
                 reconciled.phase = existing.phase
                 reconciled.tagsJson = existing.tagsJson
                 reconciled.isExecuting = existing.isExecuting
-                reconciled.hasPendingPrompt = existing.hasPendingPrompt
-                reconciled.attentionPending = existing.attentionPending
-                reconciled.attentionSeverity = existing.attentionSeverity
-                reconciled.attentionEventId = existing.attentionEventId
-                reconciled.attentionEffectiveDeadline = existing.attentionEffectiveDeadline
+                reconciled.hasQueuedPrompts = existing.hasQueuedPrompts
                 reconciled.contextTokens = existing.contextTokens
                 reconciled.contextWindow = existing.contextWindow
                 reconciled.draftInput = existing.draftInput
                 reconciled.draftUpdatedAt = existing.draftUpdatedAt
-                reconciled.hasBeenNamed = existing.hasBeenNamed
             }
 
             try reconciled.save(db)
