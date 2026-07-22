@@ -143,7 +143,9 @@ vi.mock('../tools/extensionToolHandler', () => ({
 
 vi.mock('../sessionContextServer', () => ({
   SESSION_CONTEXT_TOOL_SCHEMAS: [],
+  SESSION_VISIBILITY_TOOL_NAMES: [],
   dispatchSessionContextTool: vi.fn(),
+  getSessionVisibilityOpenAITools: () => [],
 }));
 
 vi.mock('../sessionNamingServer', () => ({
