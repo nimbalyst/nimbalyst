@@ -679,6 +679,67 @@ final class SessionFeedContinuityTests: XCTestCase {
         XCTAssertEqual(try database.session(byId: "session-1")?.lastSyncedSeq, 520)
     }
 
+    func testSessionServerErrorFinishesOwnedCatchUp() async throws {
+        let database = try makeDatabaseWithSession()
+        let crypto = makeCrypto()
+        let sessionSocket = FakeSyncSocket()
+        let manager = makeManager(
+            database: database,
+            crypto: crypto,
+            indexSocket: FakeSyncSocket(),
+            sessionSocket: sessionSocket
+        )
+        var diagnostics: [SessionSyncDiagnostic] = []
+        manager.addSessionSyncDiagnosticHandler(sessionId: "session-1") { diagnostic in
+            diagnostics.append(diagnostic)
+        }
+
+        manager.connect(authToken: "token", authUserId: userId, orgId: "org")
+        manager.joinSessionRoom(sessionId: "session-1")
+        await settleMainActor()
+        XCTAssertEqual(sessionSocket.sentJSON.count, 1)
+
+        let serverError = ServerError(
+            type: "error",
+            code: "sync_failed",
+            message: "session history unavailable"
+        )
+        await sessionSocket.emit(try JSONEncoder().encode(serverError))
+
+        XCTAssertEqual(
+            diagnostics.last?.error,
+            "Server sync error [sync_failed]: session history unavailable"
+        )
+    }
+
+    func testSessionSyncResponseTimeoutFinishesOwnedCatchUp() async throws {
+        let database = try makeDatabaseWithSession()
+        let crypto = makeCrypto()
+        let sessionSocket = FakeSyncSocket()
+        let scheduler = ControlledSyncScheduler()
+        let manager = makeManager(
+            database: database,
+            crypto: crypto,
+            indexSocket: FakeSyncSocket(),
+            sessionSocket: sessionSocket,
+            scheduler: scheduler
+        )
+        var diagnostics: [SessionSyncDiagnostic] = []
+        manager.addSessionSyncDiagnosticHandler(sessionId: "session-1") { diagnostic in
+            diagnostics.append(diagnostic)
+        }
+
+        manager.connect(authToken: "token", authUserId: userId, orgId: "org")
+        manager.joinSessionRoom(sessionId: "session-1")
+        await settleMainActor()
+        XCTAssertEqual(sessionSocket.sentJSON.count, 1)
+        XCTAssertEqual(scheduler.operations.count, 1)
+
+        scheduler.runNext()
+
+        XCTAssertEqual(diagnostics.last?.error, "Session sync response timed out")
+    }
+
     func testOlderQueuedIndexResponseCannotSplitNewerMetadataAndCursor() async throws {
         let database = try makeDatabaseWithSession(title: "initial")
         let crypto = makeCrypto()

@@ -236,6 +236,7 @@ public final class SyncManager: ObservableObject {
     private var sessionCatchUpSessionId: String?
     private var sessionCatchUpEpoch: UInt64 = 0
     private var sessionCatchUpAuthority: SessionCatchUpAuthority?
+    private var sessionCatchUpRequestGeneration: UInt64 = 0
     private var sessionSyncTotalCount = 0
     private var sessionSyncStoredCount = 0
     private var sessionSyncFailedIds: [String] = []
@@ -1216,9 +1217,11 @@ public final class SyncManager: ObservableObject {
 
     // MARK: - Error Handling
 
-    private func handleServerError(_ data: Data) {
-        guard let error = try? decoder.decode(ServerError.self, from: data) else { return }
+    @discardableResult
+    private func handleServerError(_ data: Data) -> ServerError? {
+        guard let error = try? decoder.decode(ServerError.self, from: data) else { return nil }
         logger.error("Server error [\(error.code)]: \(error.message)")
+        return error
     }
 
     // MARK: - Session Client Setup
@@ -1261,6 +1264,7 @@ public final class SyncManager: ObservableObject {
     private func resetSessionCatchUp(for sessionId: String?) {
         sessionCatchUpEpoch &+= 1
         sessionCatchUpAuthority = nil
+        sessionCatchUpRequestGeneration = 0
         sessionCatchUpInFlight = false
         sessionCatchUpPending = false
         sessionCatchUpSessionId = sessionId
@@ -1285,6 +1289,7 @@ public final class SyncManager: ObservableObject {
             context: context
         )
         sessionCatchUpAuthority = authority
+        sessionCatchUpRequestGeneration = 0
         sessionCatchUpInFlight = true
         sessionCatchUpPending = false
         sessionCatchUpSessionId = sessionId
@@ -1301,6 +1306,22 @@ public final class SyncManager: ObservableObject {
             && sessionCatchUpSessionId == authority.sessionId
             && activeSessionId == authority.sessionId
             && activeSessionContext == authority.context
+    }
+
+    private func scheduleSessionCatchUpResponseTimeout(
+        for authority: SessionCatchUpAuthority
+    ) {
+        sessionCatchUpRequestGeneration &+= 1
+        let requestGeneration = sessionCatchUpRequestGeneration
+        scheduler.schedule(after: 15.0) { [weak self] in
+            guard let self,
+                  self.ownsSessionCatchUp(authority),
+                  self.sessionCatchUpRequestGeneration == requestGeneration else { return }
+            self.finishSessionCatchUp(
+                authority: authority,
+                error: "Session sync response timed out"
+            )
+        }
     }
 
     private func requestSessionSync() {
@@ -1405,6 +1426,7 @@ public final class SyncManager: ObservableObject {
                 }
             } else {
                 self.logger.debug("requestSessionSync: send acknowledged for \(sessionId)")
+                self.scheduleSessionCatchUpResponseTimeout(for: authority)
             }
         }
     }
@@ -1428,7 +1450,19 @@ public final class SyncManager: ObservableObject {
         case "metadataBroadcast":
             handleMetadataBroadcast(data, sessionId: sessionId)
         case "error":
-            handleServerError(data)
+            let serverError = handleServerError(data)
+            if let authority = sessionCatchUpAuthority,
+               authority.sessionId == sessionId,
+               authority.context == context,
+               ownsSessionCatchUp(authority) {
+                let detail: String
+                if let serverError {
+                    detail = "Server sync error [\(serverError.code)]: \(serverError.message)"
+                } else {
+                    detail = "Server sync error"
+                }
+                finishSessionCatchUp(authority: authority, error: detail)
+            }
         default:
             logger.info("Unhandled session message type: \(envelope.type)")
         }
