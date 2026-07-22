@@ -27,7 +27,7 @@ const mocks = vi.hoisted(() => {
     storageRootOwnershipCheck: undefined as undefined | (() => void),
     protectedStorageWrite: undefined as undefined | (<T>(work: () => Promise<T>) => Promise<T>),
     configureVisibilityStorageFence: vi.fn(),
-    databaseQuery: vi.fn(async () => ({ rows: [] })),
+    databaseQuery: vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [] })),
     revokeHostBoundMcpAuthority: vi.fn(),
     deleteSession: vi.fn(),
     deleteRepositorySession: vi.fn(),
@@ -158,7 +158,7 @@ describe('SessionHandlers visibility-control convergence', () => {
     expect(mocks.databaseQuery.mock.calls.some(([sql]) => (
       String(sql).includes('CREATE TABLE IF NOT EXISTS session_visibility_storage_fence')
     ))).toBe(true);
-    expect(mocks.databaseQuery.mock.calls.some(([sql, values]) => (
+    expect(mocks.databaseQuery.mock.calls.some(([sql, values = []]) => (
       String(sql).includes('ON CONFLICT (root_identity)')
       && values[0] === databaseFence.rootIdentity
       && values[1] === databaseFence.ownerId

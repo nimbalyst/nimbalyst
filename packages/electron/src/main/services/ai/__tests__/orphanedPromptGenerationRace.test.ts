@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { SessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { AttentionEventService } from '../../AttentionEventService';
 import { clearStalePendingPromptOnTerminal } from '../pendingPromptTerminalClear';
-import { settleTerminalAttentionBeforeContinuation } from '../terminalAttentionSettlement';
+import {
+  settleTerminalAttentionBeforeContinuation,
+  type TerminalAttentionSettlementArgs,
+} from '../terminalAttentionSettlement';
 import { settleOrphanedPromptTurn } from '../orphanedPromptTurnSettlement';
 import type { PendingPromptPersistenceResult } from '../pendingPromptPersistence';
 import { terminateHostBoundAiSession } from '../aiServiceQueuedChainSettlement';
@@ -166,7 +169,13 @@ describe('orphaned git proposal generation race', () => {
       },
       reason: 'error',
     }, {
-      settleTerminal: (async (_args, continuation) => ({
+      settleTerminal: (async (
+        _args: TerminalAttentionSettlementArgs,
+        continuation: (settlement: {
+          promptClear: PendingPromptPersistenceResult;
+          attentionSettledCount: number;
+        }) => Promise<unknown>,
+      ) => ({
         promptClear: {} as PendingPromptPersistenceResult,
         attentionSettledCount: 0,
         continuationResult: await continuation({

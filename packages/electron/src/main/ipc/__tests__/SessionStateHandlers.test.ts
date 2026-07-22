@@ -98,7 +98,7 @@ describe('explicit host-bound session end registration', () => {
     terminalMocks.revoke.mockClear();
     let releaseRevocation!: () => void;
     terminalMocks.revoke.mockImplementationOnce(
-      () => new Promise<void>((resolve) => { releaseRevocation = resolve; }),
+      () => new Promise<undefined>((resolve) => { releaseRevocation = () => resolve(undefined); }),
     );
     let state = { attentionGeneration: 'turn-a' };
     const stateManager = {

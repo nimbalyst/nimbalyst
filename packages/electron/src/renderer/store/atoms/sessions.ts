@@ -952,7 +952,7 @@ export const sessionChildrenAtom = atomFamily((_sessionId: string) =>
  * families cannot enumerate retained keys, so this index lets convergence
  * repair stale caches even after their registry entry has been evicted.
  */
-export const sessionHierarchyParentIdsAtom = atom<Set<string>>(new Set());
+export const sessionHierarchyParentIdsAtom = atom<Set<string>>(new Set<string>());
 
 interface SessionHierarchyWorkspaceSnapshot {
   parents: Map<string, {

@@ -1365,6 +1365,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         // `metadata` is a raw JSON string), so kanban tags/phase disappear
         // from the session list view.
         const metadata = publicSessionMetadata(row.metadata);
+        const nestedMetadata = normalizeJsonObject(metadata.metadata);
         return {
           id: row.id,
           provider: row.provider,
@@ -1388,7 +1389,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           branchedFromSessionId: row.branched_from_session_id ?? undefined,
           branchPointMessageId: row.branch_point_message_id ? parseInt(row.branch_point_message_id) : undefined,
           branchedAt,
-          hasUnread: metadata.metadata?.hasUnread ?? metadata.hasUnread ?? false,
+          hasUnread: nestedMetadata.hasUnread === true || metadata.hasUnread === true,
           // Authoritative pending-interactive-prompt bit. Written by
           // setSessionPendingPrompt() on every prompt open/resolve so the
           // sidebar indicator survives renderer reloads and reaches mobile.
@@ -1396,7 +1397,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           // which nothing was writing.
           hasPendingInteractivePrompt: !!metadata.hasPendingPrompt,
           // Kanban board phase and tags from metadata JSONB
-          phase: metadata.phase ?? undefined,
+          phase: typeof metadata.phase === 'string' ? metadata.phase : undefined,
           tags: Array.isArray(metadata.tags) ? metadata.tags : undefined,
           // Linked tracker item IDs from metadata JSONB
           linkedTrackerItemIds: Array.isArray(metadata.linkedTrackerItemIds) ? metadata.linkedTrackerItemIds : undefined,

@@ -181,11 +181,11 @@ describe('CollabV3 pending metadata convergence', () => {
       updatedAt: 2,
       createdAt: 1,
     }]);
-    await vi.waitFor(() => expect(provider.getCachedIndexEntry('queued-session')).toBeDefined());
+    await vi.waitFor(() => expect(provider.getCachedIndexEntry!('queued-session')).toBeDefined());
 
     // Reconnection allocates the authoritative transport that replays the
     // retained entry; the closed socket is never reopened.
-    provider.reconnectIndex();
+    provider.reconnectIndex!();
     await vi.waitFor(() => expect(PendingMetadataWebSocket.instances).toHaveLength(2));
     const replacement = PendingMetadataWebSocket.instances[1];
     replacement.open();

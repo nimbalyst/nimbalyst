@@ -94,16 +94,16 @@ describe('MessageStreamingHandler extension visibility authority flow', () => {
     const order: string[] = [];
     const stateManager = {
       endSession: vi.fn(async () => { order.push('ended'); }),
-      getSessionState: vi.fn(() => ({ attentionGeneration: 7 })),
+      getSessionState: vi.fn(() => ({ attentionGeneration: '7' })),
     };
     mocks.revokeMcpAuthority.mockImplementationOnce(async () => { order.push('revoked'); });
 
     await endHostBoundAiSession(stateManager as any, 'actor-session', {
-      attentionGeneration: 7,
+      attentionGeneration: '7',
     });
 
     expect(stateManager.endSession).toHaveBeenCalledWith('actor-session', {
-      attentionGeneration: 7,
+      attentionGeneration: '7',
     });
     expect(mocks.revokeMcpAuthority).toHaveBeenCalledWith('actor-session');
     expect(order).toEqual(['revoked', 'ended']);

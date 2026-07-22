@@ -363,7 +363,7 @@ describe('AIService queued-chain generation settlement integration', () => {
     });
     let releaseRevocation!: () => void;
     fixture.revokeHostBoundMcpAuthority.mockImplementationOnce(
-      () => new Promise<void>((resolve) => { releaseRevocation = resolve; }),
+      () => new Promise<undefined>((resolve) => { releaseRevocation = () => resolve(undefined); }),
     );
 
     const staleEnd = endHostBoundAiSession(stateManager, sessionId, {

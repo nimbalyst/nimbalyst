@@ -266,9 +266,9 @@ describe('renderer session visibility convergence', () => {
     state.set(sessionListWorkspaceAtom, '/workspace-a');
     state.set(sessionRegistryAtom, registryWithoutP1);
     state.set(sessionStoreAtom('target'), meta('target', { parentSessionId: 'workstream-p1' }));
-    expect(state.get(sessionChildrenAtom('workstream-p1'))
+    expect(state.get(sessionChildrenAtom('workstream-p1')))
       .toEqual(['target', 'registered-unrelated-child', 'atom-only-child']);
-    expect(state.get(sessionChildrenAtom('workstream-p1'))
+    expect(state.get(sessionChildrenAtom('workstream-p1')))
       .not.toContain('workspace-b-only-child');
 
     listeners.get('sessions:session-reparented')?.({

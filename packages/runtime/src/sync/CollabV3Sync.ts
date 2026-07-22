@@ -1865,11 +1865,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     expectedSession: SessionConnection,
     broadcast: Extract<ServerMessage, { type: 'messageBroadcast' }>
   ): Promise<void> {
-    if (!isCurrentSessionConnection(sessionId, expectedSession) || !expectedSession.encryptionKey) return;
+    const encryptionKey = expectedSession.encryptionKey;
+    if (!isCurrentSessionConnection(sessionId, expectedSession) || !encryptionKey) return;
     const session = expectedSession;
 
     try {
-      const decrypted = await decryptMessage(broadcast.message, session.encryptionKey);
+      const decrypted = await decryptMessage(broadcast.message, encryptionKey);
       if (!isCurrentSessionConnection(sessionId, session)) return;
       decrypted.sessionId = sessionId;
 
