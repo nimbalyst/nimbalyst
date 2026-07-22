@@ -65,7 +65,7 @@ describe('SessionVisibilityConvergenceOutbox', () => {
 
     const first = new SessionVisibilityConvergenceOutbox({
       filePath,
-      retryIntervalMs: 60_000,
+      retryIntervalMs: 10,
       audit: async () => { throw new Error('audit unavailable'); },
       deliver: async () => { throw new Error('renderer unavailable'); },
     });

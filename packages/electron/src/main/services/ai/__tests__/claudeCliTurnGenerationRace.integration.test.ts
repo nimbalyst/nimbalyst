@@ -38,6 +38,9 @@ describe('long-lived Claude CLI turn generation integration', () => {
     vi.doMock('../../SyncManager', () => ({
       getSyncProvider: () => ({ pushMetadataChangeWithResult }),
     }));
+    vi.doMock('../../../mcp/httpServer', () => ({
+      revokeHostBoundMcpAuthority: vi.fn(async () => undefined),
+    }));
 
     const terminalManager = { isTerminalActive: vi.fn(() => false) };
     const launch = vi.fn(async (_input?: any): Promise<void> => undefined);

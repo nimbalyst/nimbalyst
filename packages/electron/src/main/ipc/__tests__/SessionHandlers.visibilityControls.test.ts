@@ -134,6 +134,9 @@ async function invoke(channel: string, ...args: any[]) {
 }
 
 describe('SessionHandlers visibility-control convergence', () => {
+  let registeredDatabaseFence!: { rootIdentity: string; ownerId: string };
+  let registeredDatabaseQueries!: typeof mocks.databaseQuery.mock.calls;
+
   beforeAll(async () => {
     mocks.configureHostBroadcast.mockImplementation(async (callback, resolver) => {
       mocks.hostBroadcast = callback;
@@ -143,22 +146,24 @@ describe('SessionHandlers visibility-control convergence', () => {
       mocks.workspaceWindows.get(workspacePath) ?? null
     ));
     await registerSessionHandlers();
+    expect(mocks.configureVisibilityStorageFence).toHaveBeenCalledOnce();
+    registeredDatabaseFence = mocks.configureVisibilityStorageFence.mock.calls[0][0];
+    registeredDatabaseQueries = [...mocks.databaseQuery.mock.calls];
   });
 
   it('rejects a second production-boundary owner for the same storage root', async () => {
     expect(mocks.storageRootOwnershipCheck).toBeTypeOf('function');
     expect(mocks.protectedStorageWrite).toBeTypeOf('function');
-    expect(mocks.configureVisibilityStorageFence).toHaveBeenCalledOnce();
-    const databaseFence = mocks.configureVisibilityStorageFence.mock.calls[0][0];
+    const databaseFence = registeredDatabaseFence;
     expect(databaseFence).toMatchObject({
       rootIdentity: expect.stringMatching(/^[0-9a-f]+:[0-9a-f]+$/),
       ownerId: expect.stringMatching(/^sv-root-/),
     });
     expect(databaseFence).not.toHaveProperty('assertOwned');
-    expect(mocks.databaseQuery.mock.calls.some(([sql]) => (
+    expect(registeredDatabaseQueries.some(([sql]) => (
       String(sql).includes('CREATE TABLE IF NOT EXISTS session_visibility_storage_fence')
     ))).toBe(true);
-    expect(mocks.databaseQuery.mock.calls.some(([sql, values = []]) => (
+    expect(registeredDatabaseQueries.some(([sql, values = []]) => (
       String(sql).includes('ON CONFLICT (root_identity)')
       && values[0] === databaseFence.rootIdentity
       && values[1] === databaseFence.ownerId

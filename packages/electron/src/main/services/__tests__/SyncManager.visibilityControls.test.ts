@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   getAllSessionsForSync: vi.fn().mockResolvedValue([]),
   getSessionMessagesForSyncBatch: vi.fn(),
   resolvePersonalUserId: vi.fn().mockResolvedValue('personal-user'),
+  enabledProjects: [] as string[],
 }));
 
 vi.mock('@nimbalyst/runtime/sync', () => ({
@@ -33,7 +34,7 @@ vi.mock('../../utils/store', () => ({
   getDefaultAIModel: vi.fn(),
   getAlphaFeatures: () => ({}),
   getPreferredAgentLanguage: () => 'en',
-  store: { get: () => ({ enabledProjects: [] }) },
+  store: { get: () => ({ enabledProjects: mocks.enabledProjects }) },
 }));
 vi.mock('../../utils/logger', () => ({
   logger: { main: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } },
@@ -102,6 +103,7 @@ describe('SyncManager visibility publication lifetime', () => {
     mocks.createSyncedSessionStore.mockReset();
     mocks.getAllSessionsForSync.mockReset().mockResolvedValue([]);
     mocks.resolvePersonalUserId.mockReset().mockResolvedValue('personal-user');
+    mocks.enabledProjects = [];
   });
 
   afterEach(async () => {
@@ -169,6 +171,7 @@ describe('SyncManager visibility publication lifetime', () => {
 
   it('suppresses a late generation-A startup sync without clearing generation-B ownership', async () => {
     const base = baseStore();
+    mocks.enabledProjects = ['/repo'];
     let resolveFetchA!: (value: any) => void;
     const fetchA = new Promise<any>((resolve) => { resolveFetchA = resolve; });
     let resolveFetchB!: (value: any) => void;
@@ -211,13 +214,12 @@ describe('SyncManager visibility publication lifetime', () => {
     expect(oldProvider.syncSessionsToIndex).not.toHaveBeenCalled();
 
     resolveFetchB({ sessions: [], projects: [] });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(currentProvider.syncSessionsToIndex).toHaveBeenCalledWith(
-      [expect.objectContaining({ id: 'current-startup-session' })],
-      expect.objectContaining({ syncMessages: true }),
-    );
+    await vi.waitFor(() => {
+      expect(currentProvider.syncSessionsToIndex).toHaveBeenCalledWith(
+        [expect.objectContaining({ id: 'current-startup-session' })],
+        expect.objectContaining({ syncMessages: true }),
+      );
+    });
   });
 
   it('retires a never-settling initialization so B and C can become the sole newest owner', async () => {

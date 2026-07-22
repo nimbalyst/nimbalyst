@@ -36,14 +36,27 @@ vi.mock('@nimbalyst/runtime/ai/server', () => ({
 vi.mock('@nimbalyst/runtime', () => ({
   AISessionsRepository: {
     create: mocks.create,
+    configureVisibilityStorageFence: vi.fn(),
     get: mocks.get,
     updateMetadata: mocks.updateMetadata,
   },
+  TrackerReferenceChip: () => null,
+  TrackerReferencePicker: () => null,
+  useResolvedTrackerReference: () => null,
+  navigateToTrackerReference: vi.fn(),
   TranscriptMigrationRepository: { hasService: () => false },
 }));
 
 vi.mock('@nimbalyst/runtime/ai/server/transcript', () => ({
   TranscriptProjector: class {},
+}));
+
+vi.mock('../../mcp/httpServer', () => ({
+  revokeHostBoundMcpAuthority: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../services/PGLiteSessionStore', () => ({
+  claimVisibilityStorageDatabaseFence: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../services/analytics/AnalyticsService', () => ({
@@ -80,6 +93,11 @@ vi.mock('../../window/windowState', () => ({
 }));
 
 vi.mock('electron', () => ({
+  app: {
+    on: vi.fn(),
+    getAppPath: () => '',
+    isPackaged: false,
+  },
   BrowserWindow: {
     fromWebContents: () => mocks.fakeWindow,
     getAllWindows: () => [mocks.fakeWindow],

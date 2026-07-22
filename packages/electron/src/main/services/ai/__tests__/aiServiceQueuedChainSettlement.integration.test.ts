@@ -350,7 +350,7 @@ describe('AIService queued-chain generation settlement integration', () => {
     await handlers.onTeammatesAllCompleted({ sessionId });
 
     expect(order).toEqual(['revoked', 'ended']);
-    expect(stateManager.getSessionState(sessionId)).toBeUndefined();
+    expect(stateManager.getSessionState(sessionId)).toBeNull();
   });
 
   it('revalidates generation after an awaited revocation before ending terminal state', async () => {

@@ -321,10 +321,9 @@ describe('claudeCliLauncherSingleton', () => {
         isStreaming: false,
         attentionGeneration: 'turn-a',
       });
-      expect(h.stateManager.endSession).toHaveBeenCalledWith('session-1', {
-        attentionGeneration: 'turn-a',
-      });
     });
+    expect(h.stateManager.endSession).not.toHaveBeenCalled();
+    expect(h.revoke).not.toHaveBeenCalled();
     expect(h.getCurrentState()).toMatchObject({
       status: 'running',
       attentionGeneration: 'turn-b',
