@@ -67,16 +67,35 @@ async function makeIdentity(prefix: string): Promise<{ root: string; identity: H
 
 async function nextLine(child: ChildProcessWithoutNullStreams, name: string): Promise<string> {
   const lines = createInterface({ input: child.stdout });
+  let timer: NodeJS.Timeout | undefined;
+  let exitHandler: ((code: number | null) => void) | undefined;
   try {
     return await Promise.race([
       new Promise<string>((resolvePromise) => lines.once('line', resolvePromise)),
-      new Promise<string>((_, reject) => setTimeout(
-        () => reject(new Error(`${name}_timeout`)), 2_000,
-      )),
+      new Promise<string>((_, reject) => {
+        exitHandler = (code) => reject(new Error(`${name}_child_exit:${code ?? 'signal'}`));
+        child.once('exit', exitHandler);
+      }),
+      new Promise<string>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${name}_timeout`)), 2_000);
+      }),
     ]);
   } finally {
+    if (timer) clearTimeout(timer);
+    if (exitHandler) child.off('exit', exitHandler);
     lines.close();
   }
+}
+
+async function advanceChild(
+  child: ChildProcessWithoutNullStreams,
+  command: string,
+  expected: string,
+  name: string,
+): Promise<void> {
+  const signal = nextLine(child, name);
+  child.stdin.write(`${command}\n`);
+  await expect(signal).resolves.toBe(expected);
 }
 
 async function drainChild(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -308,7 +327,14 @@ describe('HostControlMutationCoordinator durable authority journal', () => {
       process.env.TMP = parentTemp;
       const modulePath = resolve(__dirname, '../HostControlMutationCoordinator.ts');
       const script = `
+        const readline = require('readline');
+        const commands = readline.createInterface({ input: process.stdin });
+        const nextCommand = () => new Promise(resolve => commands.once('line', resolve));
+        process.stdout.write('started\\n');
+        nextCommand().then(async () => {
         require('ts-node/register/transpile-only');
+        process.stdout.write('transpiler-loaded\\n');
+        await nextCommand();
         const Database = require('better-sqlite3');
         const { hostControlMutationCoordinator } = require(process.argv[1]);
         const database = new Database(process.argv[2], { readonly: true });
@@ -316,9 +342,12 @@ describe('HostControlMutationCoordinator durable authority journal', () => {
           'SELECT store_id, authority_root FROM host_control_store_identity WHERE singleton = 1'
         ).get();
         const identity = { storeId: row.store_id, authorityRoot: row.authority_root };
-        hostControlMutationCoordinator.withOperationLock(identity, process.argv[3], async () => {
+        process.stdout.write('composition-loaded\\n');
+        await nextCommand();
+        return hostControlMutationCoordinator.withOperationLock(identity, process.argv[3], async () => {
           process.stdout.write('entered\\n');
-          await new Promise(resolve => process.stdin.once('data', resolve));
+          await nextCommand();
+        });
         }).then(() => process.exit(0), error => {
           process.stderr.write(String(error && error.stack || error));
           process.exit(1);
@@ -337,7 +366,10 @@ describe('HostControlMutationCoordinator durable authority journal', () => {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       pendingChildren.add(child);
-      await expect(nextLine(child, 'production_child_enter')).resolves.toBe('entered');
+      await expect(nextLine(child, 'production_child_start')).resolves.toBe('started');
+      await advanceChild(child, 'load-transpiler', 'transpiler-loaded', 'production_child_transpiler');
+      await advanceChild(child, 'load-composition', 'composition-loaded', 'production_child_composition');
+      await advanceChild(child, 'enter', 'entered', 'production_child_enter');
       let parentEntered = false;
       parentPromise = hostControlMutationCoordinator.withOperationLock(
         identity,
