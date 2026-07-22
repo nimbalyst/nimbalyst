@@ -97,6 +97,12 @@ export interface HostControlMutationCoordinatorOptions {
   onContention?: (operationDigest: string) => void;
   /** Test seam after a complete private record exists but before atomic publication. */
   afterClaimPrepared?: (input: PublishedClaim & { temporaryPath: string }) => Promise<void> | void;
+  /** Test seam after a private checkpoint exists but before atomic publication. */
+  afterCheckpointPrepared?: (input: {
+    path: string;
+    temporaryPath: string;
+    namespace: HostControlOperationNamespace;
+  }) => Promise<void> | void;
   /** Test seam after the immutable claim is visible. */
   afterClaimPublished?: (input: PublishedClaim) => Promise<void> | void;
   /** Test seam immediately before the exact-token release record is published. */
@@ -329,9 +335,15 @@ async function removeExact(path: string): Promise<void> {
   }
 }
 
-async function atomicPublish(path: string, value: object, token: string): Promise<'published' | 'exists'> {
+async function atomicPublish(
+  path: string,
+  value: object,
+  token: string,
+  afterPrepared?: (temporaryPath: string) => Promise<void> | void,
+): Promise<'published' | 'exists'> {
   const temporaryPath = await publishCompleteRecord(path, value, token);
   try {
+    await afterPrepared?.(temporaryPath);
     await link(temporaryPath, path);
     return 'published';
   } catch (error) {
@@ -599,6 +611,7 @@ async function publishCheckpoint(
   epoch: EpochRecord,
   throughSequence: number,
   randomToken: () => string,
+  afterPrepared?: (input: { path: string; temporaryPath: string }) => Promise<void> | void,
 ): Promise<string | null> {
   if (throughSequence <= 0) return null;
   const token = randomToken();
@@ -611,7 +624,12 @@ async function publishCheckpoint(
     operationDigest: namespace.operationDigest,
   };
   const path = join(namespace.directory, checkpointName(epoch, throughSequence, token));
-  await atomicPublish(path, { ...unsigned, checksum: checksum(unsigned) }, token);
+  await atomicPublish(
+    path,
+    { ...unsigned, checksum: checksum(unsigned) },
+    token,
+    (temporaryPath) => afterPrepared?.({ path, temporaryPath }),
+  );
   return path;
 }
 
@@ -621,6 +639,7 @@ async function compactClosedPrefix(
   scan: ClaimScan,
   beforeSequence: number,
   randomToken: () => string,
+  afterCheckpointPrepared?: HostControlMutationCoordinatorOptions['afterCheckpointPrepared'],
 ): Promise<void> {
   const prefix = scan.closed.filter((entry) => entry.sequence < beforeSequence);
   if (prefix.length === 0) {
@@ -637,7 +656,13 @@ async function compactClosedPrefix(
     return;
   }
   const throughSequence = Math.max(scan.checkpoint, ...prefix.map((entry) => entry.sequence));
-  const retainedCheckpoint = await publishCheckpoint(namespace, epoch, throughSequence, randomToken);
+  const retainedCheckpoint = await publishCheckpoint(
+    namespace,
+    epoch,
+    throughSequence,
+    randomToken,
+    (input) => afterCheckpointPrepared?.({ ...input, namespace }),
+  );
   for (const entry of prefix) {
     await removeExact(entry.claimPath);
     await removeExact(entry.releasePath);
@@ -697,6 +722,15 @@ async function compactAbandonedPrivateRecords(input: {
     }
     let partial: Partial<LockRecord> = {};
     try { partial = JSON.parse(raw) as Partial<LockRecord>; } catch { /* private partial */ }
+    // A private checkpoint/epoch/release record intentionally has no owner
+    // envelope. Its absence is indeterminate, not positive dead-owner proof,
+    // even when recovery grace is zero. Unique temp names make leaving an
+    // orphan fail closed without blocking a later publisher.
+    if (
+      !Number.isInteger(partial.pid)
+      || (partial.pid ?? 0) <= 0
+      || !isBoundedString(partial.processIdentity)
+    ) continue;
     const live = await ownerIsLive(partial, input.isProcessAlive, input.getProcessIdentity);
     if (
       live === true
@@ -870,7 +904,14 @@ export function createHostControlMutationCoordinator(
             assertBeforeDeadline(now, startedAt, acquireTimeoutMs, namespace.operationDigest);
             const winner = [...scan.active].sort((left, right) => left.sequence - right.sequence)[0];
             if (winner?.sequence === sequence && winner.token === token) {
-              await compactClosedPrefix(namespace, epoch, scan, sequence, randomToken);
+              await compactClosedPrefix(
+                namespace,
+                epoch,
+                scan,
+                sequence,
+                randomToken,
+                options.afterCheckpointPrepared,
+              );
               assertBeforeDeadline(now, startedAt, acquireTimeoutMs, namespace.operationDigest);
               return await action();
             }

@@ -420,6 +420,68 @@ describe('HostControlMutationCoordinator durable authority journal', () => {
     }
   });
 
+  it('does not reclaim a live publisher private checkpoint at zero recovery grace', async () => {
+    const { root, identity } = await makeIdentity('nim364-private-checkpoint');
+    const checkpointPrepared = boundedBarrier('private_checkpoint_prepared');
+    const checkpointResume = boundedBarrier('private_checkpoint_resume');
+    const contenderBlocked = boundedBarrier('private_checkpoint_contender_blocked');
+    const live = new Map([[211, 'boot:start-211'], [212, 'boot:start-212']]);
+    let temporaryPath: string | undefined;
+    let publisherPromise: Promise<void> | undefined;
+    let contenderPromise: Promise<void> | undefined;
+    const publisher = createHostControlMutationCoordinator({
+      pid: 211,
+      processIdentity: live.get(211),
+      retryMs: 2,
+      recoveryGraceMs: 0,
+      isProcessAlive: (pid) => live.has(pid),
+      getProcessIdentity: async (pid) => live.get(pid) ?? null,
+      afterCheckpointPrepared: async (input) => {
+        temporaryPath = input.temporaryPath;
+        checkpointPrepared.release();
+        await checkpointResume.promise;
+      },
+    });
+    const contender = createHostControlMutationCoordinator({
+      pid: 212,
+      processIdentity: live.get(212),
+      retryMs: 2,
+      recoveryGraceMs: 0,
+      isProcessAlive: (pid) => live.has(pid),
+      getProcessIdentity: async (pid) => live.get(pid) ?? null,
+      onContention: () => contenderBlocked.release(),
+    });
+    const order: string[] = [];
+    try {
+      await publisher.withOperationLock(identity, 'checkpoint-operation', async () => undefined);
+      publisherPromise = publisher.withOperationLock(
+        identity,
+        'checkpoint-operation',
+        async () => { order.push('publisher'); },
+      );
+      await checkpointPrepared.promise;
+      contenderPromise = contender.withOperationLock(
+        identity,
+        'checkpoint-operation',
+        async () => { order.push('contender'); },
+      );
+      await contenderBlocked.promise;
+      expect(temporaryPath).toBeDefined();
+      await expect(readFile(temporaryPath!, 'utf8')).resolves.toContain('throughSequence');
+      expect(order).toEqual([]);
+      checkpointResume.release();
+      await Promise.all([publisherPromise, contenderPromise]);
+      expect(order).toEqual(['publisher', 'contender']);
+    } finally {
+      checkpointResume.release();
+      contenderBlocked.release();
+      await Promise.allSettled(
+        [publisherPromise, contenderPromise].filter(Boolean) as Promise<void>[],
+      );
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('recovers dead malformed history, rolls an exhausted sequence epoch, and keeps history bounded', async () => {
     const { root, identity } = await makeIdentity('nim364-bounded-history');
     const coordinator = fakeCoordinator(301, 'boot:start-301');
