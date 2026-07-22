@@ -18,7 +18,14 @@ import {
 
 const MAX_SEQUENCE = 999_999_999_999;
 const MAX_EPOCH = 99_999_999;
+const SHARED_PROCESS_IDENTITY_KEY = Symbol.for(
+  'nimbalyst.host-control-mutation-coordinator.current-process-identity.v1',
+);
 const pendingChildren = new Set<ChildProcessWithoutNullStreams>();
+
+function resetSharedProcessIdentity(): void {
+  delete (globalThis as unknown as Record<PropertyKey, unknown>)[SHARED_PROCESS_IDENTITY_KEY];
+}
 
 function boundedBarrier(name: string, timeoutMs = 2_000) {
   let release!: () => void;
@@ -90,10 +97,136 @@ async function drainChild(child: ChildProcessWithoutNullStreams): Promise<void> 
 
 afterEach(async () => {
   await Promise.all([...pendingChildren].map(drainChild));
+  resetSharedProcessIdentity();
   vi.restoreAllMocks();
 });
 
 describe('HostControlMutationCoordinator durable authority journal', () => {
+  it('starts the acquisition deadline after a delayed positive current-process identity prerequisite', async () => {
+    const { root, identity } = await makeIdentity('nim364-identity-prerequisite');
+    let clock = 10_000;
+    resetSharedProcessIdentity();
+    const getProcessIdentity = vi.fn(async () => {
+      clock += 5_000;
+      return 'boot:current-process';
+    });
+    const coordinator = createHostControlMutationCoordinator({
+      acquireTimeoutMs: 50,
+      retryMs: 1,
+      pid: process.pid,
+      getProcessIdentity,
+      now: () => clock,
+    });
+    try {
+      await expect(coordinator.withOperationLock(
+        identity,
+        'delayed-identity',
+        async () => 'entered',
+      )).resolves.toBe('entered');
+      expect(getProcessIdentity).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('shares one positive current-process identity across coordinator module reloads', async () => {
+    const { root, identity } = await makeIdentity('nim364-shared-identity');
+    resetSharedProcessIdentity();
+    const getProcessIdentity = vi.fn(async () => 'boot:shared-current-process');
+    try {
+      vi.resetModules();
+      const firstModule = await import('../HostControlMutationCoordinator');
+      vi.resetModules();
+      const secondModule = await import('../HostControlMutationCoordinator');
+      const first = firstModule.createHostControlMutationCoordinator({
+        pid: process.pid,
+        getProcessIdentity,
+      });
+      const second = secondModule.createHostControlMutationCoordinator({
+        pid: process.pid,
+        getProcessIdentity,
+      });
+      await Promise.all([
+        first.withOperationLock(identity, 'shared-identity-a', async () => undefined),
+        second.withOperationLock(identity, 'shared-identity-b', async () => undefined),
+      ]);
+      expect(getProcessIdentity).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not cache an unavailable current-process identity or publish authority records', async () => {
+    const { root, identity } = await makeIdentity('nim364-unavailable-identity');
+    resetSharedProcessIdentity();
+    const getProcessIdentity = vi.fn(async () => null);
+    const coordinator = createHostControlMutationCoordinator({
+      pid: process.pid,
+      getProcessIdentity,
+    });
+    try {
+      await expect(coordinator.withOperationLock(
+        identity,
+        'unavailable-identity',
+        async () => undefined,
+      )).rejects.toThrow('host_control_mutation_owner_identity_unavailable');
+      await expect(coordinator.withOperationLock(
+        identity,
+        'unavailable-identity',
+        async () => undefined,
+      )).rejects.toThrow('host_control_mutation_owner_identity_unavailable');
+      expect(getProcessIdentity).toHaveBeenCalledTimes(2);
+      const namespace = await resolveHostControlOperationNamespace(identity, 'unavailable-identity');
+      expect(await readdir(namespace.directory)).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a slow foreign-owner liveness lookup inside the acquisition deadline', async () => {
+    const { root, identity } = await makeIdentity('nim364-foreign-identity-deadline');
+    const releasePaused = boundedBarrier('foreign_identity_release_paused');
+    const releaseResume = boundedBarrier('foreign_identity_release_resume');
+    let clock = 20_000;
+    let ownerPromise: Promise<void> | undefined;
+    const owner = createHostControlMutationCoordinator({
+      pid: 701,
+      processIdentity: 'boot:owner-701',
+      isProcessAlive: () => true,
+      getProcessIdentity: async () => 'boot:owner-701',
+      now: () => clock,
+      beforeReleasePublished: async () => {
+        releasePaused.release();
+        await releaseResume.promise;
+      },
+    });
+    const contender = createHostControlMutationCoordinator({
+      acquireTimeoutMs: 50,
+      retryMs: 1,
+      pid: 702,
+      processIdentity: 'boot:owner-702',
+      isProcessAlive: (pid) => pid === 701 || pid === 702,
+      getProcessIdentity: async (pid) => {
+        if (pid === 701) clock += 50;
+        return `boot:owner-${pid}`;
+      },
+      now: () => clock,
+    });
+    try {
+      ownerPromise = owner.withOperationLock(identity, 'foreign-owner', async () => undefined);
+      await releasePaused.promise;
+      await expect(contender.withOperationLock(
+        identity,
+        'foreign-owner',
+        async () => 'must-not-enter',
+      )).rejects.toThrow('host_control_mutation_lock_timeout');
+    } finally {
+      releaseResume.release();
+      await Promise.allSettled(ownerPromise ? [ownerPromise] : []);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('serializes independently loaded modules by canonical store and operation identity', async () => {
     const { root, identity } = await makeIdentity('nim364-module-isolates');
     const entered = boundedBarrier('first_module_entered');

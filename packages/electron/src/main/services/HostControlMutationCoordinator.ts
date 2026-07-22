@@ -14,6 +14,15 @@ const SEQUENCE_WIDTH = 12;
 const MAX_SEQUENCE = 999_999_999_999;
 const EPOCH_WIDTH = 8;
 const MAX_EPOCH = 99_999_999;
+const SHARED_PROCESS_IDENTITY_KEY = Symbol.for(
+  'nimbalyst.host-control-mutation-coordinator.current-process-identity.v1',
+);
+
+interface SharedProcessIdentityState {
+  pid: number;
+  promise?: Promise<string | null>;
+  value?: string;
+}
 
 export interface HostControlStoreIdentity {
   storeId: string;
@@ -175,6 +184,34 @@ async function defaultGetProcessIdentity(pid: number): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function sharedCurrentProcessIdentity(
+  pid: number,
+  resolveIdentity: (pid: number) => Promise<string | null>,
+): Promise<string | null> {
+  const shared = globalThis as unknown as Record<PropertyKey, unknown>;
+  let state = shared[SHARED_PROCESS_IDENTITY_KEY] as SharedProcessIdentityState | undefined;
+  if (!state || state.pid !== pid) {
+    state = { pid };
+    shared[SHARED_PROCESS_IDENTITY_KEY] = state;
+  }
+  if (state.value) return Promise.resolve(state.value);
+  if (state.promise) return state.promise;
+
+  const pending = resolveIdentity(pid).then((identity) => {
+    if (isBoundedString(identity)) {
+      state!.value = identity;
+    } else {
+      state!.promise = undefined;
+    }
+    return identity;
+  }, (error: unknown) => {
+    state!.promise = undefined;
+    throw error;
+  });
+  state.promise = pending;
+  return pending;
 }
 
 function boundedDelay(ms: number): Promise<void> {
@@ -705,14 +742,16 @@ export function createHostControlMutationCoordinator(
       operationKey: string,
       action: () => Promise<T>,
     ): Promise<T> {
-      const startedAt = now();
       const namespace = await resolveHostControlOperationNamespace(storeIdentity, operationKey);
-      assertBeforeDeadline(now, startedAt, acquireTimeoutMs, namespace.operationDigest);
-      const ownerIdentity = options.processIdentity ?? await getProcessIdentity(ownerPid);
-      assertBeforeDeadline(now, startedAt, acquireTimeoutMs, namespace.operationDigest);
+      const ownerIdentity = options.processIdentity ?? await (
+        ownerPid === process.pid
+          ? sharedCurrentProcessIdentity(ownerPid, getProcessIdentity)
+          : getProcessIdentity(ownerPid)
+      );
       if (!isBoundedString(ownerIdentity)) {
         throw new Error(`host_control_mutation_owner_identity_unavailable:${namespace.operationDigest.slice(0, 12)}`);
       }
+      const startedAt = now();
       const getClaimProcessIdentity = (pid: number): Promise<string | null> => (
         pid === ownerPid ? Promise.resolve(ownerIdentity) : getProcessIdentity(pid)
       );
