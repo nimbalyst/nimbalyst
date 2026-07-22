@@ -740,6 +740,55 @@ final class SessionFeedContinuityTests: XCTestCase {
         XCTAssertEqual(diagnostics.last?.error, "Session sync response timed out")
     }
 
+    func testReceivedResponseInvalidatesTimeoutBeforeYieldingPersistedChunk() async throws {
+        let database = try makeDatabaseWithSession()
+        let crypto = makeCrypto()
+        let sessionSocket = FakeSyncSocket()
+        let scheduler = ControlledSyncScheduler()
+        let yielder = ControlledSessionCatchUpYielder()
+        let manager = makeManager(
+            database: database,
+            crypto: crypto,
+            indexSocket: FakeSyncSocket(),
+            sessionSocket: sessionSocket,
+            scheduler: scheduler,
+            sessionCatchUpYielder: yielder
+        )
+        var diagnostics: [SessionSyncDiagnostic] = []
+        manager.addSessionSyncDiagnosticHandler(sessionId: "session-1") { diagnostic in
+            diagnostics.append(diagnostic)
+        }
+
+        manager.connect(authToken: "token", authUserId: userId, orgId: "org")
+        manager.joinSessionRoom(sessionId: "session-1")
+        await settleMainActor()
+        XCTAssertEqual(scheduler.operations.count, 1)
+
+        let response = SessionSyncResponse(
+            type: "syncResponse",
+            messages: [try serverMessage(sequence: 1, crypto: crypto)],
+            metadata: nil,
+            hasMore: false,
+            cursor: nil
+        )
+        let responseData = try JSONEncoder().encode(response)
+        let delivery = startTrackedOperation(
+            description: "session response persists after timeout is invalidated"
+        ) {
+            await sessionSocket.emit(responseData)
+        }
+        await fulfillment(of: [yielder.suspension.reached], timeout: 1.0)
+
+        scheduler.runNext()
+        XCTAssertTrue(diagnostics.isEmpty, "an acknowledged response must invalidate its timeout before chunk persistence yields")
+
+        yielder.suspension.resume()
+        await fulfillment(of: [delivery.completion], timeout: 1.0)
+        delivery.task.cancel()
+        XCTAssertEqual(diagnostics.count, 1)
+        XCTAssertNil(diagnostics.last?.error)
+    }
+
     func testOlderQueuedIndexResponseCannotSplitNewerMetadataAndCursor() async throws {
         let database = try makeDatabaseWithSession(title: "initial")
         let crypto = makeCrypto()

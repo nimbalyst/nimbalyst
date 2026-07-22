@@ -1324,6 +1324,10 @@ public final class SyncManager: ObservableObject {
         }
     }
 
+    private func invalidateSessionCatchUpResponseTimeout() {
+        sessionCatchUpRequestGeneration &+= 1
+    }
+
     private func requestSessionSync() {
         guard let sessionId = activeSessionId else {
             logger.warning("requestSessionSync skipped: activeSessionId is nil (connection state fired without a target)")
@@ -1479,6 +1483,7 @@ public final class SyncManager: ObservableObject {
               authority.sessionId == sessionId,
               authority.context == context,
               ownsSessionCatchUp(authority) else { return }
+        invalidateSessionCatchUpResponseTimeout()
 
         let response: SessionSyncResponse
         do {
