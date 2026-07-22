@@ -137,6 +137,7 @@ describe('RepositoryManager sync-store replacement lifetime', () => {
     const stale = { name: 'superseded-session' };
     const current = { name: 'current-session' };
     let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
     const providerPublications: string[] = [];
     mocks.reinitializeSync
       .mockImplementationOnce(async (base, lifetimeStillCurrent) => {
@@ -146,6 +147,7 @@ describe('RepositoryManager sync-store replacement lifetime', () => {
         return stale;
       })
       .mockImplementationOnce(async (_base, lifetimeStillCurrent) => {
+        await new Promise<void>((resolve) => { releaseSecond = resolve; });
         if (!lifetimeStillCurrent()) throw new Error('current lifetime unexpectedly invalid');
         providerPublications.push('current');
         return current;
@@ -157,6 +159,7 @@ describe('RepositoryManager sync-store replacement lifetime', () => {
     releaseFirst();
     await first;
     expect(mocks.setSessionStore).not.toHaveBeenCalled();
+    releaseSecond();
     await second;
 
     expect(mocks.setSessionStore).toHaveBeenCalledTimes(1);

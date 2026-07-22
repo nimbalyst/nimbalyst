@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -1391,6 +1391,25 @@ describe('PGLiteSessionStore visibility identity on the real SQLite engine', () 
 });
 
 describe('PGLiteSessionStore existing-ID ledger on the real PGLite dialect', () => {
+  const checkedInWorkerAppPath = path.resolve(process.cwd(), 'packages', 'electron');
+  let originalGetAppPathDescriptor: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    originalGetAppPathDescriptor = Object.getOwnPropertyDescriptor(app, 'getAppPath');
+    Object.defineProperty(app, 'getAppPath', {
+      configurable: true,
+      value: () => checkedInWorkerAppPath,
+    });
+  });
+
+  afterEach(() => {
+    if (originalGetAppPathDescriptor) {
+      Object.defineProperty(app, 'getAppPath', originalGetAppPathDescriptor);
+    } else {
+      delete (app as { getAppPath?: unknown }).getAppPath;
+    }
+  });
+
   it('uses the production worker schema while preserving the protected row and secret ledger', async () => {
     const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-366-pglite-production-schema-'));
     const getPath = vi.spyOn(app, 'getPath').mockImplementation((name: string) => (
@@ -1433,10 +1452,13 @@ describe('PGLiteSessionStore existing-ID ledger on the real PGLite dialect', () 
         workspaceId: '/repo',
         title: 'Before',
       });
+      const workspaceComparisonPath = path.resolve('/repo').replace(/\\/g, '/').replace(/\/+$/, '');
       const mutation = {
         mutationId: 'pglite-existing-id-operation',
         workspacePath: '/repo',
-        workspaceComparisonPath: '/repo',
+        workspaceComparisonPath: process.platform === 'win32'
+          ? workspaceComparisonPath.toLowerCase()
+          : workspaceComparisonPath,
         operation: 'session_rename' as const,
         expected: { title: 'Before', hasBeenNamed: false },
         after: { title: 'Authoritative title', hasBeenNamed: true },
@@ -1588,6 +1610,7 @@ describe('PGLiteSessionStore existing-ID ledger on the real PGLite dialect', () 
       await AISessionsRepository.create({
         id: 'target', provider: 'claude-code', workspaceId: '/repo', title: 'Target',
       });
+      syncProvider.pushMetadataChangeWithResult.mockClear();
 
       const reserved: string[] = [];
       const committed: string[] = [];

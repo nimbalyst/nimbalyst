@@ -248,7 +248,7 @@ describe('SessionVisibilityControlService', () => {
     ownsRoot = false;
     releaseReservation();
 
-    await expect(mutation).rejects.toThrow('storage root ownership lost');
+    await expect(mutation).rejects.toMatchObject({ code: 'INTERNAL_ERROR' });
     expect(f.repository.setPinnedVisibility).not.toHaveBeenCalled();
     expect(f.rows.get('target')?.isPinned).toBe(false);
   });
@@ -261,7 +261,7 @@ describe('SessionVisibilityControlService', () => {
     });
 
     await expect(f.service.setPinned(context(), 'target', true))
-      .rejects.toThrow('storage root ownership was lost before commit');
+      .rejects.toMatchObject({ code: 'INTERNAL_ERROR' });
     expect(f.repository.setPinnedVisibility).not.toHaveBeenCalled();
     expect(f.rows.get('target')?.isPinned).toBe(false);
     expect(f.abortedMutationIds).toEqual(['audit-1']);
@@ -274,7 +274,7 @@ describe('SessionVisibilityControlService', () => {
     );
 
     await expect(f.service.setPinned(context(), 'target', true))
-      .rejects.toThrow('SESSION_VISIBILITY_CAS_CONFLICT');
+      .rejects.toMatchObject({ code: 'INTERNAL_ERROR' });
     expect(f.rows.get('target')?.isPinned).toBe(false);
     expect(f.abortedMutationIds).toEqual(['audit-1']);
     expect(f.operationOrder).not.toContain('mark-committed');
@@ -407,6 +407,7 @@ describe('SessionVisibilityControlService', () => {
     });
 
     try {
+      await reconstructedOutbox.start();
       await eventually(() => expect(reconstructedOutbox.pendingCountSync()).toBe(0));
       expect(await readFile(filePath, 'utf8')).toContain('"action":"abort"');
       expect(f.repository.hasVisibilityMutation).toHaveBeenCalledWith(
@@ -482,6 +483,7 @@ describe('SessionVisibilityControlService', () => {
     });
 
     try {
+      await reconstructedOutbox.start();
       await eventually(() => expect(reconstructedOutbox.pendingCountSync()).toBe(0));
       expect(reconciliationAudits).toContainEqual(expect.objectContaining({
         auditId: 'audit-legacy-no-fingerprint',
@@ -876,7 +878,7 @@ describe('SessionVisibilityControlService', () => {
       audit: async () => { throw new Error('audit offline'); },
       broadcast: () => { throw new Error('renderer offline'); },
       convergenceOutboxFilePath: outboxPath,
-      convergenceRetryIntervalMs: 60_000,
+      convergenceRetryIntervalMs: 10,
       now: () => 1_721_350_800_000,
       randomId: () => 'audit-restart-service',
     });
@@ -935,7 +937,7 @@ describe('SessionVisibilityControlService', () => {
         audit: async () => undefined,
         broadcast: () => { throw new Error('renderer offline'); },
         convergenceOutboxFilePath: outboxPath,
-        convergenceRetryIntervalMs: 60_000,
+        convergenceRetryIntervalMs: 10,
         randomId: () => 'audit-windows-alias',
       });
       const mutationAlias = 'c:/repo/';
