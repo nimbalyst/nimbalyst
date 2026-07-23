@@ -7,6 +7,7 @@ import { dialogRef } from '../../contexts/DialogContext';
 import { windowModeAtom } from '../../store/atoms/windowMode';
 import { openSettingsCommandAtom } from '../../store/atoms/settingsNavigation';
 import { FEATURE_USAGE_KEYS, type FeatureUsageKey, type FeatureUsageRecord } from '../../../shared/featureUsage';
+import { KeyboardShortcuts } from '../../../shared/KeyboardShortcuts';
 import { tipCreateWorktreeSessionRequestAtom } from '../atoms';
 import { keyboardShortcutsTip } from '../definitions/keyboard-shortcuts';
 import { sessionCleanupTip } from '../definitions/session-cleanup';
@@ -115,6 +116,13 @@ describe('contextual tip definitions', () => {
     keyboardShortcutsTip.content.action?.onClick?.();
 
     expect(dialogRef.current?.open).toHaveBeenCalledWith(DIALOG_IDS.KEYBOARD_SHORTCUTS, {});
+  });
+
+  it('advertises the session launcher shortcut in the shortcuts tip', () => {
+    expect(keyboardShortcutsTip.version).toBe(2);
+    expect(keyboardShortcutsTip.content.body).toContain(
+      `**${KeyboardShortcuts.file.sessionLaunchPopup}**`,
+    );
   });
 
   it('shows the session launch shortcut tip to established session users without shortcut usage', () => {
