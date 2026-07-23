@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 <!-- Bug fixes go here -->
 - Collaborative document tab menus no longer offer Copy Path for non-filesystem documents.
+- Shared document @ mention menus now stay visible instead of being clipped by the editor pane.
 - Long tracker titles now wrap across lines in the detail view instead of being clipped.
 
 ### Removed

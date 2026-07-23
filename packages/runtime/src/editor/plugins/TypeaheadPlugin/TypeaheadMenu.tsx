@@ -4,8 +4,8 @@
  * Built from lessons learned analyzing Lexical's LexicalMenu implementation.
  * Key improvements over the original:
  *
- * 1. POSITIONING: Smart viewport-aware positioning that calculates available space
- *    in all directions, unlike the original which had issues near viewport edges
+ * 1. POSITIONING: Viewport-aware positioning through Floating UI, including
+ *    collision handling and a document-level portal that escapes editor clipping
  *
  * 2. SCROLL HANDLING: Separates internal menu scrolling from external document scrolling
  *    to prevent the menu from closing when user scrolls within the menu options
@@ -20,6 +20,16 @@
  */
 
 import React, {ReactNode, useCallback, useEffect, useMemo, useRef, useState,} from 'react';
+import {
+  FloatingPortal,
+  autoUpdate,
+  flip,
+  offset,
+  shift,
+  size,
+  type VirtualElement,
+  useFloating,
+} from '@floating-ui/react';
 import {
   $getSelection,
   $isRangeSelection,
@@ -76,8 +86,6 @@ import {
   // ============================================================================
 
   const PUNCTUATION = '\\.,\\+\\*\\?\\$\\@\\|#{}\\(\\)\\^\\-\\[\\]\\\\/!%\'"~=<>_:;';
-  const MENU_VERTICAL_PADDING = 8;
-  const MENU_HORIZONTAL_PADDING = 4;
   const VIEWPORT_PADDING = 10;
 
   // Commands for integration with Lexical's command system
@@ -195,106 +203,6 @@ import {
       }
     }
     return triggerOffset;
-  }
-
-  /**
-   * Smart positioning system - major improvement over Lexical's positioning
-   * Calculates optimal position considering all viewport constraints
-   */
-  export interface PositionResult {
-    top: number;
-    left: number;
-    maxHeight: number;
-    placement: 'above' | 'below';
-  }
-
-  export function calculateOptimalPosition(
-    anchorRect: DOMRect,
-    menuWidth: number,
-    menuHeight: number,
-    maxHeight?: number,
-  ): PositionResult {
-    const viewport = {
-      width: window.innerWidth,
-      height: window.innerHeight,
-    };
-
-    // Calculate available space in each direction
-    const spaceAbove = anchorRect.top - VIEWPORT_PADDING;
-    const spaceBelow = viewport.height - anchorRect.bottom - VIEWPORT_PADDING;
-    const spaceLeft = anchorRect.left - VIEWPORT_PADDING;
-    const spaceRight = viewport.width - anchorRect.right - VIEWPORT_PADDING;
-
-    // Determine vertical placement
-    const preferBelow = spaceBelow >= spaceAbove;
-    const availableHeight = preferBelow ? spaceBelow : spaceAbove;
-    const constrainedHeight = Math.min(
-      menuHeight,
-      maxHeight || Number.MAX_SAFE_INTEGER,
-      availableHeight
-    );
-
-    // Calculate vertical position
-    let top: number;
-    let placement: 'above' | 'below';
-    if (preferBelow && spaceBelow >= constrainedHeight) {
-      top = anchorRect.bottom + window.pageYOffset;
-      placement = 'below';
-    } else if (spaceAbove >= constrainedHeight) {
-      top = anchorRect.top - constrainedHeight + window.pageYOffset;
-      placement = 'above';
-    } else {
-      // Not enough space in either direction, choose the larger space
-      if (spaceBelow > spaceAbove) {
-        top = anchorRect.bottom + window.pageYOffset;
-        placement = 'below';
-      } else {
-        top = VIEWPORT_PADDING + window.pageYOffset;
-        placement = 'above';
-      }
-    }
-
-    // Calculate horizontal position
-    let left = anchorRect.left + window.pageXOffset;
-
-    // Adjust if menu would overflow viewport
-    if (left + menuWidth > viewport.width - VIEWPORT_PADDING) {
-      left = viewport.width - menuWidth - VIEWPORT_PADDING + window.pageXOffset;
-    }
-    if (left < VIEWPORT_PADDING) {
-      left = VIEWPORT_PADDING + window.pageXOffset;
-    }
-
-    return {
-      top,
-      left,
-      maxHeight: constrainedHeight,
-      placement,
-    };
-  }
-
-  /**
-   * Enhanced scroll parent detection from Lexical's getScrollParent
-   */
-  export function getScrollParent(element: HTMLElement): HTMLElement | HTMLBodyElement {
-    let style = getComputedStyle(element);
-    const excludeStaticParent = style.position === 'absolute';
-    const overflowRegex = /(auto|scroll)/;
-
-    if (style.position === 'fixed') {
-      return document.body;
-    }
-
-    for (let parent: HTMLElement | null = element; (parent = parent.parentElement); ) {
-      style = getComputedStyle(parent);
-      if (excludeStaticParent && style.position === 'static') {
-        continue;
-      }
-      if (overflowRegex.test(style.overflow + style.overflowY + style.overflowX)) {
-        return parent;
-      }
-    }
-    return document.body;
   }
 
   // ============================================================================
@@ -519,9 +427,36 @@ import {
     selectedOptionClassName = '',
     anchorElem,
   }) => {
-    const menuRef = useRef<HTMLDivElement>(null);
-    const [position, setPosition] = useState<PositionResult | null>(null);
-    const [isMeasured, setIsMeasured] = useState(false);
+    const virtualReference = useMemo<VirtualElement>(() => ({
+      getBoundingClientRect: resolution.getRect,
+      contextElement: anchorElem ?? undefined,
+    }), [anchorElem, resolution]);
+    const { refs, floatingStyles, isPositioned } = useFloating({
+      open: true,
+      placement: 'bottom-start',
+      strategy: 'fixed',
+      middleware: [
+        offset(0),
+        flip({ padding: VIEWPORT_PADDING }),
+        shift({ padding: VIEWPORT_PADDING }),
+        size({
+          padding: VIEWPORT_PADDING,
+          apply({ availableHeight, availableWidth, elements }) {
+            const constrainedWidth = Math.max(0, availableWidth);
+            Object.assign(elements.floating.style, {
+              minWidth: `${Math.min(minWidth, constrainedWidth)}px`,
+              maxWidth: `${Math.min(maxWidth, constrainedWidth)}px`,
+              maxHeight: `${Math.max(0, Math.min(maxHeight, availableHeight))}px`,
+            });
+          },
+        }),
+      ],
+      whileElementsMounted: autoUpdate,
+    });
+    useEffect(() => {
+      refs.setPositionReference(virtualReference);
+      return () => refs.setPositionReference(null);
+    }, [refs, virtualReference]);
     // Track whether mouse interaction is enabled.
     // This prevents auto-selection when the menu opens under the cursor.
     const [mouseInteractionEnabled, setMouseInteractionEnabled] = useState(false);
@@ -529,15 +464,12 @@ import {
     // Disable mouse interaction when menu opens, then enable after a brief delay
     // This prevents the initial mouseenter from selecting the wrong item
     useEffect(() => {
-      if (position) {
-        setMouseInteractionEnabled(false);
-        const timer = setTimeout(() => {
-          setMouseInteractionEnabled(true);
-        }, 100);
-        return () => clearTimeout(timer);
-      }
-      return undefined;
-    }, [position !== null]);
+      setMouseInteractionEnabled(false);
+      const timer = setTimeout(() => {
+        setMouseInteractionEnabled(true);
+      }, 100);
+      return () => clearTimeout(timer);
+    }, [resolution]);
 
     // Only allow hover selection after mouse interaction is enabled
     const handleOptionMouseEnter = useCallback((index: number) => {
@@ -564,151 +496,87 @@ import {
     // Get the option at the selected index
     const selectedOption = selectedIndex !== null ? options[selectedIndex] : null;
 
-    // Calculate position whenever resolution changes
-    useEffect(() => {
-      if (resolution && menuRef.current) {
-        // Use setTimeout to ensure DOM has updated with new options
-        const timeoutId = setTimeout(() => {
-          if (menuRef.current) {
-            // Temporarily remove height constraint to measure natural height
-            const originalMaxHeight = menuRef.current.style.maxHeight;
-            menuRef.current.style.maxHeight = 'none';
-
-            const anchorRect = resolution.getRect();
-            const menuRect = menuRef.current.getBoundingClientRect();
-
-            // Restore the height constraint
-            menuRef.current.style.maxHeight = originalMaxHeight;
-
-            const newPosition = calculateOptimalPosition(
-              anchorRect,
-              Math.max(minWidth, Math.min(maxWidth, menuRect.width)),
-              menuRect.height, // Use the natural height
-              maxHeight
-            );
-            if (anchorElem && anchorElem !== document.body) {
-              // POSITIONING: The menu is portaled into anchorElem (editor-scroller) which has
-              // position: relative and overflow: auto. To position correctly:
-              // 1. Use viewport coordinates from calculateOptimalPosition
-              // 2. Subtract containerRect to get position relative to anchorElem
-              // 3. Add anchorElem.scrollTop/Left to account for scroll offset within anchorElem
-              // This ensures the menu scrolls with content and appears at the correct position.
-              const containerRect = anchorElem.getBoundingClientRect();
-              const anchoredTop = Math.max(0, newPosition.top - window.pageYOffset - containerRect.top + anchorElem.scrollTop);
-              const anchoredLeft = Math.max(0, newPosition.left - window.pageXOffset - containerRect.left + anchorElem.scrollLeft);
-              const anchoredMaxHeight = Math.max(120, Math.min(newPosition.maxHeight, containerRect.height - 16));
-              setPosition({
-                ...newPosition,
-                top: anchoredTop,
-                left: anchoredLeft,
-                maxHeight: anchoredMaxHeight,
-              });
-            } else {
-              setPosition(newPosition);
-            }
-            setIsMeasured(true);
-          }
-        }, 0);
-
-        return () => clearTimeout(timeoutId);
-      }
-      return undefined;
-    }, [resolution, maxHeight, minWidth, maxWidth, options, anchorElem]);
-
-    // Determine if menu should be visible based on measurement state
-    const isVisible = isMeasured && position;
-    const menuStyle: React.CSSProperties = isVisible
-      ? {
-          top: `${position.top}px`,
-          left: `${position.left}px`,
-          minWidth: `${minWidth}px`,
-          maxWidth: `${maxWidth}px`,
-          maxHeight: `${position.maxHeight}px`,
-        }
-      : {
-          top: -9999,
-          left: -9999,
-          minWidth: `${minWidth}px`,
-          maxWidth: `${maxWidth}px`,
-          maxHeight: `${maxHeight}px`,
-        };
-
     return (
-      <div
-        ref={menuRef}
-        className={`typeahead-menu ${className} absolute bg-nim border border-nim rounded-md shadow-lg z-[1000] flex flex-col overflow-hidden ${!isVisible ? 'invisible pointer-events-none' : ''}`}
-        role={isVisible ? "listbox" : undefined}
-        style={menuStyle}
-        // Prevent menu from closing when clicking inside
-        onMouseDown={isVisible ? (e) => e.preventDefault() : undefined}
-      >
-        {header && (
-          <div className="border-b border-nim px-2.5 py-1.5 shrink-0">
-            {header}
-          </div>
-        )}
-
+      <FloatingPortal>
         <div
-          className="flex-1 overflow-y-auto overflow-x-hidden py-0.5"
-          // Critical: Stop propagation of scroll events to prevent menu closure
-          onScroll={(e) => e.stopPropagation()}
+          ref={refs.setFloating}
+          className={`typeahead-menu ${className} bg-nim border border-nim rounded-md shadow-lg z-[1000] flex flex-col overflow-hidden ${!isPositioned ? 'invisible pointer-events-none' : ''}`}
+          role={isPositioned ? 'listbox' : undefined}
+          style={{
+            ...floatingStyles,
+            width: 'max-content',
+          }}
+          // Prevent menu from closing when clicking inside
+          onMouseDown={isPositioned ? (e) => e.preventDefault() : undefined}
         >
-          {sectionNames.length > 1 || (sectionNames.length === 1 && sectionNames[0] !== '_default') ? (
-            sectionNames.map(sectionName => {
-              const sectionOptions = groupedOptions[sectionName];
-              if (!sectionOptions || sectionOptions.length === 0) return null;
-              
-              return (
-                <div key={sectionName} className="typeahead-section">
-                  {sectionName !== '_default' && (
-                    <div className="typeahead-section-header px-2.5 py-1.5 bg-nim-tertiary text-[0.7rem] font-semibold text-nim-muted uppercase tracking-wide m-0 pointer-events-none">
-                      {sectionName}
-                    </div>
-                  )}
-                  {sectionOptions.map((option) => {
-                    // Find this option's index in the flat array
-                    const flatIndex = options.findIndex(opt => opt.id === option.id);
-
-                    return (
-                      <MenuOption
-                        key={option.id}
-                        option={option}
-                        isSelected={selectedOption?.id === option.id}
-                        onClick={() => option.type !== 'header' && onSelectOption(option)}
-                        onMouseEnter={() => option.type !== 'header' && flatIndex >= 0 && handleOptionMouseEnter(flatIndex)}
-                        className={optionClassName}
-                        selectedClassName={selectedOptionClassName}
-                      />
-                    );
-                  })}
-                </div>
-              );
-            })
-          ) : (
-            options.map((option, index) => (
-              <MenuOption
-                key={option.id}
-                option={option}
-                isSelected={selectedIndex === index}
-                onClick={() => option.type !== 'header' && onSelectOption(option)}
-                onMouseEnter={() => option.type !== 'header' && handleOptionMouseEnter(index)}
-                className={optionClassName}
-                selectedClassName={selectedOptionClassName}
-              />
-            ))
+          {header && (
+            <div className="border-b border-nim px-2.5 py-1.5 shrink-0">
+              {header}
+            </div>
           )}
-          {options.length === 0 && (
-            <div className="p-4 text-center text-nim-faint italic">
-              No matches found
+
+          <div
+            className="flex-1 overflow-y-auto overflow-x-hidden py-0.5"
+            // Critical: Stop propagation of scroll events to prevent menu closure
+            onScroll={(e) => e.stopPropagation()}
+          >
+            {sectionNames.length > 1 || (sectionNames.length === 1 && sectionNames[0] !== '_default') ? (
+              sectionNames.map(sectionName => {
+                const sectionOptions = groupedOptions[sectionName];
+                if (!sectionOptions || sectionOptions.length === 0) return null;
+
+                return (
+                  <div key={sectionName} className="typeahead-section">
+                    {sectionName !== '_default' && (
+                      <div className="typeahead-section-header px-2.5 py-1.5 bg-nim-tertiary text-[0.7rem] font-semibold text-nim-muted uppercase tracking-wide m-0 pointer-events-none">
+                        {sectionName}
+                      </div>
+                    )}
+                    {sectionOptions.map((option) => {
+                      // Find this option's index in the flat array
+                      const flatIndex = options.findIndex(opt => opt.id === option.id);
+
+                      return (
+                        <MenuOption
+                          key={option.id}
+                          option={option}
+                          isSelected={selectedOption?.id === option.id}
+                          onClick={() => option.type !== 'header' && onSelectOption(option)}
+                          onMouseEnter={() => option.type !== 'header' && flatIndex >= 0 && handleOptionMouseEnter(flatIndex)}
+                          className={optionClassName}
+                          selectedClassName={selectedOptionClassName}
+                        />
+                      );
+                    })}
+                  </div>
+                );
+              })
+            ) : (
+              options.map((option, index) => (
+                <MenuOption
+                  key={option.id}
+                  option={option}
+                  isSelected={selectedIndex === index}
+                  onClick={() => option.type !== 'header' && onSelectOption(option)}
+                  onMouseEnter={() => option.type !== 'header' && handleOptionMouseEnter(index)}
+                  className={optionClassName}
+                  selectedClassName={selectedOptionClassName}
+                />
+              ))
+            )}
+            {options.length === 0 && (
+              <div className="p-4 text-center text-nim-faint italic">
+                No matches found
+              </div>
+            )}
+          </div>
+
+          {footer && (
+            <div className="border-t border-nim px-2.5 py-1.5 shrink-0">
+              {footer}
             </div>
           )}
         </div>
-
-          {footer && (
-          <div className="border-t border-nim px-2.5 py-1.5 shrink-0">
-            {footer}
-          </div>
-          )}
-      </div>
+      </FloatingPortal>
     );
   };

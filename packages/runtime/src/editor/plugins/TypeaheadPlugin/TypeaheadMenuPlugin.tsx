@@ -1,5 +1,4 @@
 import type { JSX } from 'react';
-import { createPortal } from "react-dom";
 
 import {
   $getSelection,
@@ -339,7 +338,7 @@ export interface TypeaheadMenuProps {
     // Return JSX directly instead of an object - AFTER all hooks have been called
     if (!resolution) return null;
 
-    return createPortal(
+    return (
       <TypeaheadMenuContent
         resolution={resolution}
         options={options}
@@ -355,7 +354,6 @@ export interface TypeaheadMenuProps {
         optionClassName={optionClassName}
         selectedOptionClassName={selectedOptionClassName}
         anchorElem={anchorElem}
-      />,
-      anchorElem ?? document.body
+      />
     );
   }
