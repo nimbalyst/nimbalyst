@@ -162,6 +162,10 @@ export interface SyncProvider {
         sentBy: 'mobile' | 'desktop';
       };
       isExecuting?: boolean;
+      /** Number of prompts queued from mobile, including explicit zero. */
+      queuedPromptCount?: number;
+      /** Decrypted queued prompts when the payload is present. */
+      queuedPrompts?: SyncedQueuedPrompt[];
     }>;
     projects: Array<{
       projectId: string;
@@ -232,6 +236,8 @@ export interface SyncProvider {
       sentBy: 'mobile' | 'desktop';
     };
     isExecuting?: boolean;
+    /** Number of prompts queued from mobile, including explicit zero. */
+    queuedPromptCount?: number;
     /** Decrypted queued prompts */
     queuedPrompts?: Array<{ id: string; prompt: string; timestamp: number }>;
   } | undefined;
