@@ -958,6 +958,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
           userId: string;
           userName?: string;
           userEmail?: string;
+          urlExtraQuery?: string;
           pendingUpdateBase64?: string;
         };
         error?: string;

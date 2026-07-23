@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Sharing a markdown document to your team now offers to share the documents it embeds, and teammates see those embeds live inline.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -18,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Bug fixes go here -->
 - Agent-mode document embeds now recover when their target file is created after the document opens.
 - Orchestrator sessions can launch isolated worktree agents in another loaded project and retain status, result, queue, prompt, and reply control.
+- Automations no longer rerun the same scheduled occurrence after restarting while a run is waiting or fails.
+- Voice Mode now explains blocked or missing microphones on Windows and links directly to microphone privacy settings.
 
 ### Removed
 <!-- Removed features go here -->

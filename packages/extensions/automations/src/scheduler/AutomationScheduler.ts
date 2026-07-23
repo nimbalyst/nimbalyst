@@ -106,8 +106,9 @@ export class AutomationScheduler {
     for (const filePath of files) {
       try {
         const content = await this.fs.readFile(filePath);
-        const status = parseAutomationStatus(content);
-        if (!status) continue;
+        const parsedStatus = parseAutomationStatus(content);
+        if (!parsedStatus) continue;
+        const status = await this.repairStaleCompletedOccurrence(filePath, content, parsedStatus);
 
         const existing = this.automations.get(filePath);
         if (existing) {
@@ -295,6 +296,37 @@ export class AutomationScheduler {
     return ms === null ? null : Date.now() + ms;
   }
 
+  /**
+   * Older scheduler versions could record a completed attempt without moving
+   * `nextRun`. If `lastRun` proves that the persisted occurrence was already
+   * handled, roll it forward instead of treating it as restart catch-up work.
+   */
+  private async repairStaleCompletedOccurrence(
+    filePath: string,
+    content: string,
+    status: AutomationStatus,
+  ): Promise<AutomationStatus> {
+    if (!status.nextRun || !status.lastRun) return status;
+
+    const nextRunAt = Date.parse(status.nextRun);
+    const lastRunAt = Date.parse(status.lastRun);
+    if (
+      Number.isNaN(nextRunAt) ||
+      Number.isNaN(lastRunAt) ||
+      nextRunAt > Date.now() ||
+      lastRunAt < nextRunAt
+    ) {
+      return status;
+    }
+
+    const repairedNextRun = calculateNextRun(status.schedule);
+    if (!repairedNextRun) return status;
+
+    const nextRun = repairedNextRun.toISOString();
+    await this.fs.writeFile(filePath, updateAutomationStatus(content, { nextRun }));
+    return { ...status, nextRun };
+  }
+
   private clearTimer(automation: ScheduledAutomation): void {
     if (automation.timerId !== null) {
       clearTimeout(automation.timerId);
@@ -317,6 +349,24 @@ export class AutomationScheduler {
       // Read fresh content to get the latest prompt
       const content = await this.fs.readFile(filePath);
       const prompt = extractPromptBody(content);
+
+      // Claim this scheduled occurrence before starting the AI session. The
+      // invocation may remain pending for user input or be interrupted by an
+      // app restart, so waiting until completion would leave the old due time
+      // on disk and cause startup to catch up the same occurrence again.
+      const claimedNextRun = calculateNextRun(status.schedule);
+      const claimedContent = updateAutomationStatus(content, {
+        nextRun: claimedNextRun?.toISOString(),
+      });
+      await this.fs.writeFile(filePath, claimedContent);
+
+      const tracked = this.automations.get(filePath);
+      if (tracked) {
+        tracked.status = {
+          ...tracked.status,
+          nextRun: claimedNextRun?.toISOString(),
+        };
+      }
 
       const result = await this.onFire(filePath, status, prompt);
       // console.log('[Automations] onFire result keys:', Object.keys(result), 'outputFile:', result.outputFile);
@@ -352,10 +402,10 @@ export class AutomationScheduler {
       });
 
       // Update in-memory status
-      const tracked = this.automations.get(filePath);
-      if (tracked) {
-        tracked.status = {
-          ...tracked.status,
+      const completedTracked = this.automations.get(filePath);
+      if (completedTracked) {
+        completedTracked.status = {
+          ...completedTracked.status,
           lastRun: now,
           lastRunStatus: 'success',
           lastRunError: undefined,
@@ -388,11 +438,13 @@ export class AutomationScheduler {
   ): Promise<void> {
     try {
       const now = new Date().toISOString();
+      const nextRun = calculateNextRun(status.schedule);
       const freshContent = await this.fs.readFile(filePath);
       const updated = updateAutomationStatus(freshContent, {
         lastRun: now,
         lastRunStatus: 'error',
         lastRunError: error,
+        nextRun: nextRun?.toISOString(),
       });
       await this.fs.writeFile(filePath, updated);
 
@@ -412,6 +464,7 @@ export class AutomationScheduler {
           lastRun: now,
           lastRunStatus: 'error',
           lastRunError: error,
+          nextRun: nextRun?.toISOString(),
         };
       }
     } catch (recordError) {

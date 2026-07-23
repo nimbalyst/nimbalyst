@@ -79,7 +79,7 @@ export class AudioCapture {
     } catch (error) {
       console.error('[AudioCapture] Failed to start:', error);
       this.cleanup();
-      throw error;
+      throw normalizeAudioCaptureError(error);
     }
   }
 
@@ -160,4 +160,19 @@ export class AudioCapture {
   isCaptureActive(): boolean {
     return this.isCapturing;
   }
+}
+
+export function normalizeAudioCaptureError(error: unknown): Error {
+  if (
+    typeof error === 'object'
+    && error !== null
+    && 'name' in error
+    && error.name === 'NotFoundError'
+  ) {
+    return new Error(
+      'No usable microphone was found. Connect or enable a microphone, check your system microphone settings, and try again.',
+    );
+  }
+
+  return error instanceof Error ? error : new Error(String(error));
 }

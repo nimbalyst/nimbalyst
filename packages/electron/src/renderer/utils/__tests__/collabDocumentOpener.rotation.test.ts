@@ -233,4 +233,71 @@ describe('collab document key rotation resolution', () => {
     );
     expect(new TextDecoder().decode(decrypted)).toBe('post-rotation update');
   });
+
+  it('can resolve an uncached child attachment without replacing a tab config', async () => {
+    const childDocumentId = 'embedded-child';
+    const childUri = buildCollabUri('org-a', childDocumentId);
+    const existing = {
+      workspacePath,
+      orgId: 'org-a',
+      documentId: childDocumentId,
+      title: 'Existing tab config',
+      documentType: 'mockup',
+      keyCustody: 'server-managed' as const,
+      serverUrl: 'ws://existing',
+      accountId: 'account-a',
+      userId: 'user-a',
+      getJwt: async () => 'old-token',
+    };
+    registerCollabConfig(existing);
+    const open = vi.fn(async () => ({
+      success: true,
+      config: {
+        orgId: 'org-a',
+        documentId: childDocumentId,
+        title: 'Embedded child',
+        documentType: 'mockup',
+        keyCustody: 'server-managed' as const,
+        orgKeyBase64: '',
+        serverUrl: 'ws://embedded',
+        urlExtraQuery: 'test_user_id=user-a&test_org_id=org-a',
+        accountId: 'account-a',
+        userId: 'user-a',
+      },
+    }));
+    const wsConnect = vi.fn(async () => ({ success: true, wsId: 'embedded-ws' }));
+    vi.stubGlobal('window', {
+      electronAPI: {
+        documentSync: {
+          open,
+          getJwt: vi.fn(async () => ({ success: true, jwt: 'token' })),
+          onWsEvent: vi.fn(() => vi.fn()),
+          wsConnect,
+          wsSend: vi.fn(),
+          wsClose: vi.fn(),
+        },
+      },
+    });
+
+    const embedded = await resolveCollabConfigForUri(
+      workspacePath,
+      childUri,
+      childDocumentId,
+      'Embedded child',
+      'mockup',
+      { cache: false },
+    );
+
+    expect(open).toHaveBeenCalledOnce();
+    expect(embedded?.serverUrl).toBe('ws://embedded');
+    expect(embedded?.urlExtraQuery).toBe('test_user_id=user-a&test_org_id=org-a');
+    embedded?.createWebSocket?.('ws://embedded/sync/room?token=token');
+    await vi.waitFor(() => {
+      expect(wsConnect).toHaveBeenCalledWith(
+        'ws://embedded/sync/room?token=token&test_user_id=user-a&test_org_id=org-a',
+      );
+    });
+    expect(getCollabConfig(childUri)).toBe(existing);
+    removeCollabConfig(childUri);
+  });
 });

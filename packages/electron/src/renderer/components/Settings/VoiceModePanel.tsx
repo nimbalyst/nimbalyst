@@ -413,20 +413,20 @@ export const VoiceModePanel: React.FC<VoiceModePanelProps> = ({
               <h4 className="text-sm font-medium text-[var(--nim-text)] mb-1">Microphone access not granted</h4>
               <p className="text-xs text-[var(--nim-text-muted)] mb-3">
                 {micStatus === 'denied'
-                  ? 'Voice Mode needs microphone access. Enable it for Nimbalyst in System Settings, then re-check below.'
+                  ? `Voice Mode needs microphone access. Enable it in ${micPlatform === 'win32' ? 'Windows Settings' : 'System Settings'}, then re-check below.`
                   : micStatus === 'restricted'
                   ? 'Microphone access is restricted on this device (e.g. by parental controls or MDM). Voice Mode cannot capture audio.'
-                  : 'Voice Mode needs microphone access. Open System Settings to grant it for Nimbalyst.'}
+                  : `Voice Mode needs microphone access. Open ${micPlatform === 'win32' ? 'Windows Settings' : 'System Settings'} to grant it.`}
               </p>
               <div className="flex items-center gap-2">
-                {micPlatform === 'darwin' && (
+                {(micPlatform === 'darwin' || micPlatform === 'win32') && (
                   <button
                     onClick={handleOpenMicSettings}
                     className="px-3 py-1.5 rounded border border-[var(--nim-border)] bg-[var(--nim-primary)] text-white cursor-pointer text-sm flex items-center gap-1.5"
                     data-testid="voice-mode-open-mic-settings"
                   >
                     <MaterialSymbol icon="open_in_new" size={14} />
-                    Open System Settings
+                    Open {micPlatform === 'win32' ? 'Windows' : 'System'} Settings
                   </button>
                 )}
                 <button

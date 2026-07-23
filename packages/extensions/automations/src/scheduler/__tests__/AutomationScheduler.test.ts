@@ -38,10 +38,12 @@ function automationFile(opts: {
   enabled?: boolean;
   scheduleYaml: string;
   nextRun?: string;
+  lastRun?: string;
   runCount?: number;
 }): string {
   const enabled = opts.enabled ?? true;
   const nextRunLine = opts.nextRun ? `\n  nextRun: "${opts.nextRun}"` : '';
+  const lastRunLine = opts.lastRun ? `\n  lastRun: "${opts.lastRun}"` : '';
   return `---
 automationStatus:
   id: ${opts.id}
@@ -53,7 +55,7 @@ ${opts.scheduleYaml}
     mode: new-file
     location: nimbalyst-local/automations/${opts.id}/
     fileNameTemplate: "{{date}}-output.md"
-  runCount: ${opts.runCount ?? 0}${nextRunLine}
+  runCount: ${opts.runCount ?? 0}${nextRunLine}${lastRunLine}
 ---
 
 Do the thing for ${opts.id}.
@@ -135,6 +137,71 @@ describe('AutomationScheduler timer firing', () => {
     await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
     expect(fire).toHaveBeenCalledTimes(2);
 
+    scheduler.dispose();
+  });
+
+  it('does not catch up the same overdue occurrence again after restarting during its run', async () => {
+    const path = 'nimbalyst-local/automations/restart-safe.md';
+    const pastNextRun = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const fs = makeFs({
+      [path]: automationFile({
+        id: 'restart-safe',
+        scheduleYaml: '    type: interval\n    intervalMinutes: 60',
+        nextRun: pastNextRun,
+      }),
+    });
+    const firstScheduler = new AutomationScheduler(fs, makeUi());
+    let finish!: (result: Awaited<ReturnType<OnAutomationFire>>) => void;
+    const firstFire = vi.fn(() => new Promise<Awaited<ReturnType<OnAutomationFire>>>((resolve) => {
+      finish = resolve;
+    }));
+    firstScheduler.setOnFire(firstFire);
+
+    await firstScheduler.initialize();
+    const firstRun = firstScheduler.runNow(path);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(firstFire).toHaveBeenCalledTimes(1);
+    expect(Date.parse(parseAutomationStatus(fs.files.get(path)!)?.nextRun ?? '')).toBeGreaterThan(Date.now());
+
+    // Simulate restarting while the AI session is still running. The new
+    // scheduler must honor the durable claim made before execution started.
+    firstScheduler.dispose();
+    const restartedScheduler = new AutomationScheduler(fs, makeUi());
+    const restartedFire = vi.fn(okFire);
+    restartedScheduler.setOnFire(restartedFire);
+    await restartedScheduler.initialize();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(restartedFire).not.toHaveBeenCalled();
+
+    finish({ success: true, response: 'done', sessionId: 's1', outputFile: 'out.md' });
+    await firstRun;
+    restartedScheduler.dispose();
+  });
+
+  it('repairs a stale due time when that occurrence already finished', async () => {
+    const path = 'nimbalyst-local/automations/stale-completed.md';
+    const staleNextRun = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const laterLastRun = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const fs = makeFs({
+      [path]: automationFile({
+        id: 'stale-completed',
+        scheduleYaml: '    type: daily\n    time: "07:00"',
+        nextRun: staleNextRun,
+        lastRun: laterLastRun,
+      }),
+    });
+    const scheduler = new AutomationScheduler(fs, makeUi());
+    const fire = vi.fn(okFire);
+    scheduler.setOnFire(fire);
+
+    await scheduler.initialize();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(Date.parse(parseAutomationStatus(fs.files.get(path)!)?.nextRun ?? '')).toBeGreaterThan(Date.now());
     scheduler.dispose();
   });
 
@@ -223,6 +290,7 @@ describe('AutomationScheduler timer firing', () => {
     expect(status?.lastRunStatus).toBe('error');
     expect(status?.lastRunError).toBe('Sign in to OpenAI Codex to continue.');
     expect(status?.runCount).toBe(0);
+    expect(Date.parse(status?.nextRun ?? '')).toBeGreaterThan(Date.now());
 
     const history = JSON.parse(fs.files.get('nimbalyst-local/automations/failing/history.json')!);
     expect(history).toEqual([

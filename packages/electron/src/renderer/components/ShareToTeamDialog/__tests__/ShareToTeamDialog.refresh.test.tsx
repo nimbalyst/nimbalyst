@@ -64,6 +64,85 @@ afterEach(() => {
 });
 
 describe('ShareToTeamDialog folder refresh', () => {
+  it('warns about linked documents and returns the deselected subset', async () => {
+    const onConfirm = vi.fn();
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        invoke: vi.fn().mockResolvedValue({ collabTree: {} }),
+      },
+    });
+    store.set(activeWorkspacePathAtom, workspacePath);
+
+    render(
+      <Provider store={store}>
+        <ShareToTeamDialog
+          isOpen
+          onClose={() => {}}
+          fileName="notes.md"
+          sourceRelPath="notes.md"
+          descriptor={markdownDescriptor}
+          embeddedDocuments={[
+            {
+              absolutePath: '/workspace/wireframe.mockup.html',
+              sourceHref: './wireframe.mockup.html',
+              fileName: 'wireframe.mockup.html',
+              fileExtension: '.mockup.html',
+              descriptor: {
+                ...markdownDescriptor,
+                documentType: 'mockup',
+                displayName: 'Mockup',
+                defaultExtension: '.mockup.html',
+                fileExtensions: ['.mockup.html'],
+                icon: 'web',
+                editor: { kind: 'extension', extensionId: 'mockup' },
+              },
+              occurrences: 1,
+              alreadyShared: { documentId: 'mockup-1', orgId: 'team-1' },
+            },
+            {
+              absolutePath: '/workspace/budget.calc.md',
+              sourceHref: './budget.calc.md',
+              fileName: 'budget.calc.md',
+              fileExtension: '.calc.md',
+              descriptor: {
+                ...markdownDescriptor,
+                documentType: 'calc',
+                displayName: 'Calc Sheet',
+                defaultExtension: '.calc.md',
+                fileExtensions: ['.calc.md'],
+                icon: 'table',
+                editor: { kind: 'extension', extensionId: 'calc' },
+              },
+              occurrences: 1,
+            },
+          ]}
+          onConfirm={onConfirm}
+        />
+      </Provider>,
+    );
+
+    expect(screen.getByText(/will also share the documents it embeds/i)).toBeTruthy();
+    expect(screen.getByText('Already shared')).toBeTruthy();
+    // The mockup is already shared -- it is reused, not created -- so the
+    // count is the parent plus the one calc sheet.
+    expect(screen.getByRole('button', { name: 'Share 2 documents' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Share budget.calc.md' }));
+    expect(screen.getByText(/teammates cannot open/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Share 1 document' })).toBeTruthy();
+
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: 'Share 1 document' }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Share 1 document' }));
+    expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({
+      selectedEmbeddedDocumentPaths: ['/workspace/wireframe.mockup.html'],
+    }));
+  });
+
   it('refreshes on every open and rebuilds paths from current first-class rows', async () => {
     const onConfirm = vi.fn();
     Object.defineProperty(window, 'electronAPI', {
@@ -141,6 +220,7 @@ describe('ShareToTeamDialog folder refresh', () => {
       folderId: 'specs',
       folderPath: 'Specs',
       sharedName: 'notes.md',
+      selectedEmbeddedDocumentPaths: [],
     });
   });
 });

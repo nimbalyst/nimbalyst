@@ -13,6 +13,7 @@ import { ShareToTeamDialog } from '../components/ShareToTeamDialog';
 import { AlphaBadge } from '../components/common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../components/common/TeamAlphaNotice';
 import type { CollaborativeDocumentTypeDescriptor } from '../services/CollaborativeDocumentTypeCatalog';
+import type { EmbeddedDocumentCandidate } from '../services/embeddedDocumentShare';
 
 // ============================================================================
 // Types
@@ -41,7 +42,13 @@ export interface ShareToTeamData {
   fileName: string;
   sourceRelPath: string;
   descriptor: CollaborativeDocumentTypeDescriptor;
-  onConfirm: (params: { folderId: string | null; folderPath: string; sharedName: string }) => void;
+  embeddedDocuments?: EmbeddedDocumentCandidate[];
+  onConfirm: (params: {
+    folderId: string | null;
+    folderPath: string;
+    sharedName: string;
+    selectedEmbeddedDocumentPaths: string[];
+  }) => void;
 }
 
 // ============================================================================
@@ -238,6 +245,7 @@ function ShareToTeamDialogWrapper({
       fileName={data.fileName}
       sourceRelPath={data.sourceRelPath}
       descriptor={data.descriptor}
+      embeddedDocuments={data.embeddedDocuments}
       onConfirm={data.onConfirm}
     />
   );

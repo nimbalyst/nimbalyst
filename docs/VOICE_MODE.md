@@ -444,5 +444,5 @@ Two mobile-specific behaviors:
 ## Prerequisites
 
 - OpenAI API key configured in Settings (uses the same key as the OpenAI chat provider)
-- Microphone permission granted in System Settings (macOS). The app cannot programmatically request mic access because the audio-input entitlement is intentionally omitted to prevent permission prompts from Claude Agent SDK subprocesses.
+- Microphone permission granted in System Settings (macOS) or Windows Settings > Privacy & security > Microphone (Windows). Windows users must enable microphone access for desktop apps.
 - Voice mode enabled in Settings (toggles visibility of the VoiceModeButton)

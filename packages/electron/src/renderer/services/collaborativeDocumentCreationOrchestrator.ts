@@ -45,6 +45,8 @@ export interface CreateCollaborativeDocumentInput {
   operationId?: string;
   /** Optional preallocated id for pre-seed hooks such as markdown asset migration. */
   documentId?: string;
+  /** Whether creation should navigate to/open this document. Defaults to true. */
+  openAfterCreate?: boolean;
 }
 
 export type CollaborativeDocumentCreationErrorCode =
@@ -549,10 +551,12 @@ export class CollaborativeDocumentCreationOrchestrator {
         );
       }
 
-      this.dependencies.publishPending(
-        document,
-        typeof content === 'string' ? content : undefined,
-      );
+      if (input.openAfterCreate !== false) {
+        this.dependencies.publishPending(
+          document,
+          typeof content === 'string' ? content : undefined,
+        );
+      }
       return document;
     } catch (cause) {
       if (workspacePath && configResolved) {

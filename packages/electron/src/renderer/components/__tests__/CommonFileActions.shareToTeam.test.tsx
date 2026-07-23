@@ -6,12 +6,22 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 const mocks = vi.hoisted(() => ({
   resolveShareability: vi.fn(),
   openDialog: vi.fn(),
+  activeTeamOrgIdAtom: Symbol('activeTeamOrgId'),
+  trashSharedDocument: vi.fn(),
 }));
 
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
+  getEmbeddableExtensions: () => ['.mockup.html'],
+  parseEmbedAttrs: () => ({}),
+  serializeEmbedAttrs: (attrs: Record<string, string>) =>
+    Object.entries(attrs).map(([key, value]) => `${key}=${value}`).join(' '),
 }));
-vi.mock('@nimbalyst/runtime/store', () => ({ store: { get: vi.fn(() => '/workspace') } }));
+vi.mock('@nimbalyst/runtime/store', () => ({
+  store: {
+    get: vi.fn((atom: unknown) => (atom === mocks.activeTeamOrgIdAtom ? 'team-1' : '/workspace')),
+  },
+}));
 vi.mock('jotai', () => ({ useAtomValue: vi.fn(() => true) }));
 vi.mock('../../hooks/useFileActions', () => ({
   useFileActions: () => ({
@@ -22,7 +32,11 @@ vi.mock('../../hooks/useFileActions', () => ({
     isShareable: false,
   }),
 }));
-vi.mock('../../store/atoms/collabDocuments', () => ({ workspaceHasTeamAtom: Symbol('workspaceHasTeam') }));
+vi.mock('../../store/atoms/collabDocuments', () => ({
+  workspaceHasTeamAtom: Symbol('workspaceHasTeam'),
+  activeTeamOrgIdAtom: mocks.activeTeamOrgIdAtom,
+  trashSharedDocument: mocks.trashSharedDocument,
+}));
 vi.mock('../../store/atoms/openProjects', () => ({ activeWorkspacePathAtom: Symbol('activeWorkspace') }));
 vi.mock('../../dialogs', () => ({
   dialogRef: { current: { open: mocks.openDialog } },
@@ -81,6 +95,75 @@ function renderActions(fileName: string) {
 }
 
 describe('CommonFileActions Share to Team catalog eligibility', () => {
+  it('inspects markdown embeds before opening the share dialog', async () => {
+    const markdownDescriptor = {
+      ...spreadsheetDescriptor,
+      documentType: 'markdown',
+      displayName: 'Markdown',
+      fileExtensions: ['.md'],
+      defaultExtension: '.md',
+      editor: { kind: 'lexical' },
+      content: { strategy: 'lexical', codecId: 'markdown' },
+    };
+    const mockupDescriptor = {
+      ...spreadsheetDescriptor,
+      documentType: 'mockup',
+      displayName: 'Mockup',
+      fileExtensions: ['.mockup.html'],
+      defaultExtension: '.mockup.html',
+      icon: 'web',
+      editor: { kind: 'extension', extensionId: 'mockup' },
+    };
+    mocks.resolveShareability.mockImplementation((name: string) => ({
+      state: 'ready',
+      descriptor: name.endsWith('.mockup.html')
+        ? mockupDescriptor
+        : markdownDescriptor,
+    }));
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        readFileContent: vi.fn(async (path: string) => (
+          path.endsWith('notes.md')
+            ? {
+                success: true,
+                content: '[Wireframe](./wireframe.mockup.html)',
+                isBinary: false,
+              }
+            : { success: true, content: 'PGh0bWw+', isBinary: true }
+        )),
+        invoke: vi.fn(async (channel: string) => (channel === 'file:exists' ? true : undefined)),
+        documentSync: {
+          findLocalOriginLink: vi.fn(async () => ({
+            success: true,
+            binding: {
+              documentId: 'mockup-1',
+              orgId: 'team-1',
+            },
+          })),
+        },
+      },
+    });
+
+    renderActions('notes.md');
+    fireEvent.click(screen.getByRole('button', { name: 'Share to Team' }));
+
+    await vi.waitFor(() => expect(mocks.openDialog).toHaveBeenCalledWith(
+      'share-to-team',
+      expect.objectContaining({
+        embeddedDocuments: [
+          expect.objectContaining({
+            absolutePath: '/workspace/wireframe.mockup.html',
+            alreadyShared: {
+              documentId: 'mockup-1',
+              orgId: 'team-1',
+            },
+          }),
+        ],
+      }),
+    ));
+  });
+
   it('shows Share to Team for a ready first-wave non-markdown type', () => {
     mocks.resolveShareability.mockReturnValue({ state: 'ready', descriptor: spreadsheetDescriptor });
     renderActions('people.tsv');

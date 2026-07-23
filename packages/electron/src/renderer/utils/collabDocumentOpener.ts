@@ -443,12 +443,19 @@ export async function resolveCollabConfigForUri(
   options: {
     forceRefresh?: boolean;
     metadata?: { metadataVersion: 2; fileExtension: string; editorId: string };
+    /**
+     * Whether to read/write the tab config registry. Nested collaborative
+     * embeds use `false` because they own a separate main-process attachment
+     * whose open/close refcount must not alias a normal tab.
+     */
+    cache?: boolean;
   } = {},
 ): Promise<CollabDocumentConfig | null> {
   if (!window.electronAPI?.documentSync) return null;
   let resolvedMetadata = options.metadata;
+  const useCache = options.cache !== false;
 
-  if (options.forceRefresh) {
+  if (options.forceRefresh && useCache) {
     // Key rotation must bypass both URI and document-id aliases. Otherwise a
     // freshly resolved cache key can still be populated with the old CryptoKey.
     for (const [registeredUri, config] of collabConfigRegistry) {
@@ -471,7 +478,7 @@ export async function resolveCollabConfigForUri(
         collabConfigRegistry.delete(registeredUri);
       }
     }
-  } else {
+  } else if (useCache) {
     // Already resolved
     const existing = collabConfigRegistry.get(uri);
     if (existing) {
@@ -503,6 +510,7 @@ export async function resolveCollabConfigForUri(
     }
 
     const { orgId, title: resolvedTitle, orgKeyBase64, legacyOrgKeyBase64, legacyOrgKeysBase64, orgKeyFingerprint, serverUrl, accountId, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+    const urlExtraQuery = result.config.urlExtraQuery;
     const resolvedDocumentType = documentType ?? result.config.documentType;
     const serverManaged = result.config.keyCustody === 'server-managed';
     const documentKey = serverManaged ? undefined : await importOrgKeyFromBase64(orgKeyBase64);
@@ -531,8 +539,15 @@ export async function resolveCollabConfigForUri(
       userId,
       userName,
       userEmail,
+      urlExtraQuery,
       pendingUpdateBase64,
-      createWebSocket: hasWsProxy ? createProxiedWebSocket : undefined,
+      createWebSocket: hasWsProxy
+        ? (url: string) => createProxiedWebSocket(
+            urlExtraQuery
+              ? `${url}${url.includes('?') ? '&' : '?'}${urlExtraQuery}`
+              : url,
+          )
+        : undefined,
       getJwt: async (opts) => {
         const jwtResult = await window.electronAPI.documentSync.getJwt(orgId, opts?.forceRefresh);
         if (!jwtResult.success || !jwtResult.jwt) {
@@ -544,10 +559,12 @@ export async function resolveCollabConfigForUri(
 
     // The URI in the tab may use the real orgId already, but double-check
     const realUri = buildCollabUri(orgId, documentId);
-    collabConfigRegistry.set(realUri, config);
-    // Also set with the passed-in URI in case it differs
-    if (uri !== realUri) {
-      collabConfigRegistry.set(uri, config);
+    if (useCache) {
+      collabConfigRegistry.set(realUri, config);
+      // Also set with the passed-in URI in case it differs
+      if (uri !== realUri) {
+        collabConfigRegistry.set(uri, config);
+      }
     }
 
     return config;

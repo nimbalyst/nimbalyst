@@ -294,6 +294,9 @@ export interface CollabExtensionHostArgs {
   getTheme?: () => string;
   /** Subscribe to host theme changes. The returned function unsubscribes. */
   subscribeToThemeChanges?: (callback: (theme: string) => void) => () => void;
+  /** Inline collaborative embeds are always marked embedded + read-only. */
+  embedded?: boolean;
+  readOnly?: boolean;
 }
 
 /**
@@ -320,6 +323,8 @@ export function createCollabExtensionHost(
     onOpenHistory,
     getTheme,
     subscribeToThemeChanges,
+    embedded = false,
+    readOnly = false,
   } = args;
 
   const editorKey = makeEditorKey(filePath);
@@ -339,12 +344,18 @@ export function createCollabExtensionHost(
   return {
     filePath,
     fileName,
+    embedded,
+    get readOnly() { return readOnly; },
     get theme() { return getTheme ? getTheme() : 'auto'; },
     get isActive() { return isActive; },
     workspaceId,
 
     onThemeChanged(callback: (theme: string) => void): () => void {
       return subscribeToThemeChanges ? subscribeToThemeChanges(callback) : () => {};
+    },
+    onReadOnlyChanged(callback: (readOnly: boolean) => void): () => void {
+      callback(readOnly);
+      return () => {};
     },
 
     async loadContent(): Promise<string> {
@@ -357,6 +368,7 @@ export function createCollabExtensionHost(
     onFileChanged: () => () => {},
 
     setDirty(isDirty: boolean): void {
+      if (embedded) return;
       store.set(editorDirtyAtom(editorKey), isDirty);
       onDirtyChange?.(isDirty);
     },
@@ -378,9 +390,11 @@ export function createCollabExtensionHost(
     // spreadsheet (or other custom editor) opened collaboratively could never
     // surface its "+ selection" cell context to the agent.
     setEditorContext(context: EditorContext | null): void {
+      if (embedded) return;
       storeSetEditorContext(filePath, context);
     },
     setEditorContextItems(items: EditorContextItem[] | null): void {
+      if (embedded) return;
       storeSetEditorContextItems(filePath, items);
     },
     registerEditorAPI(): void {},

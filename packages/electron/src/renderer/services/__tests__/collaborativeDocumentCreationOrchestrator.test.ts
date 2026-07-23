@@ -153,6 +153,23 @@ function makeHarness(options: {
 }
 
 describe('CollaborativeDocumentCreationOrchestrator', () => {
+  it('can create a cascade child without publishing it as the pending open document', async () => {
+    const harness = makeHarness({ descriptor: mockupDescriptor });
+
+    await harness.orchestrator.create({
+      descriptor: mockupDescriptor,
+      requestedName: 'embedded.mockup.html',
+      parentFolderId: null,
+      sourceContent: '<html></html>',
+      operationId: 'cascade-child',
+      documentId: 'cascade-child-doc',
+      openAfterCreate: false,
+    });
+
+    expect(harness.published).toEqual([]);
+    expect(harness.events).toEqual(['resolve-config', 'seed', 'register', 'cleanup']);
+  });
+
   it('seeds with acknowledgement before registering one V2 index row', async () => {
     const harness = makeHarness();
     const register = vi.spyOn(harness.deps, 'register');

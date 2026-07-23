@@ -16,6 +16,7 @@ import {$createLinkNode} from "@lexical/link";
 
 import {TextMatchTransformer} from "@lexical/markdown";
 import {isEmbeddableUrl} from "../../editor/plugins/EmbedPlugin/embeddableExtensions";
+import {parseEmbedAttrs} from "../../editor/plugins/EmbedPlugin/embedAttrs";
 import {
     buildImportedDocumentReference,
     exportDocumentLinkHref,
@@ -281,10 +282,19 @@ export const CollabDocumentReferenceTransformer: TextMatchTransformer = {
     export: () => null, // Export flows through DocumentReferenceTransformer.
     // Match markdown links whose target is a collab scheme. Excludes images
     // ((?<!!) / (?!!\[)) the same way the main transformer does.
-    importRegExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((nimbalyst:\/\/doc\/[^)]+|collab:\/\/[^)]+)\)/,
-    regExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((nimbalyst:\/\/doc\/[^)]+|collab:\/\/[^)]+)\)$/,
+    importRegExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((nimbalyst:\/\/doc\/[^\s)]+|collab:\/\/[^\s)]+)(?:\s+"([^"]*)")?\)/,
+    regExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((nimbalyst:\/\/doc\/[^\s)]+|collab:\/\/[^\s)]+)(?:\s+"([^"]*)")?\)$/,
     replace: (textNode, match) => {
-        const [, name, target] = match;
+        const [, name, target, title] = match;
+        const attrs = parseEmbedAttrs(title);
+        if (isEmbeddableUrl(target, attrs.embedType)) {
+            const linkNode = $createLinkNode(target, title ? {title} : undefined);
+            const linkTextNode = $createTextNode(name);
+            linkTextNode.setFormat(textNode.getFormat());
+            linkNode.append(linkTextNode);
+            textNode.replace(linkNode);
+            return linkTextNode;
+        }
         const documentId = parseCollabReferenceDocumentId(target) ?? '';
         const documentReferenceNode = $createDocumentReferenceNode(
             documentId,
