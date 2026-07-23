@@ -651,7 +651,12 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
                   onClick={(e) => e.stopPropagation()}
                 />
               ) : (
-                <span className="workstream-group-name font-medium text-[var(--nim-text)] whitespace-nowrap overflow-hidden text-ellipsis">{displayTitle}</span>
+                <span
+                  className="workstream-group-name font-medium text-[var(--nim-text)] whitespace-nowrap overflow-hidden text-ellipsis"
+                  title={displayTitle}
+                >
+                  {displayTitle}
+                </span>
               )}
               {displayIsPinned && !isRenamingWorktree && (
                 <MaterialSymbol icon="push_pin" size={12} className="workstream-group-pin-icon shrink-0 text-[var(--nim-text-faint)] opacity-70" />
@@ -1175,9 +1180,14 @@ const WorkstreamSessionItem: React.FC<WorkstreamSessionItemProps> = ({
         />
       ) : (
         <>
-          <span className={`workstream-session-item-title flex-1 text-xs text-[var(--nim-text)] whitespace-nowrap overflow-hidden text-ellipsis ${
-            isActive ? 'font-medium' : ''
-          }`}>{displayTitle}</span>
+          <span
+            className={`workstream-session-item-title flex-1 text-xs text-[var(--nim-text)] whitespace-nowrap overflow-hidden text-ellipsis ${
+              isActive ? 'font-medium' : ''
+            }`}
+            title={displayTitle}
+          >
+            {displayTitle}
+          </span>
           <span className="workstream-session-item-timestamp shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)] ml-2">
             <SessionRelativeTime sessionId={session.id} fallbackTimestamp={session.updatedAt || session.createdAt} />
           </span>
