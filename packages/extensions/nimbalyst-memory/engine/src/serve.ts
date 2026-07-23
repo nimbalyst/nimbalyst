@@ -11,8 +11,8 @@
  *   NIMBALYST_MEMORY_DB            shadow-index path (default: <root>/.nimbalyst-memory/index.db)
  *   NIMBALYST_MEMORY_FACTS_DIR     facts dir, relative (default: nimbalyst-local/voice-memory)
  *   NIMBALYST_MEMORY_CONFIG        path to a JSON config file (overrides sources/factsDir/chunk)
- *   NIMBALYST_MEMORY_EMBEDDER      "openai" | "local" (default: openai)
- *   NIMBALYST_MEMORY_OPENAI_KEY    OpenAI API key (required for the openai embedder)
+ *   NIMBALYST_MEMORY_EMBEDDER      "sparse" | "openai" | "local" (default: sparse)
+ *   NIMBALYST_MEMORY_OPENAI_KEY    explicit value for the openai embedder
  *   NIMBALYST_MEMORY_OPENAI_MODEL  default: text-embedding-3-small
  *   NIMBALYST_MEMORY_OPENAI_DIMS   default: 1536
  *   NIMBALYST_MEMORY_OPENAI_BASEURL  optional OpenAI-compatible base URL
@@ -71,20 +71,30 @@ function buildConfig(): EngineConfig {
 }
 
 function buildEmbedderConfig(): EmbedderConfig {
-  const kind = (process.env.NIMBALYST_MEMORY_EMBEDDER || 'openai').toLowerCase();
+  const kind = (process.env.NIMBALYST_MEMORY_EMBEDDER || 'sparse').toLowerCase();
+  if (kind === 'sparse') {
+    return { kind: 'sparse' };
+  }
   if (kind === 'local') {
     return { kind: 'local', model: process.env.NIMBALYST_MEMORY_LOCAL_MODEL };
   }
-  const apiKey = process.env.NIMBALYST_MEMORY_OPENAI_KEY || '';
-  return {
-    kind: 'openai',
-    apiKey,
-    model: process.env.NIMBALYST_MEMORY_OPENAI_MODEL,
-    dims: process.env.NIMBALYST_MEMORY_OPENAI_DIMS
-      ? Number(process.env.NIMBALYST_MEMORY_OPENAI_DIMS)
-      : undefined,
-    baseUrl: process.env.NIMBALYST_MEMORY_OPENAI_BASEURL,
-  };
+  if (kind === 'openai') {
+    const apiKey = process.env.NIMBALYST_MEMORY_OPENAI_KEY;
+    if (!apiKey) {
+      log('optional semantic matching is unavailable; using local keyword retrieval');
+      return { kind: 'sparse' };
+    }
+    return {
+      kind: 'openai',
+      apiKey,
+      model: process.env.NIMBALYST_MEMORY_OPENAI_MODEL,
+      dims: process.env.NIMBALYST_MEMORY_OPENAI_DIMS
+        ? Number(process.env.NIMBALYST_MEMORY_OPENAI_DIMS)
+        : undefined,
+      baseUrl: process.env.NIMBALYST_MEMORY_OPENAI_BASEURL,
+    };
+  }
+  throw new Error(`Unknown embedder kind: ${kind}`);
 }
 
 async function main(): Promise<void> {

@@ -10,7 +10,14 @@
  */
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { Embedder, EngineConfig, Fact, SearchHit, VirtualRecord } from './types.js';
+import type {
+  Embedder,
+  EngineConfig,
+  Fact,
+  RetrievalCapabilities,
+  SearchHit,
+  VirtualRecord,
+} from './types.js';
 import { SqliteStore } from './store/sqliteStore.js';
 import { Indexer, type IndexProgress } from './indexer/indexer.js';
 import { IndexWatcher } from './indexer/watcher.js';
@@ -36,6 +43,7 @@ export interface EngineStatus {
    * (bad key, network, or fd starvation) rather than with retrieval logic.
    */
   lastEmbedError: string | null;
+  retrieval: RetrievalCapabilities;
   root: string;
 }
 
@@ -257,6 +265,17 @@ export class MemoryEngine {
 
   status(): EngineStatus {
     const bySourceClass = this.store.countsBySourceClass();
+    const semanticAvailable = this.embedder.info.dims > 0 && !this.lastEmbedError;
+    const retrieval: RetrievalCapabilities = {
+      mode: semanticAvailable ? 'hybrid' : 'keyword-only',
+      semantic: semanticAvailable
+        ? { available: true }
+        : {
+            available: false,
+            reason: 'optional-embedding-provider-unavailable',
+          },
+      keyword: { available: true, source: 'local-project-index' },
+    };
     return {
       chunks: this.store.count(),
       denseChunks: this.store.countDense(),
@@ -267,6 +286,7 @@ export class MemoryEngine {
       embedderChanged: this.embedderChanged,
       indexing: this.indexing,
       lastEmbedError: this.lastEmbedError,
+      retrieval,
       root: this.config.root,
     };
   }

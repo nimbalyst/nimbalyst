@@ -14,7 +14,7 @@ import type { EmbedderInfo, StoredChunk } from '../types.js';
 type DB = Database.Database;
 
 function encodeVector(vec: number[] | null): Buffer | null {
-  if (!vec) return null;
+  if (!vec?.length) return null;
   return Buffer.from(new Float32Array(vec).buffer);
 }
 

@@ -27,6 +27,11 @@ interface IndexStatus {
   indexing?: boolean;
   lastEmbedError?: string | null;
   embedder?: { id?: string; model?: string; dims?: number } | null;
+  retrieval?: {
+    mode?: 'hybrid' | 'keyword-only';
+    semantic?: { available?: boolean; reason?: string };
+    keyword?: { available?: boolean; source?: string };
+  };
   error?: string | null;
   root?: string;
 }
@@ -114,6 +119,7 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
   const [distilling, setDistilling] = useState(false);
   const [adding, setAdding] = useState(false);
   const [distillError, setDistillError] = useState<string | null>(null);
+  const [distillNotice, setDistillNotice] = useState<string | null>(null);
 
   // Facts viewer: category filter + add/edit form.
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
@@ -258,12 +264,23 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
     if (!callBackendTool) return;
     setDistilling(true);
     setDistillError(null);
+    setDistillNotice(null);
     setCandidates(null);
     try {
       const res = (await callBackendTool('memory.distill_candidate_facts', {
         sourceClass: 'plans',
         maxDocs: 3,
-      })) as { candidates?: FactCandidate[] };
+      })) as {
+        candidates?: FactCandidate[];
+        capability?: { available?: boolean; reason?: string };
+        fallback?: { hint?: string };
+      };
+      if (res?.capability?.available === false) {
+        setDistillNotice(
+          res.fallback?.hint ?? 'Add durable facts manually with the Add fact action.',
+        );
+        return;
+      }
       const list = Array.isArray(res?.candidates) ? res.candidates : [];
       setCandidates(list);
       setSelected(new Set(list.map((_, i) => i)));
@@ -332,6 +349,10 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
   const totalChunks = status?.chunks ?? 0;
   const coverage =
     totalChunks > 0 ? Math.round(((status?.denseChunks ?? 0) / totalChunks) * 100) : 0;
+  const keywordOnly =
+    status?.retrieval?.mode === 'keyword-only' ||
+    status?.retrieval?.semantic?.available === false ||
+    Boolean(status?.lastEmbedError);
   const breakdown = useMemo(
     () =>
       Object.entries(bySourceClass)
@@ -369,9 +390,10 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
         <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Project knowledge</h3>
         <p style={{ margin: 0, color: muted, lineHeight: 1.5 }}>
           A local "project brain" that indexes your markdown into a rebuildable
-          shadow index and serves fast hybrid (semantic + keyword) retrieval to
-          the coding agent and the voice agent. The engine runs in the background
-          and refreshes as files change.
+          shadow index and serves fast local keyword retrieval to the coding
+          agent and the voice agent. Semantic matching is added when an optional
+          provider is already available. The engine runs in the background and
+          refreshes as files change.
         </p>
       </section>
 
@@ -386,8 +408,8 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
         <h4 style={H4}>Global search</h4>
         <p style={{ margin: 0, color: muted, lineHeight: 1.5 }}>
           With this extension enabled, Quick Open gains a <strong>Search</strong>{' '}
-          tab that finds any tracker or document by meaning. Trackers are cataloged
-          automatically.
+          tab that finds trackers and documents by project terms, and by meaning
+          when semantic matching is available. Trackers are cataloged automatically.
         </p>
         <label
           style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', lineHeight: 1.45 }}
@@ -455,7 +477,8 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
 
         {status && status.ready === false && (
           <p style={{ margin: 0, color: muted }}>
-            Not ready{status.error ? `: ${status.error}` : '.'}
+            The local project index is unavailable. Use normal workspace file/text
+            search over project Markdown.
           </p>
         )}
 
@@ -463,7 +486,11 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
           <div style={CARD}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
               <Stat value={totalChunks.toLocaleString()} label="chunks indexed" />
-              <Stat value={`${coverage}`} unit="%" label="embedding coverage" />
+              <Stat
+                value={keywordOnly ? 'Unavailable' : `${coverage}`}
+                unit={keywordOnly ? undefined : '%'}
+                label={keywordOnly ? 'semantic matching' : 'embedding coverage'}
+              />
               <Stat value={`${status.sourceFiles ?? 0}`} label="source files" />
             </div>
 
@@ -492,12 +519,18 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
             <div style={DIVIDER} />
 
             <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 14px', margin: 0, fontSize: 12 }}>
-              <dt style={{ color: 'var(--nim-text-muted)' }}>Embedder</dt>
+              <dt style={{ color: 'var(--nim-text-muted)' }}>Retrieval</dt>
               <dd style={{ margin: 0 }}>
-                <code>
-                  {status.embedder?.id ?? 'unknown'} · {status.embedder?.model ?? '—'}
-                </code>
-                {status.embedder?.dims ? ` · ${status.embedder.dims}d` : ''}
+                {keywordOnly ? (
+                  'Local keyword search'
+                ) : (
+                  <>
+                    <code>
+                      {status.embedder?.id ?? 'unknown'} · {status.embedder?.model ?? '—'}
+                    </code>
+                    {status.embedder?.dims ? ` · ${status.embedder.dims}d` : ''}
+                  </>
+                )}
               </dd>
               <dt style={{ color: 'var(--nim-text-muted)' }}>Last indexed</dt>
               <dd style={{ margin: 0 }}>
@@ -510,9 +543,9 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
               </dd>
             </dl>
 
-            {status.lastEmbedError && (
+            {keywordOnly && (
               <p style={{ margin: 0, color: 'var(--nim-warning, #d19a66)', lineHeight: 1.5 }}>
-                Semantic search degraded: {status.lastEmbedError} (keyword search still works)
+                Local keyword search is active. Semantic matching is unavailable.
               </p>
             )}
           </div>
@@ -559,6 +592,9 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
         </p>
 
         {distillError && <p style={ERR}>{distillError}</p>}
+        {distillNotice && (
+          <p style={{ margin: 0, color: muted, lineHeight: 1.5 }}>{distillNotice}</p>
+        )}
         {factsError && <p style={ERR}>{factsError}</p>}
 
         {/* Add / edit form */}

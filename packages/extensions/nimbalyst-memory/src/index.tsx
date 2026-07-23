@@ -8,7 +8,7 @@
  *
  *  - a voice context provider that injects a short grounding note at voice
  *    session start (so the agent knows it can call the memory tools), and
- *  - a settings panel describing the index + key source.
+ *  - a settings panel describing the index + active retrieval mode.
  *
  * v1 limitation: the renderer cannot call the backend engine directly (there is
  * no generic renderer->backend RPC), so the context provider injects a static
