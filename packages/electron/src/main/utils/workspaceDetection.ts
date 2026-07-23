@@ -566,26 +566,58 @@ export function getAdditionalDirectoriesForWorkspace(
 }
 
 /**
- * List full filesystem paths of every sibling worktree directory for a
- * project, following Nimbalyst's `<project>_worktrees/<name>` convention.
- * Returns an empty list if the worktrees directory does not exist or cannot
- * be read. Sync so it can be used from the synchronous additionalDirectories
- * loader contract.
+ * List every verified linked worktree registered by this project, regardless
+ * of where its checkout lives on disk. Git records each linked worktree under
+ * `<project>/.git/worktrees/<name>/gitdir`; each registration is then checked
+ * again through resolveWorktreeIdentity so malformed, stale, forged, or
+ * submodule-like metadata fails closed.
+ *
+ * This deliberately replaces the old `<project>_worktrees/<name>` directory
+ * convention. A valid worktree may live elsewhere (for example on a dedicated
+ * D: worktree volume), while an arbitrary directory inside a conventionally
+ * named folder must never receive sibling-worktree access just from its name.
+ * The function remains synchronous because the provider loader is synchronous.
  */
 function listSiblingWorktreePaths(projectPath: string): string[] {
   if (!projectPath) {
     return [];
   }
-  const projectName = path.basename(projectPath);
-  const worktreesDir = path.resolve(projectPath, '..', `${projectName}_worktrees`);
-  if (!fs.existsSync(worktreesDir)) {
+  let canonicalProjectPath: string;
+  try {
+    canonicalProjectPath = fs.realpathSync.native(projectPath);
+  } catch {
     return [];
   }
+
+  const registrationsDir = path.join(canonicalProjectPath, '.git', 'worktrees');
+  if (!fs.existsSync(registrationsDir)) return [];
+
   try {
-    const entries = fs.readdirSync(worktreesDir, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(worktreesDir, entry.name));
+    const siblingPaths = new Set<string>();
+    const registrations = fs.readdirSync(registrationsDir, { withFileTypes: true });
+    for (const registration of registrations) {
+      if (!registration.isDirectory()) continue;
+
+      try {
+        const gitdirPointer = fs.readFileSync(
+          path.join(registrationsDir, registration.name, 'gitdir'),
+          'utf8',
+        ).trim();
+        if (!gitdirPointer) continue;
+
+        const gitFilePath = path.isAbsolute(gitdirPointer)
+          ? gitdirPointer
+          : path.resolve(path.join(registrationsDir, registration.name), gitdirPointer);
+        const candidatePath = fs.realpathSync.native(path.dirname(gitFilePath));
+        const candidateIdentity = resolveWorktreeIdentity(candidatePath);
+        if (candidateIdentity.isWorktree && candidateIdentity.parentRoot === canonicalProjectPath) {
+          siblingPaths.add(candidateIdentity.canonical);
+        }
+      } catch {
+        // One stale registration must not hide the rest or expand access.
+      }
+    }
+    return Array.from(siblingPaths);
   } catch {
     return [];
   }

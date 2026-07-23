@@ -205,9 +205,8 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   let worktreesDir: string;
 
   beforeEach(() => {
-    // Real filesystem fixture so the sync fs.readdirSync path is exercised
-    // end-to-end. The function is called from a synchronous loader and must
-    // tolerate a missing _worktrees dir without blowing up.
+    // Real filesystem fixture so the synchronous Git-registration scan is
+    // exercised end-to-end without needing a Git executable on PATH.
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-add-dirs-'));
     projectPath = path.join(tmpRoot, 'project');
     fs.mkdirSync(projectPath);
@@ -223,35 +222,42 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   });
 
   it('returns sibling worktree paths when called from the parent project root', () => {
-    fs.mkdirSync(worktreesDir);
-    fs.mkdirSync(path.join(worktreesDir, 'proud-gorge'));
-    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+    const externalWorktreesDir = path.join(tmpRoot, 'dedicated-worktree-volume');
+    const proudGorge = path.join(worktreesDir, 'proud-gorge');
+    const swiftFalcon = path.join(externalWorktreesDir, 'swift-falcon');
+    createLinkedWorktree(projectPath, proudGorge, 'proud-gorge');
+    createLinkedWorktree(projectPath, swiftFalcon, 'swift-falcon');
 
     const dirs = getAdditionalDirectoriesForWorkspace(projectPath);
     expect(dirs.sort()).toEqual([
-      path.join(worktreesDir, 'proud-gorge'),
-      path.join(worktreesDir, 'swift-falcon'),
+      fs.realpathSync.native(proudGorge),
+      fs.realpathSync.native(swiftFalcon),
     ].sort());
   });
 
   it('returns the parent project plus other sibling worktrees when called from a worktree', () => {
-    fs.mkdirSync(worktreesDir);
     const cwd = path.join(worktreesDir, 'proud-gorge');
     createLinkedWorktree(projectPath, cwd, 'proud-gorge');
-    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+    const externalSibling = path.join(tmpRoot, 'other-volume', 'swift-falcon');
+    createLinkedWorktree(projectPath, externalSibling, 'swift-falcon');
 
     const dirs = getAdditionalDirectoriesForWorkspace(cwd);
     expect(dirs.sort()).toEqual([
       fs.realpathSync.native(projectPath),
-      path.join(fs.realpathSync.native(worktreesDir), 'swift-falcon'),
+      fs.realpathSync.native(externalSibling),
     ].sort());
     // The current worktree itself must not appear -- it is already the
     // workingDirectory, and re-listing it would just add noise.
     expect(dirs).not.toContain(cwd);
   });
 
-  it('survives a missing _worktrees directory', () => {
-    // No worktrees dir created. Should not throw, just return empty.
+  it('survives a project with no registered worktrees', () => {
+    // No .git/worktrees directory created. Should not throw, just return empty.
+    expect(getAdditionalDirectoriesForWorkspace(projectPath)).toEqual([]);
+  });
+
+  it('does not grant access to an arbitrary directory in a conventional worktrees folder', () => {
+    fs.mkdirSync(path.join(worktreesDir, 'unverified-directory'), { recursive: true });
     expect(getAdditionalDirectoriesForWorkspace(projectPath)).toEqual([]);
   });
 
@@ -259,9 +265,8 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
     // The Claude Code loader opts out: the CLI discovers .claude/commands
     // skills in every additional directory, so N sibling worktrees inflate the
     // system prompt with N duplicate copies of every project skill.
-    fs.mkdirSync(worktreesDir);
-    fs.mkdirSync(path.join(worktreesDir, 'proud-gorge'));
-    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+    createLinkedWorktree(projectPath, path.join(worktreesDir, 'proud-gorge'), 'proud-gorge');
+    createLinkedWorktree(projectPath, path.join(tmpRoot, 'other-volume', 'swift-falcon'), 'swift-falcon');
 
     const dirs = getAdditionalDirectoriesForWorkspace(projectPath, {
       includeSiblingWorktrees: false,
@@ -270,10 +275,9 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   });
 
   it('keeps the parent project but drops siblings when includeSiblingWorktrees is false (worktree)', () => {
-    fs.mkdirSync(worktreesDir);
     const cwd = path.join(worktreesDir, 'proud-gorge');
     createLinkedWorktree(projectPath, cwd, 'proud-gorge');
-    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+    createLinkedWorktree(projectPath, path.join(tmpRoot, 'other-volume', 'swift-falcon'), 'swift-falcon');
 
     const dirs = getAdditionalDirectoriesForWorkspace(cwd, {
       includeSiblingWorktrees: false,
@@ -284,17 +288,17 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
 });
 
 describe('findNearestAncestor', () => {
-  const trusted = new Set(['/path/to/project']);
+  const project = path.join(path.sep, 'path', 'to', 'project');
+  const trusted = new Set([project]);
   const pred = (dir: string) => trusted.has(dir);
 
   it('returns the start path itself when it matches', () => {
-    expect(findNearestAncestor('/path/to/project', pred)).toBe('/path/to/project');
+    expect(findNearestAncestor(project, pred)).toBe(project);
   });
 
   it('walks up to the nearest matching ancestor (subfolder cascade)', () => {
-    expect(findNearestAncestor('/path/to/project/packages/electron', pred))
-      .toBe('/path/to/project');
-    expect(findNearestAncestor('/path/to/project/src', pred)).toBe('/path/to/project');
+    expect(findNearestAncestor(path.join(project, 'packages', 'electron'), pred)).toBe(project);
+    expect(findNearestAncestor(path.join(project, 'src'), pred)).toBe(project);
   });
 
   it('returns null when no ancestor matches', () => {
@@ -302,34 +306,39 @@ describe('findNearestAncestor', () => {
   });
 
   it('returns the most specific matching ancestor when several match', () => {
-    const t2 = new Set(['/a', '/a/b/c']);
-    expect(findNearestAncestor('/a/b/c/d', (d) => t2.has(d))).toBe('/a/b/c');
+    const root = path.join(path.sep, 'a');
+    const nested = path.join(root, 'b', 'c');
+    const t2 = new Set([root, nested]);
+    expect(findNearestAncestor(path.join(nested, 'd'), (d) => t2.has(d))).toBe(nested);
   });
 
   it('handles empty input and trailing slashes', () => {
     expect(findNearestAncestor('', pred)).toBe(null);
-    expect(findNearestAncestor('/path/to/project/packages/', pred)).toBe('/path/to/project');
+    expect(findNearestAncestor(`${path.join(project, 'packages')}${path.sep}`, pred)).toBe(project);
   });
 
   describe('stopAt boundary', () => {
     it('still returns a match found at or below the boundary', () => {
       // boundary === the matching ancestor: it is tested, then the walk stops.
-      expect(findNearestAncestor('/path/to/project/src', pred, '/path/to/project'))
-        .toBe('/path/to/project');
+      expect(findNearestAncestor(path.join(project, 'src'), pred, project)).toBe(project);
     });
 
     it('does NOT climb past the boundary to a higher match', () => {
       // A trusted grandparent must not be inherited when a nearer boundary caps
       // the walk - this is the trust-boundary guard for nested projects.
-      const t = new Set(['/root']);
+      const root = path.join(path.sep, 'root');
+      const child = path.join(root, 'child');
+      const t = new Set([root]);
       const p = (d: string) => t.has(d);
-      expect(findNearestAncestor('/root/child/leaf', p, '/root/child')).toBe(null);
+      expect(findNearestAncestor(path.join(child, 'leaf'), p, child)).toBe(null);
     });
 
     it('returns the nearer match even when a farther one also matches', () => {
-      const t = new Set(['/root', '/root/child']);
+      const root = path.join(path.sep, 'root');
+      const child = path.join(root, 'child');
+      const t = new Set([root, child]);
       const p = (d: string) => t.has(d);
-      expect(findNearestAncestor('/root/child/leaf', p, '/root/child')).toBe('/root/child');
+      expect(findNearestAncestor(path.join(child, 'leaf'), p, child)).toBe(child);
     });
   });
 });

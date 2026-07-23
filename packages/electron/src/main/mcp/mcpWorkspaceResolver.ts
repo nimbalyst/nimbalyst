@@ -5,6 +5,7 @@ import {
   getVoiceEnabledBackendTools as registryGetVoiceBackendTools,
   type BackendToolDefinition,
 } from "./backendToolRegistry";
+import { isWorktreePath, resolveProjectPath } from "../utils/workspaceDetection";
 
 // Store document state PER SESSION to avoid cross-window contamination
 export const documentStateBySession = new Map<string, any>();
@@ -59,6 +60,25 @@ export async function findWindowIdForWorkspacePath(
     // Cache the mapping for future lookups
     workspaceToWindowMap.set(workspacePath, targetWindow.id);
     return targetWindow.id;
+  }
+
+  // A valid linked worktree may have been created outside Nimbalyst (and thus
+  // be absent from WorktreeStore). Git metadata is still a stronger identity
+  // source than a missing UI record. Resolve only verified linked worktrees
+  // and route them to an already-open parent project; never fall back to a
+  // lexical path convention or a different project window.
+  if (isWorktreePath(workspacePath)) {
+    const projectPath = resolveProjectPath(workspacePath);
+    worktreeToProjectPathCache.set(workspacePath, projectPath);
+    windowId = workspaceToWindowMap.get(projectPath);
+    if (windowId !== undefined) {
+      return windowId;
+    }
+    targetWindow = findWindowByWorkspace(projectPath);
+    if (targetWindow && !targetWindow.isDestroyed()) {
+      workspaceToWindowMap.set(projectPath, targetWindow.id);
+      return targetWindow.id;
+    }
   }
 
   // Check if this might be a worktree path
