@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- New Claude Agent sessions now accept Sonnet 5 saved as an explicit default instead of failing before the first prompt runs.
 
 ### Removed
 <!-- Removed features go here -->
