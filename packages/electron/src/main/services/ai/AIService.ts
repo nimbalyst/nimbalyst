@@ -128,6 +128,12 @@ import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
+import { toMillis } from '../../utils/timestampUtils';
+import {
+  createPriorityTargetGeneration,
+  type PriorityTargetState,
+} from '../PriorityPromptDeliveryService';
+import { drainPendingOrdinaryPromptsOnStartup } from './startupQueuedPromptDrain';
 
 const execFileAsync = promisify(execFile);
 
@@ -289,6 +295,163 @@ export class AIService {
       return false;
     }
     return this.processQueuedPrompt(sessionId, workspacePath, targetWindow);
+  }
+
+  public async drainPendingOrdinaryPromptsOnStartup(): Promise<{
+    discovered: number;
+    triggered: number;
+    skipped: number;
+  }> {
+    const { getQueuedPromptsStore } = await import('../RepositoryManager');
+    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+    const queueStore = getQueuedPromptsStore();
+    return drainPendingOrdinaryPromptsOnStartup({
+      listPendingOrdinarySessionIds: () =>
+        queueStore.listPendingSessionIds({ deliveryClass: 'ordinary' }),
+      resolveWorkspacePath: async (sessionId) => {
+        const session = await AISessionsRepository.get(sessionId);
+        return session?.worktreePath || session?.workspacePath || null;
+      },
+      triggerProcessing: (sessionId, workspacePath) =>
+        this.triggerQueuedPromptProcessingForSession(sessionId, workspacePath),
+      logError: (sessionId, error) => {
+        logger.main.error(
+          `[AIService] startup queue drain failed for session ${sessionId}:`,
+          error,
+        );
+      },
+    });
+  }
+
+  public async interruptCurrentTurnForSession(
+    sessionId: string,
+    expectedState?: PriorityTargetState,
+  ): Promise<{
+    success: boolean;
+    method?: string;
+    error?: string;
+    nativeEntered: boolean;
+  }> {
+    if (!sessionId) {
+      throw new Error('Session ID is required to interrupt');
+    }
+
+    const { database } = await import('../../database/PGLiteDatabaseWorker');
+    const readLifecycle = async () => {
+      const { rows } = await database.query<{
+        provider: string;
+        status: string;
+        last_activity: Date | string | number | null;
+        updated_at: Date | string | number | null;
+      }>(
+        `SELECT provider, status, last_activity, updated_at
+         FROM ai_sessions
+         WHERE id = $1
+         LIMIT 1`,
+        [sessionId],
+      );
+      const row = rows[0];
+      if (!row) {
+        return null;
+      }
+      const lastActivity = toMillis(row.last_activity);
+      const updatedAt = toMillis(row.updated_at);
+      return {
+        provider: row.provider,
+        status: row.status,
+        lastActivity,
+        updatedAt,
+        generation: createPriorityTargetGeneration(
+          row.status as PriorityTargetState['status'],
+          lastActivity,
+          updatedAt,
+        ),
+      };
+    };
+
+    const session = await readLifecycle();
+    if (!session) {
+      return { success: false, error: 'Session not found', nativeEntered: false };
+    }
+
+    if (session.provider === 'claude-code-cli') {
+      const terminalManager = getTerminalSessionManager();
+      if (!terminalManager.isTerminalActive(sessionId)) {
+        return { success: false, error: 'No active terminal for session', nativeEntered: false };
+      }
+      const current = await readLifecycle();
+      if (
+        expectedState
+        && (!current || current.generation !== expectedState.generation || current.status !== expectedState.status)
+      ) {
+        return { success: false, error: 'stale lifecycle generation', nativeEntered: false };
+      }
+      try {
+        terminalManager.writeToTerminal(sessionId, '\x03');
+        logger.main.info(`[AIService] Interrupted claude-code-cli terminal for session ${sessionId}`);
+        return { success: true, method: 'terminal-ctrl-c', nativeEntered: true };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+          nativeEntered: true,
+        };
+      }
+    }
+
+    const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+    if (!provider) {
+      return { success: false, error: 'No active provider for session', nativeEntered: false };
+    }
+
+    const sweepInterruptedQueue = async () => {
+      this.sessionsProcessingQueue.delete(sessionId);
+      try {
+        const { getQueuedPromptsStore } = await import('../RepositoryManager');
+        const queueStore = getQueuedPromptsStore();
+        const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
+        if (completed > 0 || failed > 0 || rolledBack > 0) {
+          logger.main.info(
+            `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
+          );
+        }
+      } catch (sweepErr) {
+        logger.main.error('[AIService] interruptCurrentTurn: sweepExecutingForSession failed:', sweepErr);
+      }
+    };
+
+    // Preserve the manual IPC behavior. Priority callers pass an expected
+    // lifecycle token; for them, avoid mutating queue state until after the
+    // fenced provider interrupt has actually been entered.
+    if (!expectedState) {
+      await sweepInterruptedQueue();
+    }
+
+    const current = await readLifecycle();
+    if (
+      expectedState
+      && (!current || current.generation !== expectedState.generation || current.status !== expectedState.status)
+    ) {
+      return { success: false, error: 'stale lifecycle generation', nativeEntered: false };
+    }
+
+    try {
+      const result = await provider.interruptCurrentTurn();
+      if (expectedState) {
+        await sweepInterruptedQueue();
+      }
+      logger.main.info(`[AIService] Interrupted current turn for session ${sessionId} (method=${result.method})`);
+      return { success: true, method: result.method, nativeEntered: true };
+    } catch (error) {
+      if (expectedState) {
+        await sweepInterruptedQueue();
+      }
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        nativeEntered: true,
+      };
+    }
   }
 
   public async respondToInteractivePrompt(params: {
@@ -2875,51 +3038,9 @@ export class AIService {
     // delivered prompts are marked completed, not rolled back, so the
     // follow-up ai:triggerQueueProcessing doesn't re-send the same input
     // -- NIM-615).
-    safeHandle('ai:interruptCurrentTurn', async (_event, sessionId: string) => {
-      if (!sessionId) {
-        throw new Error('Session ID is required to interrupt');
-      }
-
-      const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-      const session = await AISessionsRepository.get(sessionId);
-      if (!session) {
-        return { success: false, error: 'Session not found' };
-      }
-
-      if (session.provider === 'claude-code-cli') {
-        const terminalManager = getTerminalSessionManager();
-        if (!terminalManager.isTerminalActive(sessionId)) {
-          return { success: false, error: 'No active terminal for session' };
-        }
-
-        terminalManager.writeToTerminal(sessionId, '\x03');
-        logger.main.info(`[AIService] Interrupted claude-code-cli terminal for session ${sessionId}`);
-        return { success: true, method: 'terminal-ctrl-c' };
-      }
-
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (!provider) {
-        return { success: false, error: 'No active provider for session' };
-      }
-
-      this.sessionsProcessingQueue.delete(sessionId);
-      try {
-        const { getQueuedPromptsStore } = await import('../RepositoryManager');
-        const queueStore = getQueuedPromptsStore();
-        const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
-        if (completed > 0 || failed > 0 || rolledBack > 0) {
-          logger.main.info(
-            `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
-          );
-        }
-      } catch (sweepErr) {
-        logger.main.error('[AIService] interruptCurrentTurn: sweepExecutingForSession failed:', sweepErr);
-      }
-
-      const result = await provider.interruptCurrentTurn();
-      logger.main.info(`[AIService] Interrupted current turn for session ${sessionId} (method=${result.method})`);
-      return { success: true, method: result.method };
-    });
+    safeHandle('ai:interruptCurrentTurn', async (_event, sessionId: string) =>
+      this.interruptCurrentTurnForSession(sessionId)
+    );
 
     // Settings handlers
     safeHandle('ai:getSettings', async () => {

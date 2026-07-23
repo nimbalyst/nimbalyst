@@ -68,6 +68,7 @@ describe('Topology descriptor', () => {
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('settings_get_overview')).toBe(MCP_HOST);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('spawn_session')).toBe(MCP_HOST);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('list_queued_prompts')).toBe(MCP_HOST);
+    expect(FIRST_PARTY_TOOL_TO_SERVER.get('send_prompt_now')).toBe(MCP_HOST);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('notify_user')).toBe(MCP_HOST);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('tracker_create')).toBe(MCP_TRACKERS);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('voice_agent_speak')).toBe(MCP_SITUATIONAL);

@@ -14,6 +14,9 @@
 import React from 'react';
 import type { CustomToolWidgetProps } from './index';
 import { SessionReferenceChip } from '../../session/SessionReferenceChip';
+import {
+  isSessionLaunchConfiguration,
+} from '../../../../ai/server/sessionLaunchConfiguration';
 
 interface ActionMeta {
   label: string;
@@ -24,9 +27,10 @@ interface ActionMeta {
 
 const ACTIONS: Record<string, ActionMeta> = {
   send_prompt: { label: 'Send prompt', icon: 'send', detailArg: 'prompt' },
+  send_prompt_now: { label: 'Send priority prompt', icon: 'priority_high', detailArg: 'prompt' },
   respond_to_prompt: { label: 'Respond to prompt', icon: 'reply', detailArg: 'response' },
   spawn_session: { label: 'Spawn session', icon: 'rocket_launch', detailArg: 'prompt' },
-  create_session: { label: 'Create session', icon: 'add_circle', detailArg: 'initialPrompt' },
+  create_session: { label: 'Create session', icon: 'add_circle', detailArg: 'prompt' },
   get_session_status: { label: 'Get session status', icon: 'query_stats' },
   get_session_result: { label: 'Get session result', icon: 'task_alt' },
   list_queued_prompts: { label: 'List queued prompts', icon: 'list' },
@@ -66,16 +70,20 @@ function getResultText(result: unknown): string | null {
   return null;
 }
 
+function parseResultJson(result: unknown): unknown {
+  const text = getResultText(result);
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 /** Collect distinct session ids referenced by the result JSON. */
 function collectResultSessionIds(result: unknown): string[] {
-  const text = getResultText(result);
-  if (!text) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return [];
-  }
+  const parsed = parseResultJson(result);
+  if (!parsed) return [];
   const ids: string[] = [];
   const add = (v: unknown) => {
     if (isUuid(v) && !ids.includes(v)) ids.push(v);
@@ -93,6 +101,90 @@ function collectResultSessionIds(result: unknown): string[] {
   };
   visit(parsed);
   return ids;
+}
+
+interface LaunchSummaryItem {
+  label: string;
+  value: string;
+  source?: string | null;
+}
+
+function launchSummaryItems(
+  toolName: string,
+  args: Record<string, unknown>,
+  result: unknown,
+): LaunchSummaryItem[] {
+  const parsedResult = parseResultJson(result);
+  const launchConfiguration =
+    parsedResult && typeof parsedResult === 'object' && !Array.isArray(parsedResult)
+      ? (parsedResult as Record<string, unknown>).launchConfiguration
+      : null;
+  const config = isSessionLaunchConfiguration(launchConfiguration)
+    ? launchConfiguration
+    : null;
+
+  if (config) {
+    const { resolved } = config;
+    const items: LaunchSummaryItem[] = [
+      {
+        label: 'Model',
+        value: resolved.model,
+        source: resolved.sources.model,
+      },
+    ];
+    if (resolved.effortLevel) {
+      items.push({
+        label: 'Effort',
+        value: resolved.effortLevel,
+        source: resolved.sources.effortLevel,
+      });
+    }
+    if (resolved.thinkingMode) {
+      items.push({
+        label: 'Thinking',
+        value: resolved.thinkingMode === 'enabled' ? 'Adaptive' : 'Off',
+        source: resolved.sources.thinkingMode,
+      });
+    }
+    items.push({
+      label: 'Scope',
+      value: resolved.toolScope,
+      source: resolved.sources.toolScope,
+    });
+    items.push({
+      label: 'Workspace',
+      value: resolved.isolated
+        ? 'isolated'
+        : resolved.worktreeMode === 'none'
+          ? 'shared'
+          : `${resolved.worktreeMode} worktree`,
+    });
+    items.push({
+      label: 'Notify',
+      value: resolved.notifyOnComplete ? 'on' : 'off',
+    });
+    return items;
+  }
+
+  if (toolName !== 'create_session' && toolName !== 'spawn_session') return [];
+  const items: LaunchSummaryItem[] = [];
+  if (typeof args.model === 'string') {
+    items.push({ label: 'Model', value: args.model, source: 'requested' });
+  }
+  if (typeof args.effortLevel === 'string') {
+    items.push({ label: 'Effort', value: args.effortLevel, source: 'requested' });
+  }
+  if (typeof args.thinkingMode === 'string') {
+    items.push({
+      label: 'Thinking',
+      value: args.thinkingMode === 'enabled' ? 'Adaptive' : 'Off',
+      source: 'requested',
+    });
+  }
+  if (typeof args.toolScope === 'string') {
+    items.push({ label: 'Scope', value: args.toolScope, source: 'requested' });
+  }
+  return items;
 }
 
 function truncate(text: string, max = 120): string {
@@ -124,6 +216,7 @@ export const CrossSessionToolWidget: React.FC<CustomToolWidgetProps> = ({
     action.detailArg && typeof args[action.detailArg] === 'string'
       ? (args[action.detailArg] as string)
       : null;
+  const launchSummary = launchSummaryItems(bare, args, tool.result);
 
   const canExpand = Boolean(detail || tool.result);
   const isError = tool.isError || tool.status === 'error';
@@ -193,6 +286,37 @@ export const CrossSessionToolWidget: React.FC<CustomToolWidgetProps> = ({
           </button>
         ) : null}
       </div>
+
+      {launchSummary.length > 0 ? (
+        <div
+          className="cross-session-tool-widget-launch-summary"
+          aria-label="Launch configuration"
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '4px',
+            marginTop: '6px',
+          }}
+        >
+          {launchSummary.map((item) => (
+            <span
+              key={`${item.label}:${item.value}`}
+              className="cross-session-tool-widget-launch-item"
+              title={item.source ? `${item.label} source: ${item.source}` : undefined}
+              style={{
+                padding: '2px 6px',
+                borderRadius: '999px',
+                background: 'var(--nim-bg-tertiary)',
+                color: 'var(--nim-text-muted)',
+                fontSize: '11px',
+              }}
+            >
+              {item.label}: {truncate(item.value, 42)}
+              {item.source ? ` · ${item.source}` : ''}
+            </span>
+          ))}
+        </div>
+      ) : null}
 
       {detail && !isExpanded ? (
         <div

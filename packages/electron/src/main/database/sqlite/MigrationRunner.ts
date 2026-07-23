@@ -176,6 +176,11 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'tool_usage_backfill_state',
       sqlFile: path.join(schemaDir, '0027_tool_usage_backfill_state.sql'),
     },
+    {
+      version: 28,
+      name: 'queued_prompt_priority_control',
+      sqlFile: path.join(schemaDir, '0028_queued_prompt_priority_control.sql'),
+    },
   ];
 }
 

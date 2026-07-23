@@ -180,4 +180,58 @@ describe('queuedPromptDispatcher', () => {
 
     expect(onChainSettled).not.toHaveBeenCalled();
   });
+
+  it('dispatches an ordinary prompt exactly once when post-turn drains race', async () => {
+    vi.useFakeTimers();
+
+    const queued: ClaimedQueuedPrompt = {
+      id: 'ordinary-after-active-turn',
+      prompt: 'continue after the current turn',
+      attachments: null,
+      documentContext: null,
+    };
+    let claimed = false;
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => claimed ? [] : [queued]),
+      claim: vi.fn(async () => {
+        if (claimed) return null;
+        claimed = true;
+        return queued;
+      }),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+    const sendMessageHandler = vi.fn(async () => ({ content: 'ok' }));
+    const processingSet = new Set<string>();
+    const targetWindow = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+    const options = {
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: vi.fn(),
+      processingSet,
+      queueStore,
+      sendMessageHandler,
+      sessionId: 'session-1',
+      source: 'completion-handler queue',
+      startSession: vi.fn(async () => {}),
+      targetWindow,
+      workspacePath: '/workspace/project',
+    };
+
+    const results = await Promise.all([
+      tryClaimAndDispatchNextQueuedPrompt(options),
+      tryClaimAndDispatchNextQueuedPrompt(options),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+
+    await vi.runAllTimersAsync();
+
+    expect(queueStore.claim).toHaveBeenCalledTimes(2);
+    expect(sendMessageHandler).toHaveBeenCalledTimes(1);
+    expect(queueStore.complete).toHaveBeenCalledTimes(1);
+  });
 });

@@ -42,6 +42,10 @@
       "import": "./dist/ai/server/effortLevels.js",
       "types": "./dist/ai/server/effortLevels.d.ts"
     },
+    "./ai/server/sessionLaunchConfiguration": {
+      "import": "./dist/ai/server/sessionLaunchConfiguration.js",
+      "types": "./dist/ai/server/sessionLaunchConfiguration.d.ts"
+    },
     "./ai/types": {
       "import": "./dist/ai/types.js",
       "types": "./dist/ai/types.d.ts"
