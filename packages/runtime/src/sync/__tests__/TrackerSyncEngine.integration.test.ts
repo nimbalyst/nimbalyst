@@ -161,6 +161,12 @@ describe('TrackerSyncEngine (in-memory)', () => {
     const { clientMutationId } = await a.engine.upsertItem(payload);
 
     // Wait for both the local projection (after ack) and B's delta to land.
+    // KNOWN RACE: this only polls B's projection but the assertions below check
+    // A's envelope.syncId. The server's ack-to-A and broadcast-to-B are
+    // independent paths; on a slow runner B can land first and leave
+    // localA?.envelope.syncId at 0, tripping the toBeGreaterThan(0) below.
+    // If the flake recurs, add a second wait that also polls A, e.g.
+    // `await waitUntil(() => (a.persistence.items.get('round-trip-1')?.envelope.syncId ?? 0) > 0);`
     await waitUntil(() => appliedOnB.includes('round-trip-1'));
 
     // Local projection on A holds the decrypted payload.
