@@ -9,6 +9,7 @@ import { ProviderIcon } from '../../icons/ProviderIcons';
 import { MaterialSymbol } from '../../icons/MaterialSymbol';
 import { formatMessageTime, formatDuration, formatTurnFinishedAt } from '../../../utils/dateUtils';
 import { copyToClipboard } from '../../../utils/clipboard';
+import { serializeSelectionWithTrackerChips } from '../utils/trackerChipClipboard';
 import { JSONViewer } from './JSONViewer';
 import { formatToolArguments, extractFilePathFromArgs } from '../utils/pathResolver';
 import { EditToolResultCard } from './EditToolResultCard';
@@ -1196,6 +1197,35 @@ export const RichTranscriptView = React.forwardRef<
     );
     io.observe(el);
     return () => io.disconnect();
+  }, []);
+
+  // Preserve tracker-reference chips when copying from the transcript. The chips
+  // render with `user-select: none`, so a native selection copy drops their
+  // issue key entirely. When a copied selection includes a chip, rewrite the
+  // clipboard so each chip becomes "NIM-123" (text/plain) plus a nimbalyst://
+  // anchor (text/html). Selections without chips fall through to the browser's
+  // default copy untouched.
+  useEffect(() => {
+    const el = viewRootRef.current;
+    if (!el) return;
+    const handleCopy = (event: ClipboardEvent) => {
+      const selection = el.ownerDocument.getSelection();
+      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+      if (!el.contains(selection.anchorNode) && !el.contains(selection.focusNode)) {
+        return;
+      }
+      const fragment = el.ownerDocument.createDocumentFragment();
+      for (let i = 0; i < selection.rangeCount; i++) {
+        fragment.appendChild(selection.getRangeAt(i).cloneContents());
+      }
+      const payload = serializeSelectionWithTrackerChips(fragment);
+      if (!payload || !event.clipboardData) return;
+      event.preventDefault();
+      event.clipboardData.setData('text/plain', payload.text);
+      event.clipboardData.setData('text/html', payload.html);
+    };
+    el.addEventListener('copy', handleCopy);
+    return () => el.removeEventListener('copy', handleCopy);
   }, []);
 
   useEffect(() => {
