@@ -5,9 +5,19 @@ import { safeHandle } from '../utils/ipcRegistry';
 import { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { AIProviderType } from '@nimbalyst/runtime/ai/server/types';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
+import type { EffortLevel, ThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
+import {
+  isSessionLaunchConfiguration,
+  parseSessionLaunchToolScope,
+  resolveSessionReasoningConfiguration,
+  type SessionLaunchConfiguration,
+  type SessionLaunchToolScope,
+  type SessionLaunchValueSource,
+  type SessionLaunchWorktreeMode,
+} from '@nimbalyst/runtime/ai/server/sessionLaunchConfiguration';
 import { AISessionsRepository, AgentMessagesRepository, SessionFilesRepository } from '@nimbalyst/runtime';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
-import { getDefaultAIModel } from '../utils/store';
+import { getDefaultAIModel, getDefaultEffortLevel } from '../utils/store';
 import { toMillis } from '../utils/timestampUtils';
 import { createWorktreeStore } from './WorktreeStore';
 import { GitWorktreeService } from './GitWorktreeService';
@@ -55,6 +65,7 @@ interface SessionResultData {
   /** Capability scope the child was granted (read|write|full). The objective
    *  record of what the child COULD do; null/full means all tools. */
   toolScope?: string | null;
+  launchConfiguration?: SessionLaunchConfiguration;
 }
 
 interface CreateChildSessionArgs {
@@ -64,7 +75,17 @@ interface CreateChildSessionArgs {
   prompt?: string;
   useWorktree?: boolean;
   worktreeId?: string;
-  toolScope?: string;
+  toolScope?: SessionLaunchToolScope;
+  effortLevel?: EffortLevel;
+  thinkingMode?: ThinkingMode;
+}
+
+interface ChildLaunchContext {
+  inheritModel?: boolean;
+  isolated?: boolean;
+  notifyOnComplete?: boolean;
+  notifyOnCompleteRequested?: boolean | null;
+  worktreeMode?: SessionLaunchWorktreeMode;
 }
 
 function normalizeStoredChildModelIdentifier(
@@ -86,15 +107,128 @@ function normalizeStoredChildModelIdentifier(
   return model;
 }
 
+interface ResolvedChildModel {
+  provider: AIProviderType;
+  normalizedModel: string;
+  providerSource: SessionLaunchValueSource;
+  modelSource: SessionLaunchValueSource;
+}
+
+async function resolveChildSessionModelAndProvider(
+  parentSessionId: string,
+  args: Pick<CreateChildSessionArgs, 'provider' | 'model'>
+): Promise<ResolvedChildModel> {
+  let parentProvider: string | null = null;
+  let parentModel: string | null = null;
+  try {
+    const parentSession = await AISessionsRepository.get(parentSessionId);
+    if (parentSession) {
+      parentProvider = parentSession.provider ?? null;
+      parentModel = normalizeStoredChildModelIdentifier(parentProvider, parentSession.model ?? null);
+    }
+  } catch {
+    // Orphan callers fall through to the configured/default model.
+  }
+
+  const configuredDefaultModel = normalizeStoredChildModelIdentifier(null, getDefaultAIModel());
+  const defaultModel = parentModel || configuredDefaultModel || 'claude-code:opus';
+  const parsedExplicitModel = args.model ? ModelIdentifier.tryParse(args.model) : null;
+  if (
+    args.provider
+    && parsedExplicitModel?.provider
+    && parsedExplicitModel.provider !== args.provider
+  ) {
+    throw new Error(
+      `provider ${args.provider} does not match model provider ${parsedExplicitModel.provider}`
+    );
+  }
+
+  const explicitModelProvider =
+    args.provider
+    ?? parsedExplicitModel?.provider
+    ?? parentProvider;
+  const explicitModel = normalizeStoredChildModelIdentifier(
+    explicitModelProvider,
+    args.model ?? null
+  );
+  const model = explicitModel || defaultModel;
+  const parsed = ModelIdentifier.tryParse(model);
+  const configuredDefaultProvider = configuredDefaultModel
+    ? ModelIdentifier.tryParse(configuredDefaultModel)?.provider ?? null
+    : null;
+  const provider = (
+    args.provider
+    || parsed?.provider
+    || parentProvider
+    || configuredDefaultProvider
+    || 'claude-code'
+  ) as AIProviderType;
+  const parentModelProvider = parentModel
+    ? (ModelIdentifier.tryParse(parentModel)?.provider ?? parentProvider)
+    : null;
+  const normalizedModel =
+    explicitModel
+    || (parentModel && parentModelProvider === provider ? parentModel : null)
+    || (
+      configuredDefaultModel
+      && configuredDefaultProvider === provider
+        ? configuredDefaultModel
+        : null
+    )
+    || ModelIdentifier.getDefaultModelId(provider);
+
+  const providerSource: SessionLaunchValueSource = args.provider || parsedExplicitModel
+    ? 'requested'
+    : parentProvider
+      ? 'inherited'
+      : configuredDefaultProvider
+        ? 'app-default'
+        : 'default';
+  const modelSource: SessionLaunchValueSource = explicitModel
+    ? 'requested'
+    : parentModel && parentModelProvider === provider
+      ? 'inherited'
+      : configuredDefaultModel && configuredDefaultProvider === provider
+        ? 'app-default'
+        : 'default';
+
+  return { provider, normalizedModel, providerSource, modelSource };
+}
+
+function readSessionMetadata(metadata: unknown): Record<string, unknown> | null {
+  let parsed = metadata;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
+function readSessionLaunchConfiguration(
+  metadata: unknown
+): SessionLaunchConfiguration | undefined {
+  const launchConfiguration = readSessionMetadata(metadata)?.launchConfiguration;
+  return isSessionLaunchConfiguration(launchConfiguration)
+    ? launchConfiguration
+    : undefined;
+}
+
 interface SpawnSessionArgs {
   title?: string;
   prompt: string;
   useWorktree?: boolean;
+  provider?: string;
   model?: string;
+  toolScope?: SessionLaunchToolScope;
+  effortLevel?: EffortLevel;
+  thinkingMode?: ThinkingMode;
   /**
-   * When true and `model` is not explicitly set, the new session uses the
-   * caller's model instead of the global app default. Ignored if `model` is
-   * provided explicitly.
+   * Records explicit inheritance intent in launch provenance. The current
+   * default also inherits the caller when model is omitted.
    */
   inheritModel?: boolean;
   /**
@@ -377,7 +511,10 @@ export class MetaAgentService {
   private async createChildSessionInternal(
     metaSessionId: string,
     workspaceId: string,
-    args: CreateChildSessionArgs & { parentSessionIdOverride?: string | null }
+    args: CreateChildSessionArgs & {
+      parentSessionIdOverride?: string | null;
+      launchContext?: ChildLaunchContext;
+    }
   ): Promise<{
     sessionId: string;
     title: string;
@@ -389,6 +526,7 @@ export class MetaAgentService {
     createdBySessionId: string;
     queuedInitialPrompt: boolean;
     parentSessionId: string | null;
+    launchConfiguration: SessionLaunchConfiguration;
   }> {
     if (!this.aiService) {
       throw new Error('AI service not initialized');
@@ -413,57 +551,20 @@ export class MetaAgentService {
       );
     }
 
-    // Inherit the calling session's provider+model as the primary fallback so a
-    // non-Claude parent (Gemini, OpenAI-Codex, LM Studio, etc.) spawning a child
-    // via the meta-agent tools without an explicit model does NOT silently land
-    // on the hardcoded Opus default and bill the user's Anthropic pool. Only fall
-    // through to getDefaultAIModel() / the last-resort default when the parent
-    // session cannot be loaded (orphan call) or carries no usable provider+model.
-    // An explicit args.provider/args.model still wins; that is what they are for.
-    let parentProvider: string | null = null;
-    let parentModel: string | null = null;
-    try {
-      const parentSession = await AISessionsRepository.get(metaSessionId);
-      if (parentSession) {
-        parentProvider = parentSession.provider ?? null;
-        parentModel = normalizeStoredChildModelIdentifier(parentProvider, parentSession.model ?? null);
-      }
-    } catch {
-      // Best-effort lookup; fall through to the hardcoded default below.
-    }
-
-    const defaultModel =
-      parentModel
-      || normalizeStoredChildModelIdentifier(null, getDefaultAIModel())
-      || 'claude-code:opus';
-    // For an explicit model, the model's own "provider:" prefix is
-    // authoritative (e.g. a claude-code parent launching an
-    // "openai-codex:gpt-5.5" action). Only fall back to the parent's provider
-    // for a bare, prefix-less variant; passing the parent provider for a
-    // self-describing identifier wrongly trips the claude-code mismatch guard.
-    const explicitModelProvider =
-      args.provider
-      ?? (args.model?.includes(':') ? ModelIdentifier.tryParse(args.model)?.provider ?? null : null)
-      ?? parentProvider;
-    const explicitModel = normalizeStoredChildModelIdentifier(explicitModelProvider, args.model ?? null);
-    const model = explicitModel || defaultModel;
-    const parsed = ModelIdentifier.tryParse(model);
-    const provider = (args.provider ||
-      parsed?.provider ||
-      parentProvider ||
-      'claude-code') as AIProviderType;
-    // Provider and model MUST agree. Otherwise a child is persisted with, e.g.,
-    // provider=claude-code + an antigravity-gemini model, gets routed to the
-    // Claude Code provider, is rejected ("requires a claude-code:* identifier"),
-    // and dies with no output. Only reuse the parent model when it actually
-    // belongs to the resolved provider; otherwise use that provider default.
-    const parentModelProvider = parentModel
-      ? (ModelIdentifier.tryParse(parentModel)?.provider ?? parentProvider)
-      : null;
-    const normalizedModel =
-      explicitModel
-      || (parentModel && parentModelProvider === provider ? parentModel : null)
-      || ModelIdentifier.getDefaultModelId(provider);
+    const {
+      provider,
+      normalizedModel,
+      providerSource,
+      modelSource,
+    } = await resolveChildSessionModelAndProvider(metaSessionId, args);
+    const toolScope = parseSessionLaunchToolScope(args.toolScope);
+    const reasoning = resolveSessionReasoningConfiguration({
+      provider,
+      model: normalizedModel,
+      effortLevel: args.effortLevel,
+      thinkingMode: args.thinkingMode,
+      appDefaultEffortLevel: getDefaultEffortLevel(),
+    });
 
     const callerProvidedTitle = !!args.title?.trim();
     const title = (args.title || this.deriveTitleFromPrompt(args.prompt) || 'Meta Task').trim();
@@ -597,14 +698,54 @@ export class MetaAgentService {
       hasBeenNamed: callerProvidedTitle,
     } as any);
 
-    // Read-only tool segregation: persist a restricted capability scope so the
-    // child is granted only the matching dev tools at turn time (an analyze
-    // child physically cannot run_command, so it cannot build or claim to).
-    const childToolScope =
-      args.toolScope === 'read' || args.toolScope === 'write' ? args.toolScope : undefined;
-    if (childToolScope) {
-      await AISessionsRepository.updateMetadata(sessionId, { metadata: { toolScope: childToolScope } });
-    }
+    const worktreeMode: SessionLaunchWorktreeMode =
+      args.launchContext?.worktreeMode
+      ?? (args.worktreeId ? 'existing' : args.useWorktree ? 'new' : 'none');
+    const notifyOnComplete = args.launchContext?.notifyOnComplete ?? true;
+    const launchConfiguration: SessionLaunchConfiguration = {
+      requested: {
+        provider: args.provider ?? null,
+        model: args.model ?? null,
+        effortLevel: reasoning.requestedEffortLevel,
+        thinkingMode: reasoning.requestedThinkingMode,
+        toolScope: args.toolScope ?? null,
+        inheritModel: args.launchContext?.inheritModel === true,
+        isolated: args.launchContext?.isolated === true,
+        useWorktree: args.useWorktree === true,
+        notifyOnComplete: args.launchContext?.notifyOnCompleteRequested ?? null,
+      },
+      resolved: {
+        provider,
+        model: normalizedModel,
+        effortLevel: reasoning.effortLevel,
+        thinkingMode: reasoning.thinkingMode,
+        toolScope,
+        isolated: args.launchContext?.isolated === true,
+        worktreeMode,
+        notifyOnComplete,
+        sources: {
+          provider: providerSource,
+          model: modelSource,
+          effortLevel: reasoning.effortLevelSource,
+          thinkingMode: reasoning.thinkingModeSource,
+          toolScope: args.toolScope ? 'requested' : 'default',
+        },
+      },
+      effectiveness: 'not-provider-confirmed',
+    };
+
+    // Persist the complete launch snapshot before the initial prompt is queued.
+    // Runtime fields remain top-level for existing provider/tool-scope readers;
+    // launchConfiguration is the truthful requested/resolved audit contract.
+    await AISessionsRepository.updateMetadata(sessionId, {
+      metadata: {
+        launchConfiguration,
+        ...(toolScope !== 'full' ? { toolScope } : {}),
+        ...(reasoning.effortLevel ? { effortLevel: reasoning.effortLevel } : {}),
+        ...(reasoning.thinkingMode ? { thinkingMode: reasoning.thinkingMode } : {}),
+        ...(!notifyOnComplete ? { notifyParent: false } : {}),
+      },
+    });
 
     const initialPrompt = args.prompt?.trim();
     const shouldBypassExecution = this.shouldBypassChildAgentExecutionForTests();
@@ -657,6 +798,7 @@ export class MetaAgentService {
       createdBySessionId: metaSessionId,
       queuedInitialPrompt: !!initialPrompt,
       parentSessionId: args.parentSessionIdOverride ?? null,
+      launchConfiguration,
     };
   }
 
@@ -673,6 +815,23 @@ export class MetaAgentService {
     if (!parent || parent.workspacePath !== workspaceId) {
       throw new Error(`Parent session ${parentSessionId} not found in this workspace`);
     }
+
+    // Validate the complete requested configuration before workstream
+    // resolution can create a container or reparent the caller.
+    const effectiveModel =
+      args.model ?? (args.inheritModel ? parent.model ?? undefined : undefined);
+    const previewResolution = await resolveChildSessionModelAndProvider(parentSessionId, {
+      provider: args.provider,
+      model: effectiveModel,
+    });
+    parseSessionLaunchToolScope(args.toolScope);
+    resolveSessionReasoningConfiguration({
+      provider: previewResolution.provider,
+      model: previewResolution.normalizedModel,
+      effortLevel: args.effortLevel,
+      thinkingMode: args.thinkingMode,
+      appDefaultEffortLevel: getDefaultEffortLevel(),
+    });
 
     const isolated = args.isolated === true;
 
@@ -697,31 +856,33 @@ export class MetaAgentService {
     const inheritedWorktreeId =
       !args.useWorktree && parent.worktreeId ? parent.worktreeId : undefined;
 
-    // Resolve effective model: explicit `model` wins; otherwise `inheritModel`
-    // copies the caller's model so the new session keeps the same provider/model
-    // (e.g. opus stays on opus). Falling through to undefined lets
-    // createChildSessionInternal use the global default.
-    const effectiveModel =
-      args.model ?? (args.inheritModel ? parent.model ?? undefined : undefined);
-
+    const notifyOnComplete = args.notifyOnComplete === true;
     const childResult = await this.createChildSessionInternal(parentSessionId, workspaceId, {
       title: args.title,
       prompt: args.prompt,
       useWorktree: !!args.useWorktree,
       worktreeId: inheritedWorktreeId,
+      provider: args.provider,
       model: effectiveModel,
+      toolScope: args.toolScope,
+      effortLevel: args.effortLevel,
+      thinkingMode: args.thinkingMode,
       parentSessionIdOverride: workstreamId,
+      launchContext: {
+        inheritModel: args.inheritModel,
+        isolated,
+        notifyOnComplete,
+        notifyOnCompleteRequested: args.notifyOnComplete ?? null,
+        worktreeMode: args.useWorktree
+          ? 'new'
+          : inheritedWorktreeId
+            ? 'inherited'
+            : 'none',
+      },
     });
 
     // Default is fire-and-forget: kicking off work in a fresh session is the
     // common /launch-new-session use case (escape a long parent context).
-    const notifyOnComplete = args.notifyOnComplete === true;
-    if (!notifyOnComplete) {
-      await AISessionsRepository.updateMetadata(childResult.sessionId, {
-        metadata: { notifyParent: false },
-      });
-    }
-
     return JSON.stringify({
       ...childResult,
       isolated,
@@ -845,6 +1006,10 @@ export class MetaAgentService {
       agentRole: row.agent_role || 'standard',
       waitingForInput: status === 'waiting_for_input',
     };
+    const launchConfiguration = readSessionLaunchConfiguration(row.metadata);
+    if (launchConfiguration) {
+      result.launchConfiguration = launchConfiguration;
+    }
 
     return JSON.stringify(result, null, 2);
   }
@@ -1040,7 +1205,7 @@ export class MetaAgentService {
 
   private async getSpawnedSessions(metaSessionId: string, workspaceId: string): Promise<Array<Record<string, unknown>>> {
     const { rows } = await databaseWorker.query<any>(
-      `SELECT id, title, provider, model, status, last_activity, created_at, updated_at, worktree_id, agent_role, created_by_session_id
+      `SELECT id, title, provider, model, status, last_activity, created_at, updated_at, worktree_id, agent_role, created_by_session_id, metadata
        FROM ai_sessions
        WHERE workspace_id = $1
          AND created_by_session_id = $2
@@ -1060,6 +1225,7 @@ export class MetaAgentService {
         createdAt: toMillis(row.created_at)!,
         updatedAt: toMillis(row.updated_at)!,
         worktreeId: row.worktree_id || null,
+        metadata: row.metadata,
       }, false);
       sessions.push({
         sessionId: data.sessionId,
@@ -1075,6 +1241,9 @@ export class MetaAgentService {
         createdAt: data.createdAt,
         updatedAt: data.updatedAt,
         worktreeId: data.worktreeId || null,
+        ...(data.launchConfiguration
+          ? { launchConfiguration: data.launchConfiguration }
+          : {}),
       });
     }
 
@@ -1250,7 +1419,17 @@ export class MetaAgentService {
   private async buildSessionResultData(
     sessionId: string,
     workspaceId: string,
-    prefetchedSession?: { title: string; provider: string; model: string | null; status: string; lastActivity: number | null; createdAt: number; updatedAt: number; worktreeId: string | null },
+    prefetchedSession?: {
+      title: string;
+      provider: string;
+      model: string | null;
+      status: string;
+      lastActivity: number | null;
+      createdAt: number;
+      updatedAt: number;
+      worktreeId: string | null;
+      metadata?: unknown;
+    },
     // Skip the heavier full-turn extract when the caller only needs preview
     // fields (the list and notification paths discard fullResponse).
     includeFullResponse: boolean = true
@@ -1264,6 +1443,7 @@ export class MetaAgentService {
     let sessionUpdatedAt: number;
     let sessionWorktreeId: string | null;
     let sessionToolScope: string | null = null;
+    let launchConfiguration: SessionLaunchConfiguration | undefined;
 
     if (prefetchedSession) {
       sessionTitle = prefetchedSession.title;
@@ -1274,6 +1454,11 @@ export class MetaAgentService {
       sessionCreatedAt = prefetchedSession.createdAt;
       sessionUpdatedAt = prefetchedSession.updatedAt;
       sessionWorktreeId = prefetchedSession.worktreeId;
+      const metadata = readSessionMetadata(prefetchedSession.metadata);
+      launchConfiguration = readSessionLaunchConfiguration(metadata);
+      sessionToolScope = typeof metadata?.toolScope === 'string'
+        ? metadata.toolScope
+        : launchConfiguration?.resolved.toolScope ?? null;
     } else {
       const session = await AISessionsRepository.get(sessionId);
       if (!session || session.workspacePath !== workspaceId) {
@@ -1288,8 +1473,11 @@ export class MetaAgentService {
       sessionCreatedAt = session.createdAt;
       sessionUpdatedAt = session.updatedAt;
       sessionWorktreeId = session.worktreeId || null;
-      sessionToolScope =
-        ((session.metadata as Record<string, unknown> | undefined)?.toolScope as string | undefined) ?? null;
+      const metadata = readSessionMetadata(session.metadata);
+      launchConfiguration = readSessionLaunchConfiguration(metadata);
+      sessionToolScope = typeof metadata?.toolScope === 'string'
+        ? metadata.toolScope
+        : launchConfiguration?.resolved.toolScope ?? null;
     }
 
     const messages = await AgentMessagesRepository.list(sessionId, { limit: 500 });
@@ -1324,6 +1512,7 @@ export class MetaAgentService {
       updatedAt: sessionUpdatedAt,
       worktreeId: sessionWorktreeId,
       toolScope: sessionToolScope,
+      ...(launchConfiguration ? { launchConfiguration } : {}),
     };
   }
 
@@ -1457,7 +1646,7 @@ export class MetaAgentService {
 
   private async getSessionStatusRow(sessionId: string, workspaceId: string): Promise<any | null> {
     const { rows } = await databaseWorker.query<any>(
-      `SELECT id, title, provider, model, status, last_activity, updated_at, created_by_session_id, agent_role
+      `SELECT id, title, provider, model, status, last_activity, updated_at, created_by_session_id, agent_role, metadata
        FROM ai_sessions
        WHERE id = $1 AND workspace_id = $2
        LIMIT 1`,

@@ -13,6 +13,16 @@
  */
 
 import { resolveProjectPath } from "../utils/workspaceDetection";
+import {
+  SESSION_LAUNCH_EFFORT_LEVELS,
+  SESSION_LAUNCH_THINKING_MODES,
+  SESSION_LAUNCH_TOOL_SCOPES,
+  type SessionLaunchToolScope,
+} from "@nimbalyst/runtime/ai/server/sessionLaunchConfiguration";
+import type {
+  EffortLevel,
+  ThinkingMode,
+} from "@nimbalyst/runtime/ai/server/effortLevels";
 
 type CreateSessionArgs = {
   title?: string;
@@ -21,14 +31,20 @@ type CreateSessionArgs = {
   prompt?: string;
   useWorktree?: boolean;
   worktreeId?: string;
-  toolScope?: string;
+  toolScope?: SessionLaunchToolScope;
+  effortLevel?: EffortLevel;
+  thinkingMode?: ThinkingMode;
 };
 
 type SpawnSessionArgs = {
   title?: string;
   prompt: string;
   useWorktree?: boolean;
+  provider?: string;
   model?: string;
+  toolScope?: SessionLaunchToolScope;
+  effortLevel?: EffortLevel;
+  thinkingMode?: ThinkingMode;
   notifyOnComplete?: boolean;
   /**
    * When true, the new session is created at the top level — no parent,
@@ -217,9 +233,21 @@ export const META_AGENT_TOOL_DEFS: Array<{
         },
         toolScope: {
           type: "string",
-          enum: ["read", "write", "full"],
+          enum: [...SESSION_LAUNCH_TOOL_SCOPES],
           description:
             "Capability scope for the child. \"read\" = read_file/list_files/search_files only (pure investigation). \"write\" = those plus write_file but NO run_command, so the child can save a file deliverable (e.g. a report) yet cannot build/test/run anything. \"full\" (default) = all tools including run_command. Use read or write for analyze/research tasks so the child physically cannot run a build, and reserve full for tasks that must build/test.",
+        },
+        effortLevel: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_EFFORT_LEVELS],
+          description:
+            "Optional requested reasoning effort for this child only. Accepted only when the resolved provider/model supports that exact value; unsupported combinations fail before session creation.",
+        },
+        thinkingMode: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_THINKING_MODES],
+          description:
+            "Optional Claude adaptive-thinking toggle for this child only. Accepted only for Claude Agent models whose transport implements the toggle; unsupported combinations fail before session creation.",
         },
       },
     },
@@ -250,15 +278,38 @@ export const META_AGENT_TOOL_DEFS: Array<{
           description:
             "Default false. By default the spawned session inherits the caller's working directory: if the caller is in a worktree, the new session runs in that same worktree; if the caller is in the main checkout, the new session runs there too. Set true only when the user explicitly asks for the new session to get its OWN new worktree (separate branch and working directory) — this creates a fresh worktree rather than inheriting the caller's.",
         },
+        provider: {
+          type: "string",
+          description:
+            "Optional explicit provider. When set, model must either be omitted or carry the same provider prefix.",
+        },
         model: {
           type: "string",
           description:
-            "Optional explicit model identifier (e.g. 'claude-code:opus'). When omitted, the new session uses the global default model unless inheritModel=true. Wins over inheritModel when both are set.",
+            "Optional explicit model identifier (e.g. 'claude-code:opus'). When omitted, the new session inherits the caller's provider/model. Wins over inheritModel when both are set.",
         },
         inheritModel: {
           type: "boolean",
           description:
-            "Default false. When true and `model` is not set, the spawned session uses the caller's model so it stays on the same provider/model (e.g. opus stays on opus). Ignored when `model` is provided explicitly.",
+            "Optional explicit inheritance intent retained in launch provenance. When model is omitted, the spawned session inherits the caller's provider/model either way; an explicit model wins.",
+        },
+        toolScope: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_TOOL_SCOPES],
+          description:
+            "Capability scope for the spawned session. \"read\" and \"write\" restrict tools; \"full\" (default) grants the complete tool surface.",
+        },
+        effortLevel: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_EFFORT_LEVELS],
+          description:
+            "Optional requested reasoning effort for this session only. Accepted only when the resolved provider/model supports that exact value; unsupported combinations fail before session creation.",
+        },
+        thinkingMode: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_THINKING_MODES],
+          description:
+            "Optional Claude adaptive-thinking toggle for this session only. Accepted only for Claude Agent models whose transport implements the toggle; unsupported combinations fail before session creation.",
         },
         notifyOnComplete: {
           type: "boolean",
