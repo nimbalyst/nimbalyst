@@ -9,8 +9,15 @@ import { findForbiddenAuthors, parseGitLog } from '../check-push-authors.mjs';
 
 const CHECK_SCRIPT = fileURLToPath(new URL('../check-push-authors.mjs', import.meta.url));
 
+// Git exports repository-local GIT_* variables to hooks. If this test runs
+// inside pre-push and inherits those variables, `cwd` alone is not an isolation
+// boundary: scratch commits can mutate the repository that invoked the hook.
+const SCRATCH_ENV = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')),
+);
+
 function git(cwd, ...args) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' });
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env: SCRATCH_ENV });
 }
 
 function commitAs(cwd, name, email, message) {
@@ -55,7 +62,11 @@ test('CLI rejects a range containing a fixture-authored commit', (t) => {
   commitAs(repo, 'Greg Hinkle', 'greghinkle@gmail.com', 'real work');
   commitAs(repo, 'Test User', 'test@example.com', 'seed');
   assert.throws(
-    () => execFileSync('node', [CHECK_SCRIPT, 'HEAD~1..HEAD'], { cwd: repo, encoding: 'utf8' }),
+    () => execFileSync(
+      'node',
+      [CHECK_SCRIPT, 'HEAD~1..HEAD'],
+      { cwd: repo, encoding: 'utf8', env: SCRATCH_ENV },
+    ),
     (error) => {
       assert.equal(error.status, 1);
       assert.match(error.stderr, /test-fixture authors/);
@@ -69,6 +80,10 @@ test('CLI passes a range of real commits', (t) => {
   const repo = makeScratchRepo(t);
   commitAs(repo, 'Greg Hinkle', 'greghinkle@gmail.com', 'first');
   commitAs(repo, 'Greg Hinkle', 'greghinkle@gmail.com', 'second');
-  const stdout = execFileSync('node', [CHECK_SCRIPT, 'HEAD~1..HEAD'], { cwd: repo, encoding: 'utf8' });
+  const stdout = execFileSync(
+    'node',
+    [CHECK_SCRIPT, 'HEAD~1..HEAD'],
+    { cwd: repo, encoding: 'utf8', env: SCRATCH_ENV },
+  );
   assert.match(stdout, /OK: no test-fixture authors/);
 });

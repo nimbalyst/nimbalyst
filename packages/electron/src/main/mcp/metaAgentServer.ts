@@ -28,6 +28,8 @@ type SpawnSessionArgs = {
   title?: string;
   prompt: string;
   useWorktree?: boolean;
+  targetWorkspacePath?: string;
+  baseBranch?: string;
   model?: string;
   notifyOnComplete?: boolean;
   /**
@@ -249,6 +251,16 @@ export const META_AGENT_TOOL_DEFS: Array<{
           type: "boolean",
           description:
             "Default false. By default the spawned session inherits the caller's working directory: if the caller is in a worktree, the new session runs in that same worktree; if the caller is in the main checkout, the new session runs there too. Set true only when the user explicitly asks for the new session to get its OWN new worktree (separate branch and working directory) — this creates a fresh worktree rather than inheriting the caller's.",
+        },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional absolute path of an already-loaded canonical Nimbalyst project. Cross-project creation fails closed unless isolated=true and useWorktree=true, so the child is born as a top-level session in a fresh target-project worktree. This does not attach to an existing worktree or grant authority from an arbitrary path.",
+        },
+        baseBranch: {
+          type: "string",
+          description:
+            "Optional branch or ref for the fresh worktree created by useWorktree=true. With targetWorkspacePath, the ref is resolved inside that already-loaded target project.",
         },
         model: {
           type: "string",
