@@ -5,16 +5,19 @@ import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { MemoryEngine } from '../engine.js';
+import { SparseEmbedder } from '../embedders/sparseEmbedder.js';
 import { createMcpServer } from '../mcp/server.js';
 import { FakeEmbedder } from './fakeEmbedder.js';
-import type { EngineConfig } from '../types.js';
+import type { Embedder, EngineConfig } from '../types.js';
 
 const roots: string[] = [];
 afterEach(() => {
   for (const d of roots.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-async function bootEngine(): Promise<MemoryEngine> {
+async function bootEngine(
+  mode: 'hybrid' | 'keyword-only' | 'query-failure' = 'hybrid',
+): Promise<MemoryEngine> {
   const root = mkdtempSync(path.join(tmpdir(), 'mem-mcp-'));
   roots.push(root);
   mkdirSync(path.join(root, 'docs'), { recursive: true });
@@ -28,7 +31,23 @@ async function bootEngine(): Promise<MemoryEngine> {
     factsDir: 'voice-memory',
     sources: [{ sourceClass: 'docs', include: ['docs/**/*.md'] }],
   };
-  const engine = MemoryEngine.create(config, new FakeEmbedder());
+  const fake = new FakeEmbedder();
+  let calls = 0;
+  const queryFailure: Embedder = {
+    info: fake.info,
+    async embed(texts) {
+      calls += 1;
+      if (calls > 1) throw new Error('Invalid API key credential detail');
+      return fake.embed(texts);
+    },
+  };
+  const embedder =
+    mode === 'keyword-only'
+      ? new SparseEmbedder()
+      : mode === 'query-failure'
+        ? queryFailure
+        : fake;
+  const engine = MemoryEngine.create(config, embedder);
   await engine.indexAll();
   return engine;
 }
@@ -66,6 +85,62 @@ describe('MCP server adapter (end-to-end over in-memory transport)', () => {
     ) as { chunks: { sourcePath: string; citation: string }[] };
     expect(res.chunks[0].sourcePath).toBe('docs/voice.md');
     expect(res.chunks[0].citation).toContain('docs/voice.md');
+    await engine.close();
+  });
+
+  it('returns structured local fallback data without credential solicitation', async () => {
+    const engine = await bootEngine('keyword-only');
+    const client = await connect(engine);
+    const raw = await client.callTool({
+      name: 'search_project_knowledge',
+      arguments: { query: 'realtime voice grounding', k: 3 },
+    });
+    const res = parse(raw) as {
+      chunks: { sourcePath: string }[];
+      capabilities: {
+        mode: string;
+        semantic: { available: boolean; reason?: string };
+        keyword: { available: boolean; source: string };
+      };
+      fallback: { used: boolean; kind: string; hint: string };
+    };
+
+    expect(res.chunks[0].sourcePath).toBe('docs/voice.md');
+    expect(res.capabilities).toEqual({
+      mode: 'keyword-only',
+      semantic: {
+        available: false,
+        reason: 'optional-embedding-provider-unavailable',
+      },
+      keyword: { available: true, source: 'local-project-index' },
+    });
+    expect(res.fallback).toEqual({
+      used: true,
+      kind: 'local-keyword-index',
+      hint:
+        'Keyword search ran locally. If results are insufficient, use normal ' +
+        'workspace file/text search over project Markdown.',
+    });
+    expect(JSON.stringify(raw)).not.toMatch(/api key|credential|configure.*settings/i);
+    await engine.close();
+  });
+
+  it('does not expose raw provider errors through search or status', async () => {
+    const engine = await bootEngine('query-failure');
+    const client = await connect(engine);
+    const search = await client.callTool({
+      name: 'search_project_knowledge',
+      arguments: { query: 'realtime voice grounding', k: 3 },
+    });
+    const status = await client.callTool({ name: 'status', arguments: {} });
+
+    expect(JSON.stringify({ search, status })).not.toMatch(
+      /api key|credential|configure.*settings/i,
+    );
+    expect(parse(search)).toMatchObject({
+      capabilities: { mode: 'keyword-only', semantic: { available: false } },
+      fallback: { used: true, kind: 'local-keyword-index' },
+    });
     await engine.close();
   });
 

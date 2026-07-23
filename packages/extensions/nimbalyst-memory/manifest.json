@@ -21,7 +21,7 @@
         "enablement": {
           "default": "disabled",
           "promptOn": "firstUse",
-          "purpose": "Index this project's markdown locally and create OpenAI embeddings (using your configured OpenAI key) so the coding and voice agents can ground answers in your design docs, plans, and notes."
+          "purpose": "Index this project's Markdown locally for keyword search. Semantic matching is used when an optional embedding provider is already configured."
         }
       }
     ],

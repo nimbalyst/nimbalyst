@@ -151,6 +151,29 @@ export interface SearchHit {
   signals?: { dense: boolean; sparse: boolean };
 }
 
+/** Stable retrieval capability data returned by status and search tools. */
+export interface RetrievalCapabilities {
+  mode: 'hybrid' | 'keyword-only';
+  semantic: {
+    available: boolean;
+    reason?: 'optional-embedding-provider-unavailable';
+  };
+  keyword: {
+    available: true;
+    source: 'local-project-index';
+  };
+}
+
+export interface ProjectSearchResponse {
+  chunks: SearchHit[];
+  capabilities: RetrievalCapabilities;
+  fallback: {
+    used: boolean;
+    kind: 'local-keyword-index';
+    hint: string;
+  };
+}
+
 /** A single fact, parsed from its markdown file + frontmatter. */
 export interface Fact {
   /** Path relative to root. */

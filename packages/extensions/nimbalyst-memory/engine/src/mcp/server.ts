@@ -12,12 +12,14 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { MemoryEngine } from '../engine.js';
+import { buildProjectSearchResponse, buildPublicEngineStatus } from '../searchResponse.js';
 
 const TOOLS = [
   {
     name: 'search_project_knowledge',
     description:
-      'Hybrid semantic + keyword search over the indexed project markdown ' +
+      'Search the indexed project markdown with local keyword retrieval and ' +
+      'semantic matching when available ' +
       '(design docs, plans, CLAUDE.md, trackers, voice-memory). Returns the top ' +
       'matching chunks with source + heading citations. Use this to ground ' +
       'answers in how the project actually works.',
@@ -119,7 +121,8 @@ export function createMcpServer(engine: MemoryEngine): Server {
           const query = String(args.query ?? '');
           if (!query) throw new McpError(ErrorCode.InvalidParams, 'query is required');
           const k = typeof args.k === 'number' ? args.k : 5;
-          return jsonResult({ chunks: await engine.search(query, k) });
+          const chunks = await engine.search(query, k);
+          return jsonResult(buildProjectSearchResponse(chunks, engine.status().retrieval));
         }
         case 'expand': {
           const sourcePath = String(args.sourcePath ?? '');
@@ -159,7 +162,7 @@ export function createMcpServer(engine: MemoryEngine): Server {
           return jsonResult(await engine.indexAll());
         }
         case 'status': {
-          return jsonResult(engine.status());
+          return jsonResult(buildPublicEngineStatus(engine.status()));
         }
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);

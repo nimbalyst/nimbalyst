@@ -229,7 +229,7 @@ export class Indexer {
         prev.embedderId === info.id &&
         prev.model === info.model &&
         prev.dims === info.dims &&
-        prev.denseEmbedding;
+        (info.dims === 0 || prev.denseEmbedding);
       if (!reusable) pending.push({ idx, input: embedInput(c.headingPath, c.text) });
       return {
         ...c,

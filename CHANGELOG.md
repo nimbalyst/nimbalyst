@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Project-knowledge search now falls back to the local keyword index when semantic matching is unavailable instead of presenting a credential setup error.
 
 ### Removed
 <!-- Removed features go here -->

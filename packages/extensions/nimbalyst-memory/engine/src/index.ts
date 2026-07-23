@@ -8,6 +8,8 @@ export { MemoryEngine, type EngineStatus } from './engine.js';
 export { createEmbedder, type EmbedderConfig } from './embedders/factory.js';
 export { OpenAIEmbedder, type OpenAIEmbedderConfig } from './embedders/openaiEmbedder.js';
 export { LocalEmbedder, type LocalEmbedderConfig } from './embedders/localEmbedder.js';
+export { SparseEmbedder } from './embedders/sparseEmbedder.js';
+export { buildProjectSearchResponse, buildPublicEngineStatus } from './searchResponse.js';
 export { Indexer, type IndexProgress } from './indexer/indexer.js';
 export { Retriever } from './retrieval/retriever.js';
 export { SqliteStore } from './store/sqliteStore.js';

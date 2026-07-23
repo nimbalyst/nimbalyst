@@ -17,7 +17,12 @@ export interface GroundingStatus {
   indexing?: boolean;
   lastEmbedError?: string | null;
   embedder?: { model?: string } | null;
-  /** Set when ready === false (e.g. missing OpenAI key). */
+  retrieval?: {
+    mode?: 'hybrid' | 'keyword-only';
+    semantic?: { available?: boolean; reason?: string };
+    keyword?: { available?: boolean; source?: string };
+  };
+  /** Diagnostic detail is never copied into the grounding note. */
   error?: string | null;
 }
 
@@ -55,24 +60,29 @@ const MAX_FACTS = 8;
 
 function statusLine(status: GroundingStatus): string | null {
   if (status.ready === false) {
-    const reason = status.error ? ` ${status.error}` : '';
     return (
-      'Project-knowledge index is not ready yet.' +
-      reason +
-      ' Searches may return nothing until it is configured/finished — rely on ' +
-      'the conversation for now.'
+      'The local project-knowledge index is unavailable. Use normal workspace ' +
+      'file/text search over project Markdown for grounding.'
     );
   }
   const chunks = status.chunks ?? 0;
+  const keywordOnly =
+    status.retrieval?.mode === 'keyword-only' ||
+    status.retrieval?.semantic?.available === false ||
+    Boolean(status.lastEmbedError);
   if (status.indexing) {
-    return `Project-knowledge index is still building (${chunks} chunks so far); search results improve as it finishes.`;
+    return keywordOnly
+      ? `Local keyword project search is still building (${chunks} chunks so far); results improve as it finishes.`
+      : `Project-knowledge index is still building (${chunks} chunks so far); search results improve as it finishes.`;
   }
-  let line = `Project-knowledge index ready: ${chunks} chunks (semantic + keyword search).`;
-  if (status.lastEmbedError) {
-    line +=
-      ' Semantic search is currently degraded (an embedding error occurred) — keyword matches still work.';
+  if (keywordOnly) {
+    return (
+      `Local keyword project search is ready: ${chunks} chunks. Semantic matching ` +
+      'is unavailable; if results are insufficient, use normal workspace ' +
+      'file/text search over project Markdown.'
+    );
   }
-  return line;
+  return `Project-knowledge index ready: ${chunks} chunks (semantic + keyword search).`;
 }
 
 /**
