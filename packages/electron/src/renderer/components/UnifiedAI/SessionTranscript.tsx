@@ -108,7 +108,7 @@ import {
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
 import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom, developerModeAtom } from '../../store/atoms/appSettings';
-import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, parseThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
+import { normalizeEffortForModel, supportedEffortLevelsForModel, supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, parseThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
@@ -518,10 +518,15 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   // Effort level: read from session metadata, fall back to global default
   const showEffortLevel = useMemo(() => supportsEffortLevel(currentModel), [currentModel]);
+  const supportedEffortLevels = useMemo(
+    () => supportedEffortLevelsForModel(currentModel),
+    [currentModel],
+  );
   const effortLevel = useMemo(() => {
-    return rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
-  }, [rawEffortLevel, defaultEffortLevel]);
-  // Extended-thinking is a power-user control: only surface the selector in
+    const selectedEffort = rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
+    return normalizeEffortForModel(currentModel, selectedEffort);
+  }, [rawEffortLevel, defaultEffortLevel, currentModel]);
+  // Adaptive thinking is a power-user control: only surface the selector in
   // developer mode. When hidden, thinkingMode is never set, so the default
   // (adaptive/enabled) applies.
   const developerMode = useAtomValue(developerModeAtom);
@@ -2606,6 +2611,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
         showEffortLevel={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showEffortLevel}
+        supportedEffortLevels={supportedEffortLevels}
         thinkingMode={thinkingMode}
         onThinkingModeChange={handleThinkingModeChange}
         showThinkingToggle={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showThinkingToggle}

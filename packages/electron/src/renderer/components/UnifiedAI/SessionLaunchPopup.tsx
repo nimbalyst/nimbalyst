@@ -30,7 +30,9 @@ import {
 } from '../../store/atoms/sessionLaunchPopup';
 import { sessionRegistryAtom } from '../../store/atoms/sessions';
 import {
+  normalizeEffortForModel,
   parseThinkingMode,
+  supportedEffortLevelsForModel,
   supportsEffortLevel,
   supportsThinkingToggle,
   type EffortLevel,
@@ -134,8 +136,17 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
   const selectedModel = draft.model ?? defaultModel;
   const parsedModel = selectedModel ? ModelIdentifier.tryParse(selectedModel) : null;
   const provider = parsedModel?.provider ?? 'claude-code';
-  const effortLevel = draft.effortLevel ?? defaultEffortLevel;
+  const supportedEffortLevels = useMemo(
+    () => supportedEffortLevelsForModel(selectedModel),
+    [selectedModel],
+  );
+  const effortLevel = normalizeEffortForModel(
+    selectedModel,
+    draft.effortLevel ?? defaultEffortLevel,
+  );
   const thinkingMode = draft.thinkingMode ?? parseThinkingMode(undefined);
+  const showEffortLevel = supportsEffortLevel(selectedModel);
+  const showThinkingToggle = developerMode && supportsThinkingToggle(selectedModel);
 
   const virtualReference = useMemo<VirtualElement>(() => ({
     getBoundingClientRect: () => DOMRect.fromRect({
@@ -305,8 +316,8 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
           mode: launchMode,
           selectSession: false,
           metadata: {
-            effortLevel,
-            thinkingMode,
+            ...(showEffortLevel ? { effortLevel } : {}),
+            ...(showThinkingToggle ? { thinkingMode } : {}),
           },
         }) ?? null;
         if (!sessionId) throw new Error('Failed to create the session.');
@@ -350,6 +361,8 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
     selectedModel,
     sessionRegistry,
     setDraft,
+    showEffortLevel,
+    showThinkingToggle,
     thinkingMode,
     workspacePath,
   ]);
@@ -419,10 +432,11 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
           currentProvider={provider}
           effortLevel={effortLevel}
           onEffortLevelChange={handleEffortLevelChange}
-          showEffortLevel={supportsEffortLevel(selectedModel)}
+          showEffortLevel={showEffortLevel}
+          supportedEffortLevels={supportedEffortLevels}
           thinkingMode={thinkingMode}
           onThinkingModeChange={handleThinkingModeChange}
-          showThinkingToggle={developerMode && supportsThinkingToggle(selectedModel)}
+          showThinkingToggle={showThinkingToggle}
           provider={provider}
           testId="session-launch-popup-input"
         />

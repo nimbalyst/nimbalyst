@@ -180,7 +180,27 @@ describe('buildSdkOptions env-key hardening', () => {
     expect(options.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high');
   });
 
-  it('disables SDK extended thinking for supported Claude Agent models', async () => {
+  it('normalizes effort against the resolved Claude model before spawning', async () => {
+    const legacyOptions = await buildSdkOptions(
+      makeDeps({
+        resolveModelVariant: () => 'sonnet-4-6',
+        config: { effortLevel: 'xhigh' },
+      }),
+      makeParams()
+    );
+    const haikuOptions = await buildSdkOptions(
+      makeDeps({
+        resolveModelVariant: () => 'haiku',
+        config: { effortLevel: 'high' },
+      }),
+      makeParams()
+    );
+
+    expect(legacyOptions.options.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high');
+    expect(haikuOptions.options.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+
+  it('disables SDK adaptive thinking for supported Claude Agent models', async () => {
     const { options } = await buildSdkOptions(
       makeDeps({ config: { thinkingMode: 'disabled' } }),
       makeParams()
@@ -189,16 +209,16 @@ describe('buildSdkOptions env-key hardening', () => {
     expect(options.thinking).toEqual({ type: 'disabled' });
   });
 
-  it('omits the SDK thinking option when extended thinking is enabled', async () => {
+  it('explicitly enables adaptive thinking instead of relying on model-specific defaults', async () => {
     const { options } = await buildSdkOptions(
       makeDeps({ config: { thinkingMode: 'enabled' } }),
       makeParams()
     );
 
-    expect(options.thinking).toBeUndefined();
+    expect(options.thinking).toEqual({ type: 'adaptive' });
   });
 
-  it('omits the SDK thinking option for unsupported Claude Agent models', async () => {
+  it('keeps Fable adaptive but refuses a stored off value', async () => {
     const { options } = await buildSdkOptions(
       makeDeps({
         resolveModelVariant: () => 'claude-fable-4-6-20260615',
@@ -208,6 +228,18 @@ describe('buildSdkOptions env-key hardening', () => {
     );
 
     expect(options.thinking).toBeUndefined();
+  });
+
+  it('explicitly enables Fable adaptive thinking', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({
+        resolveModelVariant: () => 'claude-fable-5',
+        config: { thinkingMode: 'enabled' },
+      }),
+      makeParams()
+    );
+
+    expect(options.thinking).toEqual({ type: 'adaptive' });
   });
 
   it('disables the CLI self-updater by default on every spawn (NIM-1573)', async () => {
