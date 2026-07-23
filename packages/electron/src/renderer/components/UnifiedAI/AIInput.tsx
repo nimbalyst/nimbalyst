@@ -89,6 +89,7 @@ interface AIInputProps {
   effortLevel?: EffortLevel;
   onEffortLevelChange?: (level: EffortLevel) => void;
   showEffortLevel?: boolean;
+  supportedEffortLevels?: ReadonlyArray<{ key: EffortLevel; label: string }>;
   thinkingMode?: ThinkingMode;
   onThinkingModeChange?: (mode: ThinkingMode) => void;
   showThinkingToggle?: boolean;
@@ -176,6 +177,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     effortLevel,
     onEffortLevelChange,
     showEffortLevel,
+    supportedEffortLevels,
     thinkingMode,
     onThinkingModeChange,
     showThinkingToggle,
@@ -1407,6 +1409,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               <EffortLevelSelector
                 level={effortLevel}
                 onLevelChange={onEffortLevelChange}
+                levels={supportedEffortLevels}
                 disabled={reasoningControlsDisabled}
                 disabledTitle={reasoningControlsDisabledTitle}
               />

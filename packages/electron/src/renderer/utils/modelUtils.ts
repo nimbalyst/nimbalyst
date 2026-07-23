@@ -29,8 +29,10 @@ export {
   EFFORT_LEVELS,
   DEFAULT_EFFORT_LEVEL,
   DEFAULT_THINKING_MODE,
+  normalizeEffortForModel,
   parseEffortLevel,
   parseThinkingMode,
+  supportedEffortLevelsForModel,
 } from '@nimbalyst/runtime/ai/server/effortLevels';
 
 interface ModelInfo {
@@ -254,6 +256,12 @@ export function getModelShortName(provider: string, modelId: string): string {
  */
 export function supportsEffortLevel(modelId?: string): boolean {
   if (!modelId) return false;
+  const parsed = ModelIdentifier.tryParse(modelId);
+  // Only expose controls on transports that actually forward them. The
+  // terminal Claude CLI and Codex ACP launch paths currently do not.
+  if (parsed?.provider === 'claude-code-cli' || parsed?.provider === 'openai-codex-acp') {
+    return false;
+  }
   const variant = extractClaudeCodeVariant(modelId);
   if (
     variant === 'fable' ||
@@ -263,10 +271,9 @@ export function supportsEffortLevel(modelId?: string): boolean {
     variant === 'sonnet' ||
     variant === 'sonnet-4-6'
   ) return true;
-  // OpenAI Codex models support reasoning effort (both SDK and ACP transports)
-  const parsed = ModelIdentifier.tryParse(modelId);
-  if (parsed?.provider === 'openai-codex' || parsed?.provider === 'openai-codex-acp') return true;
-  if (modelId.startsWith('openai-codex:') || modelId.startsWith('openai-codex-acp:')) return true;
+  // The Codex SDK transport forwards reasoning effort.
+  if (parsed?.provider === 'openai-codex') return true;
+  if (modelId.startsWith('openai-codex:')) return true;
   return false;
 }
 
@@ -281,6 +288,8 @@ export function supportsEffortLevel(modelId?: string): boolean {
  */
 export function supportsThinkingToggle(modelId?: string): boolean {
   if (!modelId) return false;
+  const parsed = ModelIdentifier.tryParse(modelId);
+  if (parsed?.provider !== 'claude-code') return false;
   const variant = extractClaudeCodeVariant(modelId);
   if (!variant) return false;
   return variant.startsWith('opus') || variant.startsWith('sonnet');
