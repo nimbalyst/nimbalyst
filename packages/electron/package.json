@@ -443,8 +443,17 @@
         }
       ],
       "artifactName": "${productName}-Windows-${arch}.${ext}",
+      "signExts": [
+        ".exe",
+        ".dll",
+        ".node"
+      ],
       "signtoolOptions": {
-        "publisherName": "NIMBALYST, INC."
+        "publisherName": "NIMBALYST, INC.",
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "sign": "build/sign-windows.js"
       }
     },
     "nsis": {
