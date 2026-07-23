@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.70.5] - 2026-07-23
+
+
+### Added
+<!-- New features go here -->
 - The onboarding survey now offers more discovery sources and asks what users searched for when they choose Search.
 
 ### Changed
@@ -17,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Markdown tables no longer retain stale observers after their document closes.
+- Mobile settings no longer show desktop-only team-sharing guidance.
+- Shared documents reconnect cleanly when replay history has expired.
 - Collaborative document tab menus no longer offer Copy Path for non-filesystem documents.
 - Shared document @ mention menus now stay visible instead of being clipped by the editor pane.
 - Long tracker titles now wrap across lines in the detail view instead of being clipped.
