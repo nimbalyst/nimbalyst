@@ -2,6 +2,31 @@ import SwiftUI
 import Combine
 import GRDB
 
+@MainActor
+final class SessionListObservationHandoff<Value> {
+    private var generation: UInt = 0
+    private var cancellable: AnyDatabaseCancellable?
+
+    func replace(
+        start: (@escaping (Value) -> Void) -> AnyDatabaseCancellable,
+        onChange: @escaping (Value) -> Void
+    ) {
+        cancellable?.cancel()
+        generation &+= 1
+        let acceptedGeneration = generation
+        cancellable = start { [weak self] value in
+            guard let self, self.generation == acceptedGeneration else { return }
+            onChange(value)
+        }
+    }
+
+    func cancel() {
+        cancellable?.cancel()
+        cancellable = nil
+        generation &+= 1
+    }
+}
+
 // MARK: - Time Period Grouping
 
 enum TimePeriod: String, CaseIterable {
@@ -159,7 +184,7 @@ public struct SessionListView: View {
     private var isIPadSidebar: Bool { selectedSession != nil }
 
     @State private var sessions: [Session] = []
-    @State private var cancellable: AnyDatabaseCancellable?
+    @State private var observationHandoff = SessionListObservationHandoff<[Session]>()
     @State private var expandedWorkstreams: Set<String> = []
     /// Meta-agent groups that are COLLAPSED. Stored as the inverse of expansion so the
     /// default state is expanded, mirroring desktop (see `MetaAgentExpansion`).
@@ -453,13 +478,14 @@ public struct SessionListView: View {
             resolveDefaultModel()
         }
         .onChange(of: project.id) { _ in
-            cancellable?.cancel()
+            observationHandoff.cancel()
+            sessions = []
             startObserving()
             loadExpandedState()
             loadMetaAgentExpansionState()
         }
         .onDisappear {
-            cancellable?.cancel()
+            observationHandoff.cancel()
         }
         // Refresh the meta-agent gate at the root so a desktop flip is caught even when the
         // user is on a non-Sessions tab. The creation menu's listener is only mounted while
@@ -819,14 +845,24 @@ public struct SessionListView: View {
                 .fetchAll(db)
         }
 
-        cancellable = observation.start(
-            in: db.writer,
-            onError: { error in
-                print("Session observation error: \(error)")
+        observationHandoff.replace(
+            start: { receive in
+                observation.start(
+                    in: db.writer,
+                    scheduling: .async(onQueue: .main),
+                    onError: { error in
+                        print("Session observation error: \(error)")
+                    },
+                    onChange: receive
+                )
             },
             onChange: { newSessions in
                 withAnimation {
                     sessions = newSessions
+                    if let selected = selectedSession?.wrappedValue,
+                       let authoritative = newSessions.first(where: { $0.id == selected.id }) {
+                        selectedSession?.wrappedValue = authoritative
+                    }
                 }
             }
         )

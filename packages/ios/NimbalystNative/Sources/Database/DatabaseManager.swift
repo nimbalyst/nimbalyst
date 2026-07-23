@@ -368,6 +368,97 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    /// Applies a server index row only when it is not older than the durable
+    /// session snapshot. Session-room metadata can have a later independent
+    /// revision; in that case index-owned fields (including pin state) advance
+    /// while live execution/attention fields remain authoritative.
+    @discardableResult
+    public func upsertRemoteSession(_ session: Session) throws -> Bool {
+        try writer.write { db in
+            guard let existing = try Session.fetchOne(db, id: session.id) else {
+                try session.insert(db)
+                return true
+            }
+            guard session.updatedAt >= existing.updatedAt else { return false }
+
+            var reconciled = session
+            reconciled.lastSyncedSeq = max(session.lastSyncedSeq, existing.lastSyncedSeq)
+            if let existingLastMessageAt = existing.lastMessageAt {
+                reconciled.lastMessageAt = max(
+                    session.lastMessageAt ?? existingLastMessageAt,
+                    existingLastMessageAt
+                )
+            }
+            if let state = try SyncState.fetchOne(db, id: session.id),
+               let cursor = state.lastCursor,
+               let metadataRevision = Int(cursor),
+               metadataRevision >= session.updatedAt {
+                reconciled.titleEncrypted = existing.titleEncrypted
+                reconciled.titleIv = existing.titleIv
+                reconciled.titleDecrypted = existing.titleDecrypted
+                reconciled.provider = existing.provider
+                reconciled.model = existing.model
+                reconciled.mode = existing.mode
+                reconciled.phase = existing.phase
+                reconciled.tagsJson = existing.tagsJson
+                reconciled.isExecuting = existing.isExecuting
+                reconciled.hasQueuedPrompts = existing.hasQueuedPrompts
+                reconciled.contextTokens = existing.contextTokens
+                reconciled.contextWindow = existing.contextWindow
+                reconciled.draftInput = existing.draftInput
+                reconciled.draftUpdatedAt = existing.draftUpdatedAt
+            }
+
+            try reconciled.save(db)
+            return true
+        }
+    }
+
+    public struct RemoteMetadataUpdateResult: Sendable {
+        public let previous: Session
+        public let current: Session
+    }
+
+    /// Compares the session-room revision, reconciles every metadata-owned
+    /// field, and advances the durable cursor in one database transaction.
+    /// Returning nil means the session is absent or the revision is stale.
+    @discardableResult
+    public func updateRemoteSessionMetadata(
+        sessionId: String,
+        revision: Int?,
+        update: (inout Session) -> Void
+    ) throws -> RemoteMetadataUpdateResult? {
+        try writer.write { db in
+            guard var session = try Session.fetchOne(db, id: sessionId) else {
+                return nil
+            }
+
+            let existingState = try SyncState.fetchOne(db, id: sessionId)
+            if let revision,
+               let storedCursor = existingState?.lastCursor,
+               let storedRevision = Int(storedCursor),
+               revision < storedRevision {
+                return nil
+            }
+
+            let previous = session
+            update(&session)
+            try session.save(db)
+
+            if let revision {
+                let state = SyncState(
+                    roomId: sessionId,
+                    lastCursor: String(revision),
+                    lastSequence: existingState?.lastSequence ?? 0,
+                    lastSyncedAt: existingState?.lastSyncedAt
+                )
+                try state.save(db)
+            }
+
+            return RemoteMetadataUpdateResult(previous: previous, current: session)
+        }
+    }
+
     public func session(byId sessionId: String) throws -> Session? {
         try writer.read { db in
             try Session.fetchOne(db, id: sessionId)
@@ -457,6 +548,46 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    /// Persists server-originated messages and advances both the transcript
+    /// cursor and the observed session row in one transaction. Replays are
+    /// harmless, and an older catch-up page cannot move durable progress behind
+    /// a live broadcast that already arrived.
+    public func appendRemoteMessages(
+        _ messages: [Message],
+        roomId: String,
+        syncedAt: Int
+    ) throws {
+        try writer.write { db in
+            for message in messages {
+                try message.insert(db, onConflict: .ignore)
+            }
+
+            let maxSequence = messages.map(\.sequence).max() ?? 0
+            if maxSequence > 0 {
+                let maxCreatedAt = messages.map(\.createdAt).max() ?? 0
+                try db.execute(
+                    sql: """
+                        UPDATE sessions SET
+                            lastSyncedSeq = MAX(lastSyncedSeq, ?),
+                            lastMessageAt = MAX(COALESCE(lastMessageAt, 0), ?),
+                            updatedAt = MAX(updatedAt, ?)
+                        WHERE id = ?
+                    """,
+                    arguments: [maxSequence, maxCreatedAt, maxCreatedAt, roomId]
+                )
+            }
+
+            let existing = try SyncState.fetchOne(db, id: roomId)
+            let state = SyncState(
+                roomId: roomId,
+                lastCursor: existing?.lastCursor,
+                lastSequence: max(existing?.lastSequence ?? 0, maxSequence),
+                lastSyncedAt: max(existing?.lastSyncedAt ?? 0, syncedAt)
+            )
+            try state.save(db)
+        }
+    }
+
     // MARK: - Sync State Queries
 
     public func syncState(forRoom roomId: String) throws -> SyncState? {
@@ -467,7 +598,26 @@ public final class DatabaseManager: @unchecked Sendable {
 
     public func updateSyncState(_ state: SyncState) throws {
         try writer.write { db in
-            try state.save(db)
+            let existing = try SyncState.fetchOne(db, id: state.roomId)
+            let lastCursor: String?
+            if let incoming = state.lastCursor,
+               let incomingNumber = Int(incoming),
+               let existingCursor = existing?.lastCursor,
+               let existingNumber = Int(existingCursor) {
+                lastCursor = String(max(incomingNumber, existingNumber))
+            } else {
+                lastCursor = state.lastCursor ?? existing?.lastCursor
+            }
+
+            let merged = SyncState(
+                roomId: state.roomId,
+                lastCursor: lastCursor,
+                lastSequence: max(existing?.lastSequence ?? 0, state.lastSequence),
+                lastSyncedAt: [existing?.lastSyncedAt, state.lastSyncedAt]
+                    .compactMap { $0 }
+                    .max()
+            )
+            try merged.save(db)
         }
     }
 

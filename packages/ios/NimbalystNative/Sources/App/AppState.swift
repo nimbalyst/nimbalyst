@@ -117,6 +117,25 @@ public final class AppState: ObservableObject {
 
         // Auto-connect when auth state changes
         observeAuth()
+        observeAppLifecycle()
+    }
+
+    private func observeAppLifecycle() {
+        #if canImport(UIKit)
+        NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.syncManager?.setAppInForeground(false)
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.syncManager?.setAppInForeground(true)
+            }
+            .store(in: &cancellables)
+        #endif
     }
 
     /// Initialize with pre-built managers (for testing and previews).
