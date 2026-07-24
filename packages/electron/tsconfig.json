@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "exactOptionalPropertyTypes": false,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": [],
+    "baseUrl": ".",
+    "paths": {
+      "@nimbalyst/runtime": ["../runtime/src/index.ts"],
+      "@nimbalyst/runtime/*": ["../runtime/src/*"],
+      "@nimbalyst/extension-sdk": ["../extension-sdk/src/index.ts"],
+      "@nimbalyst/extension-sdk/file-tree": ["../extension-sdk/src/fileDirectoryTree.ts"],
+      "@nimbalyst/extension-sdk/*": ["../extension-sdk/src/*"]
+    }
+  },
+  "include": ["src", "src/renderer/electron.d.ts", "../runtime/src/editor/types/*.d.ts"],
+  "exclude": ["node_modules", "dist", "out", "e2e"]
+}

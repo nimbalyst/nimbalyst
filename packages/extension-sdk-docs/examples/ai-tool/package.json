@@ -1,0 +1,14 @@
+{
+  "name": "word-stats-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "@nimbalyst/extension-sdk": "workspace:*",
+    "typescript": "^5.0.0",
+    "vite": "^7.1.12"
+  }
+}

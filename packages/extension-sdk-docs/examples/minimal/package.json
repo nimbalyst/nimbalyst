@@ -1,0 +1,18 @@
+{
+  "name": "minimal-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "react": "^19.2.7"
+  },
+  "devDependencies": {
+    "@nimbalyst/extension-sdk": "workspace:*",
+    "@types/react": "^19.2.17",
+    "typescript": "^5.0.0",
+    "vite": "^7.1.12"
+  }
+}

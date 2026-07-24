@@ -1,0 +1,17 @@
+{
+  "id": "com.example.minimal",
+  "name": "Minimal Extension",
+  "version": "1.0.0",
+  "description": "A minimal extension example",
+  "main": "dist/index.js",
+  "apiVersion": "1.0.0",
+  "contributions": {
+    "customEditors": [
+      {
+        "filePatterns": ["*.minimal"],
+        "displayName": "Minimal Editor",
+        "component": "MinimalEditor"
+      }
+    ]
+  }
+}

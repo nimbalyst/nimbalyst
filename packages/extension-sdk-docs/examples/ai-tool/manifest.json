@@ -1,0 +1,18 @@
+{
+  "id": "com.example.word-stats",
+  "name": "Word Stats",
+  "version": "1.0.0",
+  "description": "AI tools for analyzing text documents",
+  "main": "dist/index.js",
+  "apiVersion": "1.0.0",
+  "permissions": {
+    "ai": true
+  },
+  "contributions": {
+    "aiTools": [
+      "wordstats.count",
+      "wordstats.frequency",
+      "wordstats.readability"
+    ]
+  }
+}

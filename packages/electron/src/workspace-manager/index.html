@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project Manager - Nimbalyst</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #1f2937;
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    /* Draggable title bar area for macOS */
+    .titlebar-area {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 38px;
+      -webkit-app-region: drag;
+      z-index: 1000;
+    }
+
+    /* Main container */
+    .main-container {
+      display: flex;
+      width: 100%;
+      height: 100vh;
+      padding-top: 38px;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+    }
+
+    /* Left panel */
+    .left-panel {
+      width: 380px;
+      background: #ffffff;
+      border-right: 1px solid #e5e7eb;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .brand-header {
+      padding: 20px 20px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      -webkit-app-region: no-drag;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .brand-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+
+    .brand-logo img {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    .brand-name {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .brand-tagline {
+      font-size: 12px;
+      opacity: 0.9;
+      margin-left: 46px;
+    }
+
+    .action-buttons {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      -webkit-app-region: no-drag;
+    }
+
+    .btn {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      -webkit-app-region: no-drag;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-secondary {
+      background: #f3f4f6;
+      color: #374151;
+      border: 1px solid #e5e7eb;
+    }
+
+    .btn-secondary:hover {
+      background: #e5e7eb;
+    }
+
+    .btn-icon {
+      width: 18px;
+      height: 18px;
+      fill: currentColor;
+    }
+
+    .recent-workspaces {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      -webkit-app-region: no-drag;
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #6b7280;
+      margin-bottom: 10px;
+    }
+
+    .workspace-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .workspace-item {
+      padding: 10px 12px;
+      background: #f9fafb;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      border: 1px solid transparent;
+    }
+
+    .workspace-item:hover {
+      background: #f3f4f6;
+      border-color: #e5e7eb;
+      transform: translateX(4px);
+    }
+
+    .workspace-item.selected {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .workspace-name {
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+
+    .workspace-path {
+      font-size: 10px;
+      opacity: 0.7;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .workspace-meta {
+      display: flex;
+      gap: 10px;
+      margin-top: 4px;
+      font-size: 10px;
+      opacity: 0.8;
+    }
+
+    /* Right panel */
+    .right-panel {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+      background: linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%);
+    }
+
+    .empty-state {
+      text-align: center;
+      max-width: 480px;
+    }
+
+    .empty-icon {
+      width: 120px;
+      height: 120px;
+      margin: 0 auto 24px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 20px 40px rgba(102, 126, 234, 0.3);
+    }
+
+    .empty-icon svg {
+      width: 60px;
+      height: 60px;
+      fill: white;
+    }
+
+    .empty-title {
+      font-size: 28px;
+      font-weight: 700;
+      color: #111827;
+      margin-bottom: 12px;
+      letter-spacing: -0.5px;
+    }
+
+    .empty-description {
+      font-size: 16px;
+      color: #6b7280;
+      line-height: 1.6;
+      margin-bottom: 32px;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+      margin-top: 32px;
+    }
+
+    .feature-item {
+      text-align: left;
+      padding: 16px;
+      background: white;
+      border-radius: 12px;
+      border: 1px solid #e5e7eb;
+    }
+
+    .feature-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 8px;
+    }
+
+    .feature-icon svg {
+      width: 18px;
+      height: 18px;
+      fill: white;
+    }
+
+    .feature-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #111827;
+      margin-bottom: 4px;
+    }
+
+    .feature-desc {
+      font-size: 12px;
+      color: #6b7280;
+      line-height: 1.4;
+    }
+
+    .workspace-preview {
+      background: white;
+      border-radius: 16px;
+      padding: 32px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    .preview-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      margin-bottom: 24px;
+    }
+
+    .preview-title {
+      font-size: 24px;
+      font-weight: 700;
+      color: #111827;
+      margin-bottom: 8px;
+    }
+
+    .preview-path {
+      font-size: 13px;
+      color: #6b7280;
+    }
+
+    .preview-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    .stat-item {
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 4px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .preview-actions {
+      display: flex;
+      gap: 12px;
+    }
+
+    .preview-actions .btn {
+      width: 100%;
+      justify-content: center;
+    }
+
+    .remove-btn {
+      padding: 8px;
+      background: none;
+      border: none;
+      color: #dc2626;
+      cursor: pointer;
+      opacity: 0.6;
+      transition: opacity 0.2s;
+    }
+
+    .remove-btn:hover {
+      opacity: 1;
+    }
+
+    /* Dark mode */
+    @media (prefers-color-scheme: dark) {
+      body {
+        background: linear-gradient(135deg, #4c1d95 0%, #5b21b6 100%);
+      }
+
+      .main-container {
+        background: rgba(17, 24, 39, 0.95);
+      }
+
+      .left-panel {
+        background: #1f2937;
+        border-right-color: #374151;
+      }
+
+      .brand-header {
+        border-bottom-color: #374151;
+      }
+
+      .btn-secondary {
+        background: #374151;
+        color: #e5e7eb;
+        border-color: #4b5563;
+      }
+
+      .btn-secondary:hover {
+        background: #4b5563;
+      }
+
+      .workspace-item {
+        background: #374151;
+        color: #e5e7eb;
+      }
+
+      .workspace-item:hover {
+        background: #4b5563;
+        border-color: #6b7280;
+      }
+
+      .right-panel {
+        background: linear-gradient(135deg, rgba(76, 29, 149, 0.1) 0%, rgba(91, 33, 182, 0.1) 100%);
+      }
+
+      .empty-title {
+        color: #f9fafb;
+      }
+
+      .empty-description {
+        color: #9ca3af;
+      }
+
+      .feature-item {
+        background: #1f2937;
+        border-color: #374151;
+      }
+
+      .feature-title {
+        color: #f9fafb;
+      }
+
+      .feature-desc {
+        color: #9ca3af;
+      }
+
+      .workspace-preview {
+        background: #1f2937;
+      }
+
+      .preview-title {
+        color: #f9fafb;
+      }
+
+      .preview-path {
+        color: #9ca3af;
+      }
+
+      .stat-label {
+        color: #9ca3af;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="titlebar-area"></div>
+
+  <div class="main-container">
+    <div class="left-panel">
+      <div class="brand-header">
+        <div class="brand-logo">
+          <img
+            src="../icon.png"
+            alt="Nimbalyst"
+            onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=\'width:48px;height:48px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:12px;display:flex;align-items:center;justify-content:center;color:white;font-size:24px;font-weight:bold;\'>S</div>'"
+          >
+          <div>
+            <div class="brand-name">Nimbalyst</div>
+          </div>
+        </div>
+        <div class="brand-tagline">Powerful markdown editing with AI assistance</div>
+      </div>
+
+      <div class="action-buttons">
+        <button class="btn btn-primary" onclick="openFolder()">
+          <svg class="btn-icon" viewBox="0 0 24 24">
+            <path d="M10 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2h-8l-2-2z"/>
+          </svg>
+          Open Workspace Folder
+        </button>
+        <button class="btn btn-secondary" onclick="createNewWorkspace()">
+          <svg class="btn-icon" viewBox="0 0 24 24">
+            <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+          </svg>
+          Create New Workspace
+        </button>
+      </div>
+
+      <div class="recent-workspaces">
+        <div class="section-title">Recent Workspaces</div>
+        <div class="workspace-list" id="workspaceList">
+          <!-- Workspaces will be added here -->
+        </div>
+      </div>
+    </div>
+
+    <div class="right-panel" id="rightPanel">
+      <div class="empty-state">
+        <div class="empty-icon">
+          <svg viewBox="0 0 24 24">
+            <path d="M10 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2h-8l-2-2z"/>
+          </svg>
+        </div>
+        <h2 class="empty-title">Welcome to Nimbalyst</h2>
+        <p class="empty-description">
+          Open a folder as a workspace to start editing markdown files with powerful features like AI assistance, real-time collaboration, and version control.
+        </p>
+
+        <div class="feature-grid">
+          <div class="feature-item">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24">
+                <path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/>
+              </svg>
+            </div>
+            <div class="feature-title">Markdown Editor</div>
+            <div class="feature-desc">Rich text editing with live preview and syntax highlighting</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+              </svg>
+            </div>
+            <div class="feature-title">AI Assistant</div>
+            <div class="feature-desc">Get help writing, editing, and improving your content</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+              </svg>
+            </div>
+            <div class="feature-title">Version History</div>
+            <div class="feature-desc">Track changes and restore previous versions</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+              </svg>
+            </div>
+            <div class="feature-title">Smart Features</div>
+            <div class="feature-desc">Auto-save, file watching, and workspace management</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Chat Sessions</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #ffffff;
+      color: #1f2937;
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Draggable title bar area for macOS */
+    .titlebar-area {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 38px;
+      -webkit-app-region: drag;
+      z-index: 1000;
+    }
+
+    /* Main container with proper spacing for title bar */
+    .main-container {
+      display: flex;
+      width: 100%;
+      height: 100vh;
+      padding-top: 38px; /* Space for title bar on macOS */
+    }
+
+    /* Left sidebar with session list */
+    .sidebar {
+      width: 320px;
+      background: #f9fafb;
+      border-right: 1px solid #e5e7eb;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid #e5e7eb;
+      -webkit-app-region: no-drag;
+    }
+
+    .search-container {
+      position: relative;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #6b7280;
+      pointer-events: none;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 8px 12px 8px 36px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+      background: white;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .search-input:focus {
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    .session-stats {
+      padding: 8px 16px;
+      font-size: 12px;
+      color: #6b7280;
+      background: #f3f4f6;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    .sessions-list {
+      flex: 1;
+      overflow-y: auto;
+      -webkit-app-region: no-drag;
+    }
+
+    .session-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      cursor: pointer;
+      transition: background 0.2s;
+      position: relative;
+    }
+
+    .session-item:hover {
+      background: #f3f4f6;
+    }
+
+    .session-item.selected {
+      background: #eff6ff;
+      border-left: 3px solid #3b82f6;
+      padding-left: 13px;
+    }
+
+    .session-item-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: #111827;
+      margin-bottom: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-item-meta {
+      display: flex;
+      gap: 8px;
+      font-size: 11px;
+      color: #6b7280;
+    }
+
+    .session-item-workspace {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 150px;
+    }
+
+    /* Provider badges */
+    .session-item-provider,
+    .provider-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .provider-claude {
+      background: #e0f2fe;
+      color: #075985;
+    }
+
+    .provider-claude-code {
+      background: #dcfce7;
+      color: #166534;
+    }
+
+    /* Right content area */
+    .content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: white;
+    }
+
+    .content-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid #e5e7eb;
+      -webkit-app-region: no-drag;
+    }
+
+    .content-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #111827;
+      margin-bottom: 8px;
+    }
+
+    .content-meta {
+      display: flex;
+      gap: 16px;
+      font-size: 13px;
+      color: #6b7280;
+    }
+
+    .content-actions {
+      padding: 16px 24px;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      gap: 12px;
+      -webkit-app-region: no-drag;
+    }
+
+    .btn {
+      padding: 6px 16px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 13px;
+      background: white;
+      color: #374151;
+      cursor: pointer;
+      transition: all 0.2s;
+      outline: none;
+    }
+
+    .btn:hover {
+      background: #f9fafb;
+      border-color: #9ca3af;
+    }
+
+    .btn-primary {
+      background: #3b82f6;
+      color: white;
+      border-color: #3b82f6;
+    }
+
+    .btn-primary:hover {
+      background: #2563eb;
+      border-color: #2563eb;
+    }
+
+    .btn-danger {
+      color: #dc2626;
+      border-color: #fecaca;
+    }
+
+    .btn-danger:hover {
+      background: #fef2f2;
+      border-color: #fca5a5;
+    }
+
+    .messages-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      -webkit-app-region: no-drag;
+    }
+
+    .message {
+      margin-bottom: 24px;
+      display: flex;
+      gap: 12px;
+    }
+
+    .message-role {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: #6b7280;
+      width: 60px;
+      flex-shrink: 0;
+      padding-top: 4px;
+    }
+
+    .message-role.user {
+      color: #3b82f6;
+    }
+
+    .message-role.assistant {
+      color: #10b981;
+    }
+
+    .message-content {
+      flex: 1;
+      font-size: 14px;
+      line-height: 1.6;
+      color: #374151;
+    }
+
+    .message-content pre {
+      background: #f3f4f6;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      margin: 8px 0;
+    }
+
+    .message-content code {
+      background: #f3f4f6;
+      padding: 2px 4px;
+      border-radius: 3px;
+      font-size: 13px;
+    }
+
+    .empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+      color: #6b7280;
+      text-align: center;
+    }
+
+    .empty-state h2 {
+      font-size: 18px;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 8px;
+    }
+
+    .empty-state p {
+      font-size: 14px;
+      margin-bottom: 20px;
+    }
+
+    .loading {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 200px;
+      color: #6b7280;
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 2px solid #e5e7eb;
+      border-top-color: #3b82f6;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Dark mode */
+    @media (prefers-color-scheme: dark) {
+      body {
+        background: #111827;
+        color: #f3f4f6;
+      }
+
+      .sidebar {
+        background: #1f2937;
+        border-right-color: #374151;
+      }
+
+      .sidebar-header {
+        border-bottom-color: #374151;
+      }
+
+      .search-input {
+        background: #374151;
+        border-color: #4b5563;
+        color: #f3f4f6;
+      }
+
+      .search-input:focus {
+        border-color: #3b82f6;
+      }
+
+      .session-stats {
+        background: #374151;
+        border-bottom-color: #4b5563;
+        color: #9ca3af;
+      }
+
+      .session-item {
+        border-bottom-color: #374151;
+      }
+
+      .session-item:hover {
+        background: #374151;
+      }
+
+      .session-item.selected {
+        background: #1e3a8a;
+      }
+
+      .session-item-title {
+        color: #f9fafb;
+      }
+
+      .session-item-meta {
+        color: #9ca3af;
+      }
+
+      .provider-claude {
+        background: #1e3a8a;
+        color: #93c5fd;
+      }
+
+      .provider-claude-code {
+        background: #14532d;
+        color: #86efac;
+      }
+
+      .content {
+        background: #111827;
+      }
+
+      .content-header {
+        border-bottom-color: #374151;
+      }
+
+      .content-title {
+        color: #f9fafb;
+      }
+
+      .content-meta {
+        color: #9ca3af;
+      }
+
+      .content-actions {
+        border-bottom-color: #374151;
+      }
+
+      .btn {
+        background: #374151;
+        border-color: #4b5563;
+        color: #e5e7eb;
+      }
+
+      .btn:hover {
+        background: #4b5563;
+        border-color: #6b7280;
+      }
+
+      .message-content {
+        color: #e5e7eb;
+      }
+
+      .message-content pre,
+      .message-content code {
+        background: #1f2937;
+      }
+
+      .empty-state h2 {
+        color: #f3f4f6;
+      }
+    }
+
+  </style>
+</head>
+<body>
+  <div class="titlebar-area"></div>
+  
+  <div class="main-container">
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <div class="search-container">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <path d="m21 21-4.35-4.35"></path>
+          </svg>
+          <input type="text" class="search-input" placeholder="Search sessions..." id="searchInput">
+        </div>
+      </div>
+      <div class="session-stats">
+        <span id="sessionCount">0 sessions across all workspaces</span>
+        <span id="workspaceFilter" style="display: none; margin-left: 8px; padding: 2px 8px; background: #3b82f6; color: white; border-radius: 4px; font-size: 11px;"></span>
+      </div>
+      <div class="sessions-list" id="sessionsList">
+        <div class="loading">
+          <div class="spinner"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="content" id="contentArea">
+      <div class="empty-state">
+        <h2>Select a Session</h2>
+        <p>Choose a session from the list to view its messages</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>
