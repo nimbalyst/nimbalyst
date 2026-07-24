@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or help using Nimbalyst
+    url: https://github.com/Nimbalyst/nimbalyst/discussions/categories/q-a
+    about: Please ask in Discussions → Q&A.
+  - name: Vague idea or "wouldn't it be cool if..."
+    url: https://github.com/Nimbalyst/nimbalyst/discussions/categories/ideas
+    about: Half-baked ideas belong in Discussions → Ideas. Maintainers will convert mature ideas into Issues.
+  - name: Show what you built
+    url: https://github.com/Nimbalyst/nimbalyst/discussions/categories/show-and-tell
+    about: Built something cool with Nimbalyst? Share it in Show and tell.

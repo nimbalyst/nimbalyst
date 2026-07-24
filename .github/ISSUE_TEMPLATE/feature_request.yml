@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a concrete new feature or capability
+title: "[Feature]: "
+type: Feature
+labels: ["status:needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a vague idea or "wouldn't it be cool if..."? Start in [Discussions → Ideas](https://github.com/Nimbalyst/nimbalyst/discussions/categories/ideas) instead.
+        This template is for concrete feature requests with a clear problem and proposed solution.
+  - type: textarea
+    id: request
+    attributes:
+      label: Describe the feature request
+      description: Explain the problem, your proposed solution, and any alternatives you considered.
+      placeholder: |
+        Problem:
+        What pain, friction, or missing capability does this solve?
+
+        Proposed solution:
+        What should Nimbalyst do instead?
+
+        Alternatives considered:
+        What other approaches did you think about?
+    validations:
+      required: true

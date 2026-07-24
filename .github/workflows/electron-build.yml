@@ -1,0 +1,896 @@
+name: Build and Release Electron App
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - 'release/**'
+  pull_request:
+    branches:
+      - 'release'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Create a release'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      create_github_release:
+        description: 'Promote the published GitHub prerelease to stable'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  workflow_call:
+    inputs:
+      release:
+        description: 'Create a release'
+        required: false
+        default: false
+        type: boolean
+      create_github_release:
+        description: 'Promote the published GitHub prerelease to stable'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Make npm resilient to transient registry socket drops (ECONNRESET): retry
+  # individual failed requests instead of aborting the whole `npm ci`.
+  npm_config_fetch_retries: '5'
+  npm_config_fetch_retry_mintimeout: '20000'
+  npm_config_fetch_retry_maxtimeout: '120000'
+  npm_config_fetch_timeout: '300000'
+  # Keep this enabled for exactly the transition build so existing alpha
+  # installs still hard-coded to the R2 feed can migrate to the new
+  # GitHub-backed alpha channel. After shipping that bridge release, flip
+  # this to "false" (or remove the R2 step entirely) to complete cutover.
+  LEGACY_ALPHA_TRANSITION_R2_UPLOAD: 'true'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+            arch: arm64
+          # electron-builder can cross-compile x64 on arm64
+          - os: macos-latest
+            platform: mac
+            arch: x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+          - os: windows-latest
+            platform: win
+            arch: x64
+          # windows-11-arm runners are in public preview on GitHub Actions.
+          # Using a native ARM64 runner avoids cross-compile toolchain wrangling
+          # for node-pty and lets bun/electron-builder pick up ARM64 prebuilds.
+          #
+          # Note: DigiCert KeyLocker (smctl) has no `smtools-win32-arm64`
+          # bundle, so the cloud-HSM re-sign cannot run on this runner. The
+          # ARM64 installer is cross-signed by the `sign-windows-arm64` job
+          # below, which runs on windows-latest (x64).
+          - os: windows-11-arm
+            platform: win
+            arch: arm64
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Upgrade npm to 11.x
+        run: npm install -g npm@11
+
+      - name: Install dependencies
+        shell: bash
+        env:
+          # @vscode/ripgrep postinstall downloads rg from ripgrep-prebuilt
+          # GitHub releases; without auth, CI runners hit 403 rate limits.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ matrix.platform }}" == "win" ] && [ "${{ matrix.arch }}" == "arm64" ]; then
+            # workerd (transitive via wrangler, used only by collabv3 and
+            # marketplace Cloudflare Workers packages) has no Windows ARM64
+            # prebuild and its postinstall throws "Unsupported platform".
+            # The Electron build doesn't need workerd, so install with
+            # --ignore-scripts and then re-run only the Electron workspace's
+            # postinstall (electron-builder install-app-deps -> rebuilds
+            # node-pty for ARM64).
+            npm ci --ignore-scripts
+            npm run --workspace=@nimbalyst/electron postinstall
+
+            # --ignore-scripts also skipped @vscode/ripgrep's postinstall,
+            # which is the only non-native-module postinstall we rely on:
+            # it downloads rg.exe from ripgrep-prebuilt GitHub releases
+            # into node_modules/@vscode/ripgrep/bin/. Without this the
+            # packaged app ships an empty bin/ directory and search/quick-
+            # open silently fall back to (missing) system rg. Run it here
+            # so ARM64 gets the same binary the x64 path gets for free.
+            if [ -f "packages/electron/node_modules/@vscode/ripgrep/lib/postinstall.js" ]; then
+              RG_POSTINSTALL="packages/electron/node_modules/@vscode/ripgrep/lib/postinstall.js"
+            elif [ -f "node_modules/@vscode/ripgrep/lib/postinstall.js" ]; then
+              RG_POSTINSTALL="node_modules/@vscode/ripgrep/lib/postinstall.js"
+            else
+              echo "::error::Cannot find @vscode/ripgrep/lib/postinstall.js"
+              exit 1
+            fi
+            echo "Running ripgrep postinstall at ${RG_POSTINSTALL}"
+            node "${RG_POSTINSTALL}" --force
+
+            RG_DIR=$(dirname "$(dirname "${RG_POSTINSTALL}")")
+            RG_EXPECTED="${RG_DIR}/bin/rg.exe"
+            if [ ! -f "${RG_EXPECTED}" ]; then
+              echo "::error::ripgrep binary not found at ${RG_EXPECTED}"
+              ls -la "${RG_DIR}/bin/" || true
+              exit 1
+            fi
+            echo "Verified: ${RG_EXPECTED} exists"
+          else
+            npm ci
+          fi
+
+      # When cross-compiling (e.g. macOS x64 on arm64 runner), npm only
+      # installs optional native binaries for the host architecture. We need
+      # the target arch binaries in node_modules/ so electron-builder's
+      # extraResources entries can copy them into the packaged app.
+      #
+      # electron-builder's `files` patterns only include packages that are
+      # in the npm dependency tree (lock file). Since we install with
+      # --no-save, the cross-arch binary isn't in the tree and `files`
+      # globs silently skip it. We use `extraResources` instead, which
+      # copies from the filesystem path directly -- no lock file needed.
+      # The binary goes to root node_modules/ (where npm naturally puts it).
+      - name: Install cross-arch native binaries
+        if: (matrix.arch == 'x64' && runner.arch == 'ARM64') || (matrix.arch == 'arm64' && runner.arch == 'X64')
+        shell: bash
+        env:
+          # Needed for @vscode/ripgrep postinstall to authenticate its
+          # GitHub release download (avoids 403 rate limits).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET_ARCH="${{ matrix.arch }}"
+          PLATFORM="${{ matrix.platform }}"
+
+          case "$PLATFORM" in
+            mac) NPM_PLATFORM="darwin" ;;
+            win) NPM_PLATFORM="win32" ;;
+            linux) NPM_PLATFORM="linux" ;;
+          esac
+
+          echo "Cross-compiling for ${NPM_PLATFORM}-${TARGET_ARCH}, installing target-arch native binaries..."
+
+          # Claude Agent SDK native binary
+          # Resolve SDK version from wherever npm hoisted it. The exports
+          # field blocks require.resolve('./package.json'), so probe known
+          # locations and use an absolute require() which bypasses exports.
+          if [ -f "packages/electron/node_modules/@anthropic-ai/claude-agent-sdk/package.json" ]; then
+            CLAUDE_PKG_JSON="packages/electron/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+          elif [ -f "node_modules/@anthropic-ai/claude-agent-sdk/package.json" ]; then
+            CLAUDE_PKG_JSON="node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+          else
+            echo "::error::Cannot find @anthropic-ai/claude-agent-sdk package.json"
+            exit 1
+          fi
+          CLAUDE_SDK_VERSION=$(node -p "require(require('path').resolve('${CLAUDE_PKG_JSON}')).version")
+          CLAUDE_PKG="@anthropic-ai/claude-agent-sdk-${NPM_PLATFORM}-${TARGET_ARCH}@${CLAUDE_SDK_VERSION}"
+          BINARY_NAME=$( [ "$NPM_PLATFORM" = "win32" ] && echo "claude.exe" || echo "claude" )
+
+          # OpenAI Codex native binary version (resolved now so we can install
+          # it in the same `npm install` as the SDK binary -- see below).
+          if [ -f "packages/electron/node_modules/@openai/codex/package.json" ]; then
+            CODEX_PKG_JSON="packages/electron/node_modules/@openai/codex/package.json"
+          elif [ -f "node_modules/@openai/codex/package.json" ]; then
+            CODEX_PKG_JSON="node_modules/@openai/codex/package.json"
+          else
+            CODEX_PKG_JSON=""
+          fi
+          if [ -n "$CODEX_PKG_JSON" ]; then
+            CODEX_SPEC=$(node -p "require(require('path').resolve('${CODEX_PKG_JSON}')).optionalDependencies?.['@openai/codex-${NPM_PLATFORM}-${TARGET_ARCH}'] || ''")
+          else
+            CODEX_SPEC=""
+          fi
+
+          # Codex ACP native binary version (same pattern as @openai/codex).
+          if [ -f "packages/electron/node_modules/@zed-industries/codex-acp/package.json" ]; then
+            CODEX_ACP_PKG_JSON="packages/electron/node_modules/@zed-industries/codex-acp/package.json"
+          elif [ -f "node_modules/@zed-industries/codex-acp/package.json" ]; then
+            CODEX_ACP_PKG_JSON="node_modules/@zed-industries/codex-acp/package.json"
+          else
+            CODEX_ACP_PKG_JSON=""
+          fi
+          if [ -n "$CODEX_ACP_PKG_JSON" ]; then
+            CODEX_ACP_SPEC=$(node -p "require(require('path').resolve('${CODEX_ACP_PKG_JSON}')).optionalDependencies?.['@zed-industries/codex-acp-${NPM_PLATFORM}-${TARGET_ARCH}'] || ''")
+          else
+            CODEX_ACP_SPEC=""
+          fi
+
+          # Install all cross-arch native binaries in a SINGLE npm invocation.
+          # Running separate `npm install --no-save` calls causes npm to prune
+          # the previously-installed cross-arch dep as "extraneous" (it's not
+          # in package.json, and --no-save keeps it that way), so the second
+          # install reports "added 1 package, removed 1 package" and leaves
+          # only the most recent one on disk. Root cause of v0.57.40/v0.57.41
+          # failing to ship the Intel Mac build.
+          INSTALL_ARGS=("${CLAUDE_PKG}")
+          echo "Installing ${CLAUDE_PKG}"
+          if [ -n "$CODEX_SPEC" ]; then
+            CODEX_PKG="@openai/codex-${NPM_PLATFORM}-${TARGET_ARCH}@${CODEX_SPEC}"
+            INSTALL_ARGS+=("${CODEX_PKG}")
+            echo "Installing ${CODEX_PKG}"
+          fi
+          if [ -n "$CODEX_ACP_SPEC" ]; then
+            CODEX_ACP_PKG="@zed-industries/codex-acp-${NPM_PLATFORM}-${TARGET_ARCH}@${CODEX_ACP_SPEC}"
+            INSTALL_ARGS+=("${CODEX_ACP_PKG}")
+            echo "Installing ${CODEX_ACP_PKG}"
+          fi
+          npm install --no-save --force "${INSTALL_ARGS[@]}"
+
+          # Verify binary exists where extraResources will look for it
+          EXPECTED="node_modules/@anthropic-ai/claude-agent-sdk-${NPM_PLATFORM}-${TARGET_ARCH}/${BINARY_NAME}"
+          if [ ! -f "${EXPECTED}" ]; then
+            echo "::error::Cross-arch binary not found at ${EXPECTED}"
+            ls -la "node_modules/@anthropic-ai/" || true
+            exit 1
+          fi
+          echo "Verified: ${EXPECTED} exists"
+
+          # @vscode/ripgrep bundles a single rg binary downloaded by its
+          # postinstall script using the host arch. For cross-compile we
+          # re-run postinstall with npm_config_arch set to the target arch
+          # and --force to overwrite the host-arch binary.
+          if [ -f "packages/electron/node_modules/@vscode/ripgrep/lib/postinstall.js" ]; then
+            RG_POSTINSTALL="packages/electron/node_modules/@vscode/ripgrep/lib/postinstall.js"
+          elif [ -f "node_modules/@vscode/ripgrep/lib/postinstall.js" ]; then
+            RG_POSTINSTALL="node_modules/@vscode/ripgrep/lib/postinstall.js"
+          else
+            echo "::error::Cannot find @vscode/ripgrep/lib/postinstall.js"
+            exit 1
+          fi
+          echo "Re-downloading ripgrep for ${TARGET_ARCH} via ${RG_POSTINSTALL}"
+          npm_config_arch="${TARGET_ARCH}" node "${RG_POSTINSTALL}" --force
+
+          RG_BINARY_NAME=$( [ "$NPM_PLATFORM" = "win32" ] && echo "rg.exe" || echo "rg" )
+          RG_DIR=$(dirname "$(dirname "${RG_POSTINSTALL}")")
+          RG_EXPECTED="${RG_DIR}/bin/${RG_BINARY_NAME}"
+          if [ ! -f "${RG_EXPECTED}" ]; then
+            echo "::error::Cross-arch ripgrep binary not found at ${RG_EXPECTED}"
+            ls -la "${RG_DIR}/bin/" || true
+            exit 1
+          fi
+          echo "Verified: ${RG_EXPECTED} exists"
+
+      - name: Build extension-sdk
+        working-directory: packages/extension-sdk
+        env:
+          NODE_ENV: production
+        run: npm run build
+
+      - name: Build runtime package (for theme assets)
+        working-directory: packages/runtime
+        env:
+          NODE_ENV: production
+          # 2GB default OOMs on the GitHub-hosted mac runner; mirror the
+          # electron build script's bump.
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: npm run build
+
+      - name: Build extensions
+        env:
+          NODE_ENV: production
+        run: |
+          # Build datamodellm extension
+          cd packages/extensions/datamodellm
+          npm run build
+          cd ../../..
+          # Build pdf-viewer extension
+          cd packages/extensions/pdf-viewer
+          npm run build
+          cd ../../..
+          # Build csv-spreadsheet extension
+          cd packages/extensions/csv-spreadsheet
+          npm run build
+
+      # macOS specific setup
+      - name: Import macOS certificates
+        if: startsWith(matrix.os, 'macos')
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Create temporary keychain
+          KEYCHAIN_NAME="build.keychain"
+          KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-$(openssl rand -base64 32)}"
+          
+          # Decode certificate
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          
+          # Create keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+          security default-keychain -s "$KEYCHAIN_NAME"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+          
+          # Import certificate
+          security import certificate.p12 -k "$KEYCHAIN_NAME" -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+          
+          # Clean up
+          rm certificate.p12
+
+      # Windows code signing setup (DigiCert KeyLocker)
+      - name: Decode DigiCert Client Certificate (Windows)
+        if: matrix.platform == 'win' && env.DIGICERT_CLIENT_CERT_BASE64 != ''
+        env:
+          DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
+        run: |
+          $certBytes = [System.Convert]::FromBase64String($env:DIGICERT_CLIENT_CERT_BASE64)
+          $certPath = Join-Path $env:RUNNER_TEMP "digicert_client_cert.p12"
+          [System.IO.File]::WriteAllBytes($certPath, $certBytes)
+          Write-Host "DigiCert client certificate decoded ($($certBytes.Length) bytes)"
+        shell: powershell
+
+      # Pre-populate electron-builder's winCodeSign cache for ARM64.
+      # The published winCodeSign archive only ships windows-10/x64 and
+      # windows-10/ia32 signtool binaries. On ARM64 runners electron-builder
+      # looks for windows-10/arm64/signtool.exe and fails with ENOENT when it
+      # tries to sign helper binaries (claude-helper.exe, node-pty tools, ...).
+      # signtool.exe is architecture-agnostic for signing, so copying the x64
+      # payload into an arm64 folder lets the build proceed.
+      - name: Pre-populate winCodeSign for Windows ARM64
+        if: matrix.platform == 'win' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "winCodeSign-2.6.0"
+          $cacheRoot = Join-Path $env:LOCALAPPDATA "electron-builder\Cache\winCodeSign"
+          $cacheDir = Join-Path $cacheRoot $version
+          $archive = Join-Path $env:RUNNER_TEMP "$version.7z"
+
+          New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+
+          Write-Host "Downloading $version.7z..."
+          Invoke-WebRequest -Uri "https://github.com/electron-userland/electron-builder-binaries/releases/download/$version/$version.7z" -OutFile $archive
+
+          Write-Host "Extracting to $cacheDir..."
+          & 7z x $archive "-o$cacheDir" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7z extraction failed with exit code $LASTEXITCODE" }
+
+          $x64Dir = Join-Path $cacheDir "windows-10\x64"
+          $arm64Dir = Join-Path $cacheDir "windows-10\arm64"
+          if (-not (Test-Path $x64Dir)) {
+            throw "Expected x64 signtool directory not found at $x64Dir after extracting $version.7z"
+          }
+          New-Item -ItemType Directory -Force -Path $arm64Dir | Out-Null
+          Copy-Item -Path (Join-Path $x64Dir "*") -Destination $arm64Dir -Recurse -Force
+
+          Write-Host "Populated ARM64 signtool directory:"
+          Get-ChildItem $arm64Dir | ForEach-Object { Write-Host "  $($_.Name)" }
+
+      # Force a real source build of node-pty on Linux.
+      # The upstream node-pty@1.x npm package only ships prebuilds for
+      # darwin and win32. With electron-builder's install-app-deps running
+      # @electron/rebuild with buildFromSource=false (set by nodeGypRebuild
+      # and buildDependenciesFromSource in package.json), the Linux job
+      # silently skips rebuilding node-pty -- no pty.node lands at any of
+      # build/Release, build/Debug, or prebuilds/linux-x64. The packaged
+      # AppImage then crashes immediately on launch with
+      # "Failed to load native module: pty.node".
+      #
+      # Other platforms get prebuilds from upstream and don't need this.
+      # See NIM-354.
+      - name: Force node-pty source rebuild for Linux
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          ELECTRON_VERSION=$(node -p "require('./packages/electron/package.json').devDependencies.electron")
+          echo "Rebuilding node-pty from source against Electron ${ELECTRON_VERSION}"
+          npx --yes @electron/rebuild \
+            --force \
+            --module-dir node_modules/node-pty \
+            --types prod \
+            --version "${ELECTRON_VERSION}"
+          # Verify pty.node landed where node-pty's loader will find it.
+          if [ ! -f node_modules/node-pty/build/Release/pty.node ]; then
+            echo "::error::node-pty rebuild did not produce build/Release/pty.node"
+            ls -la node_modules/node-pty/build/Release/ 2>/dev/null || echo "(build/Release does not exist)"
+            exit 1
+          fi
+          echo "Verified: node_modules/node-pty/build/Release/pty.node exists"
+
+      # Build Electron app
+      - name: Build Electron app
+        env:
+          # Ensure production build (disables sourcemaps, enables optimizations)
+          NODE_ENV: production
+          # macOS notarization
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: '3GYP4YJ3DH'
+          CSC_NAME: ${{ secrets.CSC_NAME }}
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          # Windows signing is handled post-build by DigiCert KeyLocker
+          # GH_TOKEN is intentionally unset: electron-builder is invoked with
+          # --publish never on all platforms below, so GitHub Release creation
+          # does not happen at the build step. The dedicated release step later
+          # in this workflow creates or updates the GitHub release explicitly.
+          # Require notarization for release builds
+          # Release builds require notarization (push to tag, or explicit release input)
+          REQUIRE_NOTARIZE: ${{ github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true' }}
+          # Mark as official build for analytics tracking
+          # This ensures PostHog only sends data from official GitHub release builds
+          OFFICIAL_BUILD: 'true'
+          # Architecture for this build job
+          BUILD_ARCH: ${{ matrix.arch }}
+        working-directory: packages/electron
+        run: |
+          # --publish never on every platform: alpha/stable distribution is
+          # handled explicitly later in this workflow, and electron-builder
+          # must not create GitHub Releases on its own.
+          if [ "${{ matrix.platform }}" == "mac" ]; then
+            if [ "${{ github.ref_type }}" == "tag" ] || [ "${{ inputs.release }}" == "true" ]; then
+              npm run build:mac:notarized -- --${{ matrix.arch }} --mac dmg zip --publish never
+            else
+              npm run build:mac:local -- --${{ matrix.arch }} --mac dmg zip --publish never
+            fi
+          elif [ "${{ matrix.platform }}" == "win" ]; then
+            if [ "${{ matrix.arch }}" == "arm64" ]; then
+              npm run build:win:arm64 -- --publish never
+            else
+              npm run build:win -- --publish never
+            fi
+          else
+            npm run build:linux -- --publish never
+          fi
+        shell: bash
+
+      # Sign Windows exe with DigiCert KeyLocker (post-build).
+      # The artifactName template "${productName}-Windows-${arch}.${ext}" means
+      # each matrix job produces a distinct arch-suffixed exe to sign.
+      #
+      # Skipped on Windows ARM64: digicert/code-signing-software-trust-action@v1.0.0
+      # downloads an arch-specific `smctl` binary and DigiCert does not publish
+      # `smctl-win32-arm64`, so the action fails with "Unable to locate executable
+      # file: smctl". The electron-builder step already signs
+      # Nimbalyst-Windows-arm64.exe with the configured p12 cert, so the ARM64
+      # installer ships with a valid (non-EV) signature. Revisit to add
+      # cloud-HSM EV signing for ARM64 once DigiCert ships an ARM64 smctl or via
+      # x64 smctl under Windows ARM64 emulation.
+      - name: Sign Windows exe with DigiCert KeyLocker
+        if: matrix.platform == 'win' && matrix.arch != 'arm64' && env.DIGICERT_CLIENT_CERT_BASE64 != ''
+        uses: digicert/code-signing-software-trust-action@v1.0.0
+        with:
+          simple-signing-mode: true
+          input: "packages/electron/release/Nimbalyst-Windows-${{ matrix.arch }}.exe"
+          keypair-alias: ${{ secrets.DIGICERT_KEYPAIR_ALIAS }}
+        env:
+          DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
+          SM_HOST: "https://clientauth.one.digicert.com"
+          SM_API_KEY: ${{ secrets.DIGICERT_CLIENT_API_TOKEN }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
+
+      # Create a backwards-compatible copy of the signed x64 exe so any existing
+      # download links pointing at Nimbalyst-Windows.exe keep working. ARM64
+      # users are expected to pick the -arm64 file explicitly.
+      - name: Create backwards-compatible x64 exe copy
+        if: matrix.platform == 'win' && matrix.arch == 'x64'
+        shell: bash
+        run: |
+          set -e
+          src="packages/electron/release/Nimbalyst-Windows-x64.exe"
+          dest="packages/electron/release/Nimbalyst-Windows.exe"
+          if [ ! -f "$src" ]; then
+            echo "Expected signed artifact not found: $src"
+            ls -la packages/electron/release/
+            exit 1
+          fi
+          cp "$src" "$dest"
+          echo "Copied $src -> $dest for backwards-compatible download links"
+
+      - name: Verify bundled Windows app-update.yml
+        if: matrix.platform == 'win'
+        working-directory: packages/electron
+        run: |
+          APP_UPDATE_YML=$(find release -path '*/resources/app-update.yml' | head -n 1)
+          if [ -z "$APP_UPDATE_YML" ]; then
+            echo "❌ Could not find bundled app-update.yml in release output"
+            find release -maxdepth 4 -type f | sort
+            exit 1
+          fi
+
+          echo "Inspecting $APP_UPDATE_YML"
+          cat "$APP_UPDATE_YML"
+
+          if ! grep -Fq 'publisherName:' "$APP_UPDATE_YML"; then
+            echo "❌ app-update.yml is missing publisherName"
+            exit 1
+          fi
+
+          if ! grep -Fq 'NIMBALYST, INC.' "$APP_UPDATE_YML"; then
+            echo "❌ app-update.yml publisherName does not match expected Authenticode publisher"
+            exit 1
+          fi
+
+          echo "✅ Bundled Windows app-update.yml contains the expected publisherName"
+        shell: bash
+
+      # Generate update metadata files
+      - name: Generate update metadata
+        if: github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true'
+        working-directory: packages/electron
+        run: |
+          node build/generate-update-yml.js || true
+        shell: bash
+
+      # Upload artifacts
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            packages/electron/release/*.dmg
+            packages/electron/release/*.zip
+            packages/electron/release/*.exe
+            packages/electron/release/*.AppImage
+            packages/electron/release/*.yml
+            packages/electron/release/*.yaml
+          retention-days: 7
+
+  # Cross-architecture DigiCert KeyLocker re-sign for the Windows ARM64
+  # installer. DigiCert does not ship a Windows ARM64 `smctl` binary (see
+  # https://github.com/digicert/code-signing-software-trust-action/issues/30),
+  # so `digicert/code-signing-software-trust-action@v1.0.0` cannot run on the
+  # windows-11-arm runner used by the ARM64 matrix build. Authenticode signing
+  # is architecture-agnostic for the target PE -- only the host running smctl
+  # has to match the runner -- so we download the unsigned-by-DigiCert ARM64
+  # artifact, re-sign it on windows-latest (x64) where smctl works natively,
+  # and upload the signed artifact back under the same name.
+  sign-windows-arm64:
+    needs: build
+    runs-on: windows-latest
+    if: github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true'
+    env:
+      DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
+    steps:
+      - name: Download win-arm64 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: win-arm64
+          path: win-arm64
+
+      - name: Decode DigiCert Client Certificate
+        if: env.DIGICERT_CLIENT_CERT_BASE64 != ''
+        run: |
+          $certBytes = [System.Convert]::FromBase64String($env:DIGICERT_CLIENT_CERT_BASE64)
+          $certPath = Join-Path $env:RUNNER_TEMP "digicert_client_cert.p12"
+          [System.IO.File]::WriteAllBytes($certPath, $certBytes)
+          Write-Host "DigiCert client certificate decoded ($($certBytes.Length) bytes)"
+        shell: powershell
+
+      - name: Sign Windows ARM64 exe with DigiCert KeyLocker
+        if: env.DIGICERT_CLIENT_CERT_BASE64 != ''
+        uses: digicert/code-signing-software-trust-action@v1.0.0
+        with:
+          simple-signing-mode: true
+          input: win-arm64/Nimbalyst-Windows-arm64.exe
+          keypair-alias: ${{ secrets.DIGICERT_KEYPAIR_ALIAS }}
+        env:
+          DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
+          SM_HOST: "https://clientauth.one.digicert.com"
+          SM_API_KEY: ${{ secrets.DIGICERT_CLIENT_API_TOKEN }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
+
+      # Re-upload every file that was in the original win-arm64 artifact so
+      # we don't silently drop blockmap/yml/etc. The download step unpacks
+      # into ./win-arm64, and upload-artifact re-archives that directory.
+      - name: Re-upload signed win-arm64 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: win-arm64
+          path: win-arm64/*
+          retention-days: 7
+          overwrite: true
+
+  release:
+    needs: [build, sign-windows-arm64]
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-files
+          # Copy binaries but NOT yml files (we'll regenerate those)
+          find release-artifacts -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" -o -name "*.AppImage" \) -exec cp {} release-files/ \;
+          ls -la release-files/
+
+      - name: Generate update metadata with all architectures
+        working-directory: packages/electron
+        run: |
+          # Copy binaries to release folder so generate-update-yml.js can find them
+          mkdir -p release
+          cp ../../release-files/*.dmg ../../release-files/*.zip release/ 2>/dev/null || true
+          cp ../../release-files/*.exe release/ 2>/dev/null || true
+          cp ../../release-files/*.AppImage release/ 2>/dev/null || true
+          ls -la release/
+          # Generate yml files with all architectures present
+          node build/generate-update-yml.js
+          # Copy generated yml files back to release-files
+          cp release/*.yml ../../release-files/ 2>/dev/null || true
+          cp release/*.yaml ../../release-files/ 2>/dev/null || true
+          ls -la ../../release-files/
+
+      - name: Generate release notes for R2 and public release
+        id: release_notes
+        run: |
+          # Get recent commits for release notes
+          git fetch --depth=50
+
+          # Create technical release notes file for R2 (commit-based)
+          {
+            echo "## Recent Changes"
+            echo ""
+            git log --oneline -10 --pretty=format:"- %s" || echo "- Release build"
+          } > release-files/RELEASE_NOTES.md
+
+          # Extract public release notes from CHANGELOG.md
+          # This gets the most recent release section (not [Unreleased])
+          VERSION=${GITHUB_REF#refs/tags/v}
+
+          # Get the release section from CHANGELOG
+          awk -v version="$VERSION" '
+            /^## \['"$VERSION"'\]/ { found=1; next }
+            found && /^## \[/ { exit }
+            found && /^### (Added|Changed|Fixed|Removed)/ {
+              category=$0
+              next
+            }
+            found && /^- / && category ~ /Added/ {
+              sub(/^- /, "")
+              if (!seen_added_header) {
+                print "### New Features"
+                print ""
+                seen_added_header=1
+              }
+              print "- " $0
+            }
+            found && /^- / && category ~ /Changed/ {
+              sub(/^- /, "")
+              if (!seen_changed_header) {
+                print ""
+                print "### Improvements"
+                print ""
+                seen_changed_header=1
+              }
+              print "- " $0
+            }
+            found && /^- / && category ~ /Fixed/ {
+              sub(/^- /, "")
+              if (!seen_fixed_header) {
+                print ""
+                print "### Fixed"
+                print ""
+                seen_fixed_header=1
+              }
+              print "- " $0
+            }
+          ' CHANGELOG.md > release-files/PUBLIC_RELEASE_NOTES.md
+
+          # If no public release notes were generated, fall back to basic message
+          if [ ! -s release-files/PUBLIC_RELEASE_NOTES.md ]; then
+            echo "New release with improvements and bug fixes." > release-files/PUBLIC_RELEASE_NOTES.md
+          fi
+
+          # Build the body for the internal GitHub Release: CHANGELOG notes
+          # first, then commit history, then download instructions.
+          {
+            cat release-files/PUBLIC_RELEASE_NOTES.md
+            echo ""
+            echo "## Commits"
+            echo ""
+            git log --oneline -20 --pretty=format:"- %s" || echo "- Release build"
+            echo ""
+            echo ""
+            echo "## Downloads"
+            echo ""
+            echo "- **macOS**: Download the .dmg file"
+            echo "- **Windows**: Download the .exe file"
+            echo "- **Linux**: Download the .AppImage file"
+          } > release-files/GITHUB_RELEASE_BODY.md
+
+          echo "Release notes generated"
+          echo "=== Technical Release Notes (RELEASE_NOTES.md) ==="
+          cat release-files/RELEASE_NOTES.md
+          echo ""
+          echo "=== Public Release Notes (PUBLIC_RELEASE_NOTES.md) ==="
+          cat release-files/PUBLIC_RELEASE_NOTES.md
+          echo ""
+          echo "=== Internal GitHub Release Body (GITHUB_RELEASE_BODY.md) ==="
+          cat release-files/GITHUB_RELEASE_BODY.md
+
+      # Transitional bridge for legacy alpha installs that still read the
+      # Cloudflare R2 feed. Disable after the one transition release ships.
+      - name: Upload to Cloudflare R2
+        if: env.LEGACY_ALPHA_TRANSITION_R2_UPLOAD == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # Install AWS CLI
+          pip install awscli
+
+          # Upload to R2 (overwrites previous release)
+          aws s3 sync release-files/ s3://nimbalyst-alpha-updates-a7592ff2/ \
+            --endpoint-url https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com \
+            --exclude "*" \
+            --include "*.dmg" \
+            --include "*.zip" \
+            --include "*.exe" \
+            --include "*.AppImage" \
+            --include "*.yml" \
+            --include "*.yaml" \
+            --include "RELEASE_NOTES.md" \
+            --include "PUBLIC_RELEASE_NOTES.md"
+
+          echo "✅ Uploaded transition assets to the legacy R2 alpha channel"
+
+      - name: Get version from tag
+        id: get_version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            # Use the package.json version for non-tag builds
+            PACKAGE_VERSION=$(node -p "require('./packages/electron/package.json').version")
+            VERSION="${PACKAGE_VERSION}-dev.${GITHUB_SHA::7}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      # Tag pushes publish a visible GitHub prerelease so alpha-channel clients
+      # can discover it through the public releases feed. Re-running the
+      # workflow with create_github_release=true updates that same release and
+      # clears the prerelease flag, making it the stable release.
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          name: Release ${{ steps.get_version.outputs.VERSION }}
+          draft: false
+          prerelease: ${{ !(inputs.create_github_release == true || inputs.create_github_release == 'true') }}
+          files: release-files/*
+          generate_release_notes: false
+          body_path: release-files/GITHUB_RELEASE_BODY.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release Complete
+        run: |
+          VERSION="${{ steps.get_version.outputs.VERSION }}"
+          echo "✅ Release $VERSION complete!"
+          echo ""
+          echo "📦 Alpha channel published on GitHub Releases as a prerelease"
+          echo "   URL: https://github.com/nimbalyst/nimbalyst/releases/tag/$VERSION"
+          echo ""
+          echo "🧪 Testing instructions:"
+          echo "   1. Open Nimbalyst Global Settings"
+          echo "   2. Go to Advanced Settings"
+          echo "   3. Command/Ctrl-click on 'Advanced Settings' title"
+          echo "   4. Select 'Alpha (Internal Testing)' from dropdown"
+          echo "   5. Save and restart the app"
+          echo "   6. Check for updates (should find version $VERSION)"
+          echo ""
+          if [[ "${LEGACY_ALPHA_TRANSITION_R2_UPLOAD}" == "true" ]]; then
+            echo "🔁 Legacy transition bridge also uploaded to R2:"
+            echo "   Bucket: nimbalyst-alpha-updates-a7592ff2"
+            echo "   URL: https://pub-4357a3345db7463580090984c0e4e2ba.r2.dev/"
+            echo ""
+          fi
+          if [[ "${{ inputs.create_github_release }}" == "true" ]]; then
+            echo "🚀 GitHub release promoted from prerelease to stable:"
+            echo "   https://github.com/nimbalyst/nimbalyst/releases/tag/$VERSION"
+          else
+            echo "ℹ️  The GitHub release is still marked as a prerelease"
+            echo "   To promote it to stable, re-run the workflow with create_github_release=true"
+          fi
+
+      - name: Notify Slack - Release Published
+        if: success() && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v2.1.0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Nimbalyst ${{ steps.get_version.outputs.VERSION }} alpha release published*\nPlatforms: macOS (arm64, x64), Linux, Windows (x64, arm64)\nGitHub prerelease updated"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View build> | Triggered by ${{ github.actor }}"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Notify Slack - Release Failed
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v2.1.0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Nimbalyst ${{ steps.get_version.outputs.VERSION }} release FAILED*\nThe release job did not complete successfully."
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs> | Triggered by ${{ github.actor }}"
+                    }
+                  ]
+                }
+              ]
+            }

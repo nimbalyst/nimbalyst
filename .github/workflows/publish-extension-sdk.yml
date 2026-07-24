@@ -1,0 +1,99 @@
+name: Publish Extension SDK to npm
+
+# Triggered manually only. Tag-based triggers used to live here, but
+# pushing `extension-sdk-v*` tags to nimbalyst/nimbalyst polluted the
+# repo's `releases.atom` feed: electron-updater's GitHub provider
+# reads that feed and picks the topmost <entry>, so a stray SDK tag
+# at the top of the feed 404'd the desktop app's update check.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Expected version (must match packages/extension-sdk/package.json). Defaults to whatever is in package.json.'
+        type: string
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run (build and pack, but do not publish)'
+        type: boolean
+        default: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Make npm resilient to transient registry socket drops (ECONNRESET): retry
+  # individual failed requests instead of aborting the whole `npm ci`.
+  npm_config_fetch_retries: '5'
+  npm_config_fetch_retry_mintimeout: '20000'
+  npm_config_fetch_retry_maxtimeout: '120000'
+  npm_config_fetch_timeout: '300000'
+
+concurrency:
+  group: publish-extension-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish @nimbalyst/extension-sdk
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          # Node 24 ships with npm >= 11.5.1, which is required for Trusted
+          # Publishing. Earlier majors need an `npm install -g npm@latest`
+          # upgrade step that hits a known self-replace bug on the runner.
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify expected version matches package.json
+        if: ${{ inputs.version != '' }}
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          PKG_VERSION=$(node -p "require('./packages/extension-sdk/package.json').version")
+          if [ "$PKG_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Expected version ($EXPECTED_VERSION) does not match packages/extension-sdk/package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "Version match: $PKG_VERSION"
+
+      - name: Run public release checks
+        run: npm run extension-sdk:check-public
+
+      - name: Publish to npm (Trusted Publishing via OIDC)
+        if: ${{ !inputs.dry_run }}
+        working-directory: packages/extension-sdk
+        # `--provenance` is what triggers npm's OIDC exchange. Without it the
+        # CLI publishes anonymously and bails on ENEEDAUTH even when
+        # id-token: write is granted.
+        run: npm publish --access public --provenance
+
+      - name: Dry run pack
+        if: ${{ inputs.dry_run }}
+        working-directory: packages/extension-sdk
+        run: |
+          echo "Dry-run mode: skipping npm publish"
+          npm pack --dry-run
+
+      - name: Summary
+        run: |
+          VERSION=$(node -p "require('./packages/extension-sdk/package.json').version")
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "Dry-run complete for @nimbalyst/extension-sdk@$VERSION"
+          else
+            echo "Published @nimbalyst/extension-sdk@$VERSION"
+            echo "https://www.npmjs.com/package/@nimbalyst/extension-sdk/v/$VERSION"
+          fi
