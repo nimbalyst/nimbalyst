@@ -2584,6 +2584,22 @@ app.whenReady().then(async () => {
         await openFileWithWorkspaceDetection(fileToOpen);
     }
 
+    // Windows and their workspace routes now exist. Automatically resume
+    // ordinary FIFO work that survived a process restart. Atomic claims make
+    // this safe if another trigger races startup; control rows stay fenced
+    // until send_prompt_now records their delivery decision.
+    try {
+        const { discovered, triggered, skipped } =
+            await aiService.drainPendingOrdinaryPromptsOnStartup();
+        if (discovered > 0) {
+            logger.main.info(
+                `[Main] Startup queue drain: discovered ${discovered} session(s), triggered ${triggered}, skipped ${skipped}`
+            );
+        }
+    } catch (drainErr) {
+        logger.main.error('[Main] Startup queue drain failed:', drainErr);
+    }
+
     // Handle pending deep link URL (e.g., auth callback)
     if (pendingDeepLinkUrl) {
         const urlToHandle = pendingDeepLinkUrl;

@@ -7,9 +7,9 @@
  * re-entry on completion, and error recovery.
  *
  * It accesses several internal members of AIService (state Maps, helper methods)
- * via an `AIServiceInternal` cast — this keeps AIService's public API surface
- * unchanged while letting the handler reach into the same shared state it had
- * when it lived inline in `setupIpcHandlers()`.
+ * through an internal view. Queue-dispatch ownership is deliberately kept on
+ * AIService's typed public lease guard so this handler cannot drift back to the
+ * removed broad processing set.
  */
 
 import { BrowserWindow } from 'electron';
@@ -136,10 +136,9 @@ export type SendMessageHandler = (
 ) => Promise<{ content: string }>;
 
 /**
- * Structural view of the AIService members this handler needs. Keeping it
- * declared here (rather than reaching into the AIService class via `private`
- * access) means AIService's class declaration stays untouched — we just cast
- * the injected service reference to this shape internally.
+ * Structural view of the AIService members this handler needs. Queue dispatch
+ * ownership is intentionally excluded: it is accessed through AIService's
+ * typed `hasActiveQueueLease` method rather than this structural view.
  */
 interface AIServiceInternal {
   // Shared state
@@ -148,7 +147,6 @@ interface AIServiceInternal {
   sendMessageHandler: SendMessageHandler | null;
   processingQueuedPromptIds: Set<string>;
   matchDebounceTimers: Map<string, ReturnType<typeof setTimeout>>;
-  sessionsProcessingQueue: Set<string>;
   documentContextService: DocumentContextService;
   hooklessWatcher: HooklessAgentFileWatcher;
 
@@ -240,6 +238,7 @@ async function getWorkspacePathForSession(sessionId: string): Promise<string | n
 }
 
 export class MessageStreamingHandler {
+  private readonly aiService: AIService;
   private readonly svc: AIServiceInternal;
   private readonly unsubscribeBatchListener: () => void;
   // Per-provider map of event -> currently-installed listener. Used by
@@ -252,6 +251,7 @@ export class MessageStreamingHandler {
   >();
 
   constructor(service: AIService) {
+    this.aiService = service;
     this.svc = service as unknown as AIServiceInternal;
 
     // The shared AgentMessageWriteQueue (in BaseAIProvider) coalesces streaming
@@ -291,6 +291,15 @@ export class MessageStreamingHandler {
   /** Used by AIService teardown to unwire the singleton batch listener. */
   destroy(): void {
     this.unsubscribeBatchListener();
+  }
+
+  /**
+   * Queue ownership is a generation lease, not a session-wide boolean. Keep
+   * this indirection typed against AIService so a future field rename fails
+   * typechecking instead of becoming an undefined `.has()` at runtime.
+   */
+  private hasActiveQueueLease(sessionId: string): boolean {
+    return this.aiService.hasActiveQueueLease(sessionId);
   }
 
   /**
@@ -1116,7 +1125,7 @@ export class MessageStreamingHandler {
         return;
       }
       // A queued/continuation turn may already be taking over; let it own the end.
-      if (this.svc.sessionsProcessingQueue.has(data.sessionId)) return;
+      if (this.hasActiveQueueLease(data.sessionId)) return;
 
       logger.main.info(`[AIService] Sub-agent drain settled for session ${data.sessionId}, ending deferred session`);
       await stateManager.endSession(data.sessionId);
@@ -2186,7 +2195,7 @@ export class MessageStreamingHandler {
             if (
               isExtensionAgentSession
               && session?.id
-              && !this.svc.sessionsProcessingQueue.has(session.id)
+              && !this.hasActiveQueueLease(session.id)
             ) {
               try {
                 await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
@@ -2581,7 +2590,7 @@ export class MessageStreamingHandler {
             const willResume = session.provider === 'claude-code'
               && typeof (provider as any).willResumeAfterCompletion === 'function'
               && (provider as any).willResumeAfterCompletion();
-            const queuedChainAlreadyActive = this.svc.sessionsProcessingQueue.has(session.id);
+            const queuedChainAlreadyActive = this.hasActiveQueueLease(session.id);
             let queuedContinuationScheduled = false;
             if (!hasTeammates && !willResume && !queuedChainAlreadyActive) {
               queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
@@ -2762,7 +2771,7 @@ export class MessageStreamingHandler {
       }
 
       // Clear executing and pending prompt flags for mobile sync
-      if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+      if (syncProvider && !this.hasActiveQueueLease(session.id)) {
         syncProvider.pushChange(session.id, {
           type: 'metadata_updated',
           metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
@@ -2829,7 +2838,7 @@ export class MessageStreamingHandler {
         const willResumeOnError = session.provider === 'claude-code'
           && typeof (provider as any).willResumeAfterCompletion === 'function'
           && (provider as any).willResumeAfterCompletion();
-        const queuedChainAlreadyActiveOnError = this.svc.sessionsProcessingQueue.has(session.id);
+        const queuedChainAlreadyActiveOnError = this.hasActiveQueueLease(session.id);
         let queuedContinuationScheduledOnError = false;
         if (!hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
           queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
@@ -2856,7 +2865,7 @@ export class MessageStreamingHandler {
         }
 
         // Clear executing and pending prompt flags for mobile sync on error
-        if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+        if (syncProvider && !this.hasActiveQueueLease(session.id)) {
           syncProvider.pushChange(session.id, {
             type: 'metadata_updated',
             metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
