@@ -1,0 +1,65 @@
+name = "nimbalyst-marketplace"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# Pin this worker to the Nimbalyst Cloudflare account so `wrangler deploy`
+# refuses to run if you're logged in as a different account. Override
+# locally by exporting CLOUDFLARE_ACCOUNT_ID.
+account_id = "454b0e55f2d7f9abc0d52d4217ecdc3c"
+
+[dev]
+port = 8791
+
+# R2 bucket for extension packages, screenshots, and registry
+[[r2_buckets]]
+binding = "EXTENSIONS_BUCKET"
+bucket_name = "nimbalyst-extensions"
+
+# KV namespace for download counts
+[[kv_namespaces]]
+binding = "DOWNLOAD_COUNTS"
+id = "305c78b0f94849f193c95f494adf95dc"
+
+# Build-time version injection (set by deploy script)
+[vars]
+VERSION = "dev"
+CDN_BASE_URL = "http://localhost:8791"
+
+# --- Environments ---
+
+[env.staging]
+name = "nimbalyst-marketplace-staging"
+
+[[env.staging.r2_buckets]]
+binding = "EXTENSIONS_BUCKET"
+bucket_name = "nimbalyst-extensions-staging"
+
+[[env.staging.kv_namespaces]]
+binding = "DOWNLOAD_COUNTS"
+id = "305c78b0f94849f193c95f494adf95dc"
+
+[env.staging.vars]
+VERSION = "staging"
+CDN_BASE_URL = "https://cdn-staging.extensions.nimbalyst.com"
+
+[env.production]
+name = "nimbalyst-marketplace"
+routes = [
+  { pattern = "extensions.nimbalyst.com", custom_domain = true }
+]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[[env.production.r2_buckets]]
+binding = "EXTENSIONS_BUCKET"
+bucket_name = "nimbalyst-extensions"
+
+[[env.production.kv_namespaces]]
+binding = "DOWNLOAD_COUNTS"
+id = "305c78b0f94849f193c95f494adf95dc"
+
+[env.production.vars]
+VERSION = "0.1.0"
+CDN_BASE_URL = "https://cdn.extensions.nimbalyst.com"

@@ -1,0 +1,144 @@
+/* Mobile editor styles for WKWebView */
+
+/* Dark theme -- matches desktop darkThemeColors from registry.ts */
+:root {
+  /* Core */
+  --nim-bg: #2d2d2d;
+  --nim-bg-secondary: #1a1a1a;
+  --nim-bg-tertiary: #3a3a3a;
+  --nim-bg-hover: rgba(255, 255, 255, 0.05);
+  --nim-bg-selected: rgba(96, 165, 250, 0.15);
+  --nim-bg-active: #4a4a4a;
+
+  /* Text */
+  --nim-text: #ffffff;
+  --nim-text-muted: #b3b3b3;
+  --nim-text-faint: #808080;
+  --nim-text-disabled: #666666;
+
+  /* Borders */
+  --nim-border: #4a4a4a;
+  --nim-border-focus: #60a5fa;
+
+  /* Primary */
+  --nim-primary: #60a5fa;
+  --nim-primary-hover: #3b82f6;
+
+  /* Links */
+  --nim-link: #60a5fa;
+  --nim-link-hover: #93c5fd;
+
+  /* Status */
+  --nim-success: #4ade80;
+  --nim-warning: #fbbf24;
+  --nim-error: #ef4444;
+  --nim-info: #60a5fa;
+  --nim-purple: #a78bfa;
+
+  /* Code */
+  --nim-code-bg: #1e1e1e;
+  --nim-code-text: #d4d4d4;
+  --nim-code-border: #4a4a4a;
+  --nim-code-gutter: #2a2a2a;
+  --nim-code-comment: #6a9955;
+  --nim-code-punctuation: #cccccc;
+  --nim-code-property: #9cdcfe;
+  --nim-code-selector: #d7ba7d;
+  --nim-code-operator: #d4d4d4;
+  --nim-code-attr: #92c5f8;
+  --nim-code-variable: #4fc1ff;
+  --nim-code-function: #dcdcaa;
+
+  /* Tables */
+  --nim-table-border: #4a4a4a;
+  --nim-table-header: #3a3a3a;
+  --nim-table-cell: #2d2d2d;
+  --nim-table-stripe: #363636;
+
+  /* Toolbar */
+  --nim-toolbar-bg: #2d2d2d;
+  --nim-toolbar-border: #4a4a4a;
+  --nim-toolbar-hover: #3a3a3a;
+  --nim-toolbar-active: rgba(96, 165, 250, 0.2);
+
+  /* Special */
+  --nim-highlight-bg: rgba(255, 212, 0, 0.2);
+  --nim-highlight-border: rgba(255, 212, 0, 0.4);
+  --nim-quote-text: #b3b3b3;
+  --nim-quote-border: #4a4a4a;
+
+  /* Scrollbar */
+  --nim-scrollbar-thumb: #4a4a4a;
+  --nim-scrollbar-thumb-hover: #5a5a5a;
+  --nim-scrollbar-track: transparent;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  background-color: var(--nim-bg-secondary);
+  color: var(--nim-text);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+  overflow: hidden;
+}
+
+#editor-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Override editor shell for mobile */
+.mobile-editor {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.mobile-editor .editor-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Make content area scrollable */
+.mobile-editor .ContentEditable__root {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px;
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+  outline: none;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+/* Hide plugins that don't work on mobile */
+.mobile-editor .draggable-block-menu {
+  display: none;
+}
+
+/* Mobile-friendly code blocks */
+.mobile-editor pre {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Selection color */
+::selection {
+  background-color: rgba(96, 165, 250, 0.3);
+}
+
+/* Allow text selection in content area */
+.mobile-editor .ContentEditable__root {
+  -webkit-user-select: text;
+  user-select: text;
+}

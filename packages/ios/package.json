@@ -1,0 +1,27 @@
+{
+  "name": "@nimbalyst/ios",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:transcript": "vite build --config vite.config.transcript.ts",
+    "build:editor": "vite build --config vite.config.editor.ts",
+    "test:transcript": "./scripts/test-transcript-integration.sh",
+    "test:swift": "cd NimbalystNative && swift test --enable-code-coverage"
+  },
+  "dependencies": {
+    "@nimbalyst/runtime": "file:../runtime",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.5.0",
+    "vite": "^7.1.12"
+  }
+}
