@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a1a;
+      color: #ffffff;
+      padding: 24px;
+    }
+    .dashboard {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    .header h1 {
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .header .actions {
+      display: flex;
+      gap: 8px;
+    }
+    .btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid #4a4a4a;
+      background: transparent;
+      color: #b3b3b3;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: #60a5fa;
+      border-color: #60a5fa;
+      color: #fff;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: #2d2d2d;
+      border: 1px solid #4a4a4a;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .stat-card .label {
+      font-size: 12px;
+      color: #808080;
+      margin-bottom: 4px;
+    }
+    .stat-card .value {
+      font-size: 24px;
+      font-weight: 600;
+    }
+    .stat-card .change {
+      font-size: 12px;
+      color: #4ade80;
+      margin-top: 4px;
+    }
+    .stat-card .change.negative { color: #ef4444; }
+    .table-section {
+      background: #2d2d2d;
+      border: 1px solid #4a4a4a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .table-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid #4a4a4a;
+    }
+    .table-header h2 {
+      font-size: 14px;
+      font-weight: 500;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th {
+      text-align: left;
+      padding: 8px 16px;
+      font-size: 11px;
+      font-weight: 500;
+      color: #808080;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid #3a3a3a;
+    }
+    td {
+      padding: 10px 16px;
+      font-size: 13px;
+      border-bottom: 1px solid #3a3a3a;
+    }
+    tr:last-child td { border-bottom: none; }
+    .status {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .status.active { background: rgba(74, 222, 128, 0.15); color: #4ade80; }
+    .status.pending { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+    .status.error { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+  </style>
+</head>
+<body>
+  <div class="dashboard">
+    <div class="header">
+      <h1>API Dashboard</h1>
+      <div class="actions">
+        <button class="btn">Export</button>
+        <button class="btn btn-primary">+ New Endpoint</button>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="label">Total Requests</div>
+        <div class="value">248K</div>
+        <div class="change">+12% this week</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Avg Response</div>
+        <div class="value">42ms</div>
+        <div class="change">-8% this week</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Error Rate</div>
+        <div class="value">0.3%</div>
+        <div class="change">-0.1% this week</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Active Users</div>
+        <div class="value">1,842</div>
+        <div class="change negative">-3% this week</div>
+      </div>
+    </div>
+
+    <div class="table-section">
+      <div class="table-header">
+        <h2>Recent API Calls</h2>
+        <button class="btn">View All</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Endpoint</th>
+            <th>Method</th>
+            <th>Status</th>
+            <th>Latency</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>/api/users</td>
+            <td>GET</td>
+            <td><span class="status active">200</span></td>
+            <td>23ms</td>
+            <td>2 min ago</td>
+          </tr>
+          <tr>
+            <td>/api/projects</td>
+            <td>POST</td>
+            <td><span class="status active">201</span></td>
+            <td>156ms</td>
+            <td>5 min ago</td>
+          </tr>
+          <tr>
+            <td>/api/auth/login</td>
+            <td>POST</td>
+            <td><span class="status active">200</span></td>
+            <td>89ms</td>
+            <td>8 min ago</td>
+          </tr>
+          <tr>
+            <td>/api/users/u_009</td>
+            <td>PUT</td>
+            <td><span class="status pending">429</span></td>
+            <td>12ms</td>
+            <td>12 min ago</td>
+          </tr>
+          <tr>
+            <td>/api/projects/delete</td>
+            <td>DELETE</td>
+            <td><span class="status error">500</span></td>
+            <td>2,340ms</td>
+            <td>15 min ago</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>

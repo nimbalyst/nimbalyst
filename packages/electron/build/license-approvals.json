@@ -1,0 +1,20 @@
+{
+  "$schema": "Hand-curated approvals for third-party packages whose licenses fall outside the auto-approved permissive set. Each entry suppresses the package from the 'Review Required' list and is rendered in the 'Approved Exceptions' section of THIRD_PARTY_LICENSE_AUDIT.md and THIRD_PARTY_NOTICES.txt. Add a new entry only after reviewing the package's license terms and confirming compatibility with Nimbalyst's distribution.",
+  "approvals": [
+    {
+      "name": "@anthropic-ai/claude-agent-sdk",
+      "license": "Anthropic Commercial",
+      "reason": "Anthropic commercial license (https://code.claude.com/docs/en/legal-and-compliance). Permits use by developers writing code locally, which is exactly how Nimbalyst integrates the SDK. Used unmodified."
+    },
+    {
+      "name": "elkjs",
+      "license": "EPL-2.0",
+      "reason": "Eclipse Public License 2.0. Bundled unmodified as a JavaScript library. EPL-2.0 is a file-level weak copyleft that permits this without affecting Nimbalyst's licensing; only modifications to elkjs itself would need to be released under EPL-2.0."
+    },
+    {
+      "name": "libheif-js",
+      "license": "LGPL-3.0",
+      "reason": "GNU Lesser GPL 3.0. Bundled unmodified as a JavaScript module loaded at runtime from node_modules; users can substitute their own build. License text is included in THIRD_PARTY_NOTICES.txt. No copyleft contagion to Nimbalyst's source."
+    }
+  ]
+}

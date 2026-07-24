@@ -1,0 +1,23 @@
+#!/bin/bash
+# Wrapper script that executes the Nimbalyst Electron binary in Node mode
+# This wrapper exists in an app bundle with LSUIElement=true to prevent dock icons
+#
+# IMPORTANT: We use "$NIMBALYST_BIN" "$@" (not exec) to keep this process as the parent.
+# This ensures macOS uses THIS app bundle's LSUIElement setting, not Nimbalyst's.
+
+# Get the directory where this script lives
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Navigate up to find the main Nimbalyst binary
+# From: Nimbalyst.app/Contents/Resources/claude-helper.app/Contents/MacOS/claude-helper
+#       ../  -> claude-helper.app/Contents/MacOS
+#       ../  -> claude-helper.app/Contents
+#       ../  -> claude-helper.app
+#       ../  -> Resources
+#       ../  -> Contents
+#       MacOS/Nimbalyst -> Contents/MacOS/Nimbalyst
+NIMBALYST_BIN="$SCRIPT_DIR/../../../../MacOS/Nimbalyst"
+
+# Run the Nimbalyst binary as a child process (not exec) so this app bundle stays "active"
+# and macOS uses our LSUIElement=true setting
+"$NIMBALYST_BIN" "$@"

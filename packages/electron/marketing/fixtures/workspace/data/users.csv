@@ -1,0 +1,11 @@
+id,name,email,role,status,created_at,last_login
+u_001,Alice Chen,alice@acme.dev,admin,active,2024-01-15,2025-02-17
+u_002,Bob Martinez,bob@acme.dev,user,active,2024-02-20,2025-02-16
+u_003,Carol Johnson,carol@acme.dev,user,active,2024-03-10,2025-02-15
+u_004,David Kim,david@acme.dev,user,active,2024-04-05,2025-02-17
+u_005,Emma Wilson,emma@acme.dev,viewer,active,2024-05-12,2025-02-10
+u_006,Frank Lopez,frank@acme.dev,user,inactive,2024-06-18,2025-01-05
+u_007,Grace Park,grace@acme.dev,admin,active,2024-07-22,2025-02-17
+u_008,Henry Nakamura,henry@acme.dev,user,active,2024-08-30,2025-02-14
+u_009,Iris Thompson,iris@acme.dev,user,pending,2025-01-08,
+u_010,Jake Rivera,jake@acme.dev,user,active,2025-01-20,2025-02-16

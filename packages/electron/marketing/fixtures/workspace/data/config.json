@@ -1,0 +1,48 @@
+{
+  "app": {
+    "name": "Acme API Server",
+    "version": "2.4.1",
+    "environment": "production"
+  },
+  "server": {
+    "port": 3000,
+    "host": "0.0.0.0",
+    "cors": {
+      "origin": ["https://app.acme.dev", "https://admin.acme.dev"],
+      "credentials": true
+    }
+  },
+  "database": {
+    "pool": {
+      "min": 5,
+      "max": 20,
+      "idleTimeoutMs": 30000
+    },
+    "ssl": true,
+    "migrations": {
+      "directory": "./migrations",
+      "tableName": "schema_migrations"
+    }
+  },
+  "auth": {
+    "jwt": {
+      "expiresIn": "15m",
+      "refreshExpiresIn": "7d",
+      "algorithm": "RS256"
+    },
+    "apiKey": {
+      "prefix": "ak_",
+      "maxPerUser": 5
+    }
+  },
+  "rateLimiting": {
+    "windowMs": 60000,
+    "maxRequests": 100,
+    "skipSuccessfulRequests": false
+  },
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "redactFields": ["password", "token", "apiKey"]
+  }
+}

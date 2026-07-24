@@ -1,0 +1,73 @@
+// @nimbalyst {"viewport":{"x":0,"y":0,"zoom":1},"positions":{},"entityViewMode":"standard"}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  name      String
+  role      Role      @default(USER)
+  password  String
+  apiKeys   ApiKey[]
+  projects  Project[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  visibility  String   @default("private")
+  owner       User     @relation(fields: [ownerId], references: [id])
+  ownerId     String
+  tasks       Task[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Task {
+  id          String     @id @default(uuid())
+  title       String
+  description String?
+  status      TaskStatus @default(TODO)
+  priority    Int        @default(0)
+  project     Project    @relation(fields: [projectId], references: [id])
+  projectId   String
+  assignee    String?
+  dueDate     DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model ApiKey {
+  id         String    @id @default(uuid())
+  key        String    @unique
+  name       String
+  scopes     String[]
+  user       User      @relation(fields: [userId], references: [id])
+  userId     String
+  revoked    Boolean   @default(false)
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+enum Role {
+  ADMIN
+  USER
+  VIEWER
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
