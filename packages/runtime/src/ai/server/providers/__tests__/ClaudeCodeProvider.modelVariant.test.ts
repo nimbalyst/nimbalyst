@@ -10,7 +10,7 @@ describe('resolveClaudeCodeModelVariant', () => {
     });
 
     it('normalizes the persisted Sonnet 5 default', () => {
-      expect(resolveClaudeCodeModelVariant('claude-code:sonnet-5', DEFAULT_MODEL)).toBe('sonnet');
+      expect(resolveClaudeCodeModelVariant('claude-code:sonnet-5', DEFAULT_MODEL)).toBe('sonnet[1m]');
     });
 
     it('resolves opus variant', () => {

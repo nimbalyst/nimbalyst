@@ -258,6 +258,7 @@ export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInpu
   'opus-4-7',
   'opus-4-6',
   'sonnet',
+  'sonnet-5',
   'sonnet-4-6',
   'haiku',
 ] as const;

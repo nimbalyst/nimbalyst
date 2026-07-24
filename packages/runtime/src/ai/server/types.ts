@@ -250,6 +250,10 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
   type ClaudeCodeVariant = typeof CLAUDE_CODE_VARIANTS[number];
   const configured = configuredModel || defaultModel;
 
+  if (/^(claude-code:)?sonnet-5(?:-1m)?$/i.test(configured)) {
+    return 'sonnet[1m]';
+  }
+
   if (isDeepSeekClaudeAgentModel(configured)) return 'sonnet';
 
   const toSdkBase = (variant: string): string => CLAUDE_CODE_PINNED_SDK_MODELS[variant as ClaudeCodeVariant] ?? variant;
