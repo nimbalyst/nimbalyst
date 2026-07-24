@@ -49,6 +49,11 @@ describe('session list virtual tags', () => {
   it('recognizes legacy child-bearing roots as workstreams without including blitzes', () => {
     expect(isWorkstreamParentSession(session({ id: 'legacy', childCount: 2 }))).toBe(true);
     expect(isWorkstreamParentSession(session({
+      id: 'empty-typed',
+      sessionType: 'workstream',
+      childCount: 0,
+    }))).toBe(true);
+    expect(isWorkstreamParentSession(session({
       id: 'blitz',
       sessionType: 'blitz',
       childCount: 2,

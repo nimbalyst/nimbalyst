@@ -37,6 +37,7 @@ import {
   viewModeAtom,
   setViewModeAtom,
   registerWorkstreamSelectedHook,
+  workstreamSessionsAtom,
 } from '../../store';
 import { initWorkstreamState, loadWorkstreamStates, workstreamStateAtom, workstreamActiveChildAtom } from '../../store/atoms/workstreamState';
 import { blitzAnalysisCreatedAtom } from '../../store/atoms/blitz';
@@ -64,6 +65,7 @@ import {
   addSessionToWorktreeActionAtom,
 } from '../../store/actions/sessionHistoryActions';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
+import { reconcileActiveSessionId } from '../../../shared/sessionHierarchy';
 
 export interface AgentModeRef {
   createNewSession: (initialDraft?: string) => Promise<string | undefined>;
@@ -157,9 +159,22 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
     [selectedWorkstream?.id]
   );
   const activeChildId = useAtomValue(activeChildAtom);
+  const memberSessionIdsAtom = useMemo(
+    () => selectedWorkstream ? workstreamSessionsAtom(selectedWorkstream.id) : atom<string[]>([]),
+    [selectedWorkstream?.id],
+  );
+  const memberSessionIds = useAtomValue(memberSessionIdsAtom);
 
-  // The actual active session is either the active child OR the workstream parent
-  const actualActiveSessionId = activeChildId || selectedWorkstream?.id || null;
+  // Route only to a current member. Empty typed containers deliberately have
+  // no transcript-bearing active session.
+  const actualActiveSessionId = selectedWorkstream
+    ? reconcileActiveSessionId({
+        containerId: selectedWorkstream.id,
+        childSessionIds: memberSessionIds,
+        activeSessionId: activeChildId,
+        isStructuralContainer: selectedWorkstream.type === 'workstream',
+      })
+    : null;
 
   // Sync the active session to the global atom so nav gutter components
   // (VoiceModeButton) can read it without workstream context. The global
@@ -316,11 +331,13 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
         mode: 'agent',
         agent: {
           workstreamId: selectedWorkstream?.id || actualActiveSessionId,
-          childSessionId: activeChildId || null,
+          childSessionId: actualActiveSessionId === selectedWorkstream?.id
+            ? null
+            : actualActiveSessionId,
         },
       });
     }
-  }, [isActive, actualActiveSessionId, selectedWorkstream?.id, activeChildId, pushNavigationEntry, isRestoringNavigation]);
+  }, [isActive, actualActiveSessionId, selectedWorkstream?.id, pushNavigationEntry, isRestoringNavigation]);
 
   // Handle "New Session" from tray menu (dispatchCreateNewSession is identity-stable)
   const trayNewSessionRequest = useAtomValue(trayNewSessionRequestAtom);
