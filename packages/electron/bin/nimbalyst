@@ -1,0 +1,94 @@
+#!/usr/bin/env node
+
+const { spawn, execSync } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+// Get the target directory
+const targetPath = process.argv[2] || '.';
+const absolutePath = path.resolve(targetPath);
+
+// Check if path exists
+if (!fs.existsSync(absolutePath)) {
+  console.error(`Error: Path "${absolutePath}" does not exist`);
+  process.exit(1);
+}
+
+// Check if it's a directory
+const stats = fs.statSync(absolutePath);
+if (!stats.isDirectory()) {
+  console.error(`Error: "${absolutePath}" is not a directory`);
+  process.exit(1);
+}
+
+// Determine if we're running from a packaged app or development
+const isDevelopment = !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
+const platform = os.platform();
+
+let appExecutable;
+
+if (isDevelopment) {
+  // Development mode - use electron from node_modules
+  const electronPath = path.join(__dirname, '..', 'node_modules', '.bin', 'electron');
+  const appPath = path.join(__dirname, '..');
+  
+  // Launch Electron with the directory as argument
+  const child = spawn(electronPath, [appPath, '--project', absolutePath], {
+    detached: true,
+    stdio: 'ignore'
+  });
+  
+  // Detach the child process so it continues running after the CLI exits
+  child.unref();
+} else {
+  // Production mode - find the installed app
+  if (platform === 'darwin') {
+    // macOS - look for the app in /Applications
+    appExecutable = '/Applications/Nimbalyst.app/Contents/MacOS/Nimbalyst';
+    
+    if (!fs.existsSync('/Applications/Nimbalyst.app')) {
+      console.error('Nimbalyst is not installed. Please install it from the release package.');
+      process.exit(1);
+    }
+    
+    // Use 'open' command on macOS with arguments
+    execSync(`open -a "Nimbalyst" --args --project "${absolutePath}"`, { stdio: 'ignore' });
+  } else if (platform === 'win32') {
+    // Windows - look in Program Files
+    const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
+    appExecutable = path.join(programFiles, 'Nimbalyst', 'Nimbalyst.exe');
+    
+    if (!fs.existsSync(appExecutable)) {
+      console.error('Nimbalyst is not installed. Please install it from the release package.');
+      process.exit(1);
+    }
+    
+    // Launch on Windows
+    spawn(appExecutable, ['--project', absolutePath], {
+      detached: true,
+      stdio: 'ignore'
+    }).unref();
+  } else {
+    // Linux
+    appExecutable = '/usr/local/bin/nimbalyst';
+    
+    if (!fs.existsSync(appExecutable)) {
+      // Try AppImage location
+      appExecutable = path.join(os.homedir(), 'Applications', 'Nimbalyst.AppImage');
+      
+      if (!fs.existsSync(appExecutable)) {
+        console.error('Nimbalyst is not installed. Please install it from the release package.');
+        process.exit(1);
+      }
+    }
+    
+    // Launch on Linux
+    spawn(appExecutable, ['--project', absolutePath], {
+      detached: true,
+      stdio: 'ignore'
+    }).unref();
+  }
+}
+
+console.log(`Opening Nimbalyst for: ${absolutePath}`);

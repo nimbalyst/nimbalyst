@@ -1,0 +1,28 @@
+{
+  "name": "@nimbalyst/collab-adapters",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Host-internal Y.Doc content registry. The CollabContentAdapter type is defined in @nimbalyst/extension-sdk; this package provides the runtime registry consumed by main process and runtime services. Extensions register adapters via context.services.collab from the SDK, not via this package.",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "yjs": ">=13.5.42"
+  },
+  "devDependencies": {
+    "@nimbalyst/extension-sdk": "*",
+    "typescript": "^5.0.0",
+    "yjs": ">=13.5.42"
+  }
+}

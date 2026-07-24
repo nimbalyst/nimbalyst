@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+app/build/
+dist-transcript/
+node_modules/
+
+# Signing material and local Firebase config -- never commit these.
+*.keystore
+*.jks
+app/ci-release.keystore
+app/google-services.json
+

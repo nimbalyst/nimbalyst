@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>About Nimbalyst</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        background: #f5f5f5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .about-container {
+        background: white;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 40px;
+        box-sizing: border-box;
+      }
+
+      .about-logo {
+        width: 200px;
+        height: auto;
+        margin-bottom: 25px;
+      }
+
+      .about-logo img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: white;
+        border-radius: 8px;
+      }
+
+      .about-title {
+        font-size: 32px;
+        font-weight: 600;
+        margin: 0 0 10px 0;
+        color: #1a1a1a;
+      }
+
+      .about-version {
+        font-size: 18px;
+        color: #666;
+        margin: 0 0 35px 0;
+      }
+
+      .about-description {
+        font-size: 16px;
+        line-height: 1.6;
+        color: #444;
+        max-width: 450px;
+        margin: 0 auto 35px;
+      }
+
+      .about-features {
+        text-align: left;
+        margin: 0 auto 30px;
+        max-width: 500px;
+      }
+
+      .about-features ul {
+        margin: 0;
+        padding: 0 0 0 20px;
+        font-size: 15px;
+        color: #555;
+        line-height: 1.8;
+      }
+
+      .about-footer {
+        font-size: 14px;
+        color: #666;
+      }
+
+      .about-footer p {
+        margin: 5px 0;
+      }
+
+      .about-footer a {
+        color: #0066cc;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .about-footer a:hover {
+        text-decoration: underline;
+      }
+
+      .support-id-container {
+        margin-top: 20px;
+        padding-top: 20px;
+        border-top: 1px solid #e0e0e0;
+        font-size: 12px;
+        color: #666;
+      }
+
+      .support-id-label {
+        margin-bottom: 5px;
+        font-weight: 500;
+      }
+
+      .support-id-value {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        background: #f5f5f5;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+        font-size: 11px;
+        color: #333;
+        cursor: pointer;
+        transition: background-color 0.2s;
+      }
+
+      .support-id-value:hover {
+        background: #e8e8e8;
+      }
+
+      .support-id-value:active {
+        background: #ddd;
+      }
+
+      .copy-icon {
+        width: 14px;
+        height: 14px;
+        opacity: 0.6;
+      }
+
+      .copy-feedback {
+        margin-left: 8px;
+        color: #0066cc;
+        font-size: 11px;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+
+      .copy-feedback.show {
+        opacity: 1;
+      }
+
+      /* Dark theme support */
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #1a1a1a;
+        }
+
+        .about-container {
+          background: #2a2a2a;
+          color: #e0e0e0;
+        }
+
+        .about-title {
+          color: #f0f0f0;
+        }
+
+        .about-version {
+          color: #aaa;
+        }
+
+        .about-description {
+          color: #ccc;
+        }
+
+        .about-features ul {
+          color: #bbb;
+        }
+
+        .about-footer {
+          color: #999;
+        }
+
+        .about-footer a {
+          color: #66b3ff;
+        }
+
+        .support-id-container {
+          border-top-color: #444;
+          color: #aaa;
+        }
+
+        .support-id-value {
+          background: #333;
+          border-color: #555;
+          color: #e0e0e0;
+        }
+
+        .support-id-value:hover {
+          background: #3a3a3a;
+        }
+
+        .support-id-value:active {
+          background: #444;
+        }
+      }
+
+      /* Manual theme classes */
+      body.dark-theme {
+        background: #1a1a1a;
+      }
+
+      body.dark-theme .about-container {
+        background: #2a2a2a;
+        color: #e0e0e0;
+      }
+
+      body.dark-theme .about-title {
+        color: #f0f0f0;
+      }
+
+      body.dark-theme .about-version {
+        color: #aaa;
+      }
+
+      body.dark-theme .about-description {
+        color: #ccc;
+      }
+
+      body.dark-theme .about-features ul {
+        color: #bbb;
+      }
+
+      body.dark-theme .about-footer {
+        color: #999;
+      }
+
+      body.dark-theme .about-footer a {
+        color: #66b3ff;
+      }
+
+      body.dark-theme .support-id-container {
+        border-top-color: #444;
+        color: #aaa;
+      }
+
+      body.dark-theme .support-id-value {
+        background: #333;
+        border-color: #555;
+        color: #e0e0e0;
+      }
+
+      body.dark-theme .support-id-value:hover {
+        background: #3a3a3a;
+      }
+
+      body.dark-theme .support-id-value:active {
+        background: #444;
+      }
+
+    </style>
+  </head>
+  <body>
+    <div class="about-container">
+      <div class="about-logo">
+        <img src="nimbalyst-logo.png" alt="Nimbalyst">
+      </div>
+      <p class="about-version" id="about-version">Version</p>
+
+      <p class="about-description">
+        Nimbalyst is the visual workspace for building with Codex and Claude Code
+      </p>
+
+      <div class="about-features">
+        <ul>
+          <li>Agentic WYSIWYG visual editors for markdown, mockups, excalidraw, mermaid, data models, csv and code. Extensions.</li>
+          <li>Parallel session management and kanban to understand session state, search and resume sessions, and link sessions to files and files to sessions</li>
+          <li>Item tracking and kanban to manage plans, bugs, and tasks with your agent</li>
+          <li>Open storage of content and status in plain files on disk and git.</li>
+        </ul>
+      </div>
+
+      <div class="about-footer">
+        <p>Built with ❤️ by <a href="https://nimbalyst.com" id="nimbalyst-link">Nimbalyst</a></p>
+        <p class="about-copyright">© 2025-2026  Nimbalyst</p>
+        <p><a href="#" id="third-party-notices-link">Third-Party Notices</a></p>
+
+        <div class="support-id-container">
+          <div class="support-id-label">Your Nimbalyst Support ID:</div>
+          <div class="support-id-value" id="support-id" title="Click to copy">
+            <span id="support-id-text">Loading...</span>
+            <svg class="copy-icon" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2Z"/>
+              <path d="M2 6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-1H6a3 3 0 0 1-3-3V6H2Z"/>
+            </svg>
+            <span class="copy-feedback" id="copy-feedback">Copied!</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Apply theme from main window
+      window.electronAPI?.onThemeChange((theme) => {
+        const body = document.body;
+        if (body.dataset.theme === theme) return;
+        body.dataset.theme = theme;
+        body.classList.remove('dark-theme', 'light-theme');
+        // crystal-dark uses dark-theme styles
+        if (theme === 'dark' || theme === 'crystal-dark') {
+          body.classList.add('dark-theme');
+        } else if (theme === 'light') {
+          body.classList.add('light-theme');
+        }
+      });
+
+      // Request initial theme
+      window.electronAPI?.getTheme?.().then(theme => {
+        // crystal-dark uses dark-theme styles
+        if (theme === 'dark' || theme === 'crystal-dark') {
+          document.body.classList.add('dark-theme');
+        }
+        document.body.dataset.theme = theme;
+      });
+
+      // Populate version from main process
+      (async () => {
+        try {
+          const version = await window.electronAPI?.getAppVersion?.();
+          if (version) {
+            const el = document.getElementById('about-version');
+            if (el) el.textContent = `Version ${version}`;
+          }
+        } catch {}
+      })();
+
+      // Handle link clicks
+      document.getElementById('nimbalyst-link')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        window.electronAPI?.openExternal?.('https://nimbalyst.com');
+      });
+
+      document.getElementById('third-party-notices-link')?.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const result = await window.electronAPI?.openThirdPartyNotices?.();
+        if (result && !result.success) {
+          console.error('Failed to open third-party notices:', result.error);
+        }
+      });
+
+      // Fetch and display Support ID
+      (async () => {
+        try {
+          const distinctId = await window.electronAPI?.analytics?.getDistinctId?.();
+          const supportIdText = document.getElementById('support-id-text');
+          if (supportIdText) {
+            supportIdText.textContent = distinctId || 'Not available';
+          }
+        } catch (error) {
+          console.error('Failed to fetch support ID:', error);
+          const supportIdText = document.getElementById('support-id-text');
+          if (supportIdText) {
+            supportIdText.textContent = 'Not available';
+          }
+        }
+      })();
+
+      // Handle copy to clipboard
+      document.getElementById('support-id')?.addEventListener('click', async () => {
+        const supportIdText = document.getElementById('support-id-text');
+        const copyFeedback = document.getElementById('copy-feedback');
+
+        if (!supportIdText || supportIdText.textContent === 'Loading...' || supportIdText.textContent === 'Not available') {
+          return;
+        }
+
+        try {
+          await navigator.clipboard.writeText(supportIdText.textContent);
+
+          // Show feedback
+          if (copyFeedback) {
+            copyFeedback.classList.add('show');
+            setTimeout(() => {
+              copyFeedback.classList.remove('show');
+            }, 1500);
+          }
+        } catch (error) {
+          console.error('Failed to copy to clipboard:', error);
+        }
+      });
+
+    </script>
+  </body>
+</html>

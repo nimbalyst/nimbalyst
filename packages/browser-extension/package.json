@@ -1,0 +1,19 @@
+{
+  "name": "@nimbalyst/browser-extension",
+  "version": "0.1.0",
+  "description": "Nimbalyst browser extension for web clipping and AI extraction",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "turndown": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "esbuild": "^0.20.0"
+  }
+}
