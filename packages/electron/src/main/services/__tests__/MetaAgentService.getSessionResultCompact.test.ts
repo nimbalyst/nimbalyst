@@ -85,7 +85,7 @@ describe('MetaAgentService.getSessionResultJson includeFullResponse (FIX C)', ()
     ] as never);
 
     const service = MetaAgentService.getInstance();
-    const json = await (service as any).getSessionResultJson('child-1', '/ws');
+    const json = await (service as any).getSessionResultJson('caller', '/ws', 'child-1');
     const data = JSON.parse(json);
 
     expect(data.fullResponse).toBe(longReport);
@@ -99,7 +99,7 @@ describe('MetaAgentService.getSessionResultJson includeFullResponse (FIX C)', ()
     ] as never);
 
     const service = MetaAgentService.getInstance();
-    const json = await (service as any).getSessionResultJson('child-1', '/ws', {
+    const json = await (service as any).getSessionResultJson('caller', '/ws', 'child-1', {
       includeFullResponse: false,
     });
     const data = JSON.parse(json);
@@ -119,7 +119,7 @@ describe('MetaAgentService.getSessionResultJson includeFullResponse (FIX C)', ()
     ] as never);
 
     const service = MetaAgentService.getInstance();
-    const json = await (service as any).getSessionResultJson('child-1', '/ws', {
+    const json = await (service as any).getSessionResultJson('caller', '/ws', 'child-1', {
       includeFullResponse: true,
     });
     const data = JSON.parse(json);

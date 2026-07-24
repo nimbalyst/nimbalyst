@@ -24,6 +24,26 @@ export interface QueuedPrompt {
   claimedAt?: number; // epoch ms
   completedAt?: number; // epoch ms
   errorMessage?: string;
+  deliveryClass: 'ordinary' | 'control';
+  priorityRank: number;
+  deliveryReady: boolean;
+  producer?: string;
+  idempotencyKey?: string;
+  requestDigest?: string;
+  controlOperation?: string;
+  interruptTargetGeneration?: string;
+  interruptReservationOwner?: string;
+  interruptReceipt?: QueuedPromptInterruptReceipt;
+}
+
+export interface QueuedPromptInterruptReceipt {
+  generation: string;
+  attempted: boolean;
+  success: boolean;
+  method: string | null;
+  error: string | null;
+  nativeEntered: boolean;
+  recordedAt: number;
 }
 
 export interface CreateQueuedPromptInput {
@@ -40,9 +60,25 @@ export interface CreateQueuedPromptInput {
   };
 }
 
+export interface CreatePriorityControlQueuedPromptInput {
+  id: string;
+  sessionId: string;
+  prompt: string;
+  producer: string;
+  idempotencyKey: string;
+  requestDigest: string;
+  controlOperation: string;
+}
+
 export interface QueuedPromptsStore {
   /** Create a new queued prompt */
   create(input: CreateQueuedPromptInput): Promise<QueuedPrompt>;
+
+  /** Create or replay an idempotent high-priority control prompt. */
+  createPriorityControlPrompt(input: CreatePriorityControlQueuedPromptInput): Promise<{
+    row: QueuedPrompt;
+    replayed: boolean;
+  }>;
 
   /** Get a specific queued prompt by ID */
   get(id: string): Promise<QueuedPrompt | null>;
@@ -52,6 +88,23 @@ export interface QueuedPromptsStore {
 
   /** List pending prompts for a session (ready to execute) */
   listPending(sessionId: string): Promise<QueuedPrompt[]>;
+
+  /** Discover pending work after a process restart without changing row state. */
+  listPendingSessionIds(options?: { deliveryClass?: 'ordinary' | 'control' }): Promise<string[]>;
+
+  /** Atomically reserve the one native interrupt allowed for a control row. */
+  reservePriorityInterrupt(input: {
+    promptId: string;
+    generation: string;
+    owner: string;
+  }): Promise<{ row: QueuedPrompt; reserved: boolean }>;
+
+  /** Persist the native interrupt result before queue processing is triggered. */
+  recordPriorityInterruptReceipt(input: {
+    promptId: string;
+    generation: string;
+    receipt: QueuedPromptInterruptReceipt;
+  }): Promise<QueuedPrompt>;
 
   /**
    * Atomically claim a pending prompt for execution.
@@ -162,6 +215,15 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     }
   }
 
+  let interruptReceipt = row.interrupt_receipt;
+  if (typeof interruptReceipt === 'string') {
+    try {
+      interruptReceipt = JSON.parse(interruptReceipt);
+    } catch {
+      interruptReceipt = undefined;
+    }
+  }
+
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -173,6 +235,16 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     claimedAt: toMillis(row.claimed_at) ?? undefined,
     completedAt: toMillis(row.completed_at) ?? undefined,
     errorMessage: row.error_message || undefined,
+    deliveryClass: row.delivery_class === 'control' ? 'control' : 'ordinary',
+    priorityRank: Number(row.priority_rank ?? 0),
+    deliveryReady: row.delivery_ready !== false && row.delivery_ready !== 0,
+    producer: row.producer || undefined,
+    idempotencyKey: row.idempotency_key || undefined,
+    requestDigest: row.request_digest || undefined,
+    controlOperation: row.control_operation || undefined,
+    interruptTargetGeneration: row.interrupt_target_generation || undefined,
+    interruptReservationOwner: row.interrupt_reservation_owner || undefined,
+    interruptReceipt: interruptReceipt || undefined,
   };
 }
 
@@ -211,6 +283,51 @@ export function createPGLiteQueuedPromptsStore(
       return rowToQueuedPrompt(rows[0]);
     },
 
+    async createPriorityControlPrompt(
+      input: CreatePriorityControlQueuedPromptInput
+    ): Promise<{ row: QueuedPrompt; replayed: boolean }> {
+      await ensureReady();
+
+      const { rows } = await db.query<any>(
+        `INSERT INTO queued_prompts (
+           id, session_id, prompt, delivery_class, priority_rank, delivery_ready, producer,
+           idempotency_key, request_digest, control_operation
+         )
+         VALUES ($1, $2, $3, 'control', 100, FALSE, $4, $5, $6, $7)
+         ON CONFLICT (session_id, idempotency_key)
+           WHERE idempotency_key IS NOT NULL
+         DO NOTHING
+         RETURNING *`,
+        [
+          input.id,
+          input.sessionId,
+          input.prompt,
+          input.producer,
+          input.idempotencyKey,
+          input.requestDigest,
+          input.controlOperation,
+        ]
+      );
+
+      if (rows.length > 0) {
+        return { row: rowToQueuedPrompt(rows[0]), replayed: false };
+      }
+
+      const existing = await db.query<any>(
+        `SELECT * FROM queued_prompts
+         WHERE session_id = $1 AND idempotency_key = $2
+         LIMIT 1`,
+        [input.sessionId, input.idempotencyKey]
+      );
+      if (existing.rows.length === 0) {
+        throw new Error('Failed to create or replay priority control prompt');
+      }
+      if (existing.rows[0].request_digest !== input.requestDigest) {
+        throw new Error('idempotency_conflict: key was already used for a different request');
+      }
+      return { row: rowToQueuedPrompt(existing.rows[0]), replayed: true };
+    },
+
     async get(id: string): Promise<QueuedPrompt | null> {
       await ensureReady();
 
@@ -234,7 +351,7 @@ export function createPGLiteQueuedPromptsStore(
       if (!includeCompleted) {
         query += ` AND status NOT IN ('completed', 'failed')`;
       }
-      query += ` ORDER BY created_at ASC`;
+      query += ` ORDER BY priority_rank DESC, created_at ASC, id ASC`;
 
       const { rows } = await db.query<any>(query, [sessionId]);
       return rows.map(rowToQueuedPrompt);
@@ -245,12 +362,95 @@ export function createPGLiteQueuedPromptsStore(
 
       const { rows } = await db.query<any>(
         `SELECT * FROM queued_prompts
-         WHERE session_id = $1 AND status = 'pending'
-         ORDER BY created_at ASC`,
+         WHERE session_id = $1 AND status = 'pending' AND delivery_ready = TRUE
+         ORDER BY priority_rank DESC, created_at ASC, id ASC`,
         [sessionId]
       );
 
       return rows.map(rowToQueuedPrompt);
+    },
+
+    async listPendingSessionIds(
+      options?: { deliveryClass?: 'ordinary' | 'control' }
+    ): Promise<string[]> {
+      await ensureReady();
+
+      const deliveryClass = options?.deliveryClass;
+      const { rows } = await db.query<{ session_id: string }>(
+        `SELECT session_id
+         FROM queued_prompts
+         WHERE status = 'pending' AND delivery_ready = TRUE
+           AND ($1 IS NULL OR delivery_class = $1)
+         GROUP BY session_id
+         ORDER BY MIN(created_at) ASC, session_id ASC`,
+        [deliveryClass ?? null]
+      );
+      return rows.map((row) => row.session_id);
+    },
+
+    async reservePriorityInterrupt(input): Promise<{ row: QueuedPrompt; reserved: boolean }> {
+      await ensureReady();
+
+      const { rows } = await db.query<any>(
+        `UPDATE queued_prompts
+         SET interrupt_target_generation = $2,
+             interrupt_reservation_owner = $3
+         WHERE id = $1
+           AND delivery_class = 'control'
+           AND interrupt_receipt IS NULL
+           AND interrupt_reservation_owner IS NULL
+         RETURNING *`,
+        [input.promptId, input.generation, input.owner]
+      );
+      if (rows.length > 0) {
+        return { row: rowToQueuedPrompt(rows[0]), reserved: true };
+      }
+      const existing = await db.query<any>(
+        `SELECT * FROM queued_prompts WHERE id = $1 LIMIT 1`,
+        [input.promptId]
+      );
+      if (existing.rows.length === 0) {
+        throw new Error(`Priority control prompt ${input.promptId} not found`);
+      }
+      return { row: rowToQueuedPrompt(existing.rows[0]), reserved: false };
+    },
+
+    async recordPriorityInterruptReceipt(input): Promise<QueuedPrompt> {
+      await ensureReady();
+
+      const { rows } = await db.query<any>(
+        `UPDATE queued_prompts
+         SET interrupt_receipt = $3,
+             delivery_ready = $4
+         WHERE id = $1
+           AND interrupt_target_generation = $2
+           AND interrupt_receipt IS NULL
+         RETURNING *`,
+        [
+          input.promptId,
+          input.generation,
+          JSON.stringify(input.receipt),
+          input.receipt.success,
+        ]
+      );
+      if (rows.length > 0) {
+        return rowToQueuedPrompt(rows[0]);
+      }
+      const existing = await db.query<any>(
+        `SELECT * FROM queued_prompts WHERE id = $1 LIMIT 1`,
+        [input.promptId]
+      );
+      if (existing.rows.length === 0) {
+        throw new Error(`Priority control prompt ${input.promptId} not found`);
+      }
+      const row = rowToQueuedPrompt(existing.rows[0]);
+      if (
+        row.interruptTargetGeneration !== input.generation
+        || !row.interruptReceipt
+      ) {
+        throw new Error('Failed to record priority interrupt receipt');
+      }
+      return row;
     },
 
     async claim(id: string): Promise<QueuedPrompt | null> {
@@ -261,7 +461,7 @@ export function createPGLiteQueuedPromptsStore(
       const { rows } = await db.query<any>(
         `UPDATE queued_prompts
          SET status = 'executing', claimed_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND status = 'pending'
+         WHERE id = $1 AND status = 'pending' AND delivery_ready = TRUE
          RETURNING *`,
         [id]
       );

@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Bug fixes go here -->
 - Queued chat messages now continue through a replacement project window after the original window reloads or closes.
 - Windows and Linux get the File/Edit/View menus back, now drawn in the project window's title bar.
+- Delegated agent sessions now report their resolved launch model and reasoning settings, accept auditable priority prompts without stale-turn interrupts, and automatically resume ordinary queued prompts after turns and restarts.
+- Orchestrator sessions can launch isolated worktree agents in another loaded project and retain status, result, queue, prompt, and reply control.
 
 ### Removed
 <!-- Removed features go here -->
