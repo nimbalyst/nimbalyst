@@ -2187,8 +2187,8 @@ const SessionHistoryComponent: React.FC = () => {
       if (metaAgentSessionIds.has(session.id) || metaAgentChildSessionIds.has(session.id)) continue;
 
       if (!session.worktreeId) {
-        // Check if this is a workstream (has children)
-        const isWorkstream = (session.childCount ?? 0) > 0;
+        // Typed workstream containers remain structural even when empty.
+        const isWorkstream = isWorkstreamParentSession(session);
         if (isWorkstream) {
           // Create workstream item with cached children (or empty array if not loaded yet)
           const cachedChildren = workstreamChildrenCache.get(session.id) || [];

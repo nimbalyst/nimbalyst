@@ -191,7 +191,9 @@ export const SessionListItem = memo<SessionListItemProps>(({
   // Determine if this session can be dragged
   // Can drag if: (1) Has a parent (is a child session), OR (2) Is an orphan (no parent, no children)
   // Worktree sessions cannot be dragged - they are tied to their git worktree
-  const isDraggable = !isWorktreeSession && (parentSessionId !== null || !isWorkstream);
+  const isDraggable = sessionType !== 'workstream'
+    && !isWorktreeSession
+    && (parentSessionId !== null || !isWorkstream);
 
   // Determine if this session can accept drops
   // Workstreams and standalone root sessions can be drop targets (dropping creates a workstream)
@@ -255,12 +257,14 @@ export const SessionListItem = memo<SessionListItemProps>(({
       parentId: parentSessionId,
       workspacePath: projectPath,
       isWorktreeSession,
+      isWorkstream,
+      sessionType,
     };
 
     e.dataTransfer.setData('application/x-nimbalyst-session', JSON.stringify(dragData));
     e.dataTransfer.effectAllowed = 'move';
     setIsDragging(true);
-  }, [isDraggable, id, parentSessionId, projectPath, isWorktreeSession]);
+  }, [isDraggable, id, parentSessionId, projectPath, isWorktreeSession, isWorkstream, sessionType]);
 
   const handleDragEnd = useCallback((e: React.DragEvent) => {
     setIsDragging(false);
@@ -296,11 +300,20 @@ export const SessionListItem = memo<SessionListItemProps>(({
     if (!dataStr || !projectPath) return;
 
     try {
-      const { sessionId, parentId, workspacePath, isWorktreeSession: draggedIsWorktree } = JSON.parse(dataStr);
+      const {
+        sessionId,
+        parentId,
+        workspacePath,
+        isWorktreeSession: draggedIsWorktree,
+        isWorkstream: draggedIsWorkstream,
+        sessionType: draggedSessionType,
+      } = JSON.parse(dataStr);
 
-      // Validate worktree sessions cannot be moved
-      if (draggedIsWorktree) {
-        console.error('[SessionListItem] Cannot move worktree sessions');
+      // Structural containers and worktree sessions cannot be moved. Check
+      // before converting a standalone drop target so a rejected source cannot
+      // leave behind an unnecessary workstream container.
+      if (draggedIsWorktree || draggedIsWorkstream || draggedSessionType === 'workstream') {
+        console.error('[SessionListItem] Cannot move structural or worktree sessions');
         return;
       }
 
