@@ -134,6 +134,7 @@ export {
   sessionArchivedAtom,
   sessionActiveAtom,
   sessionTitleAtom,
+  sessionListTitleAtom,
   sessionProviderAtom,
   sessionAgentRoleAtom,
   sessionPhaseAtom,

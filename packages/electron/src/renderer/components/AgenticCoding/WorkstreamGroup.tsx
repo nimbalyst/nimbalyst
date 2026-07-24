@@ -6,6 +6,7 @@ import {
   sessionUnreadAtom,
   sessionPendingPromptAtom,
   sessionHasPendingInteractivePromptAtom,
+  sessionListTitleAtom,
   groupSessionStatusAtom,
   reparentSessionAtom,
   refreshSessionListAtom,
@@ -1062,7 +1063,8 @@ const WorkstreamSessionItem: React.FC<WorkstreamSessionItemProps> = ({
   const renameInputRef = useRef<HTMLInputElement>(null);
   const shareInfo = useAtomValue(sessionShareAtom(session.id));
 
-  const displayTitle = session.title || 'Untitled Session';
+  const currentTitle = useAtomValue(sessionListTitleAtom(session.id));
+  const displayTitle = currentTitle || session.title || 'Untitled Session';
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
