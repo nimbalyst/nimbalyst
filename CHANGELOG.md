@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Bug fixes go here -->
 - Agent-mode document embeds now recover when their target file is created after the document opens.
 - Automations no longer rerun the same scheduled occurrence after restarting while a run is waiting or fails.
+- Pinning or unpinning a session inside an expanded workstream now updates its icon, menu, and position immediately.
 - Voice Mode now explains blocked or missing microphones on Windows and links directly to microphone privacy settings.
 
 ### Removed
