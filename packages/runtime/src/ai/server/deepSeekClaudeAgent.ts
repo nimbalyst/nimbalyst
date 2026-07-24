@@ -48,7 +48,11 @@ export function applyDeepSeekClaudeAgentProfile<T extends {
   customBackend?: string;
   effortLevel?: EffortLevel | string;
   thinkingMode?: ThinkingMode;
-}>(config: T): T {
+}>(config: T): T & {
+  customBackend?: string;
+  effortLevel?: EffortLevel | string;
+  thinkingMode?: ThinkingMode;
+} {
   if (!isDeepSeekClaudeAgentModel(config.model) && !isDeepSeekClaudeBackend(config.customBackend)) {
     return config;
   }
