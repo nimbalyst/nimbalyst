@@ -381,6 +381,11 @@ describe('MetaAgentService launch configuration', () => {
 
   it('returns persisted launch provenance from get_session_status', async () => {
     const service = MetaAgentService.getInstance();
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      id: 'child-1',
+      workspacePath: WORKSPACE,
+      createdBySessionId: CODEX_PARENT.id,
+    } as any);
     vi.mocked(databaseWorker.query).mockResolvedValueOnce({
       rows: [{
         id: 'child-1',
@@ -397,8 +402,9 @@ describe('MetaAgentService launch configuration', () => {
     } as any);
 
     const status = JSON.parse(await (service as any).getSessionStatusJson(
-      'child-1',
+      CODEX_PARENT.id,
       WORKSPACE,
+      'child-1',
     ));
     expect(status.launchConfiguration).toEqual(STORED_LAUNCH_CONFIGURATION);
     expect(status.effectiveEffortLevel).toBeUndefined();
@@ -424,8 +430,9 @@ describe('MetaAgentService launch configuration', () => {
       .mockResolvedValueOnce({ rows: [] } as any);
 
     const result = JSON.parse(await (service as any).getSessionResultJson(
-      'child-1',
+      CODEX_PARENT.id,
       WORKSPACE,
+      'child-1',
     ));
     expect(result.launchConfiguration).toEqual(STORED_LAUNCH_CONFIGURATION);
     expect(result.effectiveEffortLevel).toBeUndefined();

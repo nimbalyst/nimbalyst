@@ -5,6 +5,8 @@
 // ("seed", "hook must reject", author "Test User") to public main. Any outgoing
 // commit with one of these identities is an escaped fixture, never real work.
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const FORBIDDEN_NAMES = new Set(['Test', 'Test User', 'Your Name']);
 const FORBIDDEN_EMAIL_PATTERN = /(^test@|@example\.(com|net|org)$|@test\.?$)/i;
@@ -57,6 +59,9 @@ function main() {
   console.log(`[check-push-authors] OK: no test-fixture authors in ${range}.`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isMain = process.argv[1]
+  && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+
+if (isMain) {
   main();
 }

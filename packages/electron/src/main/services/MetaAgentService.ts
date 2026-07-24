@@ -29,6 +29,8 @@ import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 import type { NotificationOptions, NotificationResult } from './NotificationService';
+import { resolveProjectPath } from '../utils/workspaceDetection';
+import { hasLiveWindowForWorkspace } from '../window/windowState';
 import {
   createPriorityPromptDeliveryService,
   createPriorityTargetGeneration,
@@ -81,6 +83,7 @@ interface CreateChildSessionArgs {
   prompt?: string;
   useWorktree?: boolean;
   worktreeId?: string;
+  baseBranch?: string;
   toolScope?: SessionLaunchToolScope;
   effortLevel?: EffortLevel;
   thinkingMode?: ThinkingMode;
@@ -235,6 +238,13 @@ interface SpawnSessionArgs {
   title?: string;
   prompt: string;
   useWorktree?: boolean;
+  /**
+   * An already-loaded canonical project to create the session in. Crossing
+   * project boundaries requires isolated=true and useWorktree=true.
+   */
+  targetWorkspacePath?: string;
+  /** Optional branch or ref for the fresh worktree. */
+  baseBranch?: string;
   provider?: string;
   model?: string;
   toolScope?: SessionLaunchToolScope;
@@ -344,20 +354,20 @@ export class MetaAgentService {
           this.createChildSession(metaSessionId, workspaceId, args),
         spawnSession: (callerSessionId, workspaceId, args) =>
           this.spawnSession(callerSessionId, workspaceId, args),
-        getSessionStatus: (_metaSessionId, workspaceId, targetSessionId) =>
-          this.getSessionStatusJson(targetSessionId, workspaceId),
-        getSessionResult: (_metaSessionId, workspaceId, targetSessionId, options) =>
-          this.getSessionResultJson(targetSessionId, workspaceId, options),
-        listQueuedPrompts: (_metaSessionId, workspaceId, targetSessionId, options) =>
-          this.listQueuedPromptsJson(targetSessionId, workspaceId, options),
-        sendPrompt: (_metaSessionId, workspaceId, targetSessionId, prompt) =>
-          this.sendPromptToSession(targetSessionId, workspaceId, prompt),
+        getSessionStatus: (metaSessionId, workspaceId, targetSessionId) =>
+          this.getSessionStatusJson(metaSessionId, workspaceId, targetSessionId),
+        getSessionResult: (metaSessionId, workspaceId, targetSessionId, options) =>
+          this.getSessionResultJson(metaSessionId, workspaceId, targetSessionId, options),
+        listQueuedPrompts: (metaSessionId, workspaceId, targetSessionId, options) =>
+          this.listQueuedPromptsJson(metaSessionId, workspaceId, targetSessionId, options),
+        sendPrompt: (metaSessionId, workspaceId, targetSessionId, prompt) =>
+          this.sendPromptToSession(metaSessionId, workspaceId, targetSessionId, prompt),
         sendPromptNow: (metaSessionId, workspaceId, args) =>
           this.sendPromptNowToSession(metaSessionId, workspaceId, args),
         notifyUser: (callerSessionId, workspaceId, args) =>
           this.notifyUserJson(callerSessionId, workspaceId, args),
-        respondToPrompt: (_metaSessionId, workspaceId, args) =>
-          this.respondToPrompt(workspaceId, args),
+        respondToPrompt: (metaSessionId, workspaceId, args) =>
+          this.respondToPrompt(metaSessionId, workspaceId, args),
         listSpawnedSessions: (metaSessionId, workspaceId) =>
           this.listSpawnedSessionsJson(metaSessionId, workspaceId),
       });
@@ -628,7 +638,10 @@ export class MetaAgentService {
       for (const name of filesystemNames) existingNames.add(name);
       for (const name of branchNames) existingNames.add(name);
       const finalName = gitWorktreeService.generateUniqueWorktreeName(existingNames);
-      const worktree = await gitWorktreeService.createWorktree(workspaceId, { name: finalName });
+      const worktree = await gitWorktreeService.createWorktree(workspaceId, {
+        name: finalName,
+        ...(args.baseBranch ? { baseBranch: args.baseBranch } : {}),
+      });
       await worktreeStore.create(worktree);
       gitRefWatcher.start(worktree.path).catch((error: Error) => {
         console.error('[MetaAgentService] Failed to start GitRefWatcher for meta-agent worktree:', error);
@@ -834,8 +847,7 @@ export class MetaAgentService {
 
     // Validate the complete requested configuration before workstream
     // resolution can create a container or reparent the caller.
-    const effectiveModel =
-      args.model ?? (args.inheritModel ? parent.model ?? undefined : undefined);
+    const effectiveModel = args.model?.trim() || undefined;
     const previewResolution = await resolveChildSessionModelAndProvider(parentSessionId, {
       provider: args.provider,
       model: effectiveModel,
@@ -850,6 +862,26 @@ export class MetaAgentService {
     });
 
     const isolated = args.isolated === true;
+    const requestedTargetWorkspace = args.targetWorkspacePath?.trim();
+    const targetWorkspaceId = requestedTargetWorkspace
+      ? resolveProjectPath(requestedTargetWorkspace)
+      : workspaceId;
+    const isCrossProject = targetWorkspaceId !== workspaceId;
+
+    if (isCrossProject) {
+      if (!isolated) {
+        throw new Error('Cross-project spawn_session requires isolated=true');
+      }
+      if (args.useWorktree !== true) {
+        throw new Error('Cross-project spawn_session requires useWorktree=true');
+      }
+
+      if (!hasLiveWindowForWorkspace(targetWorkspaceId)) {
+        throw new Error(
+          `Cross-project spawn_session requires an already-loaded target project: ${targetWorkspaceId}`
+        );
+      }
+    }
 
     // Sibling mode: resolve (or create) a workstream container so the new
     // session shares files-edited, tabs, and workstream overview with the
@@ -873,11 +905,12 @@ export class MetaAgentService {
       !args.useWorktree && parent.worktreeId ? parent.worktreeId : undefined;
 
     const notifyOnComplete = args.notifyOnComplete === true;
-    const childResult = await this.createChildSessionInternal(parentSessionId, workspaceId, {
+    const childResult = await this.createChildSessionInternal(parentSessionId, targetWorkspaceId, {
       title: args.title,
       prompt: args.prompt,
       useWorktree: !!args.useWorktree,
       worktreeId: inheritedWorktreeId,
+      baseBranch: args.baseBranch,
       provider: args.provider,
       model: effectiveModel,
       toolScope: args.toolScope,
@@ -902,6 +935,8 @@ export class MetaAgentService {
     return JSON.stringify({
       ...childResult,
       isolated,
+      sourceWorkspacePath: workspaceId,
+      targetWorkspacePath: targetWorkspaceId,
       workstreamId,
       promotedParent,
       notifyOnComplete,
@@ -1003,8 +1038,17 @@ export class MetaAgentService {
     return JSON.stringify(summaries, null, 2);
   }
 
-  private async getSessionStatusJson(sessionId: string, workspaceId: string): Promise<string> {
-    const row = await this.getSessionStatusRow(sessionId, workspaceId);
+  private async getSessionStatusJson(
+    callerSessionId: string,
+    callerWorkspaceId: string,
+    sessionId: string
+  ): Promise<string> {
+    const session = await this.resolveSessionForCaller(
+      callerSessionId,
+      callerWorkspaceId,
+      sessionId
+    );
+    const row = await this.getSessionStatusRow(sessionId, session.workspacePath);
     if (!row) {
       throw new Error(`Session ${sessionId} not found`);
     }
@@ -1031,13 +1075,19 @@ export class MetaAgentService {
   }
 
   private async getSessionResultJson(
+    callerSessionId: string,
+    callerWorkspaceId: string,
     sessionId: string,
-    workspaceId: string,
     options: { includeFullResponse?: boolean } = {}
   ): Promise<string> {
+    const session = await this.resolveSessionForCaller(
+      callerSessionId,
+      callerWorkspaceId,
+      sessionId
+    );
     const data = await this.buildSessionResultData(
       sessionId,
-      workspaceId,
+      session.workspacePath,
       undefined,
       options.includeFullResponse ?? true
     );
@@ -1045,18 +1095,16 @@ export class MetaAgentService {
   }
 
   private async listQueuedPromptsJson(
+    callerSessionId: string,
+    callerWorkspaceId: string,
     sessionId: string,
-    workspaceId: string,
     options: { includeCompleted?: boolean; includePromptText?: boolean } = {}
   ): Promise<string> {
     if (!sessionId) {
       throw new Error('sessionId is required');
     }
 
-    const session = await AISessionsRepository.get(sessionId);
-    if (!session || session.workspacePath !== workspaceId) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
+    await this.resolveSessionForCaller(callerSessionId, callerWorkspaceId, sessionId);
 
     const { getQueuedPromptsStore } = await import('./RepositoryManager');
     const queueStore = getQueuedPromptsStore();
@@ -1091,7 +1139,12 @@ export class MetaAgentService {
     }, null, 2);
   }
 
-  private async sendPromptToSession(sessionId: string, workspaceId: string, prompt: string): Promise<string> {
+  private async sendPromptToSession(
+    callerSessionId: string,
+    callerWorkspaceId: string,
+    sessionId: string,
+    prompt: string
+  ): Promise<string> {
     if (!this.aiService) {
       throw new Error('AI service not initialized');
     }
@@ -1099,14 +1152,15 @@ export class MetaAgentService {
       throw new Error('prompt is required');
     }
 
-    const session = await AISessionsRepository.get(sessionId);
-    if (!session || session.workspacePath !== workspaceId) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
+    const session = await this.resolveSessionForCaller(
+      callerSessionId,
+      callerWorkspaceId,
+      sessionId
+    );
 
     const normalizedPrompt = prompt.trim();
     const shouldBypassExecution = this.shouldBypassChildAgentExecutionForTests();
-    const statusRow = await this.getSessionStatusRow(sessionId, workspaceId);
+    const statusRow = await this.getSessionStatusRow(sessionId, session.workspacePath);
     const statusBeforeQueue = (statusRow?.status || 'idle') as SessionStatusValue;
 
     if (shouldBypassExecution) {
@@ -1128,7 +1182,7 @@ export class MetaAgentService {
     if (processingTriggered) {
       await this.aiService.triggerQueuedPromptProcessingForSession(
         sessionId,
-        session.worktreePath || session.workspacePath || workspaceId
+        session.worktreePath || session.workspacePath
       );
     }
 
@@ -1156,10 +1210,11 @@ export class MetaAgentService {
     }
 
     const targetSessionId = args.sessionId?.trim() || callerSessionId;
-    const session = await AISessionsRepository.get(targetSessionId);
-    if (!session || session.workspacePath !== workspaceId) {
-      throw new Error(`Session ${targetSessionId} not found`);
-    }
+    const session = await this.resolveSessionForCaller(
+      callerSessionId,
+      workspaceId,
+      targetSessionId
+    );
 
     if (!this.showNotificationWithResult) {
       throw new Error('Notification delivery is not initialized');
@@ -1187,7 +1242,7 @@ export class MetaAgentService {
     }, null, 2);
   }
 
-  private async respondToPrompt(workspaceId: string, args: {
+  private async respondToPrompt(callerSessionId: string, workspaceId: string, args: {
     sessionId: string;
     promptId: string;
     promptType: PromptType;
@@ -1197,10 +1252,7 @@ export class MetaAgentService {
       throw new Error('AI service not initialized');
     }
 
-    const session = await AISessionsRepository.get(args.sessionId);
-    if (!session || session.workspacePath !== workspaceId) {
-      throw new Error(`Session ${args.sessionId} not found`);
-    }
+    await this.resolveSessionForCaller(callerSessionId, workspaceId, args.sessionId);
 
     const result = await this.aiService.respondToInteractivePrompt({
       sessionId: args.sessionId,
@@ -1227,20 +1279,19 @@ export class MetaAgentService {
     return JSON.stringify(sessions, null, 2);
   }
 
-  private async getSpawnedSessions(metaSessionId: string, workspaceId: string): Promise<Array<Record<string, unknown>>> {
+  private async getSpawnedSessions(metaSessionId: string, _workspaceId: string): Promise<Array<Record<string, unknown>>> {
     const { rows } = await databaseWorker.query<any>(
-      `SELECT id, title, provider, model, status, last_activity, created_at, updated_at, worktree_id, agent_role, created_by_session_id, metadata
+      `SELECT id, title, provider, model, status, last_activity, created_at, updated_at, worktree_id, agent_role, created_by_session_id, workspace_id, metadata
        FROM ai_sessions
-       WHERE workspace_id = $1
-         AND created_by_session_id = $2
+       WHERE created_by_session_id = $1
          AND (is_archived = FALSE OR is_archived IS NULL)
        ORDER BY created_at DESC`,
-      [workspaceId, metaSessionId]
+      [metaSessionId]
     );
 
     const sessions: Array<Record<string, unknown>> = [];
     for (const row of rows) {
-      const data = await this.buildSessionResultData(row.id, workspaceId, {
+      const data = await this.buildSessionResultData(row.id, row.workspace_id, {
         title: row.title || 'Untitled Session',
         provider: row.provider,
         model: row.model || null,
@@ -1265,6 +1316,7 @@ export class MetaAgentService {
         createdAt: data.createdAt,
         updatedAt: data.updatedAt,
         worktreeId: data.worktreeId || null,
+        workspacePath: row.workspace_id,
         ...(data.launchConfiguration
           ? { launchConfiguration: data.launchConfiguration }
           : {}),
@@ -1557,10 +1609,12 @@ export class MetaAgentService {
       throw new Error('prompt is required');
     }
 
-    const session = await AISessionsRepository.get(sessionId);
-    if (!session || session.workspacePath !== workspaceId) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
+    const session = await this.resolveSessionForCaller(
+      callerSessionId,
+      workspaceId,
+      sessionId
+    );
+    const targetWorkspaceId = session.workspacePath;
 
     const { getQueuedPromptsStore } = await import('./RepositoryManager');
     const queueStore = getQueuedPromptsStore();
@@ -1573,7 +1627,7 @@ export class MetaAgentService {
         };
       },
       getTargetState: (targetSessionId) =>
-        this.getPriorityTargetState(targetSessionId, workspaceId),
+        this.getPriorityTargetState(targetSessionId, targetWorkspaceId),
       hasStructuredPendingPrompt: async (targetSessionId) =>
         (await this.getPendingInteractivePrompt(targetSessionId)) !== null,
       reserveInterrupt: async (input) => {
@@ -1595,7 +1649,7 @@ export class MetaAgentService {
 
     const receipt = await service.deliver({
       sessionId,
-      workspacePath: session.worktreePath || session.workspacePath || workspaceId,
+      workspacePath: session.worktreePath || targetWorkspaceId,
       prompt,
       idempotencyKey: args.idempotencyKey?.trim()
         || `send_prompt_now:${callerSessionId}:${randomUUID()}`,
@@ -1743,6 +1797,30 @@ export class MetaAgentService {
       [sessionId, workspaceId]
     );
     return rows[0] || null;
+  }
+
+  /**
+   * Preserve the existing same-workspace session surface while granting a
+   * caller a narrow cross-project capability over sessions it created.
+   * Possession of a path or unrelated session UUID never grants authority.
+   */
+  private async resolveSessionForCaller(
+    callerSessionId: string,
+    callerWorkspaceId: string,
+    targetSessionId: string
+  ): Promise<any> {
+    if (!targetSessionId) {
+      throw new Error('sessionId is required');
+    }
+
+    const session = await AISessionsRepository.get(targetSessionId);
+    const sameWorkspace = session?.workspacePath === callerWorkspaceId;
+    const createdByCaller = session?.createdBySessionId === callerSessionId;
+    if (!session || (!sameWorkspace && !createdByCaller)) {
+      throw new Error(`Session ${targetSessionId} not found`);
+    }
+
+    return session;
   }
 
   private async getPriorityTargetState(
