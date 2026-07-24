@@ -1,0 +1,82 @@
+type: research-paper
+displayName: Research Paper
+displayNamePlural: Research Papers
+icon: science
+color: "#06b6d4"
+
+modes:
+  inline: true
+  fullDocument: true
+
+idPrefix: rsrch
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+
+  - name: authors
+    type: array
+    itemType: string
+
+  - name: year
+    type: number
+    min: 1900
+    max: 2100
+
+  - name: venue
+    type: string
+
+  - name: status
+    type: select
+    default: to-read
+    options:
+      - { value: to-read, label: To Read, icon: bookmark }
+      - { value: reading, label: Reading, icon: auto_stories }
+      - { value: read, label: Read, icon: done }
+
+  - name: rating
+    type: number
+    min: 1
+    max: 5
+
+  - name: topic
+    type: select
+    options:
+      - { value: ml, label: Machine Learning }
+      - { value: nlp, label: NLP }
+      - { value: cv, label: Computer Vision }
+      - { value: systems, label: Systems }
+      - { value: theory, label: Theory }
+
+  - name: url
+    type: string
+
+  - name: doi
+    type: string
+
+  - name: tags
+    type: array
+    itemType: string
+
+  - name: notes
+    type: text
+
+statusBarLayout:
+  - row:
+    - { field: status, width: 150 }
+    - { field: rating, width: 100 }
+    - { field: topic, width: 150 }
+  - row:
+    - { field: venue, width: 300 }
+    - { field: year, width: 100 }
+    - { field: tags, width: auto }
+
+inlineTemplate: "{icon} {title} ({year})"
+
+tableView:
+  defaultColumns: [title, authors, year, venue, status, rating]
+  sortable: true
+  filterable: true
+  exportable: true

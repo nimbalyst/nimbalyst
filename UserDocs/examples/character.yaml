@@ -1,0 +1,132 @@
+type: character
+displayName: Character
+displayNamePlural: Characters
+icon: person
+color: "#8b5cf6"
+
+modes:
+  inline: true
+  fullDocument: true
+
+idPrefix: chr
+idFormat: ulid
+
+fields:
+  - name: name
+    type: string
+    required: true
+    displayInline: true
+
+  - name: role
+    type: select
+    default: supporting
+    options:
+      - value: protagonist
+        label: Protagonist
+        icon: star
+        color: "#f59e0b"
+      - value: antagonist
+        label: Antagonist
+        icon: skull
+        color: "#dc2626"
+      - value: supporting
+        label: Supporting
+        icon: person
+        color: "#6366f1"
+      - value: minor
+        label: Minor
+        icon: person_outline
+        color: "#9ca3af"
+
+  - name: status
+    type: select
+    default: alive
+    options:
+      - value: alive
+        label: Alive
+        icon: favorite
+        color: "#22c55e"
+      - value: deceased
+        label: Deceased
+        icon: heart_broken
+        color: "#64748b"
+      - value: unknown
+        label: Unknown
+        icon: help
+        color: "#f59e0b"
+
+  - name: series
+    type: string
+    required: true
+    displayInline: true
+
+  - name: firstAppearance
+    type: string
+    displayInline: true
+
+  - name: allegiance
+    type: string
+
+  - name: occupation
+    type: string
+
+  - name: species
+    type: string
+    default: "Human"
+
+  - name: age
+    type: number
+    min: 0
+
+  - name: traits
+    type: array
+    itemType: string
+
+  - name: abilities
+    type: array
+    itemType: string
+
+  - name: relationships
+    type: array
+    itemType: object
+    schema:
+      - name: character
+        type: string
+      - name: relationship
+        type: string
+
+  - name: backstory
+    type: text
+
+  - name: tags
+    type: array
+    itemType: string
+
+statusBarLayout:
+  - row:
+    - field: role
+      width: 180
+    - field: status
+      width: 150
+    - field: allegiance
+      width: 200
+  - row:
+    - field: series
+      width: 200
+    - field: firstAppearance
+      width: 200
+    - field: species
+      width: 150
+
+inlineTemplate: "{icon} {name} ({role})"
+
+tableView:
+  defaultColumns:
+    - name
+    - role
+    - status
+    - series
+    - firstAppearance
+  sortable: true
+  filterable: true
+  exportable: true

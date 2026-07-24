@@ -1,0 +1,89 @@
+type: recipe
+displayName: Recipe
+displayNamePlural: Recipes
+icon: restaurant
+color: "#f59e0b"
+
+modes:
+  inline: true
+  fullDocument: true
+
+idPrefix: rcp
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+
+  - name: cuisine
+    type: select
+    options:
+      - { value: italian, label: Italian }
+      - { value: mexican, label: Mexican }
+      - { value: asian, label: Asian }
+      - { value: american, label: American }
+      - { value: french, label: French }
+      - { value: other, label: Other }
+
+  - name: difficulty
+    type: select
+    default: medium
+    options:
+      - value: easy
+        label: Easy
+        icon: sentiment_satisfied
+        color: "#22c55e"
+      - value: medium
+        label: Medium
+        icon: sentiment_neutral
+        color: "#f59e0b"
+      - value: hard
+        label: Hard
+        icon: sentiment_dissatisfied
+        color: "#dc2626"
+
+  - name: prepTime
+    type: number
+    min: 0
+
+  - name: cookTime
+    type: number
+    min: 0
+
+  - name: servings
+    type: number
+    min: 1
+    default: 4
+
+  - name: rating
+    type: number
+    min: 1
+    max: 5
+
+  - name: tags
+    type: array
+    itemType: string
+
+  - name: dietary
+    type: array
+    itemType: string
+
+statusBarLayout:
+  - row:
+    - { field: cuisine, width: 150 }
+    - { field: difficulty, width: 150 }
+    - { field: rating, width: 100 }
+  - row:
+    - { field: prepTime, width: 120 }
+    - { field: cookTime, width: 120 }
+    - { field: servings, width: 100 }
+    - { field: tags, width: auto }
+
+inlineTemplate: "{icon} {title} ({cuisine})"
+
+tableView:
+  defaultColumns: [title, cuisine, difficulty, rating, prepTime]
+  sortable: true
+  filterable: true
+  exportable: true
