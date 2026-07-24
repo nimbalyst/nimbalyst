@@ -1,0 +1,66 @@
+# Package metadata
+packageVersion: 1.0.0
+packageId: developer
+
+type: task
+displayName: Task
+displayNamePlural: Tasks
+icon: task_alt
+color: "#2563eb"
+
+modes:
+  inline: true
+  fullDocument: false
+
+sync:
+  mode: shared
+  scope: project
+
+idPrefix: task
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+    displayInline: true
+
+  - name: status
+    type: select
+    default: to-do
+    options:
+      - value: to-do
+        label: To Do
+      - value: in-progress
+        label: In Progress
+      - value: done
+        label: Done
+
+  - name: priority
+    type: select
+    default: medium
+    options:
+      - value: low
+        label: Low
+      - value: medium
+        label: Medium
+      - value: high
+        label: High
+      - value: critical
+        label: Critical
+
+  - name: owner
+    type: user
+    displayInline: true
+
+  - name: description
+    type: text
+    displayInline: false
+
+  - name: created
+    type: string
+    displayInline: false
+
+  - name: updated
+    type: string
+    displayInline: false

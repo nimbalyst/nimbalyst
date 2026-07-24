@@ -1,0 +1,75 @@
+# Package metadata
+packageVersion: 1.0.0
+packageId: developer
+
+type: blog
+displayName: Blog
+displayNamePlural: Blog Posts
+icon: article
+color: "#059669"
+
+modes:
+  inline: true
+  fullDocument: true
+
+sync:
+  mode: local
+  scope: project
+
+idPrefix: blog
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+    displayInline: true
+
+  - name: status
+    type: select
+    default: to-do
+    options:
+      - value: to-do
+        label: To Do
+      - value: drafting
+        label: Drafting
+      - value: in-review
+        label: In Review
+      - value: published
+        label: Published
+      - value: archived
+        label: Archived
+
+  - name: priority
+    type: select
+    default: medium
+    options:
+      - value: low
+        label: Low
+      - value: medium
+        label: Medium
+      - value: high
+        label: High
+
+  - name: owner
+    type: user
+    displayInline: true
+
+  - name: tags
+    type: array
+    itemType: string
+    displayInline: false
+
+  - name: description
+    type: text
+    displayInline: false
+
+  - name: created
+    type: string
+    displayInline: false
+
+  - name: updated
+    type: string
+    displayInline: false
+
+inlineTemplate: "{icon} {title} {status} {priority}"
