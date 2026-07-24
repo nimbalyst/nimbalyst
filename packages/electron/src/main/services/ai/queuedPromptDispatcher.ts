@@ -4,6 +4,7 @@ export interface ClaimedQueuedPrompt {
   id: string;
   prompt: string;
   attachments?: unknown[] | null;
+  deliveryReady?: boolean;
   documentContext?: DocumentContext | null;
 }
 

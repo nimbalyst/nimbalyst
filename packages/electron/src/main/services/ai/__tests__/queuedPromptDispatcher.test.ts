@@ -279,7 +279,10 @@ describe('queuedPromptDispatcher', () => {
     const queueStore: QueuedPromptStoreLike = {
       listPending: vi.fn(async () =>
         [...rows.values()]
-          .filter((row) => row.status === 'pending')
+          // Production listPending() only returns delivery-ready rows. Keep
+          // stale control rows in this boundary regression to prove they never
+          // become a head-of-line blocker for the ordinary FIFO.
+          .filter((row) => row.status === 'pending' && row.prompt.deliveryReady !== false)
           .map((row) => row.prompt)),
       claim: vi.fn(async (promptId) => {
         const row = rows.get(promptId);
@@ -383,5 +386,66 @@ describe('queuedPromptDispatcher', () => {
     expect(completions).toEqual([priorityPrompt.id, ordinaryPrompt.id]);
     expect(effects).toEqual(['PRIORITY_ACK', 'ORDINARY_MARKER', 'STRUCTURED_REPLY_CONTINUED']);
     expect(sendMessageHandler).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps stale non-ready controls out of ordinary FIFO head selection', async () => {
+    const sessionId = 'long-lived-session';
+    const staleControl: ClaimedQueuedPrompt = {
+      id: 'stale-control',
+      prompt: 'must never dispatch',
+      deliveryReady: false,
+    };
+    const ordinary: ClaimedQueuedPrompt = {
+      id: 'eligible-ordinary',
+      prompt: 'ordinary after long stream',
+      deliveryReady: true,
+    };
+    const rows = new Map([
+      [staleControl.id, { prompt: staleControl, status: 'pending' }],
+      [ordinary.id, { prompt: ordinary, status: 'pending' }],
+    ]);
+    const claims: string[] = [];
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () =>
+        [...rows.values()]
+          .filter((row) => row.status === 'pending' && row.prompt.deliveryReady !== false)
+          .map((row) => row.prompt)),
+      claim: vi.fn(async (promptId) => {
+        const row = rows.get(promptId);
+        if (!row || row.status !== 'pending') return null;
+        row.status = 'executing';
+        claims.push(promptId);
+        return row.prompt;
+      }),
+      complete: vi.fn(async (promptId) => {
+        const row = rows.get(promptId);
+        if (row) row.status = 'completed';
+      }),
+      fail: vi.fn(async () => {}),
+    };
+    const leases = new Map<string, symbol>();
+    const targetWindow = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+
+    expect(await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: vi.fn(),
+      processingLeases: leases,
+      queueStore,
+      sendMessageHandler: vi.fn(async () => ({ content: 'done' })),
+      sessionId,
+      source: 'long-lived settlement',
+      startSession: vi.fn(async () => {}),
+      targetWindow,
+      workspacePath: '/workspace/project',
+    })).toBe(true);
+
+    await vi.waitFor(() => expect(claims).toEqual([ordinary.id]));
+    expect(rows.get(staleControl.id)?.status).toBe('pending');
+    await vi.waitFor(() => expect(rows.get(ordinary.id)?.status).toBe('completed'));
   });
 });

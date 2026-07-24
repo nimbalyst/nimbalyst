@@ -852,6 +852,14 @@ export class AIService {
     targetWindow: Electron.BrowserWindow | null,
     source: string,
   ): Promise<boolean> {
+    // A long-lived stream can settle after its renderer has reloaded or its
+    // original window has closed. Re-resolve by workspace before deciding the
+    // queue cannot advance; otherwise an eligible ordinary head waits until a
+    // later UI action happens to trigger another drain.
+    const liveTargetWindow = targetWindow && !targetWindow.isDestroyed()
+      ? targetWindow
+      : findWindowByWorkspace(workspacePath);
+
     // NIM-834: claude-code-cli sessions have no in-process turn driver — the SDK
     // dispatch below would call the provider's Phase 1 sendMessage stub and mark
     // the prompt failed (broke meta-agent spawns, restart continuations, and
@@ -954,7 +962,7 @@ export class AIService {
           sessionId: activeSessionId,
           workspacePath: activeWorkspacePath,
         }),
-      targetWindow,
+      targetWindow: liveTargetWindow,
       workspacePath,
     });
   }

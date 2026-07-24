@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed delayed queued prompts after a long-running session's original window closes or reloads.
+
 ### Added
 <!-- New features go here -->
 - Sharing a markdown document to your team now offers to share the documents it embeds, and teammates see those embeds live inline.
