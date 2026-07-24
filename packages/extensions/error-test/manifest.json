@@ -1,0 +1,15 @@
+{
+  "id": "error-test",
+  "name": "Error Test Extension",
+  "version": "1.0.0",
+  "description": "Extension for testing error handling and the error console",
+  "main": "dist/index.js",
+  "apiVersion": "1.0",
+  "requiredReleaseChannel": "alpha",
+  "permissions": {
+    "ai": true
+  },
+  "contributions": {
+    "aiTools": ["trigger_error", "trigger_warning", "trigger_timeout"]
+  }
+}

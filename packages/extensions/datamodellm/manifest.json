@@ -1,0 +1,94 @@
+{
+  "id": "com.nimbalyst.datamodellm",
+  "name": "DatamodelLM",
+  "version": "1.0.2",
+  "description": "AI-assisted data modeling with visual entity-relationship diagrams",
+  "author": "Nimbalyst",
+  "main": "dist/index.js",
+  "styles": "dist/index.css",
+  "apiVersion": "1.0.0",
+  "marketplace": {
+    "changelog": "1.0.2: Share selected model elements with AI and reopen shared documents more reliably.\n1.0.1: Collaborative editing support, light-theme readability fixes, and more reliable external file edits.",
+    "categories": ["data"],
+    "tags": ["prisma", "database", "schema", "erd", "entity-relationship", "data-model"],
+    "icon": "database",
+    "featured": true,
+    "tagline": "Visual database schema design with Prisma syntax",
+    "longDescription": "Design database schemas visually as entity-relationship diagrams backed by real Prisma syntax. Drag entities around the canvas, define fields and relations, and switch to source mode to edit the Prisma schema directly. The AI can generate schemas from descriptions or modify existing ones.",
+    "highlights": [
+      "Visual ERD canvas backed by real Prisma schema files",
+      "AI generates and modifies database schemas from descriptions",
+      "Embed data models inline in markdown documents",
+      "Bidirectional editing between visual and source modes"
+    ],
+    "fileTypes": [".prisma"],
+    "screenshots": [
+      {
+        "alt": "Visual entity-relationship diagram with User, Post, Comment, Tag, and Category models",
+        "src": "screenshots/com.nimbalyst.datamodellm-0-dark.png",
+        "srcLight": "screenshots/com.nimbalyst.datamodellm-0-light.png",
+        "fileToOpen": "samples/demo.prisma"
+      }
+    ]
+  },
+  "permissions": {
+    "filesystem": true,
+    "ai": true
+  },
+  "contributions": {
+    "customEditors": [
+      {
+        "filePatterns": ["*.prisma"],
+        "displayName": "Data Model Editor",
+        "component": "DatamodelLMEditor",
+        "supportsSourceMode": true,
+        "supportsDiffMode": false,
+        "supportsTranscriptEmbed": true,
+        "collaboration": {
+          "supported": true,
+          "awarenessFields": ["editingEntityId", "selectedEntityId", "selectedRelationshipId"]
+        }
+      }
+    ],
+    "aiTools": [
+      "datamodellm.get_schema",
+      "datamodellm.capture_screenshot"
+    ],
+    "fileIcons": {
+      "*.prisma": "database"
+    },
+    "newFileMenu": [
+      {
+        "extension": ".prisma",
+        "displayName": "Data Model",
+        "icon": "database",
+        "defaultContent": "// @nimbalyst {\"viewport\":{\"x\":0,\"y\":0,\"zoom\":1},\"positions\":{},\"entityViewMode\":\"standard\"}\n\ndatasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n"
+      }
+    ],
+    "slashCommands": [
+      {
+        "id": "datamodellm.insert",
+        "title": "Data Model",
+        "description": "Insert a data model diagram",
+        "icon": "database",
+        "keywords": ["datamodel", "schema", "erd", "database", "entity", "prisma"],
+        "handler": "handleInsertDataModel"
+      }
+    ],
+    "nodes": ["DataModelNode"],
+    "transformers": ["DATAMODEL_TRANSFORMER"],
+    "hostComponents": ["DataModelPickerMenuHost"],
+    "claudePlugin": {
+      "path": "claude-plugin",
+      "displayName": "Data Model Commands",
+      "description": "Provides /datamodel command for creating Prisma-based data models with full schema syntax guidance",
+      "enabledByDefault": true,
+      "commands": [
+        {
+          "name": "datamodel",
+          "description": "Create or modify Prisma-based data models"
+        }
+      ]
+    }
+  }
+}

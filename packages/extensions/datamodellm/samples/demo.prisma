@@ -1,0 +1,53 @@
+// @nimbalyst {"viewport":{"x":92.6055045871559,"y":-25.146788990825712,"zoom":1.1229357798165138},"positions":{"User":{"x":50,"y":50},"Post":{"x":350,"y":50},"Comment":{"x":350,"y":350},"Tag":{"x":650,"y":50},"Category":{"x":650,"y":300}},"entityViewMode":"standard"}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          Int         @id @default(autoincrement()
+  email       String
+  name        String?
+  avatar      String?
+  role        Role        @default(MEMBER)
+  createdAt   DateTime    @default(now()
+  updatedAt   DateTime
+}
+
+model Post {
+  id          Int         @id @default(autoincrement()
+  title       String
+  content     String?
+  published   Boolean     @default(false)
+  authorId    Int
+  categoryId  Int?
+  createdAt   DateTime    @default(now()
+  updatedAt   DateTime
+  users User[]
+  category Category @relation(fields: [categoryId], references: [id])
+}
+
+model Comment {
+  id          Int         @id @default(autoincrement()
+  text        String
+  authorId    Int
+  postId      Int
+  createdAt   DateTime    @default(now()
+  users User[]
+  posts Post[]
+}
+
+model Tag {
+  id          Int         @id @default(autoincrement()
+  name        String
+  color       String      @default("#6366f1")
+  posts Post[]
+}
+
+model Category {
+  id          Int         @id @default(autoincrement()
+  name        String
+  description String?
+  posts Post[]
+}

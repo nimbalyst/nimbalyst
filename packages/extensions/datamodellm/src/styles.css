@@ -1,0 +1,770 @@
+/* Tailwind utilities used by this extension's components. In-app the host
+   stylesheet also provides them, but the web share viewer loads this bundle
+   standalone and needs them included. */
+@tailwind utilities;
+
+/**
+ * DatamodelLM Extension Styles
+ *
+ * Uses CSS variables from Nimbalyst's unified theme system (--nim-*).
+ * Falls back to reasonable defaults if variables are not available.
+ */
+
+/* ============================================================================
+   Editor Container
+   ============================================================================ */
+
+.datamodel-editor {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--nim-bg);
+  color: var(--nim-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.datamodel-canvas {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+}
+
+/* ============================================================================
+   Toolbar
+   ============================================================================ */
+
+.datamodel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--nim-border);
+  background-color: var(--nim-bg-secondary);
+  flex-shrink: 0;
+}
+
+.datamodel-toolbar-left,
+.datamodel-toolbar-center,
+.datamodel-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.datamodel-toolbar-button {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid var(--nim-border);
+  background-color: var(--nim-bg);
+  color: var(--nim-text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.datamodel-toolbar-button:hover:not(:disabled) {
+  background-color: var(--nim-bg-hover);
+  border-color: var(--nim-primary);
+}
+
+.datamodel-toolbar-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.datamodel-toolbar-icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+}
+
+.datamodel-toolbar-icon-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.datamodel-toolbar-button-primary {
+  background-color: var(--nim-primary);
+  border-color: var(--nim-primary);
+  color: var(--nim-on-primary);
+}
+
+.datamodel-toolbar-button-primary:hover {
+  background-color: var(--nim-primary-hover);
+  border-color: var(--nim-primary-hover);
+}
+
+.datamodel-toolbar-label {
+  font-size: 13px;
+  color: var(--nim-text-muted);
+  margin-right: 4px;
+}
+
+.datamodel-view-mode-group {
+  display: flex;
+  border-radius: 6px;
+  border: 1px solid var(--nim-border);
+  overflow: hidden;
+}
+
+.datamodel-view-mode-button {
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border: none;
+  border-right: 1px solid var(--nim-border);
+  background-color: var(--nim-bg);
+  color: var(--nim-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.datamodel-view-mode-button:last-child {
+  border-right: none;
+}
+
+.datamodel-view-mode-button:hover {
+  background-color: var(--nim-bg-hover);
+}
+
+.datamodel-view-mode-button.active {
+  background-color: var(--nim-primary);
+  color: var(--nim-on-primary);
+}
+
+.datamodel-toolbar-stats {
+  font-size: 13px;
+  color: var(--nim-text-muted);
+}
+
+
+/* ============================================================================
+   Entity Node
+   ============================================================================ */
+
+.datamodel-entity {
+  min-width: 250px;
+  max-width: 350px;
+  border-radius: 8px;
+  border: 1px solid var(--nim-border);
+  background-color: var(--nim-bg-secondary);
+  box-shadow: 0 2px 8px var(--nim-shadow);
+  transition: all 0.2s ease;
+}
+
+.datamodel-entity-selected {
+  border-color: var(--nim-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nim-primary) 20%, transparent), 0 4px 12px var(--nim-shadow);
+}
+
+.datamodel-entity-hovered {
+  border-color: color-mix(in srgb, var(--nim-primary) 50%, transparent);
+  box-shadow: 0 4px 12px var(--nim-shadow);
+}
+
+.datamodel-entity-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background-color: var(--nim-bg-tertiary);
+  border-radius: 7px 7px 0 0;
+}
+
+.datamodel-entity-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--nim-text);
+  flex-shrink: 0;
+}
+
+.datamodel-entity-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--nim-text);
+  cursor: pointer;
+}
+
+.datamodel-entity-name:hover {
+  opacity: 0.9;
+}
+
+.datamodel-entity-name-input {
+  flex: 1;
+  padding: 2px 8px;
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  background-color: var(--nim-bg);
+  color: var(--nim-primary);
+}
+
+.datamodel-entity-name-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nim-bg) 50%, transparent);
+}
+
+.datamodel-entity-fields {
+  padding: 0;
+}
+
+.datamodel-entity-empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--nim-text-faint);
+}
+
+.datamodel-entity-description {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--nim-text-muted);
+  background-color: var(--nim-bg-tertiary);
+  border-top: 1px solid var(--nim-border);
+  border-radius: 0 0 7px 7px;
+}
+
+/* ============================================================================
+   Compact Mode Entity
+   ============================================================================ */
+
+.datamodel-entity-compact {
+  min-width: 180px;
+  max-width: 280px;
+  padding: 12px 16px;
+}
+
+.datamodel-entity-compact-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.datamodel-entity-compact-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.datamodel-entity-compact-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  background-color: var(--nim-bg-tertiary);
+  color: var(--nim-text-muted);
+  flex-shrink: 0;
+}
+
+.datamodel-entity-compact-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.datamodel-entity-compact-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--nim-text);
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.datamodel-entity-compact-name:hover {
+  color: var(--nim-primary);
+}
+
+.datamodel-entity-compact-badge {
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--nim-text-muted);
+  background-color: var(--nim-bg-tertiary);
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.datamodel-entity-compact-description {
+  font-size: 12px;
+  color: var(--nim-text-faint);
+  line-height: 1.4;
+  padding-left: 32px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Compact mode handles - visible on right side */
+.datamodel-entity-compact .datamodel-handle-visible {
+  width: 10px !important;
+  height: 10px !important;
+  border: 2px solid var(--nim-primary) !important;
+  background-color: var(--nim-bg) !important;
+  opacity: 1 !important;
+}
+
+
+/* ============================================================================
+   Field Row
+   ============================================================================ */
+
+.datamodel-field-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--nim-border);
+  transition: background-color 0.15s ease;
+}
+
+.datamodel-field-row:last-child {
+  border-bottom: none;
+}
+
+.datamodel-field-row:hover {
+  background-color: var(--nim-bg-hover);
+}
+
+.datamodel-field-wrapper {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.datamodel-field-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  justify-content: space-between;
+}
+
+.datamodel-field-description {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--nim-text-faint);
+  line-height: 1.3;
+  padding-left: 4px;
+}
+
+.datamodel-field-name {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--nim-text);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.datamodel-field-name:hover {
+  background-color: var(--nim-bg-hover);
+}
+
+.datamodel-field-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.datamodel-field-type {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: var(--nim-text-muted);
+}
+
+.datamodel-field-input {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  padding: 2px 6px;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background-color: var(--nim-bg);
+  color: var(--nim-text);
+}
+
+.datamodel-field-input:focus {
+  outline: none;
+  border-color: var(--nim-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nim-primary) 20%, transparent);
+}
+
+.datamodel-field-input-type {
+  font-size: 12px;
+  width: 80px;
+}
+
+.datamodel-field-badges {
+  display: flex;
+  gap: 4px;
+}
+
+/* ============================================================================
+   Badges
+   ============================================================================ */
+
+.datamodel-badge {
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.datamodel-badge-pk {
+  background-color: color-mix(in srgb, var(--nim-warning) 20%, transparent);
+  color: var(--nim-warning);
+}
+
+.datamodel-badge-fk {
+  background-color: color-mix(in srgb, var(--nim-info) 20%, transparent);
+  color: var(--nim-info);
+}
+
+.datamodel-badge-id {
+  background-color: color-mix(in srgb, var(--nim-code-function) 20%, transparent);
+  color: var(--nim-code-function);
+}
+
+.datamodel-badge-arr {
+  background-color: color-mix(in srgb, var(--nim-success) 20%, transparent);
+  color: var(--nim-success);
+}
+
+/* ============================================================================
+   Handles
+   ============================================================================ */
+
+.datamodel-handle {
+  width: 8px !important;
+  height: 8px !important;
+  border: 2px solid var(--nim-primary) !important;
+  background-color: var(--nim-bg) !important;
+}
+
+.datamodel-handle-source {
+  border-color: var(--nim-success) !important;
+}
+
+.datamodel-handle-invisible {
+  opacity: 0 !important;
+}
+
+/* ============================================================================
+   Edge Styles
+   ============================================================================ */
+
+.datamodel-edge {
+  transition: stroke 0.15s ease;
+}
+
+.datamodel-edge:hover {
+  stroke: var(--nim-primary) !important;
+}
+
+.datamodel-edge-label-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.datamodel-edge-label {
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background-color: var(--nim-bg-secondary);
+  color: var(--nim-text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.datamodel-edge-label-selected {
+  border-color: var(--nim-primary);
+  background-color: var(--nim-primary);
+  color: var(--nim-on-primary);
+}
+
+/* ============================================================================
+   React Flow Overrides
+   ============================================================================ */
+
+.datamodel-controls {
+  border-radius: 8px !important;
+  border: 1px solid var(--nim-border) !important;
+  background-color: var(--nim-bg-secondary) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) !important;
+}
+
+.datamodel-controls button {
+  border-bottom: 1px solid var(--nim-border) !important;
+  background-color: transparent !important;
+}
+
+.datamodel-controls button:hover {
+  background-color: var(--nim-bg-hover) !important;
+}
+
+.datamodel-controls button svg {
+  fill: var(--nim-text-muted) !important;
+}
+
+.datamodel-minimap {
+  border-radius: 8px !important;
+  border: 1px solid var(--nim-border) !important;
+  background-color: var(--nim-bg-secondary) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) !important;
+}
+
+
+/* ============================================================================
+   Export Dropdown
+   ============================================================================ */
+
+.datamodel-export-dropdown-container {
+  position: relative;
+}
+
+.datamodel-toolbar-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.datamodel-export-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 200px;
+  border-radius: 8px;
+  border: 1px solid var(--nim-border);
+  background-color: var(--nim-bg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.datamodel-export-dropdown-header {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--nim-text-faint);
+  border-bottom: 1px solid var(--nim-border);
+}
+
+.datamodel-export-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--nim-text);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.datamodel-export-dropdown-item:hover {
+  background-color: var(--nim-bg-hover);
+}
+
+
+/* ============================================================================
+   Export Dialog
+   ============================================================================ */
+
+.datamodel-export-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+}
+
+.datamodel-export-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 800px;
+  max-height: 80vh;
+  margin: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--nim-border);
+  background-color: var(--nim-bg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+.datamodel-export-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--nim-border);
+}
+
+.datamodel-export-dialog-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--nim-text);
+}
+
+.datamodel-export-dialog-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: none;
+  color: var(--nim-text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.datamodel-export-dialog-close:hover {
+  color: var(--nim-text);
+  background-color: var(--nim-bg-hover);
+}
+
+.datamodel-export-dialog-format {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--nim-border);
+}
+
+.datamodel-export-dialog-format label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--nim-text);
+}
+
+.datamodel-export-dialog-format select {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  border-radius: 6px;
+  border: 1px solid var(--nim-border);
+  background-color: var(--nim-bg);
+  color: var(--nim-text);
+  cursor: pointer;
+}
+
+.datamodel-export-dialog-format select:focus {
+  outline: none;
+  border-color: var(--nim-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--nim-primary) 20%, transparent);
+}
+
+.datamodel-export-dialog-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.datamodel-export-dialog-content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.datamodel-export-dialog-content-header label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--nim-text);
+}
+
+.datamodel-export-dialog-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.datamodel-export-dialog-action {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border: none;
+  background: none;
+  color: var(--nim-primary);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.15s ease;
+}
+
+.datamodel-export-dialog-action:hover {
+  background-color: color-mix(in srgb, var(--nim-primary) 10%, transparent);
+}
+
+.datamodel-export-dialog-code {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 16px;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--nim-text);
+  background-color: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  white-space: pre;
+}
+
+.datamodel-export-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 20px;
+  border-top: 1px solid var(--nim-border);
+}
+
+.datamodel-export-dialog-button {
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid var(--nim-border);
+  background-color: var(--nim-bg);
+  color: var(--nim-text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.datamodel-export-dialog-button:hover {
+  background-color: var(--nim-bg-hover);
+}
+

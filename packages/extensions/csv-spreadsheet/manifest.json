@@ -1,0 +1,81 @@
+{
+  "id": "com.nimbalyst.csv-spreadsheet",
+  "name": "CSV Spreadsheet",
+  "version": "1.0.2",
+  "description": "Edit CSV files with a spreadsheet interface and formula support",
+  "author": "Nimbalyst",
+  "main": "dist/index.js",
+  "styles": "dist/index.css",
+  "apiVersion": "1.0.0",
+  "marketplace": {
+    "changelog": "1.0.2: See collaborator presence in shared spreadsheets, share selected cells with AI, and reopen shared documents more reliably.\n1.0.1: Collaborative editing support, currency/percent/number cell formatting, and full ISO date rendering.",
+    "categories": ["data"],
+    "tags": ["csv", "tsv", "spreadsheet", "data", "table", "formula"],
+    "icon": "table_chart",
+    "featured": true,
+    "tagline": "Visual CSV editing with formulas and column formatting",
+    "longDescription": "Open CSV and TSV files in a full spreadsheet interface with formula support, column resizing, frozen rows/columns, and sortable headers. Edit data visually while the underlying CSV stays clean and git-friendly. Toggle to source mode to see and edit the raw text.",
+    "highlights": [
+      "Spreadsheet UI for CSV and TSV files",
+      "Formula support with cell references",
+      "Frozen rows and columns, sortable headers",
+      "Source mode toggle for raw CSV editing"
+    ],
+    "fileTypes": [".csv", ".tsv"],
+    "screenshots": [
+      {
+        "alt": "CSV spreadsheet editor with revenue data",
+        "src": "screenshots/com.nimbalyst.csv-spreadsheet-0-dark.png",
+        "srcLight": "screenshots/com.nimbalyst.csv-spreadsheet-0-light.png",
+        "fileToOpen": "samples/demo.csv"
+      }
+    ]
+  },
+  "permissions": {
+    "filesystem": true
+  },
+  "contributions": {
+    "customEditors": [
+      {
+        "filePatterns": ["*.csv", "*.tsv"],
+        "displayName": "Spreadsheet Editor",
+        "component": "SpreadsheetEditor",
+        "supportsDiffMode": true,
+        "supportsSourceMode": true,
+        "supportsTranscriptEmbed": true,
+        "collaboration": {
+          "supported": true,
+          "awarenessFields": ["selectedCell", "editingCell"]
+        }
+      }
+    ],
+    "fileIcons": {
+      "*.csv": "table",
+      "*.tsv": "table"
+    },
+    "newFileMenu": [
+      {
+        "extension": ".csv",
+        "displayName": "CSV Spreadsheet",
+        "icon": "table",
+        "defaultContent": "Column A,Column B,Column C\n,,\n,,\n,,"
+      }
+    ],
+    "configuration": {
+      "title": "CSV Spreadsheet Settings",
+      "properties": {
+        "metadataStorage": {
+          "type": "string",
+          "enum": ["inline", "sidecar"],
+          "enumDescriptions": [
+            "Store metadata as a comment in the CSV file (default)",
+            "Store metadata in a separate .csvmeta file"
+          ],
+          "default": "inline",
+          "description": "Where to store spreadsheet metadata (headers, frozen columns, formatting)",
+          "scope": "workspace"
+        }
+      }
+    }
+  }
+}

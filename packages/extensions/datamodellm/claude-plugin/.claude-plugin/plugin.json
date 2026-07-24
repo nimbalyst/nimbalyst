@@ -1,0 +1,12 @@
+{
+  "name": "datamodellm",
+  "version": "1.0.0",
+  "description": "Data modeling commands for creating Prisma-based data models in Nimbalyst",
+  "author": {
+    "name": "Nimbalyst",
+    "email": "support@nimbalyst.com",
+    "url": "https://nimbalyst.com"
+  },
+  "license": "MIT",
+  "keywords": ["datamodel", "prisma", "schema", "database", "erd"]
+}

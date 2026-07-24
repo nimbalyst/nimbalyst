@@ -1,0 +1,94 @@
+{
+  "id": "com.nimbalyst.excalidraw",
+  "name": "Excalidraw",
+  "version": "1.0.2",
+  "description": "Excalidraw diagram editor with AI-assisted editing",
+  "author": "Nimbalyst",
+  "main": "dist/index.js",
+  "styles": "dist/index.css",
+  "apiVersion": "1.0.0",
+  "marketplace": {
+    "changelog": "1.0.2: Share selected diagram elements with AI, with improved Mermaid imports and arrow labels.\n1.0.1: Shared-document collaboration fixes, Mermaid image import fix, and more reliable AI edits to open diagrams.",
+    "categories": ["diagrams"],
+    "tags": ["excalidraw", "diagram", "flowchart", "architecture", "drawing", "whiteboard"],
+    "icon": "brush",
+    "featured": true,
+    "tagline": "Hand-drawn style diagrams with AI-assisted editing",
+    "longDescription": "Create architecture diagrams, flowcharts, wireframes, and freeform sketches using the Excalidraw canvas. The AI can create and modify diagrams from natural language descriptions, import Mermaid syntax, and lay out complex systems visually. Switch between the visual canvas and source mode for direct JSON editing.",
+    "highlights": [
+      "AI creates and modifies diagrams from natural language",
+      "Import Mermaid diagrams and convert to visual elements",
+      "Bidirectional editing with source mode toggle",
+      "Full Excalidraw toolset: shapes, arrows, text, frames, grouping"
+    ],
+    "fileTypes": [".excalidraw"],
+    "screenshots": [
+      {
+        "alt": "Architecture diagram with client, API server, cache, and database",
+        "src": "screenshots/com.nimbalyst.excalidraw-0-dark.png",
+        "srcLight": "screenshots/com.nimbalyst.excalidraw-0-light.png",
+        "fileToOpen": "samples/demo.excalidraw"
+      }
+    ]
+  },
+  "permissions": {
+    "filesystem": true,
+    "ai": true
+  },
+  "contributions": {
+    "customEditors": [
+      {
+        "filePatterns": ["*.excalidraw"],
+        "displayName": "Excalidraw Editor",
+        "component": "ExcalidrawEditor",
+        "supportsSourceMode": true,
+        "supportsDiffMode": false,
+        "supportsTranscriptEmbed": true,
+        "collaboration": {
+          "supported": true,
+          "awarenessFields": ["pointer", "button", "selectedElementIds"]
+        }
+      }
+    ],
+    "aiTools": [
+      "excalidraw.get_elements",
+      "excalidraw.add_rectangle",
+      "excalidraw.add_arrow",
+      "excalidraw.update_element",
+      "excalidraw.remove_element",
+      "excalidraw.relayout",
+      "excalidraw.import_mermaid",
+      "excalidraw.clear_all",
+      "excalidraw.add_frame",
+      "excalidraw.add_row",
+      "excalidraw.add_column",
+      "excalidraw.align_elements",
+      "excalidraw.distribute_elements",
+      "excalidraw.move_element",
+      "excalidraw.group_elements",
+      "excalidraw.set_elements_in_frame",
+      "excalidraw.add_arrows",
+      "excalidraw.add_elements",
+      "excalidraw.remove_elements"
+    ],
+    "fileIcons": {
+      "*.excalidraw": "draw"
+    },
+    "newFileMenu": [
+      {
+        "extension": ".excalidraw",
+        "displayName": "Excalidraw Diagram",
+        "icon": "draw",
+        "defaultContent": "{\"type\":\"excalidraw\",\"version\":2,\"source\":\"https://excalidraw.com\",\"elements\":[],\"appState\":{\"gridSize\":null,\"viewBackgroundColor\":\"#ffffff\"},\"files\":{}}"
+      }
+    ],
+    "nodes": ["ExcalidrawNode"],
+    "transformers": ["EXCALIDRAW_TRANSFORMER"],
+    "claudePlugin": {
+      "path": "claude-plugin",
+      "displayName": "Excalidraw Diagrams",
+      "description": "Create flowcharts, architecture diagrams, and visual drawings",
+      "enabledByDefault": true
+    }
+  }
+}

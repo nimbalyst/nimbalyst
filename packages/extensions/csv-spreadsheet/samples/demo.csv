@@ -1,0 +1,10 @@
+# nimbalyst: {"hasHeaders":true,"headerRowCount":1,"frozenColumnCount":0}
+Product,Category,Q1 Revenue,Q2 Revenue,Q3 Revenue,Q4 Revenue,YoY Growth
+Cloud Platform,Infrastructure,1250000,1380000,1520000,1690000,18.2
+AI Assistant,AI/ML,890000,1120000,1450000,1780000,42.5
+Data Pipeline,Analytics,720000,750000,810000,880000,12.1
+Auth Service,Security,340000,360000,390000,420000,8.7
+Edge CDN,Infrastructure,560000,610000,680000,740000,15.3
+Mobile SDK,Developer Tools,280000,310000,350000,400000,22.8
+Search Engine,Analytics,450000,520000,590000,670000,19.4
+Notification Hub,Messaging,190000,220000,260000,310000,28.6
