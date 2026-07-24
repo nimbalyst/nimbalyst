@@ -1,0 +1,82 @@
+// @nimbalyst {"viewport":{"x":92.51906805289957,"y":34.384235089343406,"zoom":0.7578582832551992},"positions":{"ai_sessions":{"x":80,"y":-20},"ai_agent_messages":{"x":100,"y":640},"session_files":{"x":1000,"y":280},"queued_prompts":{"x":760,"y":-80},"document_history":{"x":920,"y":680},"tracker_items":{"x":500,"y":520}},"entityViewMode":"full"}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// AI chat sessions storing conversation state, provider configuration, and user preferences
+model ai_sessions {
+  id          String      @id
+  file_path   String?
+  provider    String
+  model       String?
+  title       String      @default("New conversation")
+  draft_input String?
+  metadata    Json?       @default("{}")
+  status      String?     @default("idle")
+  mode        String?     @default("agent")
+  is_archived Boolean?    @default(false)
+  created_at  DateTime?   @default(now()
+  updated_at  DateTime?   @default(now()
+}
+
+/// Individual messages within an AI session including user prompts, assistant responses, and tool calls
+model ai_agent_messages {
+  id          BigInt      @id @default(autoincrement()
+  session_id  String
+  created_at  DateTime    @default(now()
+  source      String
+  direction   String
+  content     String
+  metadata    Json?
+  hidden      Boolean     @default(false)
+  ai_sessionss ai_sessions[]
+}
+
+/// Files attached or referenced within an AI session for context during conversations
+model session_files {
+  id          String      @id
+  session_id  String
+  file_path   String
+  link_type   String
+  timestamp   DateTime    @default(now()
+  metadata    Json?       @default("{}")
+  ai_sessionss ai_sessions[]
+}
+
+/// Pending prompts queued for processing in an AI session, enabling async message handling
+model queued_prompts {
+  id          String      @id
+  session_id  String
+  prompt      String
+  status      String      @default("pending")
+  attachments Json?
+  created_at  DateTime?   @default(now()
+  claimed_at  DateTime?
+  ai_sessionss ai_sessions[]
+}
+
+/// Version history snapshots of documents for undo/restore functionality
+model document_history {
+  id          Int         @id @default(autoincrement()
+  file_path   String
+  content     Bytes
+  size_bytes  Int?
+  timestamp   BigInt
+  version     Int?        @default(1)
+  metadata    Json?       @default("{}")
+}
+
+/// Task and habit tracker items synced across workspaces with status and metadata
+model tracker_items {
+  id          String      @id
+  type        String
+  data        Json
+  workspace   String
+  line_number Int?
+  created     DateTime?   @default(now()
+  updated     DateTime?   @default(now()
+  title       String?
+  status      String?
+}
