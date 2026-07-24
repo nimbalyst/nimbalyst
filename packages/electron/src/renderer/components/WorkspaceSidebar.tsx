@@ -1,5 +1,8 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 import { useAtomValue } from 'jotai';
+import { chromeNewSlotAtom } from '../store/atoms/chromeActions';
+import { windowModeAtom } from '../store/atoms/windowMode';
 import { FlatFileTree } from './FlatFileTree';
 import type { RendererFileTreeItem } from '../store';
 import { InputModal } from './InputModal';
@@ -8,6 +11,7 @@ import { PlansPanel } from './PlansPanel/PlansPanel';
 import { canPersistWorkspaceHydratedState } from '../utils/workspaceHydration';
 import { FileTreeFilterMenu, FileTreeFilter } from './FileTreeFilterMenu';
 import { NewFileMenu, NewFileType, ExtensionFileType, contributionToExtensionFileType } from './NewFileMenu';
+import { HeaderCreateButton } from './HeaderCreateButton';
 import { createInitialFileContent, createMockupContent } from '../utils/fileUtils';
 import { getFileName } from '../utils/pathUtils';
 import { getExtensionLoader } from '@nimbalyst/runtime';
@@ -1110,6 +1114,30 @@ export function WorkspaceSidebar({
     setIsDragOverRoot(false);
   };
 
+  // "+ New" launcher for Files mode, portaled into the window-chrome slot
+  // (pinned to the sidebar edge) when Files mode is active. Reuses the file-type
+  // menu (now with New Folder), anchored to this button via newFileButtonRef.
+  const chromeNewSlot = useAtomValue(chromeNewSlotAtom);
+  const activeWindowMode = useAtomValue(windowModeAtom);
+  const filesNewButton = (
+    <div className="workspace-new-dropdown relative z-10">
+      <HeaderCreateButton
+        ref={newFileButtonRef}
+        testId="new-dropdown-button"
+        icon="add"
+        label="New"
+        tone="primary"
+        onClick={handleNewFileButtonClick}
+        title="Create new file or folder"
+        ariaLabel="Create new file or folder"
+        showCaret
+      />
+    </div>
+  );
+  const filesChromeNew = chromeNewSlot && activeWindowMode === 'files'
+    ? createPortal(filesNewButton, chromeNewSlot)
+    : null;
+
   return (
     <div className="workspace-sidebar w-full bg-[var(--nim-bg-secondary)] border-r border-[var(--nim-border)] flex flex-col h-full overflow-hidden relative"
       onDragOver={handleRootDragOver}
@@ -1118,25 +1146,15 @@ export function WorkspaceSidebar({
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
+      {filesChromeNew}
       <WorkspaceSummaryHeader
         workspacePath={workspacePath}
         workspaceName={workspaceName}
-        actionsClassName="gap-1"
+        actionsClassName="gap-1.5"
         actions={
           <>
             {currentView === 'files' && (
               <>
-                <button
-                  ref={newFileButtonRef}
-                  className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
-                  onClick={handleNewFileButtonClick}
-                  title="New file"
-                  aria-label="New file"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
-                    edit_square
-                  </span>
-                </button>
                 <HelpTooltip testId="file-tree-refresh-button">
                   <button
                     data-testid="file-tree-refresh-button"
@@ -1150,16 +1168,6 @@ export function WorkspaceSidebar({
                     </span>
                   </button>
                 </HelpTooltip>
-                <button
-                  className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
-                  onClick={handleNewFolder}
-                  title="New folder"
-                  aria-label="New folder"
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
-                    create_new_folder
-                  </span>
-                </button>
                 {onOpenQuickSearch && (
                   <HelpTooltip testId="file-tree-quick-open-button">
                     <button
@@ -1277,6 +1285,7 @@ export function WorkspaceSidebar({
               onSelect={handleNewFileTypeSelect}
               onClose={() => setShowNewFileMenu(false)}
               extensionFileTypes={extensionFileTypes}
+              onNewFolder={handleNewFolder}
             />
           )}
         </>

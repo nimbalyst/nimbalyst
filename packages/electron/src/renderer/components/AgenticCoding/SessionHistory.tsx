@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useAtomValue, useSetAtom } from 'jotai';
+import { chromeNewSlotAtom } from '../../store/atoms/chromeActions';
+import { windowModeAtom } from '../../store/atoms/windowMode';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { CollapsibleGroup } from './CollapsibleGroup';
 import { WorktreeBaseBranchPicker } from './WorktreeBaseBranchPicker';
@@ -72,6 +75,7 @@ import { AlphaBadge } from '../common/AlphaBadge';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
 import { usePostHog } from 'posthog-js/react';
 import { WorkspaceSummaryHeader, generateWorkspaceAccentColor } from '../WorkspaceSummaryHeader';
+import { HeaderCreateButton } from '../HeaderCreateButton';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
 import './SessionHistory.css';
@@ -2058,6 +2062,47 @@ const SessionHistoryComponent: React.FC = () => {
     }
   };
 
+  // How many create options the "New" button can offer. Drives the caret:
+  // only show the menu affordance when clicking it opens a dropdown rather
+  // than creating a session directly. Mirrors handleNewButtonClick's list.
+  const newSessionOptionCount = [
+    onNewSession,
+    onNewWorktreeSession,
+    onNewBlitz,
+    onNewTerminal,
+    isSuperLoopsAvailable || null,
+    isMetaAgentEnabled || null,
+  ].filter(Boolean).length;
+
+  // Unified "New" pill, portaled into the window-chrome slot (pinned to the
+  // sidebar edge) when Agent mode is active. Only one header branch renders at
+  // a time, so the shared floating-menu ref attaches to whichever tree is on
+  // screen. Keeps the legacy `session-history-new-button` class for E2E.
+  const newSessionButton = (
+    <div className="session-history-new-dropdown relative z-10">
+      <HeaderCreateButton
+        ref={newDropdownMenu.refs.setReference}
+        className="session-history-new-button"
+        testId="new-dropdown-button"
+        icon="add"
+        label="New"
+        tone="primary"
+        onClick={handleNewButtonClick}
+        title="Create new..."
+        ariaLabel="Create new session, worktree, or terminal"
+        showCaret={newSessionOptionCount > 1}
+      />
+    </div>
+  );
+
+  // The chrome slot (WindowTopBar) and active window mode gate the portal so
+  // only the active mode's launcher shows in the title bar.
+  const chromeNewSlot = useAtomValue(chromeNewSlotAtom);
+  const activeWindowMode = useAtomValue(windowModeAtom);
+  const agentChromeNew = chromeNewSlot && activeWindowMode === 'agent'
+    ? createPortal(newSessionButton, chromeNewSlot)
+    : null;
+
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -2742,22 +2787,7 @@ const SessionHistoryComponent: React.FC = () => {
                 </svg>
               </button>
             )}
-            {(
-              <div className="session-history-new-dropdown relative z-10">
-                <button
-                  ref={newDropdownMenu.refs.setReference}
-                  className="session-history-new-button flex items-center justify-center p-1.5 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded text-[var(--nim-text)] cursor-pointer transition-colors duration-150 shrink-0 hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)] active:bg-[var(--nim-bg-tertiary)] [&_svg]:block"
-                  data-testid="new-dropdown-button"
-                  onClick={handleNewButtonClick}
-                  title="Create new..."
-                  aria-label="Create new session, worktree, or terminal"
-                >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                  </svg>
-                </button>
-              </div>
-            )}
+            {agentChromeNew}
             </>
           }
         />
@@ -2842,22 +2872,7 @@ const SessionHistoryComponent: React.FC = () => {
           showAccent={false}
           actions={
             <>
-            {(
-              <div className="session-history-new-dropdown relative z-10">
-                <button
-                  ref={newDropdownMenu.refs.setReference}
-                  className="session-history-new-button flex items-center justify-center p-1.5 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded text-[var(--nim-text)] cursor-pointer transition-colors duration-150 shrink-0 hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)] active:bg-[var(--nim-bg-tertiary)] [&_svg]:block"
-                  data-testid="new-dropdown-button"
-                  onClick={handleNewButtonClick}
-                  title="Create new..."
-                  aria-label="Create new session, worktree, or terminal"
-                >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                  </svg>
-                </button>
-              </div>
-            )}
+            {agentChromeNew}
             </>
           }
         />
@@ -3023,22 +3038,7 @@ const SessionHistoryComponent: React.FC = () => {
                   </svg>
                 </button>
               )}
-              {(
-                <div className="session-history-new-dropdown relative z-10">
-                  <button
-                    ref={newDropdownMenu.refs.setReference}
-                    className="session-history-new-button flex items-center justify-center p-1.5 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded text-[var(--nim-text)] cursor-pointer transition-colors duration-150 shrink-0 hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)] active:bg-[var(--nim-bg-tertiary)] [&_svg]:block"
-                    data-testid="new-dropdown-button"
-                    onClick={handleNewButtonClick}
-                    title="Create new..."
-                    aria-label="Create new session or worktree"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                    </svg>
-                  </button>
-                </div>
-              )}
+              {agentChromeNew}
               {onNewTerminal && (
                 <button
                   className="session-history-new-terminal-button flex items-center justify-center p-1.5 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded text-[var(--nim-text)] cursor-pointer transition-colors duration-150 shrink-0 hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)] active:bg-[var(--nim-bg-tertiary)] [&_svg]:block"
@@ -3132,22 +3132,7 @@ const SessionHistoryComponent: React.FC = () => {
               </svg>
             </button>
           )}
-          {(
-            <div className="session-history-new-dropdown relative z-10">
-              <button
-                ref={newDropdownMenu.refs.setReference}
-                className="session-history-new-button flex items-center justify-center p-1.5 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded text-[var(--nim-text)] cursor-pointer transition-colors duration-150 shrink-0 hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)] active:bg-[var(--nim-bg-tertiary)] [&_svg]:block"
-                data-testid="new-dropdown-button"
-                onClick={handleNewButtonClick}
-                title="Create new..."
-                aria-label="Create new session, worktree, or terminal"
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                </svg>
-              </button>
-            </div>
-          )}
+          {agentChromeNew}
           </>
         }
       />

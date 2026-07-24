@@ -83,9 +83,55 @@
   -webkit-app-region: no-drag;
 }
 
+/*
+ * "+ New" launcher pinned to the active sidebar's right edge. The container
+ * spans from the window's left edge to that edge and right-aligns the slot, so
+ * the button sits exactly at the sidebar boundary. pointer-events stay off the
+ * empty area so the title bar remains draggable; only the slot re-enables them.
+ */
+.window-top-bar__pinned-new {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 8px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.window-top-bar__pinned-new-slot {
+  display: flex;
+  align-items: center;
+  pointer-events: auto;
+}
+
+/*
+ * "New Session" pinned to the left edge of the AI panel column (anchored to the
+ * window's right edge, width = AI panel width, button left-aligned). Symmetric
+ * to the "+ New" pinned to the sidebar's right edge.
+ */
+.window-top-bar__pinned-session {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-left: 8px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.window-top-bar__pinned-session > * {
+  pointer-events: auto;
+}
+
 .window-top-bar__git,
-.window-top-bar__panel-button,
-.window-top-bar__new-session {
+.window-top-bar__panel-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -100,15 +146,13 @@
 }
 
 .window-top-bar__git:hover,
-.window-top-bar__panel-button:hover,
-.window-top-bar__new-session:hover {
+.window-top-bar__panel-button:hover {
   color: var(--nim-text);
   background: var(--nim-bg-hover);
 }
 
 .window-top-bar__git:focus-visible,
-.window-top-bar__panel-button:focus-visible,
-.window-top-bar__new-session:focus-visible {
+.window-top-bar__panel-button:focus-visible {
   outline: 2px solid var(--nim-border-focus);
   outline-offset: -2px;
 }
@@ -160,20 +204,6 @@
 
 .window-top-bar__panel-button[data-collapsed='false'] {
   color: var(--nim-primary);
-}
-
-.window-top-bar__new-session {
-  gap: 3px;
-  padding: 0 8px;
-  color: var(--nim-on-primary);
-  background: var(--nim-primary);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.window-top-bar__new-session:hover {
-  color: var(--nim-on-primary);
-  background: var(--nim-primary-hover);
 }
 
 .window-top-bar__menu {

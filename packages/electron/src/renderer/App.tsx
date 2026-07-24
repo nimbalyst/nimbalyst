@@ -191,12 +191,15 @@ import { setDiffTreeGroupByDirectoryAtom, setAgentFileScopeModeAtom, hydrateFile
 import {
   toggleSessionHistoryCollapsedAtom,
   sessionHistoryCollapsedAtom,
+  sessionHistoryWidthAtom,
   scrollToMessageAtom,
   initAgentModeLayout,
 } from './store/atoms/agentMode';
 import {
   aiChatCollapsedAtomFamily,
+  aiChatWidthAtomFamily,
   sidebarCollapsedAtomFamily,
+  sidebarWidthAtomFamily,
 } from './store/atoms/workspaceLayout';
 import { gitStatusAtom } from './store/atoms/gitOperations';
 import { normalizeGitStatus } from './utils/gitStatus';
@@ -573,8 +576,11 @@ export default function App() {
   const setActiveMode = useSetAtom(setWindowModeAtom);
   const toggleAgentCollapsed = useSetAtom(toggleSessionHistoryCollapsedAtom);
   const agentHistoryCollapsed = useAtomValue(sessionHistoryCollapsedAtom);
+  const agentHistoryWidth = useAtomValue(sessionHistoryWidthAtom);
   const filesSidebarCollapsed = useAtomValue(sidebarCollapsedAtomFamily(workspacePath || ''));
+  const filesSidebarWidth = useAtomValue(sidebarWidthAtomFamily(workspacePath || ''));
   const filesAIChatCollapsed = useAtomValue(aiChatCollapsedAtomFamily(workspacePath || ''));
+  const filesAIChatWidth = useAtomValue(aiChatWidthAtomFamily(workspacePath || ''));
   const toggleAIChatPanelVersion = useAtomValue(toggleAIChatPanelRequestAtom);
   const gitStatus = useAtomValue(gitStatusAtom);
   const setGitStatus = useSetAtom(gitStatusAtom);
@@ -1104,9 +1110,14 @@ export default function App() {
   ]);
 
   const windowTopBarNewSessionControl = useMemo(() => {
+    // The far-right chrome button creates an AI chat session over the AI panel.
+    // It coexists with the pinned "+ New" (files/agent create) but is
+    // differentiated by a chat icon and the explicit "New Session" label, so the
+    // two read as clearly different actions rather than duplicate "New" buttons.
     if (isFullscreenPanelActive && activeFullscreenPanel?.aiSupported) {
       return {
-        label: 'New AI session',
+        label: 'New Session',
+        icon: 'add_comment',
         onCreate: () => {
           void chatSidebarRef.current?.createNewSession();
         },
@@ -1114,7 +1125,8 @@ export default function App() {
     }
     if (activeMode === 'files') {
       return {
-        label: 'New AI session',
+        label: 'New Session',
+        icon: 'add_comment',
         onCreate: () => {
           void editorModeRef.current?.createNewChatSession();
         },
@@ -1122,7 +1134,8 @@ export default function App() {
     }
     if (activeMode === 'collab') {
       return {
-        label: 'New AI session',
+        label: 'New Session',
+        icon: 'add_comment',
         onCreate: () => {
           void collabModeRef.current?.createNewChatSession();
         },
@@ -1150,6 +1163,30 @@ export default function App() {
     };
     return labels[activeMode];
   }, [activeMode]);
+
+  // X-offset of the active sidebar's right edge, so WindowTopBar can pin the
+  // "+ New" launcher to the sidebar boundary. 48px is the navigation rail. A
+  // collapsed sidebar contributes 0 width; modes without a left sidebar get
+  // undefined (no pinned launcher).
+  const pinnedNewOffset = useMemo<number | undefined>(() => {
+    const NAV_RAIL_WIDTH = 48;
+    if (activeMode === 'agent') {
+      return NAV_RAIL_WIDTH + (agentHistoryCollapsed ? 0 : agentHistoryWidth);
+    }
+    if (activeMode === 'files') {
+      return NAV_RAIL_WIDTH + (filesSidebarCollapsed ? 0 : filesSidebarWidth);
+    }
+    return undefined;
+  }, [activeMode, agentHistoryWidth, agentHistoryCollapsed, filesSidebarWidth, filesSidebarCollapsed]);
+
+  // Width of the AI panel column (Files mode), so the "New Session" button pins
+  // to its left edge. Undefined when the panel is collapsed or absent.
+  const pinnedSessionOffset = useMemo<number | undefined>(() => {
+    if (activeMode === 'files' && !filesAIChatCollapsed) {
+      return filesAIChatWidth;
+    }
+    return undefined;
+  }, [activeMode, filesAIChatCollapsed, filesAIChatWidth]);
 
   const runTitleBarGitAction = useCallback(async (action: 'pull' | 'push') => {
     if (!workspacePath || gitActionState.busyAction) return;
@@ -2462,6 +2499,8 @@ export default function App() {
           }}
           panelControls={windowTopBarPanelControls}
           newSessionControl={windowTopBarNewSessionControl}
+          pinnedNewOffset={pinnedNewOffset}
+          pinnedSessionOffset={pinnedSessionOffset}
         />
       )}
       <div data-layout="workspace-row" className="flex flex-row flex-1 min-h-0">

@@ -26,6 +26,8 @@ interface NewFileMenuProps {
   onClose: () => void;
   /** Extension-contributed file types */
   extensionFileTypes?: ExtensionFileType[];
+  /** When provided, a "New Folder" item is appended below the file types. */
+  onNewFolder?: () => void;
 }
 
 export function NewFileMenu({
@@ -33,7 +35,8 @@ export function NewFileMenu({
   y,
   onSelect,
   onClose,
-  extensionFileTypes = []
+  extensionFileTypes = [],
+  onNewFolder
 }: NewFileMenuProps) {
   const reference = useMemo(() => virtualElement(x, y), [x, y]);
   const menu = useFloatingMenu({
@@ -89,15 +92,18 @@ export function NewFileMenu({
           </div>
         ))}
 
-        <div className="new-file-menu-separator h-px bg-[var(--nim-border)] mx-2 my-1" />
-
-        <div
-          className="new-file-menu-item flex items-center gap-2.5 py-2 px-3 rounded cursor-pointer transition-colors text-nim hover:bg-nim-hover"
-          onClick={() => handleSelect('any')}
-        >
-          <MaterialSymbol icon="note_add" size={18} />
-          <span>New File...</span>
-        </div>
+        {onNewFolder && (
+          <>
+            <div className="new-file-menu-separator h-px bg-[var(--nim-border)] mx-2 my-1" />
+            <div
+              className="new-file-menu-item new-folder-menu-item flex items-center gap-2.5 py-2 px-3 rounded cursor-pointer transition-colors text-nim hover:bg-nim-hover"
+              onClick={() => { onNewFolder(); onClose(); }}
+            >
+              <MaterialSymbol icon="create_new_folder" size={18} />
+              <span>New Folder</span>
+            </div>
+          </>
+        )}
       </div>
     </FloatingPortal>
   );

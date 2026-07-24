@@ -132,7 +132,7 @@ test.describe('Agent Mode UI', () => {
     const agentMode = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentMode);
     const chatInput = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentChatInput);
     const sessionHistory = agentMode.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistory);
-    const newSessionButton = agentMode.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewButton);
+    const newSessionButton = page.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewButton);
 
     await expect(chatInput).toBeVisible({ timeout: 2000 });
     await expect(sessionHistory).toBeVisible({ timeout: 2000 });
@@ -388,8 +388,7 @@ test.describe('Session Status Indicators', () => {
     const logs: string[] = [];
     page.on('console', msg => logs.push(msg.text()));
 
-    const agentMode = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentMode);
-    const newSessionButton = agentMode.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewButton);
+    const newSessionButton = page.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewButton);
     if (await newSessionButton.isVisible()) {
       await newSessionButton.click();
       await page.waitForTimeout(300);
