@@ -1,0 +1,4254 @@
+import { BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, app, shell } from 'electron';
+import { safeHandle, safeOn } from '../utils/ipcRegistry';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import type {
+  Document,
+  DocumentService,
+  DocumentOpenOptions,
+  DocumentMetadataEntry,
+  MetadataChangeEvent,
+  TrackerItem,
+  TrackerItemChangeEvent,
+  TrackerItemType
+} from '@nimbalyst/runtime';
+import crypto from 'crypto';
+import { getCurrentIdentity } from './TrackerIdentityService';
+import { applyCommentMutation, type CommentMutation } from './tracker/commentMutations';
+import { appendActivity } from './tracker/trackerActivity';
+import { extractItemCustomFields } from './tracker/trackerRowCustomFields';
+import {
+  getBacklinks as getRelationshipBacklinks,
+  reindexItemRelationships,
+  rebuildWorkspaceRelationshipIndex,
+} from './tracker/trackerRelationshipIndexStore';
+import { propagateInverseRelationships } from './tracker/inverseRelationshipWrites';
+import { applyRelationshipFieldWrites } from './tracker/relationshipFieldWrite';
+import { nestRelationshipFieldsIntoCustomFields, readStoredFieldValue } from './tracker/relationshipFieldStorage';
+import { projectionWouldChange } from './tracker/projectionUpdateGuard';
+import { extractFrontmatter, extractCommonFields } from '../utils/frontmatterReader';
+import { VIRTUAL_DOCS, isVirtualPath } from '@nimbalyst/runtime';
+import {
+  updateTrackerInFrontmatter,
+  updateInlineTrackerItem,
+  removeInlineTrackerItem,
+  setShareInFrontmatter,
+  EXTENSION_OWNED_KEYS,
+  LEGACY_KEY_TO_TYPE,
+  buildFullDocumentTrackerId,
+  parseFullDocumentTrackerId,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
+import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel';
+import { database } from '../database/PGLiteDatabaseWorker';
+import { shouldExcludeDir } from '../utils/fileFilters';
+import { getRegisteredExtensions } from '../extensions/RegisteredFileTypes';
+import { isPathInWorkspace, getRelativeWorkspacePath } from '../utils/workspaceDetection';
+import { syncTrackerItem, unsyncTrackerItem, isTrackerSyncActive } from './TrackerSyncManager';
+import {
+  getEffectiveTrackerSyncPolicy,
+  getInitialTrackerSyncStatus,
+  isTrackerItemShared,
+  shouldSyncTrackerItem,
+} from './TrackerPolicyService';
+import { computeFrontmatterTrackerTransition } from './tracker/frontmatterTrackerTransition';
+import { applyHeadlessBodyMarkdown } from './MainBodyDocService';
+import { getWorkspaceState } from '../utils/store';
+
+export interface ParsedInlineTrackerCandidate extends Omit<TrackerItem, 'id'> {
+  id?: string;
+  explicitId: boolean;
+}
+
+interface ExistingInlineTrackerRow {
+  id: string;
+  type: string;
+  line_number?: number | null;
+  title?: string | null;
+}
+
+interface ResolvedFullDocumentFrontmatter {
+  trackerType: string;
+  trackerData: Record<string, any>;
+}
+
+function resolveFullDocumentFrontmatter(
+  frontmatter: Record<string, any> | undefined,
+): ResolvedFullDocumentFrontmatter | null {
+  if (!frontmatter) return null;
+
+  for (const [extKey, extType] of Object.entries(EXTENSION_OWNED_KEYS)) {
+    if (frontmatter[extKey] && typeof frontmatter[extKey] === 'object') {
+      const extData = frontmatter[extKey] as Record<string, any>;
+      const { [extKey]: _ext, trackerStatus: _ts, ...topLevel } = frontmatter;
+      return {
+        trackerType: extType,
+        trackerData: { ...topLevel, ...extData },
+      };
+    }
+  }
+
+  if (frontmatter.trackerStatus && typeof frontmatter.trackerStatus === 'object') {
+    const trackerStatus = frontmatter.trackerStatus as Record<string, any>;
+    const trackerType = typeof trackerStatus.type === 'string' && trackerStatus.type.trim().length > 0
+      ? trackerStatus.type.trim()
+      : 'plan';
+    const { trackerStatus: _ts, ...topLevel } = frontmatter;
+    return {
+      trackerType,
+      trackerData: { ...trackerStatus, ...topLevel },
+    };
+  }
+
+  for (const [legacyKey, legacyType] of Object.entries(LEGACY_KEY_TO_TYPE)) {
+    if (frontmatter[legacyKey] && typeof frontmatter[legacyKey] === 'object') {
+      const legacyData = frontmatter[legacyKey] as Record<string, any>;
+      const { [legacyKey]: _legacy, trackerStatus: _ts, ...topLevel } = frontmatter;
+      return {
+        trackerType: legacyType,
+        trackerData: { ...legacyData, ...topLevel },
+      };
+    }
+  }
+
+  return null;
+}
+
+export function getCanonicalTrackerItemIdFromRow(row: { id: string; type: string; source?: string | null; source_ref?: string | null }): string {
+  if (row.source === 'frontmatter' && typeof row.source_ref === 'string' && row.source_ref.length > 0) {
+    return buildFullDocumentTrackerId(row.type, row.source_ref);
+  }
+  return row.id;
+}
+
+/**
+ * Parse a column value that may be either a parsed object/array (PGLite
+ * JSONB / TEXT[] semantics) or a JSON-encoded string (SQLite TEXT
+ * semantics). Returns the parsed shape, or undefined on null/parse error.
+ */
+function parseJsonColumn<T>(value: unknown): T | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string') return value as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parse a frontmatter date value (string/number/Date) into a valid Date, or
+ * undefined if absent/unparseable. Used as a STABLE fallback for a
+ * frontmatter tracker's timestamp so we never fabricate scan-time `new Date()`
+ * (NIM-1559).
+ */
+function parseStableDate(value: unknown): Date | undefined {
+  if (value === null || value === undefined) return undefined;
+  const d = value instanceof Date
+    ? value
+    : typeof value === 'number'
+      ? new Date(value)
+      : new Date(String(value));
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+/**
+ * `tracker_items.content` is stored as JSON.stringify(markdown) (see
+ * updateTrackerItemContent). Undo that encoding; legacy/plain rows without
+ * JSON quoting pass through unchanged rather than becoming undefined.
+ */
+function parseTrackerContentColumn(raw: string): any {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function normalizeTrackerTitle(title: string | undefined): string {
+  return (title || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function computeDeterministicInlineTrackerId(
+  relativePath: string,
+  type: string,
+  lineNumber: number | undefined,
+  title: string,
+): string {
+  const hash = crypto
+    .createHash('sha1')
+    .update(`${relativePath}\n${type}\n${lineNumber ?? 0}\n${normalizeTrackerTitle(title)}`)
+    .digest('hex')
+    .slice(0, 12);
+  return `${type}_${hash}`;
+}
+
+export function resolveInlineTrackerIds(
+  candidates: ParsedInlineTrackerCandidate[],
+  existingRows: ExistingInlineTrackerRow[],
+  relativePath: string,
+): TrackerItem[] {
+  const unmatchedExisting = [...existingRows];
+  const candidateTitleCounts = new Map<string, number>();
+  const existingTitleCounts = new Map<string, number>();
+
+  for (const candidate of candidates) {
+    const key = `${candidate.type}::${normalizeTrackerTitle(candidate.title)}`;
+    candidateTitleCounts.set(key, (candidateTitleCounts.get(key) ?? 0) + 1);
+  }
+
+  for (const row of existingRows) {
+    const key = `${row.type}::${normalizeTrackerTitle(row.title ?? undefined)}`;
+    existingTitleCounts.set(key, (existingTitleCounts.get(key) ?? 0) + 1);
+  }
+
+  function takeMatch(
+    predicate: (row: ExistingInlineTrackerRow) => boolean,
+  ): ExistingInlineTrackerRow | null {
+    const index = unmatchedExisting.findIndex(predicate);
+    if (index === -1) return null;
+    const [row] = unmatchedExisting.splice(index, 1);
+    return row;
+  }
+
+  return candidates.map((candidate) => {
+    if (candidate.explicitId && candidate.id) {
+      takeMatch((row) => row.id === candidate.id);
+      return { ...candidate, id: candidate.id };
+    }
+
+    const normalizedTitle = normalizeTrackerTitle(candidate.title);
+    const titleKey = `${candidate.type}::${normalizedTitle}`;
+
+    const exactLineMatch = takeMatch((row) =>
+      row.type === candidate.type &&
+      (row.line_number ?? null) === (candidate.lineNumber ?? null)
+    );
+
+    if (exactLineMatch) {
+      return { ...candidate, id: exactLineMatch.id };
+    }
+
+    const canUseTitleMatch =
+      (candidateTitleCounts.get(titleKey) ?? 0) === 1 &&
+      (existingTitleCounts.get(titleKey) ?? 0) === 1;
+    const titleMatch = canUseTitleMatch
+      ? takeMatch((row) =>
+          row.type === candidate.type &&
+          normalizeTrackerTitle(row.title ?? undefined) === normalizedTitle
+        )
+      : null;
+
+    if (titleMatch) {
+      return { ...candidate, id: titleMatch.id };
+    }
+
+    let nearestIndex = -1;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < unmatchedExisting.length; i++) {
+      const row = unmatchedExisting[i];
+      if (row.type !== candidate.type) continue;
+      if (candidate.lineNumber == null || row.line_number == null) continue;
+      const distance = Math.abs(row.line_number - candidate.lineNumber);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestIndex = i;
+      }
+    }
+
+    if (nearestIndex !== -1 && nearestDistance <= 3) {
+      const [nearest] = unmatchedExisting.splice(nearestIndex, 1);
+      return { ...candidate, id: nearest.id };
+    }
+
+    return {
+      ...candidate,
+      id: computeDeterministicInlineTrackerId(
+        relativePath,
+        candidate.type,
+        candidate.lineNumber,
+        candidate.title,
+      ),
+    };
+  });
+}
+
+export class ElectronDocumentService implements DocumentService {
+  private workspacePath: string;
+  private documents: Document[] = [];
+  private watchers: Map<string, (documents: Document[]) => void> = new Map();
+  private watchInterval: NodeJS.Timeout | null = null;
+
+  // Metadata cache
+  private metadataCache: Map<string, DocumentMetadataEntry> = new Map();
+  private metadataByPath: Map<string, DocumentMetadataEntry> = new Map();
+  private metadataWatchers: Map<string, (change: MetadataChangeEvent) => void> = new Map();
+  private fileStateCache: Map<string, { mtime: number; size: number; hash?: string }> = new Map();
+  private initializationPromise: Promise<void> | null = null;
+
+  // Tracker items cache
+  private trackerItemWatchers: Map<string, (change: TrackerItemChangeEvent) => void> = new Map();
+
+  // Performance limits - balance between completeness and performance
+  private static readonly MAX_FILES_TO_SCAN = 2000;   // Stop adding regular files after 2000
+  private static readonly MAX_SCAN_TIME_MS = 10000;   // Default scan budget (responsive on-demand scans)
+  // NIM-879: when a scan stops early, a background completion pass runs with this
+  // larger budget so the tracker metadata cache is never left silently incomplete
+  // (the symptom: gitignored nimbalyst-local/plans scanned after the cap = lost
+  // plans). The scan yields the event loop, so a longer budget never freezes the UI.
+  private static readonly EXTENDED_SCAN_TIME_MS = 120000;
+  private static readonly MAX_DEPTH = 8;              // Maximum directory depth
+
+  private isScanning = false; // Prevent concurrent scans
+  /** Whether the most recent scan stopped early (hit the time/file/depth cap). */
+  private lastScanStoppedEarly = false;
+  /** Guards against scheduling more than one background completion pass. */
+  private extendedScanScheduled = false;
+
+  /**
+   * Quick check if a markdown file contains tracker-relevant frontmatter
+   * This reads only the first ~4KB of the file for performance
+   */
+  private async hasTrackerFrontmatter(fullPath: string): Promise<boolean> {
+    try {
+      const fh = await fs.open(fullPath, 'r');
+      try {
+        const buffer = Buffer.alloc(4096);
+        const { bytesRead } = await fh.read(buffer, 0, 4096, 0);
+        const content = buffer.toString('utf-8', 0, bytesRead);
+
+        // Check for YAML frontmatter with tracker content
+        // Look for planStatus:, decisionStatus:, automationStatus:, trackerStatus:,
+        // or inline tracker items like #bug[, #task[, etc.
+        const hasTrackerFrontmatter = /^---[\s\S]*?(planStatus|decisionStatus|automationStatus|trackerStatus):/m.test(content);
+        const hasInlineTracker = /#([a-z][\w-]*)\[/.test(content);
+
+        return hasTrackerFrontmatter || hasInlineTracker;
+      } finally {
+        await fh.close();
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  constructor(workspacePath: string) {
+    this.workspacePath = workspacePath;
+
+    // console.log(`[DocumentService] Constructor called for workspace: ${workspacePath}`);
+    // console.log(`[DocumentService] SKIPPING initial scan - scan will happen on-demand only`);
+
+    // DON'T scan on startup - it freezes the app for large projects.
+    // Metadata initialization runs lazily when metadata APIs are first called.
+    this.initializationPromise = null;
+
+    // Disable automatic background scanning - only scan on-demand
+    // Background scanning was causing performance issues with large projects
+    // Documents will be scanned when listDocuments() is called (e.g., when @ mention is triggered)
+  }
+
+  private async initializeAsync(): Promise<void> {
+    try {
+      // Perform initial document scan and metadata extraction
+      await this.refreshDocuments();
+      // console.log(`[DocumentService] Initial metadata cache loaded: ${this.metadataCache.size} documents`);
+      // console.log('[DocumentService] Sample metadata:', Array.from(this.metadataCache.values()).slice(0, 3).map(m => ({
+      //   path: m.path,
+      //   hasFrontmatter: Object.keys(m.frontmatter).length > 0,
+      //   frontmatterKeys: Object.keys(m.frontmatter)
+      // })));
+    } catch (error) {
+      console.error('[DocumentService] Failed to initialize metadata cache:', error);
+    }
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (!this.initializationPromise) {
+      this.initializationPromise = this.initializeAsync();
+    }
+    await this.initializationPromise;
+  }
+
+  /**
+   * Start the background scan if not already started, but don't block on it.
+   * Callers that can tolerate stale/empty data should use this instead of ensureInitialized().
+   */
+  private startScanIfNeeded(): void {
+    if (!this.initializationPromise) {
+      this.initializationPromise = this.initializeAsync();
+    }
+  }
+
+  // Public method to trigger a full refresh (for tracker panel initialization, etc.)
+  async refreshWorkspaceData() {
+    if (!this.initializationPromise) {
+      this.initializationPromise = this.refreshDocuments();
+      await this.initializationPromise;
+    } else {
+      await this.refreshDocuments();
+    }
+  }
+
+  private async refreshDocuments(
+    budgetMs: number = ElectronDocumentService.MAX_SCAN_TIME_MS,
+    isExtendedPass = false,
+  ) {
+    // Prevent concurrent scans
+    if (this.isScanning) {
+      return;
+    }
+
+    this.isScanning = true;
+    try {
+      const oldDocuments = this.documents;
+      this.documents = await this.scanDocuments(budgetMs);
+
+      // Update metadata cache
+      await this.updateMetadataCache(oldDocuments, this.documents);
+
+      // Only notify watchers if the document list actually changed
+      if (this.hasDocumentListChanged(oldDocuments, this.documents)) {
+        this.watchers.forEach(callback => callback(this.documents));
+      }
+    } finally {
+      this.isScanning = false;
+    }
+
+    // NIM-879: if a default-budget scan stopped early (e.g. a slow startup under
+    // load truncated the walk before reaching gitignored nimbalyst-local/plans),
+    // run ONE background completion pass with an extended budget so the tracker
+    // metadata cache fills in and plans aren't silently lost. Never schedule from
+    // the extended pass itself (avoid an endless loop if even 120s isn't enough).
+    if (!isExtendedPass) {
+      this.scheduleExtendedScanIfNeeded();
+    }
+  }
+
+  /**
+   * Schedule a single background full re-scan (extended budget) when the last
+   * default-budget scan stopped early. Re-running with the SAME budget can't
+   * progress (the depth-first walk re-covers the same prefix), so the completion
+   * pass needs a larger budget. The scan yields the event loop, so it never
+   * freezes the UI. After it finishes, watchers + tracker consumers refresh.
+   */
+  private scheduleExtendedScanIfNeeded(): void {
+    if (!this.lastScanStoppedEarly || this.extendedScanScheduled) return;
+    this.extendedScanScheduled = true;
+    const attempt = async (triesLeft: number): Promise<void> => {
+      // Defer if another scan is in flight; retry a few times before giving up.
+      if (this.isScanning) {
+        if (triesLeft <= 0) { this.extendedScanScheduled = false; return; }
+        setTimeout(() => void attempt(triesLeft - 1), 1500);
+        return;
+      }
+      try {
+        await this.refreshDocuments(ElectronDocumentService.EXTENDED_SCAN_TIME_MS, true);
+        // Surface the now-complete tracker set so the Plans/tracker views update.
+        try {
+          const items = await this.listFullDocumentTrackerItemsFromMetadata();
+          if (items.length > 0) {
+            this.trackerItemWatchers.forEach(cb => cb({
+              added: [], updated: items, removed: [], timestamp: new Date(),
+            }));
+          }
+        } catch { /* best-effort UI refresh */ }
+      } finally {
+        this.extendedScanScheduled = false;
+      }
+    };
+    setTimeout(() => void attempt(5), 1500);
+  }
+
+  private hasDocumentListChanged(oldDocs: Document[], newDocs: Document[]): boolean {
+    if (oldDocs.length !== newDocs.length) return true;
+
+    // Create a Set of document IDs for fast lookup
+    const oldIds = new Set(oldDocs.map(d => d.id));
+    const newIds = new Set(newDocs.map(d => d.id));
+
+    // Check if any documents were added or removed
+    if (oldIds.size !== newIds.size) return true;
+
+    for (const id of newIds) {
+      if (!oldIds.has(id)) return true;
+    }
+
+    return false;
+  }
+
+  private async updateMetadataCache(oldDocs: Document[], newDocs: Document[]) {
+    const added: DocumentMetadataEntry[] = [];
+    const updated: DocumentMetadataEntry[] = [];
+    const removed: string[] = [];
+
+    // Create maps for easier lookup
+    const oldDocsMap = new Map(oldDocs.map(d => [d.id, d]));
+    const newDocsMap = new Map(newDocs.map(d => [d.id, d]));
+
+    // Check for removed documents
+    for (const oldDoc of oldDocs) {
+      if (!newDocsMap.has(oldDoc.id)) {
+        removed.push(oldDoc.id);
+        this.metadataCache.delete(oldDoc.id);
+        this.metadataByPath.delete(oldDoc.path);
+        this.fileStateCache.delete(oldDoc.path);
+      }
+    }
+
+    // Check for added or updated documents
+    for (const newDoc of newDocs) {
+      const oldDoc = oldDocsMap.get(newDoc.id);
+      const fullPath = path.join(this.workspacePath, newDoc.path);
+
+      // Get current file state
+      const stats = newDoc.lastModified ? { mtime: newDoc.lastModified.getTime(), size: 0 } : null;
+
+      if (!stats) continue;
+
+      const cachedState = this.fileStateCache.get(newDoc.path);
+      const needsUpdate = !oldDoc || !cachedState ||
+                         cachedState.mtime !== stats.mtime;
+
+      if (needsUpdate) {
+        // Skip directories - they don't have frontmatter
+        if (newDoc.type === 'directory') {
+          continue;
+        }
+
+        // TODO: Debug logging - uncomment if needed for troubleshooting
+        // console.log(`[DocumentService] File needs update: ${newDoc.path} (oldDoc=${!!oldDoc}, cachedState=${!!cachedState}, mtimeChanged=${cachedState?.mtime !== stats.mtime})`);
+        try {
+          // Extract frontmatter
+          // TODO: Debug logging - uncomment if needed for troubleshooting
+          // console.log(`[DocumentService] Extracting frontmatter from: ${fullPath}`);
+          const { data, hash, parseErrors } = await extractFrontmatter(fullPath);
+
+          if (parseErrors) {
+            console.warn(`[DocumentService] Parse errors for ${newDoc.path}:`, parseErrors);
+          }
+
+          // Debug: Log what we extracted for plan files
+          if (newDoc.path.includes('plan')) {
+            // console.log(`[DocumentService] Extracted data for ${newDoc.path}:`, data ? Object.keys(data) : 'null');
+            if (data && data.planStatus) {
+              // console.log(`[DocumentService] Found planStatus:`, data.planStatus);
+            }
+          }
+
+          // Check if frontmatter actually changed
+          if (!cachedState || cachedState.hash !== hash) {
+            const commonFields = data ? extractCommonFields(data) : {};
+
+            const metadata: DocumentMetadataEntry = {
+              id: newDoc.id,
+              path: newDoc.path,
+              workspace: newDoc.workspace,
+              frontmatter: data || {},
+              summary: commonFields.summary,
+              tags: commonFields.tags,
+              lastModified: newDoc.lastModified || new Date(),
+              lastIndexed: new Date(),
+              hash: hash || undefined,
+              parseErrors
+            };
+
+            // Update caches
+            this.metadataCache.set(newDoc.id, metadata);
+            this.metadataByPath.set(newDoc.path, metadata);
+            this.fileStateCache.set(newDoc.path, {
+              mtime: stats.mtime,
+              size: stats.size || 0,
+              hash: hash || undefined
+            });
+
+            if (!oldDoc) {
+              added.push(metadata);
+            } else {
+              updated.push(metadata);
+            }
+
+            // Capture full-document tracker status transitions from a DIRECT
+            // in-session frontmatter edit (the normal way a plan/decision moves
+            // through the system). Gated on `oldDoc` so it never runs during the
+            // cold-open bulk scan -- avoiding the NIM-875 per-file upsert storm.
+            // Non-tracker frontmatter short-circuits before any DB query.
+            if (oldDoc && data) {
+              await this.captureFrontmatterTrackerTransition(newDoc.path, data);
+            }
+          } else {
+            // Frontmatter didn't change, but file mtime did - update mtime in cache
+            this.fileStateCache.set(newDoc.path, {
+              mtime: stats.mtime,
+              size: stats.size || 0,
+              hash: hash || undefined
+            });
+          }
+
+          // Update tracker items cache whenever file content changes (mtime changed)
+          // This only runs for files that actually changed, not all files
+          await this.updateTrackerItemsCache(newDoc.path);
+        } catch (error) {
+          console.error(`[DocumentService] Failed to extract metadata for ${newDoc.path}:`, error);
+        }
+      } else {
+        // console.log(`[DocumentService] Skipping file (no update needed): ${newDoc.path}`);
+      }
+    }
+
+    // Notify metadata watchers if there are changes
+    if (added.length > 0 || updated.length > 0 || removed.length > 0) {
+      const changeEvent: MetadataChangeEvent = {
+        added,
+        updated,
+        removed,
+        timestamp: new Date()
+      };
+
+      this.metadataWatchers.forEach(callback => callback(changeEvent));
+    }
+  }
+
+  // Number of fs operations between event loop yields during async scan
+  private static readonly YIELD_INTERVAL = 100;
+
+  private async scanDirectoryAsync(
+    dirPath: string,
+    basePath: string = '',
+    depth: number = 0,
+    scanState: { count: number; trackerCount: number; startTime: number; stopped: boolean; sinceYield: number; budgetMs: number }
+  ): Promise<Document[]> {
+    const documents: Document[] = [];
+
+    // Check time limit BEFORE scanning this directory
+    if (scanState.stopped) {
+      return documents;
+    }
+
+    const elapsed = Date.now() - scanState.startTime;
+    if (elapsed > scanState.budgetMs) {
+      scanState.stopped = true;
+      return documents;
+    }
+
+    if (depth > ElectronDocumentService.MAX_DEPTH) {
+      return documents;
+    }
+
+    // Support all common text-based file types for @ mentions
+    const supportedExtensions = [
+      // Markdown
+      '.md', '.markdown',
+      // Web
+      '.html', '.htm', '.css', '.scss', '.sass', '.less',
+      // JavaScript/TypeScript
+      '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
+      // Other programming languages
+      '.py', '.rb', '.php', '.java', '.c', '.cpp', '.cc', '.h', '.hpp',
+      '.cs', '.go', '.rs', '.swift', '.kt', '.scala', '.r',
+      // Scripting and config
+      '.sh', '.bash', '.zsh', '.fish', '.ps1',
+      '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
+      '.xml', '.graphql', '.proto',
+      // Documentation
+      '.txt', '.rst', '.adoc', '.tex',
+      // SQL
+      '.sql',
+      // Other
+      '.vue', '.svelte', '.astro'
+    ];
+
+    // Extension-contributed file types. Extensions declare these via
+    // `contributions.customEditors[].filePatterns` in their manifest, and
+    // `initializeExtensionFileTypes` populates the central registry at
+    // boot. Merge them in here so files like `*.excalidraw`, `*.mockup.html`,
+    // `*.mindmap` etc. show up in the `@` typeahead without anyone editing
+    // this file.
+    const extensionContributedExtensions = Array.from(getRegisteredExtensions());
+    const supportedExtensionsSet = new Set<string>([
+      ...supportedExtensions,
+      ...extensionContributedExtensions,
+    ]);
+
+    // Markdown extensions for tracker content check
+    const markdownExtensions = ['.md', '.markdown'];
+
+    try {
+      const items = await fs.readdir(dirPath);
+
+      for (const item of items) {
+        // Check time limit on EVERY iteration to bail out quickly
+        if (Date.now() - scanState.startTime > scanState.budgetMs) {
+          scanState.stopped = true;
+          break;
+        }
+
+        if (scanState.stopped) {
+          break;
+        }
+
+        // Skip .DS_Store
+        if (item === '.DS_Store') {
+          continue;
+        }
+
+        const fullPath = path.join(dirPath, item);
+        const relativePath = basePath ? path.join(basePath, item) : item;
+
+        try {
+          // Yield the event loop periodically so IPC responses aren't starved
+          scanState.sinceYield++;
+          if (scanState.sinceYield >= ElectronDocumentService.YIELD_INTERVAL) {
+            scanState.sinceYield = 0;
+            await new Promise<void>(resolve => setImmediate(resolve));
+          }
+
+          const stats = await fs.stat(fullPath);
+
+          if (stats.isDirectory()) {
+            // Use centralized directory exclusion logic (worktrees, node_modules, .git, etc.)
+            if (shouldExcludeDir(item)) {
+              continue;
+            }
+            // Add directory as a mentionable document for @ mentions
+            const dirId = crypto.createHash('md5').update(relativePath + '/').digest('hex');
+            documents.push({
+              id: dirId,
+              name: item,
+              path: relativePath,
+              workspace: undefined,
+              lastModified: stats.mtime,
+              type: 'directory'
+            });
+            // Recursively scan subdirectories with incremented depth
+            const subDocs = await this.scanDirectoryAsync(fullPath, relativePath, depth + 1, scanState);
+            documents.push(...subDocs);
+          } else if (stats.isFile()) {
+            const ext = path.extname(item).toLowerCase();
+            if (supportedExtensionsSet.has(ext)) {
+              const isMarkdown = markdownExtensions.includes(ext);
+              const underLimit = scanState.count < ElectronDocumentService.MAX_FILES_TO_SCAN;
+
+              // Determine if we should add this file:
+              // - Always add if under the limit
+              // - For markdown files above the limit, check if they have tracker frontmatter
+              let shouldAdd = underLimit;
+              if (!underLimit && isMarkdown) {
+                shouldAdd = await this.hasTrackerFrontmatter(fullPath);
+                if (shouldAdd) {
+                  scanState.trackerCount++;
+                }
+              }
+
+              if (shouldAdd) {
+                scanState.count++;
+
+                const id = crypto.createHash('md5').update(relativePath).digest('hex');
+
+                documents.push({
+                  id,
+                  name: item,
+                  path: relativePath,
+                  workspace: basePath || undefined,
+                  lastModified: stats.mtime,
+                  type: ext.slice(1)
+                });
+              }
+            }
+          }
+        } catch (error) {
+          // Skip files/dirs we can't stat (permissions, broken symlinks, etc.)
+        }
+      }
+    } catch (error) {
+      // Silent - directory scanning errors are not critical
+    }
+
+    return documents;
+  }
+
+  private async scanDocuments(budgetMs: number = ElectronDocumentService.MAX_SCAN_TIME_MS): Promise<Document[]> {
+    try {
+      const scanState = { count: 0, trackerCount: 0, startTime: Date.now(), stopped: false, sinceYield: 0, budgetMs };
+      const docs = await this.scanDirectoryAsync(this.workspacePath, '', 0, scanState);
+
+      // Record whether this scan was truncated so the caller can schedule a
+      // background completion pass (NIM-879).
+      this.lastScanStoppedEarly = scanState.stopped;
+
+      // Log info about scan results
+      const elapsed = Date.now() - scanState.startTime;
+      if (scanState.stopped) {
+        console.warn(
+          `[DocumentService] Scan stopped early: scanned ${scanState.count} files in ${elapsed}ms. ` +
+          `Time budget: ${budgetMs}ms, depth limit: ${ElectronDocumentService.MAX_DEPTH}. ` +
+          `A background completion pass will run; some files may be temporarily missing.`
+        );
+      } else if (scanState.trackerCount > 0) {
+        // console.log(
+        //   `[DocumentService] Scan complete: ${scanState.count} files in ${elapsed}ms ` +
+        //   `(${scanState.trackerCount} tracker files found beyond ${ElectronDocumentService.MAX_FILES_TO_SCAN} file limit)`
+        // );
+      }
+
+      return docs;
+    } catch (err) {
+      // Silent - document scanning errors are not critical
+      console.error('[DocumentService] Scan error:', err);
+      return [];
+    }
+  }
+
+  private lastScanTime = 0;
+  private readonly SCAN_CACHE_MS = 30000; // Only rescan every 30 seconds max
+
+  async listDocuments(): Promise<Document[]> {
+    const now = Date.now();
+    const timeSinceLastScan = now - this.lastScanTime;
+
+    // Only scan if we have no documents OR it's been > 30 seconds since last scan
+    if (this.documents.length === 0 || timeSinceLastScan > this.SCAN_CACHE_MS) {
+      // Debug logging - comment out for production
+      // console.log('[DocumentService] Scanning workspace (cache expired or empty)...');
+      this.documents = await this.scanDocuments();
+      this.lastScanTime = now;
+      // console.log(`[DocumentService] Scan complete: found ${this.documents.length} documents`);
+    } else {
+      // Debug logging - comment out for production
+      // console.log(`[DocumentService] Using cached documents: ${this.documents.length} (scanned ${Math.round(timeSinceLastScan/1000)}s ago)`);
+    }
+    return this.documents;
+  }
+
+  async searchDocuments(query: string): Promise<Document[]> {
+    const documents = await this.listDocuments();
+    const lowerQuery = query.toLowerCase();
+
+    // Debug logging - comment out for production
+    // console.log(`[DocumentService] searchDocuments: query="${query}", total docs=${documents.length}`);
+
+    const results = documents.filter(doc =>
+      doc.name.toLowerCase().includes(lowerQuery) ||
+      doc.path.toLowerCase().includes(lowerQuery) ||
+      (doc.workspace && doc.workspace.toLowerCase().includes(lowerQuery))
+    );
+
+    // Debug logging - comment out for production
+    // console.log(`[DocumentService] searchDocuments: found ${results.length} matching documents`);
+    return results;
+  }
+
+  async getDocument(id: string): Promise<Document | null> {
+    const documents = await this.listDocuments();
+    return documents.find(doc => doc.id === id) || null;
+  }
+
+  async getDocumentByPath(path: string): Promise<Document | null> {
+    const normalizedPath = path.replace(/\\/g, '/');
+    const documents = await this.listDocuments();
+    return documents.find(doc => doc.path.replace(/\\/g, '/') === normalizedPath) || null;
+  }
+
+  watchDocuments(callback: (documents: Document[]) => void): () => void {
+    const id = Date.now().toString();
+    this.watchers.set(id, callback);
+
+    // Send initial documents
+    callback(this.documents);
+
+    // Return unsubscribe function
+    return () => {
+      this.watchers.delete(id);
+    };
+  }
+
+  async openDocument(
+    documentId: string,
+    fallback?: DocumentOpenOptions,
+    requester?: Electron.WebContents,
+  ): Promise<void> {
+    let doc: Document | null = null;
+
+    if (documentId) {
+      doc = await this.getDocument(documentId);
+    }
+
+    if (!doc && fallback?.path) {
+      doc = await this.getDocumentByPath(fallback.path);
+    }
+
+    if (!doc && fallback?.name) {
+      const documents = await this.listDocuments();
+      doc =
+        documents.find(d => d.name === fallback.name) ||
+        documents.find(d => d.path.split(/[\\/]/).pop() === fallback.name) ||
+        null;
+    }
+
+    if (!doc) {
+      throw new Error(
+        `Document not found (id=${documentId || 'n/a'}, path=${fallback?.path ?? 'n/a'}, name=${fallback?.name ?? 'n/a'})`
+      );
+    }
+
+    // Send message to renderer to open the document. Prefer the requesting
+    // webContents — the focused window can be a different window (or none at
+    // all, e.g. the app is in the background), which used to silently drop
+    // the open.
+    const target =
+      requester && !requester.isDestroyed()
+        ? requester
+        : BrowserWindow.getFocusedWindow()?.webContents;
+    if (target) {
+      target.send('open-document', {
+        path: path.join(this.workspacePath, doc.path)
+      });
+    }
+  }
+
+  // Metadata API methods
+  async getDocumentMetadata(id: string): Promise<DocumentMetadataEntry | null> {
+    await this.ensureInitialized();
+    return this.metadataCache.get(id) || null;
+  }
+
+  async getDocumentMetadataByPath(path: string): Promise<DocumentMetadataEntry | null> {
+    await this.ensureInitialized();
+    return this.metadataByPath.get(path) || null;
+  }
+
+  /**
+   * Returns cached metadata immediately without blocking on the scan.
+   * On first call this may return an empty array. Callers that need
+   * complete data must also subscribe via watchDocumentMetadata().
+   */
+  async listDocumentMetadata(): Promise<DocumentMetadataEntry[]> {
+    this.startScanIfNeeded();
+    return Array.from(this.metadataCache.values());
+  }
+
+  watchDocumentMetadata(listener: (change: MetadataChangeEvent) => void): () => void {
+    const id = Date.now().toString();
+    this.metadataWatchers.set(id, listener);
+
+    // Return unsubscribe function
+    return () => {
+      this.metadataWatchers.delete(id);
+    };
+  }
+
+  notifyFrontmatterChanged(path: string, frontmatter: Record<string, unknown>): void {
+    const metadata = this.metadataByPath.get(path);
+    if (!metadata) return;
+
+    // Generate new hash - sort keys recursively for consistent hashing
+    const sortedData = JSON.parse(JSON.stringify(frontmatter, (key, value) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return Object.keys(value).sort().reduce((sorted, key) => {
+          sorted[key] = value[key];
+          return sorted;
+        }, {} as Record<string, any>);
+      }
+      return value;
+    }));
+    const dataString = JSON.stringify(sortedData);
+    const hash = crypto.createHash('sha256').update(dataString).digest('hex');
+
+    // Check if frontmatter actually changed
+    if (metadata.hash === hash) return;
+
+    // Extract common fields
+    const commonFields = extractCommonFields(frontmatter);
+
+    // Update metadata
+    const updatedMetadata: DocumentMetadataEntry = {
+      ...metadata,
+      frontmatter,
+      summary: commonFields.summary,
+      tags: commonFields.tags,
+      lastIndexed: new Date(),
+      hash
+    };
+
+    // Update caches
+    this.metadataCache.set(metadata.id, updatedMetadata);
+    this.metadataByPath.set(path, updatedMetadata);
+
+    // Update file state cache
+    const cachedState = this.fileStateCache.get(path);
+    if (cachedState) {
+      cachedState.hash = hash;
+    }
+
+    // Notify watchers
+    const changeEvent: MetadataChangeEvent = {
+      added: [],
+      updated: [updatedMetadata],
+      removed: [],
+      timestamp: new Date()
+    };
+
+    this.metadataWatchers.forEach(callback => callback(changeEvent));
+  }
+
+  async refreshFileMetadata(filePath: string): Promise<void> {
+    await this.ensureInitialized();
+
+    // Convert to relative path if absolute
+    // Use proper path boundary checking to avoid matching snake_worktrees when workspace is snake
+    const relativeFromWorkspace = getRelativeWorkspacePath(filePath, this.workspacePath);
+    const relativePath = relativeFromWorkspace !== null ? relativeFromWorkspace : filePath;
+
+    // Only process markdown files
+    if (!relativePath.endsWith('.md')) {
+      return;
+    }
+
+    const fullPath = path.join(this.workspacePath, relativePath);
+
+    try {
+      const stats = await fs.stat(fullPath);
+      const { data, hash, parseErrors } = await extractFrontmatter(fullPath);
+
+      if (parseErrors) {
+        console.warn(`[DocumentService] Parse errors for ${relativePath}:`, parseErrors);
+      }
+
+      const cachedState = this.fileStateCache.get(relativePath);
+
+      // Always update if hash changed or no cache exists
+      if (!cachedState || cachedState.hash !== hash) {
+        const commonFields = data ? extractCommonFields(data) : {};
+
+        // Find the document entry, or create one if it doesn't exist
+        // (this can happen for files beyond the scan limit or newly created files)
+        let doc = this.documents.find(d => d.path === relativePath);
+        if (!doc) {
+          // Create a document entry for this file
+          const fileName = path.basename(relativePath);
+          const ext = path.extname(fileName).toLowerCase();
+          const id = crypto.createHash('md5').update(relativePath).digest('hex');
+
+          const dirname = path.dirname(relativePath);
+          doc = {
+            id,
+            name: fileName,
+            path: relativePath,
+            workspace: dirname && dirname !== '.' ? dirname : undefined,
+            lastModified: stats.mtime,
+            type: ext.slice(1)
+          };
+
+          // Add to documents list so future lookups work
+          this.documents.push(doc);
+          // console.log(`[DocumentService] Added document entry for agent-edited file: ${relativePath}`);
+        }
+
+        const metadata: DocumentMetadataEntry = {
+          id: doc.id,
+          path: relativePath,
+          workspace: doc.workspace,
+          frontmatter: data || {},
+          summary: commonFields.summary,
+          tags: commonFields.tags,
+          lastModified: new Date(stats.mtime),
+          lastIndexed: new Date(),
+          hash: hash || undefined,
+          parseErrors
+        };
+
+        // Update caches
+        this.metadataCache.set(doc.id, metadata);
+        this.metadataByPath.set(relativePath, metadata);
+        this.fileStateCache.set(relativePath, {
+          mtime: stats.mtimeMs,
+          size: stats.size,
+          hash: hash || undefined
+        });
+
+        // Notify watchers
+        const changeEvent: MetadataChangeEvent = {
+          added: [],
+          updated: [metadata],
+          removed: [],
+          timestamp: new Date()
+        };
+
+        this.metadataWatchers.forEach(callback => callback(changeEvent));
+      }
+
+      // Also update tracker items for markdown files
+      // This ensures inline tracker items (#bug, #task, etc.) are kept in sync
+      await this.updateTrackerItemsCache(relativePath);
+    } catch (error) {
+      console.error(`[DocumentService] Failed to refresh metadata for ${relativePath}:`, error);
+    }
+  }
+
+  /**
+   * Load a virtual document by its path
+   */
+  async loadVirtualDocument(virtualPath: string): Promise<string | null> {
+    if (!isVirtualPath(virtualPath)) {
+      return null;
+    }
+
+    // Find the virtual document descriptor. Only built-in virtual docs (welcome,
+    // tracker views, etc.) have loadable text content here. Extension-owned
+    // virtual tabs (e.g. `virtual://com.nimbalyst.browser/…`) are rendered by
+    // their custom editor and have no content to load, so a miss is expected --
+    // return null quietly rather than logging an error on every such tab open.
+    const virtualDoc = Object.values(VIRTUAL_DOCS).find(doc => doc.virtualPath === virtualPath);
+    if (!virtualDoc) {
+      return null;
+    }
+
+    try {
+      // Determine asset path - in development use source path, in production use app resources
+      let assetPath: string;
+      if (app.isPackaged) {
+        assetPath = path.join(process.resourcesPath, virtualDoc.assetPath);
+      } else {
+        // In development, use app.getAppPath() to get the package root reliably
+        // (can't use __dirname because bundled chunks may be in nested directories)
+        assetPath = path.join(app.getAppPath(), virtualDoc.assetPath);
+      }
+
+      // console.log('[DocumentService] Loading virtual document:', {
+      //   virtualPath,
+      //   assetPath,
+      //   __dirname,
+      //   exists: await fs.access(assetPath).then(() => true).catch(() => false)
+      // });
+
+      const content = await fs.readFile(assetPath, 'utf-8');
+      return content;
+    } catch (error) {
+      console.error(`[DocumentService] Failed to load virtual document ${virtualPath}:`, error);
+      return null;
+    }
+  }
+
+  private async listFullDocumentTrackerItemsFromMetadata(): Promise<TrackerItem[]> {
+    this.startScanIfNeeded();
+
+    const items: TrackerItem[] = [];
+
+    for (const metadata of this.metadataCache.values()) {
+      const pathLower = metadata.path.toLowerCase();
+      if (pathLower.includes('/agents/') || pathLower.includes('\\agents\\')) {
+        continue;
+      }
+
+      const resolved = resolveFullDocumentFrontmatter(metadata.frontmatter);
+      if (!resolved) continue;
+
+      const model = globalRegistry.get(resolved.trackerType);
+      if (!model?.modes?.fullDocument) continue;
+
+      const trackerData = resolved.trackerData;
+      const title = (trackerData.title as string)
+        || (metadata.frontmatter.title as string)
+        || metadata.path.split('/').pop()?.replace(/\.md$/, '')
+        || 'Untitled';
+
+      const coreFieldKeys = new Set([
+        'type', 'title', 'status', 'priority', 'owner', 'tags', 'created',
+        'updated', 'dueDate', 'progress', 'description',
+      ]);
+      const customFields: Record<string, any> = {};
+      for (const [key, value] of Object.entries(trackerData)) {
+        if (!coreFieldKeys.has(key) && value !== undefined) {
+          customFields[key] = value;
+        }
+      }
+
+      items.push({
+        id: buildFullDocumentTrackerId(resolved.trackerType, metadata.path),
+        type: resolved.trackerType as TrackerItemType,
+        typeTags: [resolved.trackerType],
+        title,
+        description: trackerData.description || undefined,
+        status: ((trackerData.status || metadata.frontmatter.status || 'to-do') as string).toLowerCase() as TrackerItem['status'],
+        priority: (trackerData.priority || metadata.frontmatter.priority || 'medium') as TrackerItem['priority'],
+        owner: trackerData.owner || undefined,
+        module: metadata.path,
+        lineNumber: 0,
+        workspace: this.workspacePath,
+        tags: Array.isArray(trackerData.tags) ? trackerData.tags : undefined,
+        created: trackerData.created ? String(trackerData.created) : undefined,
+        updated: trackerData.updated ? String(trackerData.updated) : undefined,
+        dueDate: trackerData.dueDate ? String(trackerData.dueDate) : undefined,
+        progress: typeof trackerData.progress === 'number' ? trackerData.progress : undefined,
+        // NIM-1559: this value drives the tracker table's "Updated" column/sort
+        // (which uses `updatedAt || createdAt || lastIndexed`) for a plan with
+        // no frontmatter `updated`/`created`. It must be a STABLE timestamp, so
+        // it must NOT come from a scan-time source. `metadata.lastIndexed` is
+        // the doc-scan timestamp (≈ now during cold-open, before the file mtime
+        // is read) -- using it made every undated plan jump to the top as "just
+        // now" on every restart. Prefer file mtime, then frontmatter dates, and
+        // epoch as a last resort so undated plans sort to the bottom, not the
+        // top. Never `metadata.lastIndexed` / `new Date()`.
+        lastIndexed:
+          metadata.lastModified
+          || parseStableDate(trackerData.updated)
+          || parseStableDate(trackerData.created)
+          || new Date(0),
+        archived: false,
+        source: 'frontmatter',
+        sourceRef: metadata.path,
+        customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
+      });
+    }
+
+    return items;
+  }
+
+  private async listMergedTrackerItems(): Promise<TrackerItem[]> {
+    const result = await database.query<any>(
+      `SELECT * FROM tracker_items WHERE workspace = $1 ORDER BY kanban_sort_order ASC NULLS LAST, last_indexed DESC`,
+      [this.workspacePath]
+    );
+    const dbItems = result.rows.map(row => this.rowToTrackerItem(row));
+    const metadataItems = await this.listFullDocumentTrackerItemsFromMetadata();
+
+    const merged = new Map<string, TrackerItem>();
+    for (const item of metadataItems) {
+      merged.set(item.id, item);
+    }
+    for (const item of dbItems) {
+      const existing = merged.get(item.id);
+      if (existing && item.source === 'frontmatter') {
+        merged.set(item.id, {
+          ...item,
+          title: existing.title,
+          description: existing.description,
+          status: existing.status,
+          priority: existing.priority,
+          owner: existing.owner,
+          module: existing.module,
+          tags: existing.tags,
+          created: existing.created,
+          updated: existing.updated,
+          dueDate: existing.dueDate,
+          progress: existing.progress,
+          lastIndexed: existing.lastIndexed,
+          source: existing.source,
+          sourceRef: existing.sourceRef,
+          customFields: {
+            ...(existing.customFields || {}),
+            ...(item.customFields || {}),
+          },
+        });
+      } else {
+        merged.set(item.id, item);
+      }
+    }
+
+    return Array.from(merged.values());
+  }
+
+  private async resolveTrackerRowForPublicId(
+    itemId: string,
+    options?: { createProjectionForFullDocument?: boolean }
+  ): Promise<any | null> {
+    const direct = await database.query<any>(
+      `SELECT * FROM tracker_items WHERE id = $1`,
+      [itemId]
+    );
+    if (direct.rows.length > 0) {
+      return direct.rows[0];
+    }
+
+    const parsed = parseFullDocumentTrackerId(itemId);
+    if (!parsed) return null;
+
+    const bySourceRef = await database.query<any>(
+      `SELECT * FROM tracker_items
+       WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3
+       ORDER BY updated DESC
+       LIMIT 1`,
+      [this.workspacePath, parsed.relativePath, parsed.trackerType]
+    );
+    if (bySourceRef.rows.length > 0) {
+      return bySourceRef.rows[0];
+    }
+
+    if (!options?.createProjectionForFullDocument) {
+      return null;
+    }
+
+    await this.ensureFrontmatterProjectionRow(parsed.relativePath, parsed.trackerType);
+
+    const created = await database.query<any>(
+      `SELECT * FROM tracker_items
+       WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3
+       ORDER BY updated DESC
+       LIMIT 1`,
+      [this.workspacePath, parsed.relativePath, parsed.trackerType]
+    );
+    return created.rows[0] || null;
+  }
+
+  private async ensureFrontmatterProjectionRow(
+    relativePath: string,
+    expectedType?: string,
+  ): Promise<TrackerItem | null> {
+    const fullPath = path.join(this.workspacePath, relativePath);
+
+    let fileContent: string;
+    try {
+      fileContent = await fs.readFile(fullPath, 'utf-8');
+    } catch {
+      return null;
+    }
+
+    const { data: frontmatter } = await extractFrontmatter(fullPath);
+    if (!frontmatter) return null;
+
+    const resolved = resolveFullDocumentFrontmatter(frontmatter);
+    if (!resolved) return null;
+    if (expectedType && resolved.trackerType !== expectedType) return null;
+
+    const title = (resolved.trackerData.title as string)
+      || (frontmatter.title as string)
+      || relativePath.split('/').pop()?.replace(/\.md$/, '')
+      || 'Untitled';
+    const bodyMatch = fileContent.match(/^---\s*\n[\s\S]*?\n---\s*\n([\s\S]*)$/);
+    const markdownBody = bodyMatch ? bodyMatch[1].trim() : '';
+    const canonicalId = buildFullDocumentTrackerId(resolved.trackerType, relativePath);
+
+    const data: Record<string, any> = { title };
+    for (const [key, value] of Object.entries(resolved.trackerData)) {
+      if (key === 'type' || key === 'trackerStatus') continue;
+      if (value !== undefined && value !== null) {
+        data[key] = value;
+      }
+    }
+
+    const existing = await database.query<any>(
+      `SELECT id FROM tracker_items
+       WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3
+       LIMIT 1`,
+      [this.workspacePath, relativePath, resolved.trackerType]
+    );
+
+    if (existing.rows.length > 0 && existing.rows[0].id !== canonicalId) {
+      await database.query(
+        `UPDATE tracker_items
+         SET data = $1, content = $2, source = 'frontmatter', source_ref = $3, document_path = $3, updated = NOW()
+         WHERE id = $4`,
+        [
+          JSON.stringify(data),
+          markdownBody ? JSON.stringify(markdownBody) : null,
+          relativePath,
+          existing.rows[0].id,
+        ]
+      );
+      const result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [existing.rows[0].id]);
+      return result.rows.length > 0 ? this.rowToTrackerItem(result.rows[0]) : null;
+    }
+
+    await database.query(
+      `INSERT INTO tracker_items (
+        id, type, data, workspace, document_path, line_number,
+        created, updated, last_indexed, sync_status,
+        content, archived, source, source_ref
+      ) VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW(), NOW(), 'local', $6, FALSE, 'frontmatter', $5)
+      ON CONFLICT (id) DO UPDATE SET
+        data = tracker_items.data || $3,
+        content = $6,
+        source = 'frontmatter',
+        source_ref = $5,
+        document_path = $5,
+        updated = NOW()`,
+      [
+        canonicalId,
+        resolved.trackerType,
+        JSON.stringify(data),
+        this.workspacePath,
+        relativePath,
+        markdownBody ? JSON.stringify(markdownBody) : null,
+      ]
+    );
+
+    const result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [canonicalId]);
+    return result.rows.length > 0 ? this.rowToTrackerItem(result.rows[0]) : null;
+  }
+
+  /**
+   * Capture a status/field transition for a full-document (frontmatter-backed)
+   * tracker when its frontmatter is edited directly on disk. This is what gives
+   * plans (and other full-document trackers) a status-over-time history even
+   * when the change never went through the tracker UI/MCP update path.
+   *
+   * The caller gates this to in-session frontmatter edits (an already-known doc
+   * whose frontmatter hash changed), so it never runs during the cold-open bulk
+   * scan. It updates an existing projection row (or lazily materializes one for
+   * the single edited file) and writes the full `data` payload computed in JS,
+   * which is safe across both DB backends and preserves system metadata.
+   */
+  private async captureFrontmatterTrackerTransition(
+    relativePath: string,
+    frontmatter: Record<string, any>,
+  ): Promise<void> {
+    try {
+      const resolved = resolveFullDocumentFrontmatter(frontmatter);
+      if (!resolved) return; // not a tracker document -> nothing to do (no DB hit)
+      const type = resolved.trackerType;
+      const canonicalId = buildFullDocumentTrackerId(type, relativePath);
+
+      const existingRes = await database.query<any>(
+        `SELECT id, data FROM tracker_items
+         WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3
+         ORDER BY updated DESC
+         LIMIT 1`,
+        [this.workspacePath, relativePath, type],
+      );
+      const row = existingRes.rows[0];
+      const existingData = row ? (parseJsonColumn<Record<string, any>>(row.data) ?? {}) : null;
+
+      // Tracked field values from the resolved frontmatter, minus routing keys.
+      // Title falls back to the filename, matching the projection path.
+      const title = (resolved.trackerData.title as string)
+        || (frontmatter.title as string)
+        || relativePath.split('/').pop()?.replace(/\.md$/, '')
+        || 'Untitled';
+      const newFields: Record<string, any> = { title };
+      for (const [key, value] of Object.entries(resolved.trackerData)) {
+        if (key === 'type' || key === 'trackerStatus' || key === 'activity') continue;
+        if (value !== undefined && value !== null) newFields[key] = value;
+      }
+
+      let identity: unknown = null;
+      try { identity = getCurrentIdentity(this.workspacePath); } catch { identity = null; }
+
+      const { data: nextData, changes, isNew } = computeFrontmatterTrackerTransition(
+        existingData,
+        newFields,
+        identity,
+        Date.now(),
+      );
+
+      // Reconcile the per-plan share flags explicitly from the CURRENT frontmatter.
+      // The generic transition only writes keys that are present and never
+      // deletes, so REMOVING the `share` block from frontmatter must clear the
+      // stored flag here -- otherwise an unshare-by-deletion would never take.
+      const fmShare = (resolved.trackerData as Record<string, any>).share;
+      const fmShared = (resolved.trackerData as Record<string, any>).shared;
+      if (fmShare !== undefined) nextData.share = fmShare; else delete nextData.share;
+      if (fmShared !== undefined) nextData.shared = fmShared; else delete nextData.shared;
+      // The sync round-trip nests the flag under `customFields.share`, and
+      // isTrackerItemShared lets the nested value win. Mirror the file's intent
+      // there too, so removing `share` from frontmatter actually unshares (the
+      // file is the source of truth for a frontmatter-backed item).
+      if (nextData.customFields && typeof nextData.customFields === 'object') {
+        if (fmShare !== undefined) nextData.customFields.share = fmShare;
+        else delete nextData.customFields.share;
+      }
+
+      // Detect a share-flag flip (NIM-876). A pure share toggle has no tracked-field
+      // change, so it must still force a write + reconcile.
+      const wasShared = isTrackerItemShared(existingData);
+      const nowShared = isTrackerItemShared(nextData);
+      const shareChanged = wasShared !== nowShared;
+
+      if (!row) {
+        // No projection row yet: materialize THIS single edited file (one insert,
+        // not a bulk-scan storm). content is filled in on the next full projection.
+        await database.query(
+          `INSERT INTO tracker_items (
+            id, type, data, workspace, document_path, line_number,
+            created, updated, last_indexed, sync_status,
+            content, archived, source, source_ref
+          ) VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW(), NOW(), 'local', NULL, FALSE, 'frontmatter', $5)
+          ON CONFLICT (id) DO UPDATE SET
+            data = tracker_items.data || $3,
+            updated = NOW()`,
+          [canonicalId, type, JSON.stringify(nextData), this.workspacePath, relativePath],
+        );
+      } else if (changes.length > 0 || shareChanged) {
+        // Existing row + a real transition (or share toggle): persist full data.
+        await database.query(
+          `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+          [JSON.stringify(nextData), row.id],
+        );
+      } else {
+        return; // existing row, no tracked-field change, no share flip -> no write
+      }
+
+      const persisted = await database.query<any>(
+        `SELECT * FROM tracker_items WHERE id = $1`,
+        [row?.id ?? canonicalId],
+      );
+      if (persisted.rows.length > 0) {
+        const item = this.rowToTrackerItem(persisted.rows[0]);
+        const changeEvent: TrackerItemChangeEvent = {
+          added: isNew ? [item] : [],
+          updated: isNew ? [] : [item],
+          removed: [],
+          timestamp: new Date(),
+        };
+        this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+
+        // Reconcile team sharing when the share flag flipped (or a freshly
+        // materialized row is already flagged). Lifecycle-share rides the
+        // existing tracker sync path; the item carries its own body version.
+        if (shareChanged || (isNew && nowShared)) {
+          await this.reconcileFrontmatterShare(item, persisted.rows[0].id, relativePath, nowShared);
+        } else if (nowShared && changes.length > 0) {
+          // NIM-880: an ALREADY-shared plan whose lifecycle field changed (no
+          // share flip) must still push the updated metadata. The reconcile gate
+          // above only fires on a flip/new-flag, so without this the change was
+          // written locally and never reached the room (and the already-synced
+          // row -- sync_id set, status 'synced' -- isn't a backfill candidate
+          // either). Body is unchanged here, so no re-seed.
+          await this.syncSharedFrontmatterMetadata(item, persisted.rows[0].id);
+        }
+      }
+    } catch (error) {
+      console.error(`[DocumentService] captureFrontmatterTrackerTransition failed for ${relativePath}:`, error);
+    }
+  }
+
+  /**
+   * Push or remove a frontmatter-backed (full-document) tracker item from the
+   * team TrackerRoom when its per-plan `share` flag flips (NIM-876).
+   *
+   * Lifecycle-share rides the normal tracker sync path. The BODY is shared the
+   * same way every other tracker item's body is: through the
+   * `tracker-content/<itemId>` room (MainBodyDocService / applyHeadlessBodyMarkdown),
+   * NOT the file-share-to-team document index. We persist the file's markdown
+   * body to the row (bumping body_version + cache) and seed the live room, so a
+   * teammate opening the shared plan sees its content. When sharing is turned
+   * OFF, the item is deleted from the room and reset to local.
+   *
+   * @param item     the projected tracker item (canonical `fm:<type>:<path>` id)
+   * @param rowId    the backing DB row id (may differ from the canonical id for
+   *                 legacy rows) -- used for the local sync_status write
+   * @param relativePath workspace-relative path of the backing markdown file
+   * @param nowShared whether the item is currently flagged for sharing
+   */
+  private async reconcileFrontmatterShare(
+    item: TrackerItem,
+    rowId: string,
+    relativePath: string,
+    nowShared: boolean,
+  ): Promise<void> {
+    const workspace = item.workspace || this.workspacePath;
+    try {
+      if (nowShared) {
+        const policy = getEffectiveTrackerSyncPolicy(workspace, item.type);
+        // Respect the type policy: a `local` type never shares even if flagged.
+        if (!shouldSyncTrackerItem(policy, item)) return;
+        if (isTrackerSyncActive(workspace)) {
+          await syncTrackerItem(item);
+          // Body-share: push the file's markdown body through the SAME
+          // tracker-content room mechanism used for every tracker body, so the
+          // plan body is readable by teammates. No live renderer peer exists on
+          // this main-process path, so we seed the headless Y.Doc explicitly
+          // (mirroring the MCP tracker_create body path).
+          await this.shareFrontmatterBody(item.id, relativePath, workspace);
+        } else {
+          // Sync not live yet. Seed the body LOCALLY anyway (NIM-880): this bumps
+          // `body_version`, writes the body cache, and seeds the headless Y.Doc,
+          // so when the engine reconnects the backfill ships a real bodyVersion
+          // and the body is already present -- a pre-connect share that only
+          // marked pending used to push metadata with bodyVersion 0 and an empty
+          // body. Then mark pending so the reconnect backfill re-pushes it.
+          await this.shareFrontmatterBody(item.id, relativePath, workspace);
+          await database.query(
+            `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+            [rowId],
+          );
+        }
+      } else if (isTrackerSyncActive(workspace)) {
+        // Unshare (live): reset the local row FIRST so the unshare always lands
+        // locally even if the room delete is slow/erroring, then remove from the
+        // team room best-effort. Clearing `sync_id` keeps the backfill from
+        // re-processing it.
+        // console.log('[DocumentService] reconcile UNSHARE(live) resetting row', rowId);
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'local', sync_id = NULL WHERE id = $1`,
+          [rowId],
+        );
+        try {
+          await unsyncTrackerItem(item.id, workspace);
+        } catch (unsyncErr) {
+          console.error('[DocumentService] reconcile unsync (room delete) failed; local row already reset:', unsyncErr);
+        }
+      } else {
+        // Unshare (offline): `unsyncTrackerItem` would no-op with no engine, so
+        // resetting straight to 'local' (NIM-880) stranded the deletion -- the
+        // row kept its `sync_id` and never re-entered the backfill candidate set,
+        // so the team room kept the plan. Mark pending instead: the reconnect
+        // backfill sees a previously-shared (sync_id set) but now-unflagged item
+        // and issues the room tombstone.
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+          [rowId],
+        );
+      }
+    } catch (err) {
+      console.error('[DocumentService] reconcileFrontmatterShare failed:', err);
+    }
+  }
+
+  /**
+   * Share a frontmatter-backed item's body through the standard tracker-content
+   * room: read the file's markdown (sans frontmatter), persist it as the item's
+   * body (bumping `body_version` + cache + metadata re-sync via
+   * `updateTrackerItemContent`), then seed the live `tracker-content/<itemId>`
+   * Y.Doc so a teammate who opens the item sees content immediately. Best-effort;
+   * the durable record is the PGLite body + version bump.
+   */
+  private async shareFrontmatterBody(
+    itemId: string,
+    relativePath: string,
+    workspace: string,
+  ): Promise<void> {
+    try {
+      const fullPath = path.join(this.workspacePath, relativePath);
+      let fileContent: string;
+      try {
+        fileContent = await fs.readFile(fullPath, 'utf-8');
+      } catch {
+        return; // file vanished mid-edit -> nothing to seed
+      }
+      const bodyMatch = fileContent.match(/^---\s*\n[\s\S]*?\n---\s*\n([\s\S]*)$/);
+      const markdownBody = (bodyMatch ? bodyMatch[1] : fileContent).trim();
+      if (!markdownBody) return; // empty body -> nothing to share
+
+      // Persist + bump version + cache + metadata re-sync (no headless seed here;
+      // updateTrackerItemContent intentionally skips it to avoid the renderer
+      // autosave loop -- but this path has no live peer, so we seed below).
+      await this.updateTrackerItemContent(itemId, markdownBody);
+      await applyHeadlessBodyMarkdown(workspace, itemId, markdownBody);
+    } catch (err) {
+      console.error('[DocumentService] shareFrontmatterBody failed:', err);
+    }
+  }
+
+  /**
+   * Push the metadata of an ALREADY-shared frontmatter item to the team room
+   * after a lifecycle/field change (NIM-880). No share flip and no body change,
+   * so this is a metadata-only push -- it does NOT re-seed the body. Gated by the
+   * per-item policy; when sync is offline the row is marked pending so the
+   * reconnect backfill re-pushes the new metadata.
+   */
+  private async syncSharedFrontmatterMetadata(item: TrackerItem, rowId: string): Promise<void> {
+    const workspace = item.workspace || this.workspacePath;
+    try {
+      const policy = getEffectiveTrackerSyncPolicy(workspace, item.type);
+      if (!shouldSyncTrackerItem(policy, item)) return;
+      if (isTrackerSyncActive(workspace)) {
+        await syncTrackerItem(item);
+      } else {
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+          [rowId],
+        );
+      }
+    } catch (err) {
+      console.error('[DocumentService] syncSharedFrontmatterMetadata failed:', err);
+    }
+  }
+
+  /**
+   * Per-item team-sync decision for a resolved tracker item: combines the
+   * effective type policy with the per-item share flag (NIM-880). Call sites that
+   * push to the room (body save, archive toggle) must gate on this -- not merely
+   * on `isTrackerSyncActive` -- because `syncTrackerItem` itself does no policy
+   * gating, so an unflagged hybrid item would otherwise leak.
+   */
+  private shouldSyncItemNow(item: TrackerItem): boolean {
+    const workspace = item.workspace || this.workspacePath;
+    const policy = getEffectiveTrackerSyncPolicy(workspace, item.type);
+    return shouldSyncTrackerItem(policy, item);
+  }
+
+  // Tracker Items API methods
+  async listTrackerItems(): Promise<TrackerItem[]> {
+    try {
+      return await this.listMergedTrackerItems();
+    } catch (error) {
+      console.error('[DocumentService] Failed to list tracker items:', error);
+      return [];
+    }
+  }
+
+  async getTrackerItemsByType(type: TrackerItemType): Promise<TrackerItem[]> {
+    try {
+      const items = await this.listMergedTrackerItems();
+      return items.filter(item => item.type === type);
+    } catch (error) {
+      console.error('[DocumentService] Failed to get tracker items by type:', error);
+      return [];
+    }
+  }
+
+  async getTrackerItemsByModule(module: string): Promise<TrackerItem[]> {
+    try {
+      const items = await this.listMergedTrackerItems();
+      return items.filter(item => item.module === module);
+    } catch (error) {
+      console.error('[DocumentService] Failed to get tracker items by module:', error);
+      return [];
+    }
+  }
+
+  watchTrackerItems(listener: (change: TrackerItemChangeEvent) => void): () => void {
+    const id = Date.now().toString();
+    this.trackerItemWatchers.set(id, listener);
+
+    // Return unsubscribe function
+    return () => {
+      this.trackerItemWatchers.delete(id);
+    };
+  }
+
+  private rowToTrackerItem(row: any): TrackerItem {
+    // Parse JSONB data field (PGLite returns object, SQLite returns JSON string)
+    const data = parseJsonColumn<Record<string, any>>(row.data) ?? {};
+
+    // type_tags from DB column; fall back to [type] for backward compat.
+    // PGLite stored this as TEXT[]; SQLite stores it as a JSON-encoded string.
+    const parsedTypeTags = parseJsonColumn<string[]>(row.type_tags);
+    const typeTags: string[] =
+      Array.isArray(parsedTypeTags) && parsedTypeTags.length > 0 ? parsedTypeTags : [row.type];
+
+    return {
+      id: getCanonicalTrackerItemIdFromRow(row),
+      issueNumber: row.issue_number ?? undefined,
+      issueKey: row.issue_key ?? undefined,
+      type: row.type,
+      typeTags,
+      title: data.title || row.title, // Fallback to generated column
+      description: data.description || undefined,
+      status: data.status || row.status, // Fallback to generated column
+      priority: data.priority || undefined,
+      owner: data.owner || undefined,
+      module: row.document_path || ((row.source === 'frontmatter' || row.source === 'import') ? row.source_ref : undefined),
+      lineNumber: row.line_number || undefined,
+      workspace: row.workspace,
+      tags: data.tags || undefined,
+      created: data.created || row.created || undefined,
+      updated: data.updated || row.updated || undefined,
+      dueDate: data.dueDate || undefined,
+      lastIndexed: new Date(row.last_indexed),
+      // Rich content (Lexical editor state). Stored as JSON.stringify(markdown);
+      // undo that on read or the raw JSON-quoted string renders as literal text.
+      content: row.content != null ? parseTrackerContentColumn(row.content) : undefined,
+      // Archive state
+      archived: row.archived ?? false,
+      archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
+      // Source tracking
+      source: row.source || (row.document_path ? 'inline' : 'native'),
+      sourceRef: row.source_ref || undefined,
+      // Collaborative fields from JSONB data
+      assigneeEmail: data.assigneeEmail || undefined,
+      reporterEmail: data.reporterEmail || undefined,
+      authorIdentity: data.authorIdentity || undefined,
+      lastModifiedBy: data.lastModifiedBy || undefined,
+      createdByAgent: data.createdByAgent || false,
+      assigneeId: data.assigneeId || undefined,
+      reporterId: data.reporterId || undefined,
+      labels: data.labels || undefined,
+      linkedSessions: data.linkedSessions || undefined,
+      linkedCommitSha: data.linkedCommitSha || undefined,
+      documentId: data.documentId || undefined,
+      syncStatus: row.sync_status || 'local',
+      // Body Y.Doc version pointer (phase 4b). BIGINT in PGLite arrives
+      // as string|number depending on the driver path; normalize.
+      bodyVersion: row.body_version !== undefined && row.body_version !== null
+        ? Number(row.body_version)
+        : undefined,
+      // Pass through extra JSONB data fields (e.g. kanbanSortOrder) AND un-nest
+      // a nested `data.customFields` bag so custom schema columns (e.g. prUrl)
+      // survive the TrackerItem -> TrackerRecord conversion. See NIM-863.
+      customFields: extractItemCustomFields(data, new Set([
+        'title', 'description', 'status', 'priority', 'owner', 'tags',
+        'created', 'updated', 'dueDate', 'assigneeEmail', 'reporterEmail',
+        'authorIdentity', 'lastModifiedBy', 'createdByAgent', 'assigneeId',
+        'reporterId', 'labels', 'linkedSessions', 'linkedCommitSha', 'documentId',
+      ])),
+    };
+  }
+
+  /**
+   * Get a single tracker item by ID, or null if not found.
+   */
+  async getTrackerItemById(itemId: string): Promise<TrackerItem | null> {
+    const merged = await this.listMergedTrackerItems();
+    const found = merged.find(item => item.id === itemId);
+    if (found) return found;
+
+    const row = await this.resolveTrackerRowForPublicId(itemId);
+    return row ? this.rowToTrackerItem(row) : null;
+  }
+
+  /**
+   * Ensure a backing projection row exists for a public tracker ID and return
+   * the projected item. This is primarily used by MCP-facing code so
+   * frontmatter-backed full-document items can participate in mutations that
+   * still need a `tracker_items` row.
+   */
+  async ensureTrackerProjection(itemId: string): Promise<TrackerItem | null> {
+    const row = await this.resolveTrackerRowForPublicId(itemId, {
+      createProjectionForFullDocument: true,
+    });
+    return row ? this.rowToTrackerItem(row) : null;
+  }
+
+  /**
+   * Update the sync_status of a tracker item.
+   */
+  async updateTrackerItemSyncStatus(itemId: string, syncStatus: string): Promise<void> {
+    const row = await this.resolveTrackerRowForPublicId(itemId);
+    if (!row) return;
+    await database.query(
+      `UPDATE tracker_items SET sync_status = $1 WHERE id = $2`,
+      [syncStatus, row.id]
+    );
+    // Notify watchers
+    const result = await database.query<any>(
+      `SELECT * FROM tracker_items WHERE id = $1`,
+      [row.id]
+    );
+    if (result.rows.length > 0) {
+      const item = this.rowToTrackerItem(result.rows[0]);
+      const changeEvent: TrackerItemChangeEvent = {
+        added: [],
+        updated: [item],
+        removed: [],
+        timestamp: new Date(),
+      };
+      this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+    }
+  }
+
+  /**
+   * Update fields on a tracker item in PGLite.
+   * Merges provided fields into the existing JSONB data column.
+   */
+  async updateTrackerItem(itemId: string, updates: Record<string, any>): Promise<TrackerItem> {
+    const row = await this.resolveTrackerRowForPublicId(itemId, { createProjectionForFullDocument: true });
+    if (!row) {
+      throw new Error(`Tracker item not found: ${itemId}`);
+    }
+    const data = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+
+    // Handle typeTags separately -- stored in SQL column, not JSONB
+    if (updates.typeTags !== undefined) {
+      const newTypeTags: string[] = Array.isArray(updates.typeTags) ? updates.typeTags : [row.type];
+      // Ensure primary type is always included
+      if (!newTypeTags.includes(row.type)) newTypeTags.unshift(row.type);
+      await database.query(
+        `UPDATE tracker_items SET type_tags = $1 WHERE id = $2`,
+        [newTypeTags, row.id]
+      );
+    }
+
+    // Stamp lastModifiedBy with current identity
+    // getCurrentIdentity imported statically at top of file
+    const modifierIdentity = getCurrentIdentity(row.workspace);
+    data.lastModifiedBy = modifierIdentity;
+
+    const changes: Record<string, { from: any; to: any }> = {};
+
+    // Merge remaining updates into data (skip typeTags since it's a column)
+    for (const [key, value] of Object.entries(updates)) {
+      if (key === 'typeTags') {
+        changes[key] = { from: row.type_tags, to: value };
+        continue;
+      }
+      changes[key] = { from: readStoredFieldValue(data, key), to: value };
+      data[key] = value;
+    }
+
+    for (const [field, change] of Object.entries(changes)) {
+      const action = field === 'status' ? 'status_changed'
+        : field === 'archived' ? 'archived'
+        : field === 'type' ? 'type_changed'
+        : 'updated';
+      appendActivity(data, modifierIdentity, action, {
+        field,
+        oldValue: change.from != null ? String(change.from) : undefined,
+        newValue: change.to != null ? String(change.to) : undefined,
+      });
+    }
+
+    const writtenFields = new Set(Object.keys(updates).filter((key) => key !== 'typeTags'));
+
+    // Relationship values must live under data.customFields (the durable synced
+    // shape). Route any relationship-typed field into the nested bag, preserving
+    // sibling custom fields and clearing the top-level shadow, so the value
+    // survives the sync re-serialization and inverse-write reads find it (NIM-1305).
+    nestRelationshipFieldsIntoCustomFields(data, globalRegistry.get(row.type)?.fields ?? [], { writtenFields });
+
+    const result = await database.query<any>(
+      `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2 RETURNING *`,
+      [JSON.stringify(data), row.id]
+    );
+    if (result.rows.length === 0) {
+      throw new Error(`Tracker item not found: ${itemId}`);
+    }
+    const updated = this.rowToTrackerItem(result.rows[0]);
+
+    const changeEvent: TrackerItemChangeEvent = {
+      added: [],
+      updated: [updated],
+      removed: [],
+      timestamp: new Date(),
+    };
+    this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+
+    return updated;
+  }
+
+  /**
+   * Materialize inverse relationship fields on target items after a source item's
+   * relationship field changed (Phase 3). Shared by the IPC update handler and the
+   * MCP `tracker_update` path so the two can't drift (NIM-1305 Defect A).
+   *
+   * Each inverse target write goes through `updateTrackerItem` (which nests the
+   * value under data.customFields and broadcasts a complete record), then the same
+   * sync gate + relationship reindex as the source. `propagateInverseRelationships`
+   * reads the target's existing inverse array customFields-aware, so adding one
+   * link preserves the target's other links. Loop-safe: targets are written via
+   * `updateTrackerItem`, never by re-entering this method.
+   */
+  async propagateInverseForUpdate(
+    source: { id: string; type: string; issueKey?: string; title?: string },
+    changedFields: Record<string, unknown>,
+    oldData: Record<string, unknown>,
+    syncMode?: string,
+  ): Promise<void> {
+    await propagateInverseRelationships(
+      source,
+      changedFields,
+      oldData,
+      {
+        loadItem: async (id) => {
+          const row = await database.query<any>(`SELECT id, type, data FROM tracker_items WHERE id = $1`, [id]);
+          if (!row.rows[0]) return null;
+          return {
+            id: row.rows[0].id,
+            type: row.rows[0].type,
+            data: parseJsonColumn<Record<string, unknown>>(row.rows[0].data) ?? {},
+          };
+        },
+        applyTargetUpdate: async (targetId, fieldName, value) => {
+          const target = await this.updateTrackerItem(targetId, { [fieldName]: value });
+          const targetPolicy = getEffectiveTrackerSyncPolicy(target.workspace, target.type, syncMode);
+          if (shouldSyncTrackerItem(targetPolicy, target)) {
+            if (isTrackerSyncActive(target.workspace)) {
+              await syncTrackerItem(target);
+            } else {
+              await this.updateTrackerItemSyncStatus(target.id, 'pending');
+            }
+          }
+          const targetDefs = globalRegistry.get(target.type)?.fields ?? [];
+          const targetData = await database.query<any>(`SELECT data, updated FROM tracker_items WHERE id = $1`, [target.id]);
+          const td = parseJsonColumn<Record<string, unknown>>(targetData.rows[0]?.data) ?? {};
+          const updatedAt = targetData.rows[0]?.updated
+            ? (typeof targetData.rows[0].updated === 'string' ? targetData.rows[0].updated : new Date(targetData.rows[0].updated).toISOString())
+            : null;
+          await reindexItemRelationships(target.workspace, target.id, td, targetDefs, updatedAt, database as any);
+        },
+      },
+    );
+  }
+
+  /**
+   * Flip a tracker item's team-share flag from the UI — the per-item "Share
+   * with team" toggle for `hybrid` trackers (e.g. plans). Writes the canonical
+   * `share` flag into the item's data and reconciles the team TrackerRoom:
+   * sharing pushes the item (its body rides the `tracker-content/<id>` room the
+   * open detail editor seeds once it becomes collaborative); unsharing tombstones
+   * it from the room and resets the local row to `local`.
+   *
+   * Native DB items only. File-backed (frontmatter) plans carry their share flag
+   * in the markdown and are reconciled by `reconcileFrontmatterShare` on save.
+   */
+  async setTrackerItemShared(itemId: string, shared: boolean): Promise<TrackerItem> {
+    const row = await this.resolveTrackerRowForPublicId(itemId, { createProjectionForFullDocument: true });
+    if (!row) {
+      throw new Error(`Tracker item not found: ${itemId}`);
+    }
+    const shareFlag = shared
+      ? { status: 'team', body: 'team' }
+      : { status: 'private', body: 'private' };
+
+    // File-backed plans/decisions (`fm:<type>:<path>`) carry their canonical
+    // share flag in the markdown frontmatter. Write ONLY the top-level `share`
+    // key (via setShareInFrontmatter) so the plan extension's own frontmatter
+    // block is left untouched -- updateTrackerItemInFile would migrate the
+    // legacy `planStatus:` block and reshuffle the file.
+    //
+    // Reconcile the room push EXPLICITLY here rather than rely on the
+    // file-change rescan: we also write the flag to the DB row below, so by the
+    // time the rescan runs captureFrontmatterTrackerTransition sees no change
+    // and skips its reconcile. reconcileFrontmatterShare pushes the item (and
+    // seeds its file body) on share, or tombstones it on unshare.
+    if ((row.source === 'frontmatter' || row.source === 'import') && (row.source_ref || row.document_path)) {
+      const relativePath = row.source_ref || row.document_path;
+      const fullPath = path.join(this.workspacePath, relativePath);
+      try {
+        const content = await fs.readFile(fullPath, 'utf-8');
+        const updatedContent = setShareInFrontmatter(content, shared ? shareFlag : null);
+        await fs.writeFile(fullPath, updatedContent, 'utf-8');
+      } catch (err) {
+        throw new Error(`Failed to write share flag to ${relativePath}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // Mirror the flag into the DB row so the UI + reconcile see it at once.
+      // Deliberately do NOT bump the row's `updated` column -- sharing is not a
+      // content edit and must not advance the plan's "updated" timestamp.
+      //
+      // Clear/set BOTH the top-level `share` and the nested `customFields.share`:
+      // the sync round-trip stores the flag nested, and isTrackerItemShared makes
+      // the nested value win -- so an unshare that only cleared the top level
+      // would leave a stale nested `team` flag and the item would re-sync.
+      const fmData = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+      if (shared) {
+        fmData.share = shareFlag;
+        fmData.customFields = {
+          ...(fmData.customFields && typeof fmData.customFields === 'object' ? fmData.customFields : {}),
+          share: shareFlag,
+        };
+      } else {
+        delete fmData.share;
+        if (fmData.customFields && typeof fmData.customFields === 'object') {
+          delete fmData.customFields.share;
+        }
+      }
+      fmData.shared = false;
+      await database.query(
+        `UPDATE tracker_items SET data = $1 WHERE id = $2`,
+        [JSON.stringify(fmData), row.id],
+      );
+      const fmResult = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [row.id]);
+      const fmItem = this.rowToTrackerItem(fmResult.rows[0]);
+
+      await this.reconcileFrontmatterShare(fmItem, row.id, relativePath, shared);
+
+      // Re-read so the emitted item reflects the final sync_status.
+      const finalResult = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [row.id]);
+      const finalItem = this.rowToTrackerItem(finalResult.rows[0]);
+      this.trackerItemWatchers.forEach(callback => callback({
+        added: [], updated: [finalItem], removed: [], timestamp: new Date(),
+      }));
+      return finalItem;
+    }
+
+    // Native (DB-backed) item. Unsharing a native item is BLOCKED for now: the
+    // sync engine has no "remove from room, keep local" primitive -- unsync goes
+    // through engine.deleteItem, which tombstones the local row too. A file-backed
+    // plan re-projects from its file, but a native item would be permanently
+    // deleted. Until a real unshare primitive lands, refuse native unshare so the
+    // UI/data can't lose an item. (Native SHARE is fine.)
+    if (!shared) {
+      throw new Error(
+        'Unsharing a native tracker item is not supported yet (it would delete the item). ' +
+        'Only file-backed plans/decisions can be unshared from the UI.',
+      );
+    }
+
+    const data = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+
+    // Write the flag in BOTH storage shapes. The sync round-trip stores custom
+    // fields nested under `data.customFields`, and `extractItemCustomFields`
+    // makes the nested value WIN over the top-level one -- so writing only the
+    // top level would leave a stale nested `team` flag on unshare and the item
+    // would still read as shared. Keep both consistent.
+    data.share = shareFlag;
+    data.customFields = {
+      ...(data.customFields && typeof data.customFields === 'object' ? data.customFields : {}),
+      share: shareFlag,
+    };
+    data.shared = false; // drop any legacy boolean flag
+    data.lastModifiedBy = getCurrentIdentity(row.workspace);
+
+    await database.query(
+      `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+      [JSON.stringify(data), row.id],
+    );
+
+    // Read back for the reconcile (it needs the share flag for the policy gate).
+    let result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [row.id]);
+    let item = this.rowToTrackerItem(result.rows[0]);
+
+    await this.reconcileItemShare(item, row.id, shared);
+
+    // Re-read AFTER reconcile so the emitted item carries the final sync_status
+    // (synced/pending on share, local on unshare) -- otherwise the renderer's
+    // "is this item shared" check would lag a beat behind on the room state.
+    result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [row.id]);
+    item = this.rowToTrackerItem(result.rows[0]);
+    this.trackerItemWatchers.forEach(callback => callback({
+      added: [],
+      updated: [item],
+      removed: [],
+      timestamp: new Date(),
+    }));
+
+    return item;
+  }
+
+  /**
+   * Push or remove a native tracker item from the team TrackerRoom when its
+   * per-item `share` flag flips. Mirrors `reconcileFrontmatterShare` minus the
+   * file-body seed (a native item's body is seeded by the live collaborative
+   * editor that mounts once the item becomes shared).
+   *
+   *   - share + sync live    -> syncTrackerItem (push to room)
+   *   - share + offline      -> mark pending (reconnect backfill pushes it)
+   *   - unshare + sync live  -> unsyncTrackerItem + reset row to local
+   *   - unshare + offline    -> mark pending (reconnect backfill tombstones it)
+   */
+  private async reconcileItemShare(item: TrackerItem, rowId: string, nowShared: boolean): Promise<void> {
+    const workspace = item.workspace || this.workspacePath;
+    try {
+      if (nowShared) {
+        const policy = getEffectiveTrackerSyncPolicy(workspace, item.type);
+        // Respect the type policy: a `local` type never shares even if flagged.
+        if (!shouldSyncTrackerItem(policy, item)) return;
+        if (isTrackerSyncActive(workspace)) {
+          await syncTrackerItem(item);
+        } else {
+          await database.query(
+            `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+            [rowId],
+          );
+        }
+      } else if (isTrackerSyncActive(workspace)) {
+        // Unshare (live): reset the local row FIRST so the unshare always lands
+        // locally even if the room delete is slow/erroring, then remove from the
+        // team room best-effort. Clearing `sync_id` keeps the backfill from
+        // re-processing it.
+        // console.log('[DocumentService] reconcile UNSHARE(live) resetting row', rowId);
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'local', sync_id = NULL WHERE id = $1`,
+          [rowId],
+        );
+        try {
+          await unsyncTrackerItem(item.id, workspace);
+        } catch (unsyncErr) {
+          console.error('[DocumentService] reconcile unsync (room delete) failed; local row already reset:', unsyncErr);
+        }
+      } else {
+        // Unshare (offline): mark pending so the reconnect backfill sees a
+        // previously-shared (sync_id set) but now-unflagged item and issues the
+        // room tombstone (NIM-880).
+        await database.query(
+          `UPDATE tracker_items SET sync_status = 'pending' WHERE id = $1`,
+          [rowId],
+        );
+      }
+    } catch (err) {
+      console.error('[DocumentService] reconcileItemShare failed:', err);
+    }
+  }
+
+  /**
+   * Update the rich content (Lexical editor state) of a tracker item.
+   */
+  async updateTrackerItemContent(itemId: string, content: any): Promise<void> {
+    const row = await this.resolveTrackerRowForPublicId(itemId, { createProjectionForFullDocument: true });
+    if (!row) {
+      throw new Error(`Tracker item not found: ${itemId}`);
+    }
+    const contentJson = content != null ? JSON.stringify(content) : null;
+    const data = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+    const modifierIdentity = getCurrentIdentity(row.workspace);
+    appendActivity(data, modifierIdentity, 'updated', { field: 'content' });
+    // Phase 4b: every body save bumps `body_version` and writes a row
+    // into `tracker_body_cache` keyed by `(item_id, body_version)`. The
+    // bumped version travels through the metadata sync envelope so
+    // remote clients learn the body changed without re-fetching the Y.Doc.
+    //
+    // The UPDATE + cache INSERT are issued serially via the PGLite
+    // worker, which serializes calls. A crash between the two leaves
+    // tracker_items.body_version bumped but tracker_body_cache without
+    // the new row -- on next save the bump re-fires and the cache row
+    // gets a fresher version anyway, so we don't end up wedged.
+    const updateResult = await database.query<any>(
+      `UPDATE tracker_items
+         SET content = $1,
+             data = $2,
+             body_version = COALESCE(body_version, 0) + 1,
+             updated = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [contentJson, JSON.stringify(data), row.id]
+    );
+    const newBodyVersion = Number(updateResult.rows[0]?.body_version ?? 0);
+
+    if (contentJson !== null && newBodyVersion > 0) {
+      // ON CONFLICT DO NOTHING covers the rare case where two saves race
+      // on the same version assignment (shouldn't happen via PGLite's
+      // single-writer worker, but cheap insurance).
+      await database.query(
+        `INSERT INTO tracker_body_cache (item_id, body_version, content, cached_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (item_id, body_version) DO NOTHING`,
+        [row.id, newBodyVersion, contentJson]
+      );
+    }
+
+    if (updateResult.rows.length > 0) {
+      const item = this.rowToTrackerItem(updateResult.rows[0]);
+      const changeEvent: TrackerItemChangeEvent = {
+        added: [],
+        updated: [item],
+        removed: [],
+        timestamp: new Date(),
+      };
+      this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+
+      // Phase 4b: fire a metadata-layer sync so remote cold clients
+      // learn about the bumped body_version. Warm clients with the
+      // DocumentRoom Y.Doc open already see body changes directly --
+      // this push exists for the "search / preview / never-opened"
+      // surface, which only ever reads the metadata projection. The
+      // 800ms debounce upstream keeps the burst rate reasonable.
+      //
+      // Gate on the per-item policy (NIM-880): `syncTrackerItem` does no policy
+      // check, so an unflagged hybrid item's body save would otherwise leak to
+      // the room. The legit frontmatter body-share path (shareFrontmatterBody)
+      // still passes here because by then the row carries the share flag.
+      if (isTrackerSyncActive(item.workspace) && this.shouldSyncItemNow(item)) {
+        try {
+          await syncTrackerItem(item);
+        } catch (syncErr) {
+          console.error('[DocumentService] updateTrackerItemContent sync failed:', syncErr);
+        }
+        // Intentionally NOT calling `applyHeadlessBodyMarkdown` here.
+        //
+        // The renderer save path that hits this IPC already wrote the
+        // body to the live DocumentRoom Y.Doc through its own
+        // `CollabLexicalProvider` -- the autosave fires AFTER the local
+        // Y.Doc edit has propagated. Re-applying the same markdown via
+        // the main-process headless peer is not just redundant: the
+        // headless write does `root.clear()` + re-parse, generating
+        // brand-new XmlElement IDs that the renderer's `@lexical/yjs`
+        // binding sees as remote structural changes. That fires
+        // `onDirtyChange` on the editor, which triggers another save,
+        // which fires another headless write, and so on -- the loop
+        // that just clobbered NIM-633's body cache 100+ times in 90
+        // seconds with "asd" while we were debugging.
+        //
+        // MCP-driven body writes (handleTrackerCreate /
+        // handleTrackerUpdate in trackerToolHandlers) still call
+        // `applyHeadlessBodyMarkdown` themselves -- they are the path
+        // that needs it because there is no live renderer peer to
+        // write the Y.Doc.
+      }
+    }
+  }
+
+  /**
+   * Read a body snapshot at a specific version from the cache. Used by
+   * future cold-read paths (search, history, preview) so they don't pay
+   * the cost of resolving the Y.Doc just to look at body text.
+   *
+   * Returns `null` when no cached row exists at that version (e.g. the
+   * cache was provisioned after the version was written, or the row was
+   * evicted by a future pruning policy).
+   */
+  async getTrackerBodyCacheAtVersion(itemId: string, bodyVersion: number): Promise<any | null> {
+    const row = await this.resolveTrackerRowForPublicId(itemId);
+    if (!row) return null;
+    const result = await database.query<{ content: string | null }>(
+      `SELECT content FROM tracker_body_cache
+        WHERE item_id = $1 AND body_version = $2`,
+      [row.id, bodyVersion]
+    );
+    const raw = result.rows[0]?.content;
+    if (raw === undefined || raw === null) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // Not JSON -- return as-is. The cache stores whatever the host wrote.
+      return raw;
+    }
+  }
+
+  /**
+   * Read the latest body cache row for an item -- the one matching the
+   * item's current `body_version`. Used by the renderer's cold-open path
+   * so the editor can paint authoritative content before the
+   * DocumentRoom Y.Doc finishes its initial sync. CollabLexicalProvider's
+   * `deferInitialSync: true` mode ensures the bootstrap decision still
+   * happens AFTER the server's initial sync response, so a non-empty
+   * room won't be clobbered by this optimistic paint.
+   *
+   * Returns `null` when the item is missing, has never been saved
+   * (body_version = 0), or the cache row was never written.
+   */
+  async getTrackerBodyCacheLatest(itemId: string): Promise<{ bodyVersion: number; content: any } | null> {
+    const trackerRow = await this.resolveTrackerRowForPublicId(itemId);
+    if (!trackerRow) return null;
+    const result = await database.query<{ body_version: string | number | null; content: string | null }>(
+      `SELECT t.body_version, c.content
+         FROM tracker_items t
+         LEFT JOIN tracker_body_cache c
+           ON c.item_id = t.id AND c.body_version = t.body_version
+        WHERE t.id = $1`,
+      [trackerRow.id]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const bodyVersion = Number(row.body_version ?? 0);
+    if (bodyVersion <= 0) return null;
+    const raw = row.content;
+    if (raw === undefined || raw === null) return null;
+    let parsed: any = raw;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Not JSON -- return as-is. The cache stores whatever the host wrote.
+    }
+    return { bodyVersion, content: parsed };
+  }
+
+  /**
+   * Get the rich content (Lexical editor state) of a tracker item.
+   */
+  async getTrackerItemContent(itemId: string): Promise<any | null> {
+    const row = await this.resolveTrackerRowForPublicId(itemId);
+    if (!row) return null;
+    const result = await database.query<any>(
+      `SELECT content FROM tracker_items WHERE id = $1`,
+      [row.id]
+    );
+    if (result.rows.length === 0) return null;
+    const raw = result.rows[0].content;
+    return raw != null ? parseTrackerContentColumn(raw) : null;
+  }
+
+  /**
+   * Archive or unarchive a tracker item.
+   */
+  async archiveTrackerItem(itemId: string, archive: boolean): Promise<TrackerItem> {
+    const row = await this.resolveTrackerRowForPublicId(itemId, { createProjectionForFullDocument: true });
+    if (!row) {
+      throw new Error(`Tracker item not found: ${itemId}`);
+    }
+
+    // For inline/frontmatter items, write archived state back to the source file
+    const documentPath = row.document_path || row.source_ref;
+    if ((row.source === 'inline' || row.source === 'frontmatter') && documentPath) {
+      try {
+        await this.updateTrackerItemInFile(itemId, { archived: archive ? 'true' : null });
+      } catch (err) {
+        // File may be gone -- fall through to DB-only update
+      }
+    }
+
+    const data = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+    const wasArchived = Boolean(row.archived);
+    if (wasArchived !== archive) {
+      appendActivity(data, getCurrentIdentity(row.workspace), 'archived', {
+        field: 'archived',
+        oldValue: String(wasArchived),
+        newValue: String(archive),
+      });
+    }
+
+    let result;
+    if (archive) {
+      result = await database.query<any>(
+        `UPDATE tracker_items SET data = $1, archived = TRUE, archived_at = NOW(), updated = NOW() WHERE id = $2 RETURNING *`,
+        [JSON.stringify(data), row.id]
+      );
+    } else {
+      result = await database.query<any>(
+        `UPDATE tracker_items SET data = $1, archived = FALSE, archived_at = NULL, updated = NOW() WHERE id = $2 RETURNING *`,
+        [JSON.stringify(data), row.id]
+      );
+    }
+    if (result.rows.length === 0) {
+      throw new Error(`Tracker item not found: ${itemId}`);
+    }
+    const item = this.rowToTrackerItem(result.rows[0]);
+
+    const changeEvent: TrackerItemChangeEvent = {
+      added: [],
+      updated: [item],
+      removed: [],
+      timestamp: new Date(),
+    };
+    this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+
+    // Push archived state to sync server so other clients see it. Gate on the
+    // per-item policy (NIM-880) so an unflagged hybrid item doesn't leak to the
+    // room just because it was archived.
+    if (isTrackerSyncActive(item.workspace) && this.shouldSyncItemNow(item)) {
+      try {
+        await syncTrackerItem(item);
+      } catch (syncErr) {
+        console.error('[DocumentService] archiveTrackerItem sync failed:', syncErr);
+      }
+    }
+
+    return item;
+  }
+
+  /**
+   * Permanently delete a tracker item from the database.
+   */
+  async deleteTrackerItem(itemId: string): Promise<void> {
+    const row = await this.resolveTrackerRowForPublicId(itemId);
+    const rowId = row?.id || itemId;
+
+    // For inline items, remove the line from the source file before deleting from DB
+    if (row) {
+      const { source, document_path: documentPath } = row;
+      if (source === 'inline' && documentPath) {
+        const fullPath = path.join(this.workspacePath, documentPath);
+        try {
+          const fileContent = await fs.readFile(fullPath, 'utf-8');
+          const updated = removeInlineTrackerItem(fileContent, rowId);
+          if (updated !== null) {
+            await fs.writeFile(fullPath, updated, 'utf-8');
+          }
+        } catch (err: any) {
+          if (err?.code !== 'ENOENT') {
+            console.error(`[DocumentService] Failed to remove inline item ${itemId} from file:`, err);
+          }
+          // ENOENT: file already gone, proceed with DB delete
+        }
+      }
+    }
+
+    await database.query(
+      `DELETE FROM tracker_items WHERE id = $1`,
+      [rowId]
+    );
+
+    // Notify sync server so other clients remove the item too
+    if (isTrackerSyncActive(this.workspacePath)) {
+      try {
+        await unsyncTrackerItem(rowId, this.workspacePath);
+      } catch (syncErr) {
+        console.error('[DocumentService] deleteTrackerItem sync failed:', syncErr);
+      }
+    }
+
+    const changeEvent: TrackerItemChangeEvent = {
+      added: [],
+      updated: [],
+      removed: [itemId],
+      timestamp: new Date(),
+    };
+    this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+  }
+
+  /**
+   * Update a file-backed tracker item by writing field changes back to the file.
+   * Handles both frontmatter-based items (YAML) and inline items (#type[...]).
+   */
+  async updateTrackerItemInFile(itemId: string, updates: Record<string, any>): Promise<TrackerItem> {
+    let row = await this.resolveTrackerRowForPublicId(itemId, { createProjectionForFullDocument: false });
+    const parsedFullDocumentId = parseFullDocumentTrackerId(itemId);
+    if (!row && parsedFullDocumentId) {
+      row = {
+        id: itemId,
+        type: parsedFullDocumentId.trackerType,
+        source: 'frontmatter',
+        source_ref: parsedFullDocumentId.relativePath,
+        document_path: parsedFullDocumentId.relativePath,
+        data: {},
+        workspace: this.workspacePath,
+      };
+    }
+    if (!row) {
+      throw new Error(`Tracker item not found: ${itemId}`);
+    }
+
+    const source = row.source; // 'inline', 'frontmatter', 'import'
+    const sourceRef = row.source_ref;
+    const documentPath = row.document_path;
+    const trackerType = row.type;
+
+    // Determine the file path -- inline items use document_path, frontmatter uses source_ref
+    const relativePath = source === 'inline' ? documentPath : (sourceRef || documentPath);
+    if (!relativePath) {
+      throw new Error(`Item ${itemId} has no source file reference`);
+    }
+
+    const fullPath = path.join(this.workspacePath, relativePath);
+
+    // Read current file content -- if the source file was deleted, fall through
+    // to a DB-only update (no file to write back to)
+    let fileContent: string | null = null;
+    try {
+      fileContent = await fs.readFile(fullPath, 'utf-8');
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        // Source file was deleted -- we'll just update the DB below
+        // console.log(`[DocumentService] Source file ${relativePath} no longer exists, updating DB only`);
+      } else {
+        throw new Error(`Failed to read source file: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (fileContent !== null) {
+      let updatedContent: string;
+      if (source === 'inline') {
+        // Inline items: rewrite #type[...] metadata in the line. Markers without
+        // an explicit id: are located via the row's line + title, since the id is
+        // a deterministic hash that never reaches the file (GitHub #404).
+        const result = updateInlineTrackerItem(fileContent, itemId, updates, {
+          lineNumber: row.line_number != null ? Number(row.line_number) : undefined,
+          title: typeof row.title === 'string' ? row.title : undefined,
+        });
+        if (!result) {
+          throw new Error(`Could not find inline item ${itemId} in ${relativePath}`);
+        }
+        updatedContent = result;
+      } else {
+        const { description, ...frontmatterUpdates } = updates;
+        updatedContent = Object.keys(frontmatterUpdates).length > 0
+          ? updateTrackerInFrontmatter(fileContent, trackerType, frontmatterUpdates)
+          : fileContent;
+        if (description !== undefined) {
+          const normalizedBody = typeof description === 'string'
+            ? description.replace(/\\n/g, '\n')
+            : String(description ?? '');
+          const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+          const frontmatterMatch = updatedContent.match(frontmatterRegex);
+          if (frontmatterMatch) {
+            updatedContent = `${frontmatterMatch[0]}${normalizedBody}${normalizedBody.endsWith('\n') ? '' : '\n'}`;
+          } else {
+            updatedContent = normalizedBody;
+          }
+        }
+      }
+
+      // Write back
+      await fs.writeFile(fullPath, updatedContent, 'utf-8');
+    }
+
+    // Also update the database row so the UI reflects changes immediately
+    // (the file watcher will re-index later, but this gives instant feedback)
+    // Only update the data JSONB column -- top-level columns (status, title, etc.)
+    // are generated columns and cannot be SET directly.
+    const resolvedRow = await this.resolveTrackerRowForPublicId(itemId, {
+      createProjectionForFullDocument: source === 'frontmatter' || source === 'import',
+    });
+
+    let item: TrackerItem;
+    if (resolvedRow) {
+      const existingData = typeof resolvedRow.data === 'string' ? JSON.parse(resolvedRow.data) : (resolvedRow.data || {});
+      const mergedData = { ...existingData, ...updates };
+      const normalizedDescription = typeof updates.description === 'string'
+        ? updates.description.replace(/\\n/g, '\n')
+        : undefined;
+      if ((source === 'frontmatter' || source === 'import') && updates.description !== undefined) {
+        delete mergedData.description;
+        const contentJson = normalizedDescription != null ? JSON.stringify(normalizedDescription) : null;
+        const versionResult = await database.query<{ body_version: string | number | null }>(
+          `UPDATE tracker_items
+             SET data = $1,
+                 content = $2,
+                 body_version = COALESCE(body_version, 0) + 1,
+                 updated = NOW()
+           WHERE id = $3
+           RETURNING body_version`,
+          [JSON.stringify(mergedData), contentJson, resolvedRow.id]
+        );
+        const newBodyVersion = Number(versionResult.rows[0]?.body_version ?? 0);
+        if (contentJson !== null && newBodyVersion > 0) {
+          await database.query(
+            `INSERT INTO tracker_body_cache (item_id, body_version, content, cached_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (item_id, body_version) DO NOTHING`,
+            [resolvedRow.id, newBodyVersion, contentJson]
+          );
+        }
+      } else {
+        await database.query(
+          `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+          [JSON.stringify(mergedData), resolvedRow.id]
+        );
+      }
+
+      const updated = await database.query<any>(
+        `SELECT * FROM tracker_items WHERE id = $1`,
+        [resolvedRow.id]
+      );
+      item = this.rowToTrackerItem(updated.rows[0]);
+    } else {
+      const metadata = this.metadataByPath.get(relativePath);
+      if (!metadata) {
+        throw new Error(`Tracker item ${itemId} was updated in file but could not be reloaded from metadata`);
+      }
+      const synthesized = (await this.listFullDocumentTrackerItemsFromMetadata())
+        .find(candidate => candidate.id === itemId);
+      if (!synthesized) {
+        throw new Error(`Tracker item ${itemId} was updated in file but could not be synthesized`);
+      }
+      item = synthesized;
+    }
+
+    // Notify watchers
+    const changeEvent: TrackerItemChangeEvent = {
+      added: [],
+      updated: [item],
+      removed: [],
+      timestamp: new Date(),
+    };
+    this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+
+    return item;
+  }
+
+  /**
+   * Import a single markdown file as a native tracker item.
+   * Reads frontmatter for metadata and the markdown body as content.
+   * Returns the created item or null if the file has no tracker frontmatter.
+   */
+  async importTrackerItemFromFile(relativePath: string, options?: {
+    skipDuplicates?: boolean;
+  }): Promise<{ item: TrackerItem | null; skipped: boolean; error?: string }> {
+    const fullPath = path.join(this.workspacePath, relativePath);
+
+    // Check for duplicate by source_ref
+    if (options?.skipDuplicates !== false) {
+      const existing = await database.query<any>(
+        `SELECT id FROM tracker_items WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2`,
+        [this.workspacePath, relativePath]
+      );
+      if (existing.rows.length > 0) {
+        return { item: null, skipped: true };
+      }
+    }
+
+    // Read the full file
+    let fileContent: string;
+    try {
+      fileContent = await fs.readFile(fullPath, 'utf-8');
+    } catch (err) {
+      return { item: null, skipped: false, error: `Failed to read file: ${err instanceof Error ? err.message : String(err)}` };
+    }
+
+    // Parse frontmatter
+    const { data: frontmatter } = await extractFrontmatter(fullPath);
+    if (!frontmatter) {
+      return { item: null, skipped: false, error: 'No valid frontmatter found' };
+    }
+
+    // Resolve tracker frontmatter. Keep this in sync with
+    // `detectTrackerFromFrontmatter` / `resolveTrackerFrontmatter` so import
+    // accepts extension-owned keys, canonical trackerStatus docs, and older
+    // legacy per-type keys like `planStatus`. Otherwise import rejects files
+    // that the tracker UI still considers valid tracker documents.
+    let trackerData: Record<string, any> | null = null;
+    let trackerType = 'plan'; // default
+
+    for (const [extKey, extType] of Object.entries(EXTENSION_OWNED_KEYS)) {
+      if (frontmatter[extKey] && typeof frontmatter[extKey] === 'object') {
+        const extData = frontmatter[extKey] as Record<string, any>;
+        const { [extKey]: _ext, trackerStatus: _ts, ...topLevel } = frontmatter;
+        trackerType = extType;
+        trackerData = { ...topLevel, ...extData };
+        break;
+      }
+    }
+
+    if (!trackerData && frontmatter.trackerStatus && typeof frontmatter.trackerStatus === 'object') {
+      const ts = frontmatter.trackerStatus as Record<string, any>;
+      trackerType = (ts.type as string) || 'plan';
+      // Top-level fields are canonical, trackerStatus holds only type
+      const { trackerStatus: _, ...topLevel } = frontmatter;
+      trackerData = { ...ts, ...topLevel };
+    }
+
+    if (!trackerData) {
+      for (const [legacyKey, legacyType] of Object.entries(LEGACY_KEY_TO_TYPE)) {
+        if (frontmatter[legacyKey] && typeof frontmatter[legacyKey] === 'object') {
+          const legacyData = frontmatter[legacyKey] as Record<string, any>;
+          const { [legacyKey]: _, trackerStatus: _ts, ...topLevel } = frontmatter;
+          trackerType = legacyType;
+          trackerData = { ...legacyData, ...topLevel };
+          break;
+        }
+      }
+    }
+
+    if (!trackerData) {
+      return { item: null, skipped: false, error: 'No tracker frontmatter found' };
+    }
+
+    // Extract markdown body (everything after frontmatter)
+    const bodyMatch = fileContent.match(/^---\s*\n[\s\S]*?\n---\s*\n([\s\S]*)$/);
+    const markdownBody = bodyMatch ? bodyMatch[1].trim() : '';
+
+    // Build title from frontmatter or file name
+    const title = (trackerData.title as string)
+      || (frontmatter.title as string)
+      || relativePath.split('/').pop()?.replace(/\.md$/, '') || 'Untitled';
+
+    // Generate stable canonical ID from tracker type + file path so UI, MCP,
+    // and file-backed mutation paths all resolve the same logical item.
+    const id = buildFullDocumentTrackerId(trackerType, relativePath);
+
+    // Build JSONB data: ALL frontmatter fields go into the data bag generically.
+    // No privileged field vocabulary -- the schema determines which fields matter.
+    const systemKeys = new Set(['type', 'trackerStatus']);
+    const data: Record<string, any> = { title };
+    for (const [key, value] of Object.entries(trackerData)) {
+      if (systemKeys.has(key)) continue;
+      if (value !== undefined && value !== null) {
+        data[key] = value;
+      }
+    }
+
+    const contentJson = markdownBody ? JSON.stringify(markdownBody) : null;
+
+    // NIM-1559: don't bump `updated` on a no-op re-import. A cold-open scan
+    // re-imports every tracker markdown file; without this guard each one
+    // re-stamps `updated = NOW()` even when nothing changed (and a shared
+    // `fm:` item then re-syncs that bogus timestamp to the whole org). Read
+    // the existing projection row and only advance `updated` when a projected
+    // field or the body actually changed; otherwise refresh `last_indexed`
+    // (the scan timestamp) alone.
+    const existingRow = await database.query<any>(
+      `SELECT data, content FROM tracker_items WHERE id = $1`,
+      [id]
+    );
+    const hadRow = existingRow.rows.length > 0;
+    const changed = !hadRow || projectionWouldChange(
+      parseJsonColumn<Record<string, unknown>>(existingRow.rows[0].data) ?? {},
+      data,
+      existingRow.rows[0].content,
+      contentJson,
+    );
+
+    if (hadRow && !changed) {
+      await database.query(
+        `UPDATE tracker_items SET last_indexed = NOW() WHERE id = $1`,
+        [id]
+      );
+    } else {
+      await database.query(
+        `INSERT INTO tracker_items (
+          id, type, data, workspace, document_path, line_number,
+          created, updated, last_indexed, sync_status,
+          content, archived, source, source_ref
+        ) VALUES ($1, $2, $3, $4, $6, NULL, NOW(), NOW(), NOW(), 'local', $5, FALSE, 'frontmatter', $6)
+        ON CONFLICT (id) DO UPDATE SET
+          data = tracker_items.data || $3, content = $5, source = 'frontmatter', source_ref = $6, document_path = $6, updated = NOW(), last_indexed = NOW()`,
+        [id, trackerType, JSON.stringify(data), this.workspacePath, contentJson, relativePath]
+      );
+    }
+
+    const result = await database.query<any>(
+      `SELECT * FROM tracker_items WHERE id = $1`,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return { item: null, skipped: false, error: 'Failed to read back created item' };
+    }
+
+    const created = this.rowToTrackerItem(result.rows[0]);
+
+    // Notify watchers
+    const changeEvent: TrackerItemChangeEvent = {
+      added: [created],
+      updated: [],
+      removed: [],
+      timestamp: new Date(),
+    };
+    this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+
+    return { item: created, skipped: false };
+  }
+
+  /**
+   * Bulk import markdown files from a directory as native tracker items.
+   * Scans for files with tracker frontmatter and imports them.
+   */
+  async bulkImportTrackerItems(directory: string, options?: {
+    skipDuplicates?: boolean;
+    recursive?: boolean;
+  }): Promise<{ imported: number; skipped: number; errors: string[] }> {
+    const fullDir = path.join(this.workspacePath, directory);
+    const skipDuplicates = options?.skipDuplicates ?? true;
+    const recursive = options?.recursive ?? true;
+
+    let imported = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    // Scan directory for markdown files
+    const scanDir = async (dir: string) => {
+      let entries: string[];
+      try {
+        entries = await fs.readdir(dir);
+      } catch {
+        errors.push(`Cannot read directory: ${dir}`);
+        return;
+      }
+
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry);
+        let stat;
+        try {
+          stat = await fs.stat(fullPath);
+        } catch {
+          continue;
+        }
+
+        if (stat.isDirectory() && recursive) {
+          await scanDir(fullPath);
+        } else if (stat.isFile()) {
+          const ext = path.extname(entry).toLowerCase();
+          if (ext !== '.md' && ext !== '.markdown') continue;
+
+          const relativePath = path.relative(this.workspacePath, fullPath);
+          const result = await this.importTrackerItemFromFile(relativePath, { skipDuplicates });
+
+          if (result.skipped) {
+            skipped++;
+          } else if (result.item) {
+            imported++;
+          } else if (result.error) {
+            // Only report real errors, not "no frontmatter" which is expected for non-tracker files
+            if (!result.error.includes('No tracker frontmatter') && !result.error.includes('No valid frontmatter')) {
+              errors.push(`${relativePath}: ${result.error}`);
+            }
+          }
+        }
+      }
+    };
+
+    await scanDir(fullDir);
+    return { imported, skipped, errors };
+  }
+
+  /**
+   * Create a tracker item directly in PGLite (not from markdown parsing).
+   * Used for proper collaborative tracked items created from the UI.
+   * These items have empty document_path and don't correspond to any file.
+   */
+  async createTrackerItem(payload: {
+    id: string;
+    type: string;
+    title: string;
+    status: string;
+    priority: string;
+    workspace: string;
+    description?: string;
+    owner?: string;
+    tags?: string[];
+    customFields?: Record<string, any>;
+    content?: any;
+    source?: string;
+    sourceRef?: string;
+    syncMode?: string;
+  }): Promise<TrackerItem> {
+    // Check if this type allows creation
+    const model = globalRegistry.get(payload.type);
+    if (model && model.creatable === false) {
+      throw new Error(`Cannot create items of type '${payload.type}': type is not creatable`);
+    }
+
+    // Stamp author identity on creation
+    // getCurrentIdentity imported statically at top of file
+    const authorIdentity = getCurrentIdentity(payload.workspace);
+
+    // Assign initial kanbanSortOrder: place new items at the top of their column.
+    // Query the current minimum sort key for this workspace+status so the new item sorts before it.
+    let initialSortOrder = 'a0';
+    try {
+      const minKeyResult = await database.query<any>(
+        `SELECT MIN(kanban_sort_order) as min_key FROM tracker_items WHERE workspace = $1 AND status = $2 AND kanban_sort_order IS NOT NULL`,
+        [payload.workspace, payload.status]
+      );
+      const minKey = minKeyResult.rows[0]?.min_key;
+      if (minKey) {
+        const { generateKeyBetween } = await import('@nimbalyst/runtime/utils/fractionalIndex');
+        initialSortOrder = generateKeyBetween(null, minKey);
+      }
+    } catch (e) {
+      // Non-fatal: fall back to default sort order
+    }
+
+    const data: Record<string, any> = {
+      title: payload.title,
+      status: payload.status,
+      priority: payload.priority,
+      kanbanSortOrder: initialSortOrder,
+      created: new Date().toISOString().split('T')[0],
+      authorIdentity,
+      reporterEmail: authorIdentity.email || authorIdentity.gitEmail || undefined,
+    };
+    if (payload.description) data.description = payload.description;
+    if (payload.owner) data.owner = payload.owner;
+    if (payload.tags && payload.tags.length > 0) data.tags = payload.tags;
+    if (payload.customFields) {
+      Object.assign(data, payload.customFields);
+    }
+
+    const source = payload.source || 'native';
+    const contentJson = payload.content ? JSON.stringify(payload.content) : null;
+    const syncPolicy = getEffectiveTrackerSyncPolicy(payload.workspace, payload.type, payload.syncMode);
+    // Per-item decision (NIM-876): hybrid types only sync flagged items.
+    const syncStatus = getInitialTrackerSyncStatus(syncPolicy, data);
+
+    // NIM-454: persist the tracker-type tag on the row so the item reliably
+    // appears in its type view and syncs correctly, instead of relying on a
+    // read-time fallback. Mirrors the MCP create path (typeTags always includes
+    // the primary type). The DB layer maps a JS array to TEXT[] on PGLite / a
+    // JSON string on better-sqlite3.
+    const typeTags: string[] = [payload.type];
+
+    await database.query(
+      `INSERT INTO tracker_items (
+        id, type, type_tags, data, workspace, document_path, line_number,
+        created, updated, last_indexed, sync_status,
+        content, archived, source, source_ref
+      ) VALUES ($1, $2, $3, $4, $5, '', NULL, NOW(), NOW(), NOW(), $6, $7, FALSE, $8, $9)`,
+      [
+        payload.id,
+        payload.type,
+        typeTags,
+        JSON.stringify(data),
+        payload.workspace,
+        syncStatus,
+        contentJson,
+        source,
+        payload.sourceRef || null,
+      ]
+    );
+
+    // NIM-363: allocate a NIM-### issue key for items created through the
+    // native/UI path (quick-add) the same way the MCP create path does, so
+    // every type -- including ideas -- gets a key. Without this, manual creates
+    // had no issue key while MCP creates did.
+    try {
+      const prefix = getWorkspaceState(payload.workspace).issueKeyPrefix || 'NIM';
+      const maxResult = await database.query<{ max_num: number | null }>(
+        `SELECT MAX(issue_number) as max_num FROM tracker_items WHERE workspace = $1`,
+        [payload.workspace]
+      );
+      const nextNum = (maxResult.rows[0]?.max_num ?? 0) + 1;
+      const issueKey = `${prefix}-${nextNum}`;
+      await database.query(
+        `UPDATE tracker_items SET issue_number = $1, issue_key = $2 WHERE id = $3`,
+        [nextNum, issueKey, payload.id]
+      );
+    } catch (issueKeyError) {
+      console.error('[DocumentService] Local issue key allocation failed:', issueKeyError);
+    }
+
+    const result = await database.query<any>(
+      `SELECT * FROM tracker_items WHERE id = $1`,
+      [payload.id]
+    );
+    if (result.rows.length === 0) {
+      throw new Error(`Failed to create tracker item ${payload.id}`);
+    }
+
+    const created = this.rowToTrackerItem(result.rows[0]);
+
+    // Notify watchers
+    const changeEvent: TrackerItemChangeEvent = {
+      added: [created],
+      updated: [],
+      removed: [],
+      timestamp: new Date(),
+    };
+    this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+
+    return created;
+  }
+
+  /**
+   * Parse tracker items from markdown content
+   * Note: This function is only called for .md and .markdown files
+   */
+  private async parseTrackerItems(filePath: string, relativePath: string): Promise<ParsedInlineTrackerCandidate[]> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const items: ParsedInlineTrackerCandidate[] = [];
+      const lines = content.split('\n');
+
+      // Anchor the tracker token on whitespace (or start-of-line) instead of
+      // leading with a lazy `.+?`. The previous pattern
+      // `/(.+?)\s+#([\w-]+)\[(.+?)\]/` had two unbounded lazy groups and
+      // exhibited O(N^2)+ catastrophic backtracking on long lines containing
+      // scattered `#`, `[`, `]` characters without a real tracker token. A
+      // single inline base64 image (`![](data:image/png;base64,...)`,
+      // ~300k chars on one line) locked the main process for 100+ seconds
+      // during the file-watcher-driven cache refresh after AI edits.
+      const trackerRegex = /(?:^|\s)#([\w-]+)\[([^\]\r\n]+)\]/;
+
+      // Track whether we're inside a code block
+      let inCodeBlock = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        // Check for code block fences (``` or ~~~)
+        if (line.trim().startsWith('```') || line.trim().startsWith('~~~')) {
+          inCodeBlock = !inCodeBlock;
+          continue;
+        }
+
+        // Skip lines inside code blocks
+        if (inCodeBlock) {
+          continue;
+        }
+
+        // Defense-in-depth: skip pathological lines before the regex runs.
+        // Real tracker syntax is well under 500 chars; anything longer is an
+        // inline base64 image, minified JSON, or similar — never a tracker.
+        if (line.length > 4096) {
+          continue;
+        }
+
+        // Cheap prefilter: a tracker token requires both `#` and `[`.
+        if (line.indexOf('#') < 0 || line.indexOf('[') < 0) {
+          continue;
+        }
+
+        // Skip lines that are indented code blocks (4+ spaces or tab at start)
+        if (line.match(/^(\s{4,}|\t)/)) {
+          continue;
+        }
+
+        const match = line.match(trackerRegex);
+
+        if (match && match.index !== undefined) {
+          // Reconstruct the title from the slice of the line preceding the
+          // tag. The new regex no longer captures the title group; deriving
+          // it positionally keeps the title O(N) instead of forcing the
+          // engine into a lazy-prefix backtrack.
+          const title = line.slice(0, match.index).trim();
+          if (!title) {
+            // Preserve original semantic: a tracker line must have a title.
+            continue;
+          }
+
+          // Additional check: ensure the match is not inside inline code (backticks)
+          // This prevents matching `#bug[...]` within inline code blocks
+          const beforeMatch = line.substring(0, match.index);
+          const backtickCount = (beforeMatch.match(/`/g) || []).length;
+
+          // If odd number of backticks before the match, we're inside inline code
+          if (backtickCount % 2 !== 0) {
+            continue;
+          }
+          const [, type, propsStr] = match;
+
+          // Parse key:value pairs
+          const props: Record<string, string> = {};
+          const propRegex = /(\w+):((?:"[^"]*")|(?:[^\s\]]+))/g;
+          let propMatch;
+          while ((propMatch = propRegex.exec(propsStr)) !== null) {
+            const [, key, value] = propMatch;
+            props[key] = value.startsWith('"') ? value.slice(1, -1).replace(/\\"/g, '"') : value;
+          }
+
+          // Extract description from indented lines below
+          let description: string | undefined;
+          const descriptionLines: string[] = [];
+          let j = i + 1;
+          while (j < lines.length) {
+            const nextLine = lines[j];
+            // Check if line is indented (starts with 2+ spaces or a tab)
+            if (nextLine.match(/^(\s{2,}|\t)/)) {
+              // Remove leading indentation and add to description
+              descriptionLines.push(nextLine.replace(/^(\s{2,}|\t)/, ''));
+              j++;
+            } else {
+              break;
+            }
+          }
+          if (descriptionLines.length > 0) {
+            description = descriptionLines.join('\n').trim();
+          }
+
+          items.push({
+            id: props.id || undefined,
+            explicitId: Boolean(props.id),
+            type: type as TrackerItemType,
+            title: title.replace(/^- /, '').replace(/^\[ \] /, '').replace(/^\[x\] /, ''),
+            description,
+            status: (props.status || 'to-do') as any,
+            priority: props.priority as any,
+            owner: props.owner,
+            module: relativePath,
+            lineNumber: i + 1,
+            workspace: this.workspacePath,
+            tags: props.tags ? props.tags.split(',') : undefined,
+            created: props.created,
+            updated: props.updated,
+            dueDate: props.due || undefined,
+            archived: props.archived === 'true',
+            lastIndexed: new Date()
+          });
+        }
+      }
+
+      // console.log(`[DocumentService] Parsed ${items.length} tracker items from ${relativePath}`);
+      return items;
+    } catch (error) {
+      console.error(`[DocumentService] Failed to parse tracker items from ${relativePath}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Update tracker items cache for a file
+   * Only processes markdown files - tracker items are not parsed from code files
+   */
+  private async updateTrackerItemsCache(relativePath: string): Promise<void> {
+    // Only parse tracker items from markdown files
+    const ext = path.extname(relativePath).toLowerCase();
+    if (ext !== '.md' && ext !== '.markdown') {
+      return;
+    }
+
+    const fullPath = path.join(this.workspacePath, relativePath);
+
+    // TODO: Debug logging - uncomment if needed for troubleshooting
+    // console.log(`[DocumentService] updateTrackerItemsCache called for: ${relativePath}`);
+    // console.log(`[DocumentService] Full path: ${fullPath}`);
+
+    try {
+      // Parse tracker items from the file
+      const parsedItems = await this.parseTrackerItems(fullPath, relativePath);
+      // TODO: Debug logging - uncomment if needed for troubleshooting
+      // console.log(`[DocumentService] Found ${items.length} tracker items in ${relativePath}`);
+      // if (items.length > 0) {
+      //   console.log(`[DocumentService] Sample tracker item:`, items[0]);
+      // }
+
+      // Get existing items for this module
+      // console.log(`[DocumentService] Querying database for existing tracker items...`);
+      const existingResult = await database.query<any>(
+        `SELECT id, type, line_number, title, data, updated
+         FROM tracker_items
+         WHERE workspace = $1 AND document_path = $2`,
+        [this.workspacePath, relativePath]
+      );
+      // console.log(`[DocumentService] Found ${existingResult.rows.length} existing tracker items in database`);
+      const existingIds = new Set(existingResult.rows.map(row => row.id));
+      const items = resolveInlineTrackerIds(parsedItems, existingResult.rows, relativePath);
+      const newIds = new Set(items.map(item => item.id));
+
+      // NIM-1559: look up each existing row BY ID across the workspace, not
+      // scoped to this file's `document_path`. The same inline `#id[...]`
+      // marker can appear in two files (e.g. a plan and its aggregated
+      // `__plans.md`); the row is keyed by its unique id, so a per-file lookup
+      // misses it (`document_path` currently belongs to the other file) and
+      // the item looks brand-new. That made each file's scan re-home the row
+      // and bump `updated`, ping-ponging it every re-index. Keyed by id, the
+      // guard sees the real row and preserves `updated` when content matches.
+      const resolvedIds = items.map(item => item.id).filter(Boolean) as string[];
+      const existingById = new Map<string, any>();
+      if (resolvedIds.length > 0) {
+        const byIdResult = await database.query<any>(
+          `SELECT id, type, line_number, data, updated
+           FROM tracker_items
+           WHERE workspace = $1 AND id = ANY($2)`,
+          [this.workspacePath, resolvedIds]
+        );
+        for (const row of byIdResult.rows) existingById.set(row.id, row);
+      }
+
+      // Find items to remove (existed before but not anymore)
+      const removedIds = Array.from(existingIds).filter(id => !newIds.has(id));
+
+      // Remove old items
+      if (removedIds.length > 0) {
+        // console.log(`[DocumentService] Removing ${removedIds.length} tracker items from database`);
+        await database.query(
+          `DELETE FROM tracker_items WHERE id = ANY($1)`,
+          [removedIds]
+        );
+      }
+
+      // Upsert new/updated items.
+      //
+      // NIM-875: a cold open treats every markdown file as changed and used to
+      // run one awaited INSERT ... ON CONFLICT per tracker item in a sequential
+      // loop. On a tracker-heavy project that serial N+1 flooded the single DB
+      // worker and starved the session-list query, hanging the window. Batch
+      // each file's items into a single multi-row upsert (chunked to stay under
+      // the SQLite bound-variable limit) so one file is one round-trip.
+      //
+      // Only set archived on INSERT (new items default to false). On UPDATE:
+      // only set archived=true if the file explicitly says so. Never reset
+      // archived to false from re-indexing -- the DB is the authority for
+      // archive state when the file doesn't have an archived prop. On conflict:
+      // merge file-derived fields INTO existing JSONB (preserves system metadata
+      // like authorIdentity, createdByAgent, linkedSessions, activity, comments
+      // that the indexer doesn't know about).
+      // NIM-1559: `updated` is a per-row bound param (not an inlined NOW()) so
+      // an item whose projected fields are unchanged on this re-index keeps
+      // its existing `updated`, while `last_indexed` still advances. Editing
+      // one line of a file must not re-stamp every tracker item in it.
+      const scanNow = new Date().toISOString();
+      const COLS_PER_ROW = 10; // params per row; created NOW() is inlined
+      const UPSERT_CHUNK = 90; // 900 bound vars/chunk, safely under SQLite's limit
+      for (let offset = 0; offset < items.length; offset += UPSERT_CHUNK) {
+        const chunk = items.slice(offset, offset + UPSERT_CHUNK);
+        const valuesClauses: string[] = [];
+        const params: any[] = [];
+        for (let i = 0; i < chunk.length; i++) {
+          const item = chunk[i];
+          const data = {
+            title: item.title,
+            description: item.description,
+            status: item.status,
+            priority: item.priority,
+            owner: item.owner,
+            tags: item.tags || [],
+            dueDate: item.dueDate,
+            created: item.created,
+            updated: item.updated
+          };
+          const existing = existingById.get(item.id);
+          // Only a change to projected CONTENT (or the item's type) advances
+          // `updated`. Positional metadata -- line number, which file owns the
+          // marker -- is written but must NOT bump `updated` (NIM-1559).
+          const changed =
+            !existing ||
+            existing.type !== item.type ||
+            projectionWouldChange(
+              parseJsonColumn<Record<string, unknown>>(existing.data) ?? {},
+              data,
+            );
+          const updatedValue = changed
+            ? scanNow
+            : (existing.updated != null
+                ? new Date(existing.updated).toISOString()
+                : scanNow);
+          const isArchived = item.archived === true;
+          const b = i * COLS_PER_ROW;
+          valuesClauses.push(
+            `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, NOW(), $${b + 7}, $${b + 8}, $${b + 9}, $${b + 10})`
+          );
+          params.push(
+            item.id,
+            item.type,
+            JSON.stringify(data),
+            item.workspace,
+            item.module, // document_path
+            item.lineNumber || null,
+            updatedValue,
+            item.lastIndexed,
+            isArchived,
+            isArchived ? new Date().toISOString() : null
+          );
+        }
+        await database.query(
+          `INSERT INTO tracker_items (
+            id, type, data, workspace, document_path, line_number, created, updated, last_indexed, archived, archived_at
+          ) VALUES ${valuesClauses.join(', ')}
+          ON CONFLICT (id) DO UPDATE SET
+            type = EXCLUDED.type,
+            data = tracker_items.data || EXCLUDED.data,
+            workspace = EXCLUDED.workspace,
+            document_path = EXCLUDED.document_path,
+            line_number = EXCLUDED.line_number,
+            updated = EXCLUDED.updated,
+            last_indexed = EXCLUDED.last_indexed,
+            archived = CASE WHEN EXCLUDED.archived = TRUE THEN TRUE ELSE tracker_items.archived END,
+            archived_at = CASE WHEN EXCLUDED.archived = TRUE THEN EXCLUDED.archived_at ELSE tracker_items.archived_at END`,
+          params
+        );
+      }
+
+      // Notify watchers if there are changes.
+      // Re-read items from DB to get authoritative archived state
+      // (the upsert preserves DB archived state via CASE, but parsed items may not have it)
+      if (items.length > 0 || removedIds.length > 0) {
+        const itemIds = items.map(item => item.id);
+        let dbItems: TrackerItem[] = items;
+        if (itemIds.length > 0) {
+          try {
+            const dbResult = await database.query<any>(
+              `SELECT * FROM tracker_items WHERE id = ANY($1)`,
+              [itemIds]
+            );
+            dbItems = dbResult.rows.map((row: any) => this.rowToTrackerItem(row));
+          } catch {
+            // Fall back to parsed items if DB read fails
+          }
+        }
+        const changeEvent: TrackerItemChangeEvent = {
+          added: dbItems.filter(item => !existingIds.has(item.id)),
+          updated: dbItems.filter(item => existingIds.has(item.id)),
+          removed: removedIds,
+          timestamp: new Date()
+        };
+
+        // console.log(`[DocumentService] Notifying ${this.trackerItemWatchers.size} watchers of tracker item changes`);
+        this.trackerItemWatchers.forEach(callback => callback(changeEvent));
+      }
+
+      // console.log(`[DocumentService] updateTrackerItemsCache completed successfully for ${relativePath}`);
+    } catch (error) {
+      console.error(`[DocumentService] Failed to update tracker items cache for ${relativePath}:`, error);
+    }
+  }
+
+  // Asset management methods
+  async storeAsset(buffer: Buffer, mimeType: string, documentPath?: string): Promise<{ hash: string, extension: string, relativePath: string }> {
+    // Hash the image buffer
+    const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+
+    // Determine file extension from MIME type
+    const extensionMap: Record<string, string> = {
+      'image/png': 'png',
+      'image/jpeg': 'jpg',
+      'image/jpg': 'jpg',
+      'image/gif': 'gif',
+      'image/webp': 'webp',
+      'image/svg+xml': 'svg'
+    };
+    const extension = extensionMap[mimeType] || 'png';
+    const filename = `${hash}.${extension}`;
+
+    // Determine asset storage location based on document path
+    let assetsDir: string;
+    let relativePath: string;
+
+    if (documentPath) {
+      // Store in assets/ folder adjacent to the document
+      const documentDir = path.dirname(documentPath);
+      assetsDir = path.join(documentDir, 'assets');
+      relativePath = `assets/${filename}`;
+    } else {
+      // Fallback to workspace-level storage (for backward compatibility)
+      assetsDir = path.join(this.workspacePath, '.nimbalyst', 'assets');
+      relativePath = `.nimbalyst/assets/${filename}`;
+    }
+
+    // Ensure assets directory exists
+    await fs.mkdir(assetsDir, { recursive: true });
+
+    // Write file with hash as name
+    const assetPath = path.join(assetsDir, filename);
+
+    // Only write if file doesn't already exist (deduplication)
+    try {
+      await fs.access(assetPath);
+      // console.log(`[DocumentService] Asset ${filename} already exists at ${assetsDir}, skipping write`);
+    } catch {
+      await fs.writeFile(assetPath, buffer);
+      // console.log(`[DocumentService] Stored asset ${filename} at ${assetsDir} (${buffer.length} bytes)`);
+    }
+
+    return { hash, extension, relativePath };
+  }
+
+  async getAssetPath(hash: string): Promise<string | null> {
+    const assetsDir = path.join(this.workspacePath, '.nimbalyst', 'assets');
+
+    // Try common extensions
+    const extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
+    for (const ext of extensions) {
+      const assetPath = path.join(assetsDir, `${hash}.${ext}`);
+      try {
+        await fs.access(assetPath);
+        return assetPath;
+      } catch {
+        // File doesn't exist, try next extension
+      }
+    }
+
+    return null;
+  }
+
+  async garbageCollectAssets(): Promise<number> {
+    const assetsDir = path.join(this.workspacePath, '.nimbalyst', 'assets');
+
+    try {
+      // Check if assets directory exists
+      await fs.access(assetsDir);
+    } catch {
+      // No assets directory, nothing to collect
+      return 0;
+    }
+
+    // Scan all markdown files for asset references
+    const referencedHashes = new Set<string>();
+    const assetRegex = /\.nimbalyst\/assets\/([a-f0-9]+)\./g;
+
+    for (const doc of this.documents) {
+      const fullPath = path.join(this.workspacePath, doc.path);
+      try {
+        const content = await fs.readFile(fullPath, 'utf-8');
+        let match;
+        while ((match = assetRegex.exec(content)) !== null) {
+          referencedHashes.add(match[1]);
+        }
+      } catch (error) {
+        console.error(`[DocumentService] Failed to scan ${doc.path} for asset refs:`, error);
+      }
+    }
+
+    // Get all asset files
+    const assetFiles = await fs.readdir(assetsDir);
+    let deletedCount = 0;
+
+    for (const file of assetFiles) {
+      // Extract hash from filename (before the extension)
+      const hash = file.split('.')[0];
+
+      if (!referencedHashes.has(hash)) {
+        const assetPath = path.join(assetsDir, file);
+        await shell.trashItem(assetPath);
+        // console.log(`[DocumentService] Deleted unreferenced asset: ${file}`);
+        deletedCount++;
+      }
+    }
+
+    return deletedCount;
+  }
+
+  destroy() {
+    if (this.watchInterval) {
+      clearInterval(this.watchInterval);
+      this.watchInterval = null;
+    }
+    this.watchers.clear();
+    this.metadataWatchers.clear();
+    this.trackerItemWatchers.clear();
+    this.metadataCache.clear();
+    this.metadataByPath.clear();
+    this.fileStateCache.clear();
+  }
+}
+
+type DocumentServiceResolver = (event: IpcMainEvent | IpcMainInvokeEvent) => ElectronDocumentService | null;
+
+let handlersRegistered = false;
+let resolveDocumentService: DocumentServiceResolver | null = null;
+
+function requireDocumentService(event: IpcMainEvent | IpcMainInvokeEvent): ElectronDocumentService {
+  if (!resolveDocumentService) {
+    throw new Error('[DocumentService] Resolver not registered');
+  }
+  const service = resolveDocumentService(event);
+  if (!service) {
+    throw new Error('[DocumentService] No document service available for sender');
+  }
+  return service;
+}
+
+// IPC handler setup
+export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) {
+  resolveDocumentService = resolver;
+
+  if (handlersRegistered) {
+    return;
+  }
+  handlersRegistered = true;
+
+  safeHandle('document-service:list', async (event) => {
+    try {
+      // Debug logging - comment out for production
+      // console.log('[DocumentService IPC] list handler called');
+      const docs = await requireDocumentService(event).listDocuments();
+      // console.log('[DocumentService IPC] list returning', docs.length, 'documents');
+      return docs;
+    } catch (error) {
+      console.error('[DocumentService] list failed:', error);
+      return [];
+    }
+  });
+
+  safeHandle('document-service:search', async (event, query: string) => {
+    try {
+      // Debug logging - comment out for production
+      // console.log('[DocumentService IPC] search handler called with query:', query);
+      const results = await requireDocumentService(event).searchDocuments(query);
+      // console.log('[DocumentService IPC] search returning', results.length, 'results');
+      return results;
+    } catch (error) {
+      console.error('[DocumentService] search failed:', error);
+      return [];
+    }
+  });
+
+  safeHandle('document-service:get', async (event, id: string) => {
+    try {
+      return await requireDocumentService(event).getDocument(id);
+    } catch (error) {
+      console.error('[DocumentService] get failed:', error);
+      return null;
+    }
+  });
+
+  safeHandle('document-service:get-by-path', async (event, path: string) => {
+    try {
+      return await requireDocumentService(event).getDocumentByPath(path);
+    } catch (error) {
+      console.error('[DocumentService] getByPath failed:', error);
+      return null;
+    }
+  });
+
+  safeHandle('document-service:open', async (event, payload: { documentId: string; fallback?: DocumentOpenOptions }) => {
+    try {
+      const { documentId, fallback } = payload ?? { documentId: '' };
+      return await requireDocumentService(event).openDocument(documentId, fallback, event.sender);
+    } catch (error) {
+      console.error('[DocumentService] open failed:', error);
+      throw error;
+    }
+  });
+
+  // Handle watch subscriptions
+  safeOn('document-service:watch', (event) => {
+    let unsubscribe: (() => void) | undefined;
+    try {
+      const service = requireDocumentService(event);
+      unsubscribe = service.watchDocuments((documents) => {
+        event.sender.send('document-service:documents-changed', documents);
+      });
+    } catch (error) {
+      console.error('[DocumentService] watch failed to start:', error);
+      event.sender.send('document-service:documents-changed', []);
+    }
+
+    if (unsubscribe) {
+      // Clean up when renderer is destroyed
+      event.sender.once('destroyed', unsubscribe);
+    }
+  });
+
+  // Metadata IPC handlers
+  safeHandle('document-service:metadata-get', async (event, id: string) => {
+    try {
+      return await requireDocumentService(event).getDocumentMetadata(id);
+    } catch (error) {
+      console.error('[DocumentService] metadata-get failed:', error);
+      return null;
+    }
+  });
+
+  safeHandle('document-service:metadata-get-by-path', async (event, path: string) => {
+    try {
+      return await requireDocumentService(event).getDocumentMetadataByPath(path);
+    } catch (error) {
+      console.error('[DocumentService] metadata-get-by-path failed:', error);
+      return null;
+    }
+  });
+
+  safeHandle('document-service:metadata-list', async (event) => {
+    try {
+      // console.log('[DocumentService] metadata-list IPC handler called');
+      const service = requireDocumentService(event);
+      // console.log('[DocumentService] Got service:', !!service);
+      const result = await service.listDocumentMetadata();
+      // console.log('[DocumentService] Returning metadata:', result.length);
+      return result;
+    } catch (error) {
+      console.error('[DocumentService] metadata-list failed:', error);
+      return [];
+    }
+  });
+
+  safeHandle('document-service:notify-frontmatter-changed', async (event, payload: { path: string; frontmatter: Record<string, unknown> }) => {
+    try {
+      const { path, frontmatter } = payload;
+      requireDocumentService(event).notifyFrontmatterChanged(path, frontmatter);
+      return { success: true };
+    } catch (error) {
+      console.error('[DocumentService] notify-frontmatter-changed failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  safeHandle('document-service:refresh-file-metadata', async (event, filePath: string) => {
+    try {
+      await requireDocumentService(event).refreshFileMetadata(filePath);
+      return { success: true };
+    } catch (error) {
+      console.error('[DocumentService] refresh-file-metadata failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Handle metadata watch subscriptions
+  // Track per-sender metadata watch subscriptions to prevent stacking on HMR
+  const metadataWatchBySender = new WeakMap<Electron.WebContents, () => void>();
+
+  safeOn('document-service:metadata-watch', (event) => {
+    // Unsubscribe previous watcher for this sender (prevents stacking on HMR)
+    const prevUnsub = metadataWatchBySender.get(event.sender);
+    if (prevUnsub) prevUnsub();
+
+    let unsubscribe: (() => void) | undefined;
+    try {
+      const service = requireDocumentService(event);
+      unsubscribe = service.watchDocumentMetadata((change) => {
+        event.sender.send('document-service:metadata-changed', change);
+      });
+    } catch (error) {
+      console.error('[DocumentService] metadata-watch failed to start:', error);
+    }
+
+    if (unsubscribe) {
+      metadataWatchBySender.set(event.sender, unsubscribe);
+      event.sender.once('destroyed', () => {
+        unsubscribe!();
+        metadataWatchBySender.delete(event.sender);
+      });
+    }
+  });
+
+  // Refresh workspace data (scan documents and update tracker/metadata caches)
+  safeHandle('document-service:refresh-workspace', async (event) => {
+    try {
+      await requireDocumentService(event).refreshWorkspaceData();
+      return { success: true };
+    } catch (error) {
+      console.error('[DocumentService] refresh-workspace failed:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Virtual document handler
+  safeHandle('document-service:load-virtual', async (event, virtualPath: string) => {
+    try {
+      return await requireDocumentService(event).loadVirtualDocument(virtualPath);
+    } catch (error) {
+      console.error('[DocumentService] load-virtual failed:', error);
+      return null;
+    }
+  });
+
+  // Tracker items handlers
+  safeHandle('document-service:tracker-items-list', async (event) => {
+    try {
+      return await requireDocumentService(event).listTrackerItems();
+    } catch (error) {
+      console.error('[DocumentService] tracker-items-list failed:', error);
+      return [];
+    }
+  });
+
+  safeHandle('document-service:tracker-items-by-type', async (event, type: TrackerItemType) => {
+    try {
+      return await requireDocumentService(event).getTrackerItemsByType(type);
+    } catch (error) {
+      console.error('[DocumentService] tracker-items-by-type failed:', error);
+      return [];
+    }
+  });
+
+  safeHandle('document-service:tracker-items-by-module', async (event, module: string) => {
+    try {
+      return await requireDocumentService(event).getTrackerItemsByModule(module);
+    } catch (error) {
+      console.error('[DocumentService] tracker-items-by-module failed:', error);
+      return [];
+    }
+  });
+
+  // Track per-sender tracker item watch subscriptions to prevent stacking on HMR
+  const trackerWatchBySender = new WeakMap<Electron.WebContents, () => void>();
+
+  safeOn('document-service:tracker-items-watch', (event) => {
+    // Unsubscribe previous watcher for this sender (prevents stacking on HMR)
+    const prevUnsub = trackerWatchBySender.get(event.sender);
+    if (prevUnsub) prevUnsub();
+
+    let unsubscribe: (() => void) | undefined;
+    try {
+      const service = requireDocumentService(event);
+      unsubscribe = service.watchTrackerItems((change: TrackerItemChangeEvent) => {
+        event.sender.send('document-service:tracker-items-changed', change);
+      });
+    } catch (error) {
+      console.error('[DocumentService] tracker-items-watch failed to start:', error);
+    }
+
+    if (unsubscribe) {
+      trackerWatchBySender.set(event.sender, unsubscribe);
+      event.sender.once('destroyed', () => {
+        unsubscribe!();
+        trackerWatchBySender.delete(event.sender);
+      });
+    }
+  });
+
+  // Tracker item sync status update
+  safeHandle('document-service:tracker-item-update-sync-status', async (event, payload: { itemId: string; syncStatus: string }) => {
+    try {
+      const { itemId, syncStatus } = payload;
+      await requireDocumentService(event).updateTrackerItemSyncStatus(itemId, syncStatus);
+      return { success: true };
+    } catch (error) {
+      console.error('[DocumentService] tracker-item-update-sync-status failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Get the current user's TrackerIdentity for "my items" filtering
+  safeHandle('document-service:get-current-identity', async (event) => {
+    try {
+      // getCurrentIdentity imported statically at top of file
+      const service = resolveDocumentService?.(event);
+      // Pass workspace path for git config resolution if available
+      const workspacePath = (service as any)?.workspacePath as string | undefined;
+      return { success: true, identity: getCurrentIdentity(workspacePath) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Create tracker item directly in PGLite (bypassing markdown files)
+  safeHandle('document-service:create-tracker-item', async (event, payload: {
+    id: string;
+    type: string;
+    title: string;
+    status: string;
+    priority: string;
+    workspace: string;
+    description?: string;
+    owner?: string;
+    tags?: string[];
+    customFields?: Record<string, any>;
+    syncMode?: string;
+  }) => {
+    try {
+      const syncPolicy = getEffectiveTrackerSyncPolicy(payload.workspace, payload.type, payload.syncMode);
+      // console.log('[DocumentService] create-tracker-item called:', {
+      //   id: payload.id,
+      //   type: payload.type,
+      //   requestedSyncMode: payload.syncMode,
+      //   effectiveSyncPolicy: syncPolicy,
+      //   workspace: payload.workspace,
+      // });
+      const item = await requireDocumentService(event).createTrackerItem(payload);
+      // console.log('[DocumentService] create-tracker-item created locally:', item.id);
+
+      if (shouldSyncTrackerItem(syncPolicy, item)) {
+        const active = isTrackerSyncActive(payload.workspace);
+        // console.log('[DocumentService] create-tracker-item sync check:', { syncPolicy, active });
+        if (active) {
+          try {
+            await syncTrackerItem(item);
+            // console.log('[DocumentService] create-tracker-item synced to TrackerRoom:', item.id);
+          } catch (syncErr) {
+            console.error('[DocumentService] create-tracker-item sync failed (item still created locally):', syncErr);
+          }
+        }
+      }
+
+      return { success: true, item };
+    } catch (error) {
+      console.error('[DocumentService] create-tracker-item failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Update tracker item fields
+  safeHandle('document-service:update-tracker-item', async (event, payload: {
+    itemId: string;
+    updates: Record<string, any>;
+    syncMode?: string;
+  }) => {
+    try {
+      // console.log('[DocumentService] update-tracker-item:', {
+      //   itemId: payload.itemId,
+      //   requestedSyncMode: payload.syncMode,
+      //   updateKeys: Object.keys(payload.updates),
+      // });
+      const svc = requireDocumentService(event);
+
+      // Capture the pre-update relationship values so inverse propagation (below)
+      // can diff added/dropped targets. Best-effort by canonical id; if the row
+      // can't be read here we simply skip inverse propagation for this update.
+      let oldData: Record<string, unknown> = {};
+      let oldType: string | null = null;
+      try {
+        const oldRow = await database.query<any>(`SELECT type, data FROM tracker_items WHERE id = $1`, [payload.itemId]);
+        if (oldRow.rows[0]) {
+          oldType = oldRow.rows[0].type ?? null;
+          oldData = parseJsonColumn<Record<string, unknown>>(oldRow.rows[0].data) ?? {};
+        }
+      } catch { /* skip inverse propagation if old data is unavailable */ }
+
+      const updates = { ...payload.updates };
+      if (oldType) {
+        const relWrite = applyRelationshipFieldWrites(
+          updates,
+          globalRegistry.get(oldType)?.fields ?? [],
+          payload.itemId,
+        );
+        if (!relWrite.ok) {
+          throw new Error(`Invalid relationship field "${relWrite.field}": ${relWrite.errors.join('; ')}`);
+        }
+      }
+
+      const item = await svc.updateTrackerItem(payload.itemId, updates);
+      const syncPolicy = getEffectiveTrackerSyncPolicy(item.workspace, item.type, payload.syncMode);
+
+      if (shouldSyncTrackerItem(syncPolicy, item)) {
+        const syncActive = isTrackerSyncActive(item.workspace);
+        // console.log('[DocumentService] update-tracker-item sync gate:', { syncPolicy, workspace: item.workspace, syncActive });
+        try {
+          if (syncActive) {
+            await syncTrackerItem(item);
+            // console.log('[DocumentService] update-tracker-item synced:', item.id);
+          } else {
+            await svc.updateTrackerItemSyncStatus(item.id, 'pending');
+            // console.log('[DocumentService] update-tracker-item skipped: sync not active for workspace');
+          }
+        } catch (syncErr) {
+          console.error('[DocumentService] update-tracker-item sync failed:', syncErr);
+        }
+      } else {
+        // console.log('[DocumentService] update-tracker-item no sync: effective mode =', syncPolicy.mode);
+      }
+
+      // Phase 3: materialize inverse relationship fields on target items via the
+      // shared, customFields-aware helper (same path the MCP tracker_update handler
+      // uses, so the two can't drift — NIM-1305 Defect A).
+      try {
+        await svc.propagateInverseForUpdate(
+          { id: item.id, type: item.type, issueKey: item.issueKey, title: item.title },
+          updates,
+          oldData,
+          payload.syncMode,
+        );
+      } catch (invErr) {
+        console.error('[DocumentService] inverse relationship propagation failed:', invErr);
+      }
+
+      return { success: true, item };
+    } catch (error) {
+      console.error('[DocumentService] update-tracker-item failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Per-item "Share with team" toggle for hybrid trackers (e.g. plans).
+  safeHandle('document-service:set-tracker-item-shared', async (event, payload: {
+    itemId: string;
+    shared: boolean;
+  }) => {
+    try {
+      const item = await requireDocumentService(event).setTrackerItemShared(payload.itemId, payload.shared);
+      return { success: true, item };
+    } catch (error) {
+      console.error('[DocumentService] set-tracker-item-shared failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Update tracker item content (Lexical editor state)
+  safeHandle('document-service:tracker-item-update-content', async (event, payload: {
+    itemId: string;
+    content: any;
+  }) => {
+    try {
+      await requireDocumentService(event).updateTrackerItemContent(payload.itemId, payload.content);
+
+      // Trigger sync; the new sync engine orders writes by server-assigned syncId.
+      try {
+        const row = await database.query<any>(
+          `SELECT workspace, type FROM tracker_items WHERE id = $1`,
+          [payload.itemId],
+        );
+        if (row.rows.length > 0) {
+          await syncAfterCommentMutation(event, payload.itemId, row.rows[0].workspace, row.rows[0].type);
+        }
+      } catch (syncErr) {
+        console.error('[DocumentService] content sync failed:', syncErr);
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error('[DocumentService] tracker-item-update-content failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Get tracker item content (Lexical editor state)
+  safeHandle('document-service:tracker-item-get-content', async (event, payload: {
+    itemId: string;
+  }) => {
+    try {
+      const content = await requireDocumentService(event).getTrackerItemContent(payload.itemId);
+      return { success: true, content };
+    } catch (error) {
+      console.error('[DocumentService] tracker-item-get-content failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Latest body cache row for an item -- cold-open paint path. Returns
+  // { bodyVersion, content } so the renderer can paint authoritative
+  // content while the DocumentRoom Y.Doc connects in the background.
+  safeHandle('document-service:get-tracker-body-cache-for-detail', async (event, payload: {
+    itemId: string;
+  }) => {
+    try {
+      const row = await requireDocumentService(event).getTrackerBodyCacheLatest(payload.itemId);
+      return { success: true, row };
+    } catch (error) {
+      console.error('[DocumentService] get-tracker-body-cache-for-detail failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Archive/unarchive tracker item
+  safeHandle('document-service:tracker-item-archive', async (event, payload: {
+    itemId: string;
+    archive: boolean;
+  }) => {
+    try {
+      const item = await requireDocumentService(event).archiveTrackerItem(payload.itemId, payload.archive);
+      return { success: true, item };
+    } catch (error) {
+      console.error('[DocumentService] tracker-item-archive failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Delete tracker item permanently
+  safeHandle('document-service:tracker-item-delete', async (event, payload: {
+    itemId: string;
+  }) => {
+    try {
+      await requireDocumentService(event).deleteTrackerItem(payload.itemId);
+      return { success: true };
+    } catch (error) {
+      console.error('[DocumentService] tracker-item-delete failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Update tracker item in source file (frontmatter)
+  safeHandle('document-service:tracker-item-update-in-file', async (event, payload: {
+    itemId: string;
+    updates: Record<string, any>;
+  }) => {
+    try {
+      const item = await requireDocumentService(event).updateTrackerItemInFile(payload.itemId, payload.updates);
+      return { success: true, item };
+    } catch (error) {
+      console.error('[DocumentService] tracker-item-update-in-file failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Import tracker item from file
+  safeHandle('document-service:tracker-item-import-file', async (event, payload: {
+    relativePath: string;
+    skipDuplicates?: boolean;
+  }) => {
+    try {
+      const result = await requireDocumentService(event).importTrackerItemFromFile(
+        payload.relativePath,
+        { skipDuplicates: payload.skipDuplicates }
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('[DocumentService] tracker-item-import-file failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Bulk import tracker items from directory
+  safeHandle('document-service:tracker-item-bulk-import', async (event, payload: {
+    directory: string;
+    skipDuplicates?: boolean;
+    recursive?: boolean;
+  }) => {
+    try {
+      const result = await requireDocumentService(event).bulkImportTrackerItems(
+        payload.directory,
+        { skipDuplicates: payload.skipDuplicates, recursive: payload.recursive }
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('[DocumentService] tracker-item-bulk-import failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  /** Trigger sync for a tracker item after a local mutation (same pattern as update-tracker-item) */
+  async function syncAfterCommentMutation(event: IpcMainInvokeEvent, itemId: string, workspace: string, itemType: string): Promise<void> {
+    try {
+      const syncPolicy = getEffectiveTrackerSyncPolicy(workspace, itemType as any);
+      const service = requireDocumentService(event);
+      const item = await service.getTrackerItemById(itemId);
+      // Per-item decision (NIM-876): hybrid types only sync flagged items.
+      if (item && shouldSyncTrackerItem(syncPolicy, item)) {
+        if (isTrackerSyncActive(workspace)) {
+          await syncTrackerItem(item);
+        } else {
+          await service.updateTrackerItemSyncStatus(itemId, 'pending');
+        }
+      }
+    } catch (syncErr) {
+      console.error('[DocumentService] comment sync failed:', syncErr);
+    }
+  }
+
+  /** Re-read a tracker item from DB and broadcast change to the event sender */
+  async function broadcastTrackerItemUpdate(event: IpcMainInvokeEvent, itemId: string): Promise<void> {
+    try {
+      const result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [itemId]);
+      if (result.rows.length === 0) return;
+      const r = result.rows[0];
+      const d = parseJsonColumn<Record<string, any>>(r.data) ?? {};
+      const parsedTags = parseJsonColumn<string[]>(r.type_tags);
+      const typeTags: string[] =
+        Array.isArray(parsedTags) && parsedTags.length > 0 ? parsedTags : [r.type];
+      const item: TrackerItem = {
+        id: r.id, issueNumber: r.issue_number ?? undefined, issueKey: r.issue_key ?? undefined,
+        type: r.type, typeTags, title: d.title || r.title, description: d.description || undefined,
+        status: d.status || r.status, priority: d.priority || undefined, owner: d.owner || undefined,
+        module: r.document_path, lineNumber: r.line_number || undefined, workspace: r.workspace,
+        tags: d.tags || undefined, created: d.created || r.created || undefined,
+        updated: d.updated || r.updated || undefined, dueDate: d.dueDate || undefined,
+        lastIndexed: new Date(r.last_indexed), content: r.content || undefined,
+        archived: r.archived ?? false,
+        archivedAt: r.archived_at ? new Date(r.archived_at).toISOString() : undefined,
+        source: r.source || (r.document_path ? 'inline' : 'native'),
+        sourceRef: r.source_ref || undefined,
+        authorIdentity: d.authorIdentity || undefined, lastModifiedBy: d.lastModifiedBy || undefined,
+        createdByAgent: d.createdByAgent || false,
+        assigneeEmail: d.assigneeEmail || undefined, reporterEmail: d.reporterEmail || undefined,
+        assigneeId: d.assigneeId || undefined, reporterId: d.reporterId || undefined,
+        labels: d.labels || undefined, linkedSessions: d.linkedSessions || undefined,
+        linkedCommitSha: d.linkedCommitSha || undefined, documentId: d.documentId || undefined,
+        syncStatus: r.sync_status || 'local',
+      };
+      // Pass through extra JSONB data fields (activity, comments, etc.) AND
+      // un-nest a nested `data.customFields` bag so custom schema columns
+      // survive the TrackerItem -> TrackerRecord conversion. See NIM-863.
+      // Uses the item's own keys as the "known" set -- no hardcoded list.
+      const itemKeys = new Set(Object.keys(item));
+      const cf = extractItemCustomFields(d, itemKeys);
+      if (cf) (item as any).customFields = cf;
+      event.sender.send('document-service:tracker-items-changed', {
+        added: [], updated: [item], removed: [], timestamp: new Date(),
+      });
+    } catch { /* best-effort */ }
+  }
+
+  // Comment management handlers
+  safeHandle('document-service:tracker-item-add-comment', async (event, payload: {
+    itemId: string;
+    body: string;
+  }) => {
+    try {
+      const row = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [payload.itemId]);
+      if (row.rows.length === 0) return { success: false, error: 'Item not found' };
+
+      const data = typeof row.rows[0].data === 'string' ? JSON.parse(row.rows[0].data) : row.rows[0].data || {};
+      // getCurrentIdentity imported statically at top of file
+      const authorIdentity = getCurrentIdentity(row.rows[0].workspace);
+
+      const comments = data.comments || data.customFields?.comments || [];
+      const commentId = `comment_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      comments.push({
+        id: commentId,
+        authorIdentity,
+        body: payload.body,
+        createdAt: Date.now(),
+        updatedAt: null,
+        deleted: false,
+      });
+      data.comments = comments;
+      if (data.customFields?.comments) {
+        delete data.customFields.comments;
+        if (Object.keys(data.customFields).length === 0) delete data.customFields;
+      }
+      data.lastModifiedBy = authorIdentity;
+
+      // Record activity for the comment
+      appendActivity(data, authorIdentity, 'commented');
+
+      await database.query(
+        `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+        [JSON.stringify(data), payload.itemId]
+      );
+
+      // Re-read updated row and broadcast so UI refreshes
+      await broadcastTrackerItemUpdate(event, payload.itemId);
+
+      // Trigger sync
+      await syncAfterCommentMutation(event, payload.itemId, row.rows[0].workspace, row.rows[0].type);
+
+      return { success: true, commentId };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  safeHandle('document-service:tracker-item-update-comment', async (event, payload: {
+    itemId: string;
+    commentId: string;
+    body?: string;
+    deleted?: boolean;
+  }) => {
+    try {
+      const row = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [payload.itemId]);
+      if (row.rows.length === 0) return { success: false, error: 'Item not found' };
+
+      const data = typeof row.rows[0].data === 'string' ? JSON.parse(row.rows[0].data) : row.rows[0].data || {};
+      const comments = data.comments || data.customFields?.comments || [];
+
+      // NIM-360: edit/delete are author-only. Build the requested mutation
+      // (delete wins over edit if both are set) and let the pure guard enforce
+      // authorship + LWW stamping. Fails closed for non-authors / unknown ids.
+      const actor = getCurrentIdentity(row.rows[0].workspace);
+      const mutation: CommentMutation | null =
+        payload.deleted === true
+          ? { kind: 'delete' }
+          : payload.body !== undefined
+            ? { kind: 'edit', body: payload.body }
+            : null;
+      if (!mutation) return { success: false, error: 'No comment change requested' };
+
+      const result = applyCommentMutation(comments, payload.commentId, mutation, actor, Date.now());
+      if (!result.ok) {
+        return { success: false, error: result.error, code: result.code };
+      }
+      data.comments = result.comments;
+      data.lastModifiedBy = actor;
+      if (data.customFields?.comments) {
+        delete data.customFields.comments;
+        if (Object.keys(data.customFields).length === 0) delete data.customFields;
+      }
+      appendActivity(
+        data,
+        actor,
+        mutation.kind === 'edit' ? 'comment_updated' : 'comment_deleted',
+        {
+          field: 'comment',
+          oldValue: result.previous.body,
+          newValue: mutation.kind === 'edit' ? result.comment.body : undefined,
+        },
+      );
+
+      await database.query(
+        `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+        [JSON.stringify(data), payload.itemId]
+      );
+
+      // Re-read updated row and broadcast so UI refreshes
+      await broadcastTrackerItemUpdate(event, payload.itemId);
+
+      // Trigger sync
+      await syncAfterCommentMutation(event, payload.itemId, row.rows[0].workspace, row.rows[0].type);
+
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Relationship backlinks (Epic C Phase 2). The tracker_relationship_index is a
+  // local, rebuildable projection of relationship field values; build it lazily
+  // per workspace on first request, then return incoming links for an item. The
+  // UI resolves source titles from its already-loaded items map, so we return
+  // only the edge identity.
+  // Throttle full-workspace rebuilds: cheap enough to re-run so MCP/agent writes
+  // (which don't reindex incrementally) surface in backlinks, but not on every
+  // rapid item open. UI field edits reindex their own item immediately.
+  const relationshipIndexBuiltAt = new Map<string, number>();
+  const RELATIONSHIP_INDEX_TTL_MS = 2000;
+
+  async function ensureRelationshipIndex(workspace: string): Promise<void> {
+    const last = relationshipIndexBuiltAt.get(workspace) ?? 0;
+    if (Date.now() - last < RELATIONSHIP_INDEX_TTL_MS) return;
+    relationshipIndexBuiltAt.set(workspace, Date.now()); // set before await to dedupe concurrent builds
+    try {
+      await rebuildWorkspaceRelationshipIndex(
+        workspace,
+        (type) => globalRegistry.get(type)?.fields ?? [],
+        database as any,
+      );
+    } catch (err) {
+      relationshipIndexBuiltAt.delete(workspace); // allow a retry on next request
+      console.error('[DocumentService] relationship index build failed:', err);
+    }
+  }
+
+  safeHandle('document-service:tracker-item-backlinks', async (_event, payload: { itemId: string }) => {
+    try {
+      const row = await database.query<any>(`SELECT workspace FROM tracker_items WHERE id = $1`, [payload.itemId]);
+      const workspace = row.rows[0]?.workspace;
+      if (!workspace) return { success: true, backlinks: [] };
+      await ensureRelationshipIndex(workspace);
+      const backlinks = await getRelationshipBacklinks(workspace, payload.itemId, database as any);
+      return {
+        success: true,
+        backlinks: backlinks.map((b) => ({
+          sourceItemId: b.sourceItemId,
+          sourceFieldId: b.sourceFieldId,
+          relationshipTypeKey: b.relationshipTypeKey,
+        })),
+      };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), backlinks: [] };
+    }
+  });
+
+  // Incremental reindex of one item's outgoing relationship edges. Called by the
+  // renderer after a relationship field changes so backlinks update without a
+  // full workspace rebuild. Idempotent.
+  safeHandle('document-service:tracker-item-reindex-relationships', async (_event, payload: { itemId: string }) => {
+    try {
+      const row = await database.query<any>(`SELECT id, type, data, workspace, updated FROM tracker_items WHERE id = $1`, [payload.itemId]);
+      if (row.rows.length === 0) return { success: false, error: 'Item not found' };
+      const r = row.rows[0];
+      const data = typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || {});
+      const defs = globalRegistry.get(r.type)?.fields ?? [];
+      const updatedAt = typeof r.updated === 'string' ? r.updated : (r.updated ? new Date(r.updated).toISOString() : null);
+      await reindexItemRelationships(r.workspace, r.id, data, defs, updatedAt, database as any);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Asset management handlers
+  safeHandle('document-service:store-asset', async (event, payload: { buffer: number[]; mimeType: string; documentPath?: string }) => {
+    try {
+      const { buffer, mimeType, documentPath } = payload;
+      const bufferObj = Buffer.from(buffer);
+      return await requireDocumentService(event).storeAsset(bufferObj, mimeType, documentPath);
+    } catch (error) {
+      console.error('[DocumentService] store-asset failed:', error);
+      throw error;
+    }
+  });
+
+  safeHandle('document-service:get-asset-path', async (event, hash: string) => {
+    try {
+      return await requireDocumentService(event).getAssetPath(hash);
+    } catch (error) {
+      console.error('[DocumentService] get-asset-path failed:', error);
+      return null;
+    }
+  });
+
+  safeHandle('document-service:gc-assets', async (event) => {
+    try {
+      return await requireDocumentService(event).garbageCollectAssets();
+    } catch (error) {
+      console.error('[DocumentService] gc-assets failed:', error);
+      return 0;
+    }
+  });
+}
