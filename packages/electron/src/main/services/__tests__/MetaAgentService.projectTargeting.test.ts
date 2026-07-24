@@ -266,6 +266,66 @@ describe('MetaAgentService project-targeted session routing (NIM-408)', () => {
     });
   });
 
+  it('creates a target-project child when the creator row exists only in the source project', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = {
+      queuePromptForSession: vi.fn(async () => ({ id: 'queue-1', prompt: 'Do the work' })),
+      triggerQueuedPromptProcessingForSession: vi.fn(async () => undefined),
+    };
+
+    vi.mocked(AISessionsRepository.get).mockImplementation(async (sessionId: string) =>
+      sessionId === 'caller' ? caller as any : null,
+    );
+    hasLiveWindowForWorkspaceMock.mockReturnValue(true);
+    createWorktreeMock.mockResolvedValue({
+      id: 'target-worktree',
+      name: 'safe-route',
+      path: '/project-b_worktrees/safe-route',
+      branch: 'worktree/safe-route',
+      baseBranch: 'integration/v12',
+      projectPath: '/project-b',
+      createdAt: 1,
+    });
+
+    const result = JSON.parse(await (service as any).spawnSession('caller', '/project-b', {
+      prompt: 'Do the work',
+      title: 'Project B owner',
+      isolated: true,
+      useWorktree: true,
+      targetWorkspacePath: '/project-b',
+      baseBranch: 'integration/v12',
+    }));
+
+    expect(hasLiveWindowForWorkspaceMock).toHaveBeenCalledWith('/project-b');
+    expect(vi.mocked(AISessionsRepository.create)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: '/project-b',
+        worktreeId: 'target-worktree',
+        createdBySessionId: 'caller',
+        parentSessionId: null,
+      }),
+    );
+    expect(result).toMatchObject({
+      isolated: true,
+      sourceWorkspacePath: '/project-a',
+      targetWorkspacePath: '/project-b',
+      worktreeId: 'target-worktree',
+      worktreePath: '/project-b_worktrees/safe-route',
+      worktreeMode: 'new',
+    });
+  });
+
+  it('fails closed when host routing differs from the creator and no target is explicit', async () => {
+    const service = MetaAgentService.getInstance();
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(caller as any);
+
+    await expect((service as any).spawnSession('caller', '/project-b', {
+      prompt: 'Do the work',
+      isolated: true,
+      useWorktree: true,
+    })).rejects.toThrow('Parent session caller not found in this workspace');
+  });
+
   it.each([
     [{ isolated: false, useWorktree: true }, 'isolated=true'],
     [{ isolated: true, useWorktree: false }, 'useWorktree=true'],
