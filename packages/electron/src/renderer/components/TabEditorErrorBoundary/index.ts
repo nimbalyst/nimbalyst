@@ -1,0 +1,1 @@
+export { TabEditorErrorBoundary } from './TabEditorErrorBoundary';
