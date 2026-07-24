@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+# Validate package-lock.json is in sync with every workspace package.json
+# when the outgoing commits touch any manifest. This is exactly the check
+# CI's `npm ci` performs; without it, lockfile drift is only discovered
+# after pushing (2026-07-07 incident: npm 10/11 override-shape mismatch).
+base=$(git merge-base HEAD origin/main 2>/dev/null || echo HEAD~1)
+
+# Refuse to push escaped unit-test fixture commits (2026-07-22 incident: the
+# pre-push vitest run leaked "Test User" commits onto public main).
+echo "[pre-push] Checking outgoing commits for test-fixture authors..."
+node scripts/check-push-authors.mjs "$base..HEAD"
+
+if ! git diff --quiet "$base" HEAD -- package-lock.json 'package.json' '*/package.json' 2>/dev/null; then
+  echo "[pre-push] Manifest/lockfile changed; validating lockfile sync (npm ci --dry-run)..."
+  if ! npm ci --dry-run >/dev/null 2>&1; then
+    echo ""
+    echo "[pre-push] ERROR: package-lock.json is out of sync with package.json."
+    echo "[pre-push] Run 'npm install' (Node 24 / npm 11 -- see .nvmrc) and commit the lockfile."
+    npm ci --dry-run 2>&1 | grep -E 'Invalid|Missing|EBADENGINE' | head -10
+    exit 1
+  fi
+  echo "[pre-push] Lockfile in sync."
+fi
+
+echo "[pre-push] Checking override/dep sync..."
+npm run check:override-sync
+
+echo "[pre-push] Building typecheck prerequisites and running the full typecheck..."
+npm run typecheck:prepush
+
+echo "[pre-push] Verifying platform test-gate behavior..."
+npm run test:prepush-gate
+
+if [ "$(node scripts/prepush-test-gate.mjs)" = "run" ]; then
+  echo "[pre-push] Running non-provider unit tests..."
+  npm run test:prepush
+else
+  echo "[pre-push] Skipping the full Vitest suite on local Windows; CI and non-Windows pushes still require it."
+  echo "[pre-push] See docs/WINDOWS_PREPUSH_GATE.md for the tracked nonportable failures."
+fi
