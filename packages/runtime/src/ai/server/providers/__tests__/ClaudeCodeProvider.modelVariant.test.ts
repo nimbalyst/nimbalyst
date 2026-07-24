@@ -9,6 +9,10 @@ describe('resolveClaudeCodeModelVariant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:sonnet', DEFAULT_MODEL)).toBe('sonnet');
     });
 
+    it('normalizes the persisted Sonnet 5 default', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:sonnet-5', DEFAULT_MODEL)).toBe('sonnet');
+    });
+
     it('resolves opus variant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:opus', DEFAULT_MODEL)).toBe('opus');
     });
@@ -45,6 +49,10 @@ describe('resolveClaudeCodeModelVariant', () => {
     it('sonnet-1m resolves to sonnet[1m] (Sonnet 4.6)', () => {
       const result = resolveClaudeCodeModelVariant('claude-code:sonnet-1m', DEFAULT_MODEL);
       expect(result).toBe('sonnet[1m]');
+    });
+
+    it('normalizes the persisted Sonnet 5 1M default', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:sonnet-5-1m', DEFAULT_MODEL)).toBe('sonnet[1m]');
     });
 
     it('opus-1m resolves to opus[1m]', () => {

@@ -239,7 +239,7 @@ export const OPENAI_MODELS: ModelDefinition[] = [
  *   `opus` to the next version.
  */
 export type ClaudeCodeVariant = 'fable' | 'opus' | 'sonnet' | 'haiku' | 'opus-4-7' | 'opus-4-6' | 'sonnet-4-6';
-export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-4-8' | 'fable-5';
+export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-4-8' | 'sonnet-5' | 'fable-5';
 
 /**
  * Accepted input aliases for Claude Agent model identifiers.
@@ -270,6 +270,7 @@ const CLAUDE_CODE_VARIANT_INPUT_MAP: Readonly<Record<ClaudeCodeVariantInput, Cla
   'opus-4-7': 'opus-4-7',
   'opus-4-6': 'opus-4-6',
   sonnet: 'sonnet',
+  'sonnet-5': 'sonnet',
   'sonnet-4-6': 'sonnet-4-6',
   haiku: 'haiku',
 };
