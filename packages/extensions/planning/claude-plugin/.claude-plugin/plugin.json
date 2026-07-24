@@ -1,0 +1,10 @@
+{
+  "name": "planning",
+  "version": "1.0.0",
+  "description": "Structured planning and tracking system for Nimbalyst",
+  "author": {
+    "name": "Nimbalyst",
+    "url": "https://nimbalyst.com"
+  },
+  "keywords": ["planning", "tracking", "project-management", "yaml", "frontmatter"]
+}

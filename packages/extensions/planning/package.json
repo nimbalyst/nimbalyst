@@ -1,0 +1,7 @@
+{
+  "name": "@nimbalyst/planning",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Structured planning and tracking with YAML frontmatter",
+  "author": "Nimbalyst"
+}

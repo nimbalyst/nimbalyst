@@ -1,0 +1,93 @@
+name: NimbalystApp
+options:
+  bundleIdPrefix: com.nimbalyst
+  deploymentTarget:
+    iOS: "18.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: "X8S24QHAT9"
+packages:
+  NimbalystNative:
+    path: ../NimbalystNative
+schemes:
+  NimbalystApp:
+    build:
+      targets:
+        NimbalystApp: all
+    run:
+      config: Debug
+      commandLineArguments: {}
+targets:
+  NimbalystApp:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - path: Resources/transcript-dist
+        type: folder
+        buildPhase: resources
+        optional: true
+      - path: Resources/editor-dist
+        type: folder
+        buildPhase: resources
+        optional: true
+    dependencies:
+      - package: NimbalystNative
+        product: NimbalystNative
+    entitlements:
+      path: Sources/NimbalystApp.entitlements
+      properties:
+        aps-environment: production
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nimbalyst.app
+        INFOPLIST_FILE: Sources/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    preBuildScripts:
+      - name: Build Transcript Web Bundle
+        script: |
+          # Xcode build scripts run with a minimal PATH that excludes common
+          # node install locations (Homebrew, nvm). Augment PATH so `node` and
+          # the workspace-hoisted vite are resolvable.
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/versions/node/$(cat $HOME/.nvm/alias/default 2>/dev/null)/bin:$PATH"
+          cd "${SRCROOT}/.."
+          # npm workspaces hoist vite to the monorepo root node_modules. The
+          # previous package-local `node_modules/.bin/vite` check was always
+          # false here and silently shipped a stale dist on every rebuild.
+          # Invoke the hoisted binary directly and fail loudly if it's gone.
+          VITE_BIN="${SRCROOT}/../../../node_modules/.bin/vite"
+          if [ ! -x "$VITE_BIN" ]; then
+            echo "error: $VITE_BIN missing; run 'npm install' at the monorepo root" >&2
+            exit 1
+          fi
+          "$VITE_BIN" build --config vite.config.transcript.ts
+          # Copy transcript dist to Resources (clean first to remove stale hashed assets)
+          rm -rf "${SRCROOT}/Resources/transcript-dist"
+          mkdir -p "${SRCROOT}/Resources/transcript-dist"
+          cp dist-transcript/transcript.html "${SRCROOT}/Resources/transcript-dist/"
+          cp -R dist-transcript/assets "${SRCROOT}/Resources/transcript-dist/"
+        basedOnDependencyAnalysis: false
+      - name: Build Editor Web Bundle
+        script: |
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/versions/node/$(cat $HOME/.nvm/alias/default 2>/dev/null)/bin:$PATH"
+          cd "${SRCROOT}/.."
+          VITE_BIN="${SRCROOT}/../../../node_modules/.bin/vite"
+          if [ ! -x "$VITE_BIN" ]; then
+            echo "error: $VITE_BIN missing; run 'npm install' at the monorepo root" >&2
+            exit 1
+          fi
+          "$VITE_BIN" build --config vite.config.editor.ts
+          # Copy editor dist to Resources (clean first to remove stale hashed assets)
+          rm -rf "${SRCROOT}/Resources/editor-dist"
+          mkdir -p "${SRCROOT}/Resources/editor-dist"
+          cp dist-editor/editor.html "${SRCROOT}/Resources/editor-dist/"
+          cp -R dist-editor/assets "${SRCROOT}/Resources/editor-dist/"
+        basedOnDependencyAnalysis: false

@@ -1,0 +1,112 @@
+/**
+ * RTL Support — right-to-left styles.
+ *
+ * Classes:
+ *  - .nim-rtl-block.nim-rtl-rtl : RTL text block (p, li, h1-h6, blockquote)
+ *  - .nim-rtl-block.nim-rtl-ltr : LTR text block
+ *  - .nim-rtl-cell.nim-rtl-rtl   : RTL table cell
+ *  - .nim-rtl-table.nim-rtl-rtl  : RTL table (mirrored)
+ */
+
+/* ============================================================
+   Text blocks — main direction
+   ============================================================ */
+
+.nim-rtl-block.nim-rtl-rtl {
+  direction: rtl;
+  text-align: right;
+  unicode-bidi: plaintext;
+}
+
+.nim-rtl-block.nim-rtl-ltr {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: plaintext;
+}
+
+/* ============================================================
+   Code block protection — always LTR
+   ============================================================ */
+
+.nim-rtl-block.nim-rtl-rtl pre,
+.nim-rtl-block.nim-rtl-rtl code,
+.nim-rtl-block.nim-rtl-rtl kbd,
+.nim-rtl-block.nim-rtl-rtl samp {
+  direction: ltr !important;
+  text-align: left !important;
+  unicode-bidi: isolate;
+}
+
+/* Inline code within RTL text */
+.nim-rtl-block.nim-rtl-rtl :not(pre) > code {
+  unicode-bidi: isolate;
+  direction: ltr;
+  display: inline-block;
+}
+
+/* ============================================================
+   bidi-isolation for mixed content
+   ============================================================ */
+
+.nim-rtl-block.nim-rtl-rtl a,
+.nim-rtl-block.nim-rtl-rtl [dir="ltr"] {
+  unicode-bidi: isolate;
+}
+
+/* ============================================================
+   Markdown elements — mirroring
+   ============================================================ */
+
+/* Lists */
+ul.nim-rtl-block.nim-rtl-rtl,
+ol.nim-rtl-block.nim-rtl-rtl {
+  padding-right: 1.5em;
+  padding-left: 0 !important;
+}
+
+/* Blockquote */
+blockquote.nim-rtl-block.nim-rtl-rtl {
+  border-right: 4px solid var(--nim-border, currentColor) !important;
+  border-left: none !important;
+  padding-right: 1em !important;
+  padding-left: 0 !important;
+  margin-right: 0 !important;
+  margin-left: 0 !important;
+}
+
+/* ============================================================
+   Tables — mirror in RTL
+   ============================================================ */
+
+.nim-rtl-table.nim-rtl-rtl {
+  direction: rtl;
+}
+
+.nim-rtl-table.nim-rtl-rtl th,
+.nim-rtl-table.nim-rtl-rtl td {
+  text-align: right !important;
+}
+
+/* ============================================================
+   Table cells
+   ============================================================ */
+
+.nim-rtl-cell.nim-rtl-rtl {
+  direction: rtl;
+  text-align: right !important;
+}
+
+.nim-rtl-cell.nim-rtl-ltr {
+  direction: ltr;
+  text-align: left;
+}
+
+/* ============================================================
+   LTR blocks within an RTL message (per-block isolation)
+   ============================================================ */
+
+.nim-rtl-block.nim-rtl-ltr {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: isolate;
+}
