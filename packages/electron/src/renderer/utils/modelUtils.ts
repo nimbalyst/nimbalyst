@@ -22,6 +22,9 @@ import {
   type ClaudeCodeVariant,
 } from '@nimbalyst/runtime/ai/modelConstants';
 import { CLAUDE_CODE_VARIANTS, ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
+import {
+  isDeepSeekClaudeAgentModel,
+} from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 
 export { type EffortLevel, type ThinkingMode, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL, DEFAULT_THINKING_MODE, parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 
@@ -64,6 +67,7 @@ function formatVariantLabel(variant: ClaudeCodeVariant): string {
 }
 
 export function getClaudeCodeModelLabel(modelId?: string): string {
+  if (isDeepSeekClaudeAgentModel(modelId)) return 'Claude agent - DeepSeek';
   const variant = extractClaudeCodeVariant(modelId) ?? 'sonnet';
   const parsed = modelId ? ModelIdentifier.tryParse(modelId) : null;
   const version = CLAUDE_CODE_VARIANT_VERSIONS[variant];
@@ -72,6 +76,7 @@ export function getClaudeCodeModelLabel(modelId?: string): string {
 }
 
 export function getClaudeCodeModelShortLabel(modelId?: string): string {
+  if (isDeepSeekClaudeAgentModel(modelId)) return 'DeepSeek';
   const variant = extractClaudeCodeVariant(modelId) ?? 'sonnet';
   const parsed = modelId ? ModelIdentifier.tryParse(modelId) : null;
   const version = CLAUDE_CODE_VARIANT_VERSIONS[variant];
@@ -232,6 +237,7 @@ export function getModelShortName(provider: string, modelId: string): string {
  */
 export function supportsEffortLevel(modelId?: string): boolean {
   if (!modelId) return false;
+  if (isDeepSeekClaudeAgentModel(modelId)) return true;
   const variant = extractClaudeCodeVariant(modelId);
   if (variant === 'opus' || variant === 'opus-4-6' || variant === 'sonnet' || variant === 'sonnet-5' || variant === 'fable-5') return true;
   // OpenAI Codex models support reasoning effort (both SDK and ACP transports)
@@ -248,6 +254,7 @@ export function supportsEffortLevel(modelId?: string): boolean {
  */
 export function supportsThinkingToggle(modelId?: string): boolean {
   if (!modelId) return false;
+  if (isDeepSeekClaudeAgentModel(modelId)) return true;
   const normalized = modelId.toLowerCase();
   if (normalized.includes('fable')) return false;
   if (normalized.includes('sonnet-5')) return false;

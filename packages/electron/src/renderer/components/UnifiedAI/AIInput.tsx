@@ -5,6 +5,11 @@ import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type Slas
 import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
 import { readClipboard, type ChatAttachment } from '@nimbalyst/runtime';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
+import {
+  DEEPSEEK_EFFORT_LEVELS,
+  isDeepSeekClaudeAgentModel,
+  isDeepSeekClaudeBackend,
+} from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import type { EffortLevel, ThinkingMode } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
 import { ModeTag, AIMode } from './ModeTag';
@@ -217,7 +222,11 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     // Voice mode state - derived from centralized atom
     const voiceActiveSessionId = useAtomValue(voiceActiveSessionIdAtom);
     const isVoiceActive = voiceActiveSessionId === sessionId;
-    const disableClaudeReasoningControls = currentProvider === 'claude-code' && !!claudeBackend;
+    const isDeepSeekClaudeAgent = isDeepSeekClaudeAgentModel(currentModel)
+      || isDeepSeekClaudeBackend(claudeBackend);
+    const disableClaudeReasoningControls = currentProvider === 'claude-code'
+      && !!claudeBackend
+      && !isDeepSeekClaudeAgent;
     const disabledReasoningControlTitle = 'Reasoning controls do not apply while a custom Claude Agent brain is selected.';
 
     // Undo/redo stack for the input. Snapshots include text, attachments, and
@@ -1315,20 +1324,44 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               </HelpTooltip>
             )}
             {showEffortLevel && onEffortLevelChange && effortLevel && (
-              <EffortLevelSelector
-                level={effortLevel}
-                onLevelChange={onEffortLevelChange}
-                disabled={disableClaudeReasoningControls}
-                disabledTitle={disabledReasoningControlTitle}
-              />
+              isDeepSeekClaudeAgent ? (
+                <HelpTooltip testId="deepseek-effort-selector">
+                  <span style={{ display: 'inline-flex' }}>
+                    <EffortLevelSelector
+                      level={effortLevel}
+                      onLevelChange={onEffortLevelChange}
+                      levels={DEEPSEEK_EFFORT_LEVELS}
+                    />
+                  </span>
+                </HelpTooltip>
+              ) : (
+                <EffortLevelSelector
+                  level={effortLevel}
+                  onLevelChange={onEffortLevelChange}
+                  disabled={disableClaudeReasoningControls}
+                  disabledTitle={disabledReasoningControlTitle}
+                />
+              )
             )}
             {showThinkingToggle && onThinkingModeChange && (
-              <ThinkingModeSelector
-                mode={thinkingMode ?? 'disabled'}
-                onModeChange={onThinkingModeChange}
-                disabled={disableClaudeReasoningControls}
-                disabledTitle={disabledReasoningControlTitle}
-              />
+              isDeepSeekClaudeAgent ? (
+                <HelpTooltip testId="deepseek-reasoning-selector">
+                  <span style={{ display: 'inline-flex' }}>
+                    <ThinkingModeSelector
+                      mode={thinkingMode ?? 'enabled'}
+                      onModeChange={onThinkingModeChange}
+                      label="Reasoning"
+                    />
+                  </span>
+                </HelpTooltip>
+              ) : (
+                <ThinkingModeSelector
+                  mode={thinkingMode ?? 'disabled'}
+                  onModeChange={onThinkingModeChange}
+                  disabled={disableClaudeReasoningControls}
+                  disabledTitle={disabledReasoningControlTitle}
+                />
+              )
             )}
             {currentProvider === 'opencode' && availableAgents && availableAgents.length > 0 && onAgentChange && (
               <select
@@ -1343,7 +1376,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
                 ))}
               </select>
             )}
-            {currentProvider === 'claude-code' && availableClaudeBackends && availableClaudeBackends.length > 0 && onClaudeBackendChange && (
+            {currentProvider === 'claude-code' && !isDeepSeekClaudeAgentModel(currentModel) && availableClaudeBackends && availableClaudeBackends.length > 0 && onClaudeBackendChange && (
               <select
                 className="claude-backend-picker border border-[var(--nim-border)] rounded bg-[var(--nim-bg)] text-[var(--nim-text)] text-xs px-2 py-1 focus:outline-none focus:border-[var(--nim-primary)]"
                 value={claudeBackend ?? ''}

@@ -22,6 +22,10 @@ import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStat
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
+import {
+  isDeepSeekClaudeBackend,
+  normalizeDeepSeekThinkingMode,
+} from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -558,6 +562,7 @@ export class AIService {
     // it was the root cause of a "DeepSeek" session silently running on Anthropic. Resolve from a
     // fresh DB read, tolerating the nested-metadata artifact, so a stale snapshot can't drop it.
     let claudeBackend: string | undefined;
+    let rawEffortLevel: unknown = (session.metadata as any)?.effortLevel ?? (session.metadata as any)?.metadata?.effortLevel;
     let rawThinkingMode: unknown = (session.metadata as any)?.thinkingMode ?? (session.metadata as any)?.metadata?.thinkingMode;
     try {
       const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
@@ -566,23 +571,29 @@ export class AIService {
       const sm: any = session.metadata ?? {};
       claudeBackend = fm.claudeBackend ?? fm.metadata?.claudeBackend
         ?? sm.claudeBackend ?? sm.metadata?.claudeBackend ?? undefined;
+      rawEffortLevel = fm.effortLevel ?? fm.metadata?.effortLevel
+        ?? sm.effortLevel ?? sm.metadata?.effortLevel ?? rawEffortLevel;
       rawThinkingMode = fm.thinkingMode ?? fm.metadata?.thinkingMode
         ?? sm.thinkingMode ?? sm.metadata?.thinkingMode ?? rawThinkingMode;
     } catch {
       const sm: any = session.metadata ?? {};
       claudeBackend = sm.claudeBackend ?? sm.metadata?.claudeBackend ?? undefined;
+      rawEffortLevel = sm.effortLevel ?? sm.metadata?.effortLevel ?? rawEffortLevel;
       rawThinkingMode = sm.thinkingMode ?? sm.metadata?.thinkingMode ?? rawThinkingMode;
     }
 
+    const supportsReasoningControls = !claudeBackend || isDeepSeekClaudeBackend(claudeBackend);
     const config: ProviderConfig = {
       maxTokens: (session.providerConfig as any)?.maxTokens,
       temperature: (session.providerConfig as any)?.temperature,
       ...(apiKey ? { apiKey } : {}),
-      ...(!claudeBackend && (session.metadata as any)?.effortLevel && {
-        effortLevel: parseEffortLevel((session.metadata as any).effortLevel),
+      ...(supportsReasoningControls && rawEffortLevel != null && {
+        effortLevel: parseEffortLevel(rawEffortLevel),
       }),
-      ...(!claudeBackend && {
-        thinkingMode: parseThinkingMode(rawThinkingMode),
+      ...(supportsReasoningControls && {
+        thinkingMode: isDeepSeekClaudeBackend(claudeBackend)
+          ? normalizeDeepSeekThinkingMode(rawThinkingMode)
+          : parseThinkingMode(rawThinkingMode),
       }),
       ...(claudeBackend ? { customBackend: claudeBackend } : {}),
     };
@@ -1809,17 +1820,24 @@ export class AIService {
       // Pass through allowedTools and effort level settings for Claude Code
       if (provider === 'claude-code') {
         const claudeBackend = (session.metadata as any)?.claudeBackend ?? (session.metadata as any)?.metadata?.claudeBackend;
+        const supportsReasoningControls = !claudeBackend || isDeepSeekClaudeBackend(claudeBackend);
         const providerSettings = this.getSettingsStore().get('providerSettings', {}) as any;
         if (providerSettings?.['claude-code']?.allowedTools) {
           initConfig.allowedTools = providerSettings['claude-code'].allowedTools;
         }
         // Pass effort level from session metadata (Opus 4.6 adaptive reasoning)
-        if (!claudeBackend && (session.metadata as any)?.effortLevel) {
-          initConfig.effortLevel = parseEffortLevel((session.metadata as any).effortLevel);
+        const storedEffortLevel = (session.metadata as any)?.effortLevel ?? (session.metadata as any)?.metadata?.effortLevel;
+        if (supportsReasoningControls && storedEffortLevel) {
+          initConfig.effortLevel = parseEffortLevel(storedEffortLevel);
         }
-        if (!claudeBackend) {
-          initConfig.thinkingMode = parseThinkingMode((session.metadata as any)?.thinkingMode);
-        } else {
+        if (supportsReasoningControls) {
+          const storedThinkingMode = (session.metadata as any)?.thinkingMode
+            ?? (session.metadata as any)?.metadata?.thinkingMode;
+          initConfig.thinkingMode = isDeepSeekClaudeBackend(claudeBackend)
+            ? normalizeDeepSeekThinkingMode(storedThinkingMode)
+            : parseThinkingMode(storedThinkingMode);
+        }
+        if (claudeBackend) {
           initConfig.customBackend = claudeBackend;
         }
       }

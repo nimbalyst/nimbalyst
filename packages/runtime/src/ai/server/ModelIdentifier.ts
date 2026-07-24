@@ -12,6 +12,7 @@
 
 import { AIProviderType, AI_PROVIDER_TYPES, CLAUDE_CODE_VARIANTS } from './types';
 import { DEFAULT_MODELS } from '../modelConstants';
+import { DEEPSEEK_CLAUDE_AGENT_MODEL_VARIANT } from './deepSeekClaudeAgent';
 
 /**
  * Valid Claude Code model suffixes (e.g., -1m for 1M context window)
@@ -130,9 +131,12 @@ export class ModelIdentifier {
         }
       }
 
-      if (!(CLAUDE_CODE_VARIANTS as readonly string[]).includes(baseVariant)) {
+      if (
+        !(CLAUDE_CODE_VARIANTS as readonly string[]).includes(baseVariant)
+        && baseVariant !== DEEPSEEK_CLAUDE_AGENT_MODEL_VARIANT
+      ) {
         throw new Error(
-          `Invalid Claude Code variant: ${model}. Must be one of: ${CLAUDE_CODE_VARIANTS.join(', ')} (optionally with -1m suffix)`
+          `Invalid Claude Code variant: ${model}. Must be one of: ${CLAUDE_CODE_VARIANTS.join(', ')}, ${DEEPSEEK_CLAUDE_AGENT_MODEL_VARIANT} (optionally with -1m suffix for Claude variants)`
         );
       }
 

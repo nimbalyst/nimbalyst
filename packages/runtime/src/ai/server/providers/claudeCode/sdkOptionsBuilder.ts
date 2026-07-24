@@ -13,6 +13,11 @@ import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { DEFAULT_EFFORT_LEVEL, type ThinkingMode } from '../../effortLevels';
 import { resolveClaudeCodeBackend, applyClaudeCodeBackendEnv } from './customBackends';
+import {
+  isDeepSeekClaudeBackend,
+  normalizeDeepSeekEffort,
+  normalizeDeepSeekThinkingMode,
+} from '../../deepSeekClaudeAgent';
 
 type SessionMode = 'planning' | 'agent' | undefined;
 
@@ -162,6 +167,8 @@ export async function buildSdkOptions(
 
   let helperMethod: 'native' | 'custom' = 'native';
   const resolvedModel = resolveModelVariant();
+  const customBackend = resolveClaudeCodeBackend(config.customBackend);
+  const isDeepSeekBackend = isDeepSeekClaudeBackend(customBackend?.id);
 
   // Determine which settings sources to use based on user preferences
   let settingSources: string[] = ['local'];
@@ -218,7 +225,9 @@ export async function buildSdkOptions(
     },
   };
 
-  if (config.thinkingMode === 'disabled' && !config.customBackend) {
+  if (isDeepSeekBackend) {
+    options.thinking = { type: normalizeDeepSeekThinkingMode(config.thinkingMode) };
+  } else if (config.thinkingMode === 'disabled' && !config.customBackend) {
     if (canDisableThinkingForModel(resolvedModel)) {
       options.thinking = { type: 'disabled' as const };
     } else {
@@ -296,9 +305,11 @@ export async function buildSdkOptions(
     // the official CLI and removes that asymmetry. The user can still
     // override via their own env var if they want the original sdk-ts label.
     ...(process.env.CLAUDE_CODE_ENTRYPOINT == null && { CLAUDE_CODE_ENTRYPOINT: 'cli' }),
-    ...(!config.customBackend && config.effortLevel && config.effortLevel !== DEFAULT_EFFORT_LEVEL && {
-      CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
-    }),
+    ...(isDeepSeekBackend
+      ? { CLAUDE_CODE_EFFORT_LEVEL: normalizeDeepSeekEffort(config.effortLevel) }
+      : !config.customBackend && config.effortLevel && config.effortLevel !== DEFAULT_EFFORT_LEVEL
+        ? { CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel }
+        : {}),
   };
 
   // NIM-376: Overlay enhanced PATH so the Claude Code SDK can find stdio MCP
@@ -372,7 +383,6 @@ export async function buildSdkOptions(
   // brain (DeepSeek/Kimi/Qwen) via its Anthropic-Messages endpoint. Applied
   // AFTER the API-key block so the gateway token wins over any Settings key.
   // No backend selected -> this is a no-op and the session uses default Anthropic.
-  const customBackend = resolveClaudeCodeBackend(config.customBackend);
   console.log(`[CC-BACKEND] sdkOptions: config.customBackend=${config.customBackend ?? '(none)'} resolved=${customBackend?.id ?? '(none)'} (DIAGNOSTIC)`);
   if (customBackend) {
     applyClaudeCodeBackendEnv(env, customBackend);

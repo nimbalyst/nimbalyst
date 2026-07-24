@@ -42,6 +42,10 @@
       "import": "./dist/ai/server/effortLevels.js",
       "types": "./dist/ai/server/effortLevels.d.ts"
     },
+    "./ai/server/deepSeekClaudeAgent": {
+      "import": "./dist/ai/server/deepSeekClaudeAgent.js",
+      "types": "./dist/ai/server/deepSeekClaudeAgent.d.ts"
+    },
     "./ai/types": {
       "import": "./dist/ai/types.js",
       "types": "./dist/ai/types.d.ts"

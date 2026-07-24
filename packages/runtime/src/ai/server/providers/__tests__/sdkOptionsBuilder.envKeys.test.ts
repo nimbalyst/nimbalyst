@@ -175,21 +175,24 @@ describe('buildSdkOptions env-key hardening', () => {
     expect(options.thinking).toEqual({ type: 'disabled' });
   });
 
-  it('suppresses effort and thinking controls when a custom Claude Code backend is selected', async () => {
+  it('routes DeepSeek V4 roles and forwards only its real effort and reasoning controls', async () => {
     const { options } = await buildSdkOptions(
       makeDeps({
         config: {
           customBackend: 'deepseek-reasoner',
-          effortLevel: 'max',
+          effortLevel: 'xhigh',
           thinkingMode: 'disabled',
         },
       }),
       makeParams()
     );
 
-    expect(options.thinking).toBeUndefined();
-    expect(options.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
-    expect(options.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('deepseek-reasoner');
+    expect(options.thinking).toEqual({ type: 'disabled' });
+    expect(options.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
+    expect(options.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('deepseek-v4-pro[1m]');
+    expect(options.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('deepseek-v4-pro[1m]');
+    expect(options.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('deepseek-v4-flash');
+    expect(options.env.CLAUDE_CODE_SUBAGENT_MODEL).toBe('deepseek-v4-flash');
   });
 
   it('routes GLM 5.2 API balance through ZAI_API_KEY only', async () => {

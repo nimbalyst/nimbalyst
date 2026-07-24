@@ -18,6 +18,11 @@
  *   - *_SUPPORTED_CAPABILITIES makes /effort and thinking work on the upstream.
  */
 
+import {
+  DEEPSEEK_CLAUDE_BACKEND_ID,
+  isDeepSeekClaudeBackend,
+} from '../../deepSeekClaudeAgent';
+
 export interface ClaudeCodeBackend {
   /** Stable id selected per session (stored as ProviderConfig.customBackend). */
   id: string;
@@ -29,6 +34,13 @@ export interface ClaudeCodeBackend {
   authTokenEnv: string;
   /** Upstream model id the Claude variants map to (e.g. 'deepseek-reasoner'). */
   upstreamModel: string;
+  /** Optional per-role routing used when a provider exposes primary and fast models. */
+  upstreamModels?: {
+    opus: string;
+    sonnet: string;
+    haiku: string;
+    subagent: string;
+  };
   /** Capability declaration so /effort + thinking are honored upstream. */
   capabilities?: string;
   /** Additional env needed by this backend. Values must not contain secrets. */
@@ -69,20 +81,18 @@ export const CLAUDE_CODE_BACKENDS: readonly ClaudeCodeBackend[] = [
     },
   },
   {
-    id: 'deepseek-reasoner',
-    name: 'DeepSeek V4 (reasoner)',
+    id: DEEPSEEK_CLAUDE_BACKEND_ID,
+    name: 'DeepSeek V4',
     baseUrl: 'https://api.deepseek.com/anthropic',
     authTokenEnv: 'DEEPSEEK_API_KEY',
-    upstreamModel: 'deepseek-reasoner',
+    upstreamModel: 'deepseek-v4-pro[1m]',
+    upstreamModels: {
+      opus: 'deepseek-v4-pro[1m]',
+      sonnet: 'deepseek-v4-pro[1m]',
+      haiku: 'deepseek-v4-flash',
+      subagent: 'deepseek-v4-flash',
+    },
     capabilities: 'effort,max_effort,thinking',
-  },
-  {
-    id: 'deepseek-chat',
-    name: 'DeepSeek V4 (fast)',
-    baseUrl: 'https://api.deepseek.com/anthropic',
-    authTokenEnv: 'DEEPSEEK_API_KEY',
-    upstreamModel: 'deepseek-chat',
-    capabilities: 'effort',
   },
   {
     id: 'kimi-k2.6',
@@ -191,6 +201,9 @@ export const CLAUDE_CODE_BACKENDS: readonly ClaudeCodeBackend[] = [
 /** Resolve a per-session backend id to its definition (undefined = default Anthropic). */
 export function resolveClaudeCodeBackend(backendId: string | undefined | null): ClaudeCodeBackend | undefined {
   if (!backendId) return undefined;
+  if (isDeepSeekClaudeBackend(backendId)) {
+    return CLAUDE_CODE_BACKENDS.find((backend) => backend.id === DEEPSEEK_CLAUDE_BACKEND_ID);
+  }
   return CLAUDE_CODE_BACKENDS.find((b) => b.id === backendId);
 }
 
@@ -225,10 +238,10 @@ export function applyClaudeCodeBackendEnv(env: Record<string, any>, backend: Cla
   }
   // Redirect every Claude variant to the upstream model so opus/sonnet/haiku
   // resolution maps onto the third-party model.
-  env.ANTHROPIC_DEFAULT_OPUS_MODEL = backend.upstreamModel;
-  env.ANTHROPIC_DEFAULT_SONNET_MODEL = backend.upstreamModel;
-  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = backend.upstreamModel;
-  env.CLAUDE_CODE_SUBAGENT_MODEL = backend.upstreamModel;
+  env.ANTHROPIC_DEFAULT_OPUS_MODEL = backend.upstreamModels?.opus ?? backend.upstreamModel;
+  env.ANTHROPIC_DEFAULT_SONNET_MODEL = backend.upstreamModels?.sonnet ?? backend.upstreamModel;
+  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = backend.upstreamModels?.haiku ?? backend.upstreamModel;
+  env.CLAUDE_CODE_SUBAGENT_MODEL = backend.upstreamModels?.subagent ?? backend.upstreamModel;
   if (backend.capabilities) {
     env.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES = backend.capabilities;
     env.ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES = backend.capabilities;

@@ -1,9 +1,30 @@
 import { describe, it, expect } from 'vitest';
 import { resolveClaudeCodeModelVariant } from '../../types';
+import { ClaudeCodeProvider } from '../ClaudeCodeProvider';
+import {
+  applyDeepSeekClaudeAgentProfile,
+  DEEPSEEK_CLAUDE_BACKEND_ID,
+} from '../../deepSeekClaudeAgent';
 
 const DEFAULT_MODEL = 'claude-code:opus-1m';
 
 describe('resolveClaudeCodeModelVariant', () => {
+  it('publishes a launchable DeepSeek model row with the exact product label', async () => {
+    const deepSeek = (await ClaudeCodeProvider.getModels()).find(
+      model => model.id === 'claude-code:deepseek',
+    );
+
+    expect(deepSeek).toMatchObject({
+      id: 'claude-code:deepseek',
+      name: 'Claude agent - DeepSeek',
+      provider: 'claude-code',
+      contextWindow: 1000000,
+    });
+    expect(resolveClaudeCodeModelVariant(deepSeek?.id, DEFAULT_MODEL)).toBe('sonnet');
+    expect(applyDeepSeekClaudeAgentProfile({ model: deepSeek?.id }).customBackend)
+      .toBe(DEEPSEEK_CLAUDE_BACKEND_ID);
+  });
+
   describe('standard variants (no extended context)', () => {
     it('resolves sonnet variant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:sonnet', DEFAULT_MODEL)).toBe('sonnet');
@@ -23,6 +44,10 @@ describe('resolveClaudeCodeModelVariant', () => {
 
     it('resolves haiku variant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:haiku', DEFAULT_MODEL)).toBe('haiku');
+    });
+
+    it('resolves the DeepSeek catalog row to the Sonnet harness route', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:deepseek', DEFAULT_MODEL)).toBe('sonnet');
     });
 
     it('uses default model when config model is undefined', () => {

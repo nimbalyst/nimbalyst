@@ -7,6 +7,7 @@ import type { EffortLevel, ThinkingMode } from './effortLevels';
 import type { ToolResult } from './protocols/ProtocolInterface';
 import { ModelIdentifier } from './ModelIdentifier';
 import { CLAUDE_CODE_PINNED_SDK_MODELS } from '../modelConstants';
+import { isDeepSeekClaudeAgentModel } from './deepSeekClaudeAgent';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
 export type { ToolDefinition } from '../tools';
 export { ModelIdentifier } from './ModelIdentifier';
@@ -196,6 +197,12 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
   type ClaudeCodeVariant = typeof CLAUDE_CODE_VARIANTS[number];
   const fallback: ClaudeCodeVariant = 'sonnet';
   const configured = configuredModel || defaultModel;
+
+  if (isDeepSeekClaudeAgentModel(configured)) {
+    // The synthetic picker row uses Claude's Sonnet harness variant. The
+    // per-session DeepSeek backend remaps Sonnet to DeepSeek V4 Pro.
+    return 'sonnet';
+  }
 
   const toSdkBase = (variant: string): string => CLAUDE_CODE_PINNED_SDK_MODELS[variant as ClaudeCodeVariant] ?? variant;
 

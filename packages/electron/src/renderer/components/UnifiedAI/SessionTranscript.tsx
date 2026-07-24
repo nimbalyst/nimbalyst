@@ -92,6 +92,13 @@ import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } fro
 import { usePostHog } from 'posthog-js/react';
 import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
 import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, parseThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
+import {
+  DEEPSEEK_CLAUDE_BACKEND_ID,
+  isDeepSeekClaudeAgentModel,
+  isDeepSeekClaudeBackend,
+  normalizeDeepSeekEffort,
+  normalizeDeepSeekThinkingMode,
+} from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
 import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPeekSizeAtoms';
@@ -477,12 +484,28 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   ]);
 
   // Effort level: read from session metadata, fall back to global default
-  const showEffortLevel = useMemo(() => supportsEffortLevel(currentModel), [currentModel]);
+  const isDeepSeekClaudeAgent = useMemo(
+    () => isDeepSeekClaudeAgentModel(currentModel) || isDeepSeekClaudeBackend(rawClaudeBackend),
+    [currentModel, rawClaudeBackend],
+  );
+  const showEffortLevel = useMemo(
+    () => isDeepSeekClaudeAgent || supportsEffortLevel(currentModel),
+    [isDeepSeekClaudeAgent, currentModel],
+  );
   const effortLevel = useMemo(() => {
-    return rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
-  }, [rawEffortLevel, defaultEffortLevel]);
-  const showThinkingToggle = useMemo(() => provider === 'claude-code' && supportsThinkingToggle(currentModel), [provider, currentModel]);
-  const thinkingMode = useMemo(() => parseThinkingMode(rawThinkingMode), [rawThinkingMode]);
+    const stored = rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
+    return isDeepSeekClaudeAgent ? normalizeDeepSeekEffort(stored) : stored;
+  }, [rawEffortLevel, defaultEffortLevel, isDeepSeekClaudeAgent]);
+  const showThinkingToggle = useMemo(
+    () => provider === 'claude-code' && (isDeepSeekClaudeAgent || supportsThinkingToggle(currentModel)),
+    [provider, isDeepSeekClaudeAgent, currentModel],
+  );
+  const thinkingMode = useMemo(
+    () => isDeepSeekClaudeAgent
+      ? normalizeDeepSeekThinkingMode(rawThinkingMode)
+      : parseThinkingMode(rawThinkingMode),
+    [rawThinkingMode, isDeepSeekClaudeAgent],
+  );
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -1247,27 +1270,60 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   const handleModelChange = useCallback(async (modelId: string) => {
     const previousModel = currentModel;
+    const previousSessionData = store.get(sessionStoreAtom(sessionId));
+    const previousMetadata = (previousSessionData?.metadata as Record<string, unknown> | undefined) ?? {};
+    const selectingDeepSeek = isDeepSeekClaudeAgentModel(modelId);
+    const metadataUpdates = {
+      claudeBackend: selectingDeepSeek ? DEEPSEEK_CLAUDE_BACKEND_ID : null,
+      ...(selectingDeepSeek ? {
+        effortLevel: normalizeDeepSeekEffort(effortLevel),
+        thinkingMode: normalizeDeepSeekThinkingMode(thinkingMode),
+      } : {}),
+    };
+
     setCurrentModel(modelId);
+    updateSessionStore({
+      sessionId,
+      updates: {
+        metadata: { ...previousMetadata, ...metadataUpdates },
+      },
+    });
     // Save as the default model for new sessions
     setAgentModeSettings({ defaultModel: modelId });
     try {
-      await window.electronAPI.invoke('sessions:update-metadata', sessionId, { model: modelId });
+      await window.electronAPI.invoke('sessions:update-metadata', sessionId, {
+        model: modelId,
+        metadata: metadataUpdates,
+      });
     } catch (error) {
       console.error('[SessionTranscript] Failed to update model:', error);
       setCurrentModel(previousModel);
+      updateSessionStore({
+        sessionId,
+        updates: { metadata: previousMetadata },
+      });
       setAgentModeSettings({ defaultModel: previousModel });
     }
-  }, [currentModel, sessionId, setCurrentModel, setAgentModeSettings]);
+  }, [
+    currentModel,
+    effortLevel,
+    thinkingMode,
+    sessionId,
+    setCurrentModel,
+    setAgentModeSettings,
+    updateSessionStore,
+  ]);
 
   const handleEffortLevelChange = useCallback(async (level: EffortLevel) => {
+    const normalizedLevel = isDeepSeekClaudeAgent ? normalizeDeepSeekEffort(level) : level;
     const previousLevel = effortLevel;
-    await updateSessionMetadataField(sessionId, 'effortLevel', level, null, updateSessionStore);
-    setAgentModeSettings({ defaultEffortLevel: level });
+    await updateSessionMetadataField(sessionId, 'effortLevel', normalizedLevel, null, updateSessionStore);
+    setAgentModeSettings({ defaultEffortLevel: normalizedLevel });
     posthog?.capture('ai_effort_level_changed', {
-      effort_level: level,
+      effort_level: normalizedLevel,
       previous_level: previousLevel,
     });
-  }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog]);
+  }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog, isDeepSeekClaudeAgent]);
 
   const handleThinkingModeChange = useCallback(async (mode: ThinkingMode) => {
     const previousMode = thinkingMode;
@@ -1284,8 +1340,23 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, [sessionId, updateSessionStore]);
 
   const handleClaudeBackendChange = useCallback(async (backendId: string) => {
+    if (isDeepSeekClaudeBackend(backendId)) {
+      const currentSessionData = store.get(sessionStoreAtom(sessionId));
+      const currentMetadata = (currentSessionData?.metadata as Record<string, unknown> | undefined) ?? {};
+      const metadataUpdates = {
+        claudeBackend: DEEPSEEK_CLAUDE_BACKEND_ID,
+        effortLevel: normalizeDeepSeekEffort(effortLevel),
+        thinkingMode: normalizeDeepSeekThinkingMode(thinkingMode),
+      };
+      updateSessionStore({
+        sessionId,
+        updates: { metadata: { ...currentMetadata, ...metadataUpdates } },
+      });
+      await window.electronAPI.invoke('sessions:update-metadata', sessionId, { metadata: metadataUpdates });
+      return;
+    }
     await updateSessionMetadataField(sessionId, 'claudeBackend', backendId || null, null, updateSessionStore);
-  }, [sessionId, updateSessionStore]);
+  }, [sessionId, updateSessionStore, effortLevel, thinkingMode]);
 
   useEffect(() => {
     if (provider !== 'opencode' || !window.electronAPI) return;
@@ -2172,8 +2243,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         availableClaudeBackends={[
           { id: 'glm-5.2', name: 'GLM 5.2 (Z.AI API balance)' },
           { id: 'glm-5.2-coding-plan', name: 'GLM 5.2 (Z.AI Coding Plan)' },
-          { id: 'deepseek-reasoner', name: 'DeepSeek V4 (reasoner)' },
-          { id: 'deepseek-chat', name: 'DeepSeek V4 (fast)' },
+          { id: DEEPSEEK_CLAUDE_BACKEND_ID, name: 'DeepSeek V4' },
           { id: 'kimi-k2.6', name: 'Kimi K2.6' },
           { id: 'qwen3-max-thinking', name: 'Qwen3 Max (thinking)' },
         ]}

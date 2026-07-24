@@ -34,6 +34,11 @@ import {
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
+import {
+  DEEPSEEK_CLAUDE_BACKEND_ID,
+  isDeepSeekClaudeBackend,
+  normalizeDeepSeekThinkingMode,
+} from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
@@ -421,15 +426,19 @@ export class MessageStreamingHandler {
     // read -> the session silently ran on Anthropic. Resolve from a FRESH DB read, tolerating the
     // nested artifact. The BUILD_MARKER also proves the running main is current (not a stale bundle).
     let freshClaudeBackend: string | undefined;
+    let freshEffortLevelRaw: unknown;
     let freshThinkingModeRaw: unknown;
     if (isProviderClaudeCode) {
       const sm: any = session.metadata ?? {};
+      freshEffortLevelRaw = sm.effortLevel ?? sm.metadata?.effortLevel;
       freshThinkingModeRaw = sm.thinkingMode ?? sm.metadata?.thinkingMode;
       try {
         const freshRow: any = await AISessionsRepository.get(session.id);
         const fm: any = freshRow?.metadata ?? {};
         freshClaudeBackend = fm.claudeBackend ?? fm.metadata?.claudeBackend
           ?? sm.claudeBackend ?? sm.metadata?.claudeBackend ?? undefined;
+        freshEffortLevelRaw = fm.effortLevel ?? fm.metadata?.effortLevel
+          ?? sm.effortLevel ?? sm.metadata?.effortLevel ?? freshEffortLevelRaw;
         freshThinkingModeRaw = fm.thinkingMode ?? fm.metadata?.thinkingMode
           ?? sm.thinkingMode ?? sm.metadata?.thinkingMode ?? freshThinkingModeRaw;
         console.log(`[PROBE-Q1] BUILD_MARKER=2026-06-14-A sess=${session.id} providerExisted=${!!provider}`
@@ -438,8 +447,12 @@ export class MessageStreamingHandler {
           + ` resolved=${freshClaudeBackend ?? '(undef)'}`);
       } catch (e: any) {
         freshClaudeBackend = sm.claudeBackend ?? sm.metadata?.claudeBackend ?? undefined;
+        freshEffortLevelRaw = sm.effortLevel ?? sm.metadata?.effortLevel ?? freshEffortLevelRaw;
         freshThinkingModeRaw = sm.thinkingMode ?? sm.metadata?.thinkingMode ?? freshThinkingModeRaw;
         console.log(`[PROBE-Q1] BUILD_MARKER=2026-06-14-A sess=${session.id} freshReadFailed=${e?.message} fallback=${freshClaudeBackend ?? '(undef)'}`);
+      }
+      if (isDeepSeekClaudeBackend(freshClaudeBackend)) {
+        freshClaudeBackend = DEEPSEEK_CLAUDE_BACKEND_ID;
       }
     }
 
@@ -549,8 +562,8 @@ export class MessageStreamingHandler {
         maxTokens: (session.providerConfig as any)?.maxTokens,
         temperature: (session.providerConfig as any)?.temperature,
         // Pass effort level from session metadata (Opus 4.6 adaptive reasoning)
-        ...((!isProviderClaudeCode || !freshClaudeBackend) && (session.metadata as any)?.effortLevel && {
-          effortLevel: parseEffortLevel((session.metadata as any).effortLevel),
+        ...((!isProviderClaudeCode || !freshClaudeBackend || isDeepSeekClaudeBackend(freshClaudeBackend)) && freshEffortLevelRaw != null && {
+          effortLevel: parseEffortLevel(freshEffortLevelRaw),
         }),
         // Pass OpenCode agent from session metadata
         ...(session.provider === 'opencode' && (session.metadata as any)?.opencodeAgent && {
@@ -561,8 +574,10 @@ export class MessageStreamingHandler {
         ...(isProviderClaudeCode && freshClaudeBackend && {
           customBackend: freshClaudeBackend,
         }),
-        ...(isProviderClaudeCode && !freshClaudeBackend && {
-          thinkingMode: parseThinkingMode(freshThinkingModeRaw),
+        ...(isProviderClaudeCode && (!freshClaudeBackend || isDeepSeekClaudeBackend(freshClaudeBackend)) && {
+          thinkingMode: isDeepSeekClaudeBackend(freshClaudeBackend)
+            ? normalizeDeepSeekThinkingMode(freshThinkingModeRaw)
+            : parseThinkingMode(freshThinkingModeRaw),
         }),
       };
 

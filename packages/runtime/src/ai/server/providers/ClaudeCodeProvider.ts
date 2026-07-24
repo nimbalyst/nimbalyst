@@ -44,6 +44,10 @@ import {
   CLAUDE_CODE_VARIANT_CONTEXT_WINDOWS,
   CLAUDE_CODE_VARIANTS_WITH_1M,
 } from '../../modelConstants';
+import {
+  applyDeepSeekClaudeAgentProfile,
+  DEEPSEEK_CLAUDE_AGENT_MODEL_VARIANT,
+} from '../deepSeekClaudeAgent';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
 import { TeammateManager, type TeammateToLeadMessage } from './TeammateManager';
@@ -407,7 +411,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     //   config: safeConfig
     // }, null, 2));
 
-    this.config = config;
+    this.config = applyDeepSeekClaudeAgentProfile(config);
 
     // Claude Code manages its own authentication - do not require or use API key
   }
@@ -2987,6 +2991,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       }
 
     }
+
+    models.push({
+      id: ModelIdentifier.create('claude-code', DEEPSEEK_CLAUDE_AGENT_MODEL_VARIANT).combined,
+      name: 'Claude agent - DeepSeek',
+      provider: 'claude-code' as const,
+      maxTokens: 384000,
+      contextWindow: 1000000,
+    });
 
     return models;
   }

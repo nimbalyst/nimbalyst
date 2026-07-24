@@ -227,6 +227,14 @@ export const HelpContent: Record<string, HelpEntry> = {
     title: 'Select AI Model',
     body: 'Choose which AI model to use. Different models have different capabilities and speeds.',
   },
+  'deepseek-effort-selector': {
+    title: 'DeepSeek Effort',
+    body: 'High and Max control how much reasoning work DeepSeek applies. This does not change the context window or set a fixed token budget.',
+  },
+  'deepseek-reasoning-selector': {
+    title: 'DeepSeek Reasoning',
+    body: 'Turn DeepSeek reasoning on or off for the next request.',
+  },
   'action-prompts-dropdown': {
     title: 'Action Prompts',
     body: 'Reusable prompts you define in nimbalyst-local/ai-actions.md. Picking one inserts its body into the draft so you can tweak it before sending.',

@@ -9,6 +9,12 @@ import {
     shouldBlockStartedSessionProviderSwitch,
     type AIProviderType,
 } from '@nimbalyst/runtime/ai/server/types';
+import {
+    DEEPSEEK_CLAUDE_BACKEND_ID,
+    isDeepSeekClaudeAgentModel,
+    normalizeDeepSeekEffort,
+    normalizeDeepSeekThinkingMode,
+} from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import type { UpdateSessionMetadataPayload } from '@nimbalyst/runtime/ai/adapters/sessionStore';
 import path from "path";
 import { existsSync } from "fs";
@@ -292,6 +298,13 @@ export async function registerSessionHandlers() {
                 console.log(`[SessionHandlers] No model provided, using default: ${model}`);
             }
 
+            const sessionMetadata: Record<string, any> = { ...(session.metadata ?? {}) };
+            if (isDeepSeekClaudeAgentModel(model)) {
+                sessionMetadata.claudeBackend = DEEPSEEK_CLAUDE_BACKEND_ID;
+                sessionMetadata.effortLevel = normalizeDeepSeekEffort(sessionMetadata.effortLevel);
+                sessionMetadata.thinkingMode = normalizeDeepSeekThinkingMode(sessionMetadata.thinkingMode);
+            }
+
             const createPayload = {
                 id: session.id,
                 provider,
@@ -314,8 +327,8 @@ export async function registerSessionHandlers() {
             });
 
             // Update with full metadata
-            if (session.metadata) {
-                await AISessionsRepository.updateMetadata(session.id, { metadata: session.metadata });
+            if (Object.keys(sessionMetadata).length > 0) {
+                await AISessionsRepository.updateMetadata(session.id, { metadata: sessionMetadata });
             }
 
             return { success: true, id: session.id };
@@ -383,6 +396,17 @@ export async function registerSessionHandlers() {
                 if (modelId) {
                     updates.provider = modelId.provider;
                     providerType = modelId.provider;
+                    const metadataUpdates = { ...((updates.metadata as Record<string, unknown> | undefined) ?? {}) };
+                    if (isDeepSeekClaudeAgentModel(updates.model)) {
+                        metadataUpdates.claudeBackend = DEEPSEEK_CLAUDE_BACKEND_ID;
+                        metadataUpdates.effortLevel = normalizeDeepSeekEffort(metadataUpdates.effortLevel);
+                        metadataUpdates.thinkingMode = normalizeDeepSeekThinkingMode(metadataUpdates.thinkingMode);
+                    } else if (modelId.provider === 'claude-code') {
+                        // A normal Claude selection exits the synthetic DeepSeek
+                        // profile instead of carrying its backend into a new model.
+                        metadataUpdates.claudeBackend = null;
+                    }
+                    updates.metadata = metadataUpdates;
                 }
             }
 

@@ -10,11 +10,18 @@ const THINKING_MODE_OPTIONS: { key: ThinkingMode; label: string }[] = [
 interface ThinkingModeSelectorProps {
   mode: ThinkingMode;
   onModeChange: (mode: ThinkingMode) => void;
+  label?: 'Extended' | 'Reasoning';
   disabled?: boolean;
   disabledTitle?: string;
 }
 
-export function ThinkingModeSelector({ mode, onModeChange, disabled = false, disabledTitle }: ThinkingModeSelectorProps) {
+export function ThinkingModeSelector({
+  mode,
+  onModeChange,
+  label = 'Extended',
+  disabled = false,
+  disabledTitle,
+}: ThinkingModeSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -38,7 +45,11 @@ export function ThinkingModeSelector({ mode, onModeChange, disabled = false, dis
     };
   }, [isOpen]);
 
-  const currentMode = THINKING_MODE_OPTIONS.find(option => option.key === mode) ?? THINKING_MODE_OPTIONS[1];
+  const modeOptions = THINKING_MODE_OPTIONS.map((option) => ({
+    ...option,
+    label: `${label}: ${option.key === 'enabled' ? 'On' : 'Off'}`,
+  }));
+  const currentMode = modeOptions.find(option => option.key === mode) ?? modeOptions[1];
 
   return (
     <div className="thinking-mode-selector relative inline-block" ref={dropdownRef}>
@@ -48,7 +59,7 @@ export function ThinkingModeSelector({ mode, onModeChange, disabled = false, dis
         disabled={disabled}
         onClick={() => setIsOpen(!isOpen)}
         title={disabled ? disabledTitle : undefined}
-        aria-label={`Extended thinking: ${currentMode.key === 'enabled' ? 'on' : 'off'}`}
+        aria-label={`${label}: ${currentMode.key === 'enabled' ? 'on' : 'off'}`}
       >
         <MaterialSymbol icon="psychology" size={12} />
         <span>{currentMode.label}</span>
@@ -57,7 +68,7 @@ export function ThinkingModeSelector({ mode, onModeChange, disabled = false, dis
 
       {isOpen && (
         <div className="absolute bottom-full left-0 mb-1 min-w-[136px] rounded-lg p-1 z-[1000] bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_4px_12px_rgba(0,0,0,0.15)]">
-          {THINKING_MODE_OPTIONS.map(option => (
+          {modeOptions.map(option => (
             <button
               key={option.key}
               className={`flex items-center justify-between gap-2 px-2 py-1.5 w-full border-none rounded text-xs cursor-pointer transition-[background] duration-150 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] ${option.key === mode ? 'bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)]' : ''}`}
