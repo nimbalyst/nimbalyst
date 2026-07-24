@@ -2806,6 +2806,12 @@ class PGLiteWorker {
         CREATE INDEX IF NOT EXISTS idx_tracker_personal_state_scope
           ON tracker_personal_state (user_email, scope);
       `);
+      // Personal triage snooze (schema version 29). Mirror of SQLite
+      // 0029_tracker_personal_snooze.sql. Added separately so databases created
+      // before the inbox existed pick the column up on the next launch.
+      await this.db.exec(`
+        ALTER TABLE tracker_personal_state ADD COLUMN IF NOT EXISTS snoozed_until BIGINT;
+      `);
       console.log('[PGLite Worker] tracker_personal_state table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create tracker_personal_state table:', error);
@@ -2836,6 +2842,33 @@ class PGLiteWorker {
       console.log('[PGLite Worker] tracker_type_navigation table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create tracker_type_navigation table:', error);
+      throw error;
+    }
+
+    // Migration: team-shared tracker saved views (schema version 28).
+    // Mirror of SQLite migration 0028_tracker_shared_saved_views.sql.
+    // Payload is stored as TEXT (not JSONB) so the row round-trips byte-for-byte
+    // through the sync lane; see DATABASE.md on the JSONB sub-extraction divergence.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_shared_saved_views (
+          workspace   TEXT NOT NULL,
+          view_id     TEXT NOT NULL,
+          payload     TEXT NOT NULL,
+          updated     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at  TIMESTAMPTZ,
+          sync_id     BIGINT,
+          sync_status TEXT NOT NULL DEFAULT 'local',
+          PRIMARY KEY (workspace, view_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracker_shared_saved_views_sync
+          ON tracker_shared_saved_views (workspace, sync_status);
+        CREATE INDEX IF NOT EXISTS idx_tracker_shared_saved_views_cursor
+          ON tracker_shared_saved_views (workspace, sync_id);
+      `);
+      console.log('[PGLite Worker] tracker_shared_saved_views table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_shared_saved_views table:', error);
       throw error;
     }
 

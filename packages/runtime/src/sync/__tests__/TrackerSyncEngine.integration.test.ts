@@ -303,6 +303,73 @@ describe('TrackerSyncEngine (in-memory)', () => {
     c.engine.destroy();
   });
 
+  it('syncs team-shared saved views through outbox, live delta, and bootstrap', async () => {
+    const server = createFakeServer();
+    const sprintView = JSON.stringify({
+      id: 'view-sprint-7',
+      name: 'Sprint 7 -- open bugs',
+      definition: { selectedType: 'bug', viewMode: 'grid' },
+    });
+
+    // A peer that is already connected receives the view as a live delta.
+    const b = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const bApplied: Array<{ viewId: string; payload: string | null; syncId: number }> = [];
+    b.config.savedViewSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { bApplied.push(def); },
+    };
+    await b.engine.connect();
+    await waitUntil(() => b.engine.getStatus() === 'connected');
+
+    let pending: Array<{ viewId: string; payload: string | null; deleted: boolean }> =
+      [{ viewId: 'view-sprint-7', payload: sprintView, deleted: false }];
+    const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    a.config.savedViewSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => pending,
+      applyRemote: async (def) => {
+        pending = pending.filter((view) => view.viewId !== def.viewId);
+      },
+    };
+    await a.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected');
+    await waitUntil(() => bApplied.some((view) => view.viewId === 'view-sprint-7'));
+    expect(JSON.parse(bApplied[0].payload!)).toMatchObject({ name: 'Sprint 7 -- open bugs' });
+
+    // Unsharing a view travels as a tombstone, not a payload.
+    pending = [{ viewId: 'view-sprint-7', payload: null, deleted: true }];
+    await a.engine.flushSavedViews();
+    await waitUntil(() => bApplied.length === 2);
+    expect(bApplied[1]).toMatchObject({ viewId: 'view-sprint-7', payload: null });
+
+    // A fresh client bootstraps the whole lane from syncId 0.
+    const c = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const cApplied: Array<{ viewId: string; payload: string | null; syncId: number }> = [];
+    c.config.savedViewSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { cApplied.push(def); },
+    };
+    await c.engine.connect();
+    await waitUntil(() => c.engine.getStatus() === 'connected');
+    await waitUntil(() => cApplied.length >= 1);
+    expect(cApplied.at(-1)).toMatchObject({ viewId: 'view-sprint-7', payload: null });
+
+    expect(server.room.receivedSavedViewMutations.map((v) => v.viewId)).toEqual([
+      'view-sprint-7',
+      'view-sprint-7',
+    ]);
+
+    // The server never sees the view's contents.
+    const stored = server.room.getStoredSavedViews();
+    expect(stored[0].encryptedPayload).toBeNull();
+
+    a.engine.destroy();
+    b.engine.destroy();
+    c.engine.destroy();
+  });
+
   // ==========================================================================
   // Stripping linked sessions at upload boundary
   // ==========================================================================

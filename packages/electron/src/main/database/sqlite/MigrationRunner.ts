@@ -176,6 +176,16 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'tool_usage_backfill_state',
       sqlFile: path.join(schemaDir, '0027_tool_usage_backfill_state.sql'),
     },
+    {
+      version: 28,
+      name: 'tracker_shared_saved_views',
+      sqlFile: path.join(schemaDir, '0028_tracker_shared_saved_views.sql'),
+    },
+    {
+      version: 29,
+      name: 'tracker_personal_snooze',
+      sqlFile: path.join(schemaDir, '0029_tracker_personal_snooze.sql'),
+    },
   ];
 }
 

@@ -212,6 +212,9 @@ export {
   encryptTrackerPayload,
   decryptTrackerEnvelope,
   encryptTrackerNavigationPayload,
+  encryptTrackerSavedViewPayload,
+  decryptTrackerSavedViewEnvelope,
+  decodeTrackerSavedViewEnvelopePlaintext,
   decryptTrackerNavigationEnvelope,
   fingerprintTrackerKey,
 } from './TrackerEnvelopeCrypto';

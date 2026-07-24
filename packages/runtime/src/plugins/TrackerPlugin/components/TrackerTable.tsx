@@ -78,6 +78,8 @@ interface TrackerTableProps {
   favoriteItemIds?: ReadonlySet<string>;
   onToggleFavorite?: (itemId: string) => void;
   preserveItemOrder?: boolean;
+  /** Parent renders the shared tracker-view controls. */
+  hideToolbar?: boolean;
 }
 
 /**
@@ -763,6 +765,7 @@ export function TrackerTable({
   favoriteItemIds = new Set<string>(),
   onToggleFavorite,
   preserveItemOrder = false,
+  hideToolbar = false,
 }: TrackerTableProps): JSX.Element {
   // Type filter: use prop filterType when hideTypeTabs is true, otherwise use internal state
   const [internalTypeFilter, setInternalTypeFilter] = useState<TrackerItemType | 'all'>('all');
@@ -1118,7 +1121,7 @@ export function TrackerTable({
   return (
     <div className="tracker-table-wrapper flex flex-col h-full w-full bg-[var(--nim-bg)]" data-testid="tracker-table">
       {/* Display options panel (positioned relative to wrapper) */}
-      {showDisplayOptions && onColumnConfigChange && (
+      {!hideToolbar && showDisplayOptions && onColumnConfigChange && (
         <div className="relative">
           <DisplayOptionsPanel
             availableColumns={allColumns}
@@ -1150,7 +1153,7 @@ export function TrackerTable({
       )}
 
       {/* Toolbar: filter + display options + count */}
-      {items.length > 0 && (
+      {!hideToolbar && items.length > 0 && (
         <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-[var(--nim-border)] bg-[var(--nim-bg)]">
           {/* Filter button */}
           <div className="relative" ref={filterMenuRef}>

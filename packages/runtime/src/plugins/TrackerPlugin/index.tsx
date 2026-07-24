@@ -1026,8 +1026,36 @@ export type { UseTrackerRowsOptions, UseTrackerRowsResult, EditingCellRef, Editi
 export { TrackerFieldEditor } from './components/TrackerFieldEditor';
 export { UserAvatar } from './components/UserAvatar';
 export { DisplayOptionsPanel } from './components/DisplayOptionsPanel';
-export { getDefaultColumnConfig, resolveColumnsForType, BUILTIN_COLUMNS, DEFAULT_VISIBLE_COLUMNS } from './components/trackerColumns';
+export {
+  getDefaultColumnConfig,
+  resolveColumnsForType,
+  BUILTIN_COLUMNS,
+  DEFAULT_VISIBLE_COLUMNS,
+  getCellValue,
+  getFieldForColumn,
+  getStatusColor,
+  getPriorityColor,
+  getTypeColor,
+  getTypeIcon,
+  formatRelativeDate,
+  getEffectiveUpdatedDate,
+} from './components/trackerColumns';
 export type { TrackerColumnDef, TypeColumnConfig, ColumnRenderType } from './components/trackerColumns';
+export {
+  resolveCellEditor,
+  coerceCellValue,
+  formatCellForEditor,
+  isFieldEditableInGrid,
+  READONLY_STRUCTURAL_COLUMNS,
+} from './components/trackerCellEditors';
+export type { CellEditorKind, CellEditorDescriptor } from './components/trackerCellEditors';
+export {
+  withEffectiveUpdated,
+  filterTrackerRecords,
+  sortTrackerRecords,
+  searchMatchesRecord,
+  compareRecords,
+} from './components/trackerRowData';
 export type { TrackerFieldEditorProps } from './components/TrackerFieldEditor';
 
 // Export tracker data atoms (cross-platform reactive state)

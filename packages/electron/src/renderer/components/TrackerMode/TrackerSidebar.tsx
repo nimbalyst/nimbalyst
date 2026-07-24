@@ -37,12 +37,14 @@ interface TrackerSidebarProps {
   onViewModeChange: (mode: ViewMode) => void;
   /** Saved views for this workspace (NIM-788). */
   savedViews: SavedView[];
+  /** View currently represented by the main header. */
+  activeSavedViewId: string | null;
   /** Apply a saved view's definition. */
   onApplyView: (view: SavedView) => void;
-  /** Save the current view state under a name. */
-  onSaveView: (name: string) => void;
-  /** Delete a saved view by id. */
-  onDeleteView: (viewId: string) => void;
+  /** Delete a saved view. Deleting a shared view removes it for the team. */
+  onDeleteView: (view: SavedView) => void;
+  /** Share the view with the team, or stop sharing it. */
+  onToggleShareView: (view: SavedView) => void;
   onSaveNavigationEntry: (entry: TrackerNavigationEntry) => Promise<void>;
   onDeleteFolder: (folderId: string) => Promise<void>;
 }
@@ -140,18 +142,17 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
   onToggleFilter,
   onViewModeChange,
   savedViews,
+  activeSavedViewId,
   onApplyView,
-  onSaveView,
   onDeleteView,
+  onToggleShareView,
   onSaveNavigationEntry,
   onDeleteFolder,
 }) => {
-  const [savingView, setSavingView] = useState(false);
   const trackerSyncConnection = useAtomValue(trackerSyncConnectionAtom);
   const isSharedLayout = !!workspacePath &&
     trackerSyncConnection?.workspacePath === workspacePath &&
     trackerSyncConnection.projectId !== null;
-  const [newViewName, setNewViewName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -303,14 +304,6 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
     </button>
   );
 
-  const commitSaveView = () => {
-    const name = newViewName.trim();
-    if (!name) return;
-    onSaveView(name);
-    setNewViewName('');
-    setSavingView(false);
-  };
-
   return (
     <div className="tracker-sidebar w-full h-full flex flex-col bg-nim-secondary overflow-hidden" data-testid="tracker-sidebar">
       {workspacePath && (
@@ -346,6 +339,19 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
                   </button>
                   <button
                     className={`relative flex items-center justify-center w-7 h-6 border-l border-nim transition-colors ${
+                      viewMode === 'grid'
+                        ? 'bg-nim-active text-nim'
+                        : 'bg-nim-secondary text-nim-muted hover:text-nim'
+                    }`}
+                    onClick={() => onViewModeChange('grid')}
+                    title="Editable grid view (alpha)"
+                    data-testid="tracker-view-mode-grid"
+                  >
+                    <MaterialSymbol icon="grid_on" size={16} />
+                    <AlphaBadge size="dot" className="absolute -top-1 -right-1 pointer-events-none" />
+                  </button>
+                  <button
+                    className={`relative flex items-center justify-center w-7 h-6 border-l border-nim transition-colors ${
                       viewMode === 'kanban'
                         ? 'bg-nim-active text-nim'
                         : 'bg-nim-secondary text-nim-muted hover:text-nim'
@@ -368,6 +374,19 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
                     data-testid="tracker-view-mode-tag-board"
                   >
                     <MaterialSymbol icon="sell" size={16} />
+                    <AlphaBadge size="dot" className="absolute -top-1 -right-1 pointer-events-none" />
+                  </button>
+                  <button
+                    className={`relative flex items-center justify-center w-7 h-6 border-l border-nim transition-colors ${
+                      viewMode === 'inbox'
+                        ? 'bg-nim-active text-nim'
+                        : 'bg-nim-secondary text-nim-muted hover:text-nim'
+                    }`}
+                    onClick={() => onViewModeChange('inbox')}
+                    title="Triage inbox (alpha)"
+                    data-testid="tracker-view-mode-inbox"
+                  >
+                    <MaterialSymbol icon="inbox" size={16} />
                     <AlphaBadge size="dot" className="absolute -top-1 -right-1 pointer-events-none" />
                   </button>
                 </div>
@@ -437,55 +456,20 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
             <span className="text-[10px] font-semibold text-nim-faint uppercase tracking-wider">
               Saved Views
             </span>
-            <button
-              className="flex items-center gap-0.5 text-[10px] text-nim-faint hover:text-nim transition-colors"
-              onClick={() => setSavingView((v) => !v)}
-              title="Save current view"
-              data-testid="tracker-saved-view-add"
-            >
-              <MaterialSymbol icon="add" size={13} />
-            </button>
           </div>
 
-          {savingView && (
-            <div className="flex items-center gap-1 mb-1.5 px-1">
-              <input
-                autoFocus
-                type="text"
-                value={newViewName}
-                onChange={(e) => setNewViewName(e.target.value)}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter') commitSaveView();
-                  if (e.key === 'Escape') { setSavingView(false); setNewViewName(''); }
-                }}
-                placeholder="View name..."
-                className="flex-1 min-w-0 px-2 py-1 text-[11px] bg-nim border border-nim rounded text-nim placeholder:text-nim-faint focus:outline-none focus:border-[var(--nim-primary)]"
-                data-testid="tracker-saved-view-name-input"
-              />
-              <button
-                className="px-1.5 py-1 text-[11px] text-white bg-[var(--nim-primary)] rounded hover:opacity-90 disabled:opacity-40"
-                onClick={commitSaveView}
-                disabled={!newViewName.trim()}
-                data-testid="tracker-saved-view-save"
-              >
-                Save
-              </button>
-            </div>
-          )}
-
           {savedViews.length === 0 ? (
-            !savingView && (
-              <div className="px-1 text-[10px] text-nim-faint italic">
-                Save the current filters and layout as a reusable view.
-              </div>
-            )
+            <div className="px-1 text-[10px] text-nim-faint italic">
+              Saved views will appear here.
+            </div>
           ) : (
             <div className="flex flex-col gap-0.5">
               {savedViews.map((view) => (
                 <div
                   key={view.id}
-                  className="group flex items-center gap-1 rounded-md hover:bg-nim-tertiary"
+                  className={`group flex items-center gap-1 rounded-md ${
+                    activeSavedViewId === view.id ? 'bg-nim-active' : 'hover:bg-nim-tertiary'
+                  }`}
                   data-testid="tracker-saved-view-item"
                 >
                   <button
@@ -495,11 +479,31 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
                   >
                     <MaterialSymbol icon="bookmark" size={13} className="shrink-0" />
                     <span className="flex-1 truncate">{view.name}</span>
+                    {view.shared && (
+                      <MaterialSymbol
+                        icon="group"
+                        size={12}
+                        className="shrink-0 text-nim-faint"
+                        title="Shared with this team"
+                      />
+                    )}
                   </button>
+                  {isSharedLayout && (
+                    <button
+                      className={view.shared
+                        ? 'px-1.5 text-[var(--nim-primary)]'
+                        : 'opacity-0 group-hover:opacity-100 px-1.5 text-nim-faint hover:text-nim transition-opacity'}
+                      onClick={() => onToggleShareView(view)}
+                      title={view.shared ? 'Stop sharing with the team' : 'Share view with the team'}
+                      data-testid="tracker-saved-view-share"
+                    >
+                      <MaterialSymbol icon={view.shared ? 'group' : 'group_add'} size={13} />
+                    </button>
+                  )}
                   <button
                     className="opacity-0 group-hover:opacity-100 px-1.5 text-nim-faint hover:text-[#ef4444] transition-opacity"
-                    onClick={() => onDeleteView(view.id)}
-                    title="Delete view"
+                    onClick={() => onDeleteView(view)}
+                    title={view.shared ? 'Delete view for the whole team' : 'Delete view'}
                     data-testid="tracker-saved-view-delete"
                   >
                     <MaterialSymbol icon="close" size={13} />

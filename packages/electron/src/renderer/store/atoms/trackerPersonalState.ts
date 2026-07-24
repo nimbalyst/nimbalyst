@@ -26,6 +26,13 @@ export const favoriteTrackerItemIdsAtom = atom((get) => {
   }
   return ids as ReadonlySet<string>;
 });
+export const trackerSnoozedUntilByItemIdAtom = atom((get) => {
+  const snoozed = new Map<string, number>();
+  for (const row of get(trackerPersonalStateAtom).rowsByItemId.values()) {
+    if (row.snoozedUntil != null) snoozed.set(row.itemId, row.snoozedUntil);
+  }
+  return snoozed as ReadonlyMap<string, number>;
+});
 export const trackerViewedAtByItemIdAtom = atom((get) => {
   const viewed = new Map<string, number>();
   for (const row of get(trackerPersonalStateAtom).rowsByItemId.values()) {
@@ -72,6 +79,7 @@ export const setTrackerFavoriteAtom = atom(null, async (get, set, input: { itemI
     isFavorite: input.isFavorite,
     favoriteUpdatedAt,
     lastOpenedAt: previous?.lastOpenedAt ?? null,
+    snoozedUntil: previous?.snoozedUntil ?? null,
     updatedAt: Math.max(previous?.updatedAt ?? 0, favoriteUpdatedAt),
   };
   set(trackerPersonalStateAtom, { ...current, rowsByItemId: new Map(current.rowsByItemId).set(input.itemId, optimistic) });
@@ -87,6 +95,44 @@ export const setTrackerFavoriteAtom = atom(null, async (get, set, input: { itemI
     console.error('[trackerPersonalState] Failed to set favorite:', error);
     set(trackerPersonalStateAtom, (latest) => {
       if (latest.rowsByItemId.get(input.itemId)?.favoriteUpdatedAt !== favoriteUpdatedAt) return latest;
+      const rows = new Map(latest.rowsByItemId);
+      if (previous) rows.set(input.itemId, previous); else rows.delete(input.itemId);
+      return { ...latest, rowsByItemId: rows };
+    });
+  }
+});
+
+/**
+ * Snooze an item out of this user's triage inbox until `snoozedUntil`, or pass
+ * null to bring it back now. Optimistic so the queue advances immediately.
+ */
+export const setTrackerSnoozeAtom = atom(null, async (get, set, input: { itemId: string; snoozedUntil: number | null }) => {
+  const current = get(trackerPersonalStateAtom);
+  if (!current.workspacePath || !current.scope || !current.hydrated) return;
+  const updatedAt = Date.now();
+  const previous = current.rowsByItemId.get(input.itemId);
+  const optimistic: TrackerPersonalStateDto = {
+    userEmail: current.identityEmail ?? '',
+    scope: current.scope,
+    itemId: input.itemId,
+    isFavorite: previous?.isFavorite ?? false,
+    favoriteUpdatedAt: previous?.favoriteUpdatedAt ?? 0,
+    lastOpenedAt: previous?.lastOpenedAt ?? null,
+    snoozedUntil: input.snoozedUntil,
+    updatedAt,
+  };
+  set(trackerPersonalStateAtom, { ...current, rowsByItemId: new Map(current.rowsByItemId).set(input.itemId, optimistic) });
+  try {
+    const row = await trackerPersonalStateService.setSnooze({
+      workspacePath: current.workspacePath,
+      itemId: input.itemId,
+      snoozedUntil: input.snoozedUntil,
+    });
+    if (row) set(applyTrackerPersonalStateRowAtom, row);
+  } catch (error) {
+    console.error('[trackerPersonalState] Failed to set snooze:', error);
+    set(trackerPersonalStateAtom, (latest) => {
+      if (latest.rowsByItemId.get(input.itemId)?.updatedAt !== updatedAt) return latest;
       const rows = new Map(latest.rowsByItemId);
       if (previous) rows.set(input.itemId, previous); else rows.delete(input.itemId);
       return { ...latest, rowsByItemId: rows };
@@ -121,6 +167,9 @@ export const applyTrackerPersonalStateRowAtom = atom(null, (get, set, row: Track
       : previous.isFavorite,
     favoriteUpdatedAt: Math.max(previous.favoriteUpdatedAt, row.favoriteUpdatedAt),
     lastOpenedAt: Math.max(previous.lastOpenedAt ?? 0, row.lastOpenedAt ?? 0) || null,
+    // Snooze is last-write-wins on `updatedAt` -- taking the max would make an
+    // un-snooze (null) impossible to express.
+    snoozedUntil: row.updatedAt >= previous.updatedAt ? row.snoozedUntil : previous.snoozedUntil,
     updatedAt: Math.max(previous.updatedAt, row.updatedAt),
   } : row;
   set(trackerPersonalStateAtom, {

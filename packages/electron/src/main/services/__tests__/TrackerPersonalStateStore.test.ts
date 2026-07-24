@@ -20,6 +20,7 @@ const sqliteSchema = `
     is_favorite INTEGER NOT NULL DEFAULT 0,
     favorite_updated_at INTEGER NOT NULL DEFAULT 0,
     last_opened_at INTEGER,
+    snoozed_until INTEGER,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (user_email, scope, item_id)
   )`;
@@ -95,5 +96,40 @@ describe.each(['sqlite', 'pglite'] as const)('TrackerPersonalStateStore (%s)', (
 
     expect(stale).toBeNull();
     expect(advanced).toMatchObject({ isFavorite: true, favoriteUpdatedAt: 50, lastOpenedAt: 200 });
+  });
+
+  it('snoozes and un-snoozes an item without disturbing its favorite state', async () => {
+    await setup();
+    await store.setFavorite({ userEmail: 'me@example.com', scope: '/a', itemId: 'x', isFavorite: true, favoriteUpdatedAt: 50 });
+    const snoozed = await store.setSnooze({
+      userEmail: 'me@example.com', scope: '/a', itemId: 'x', snoozedUntil: 5_000, updatedAt: 100,
+    });
+    expect(snoozed).toMatchObject({ snoozedUntil: 5_000, isFavorite: true });
+
+    const cleared = await store.setSnooze({
+      userEmail: 'me@example.com', scope: '/a', itemId: 'x', snoozedUntil: null, updatedAt: 200,
+    });
+    expect(cleared).toMatchObject({ snoozedUntil: null, isFavorite: true });
+  });
+
+  it('ignores a snooze write that lost the race', async () => {
+    await setup();
+    await store.setSnooze({
+      userEmail: 'me@example.com', scope: '/a', itemId: 'x', snoozedUntil: null, updatedAt: 200,
+    });
+    const stale = await store.setSnooze({
+      userEmail: 'me@example.com', scope: '/a', itemId: 'x', snoozedUntil: 9_000, updatedAt: 100,
+    });
+
+    expect(stale).toBeNull();
+    expect((await store.getForScope('me@example.com', '/a'))[0]).toMatchObject({ snoozedUntil: null });
+  });
+
+  it('snoozes an item it has never seen before', async () => {
+    await setup();
+    const row = await store.setSnooze({
+      userEmail: 'me@example.com', scope: '/a', itemId: 'fresh', snoozedUntil: 7_000, updatedAt: 10,
+    });
+    expect(row).toMatchObject({ itemId: 'fresh', snoozedUntil: 7_000, isFavorite: false });
   });
 });

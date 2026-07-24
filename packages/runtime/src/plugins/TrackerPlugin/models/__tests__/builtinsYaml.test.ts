@@ -22,6 +22,8 @@ const EXPECTED = [
   'bug',
   'task',
   'idea',
+  'milestone',
+  'release',
 ] as const;
 
 // Behavior-preserving invariants carried over from the pre-migration code array.
@@ -35,6 +37,9 @@ const INVARIANTS: Record<string, {
   bug: { idPrefix: 'bug', syncMode: 'shared' },
   task: { idPrefix: 'tsk', syncMode: 'shared' },
   idea: { idPrefix: 'id', syncMode: 'local' },
+  // Collection types: both shared, since a sprint or release is a team artifact.
+  milestone: { idPrefix: 'mst', syncMode: 'shared' },
+  release: { idPrefix: 'rel', syncMode: 'shared' },
 };
 
 describe('bundled builtin tracker YAML', () => {

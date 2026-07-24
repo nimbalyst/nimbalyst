@@ -24,6 +24,7 @@ const {
   mockIsBuiltinTrackerSchema: vi.fn(() => false),
   mockGlobalRegistry: {
     get: vi.fn(() => undefined),
+    getAll: vi.fn(() => []),
     validate: vi.fn(() => ({ valid: true, errors: [] as Array<{ field: string; message: string }> })),
   },
   mockApplyHeadlessBodyMarkdown: vi.fn(async () => undefined),
@@ -121,6 +122,7 @@ import {
   handleTrackerDeleteType,
   handleTrackerGet,
   handleTrackerLinkSession,
+  handleTrackerList,
   handleTrackerListTypes,
   handleTrackerUnlinkSession,
   handleTrackerUpdate,
@@ -130,6 +132,102 @@ import {
 } from '../trackerToolHandlers';
 import { isTrackerSyncActive } from '../../../services/TrackerSyncManager';
 import { getEffectiveTrackerSyncPolicy, shouldSyncTrackerItem } from '../../../services/TrackerPolicyService';
+
+describe('handleTrackerList structured records', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDocumentServices.clear();
+  });
+
+  it('returns custom fields under `full` and honors the all-items sentinel', async () => {
+    const items = Array.from({ length: 260 }, (_, index) => ({
+      id: `release-${index}`,
+      issueKey: `NIM-${index}`,
+      type: 'release',
+      typeTags: ['release'],
+      title: `Release ${index}`,
+      status: 'planned',
+      priority: '',
+      workspace: '/tmp/ws',
+      customFields: {
+        version: `1.0.${index}`,
+        items: [{ itemId: `member-${index}` }],
+      },
+      updated: `2026-07-23T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+    }));
+    mockDocService.listTrackerItems.mockResolvedValue(items);
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+
+    const result = await handleTrackerList({ type: 'release', limit: -1, full: true }, '/tmp/ws');
+    const payload = JSON.parse(result.content[0].text!);
+
+    expect(result.isError).toBeFalsy();
+    expect(payload.structured.items).toHaveLength(260);
+    expect(payload.structured.items[0].customFields).toMatchObject({
+      version: expect.any(String),
+      items: [expect.objectContaining({ itemId: expect.any(String) })],
+    });
+  });
+
+  it('treats a where `=` with an empty operand as "match empties"', async () => {
+    mockDocService.listTrackerItems.mockResolvedValue([
+      { id: 'a', type: 'bug', typeTags: ['bug'], title: 'No owner', status: 'to-do', workspace: '/tmp/ws', customFields: { owner: '' } },
+      { id: 'b', type: 'bug', typeTags: ['bug'], title: 'Has owner', status: 'to-do', workspace: '/tmp/ws', customFields: { owner: 'greg' } },
+    ]);
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+
+    const result = await handleTrackerList(
+      { where: [{ field: 'owner', op: '=', value: '' }] },
+      '/tmp/ws',
+    );
+    const items = JSON.parse(result.content[0].text!).structured.items;
+
+    // The blank binary clause must select the empty-owner item, not vanish and
+    // return everything (the pre-`is-empty` idiom).
+    expect(items.map((i: any) => i.id)).toEqual(['a']);
+  });
+
+  it('registers workspace schemas before resolving roles', async () => {
+    const { ensureWorkspaceTrackerSchemasLoaded } = await import('../../../services/TrackerSchemaService');
+    vi.mocked(ensureWorkspaceTrackerSchemasLoaded).mockClear();
+    mockDocService.listTrackerItems.mockResolvedValue([]);
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+
+    await handleTrackerList({ inbox: true }, '/tmp/ws');
+
+    expect(ensureWorkspaceTrackerSchemasLoaded).toHaveBeenCalledWith('/tmp/ws');
+  });
+
+  it('omits the heavy fields by default so an ordinary list stays small', async () => {
+    mockDocService.listTrackerItems.mockResolvedValue([
+      {
+        id: 'release-0',
+        issueKey: 'NIM-0',
+        type: 'release',
+        typeTags: ['release'],
+        title: 'Release 0',
+        status: 'planned',
+        priority: '',
+        workspace: '/tmp/ws',
+        customFields: { version: '1.0.0', items: [{ itemId: 'member-0' }] },
+        linkedSessions: ['session-1'],
+        origin: 'agent',
+        updated: '2026-07-23T00:00:00.000Z',
+      },
+    ]);
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+
+    const result = await handleTrackerList({ type: 'release' }, '/tmp/ws');
+    const item = JSON.parse(result.content[0].text!).structured.items[0];
+
+    // Lean identity fields survive; the heavy fields are gone without `full`.
+    expect(item.title).toBe('Release 0');
+    expect(item.status).toBe('planned');
+    expect(item.customFields).toBeUndefined();
+    expect(item.linkedSessions).toBeUndefined();
+    expect(item.origin).toBeUndefined();
+  });
+});
 
 describe('handleTrackerAddComment', () => {
   beforeEach(() => {

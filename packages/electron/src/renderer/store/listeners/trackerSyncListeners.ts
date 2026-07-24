@@ -33,6 +33,7 @@ import { globalRegistry, isRelationshipField } from '@nimbalyst/runtime/plugins/
 import { trackerSyncConfigChangeAtom, trackerSyncConnectionAtom, trackerSyncRejectionAtom, type TrackerSyncRejectionCode } from '../atoms/trackerSync';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
 import { loadTrackerNavigationAtom } from '../atoms/trackerNavigation';
+import { initTrackerPanelLayout, loadSharedTrackerViewsAtom } from '../atoms/trackers';
 
 /** Auto-clear delay for transient rotation locks. Matches the typical
  *  team rotation window -- by 30s the org-wide write freeze should have
@@ -244,6 +245,15 @@ export function initTrackerSyncListeners(): () => void {
       },
     ),
   );
+  cleanups.push(
+    window.electronAPI.on(
+      'tracker-saved-views:changed',
+      (data: { workspacePath: string }) => {
+        if (!data?.workspacePath || data.workspacePath !== currentWorkspacePath) return;
+        void store.set(loadSharedTrackerViewsAtom, data.workspacePath);
+      },
+    ),
+  );
   void window.electronAPI
     .invoke('get-initial-state')
     .then(async (state: { mode?: string; workspacePath?: string } | null) => {
@@ -261,6 +271,9 @@ export function initTrackerSyncListeners(): () => void {
 
       void store.set(loadTrackerNavigationAtom, requestedWorkspacePath).catch((error) => {
         console.error('[trackerSyncListeners] Failed to load tracker navigation:', error);
+      });
+      void store.set(loadSharedTrackerViewsAtom, requestedWorkspacePath).catch((error) => {
+        console.error('[trackerSyncListeners] Failed to load shared saved views:', error);
       });
       void window.electronAPI.invoke(
         'tracker-sync:get-status',
@@ -363,6 +376,13 @@ export function initTrackerSyncListeners(): () => void {
         const nextPath = store.get(activeWorkspacePathAtom);
         if (!nextPath || nextPath === currentWorkspacePath) return;
         currentWorkspacePath = nextPath;
+        void initTrackerPanelLayout(nextPath);
+        void store.set(loadTrackerNavigationAtom, nextPath).catch((error) => {
+          console.error('[trackerSyncListeners] Failed to load tracker navigation after project switch:', error);
+        });
+        void store.set(loadSharedTrackerViewsAtom, nextPath).catch((error) => {
+          console.error('[trackerSyncListeners] Failed to load shared saved views after project switch:', error);
+        });
         void loadAllTrackerItems();
       });
       cleanups.push(unsubscribeActivePath);

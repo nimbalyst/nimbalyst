@@ -1,0 +1,221 @@
+/**
+ * RevoGrid theming for the tracker grid.
+ *
+ * RevoGrid ships light-only default themes, so every surface color is remapped
+ * onto the canonical `--nim-*` tokens; that keeps the grid correct in dark mode
+ * and in any custom theme without a per-theme stylesheet.
+ */
+
+.tracker-grid-view,
+.tracker-grid-view revo-grid {
+  --revo-grid-primary: var(--nim-primary);
+  --revo-grid-primary-transparent: color-mix(in srgb, var(--nim-primary) 75%, transparent);
+  --revo-grid-background: var(--nim-bg);
+  --revo-grid-foreground: var(--nim-text);
+  --revo-grid-divider: var(--nim-border);
+  --revo-grid-shadow: color-mix(in srgb, var(--nim-bg) 55%, transparent);
+  --revo-grid-text: var(--nim-text);
+  --revo-grid-border: var(--nim-border);
+  --revo-grid-header-bg: var(--nim-bg-secondary);
+  --revo-grid-header-color: var(--nim-text-muted);
+  --revo-grid-header-border: var(--nim-border);
+  --revo-grid-cell-border: var(--nim-border);
+  --revo-grid-focused-bg: color-mix(in srgb, var(--nim-primary) 10%, var(--nim-bg));
+  --revo-grid-row-hover: var(--nim-bg-hover);
+  --revo-grid-row-headers-bg: var(--nim-bg-secondary);
+  --revo-grid-row-headers-color: var(--nim-text-faint);
+  --revo-grid-cell-disabled-bg: color-mix(in srgb, var(--nim-bg-secondary) 55%, transparent);
+}
+
+.tracker-grid-view revo-grid {
+  height: 100%;
+  width: 100%;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--nim-text);
+  background: var(--nim-bg);
+  border: 0;
+}
+
+/* Header */
+.tracker-grid-view revogr-header {
+  background: var(--nim-bg-secondary);
+  color: var(--nim-text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 32px;
+  border-bottom: 1px solid var(--nim-border);
+}
+
+.tracker-grid-view revogr-header .header-rgRow {
+  height: 32px;
+}
+
+.tracker-grid-view revogr-header .rgHeaderCell {
+  border-right: 1px solid var(--nim-border);
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+}
+
+/* Data cells */
+.tracker-grid-view .rgCell {
+  border-right: 1px solid var(--nim-border);
+  border-bottom: 1px solid var(--nim-border);
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  color: var(--nim-text);
+  background: var(--nim-bg);
+}
+
+.tracker-grid-view .rgRow:hover .rgCell {
+  background: var(--nim-bg-hover);
+}
+
+/* Row header gutter (row numbers) */
+.tracker-grid-view .rowHeaders .rgCell {
+  background: var(--nim-bg-secondary);
+  color: var(--nim-text-faint);
+  justify-content: flex-end;
+}
+
+/* Focus + range selection */
+.tracker-grid-view revogr-focus {
+  border: 2px solid var(--nim-primary);
+}
+
+.tracker-grid-view revogr-temp-range,
+.tracker-grid-view .selection-border-range {
+  border: 1px solid var(--nim-primary);
+  background: color-mix(in srgb, var(--nim-primary) 12%, transparent);
+}
+
+/* Readonly cells read as inert rather than merely uneditable */
+.tracker-grid-view .rgCell[data-readonly='true'] {
+  color: var(--nim-text-muted);
+}
+
+/* Cell content */
+.tracker-grid-cell-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tracker-grid-cell-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tracker-grid-cell-tags {
+  display: inline-flex;
+  gap: 4px;
+  overflow: hidden;
+}
+
+/* Editors */
+.tracker-grid-editor-input,
+.tracker-grid-editor-select {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0 6px;
+  border: none;
+  outline: 2px solid var(--nim-primary);
+  outline-offset: -2px;
+  background: var(--nim-bg);
+  color: var(--nim-text);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.tracker-grid-editor-checkbox {
+  margin: 0 6px;
+  accent-color: var(--nim-primary);
+}
+
+/* Column header: label plus compact sort/filter affordances */
+.tracker-grid-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+
+.tracker-grid-header-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tracker-grid-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
+}
+
+.tracker-grid-header-filter,
+.tracker-grid-header-sort {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+  color: var(--nim-text-muted);
+  transition: color 120ms ease, opacity 120ms ease, background-color 120ms ease;
+}
+
+.tracker-grid-header-filter {
+  opacity: 0;
+}
+
+.tracker-grid-header:hover .tracker-grid-header-filter,
+.tracker-grid-header-filter:focus-visible,
+.tracker-grid-header-filter.is-filtered {
+  opacity: 1;
+}
+
+.tracker-grid-header-filter:hover,
+.tracker-grid-header-sort:hover {
+  color: var(--nim-text);
+  background: var(--nim-bg-hover);
+}
+
+.tracker-grid-header-filter.is-filtered {
+  color: var(--nim-primary);
+  background: color-mix(in srgb, var(--nim-primary) 12%, transparent);
+}
+
+.tracker-grid-header-filter-icon {
+  font-size: 12px;
+}
+
+.tracker-grid-header-sort {
+  opacity: 0.6;
+}
+
+.tracker-grid-header-sort.is-sorted {
+  color: var(--nim-primary);
+  opacity: 1;
+}
+
+.tracker-grid-header-sort-icon {
+  font-size: 13px;
+}

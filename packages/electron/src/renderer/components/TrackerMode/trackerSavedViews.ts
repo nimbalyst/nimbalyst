@@ -18,7 +18,8 @@ import {
   isMyRecord,
   isSameIdentity,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
-import type { SortColumn, SortDirection } from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import type { SortColumn, SortDirection, TypeColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import type { TrackerFilterSet, TrackerFieldFilter } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import type { TrackerFilterChip } from '../../store/atoms/trackers';
 import type { ViewMode } from './TrackerMainView';
 import { getTrackerItemTags, filterTrackerItemsByTags } from './trackerTagFilterUtils';
@@ -43,12 +44,30 @@ export interface SavedViewDefinition {
   sortDirection: SortDirection;
   /** Genuine-open lookback in days; null means any time. */
   recentlyViewedDays: 7 | 30 | 90 | null;
+  /**
+   * Column layout captured with the view, so restoring a view reproduces the
+   * whole table state and not just its filters. `null` means "leave the
+   * current column config alone" -- views saved before this existed.
+   */
+  columnConfig: TypeColumnConfig | null;
+  /**
+   * Per-column filter set, in the shared `{field, op, value}` language. Applies
+   * on top of `activeFilters` (the coarse chips).
+   */
+  columnFilters: TrackerFilterSet | null;
+  /** Scope for the triage inbox view: all types, or the selected type only. */
+  inboxScope: 'global' | 'type' | null;
 }
 
 export interface SavedView {
   id: string;
   name: string;
   definition: SavedViewDefinition;
+  /**
+   * Whether this view is shared with the team (synced) rather than local-only.
+   * Absent on views saved before sharing existed, which are local.
+   */
+  shared?: boolean;
 }
 
 export function createDefaultViewDefinition(): SavedViewDefinition {
@@ -61,6 +80,9 @@ export function createDefaultViewDefinition(): SavedViewDefinition {
     sortBy: 'lastIndexed',
     sortDirection: 'desc',
     recentlyViewedDays: 30,
+    columnConfig: null,
+    columnFilters: null,
+    inboxScope: null,
   };
 }
 
@@ -85,7 +107,91 @@ export function normalizeViewDefinition(raw: Partial<SavedViewDefinition> | unde
       || raw.recentlyViewedDays === 30 || raw.recentlyViewedDays === 90
       ? raw.recentlyViewedDays
       : base.recentlyViewedDays,
+    columnConfig: normalizeColumnConfig(raw.columnConfig),
+    columnFilters: normalizeColumnFilters(raw.columnFilters),
+    inboxScope: raw.inboxScope === 'global' || raw.inboxScope === 'type' ? raw.inboxScope : base.inboxScope,
   };
+}
+
+/**
+ * Accept a persisted column config only if it is structurally sound. A
+ * half-written config would otherwise hide every column on restore.
+ */
+function normalizeColumnConfig(raw: unknown): TypeColumnConfig | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Partial<TypeColumnConfig>;
+  if (!Array.isArray(value.visibleColumns) || value.visibleColumns.length === 0) return null;
+  return {
+    visibleColumns: value.visibleColumns.filter((c): c is string => typeof c === 'string'),
+    columnWidths: value.columnWidths && typeof value.columnWidths === 'object' ? value.columnWidths : {},
+    groupBy: typeof value.groupBy === 'string' ? value.groupBy : null,
+  };
+}
+
+function normalizeColumnFilters(raw: unknown): TrackerFilterSet | null {
+  // `null` is reserved for "this view predates column filters -- leave the
+  // current table filters alone on apply." A view saved WITH the feature always
+  // carries a set (its `clauses` array present), so an explicitly empty set is
+  // preserved and clears filters on apply rather than reading as legacy.
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Partial<TrackerFilterSet>;
+  if (!Array.isArray(value.clauses)) return null;
+  const clauses = value.clauses.filter(
+    (c): c is TrackerFieldFilter =>
+      Boolean(c) && typeof (c as TrackerFieldFilter).field === 'string'
+      && typeof (c as TrackerFieldFilter).op === 'string',
+  );
+  return { combinator: value.combinator === 'or' ? 'or' : 'and', clauses };
+}
+
+/**
+ * Serialize a view for the shared-view lane. Only the name and definition
+ * travel; `id` rides outside the payload as the row key, and `shared` is a
+ * property of *where* the view is stored, not of the view itself.
+ */
+export function serializeSharedSavedView(view: SavedView): string {
+  return JSON.stringify({ name: view.name, definition: view.definition });
+}
+
+/**
+ * Rebuild a `SavedView` from a shared-store row. Returns null for a payload we
+ * can't make sense of so one bad row from a peer (or a future version) can't
+ * take out the whole views list.
+ */
+export function parseSharedSavedView(
+  record: { viewId: string; payload: string },
+): SavedView | null {
+  if (!record?.viewId || typeof record.payload !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(record.payload);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const raw = parsed as { name?: unknown; definition?: unknown };
+  const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name : null;
+  if (!name) return null;
+  return {
+    id: record.viewId,
+    name,
+    definition: normalizeViewDefinition(raw.definition as Partial<SavedViewDefinition> | null),
+    shared: true,
+  };
+}
+
+/**
+ * The list the sidebar renders: local views plus the team's shared views. A
+ * view that exists in both (the machine that shared it keeps no local copy, but
+ * a rename race can transiently produce one) resolves to the shared row, since
+ * that is the copy the team sees.
+ */
+export function mergeSavedViews(local: SavedView[], shared: SavedView[]): SavedView[] {
+  const sharedIds = new Set(shared.map((view) => view.id));
+  const localOnly = local.filter((view) => !sharedIds.has(view.id)).map(
+    (view) => (view.shared ? { ...view, shared: false } : view),
+  );
+  return [...localOnly, ...shared];
 }
 
 export interface FilterContext {

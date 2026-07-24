@@ -7,6 +7,10 @@ import {
   groupTrackerItems,
   normalizeViewDefinition,
   createDefaultViewDefinition,
+  mergeSavedViews,
+  parseSharedSavedView,
+  serializeSharedSavedView,
+  type SavedView,
 } from '../trackerSavedViews';
 
 function makeItem(
@@ -393,5 +397,101 @@ describe('normalizeViewDefinition', () => {
       sortDirection: 'asc',
       recentlyViewedDays: 90,
     });
+  });
+});
+
+describe('view definitions capture full table state', () => {
+  it('defaults column layout, filters, and inbox scope to null', () => {
+    const def = createDefaultViewDefinition();
+    expect(def.columnConfig).toBeNull();
+    expect(def.columnFilters).toBeNull();
+    expect(def.inboxScope).toBeNull();
+  });
+
+  it('round-trips a captured column layout and filter set', () => {
+    const def = normalizeViewDefinition({
+      columnConfig: { visibleColumns: ['type', 'title'], columnWidths: { title: 320 }, groupBy: null },
+      columnFilters: { combinator: 'or', clauses: [{ field: 'status', op: '=', value: 'done' }] },
+      inboxScope: 'global',
+    });
+    expect(def.columnConfig).toEqual({
+      visibleColumns: ['type', 'title'],
+      columnWidths: { title: 320 },
+      groupBy: null,
+    });
+    expect(def.columnFilters).toEqual({
+      combinator: 'or',
+      clauses: [{ field: 'status', op: '=', value: 'done' }],
+    });
+    expect(def.inboxScope).toBe('global');
+  });
+
+  it('rejects a column config with no columns rather than hiding every column', () => {
+    expect(normalizeViewDefinition({ columnConfig: { visibleColumns: [] } as any }).columnConfig).toBeNull();
+    expect(normalizeViewDefinition({ columnConfig: 'nonsense' as any }).columnConfig).toBeNull();
+  });
+
+  it('drops malformed clauses but keeps an explicitly empty set (clears on apply)', () => {
+    // A present `clauses` array means the view was saved WITH the feature, so a
+    // view with no (usable) filters resolves to an empty set that CLEARS filters
+    // on apply -- never to legacy null, which would leave stale filters active.
+    expect(normalizeViewDefinition({ columnFilters: { clauses: [{ nope: 1 }] } as any }).columnFilters)
+      .toEqual({ combinator: 'and', clauses: [] });
+    expect(normalizeViewDefinition({ columnFilters: { clauses: [] } as any }).columnFilters)
+      .toEqual({ combinator: 'and', clauses: [] });
+  });
+
+  it('leaves older views without captured layout untouched', () => {
+    // A view saved before column capture existed must not clobber the current
+    // table state on restore -- absent (not empty) columnFilters reads as legacy.
+    const def = normalizeViewDefinition({ selectedType: 'bug', viewMode: 'list' });
+    expect(def.columnConfig).toBeNull();
+    expect(def.columnFilters).toBeNull();
+    // A non-object columnFilters is unparseable and also treated as legacy.
+    expect(normalizeViewDefinition({ columnFilters: 'nonsense' as any }).columnFilters).toBeNull();
+  });
+});
+
+describe('shared saved views', () => {
+  const localView = (id: string, name: string): SavedView => ({
+    id,
+    name,
+    definition: { ...createDefaultViewDefinition(), selectedType: 'bug' },
+  });
+
+  it('round-trips a view through the shared payload', () => {
+    const view = localView('v1', 'Sprint 7 bugs');
+    const parsed = parseSharedSavedView({ viewId: 'v1', payload: serializeSharedSavedView(view) });
+    expect(parsed).toEqual({ ...view, shared: true });
+  });
+
+  it('normalizes a peer payload written by an older client', () => {
+    const parsed = parseSharedSavedView({
+      viewId: 'v2',
+      payload: JSON.stringify({ name: 'Old view', definition: { selectedType: 'task' } }),
+    });
+    expect(parsed?.definition.selectedType).toBe('task');
+    // Fields the older client never wrote fall back to defaults rather than undefined.
+    expect(parsed?.definition.columnConfig).toBeNull();
+    expect(parsed?.definition.sortBy).toBe(createDefaultViewDefinition().sortBy);
+  });
+
+  it('drops payloads it cannot make sense of instead of failing the whole list', () => {
+    expect(parseSharedSavedView({ viewId: 'v3', payload: 'not json' })).toBeNull();
+    expect(parseSharedSavedView({ viewId: 'v3', payload: '[]' })).toBeNull();
+    expect(parseSharedSavedView({ viewId: 'v3', payload: '{"definition":{}}' })).toBeNull();
+    expect(parseSharedSavedView({ viewId: '', payload: '{"name":"x"}' })).toBeNull();
+  });
+
+  it('merges local and shared views, with the shared copy winning on id collision', () => {
+    const shared = { ...localView('v1', 'Team name'), shared: true };
+    const merged = mergeSavedViews([localView('v1', 'My name'), localView('v2', 'Local only')], [shared]);
+    expect(merged.map((v) => v.name)).toEqual(['Local only', 'Team name']);
+    expect(merged.find((v) => v.id === 'v1')?.shared).toBe(true);
+  });
+
+  it('clears a stale shared flag on a view that is no longer shared', () => {
+    const stale: SavedView = { ...localView('v9', 'Was shared'), shared: true };
+    expect(mergeSavedViews([stale], [])[0].shared).toBe(false);
   });
 });

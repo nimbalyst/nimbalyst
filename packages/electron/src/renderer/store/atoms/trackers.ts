@@ -5,7 +5,7 @@
  * Uses tracker type as keys for per-tracker-type state.
  */
 
-import { atom } from 'jotai';
+import { atom, type Setter } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
 
@@ -69,7 +69,7 @@ function migrateViewMode(
   raw: unknown,
   alreadyMigrated: boolean,
 ): TrackerModeLayout['viewMode'] {
-  if (raw === 'list' || raw === 'kanban' || raw === 'tag-board') return raw;
+  if (raw === 'list' || raw === 'kanban' || raw === 'tag-board' || raw === 'grid' || raw === 'inbox') return raw;
   if (raw === 'table') {
     if (!alreadyMigrated) return 'list';
     return 'table';
@@ -83,12 +83,19 @@ function migrateViewMode(
  */
 export async function initTrackerPanelLayout(workspacePath: string): Promise<void> {
   currentWorkspacePath = workspacePath;
+  // Clear the previous project's state before any asynchronous reads complete.
+  // Without this, switching projects briefly exposes (and allows actions on)
+  // saved views owned by the workspace that was just left.
+  store.set(trackerModeLayoutAtom, DEFAULT_MODE_LAYOUT);
+  store.set(trackerSavedViewsAtom, []);
+  store.set(sharedTrackerSavedViewsAtom, []);
 
   try {
     const workspaceState = await window.electronAPI.invoke(
       'workspace:get-state',
       workspacePath
     );
+    if (currentWorkspacePath !== workspacePath) return;
 
     const savedModeLayout = workspaceState?.trackerModeLayout;
     if (savedModeLayout && typeof savedModeLayout === 'object') {
@@ -105,6 +112,7 @@ export async function initTrackerPanelLayout(workspacePath: string): Promise<voi
         sidebarWidth: savedModeLayout.sidebarWidth ?? DEFAULT_MODE_LAYOUT.sidebarWidth,
         detailPanelWidth: savedModeLayout.detailPanelWidth ?? DEFAULT_MODE_LAYOUT.detailPanelWidth,
         typeColumnConfigs: savedModeLayout.typeColumnConfigs ?? DEFAULT_MODE_LAYOUT.typeColumnConfigs,
+        typeColumnFilters: savedModeLayout.typeColumnFilters ?? DEFAULT_MODE_LAYOUT.typeColumnFilters,
         groupBy: savedModeLayout.groupBy ?? DEFAULT_MODE_LAYOUT.groupBy,
         sortBy: typeof savedModeLayout.sortBy === 'string' ? savedModeLayout.sortBy : DEFAULT_MODE_LAYOUT.sortBy,
         sortDirection: savedModeLayout.sortDirection === 'asc' || savedModeLayout.sortDirection === 'desc'
@@ -116,6 +124,7 @@ export async function initTrackerPanelLayout(workspacePath: string): Promise<voi
           || savedModeLayout.recentlyViewedDays === 90
           ? savedModeLayout.recentlyViewedDays
           : DEFAULT_MODE_LAYOUT.recentlyViewedDays,
+        inboxScope: savedModeLayout.inboxScope === 'type' ? 'type' : DEFAULT_MODE_LAYOUT.inboxScope,
         viewModeMigrated: true,
       };
 
@@ -156,7 +165,15 @@ export type TrackerFilterChip = 'mine' | 'unassigned' | 'high-priority' | 'recen
 export type { TypeColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
 import type { TypeColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
 import type { SortColumn, SortDirection } from '@nimbalyst/runtime/plugins/TrackerPlugin';
-import { normalizeViewDefinition, type SavedView, type TrackerGroupBy } from '../../components/TrackerMode/trackerSavedViews';
+import type { InboxScope, TrackerFilterSet } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import {
+  mergeSavedViews,
+  normalizeViewDefinition,
+  parseSharedSavedView,
+  serializeSharedSavedView,
+  type SavedView,
+  type TrackerGroupBy,
+} from '../../components/TrackerMode/trackerSavedViews';
 
 export interface TrackerModeLayout {
   /** Selected type filter in sidebar ('all' or specific type) */
@@ -168,14 +185,18 @@ export interface TrackerModeLayout {
    * - `list`   -- title-left / badges-right row list (`TrackerTable`).
    * - `table`  -- true grid with aligned header and resizable columns
    *               (`TrackerTableGrid`).
+   * - `grid`   -- virtualized, in-place-editable spreadsheet grid
+   *               (`TrackerGridView`).
    * - `kanban` -- column-per-status board (`KanbanBoard`).
    * - `tag-board` -- column-per-tag board (`TagBoard`).
+   * - `inbox`  -- keyboard-driven triage queue of untriaged items
+   *               (`TrackerInboxView`).
    *
    * Legacy persisted state used `'table'` for the list view; loads through
    * `initTrackerPanelLayout` rewrite that to `'list'` once, gated by
    * `viewModeMigrated`.
    */
-  viewMode: 'list' | 'table' | 'kanban' | 'tag-board';
+  viewMode: 'list' | 'table' | 'grid' | 'kanban' | 'tag-board' | 'inbox';
   /** Currently selected tracker item ID (opens detail panel when non-null) */
   selectedItemId: string | null;
   /** Sidebar width in pixels */
@@ -184,11 +205,19 @@ export interface TrackerModeLayout {
   detailPanelWidth: number;
   /** Per-type column configuration (keyed by tracker type, 'all' for the all-types view) */
   typeColumnConfigs: Record<string, TypeColumnConfig>;
+  /**
+   * Per-type column filter sets, in the shared `{field, op, value}` language
+   * (keyed the same way as `typeColumnConfigs`). Applied on top of the coarse
+   * `activeFilters` chips.
+   */
+  typeColumnFilters: Record<string, TrackerFilterSet>;
   /** Active grouping for grouped renderings (NIM-788). Defaults to 'none'. */
   groupBy: TrackerGroupBy;
   sortBy: SortColumn;
   sortDirection: SortDirection;
   recentlyViewedDays: 7 | 30 | 90 | null;
+  /** Whether the triage inbox spans every type or only the selected one. */
+  inboxScope: InboxScope;
   /**
    * Set to `true` once the one-shot `'table' -> 'list'` rewrite has run for
    * this workspace. Future loads pass `viewMode` through untouched so users
@@ -205,10 +234,12 @@ const DEFAULT_MODE_LAYOUT: TrackerModeLayout = {
   sidebarWidth: 220,
   detailPanelWidth: 400,
   typeColumnConfigs: {},
+  typeColumnFilters: {},
   groupBy: 'none',
   sortBy: 'lastIndexed',
   sortDirection: 'desc',
   recentlyViewedDays: 30,
+  inboxScope: 'global',
   viewModeMigrated: true,
 };
 
@@ -306,6 +337,100 @@ export const deleteTrackerViewAtom = atom(
     set(trackerSavedViewsAtom, next);
     if (currentWorkspacePath) persistSavedViews(currentWorkspacePath, next);
   }
+);
+
+/**
+ * Team-shared views, projected from the main-process shared-view store. These
+ * are not persisted in workspace settings -- the store row *is* the local copy,
+ * and it round-trips through the tracker room's saved-view lane.
+ */
+export const sharedTrackerSavedViewsAtom = atom<SavedView[]>([]);
+let sharedViewsLoadVersion = 0;
+
+/** Local + shared views, as the sidebar renders them. */
+export const allTrackerSavedViewsAtom = atom<SavedView[]>((get) =>
+  mergeSavedViews(get(trackerSavedViewsAtom), get(sharedTrackerSavedViewsAtom)),
+);
+
+function applySharedViewRecords(set: Setter, records: unknown): void {
+  const rows = Array.isArray(records) ? records as Array<{ viewId: string; payload: string }> : [];
+  set(
+    sharedTrackerSavedViewsAtom,
+    rows.map(parseSharedSavedView).filter((view): view is SavedView => view !== null),
+  );
+}
+
+export const loadSharedTrackerViewsAtom = atom(
+  null,
+  async (_get, set, workspacePath: string) => {
+    const loadVersion = ++sharedViewsLoadVersion;
+    set(sharedTrackerSavedViewsAtom, []);
+    const records = await window.electronAPI.invoke('tracker-saved-views:list', workspacePath);
+    if (loadVersion !== sharedViewsLoadVersion) return;
+    applySharedViewRecords(set, records);
+  },
+);
+
+/**
+ * Share a view with the team: it moves out of workspace settings and into the
+ * synced store, so the view exists in exactly one place and edits can't fork.
+ */
+export const shareTrackerViewAtom = atom(
+  null,
+  async (get, set, view: SavedView) => {
+    if (!currentWorkspacePath) return;
+    const records = await window.electronAPI.invoke(
+      'tracker-saved-views:share',
+      currentWorkspacePath,
+      { viewId: view.id, payload: serializeSharedSavedView(view) },
+    );
+    applySharedViewRecords(set, records);
+    const localRemainder = get(trackerSavedViewsAtom).filter((v) => v.id !== view.id);
+    if (localRemainder.length !== get(trackerSavedViewsAtom).length) {
+      set(trackerSavedViewsAtom, localRemainder);
+      persistSavedViews(currentWorkspacePath, localRemainder);
+    }
+  },
+);
+
+/** Stop sharing: tombstone the synced row and keep the view as a local one. */
+export const unshareTrackerViewAtom = atom(
+  null,
+  async (get, set, view: SavedView) => {
+    if (!currentWorkspacePath) return;
+    const records = await window.electronAPI.invoke(
+      'tracker-saved-views:unshare',
+      currentWorkspacePath,
+      view.id,
+    );
+    applySharedViewRecords(set, records);
+    const current = get(trackerSavedViewsAtom);
+    if (!current.some((v) => v.id === view.id)) {
+      const next = [...current, { ...view, shared: false }];
+      set(trackerSavedViewsAtom, next);
+      persistSavedViews(currentWorkspacePath, next);
+    }
+  },
+);
+
+/**
+ * Delete a view regardless of where it lives. Deleting a shared view removes it
+ * for the whole team, so callers should confirm first.
+ */
+export const removeTrackerViewAtom = atom(
+  null,
+  async (get, set, view: SavedView) => {
+    if (view.shared && currentWorkspacePath) {
+      const records = await window.electronAPI.invoke(
+        'tracker-saved-views:unshare',
+        currentWorkspacePath,
+        view.id,
+      );
+      applySharedViewRecords(set, records);
+      return;
+    }
+    set(deleteTrackerViewAtom, view.id);
+  },
 );
 
 // ============================================================

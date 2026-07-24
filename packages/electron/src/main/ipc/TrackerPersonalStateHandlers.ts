@@ -127,5 +127,31 @@ export function registerTrackerPersonalStateHandlers(): void {
     } catch (error) { return fail(error); }
   });
 
+  // Snooze is deliberately local-only: it is a transient triage deferral, and
+  // pushing it would mean a new kind on the personal-sync wire protocol that the
+  // mobile client would have to understand. Revisit if inbox triage moves to
+  // mobile.
+  safeHandle('tracker-personal-state:set-snooze', async (_event, input: {
+    itemId: string; snoozedUntil: number | null;
+  }, workspacePath?: string): Promise<IPCResponse<TrackerPersonalStateRow | null>> => {
+    if (!workspacePath || !input?.itemId) {
+      return { success: false, error: 'workspacePath and itemId required' };
+    }
+    if (input.snoozedUntil !== null && !Number.isFinite(input.snoozedUntil)) {
+      return { success: false, error: 'snoozedUntil must be a timestamp or null' };
+    }
+    try {
+      const projectScope = await resolveTrackerProjectScope(workspacePath);
+      const row = await getStore().setSnooze({
+        itemId: input.itemId,
+        snoozedUntil: input.snoozedUntil,
+        scope: projectScope.scope,
+        userEmail: resolveUserEmail(workspacePath),
+        updatedAt: Date.now(),
+      });
+      return { success: true, data: row };
+    } catch (error) { return fail(error); }
+  });
+
   logger.info('Tracker personal-state IPC handlers registered');
 }

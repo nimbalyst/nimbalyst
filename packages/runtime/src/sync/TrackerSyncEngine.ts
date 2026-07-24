@@ -54,6 +54,10 @@ import type {
   TrackerNavigationSyncResponseMessage,
   TrackerNavigationDeltaMessage,
   TrackerNavigationMutationAckMessage,
+  EncryptedTrackerSavedViewEnvelope,
+  TrackerSavedViewSyncResponseMessage,
+  TrackerSavedViewDeltaMessage,
+  TrackerSavedViewMutationAckMessage,
   TrackerRoomMovedMessage,
 } from './trackerProtocol';
 import { SYNC_ID_INITIAL, buildTrackerRoomId } from './trackerProtocol';
@@ -69,6 +73,9 @@ import {
   encryptTrackerNavigationPayload,
   decryptTrackerNavigationEnvelope,
   decodeTrackerNavigationEnvelopePlaintext,
+  encryptTrackerSavedViewPayload,
+  decryptTrackerSavedViewEnvelope,
+  decodeTrackerSavedViewEnvelopePlaintext,
 } from './TrackerEnvelopeCrypto';
 import type { TrackerPersistence, TrackerRowSnapshot } from './trackerPersistence';
 
@@ -140,6 +147,23 @@ export interface TrackerNavigationSyncHooks {
   applyRemote: (def: { entryId: string; payload: string | null; syncId: SyncId }) => Promise<unknown>;
 }
 
+export interface TrackerSavedViewLocalChange {
+  viewId: string;
+  payload: string | null;
+  deleted: boolean;
+}
+
+/**
+ * Team-shared saved views. Its own lane (and its own syncId cursor) rather
+ * than riding the navigation channel, so "a shared view" stays a first-class
+ * concept on the wire instead of an overloaded navigation entry.
+ */
+export interface TrackerSavedViewSyncHooks {
+  getMaxSyncId: () => Promise<SyncId>;
+  listUnsynced: () => Promise<TrackerSavedViewLocalChange[]>;
+  applyRemote: (def: { viewId: string; payload: string | null; syncId: SyncId }) => Promise<unknown>;
+}
+
 /**
  * Outcome of a key-refresh callback. Returning `null` indicates the host
  * could not produce a fresh key (e.g. admin hasn't re-shared yet); the
@@ -207,6 +231,8 @@ export interface TrackerSyncEngineConfig {
 
   /** Optional shared tracker-sidebar navigation sync seam. */
   navigationSync?: TrackerNavigationSyncHooks;
+  /** Optional team-shared saved-view sync seam. */
+  savedViewSync?: TrackerSavedViewSyncHooks;
 
   /**
    * Prefix to install when the first bootstrap proves the tracker room is
@@ -445,6 +471,11 @@ export class TrackerSyncEngine {
     return this.status;
   }
 
+  /** Flush locally-pending shared saved views while connected. */
+  async flushSavedViews(): Promise<void> {
+    await this.pushPendingSavedViews();
+  }
+
   /** Flush locally-pending tracker navigation entries while connected. */
   async flushNavigation(): Promise<void> {
     await this.pushPendingNavigation();
@@ -564,6 +595,7 @@ export class TrackerSyncEngine {
 
       await this.runSchemaBootstrap();
       await this.runNavigationBootstrap();
+      await this.runSavedViewBootstrap();
 
       this.synced = true;
       this.setStatus('connected');
@@ -572,6 +604,7 @@ export class TrackerSyncEngine {
       await this.replayPending();
       await this.pushPendingSchemas();
       await this.pushPendingNavigation();
+      await this.pushPendingSavedViews();
     } catch (err) {
       // Bootstrap failures (e.g. socket drop mid-loop) fall through to the
       // disconnect path, which triggers a reconnect. Don't tear down here.
@@ -709,6 +742,57 @@ export class TrackerSyncEngine {
     }
   }
 
+  private async runSavedViewBootstrap(): Promise<void> {
+    const hooks = this.config.savedViewSync;
+    if (!hooks) return;
+    let cursor = await hooks.getMaxSyncId();
+    let staleKeyRefreshTried = false;
+    while (true) {
+      const response = await this.requestSavedViewSync(cursor);
+      if (!staleKeyRefreshTried && this.shouldRefreshForStaleSavedViewKey(response.views)) {
+        staleKeyRefreshTried = true;
+        const fresh = await this.config.refreshKey?.();
+        if (fresh) this.setKey(fresh);
+      }
+      for (const envelope of response.views) {
+        try {
+          await this.applySavedViewEnvelope(envelope);
+        } catch (err) {
+          // One undecryptable view must not abort the whole bootstrap.
+          this.config.onBootstrapError?.(err);
+        }
+      }
+      cursor = response.cursorSyncId;
+      if (!response.hasMore) break;
+    }
+  }
+
+  private shouldRefreshForStaleSavedViewKey(views: EncryptedTrackerSavedViewEnvelope[]): boolean {
+    if (!this.orgKeyFingerprint) return false;
+    return views.some((view) =>
+      view.encryptedPayload !== null &&
+      view.orgKeyFingerprint !== null &&
+      view.orgKeyFingerprint !== this.orgKeyFingerprint,
+    );
+  }
+
+  private requestSavedViewSync(sinceSyncId: SyncId): Promise<TrackerSavedViewSyncResponseMessage> {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('WebSocket not open'));
+        return;
+      }
+      const handler = (event: MessageEvent) => {
+        const msg = parseServerMessage(event.data);
+        if (!msg || msg.type !== 'trackerSavedViewSyncResponse') return;
+        this.ws?.removeEventListener('message', handler);
+        resolve(msg);
+      };
+      this.ws.addEventListener('message', handler);
+      this.send({ type: 'trackerSavedViewSync', sinceSyncId });
+    });
+  }
+
   private shouldRefreshForStaleNavigationKey(entries: EncryptedTrackerNavigationEnvelope[]): boolean {
     if (!this.orgKeyFingerprint) return false;
     return entries.some((entry) =>
@@ -803,6 +887,12 @@ export class TrackerSyncEngine {
       case 'trackerSchemaMutationAck':
         await this.handleSchemaAck(msg);
         break;
+      case 'trackerSavedViewDelta':
+        await this.handleSavedViewDelta(msg);
+        break;
+      case 'trackerSavedViewMutationAck':
+        await this.handleSavedViewAck(msg);
+        break;
       case 'trackerNavigationDelta':
         await this.handleNavigationDelta(msg);
         break;
@@ -829,6 +919,9 @@ export class TrackerSyncEngine {
         break;
       case 'trackerSchemaSyncResponse':
         // The schema bootstrap loop owns these via `requestSchemaSync`.
+        break;
+      case 'trackerSavedViewSyncResponse':
+        // The saved-view bootstrap loop owns these via `requestSavedViewSync`.
         break;
       case 'trackerNavigationSyncResponse':
         // The navigation bootstrap loop owns these via `requestNavigationSync`.
@@ -955,6 +1048,32 @@ export class TrackerSyncEngine {
       if (fresh) {
         this.setKey(fresh);
         await this.pushPendingSchemas();
+      }
+    }
+  }
+
+  private async handleSavedViewDelta(msg: TrackerSavedViewDeltaMessage): Promise<void> {
+    const applied = await this.applySavedViewEnvelope(msg.view);
+    if (!applied && msg.view.orgKeyFingerprint && this.orgKeyFingerprint &&
+        msg.view.orgKeyFingerprint !== this.orgKeyFingerprint && this.config.refreshKey) {
+      const fresh = await this.config.refreshKey();
+      if (fresh) {
+        this.setKey(fresh);
+        await this.applySavedViewEnvelope(msg.view);
+      }
+    }
+  }
+
+  private async handleSavedViewAck(msg: TrackerSavedViewMutationAckMessage): Promise<void> {
+    if (msg.accepted && msg.view) {
+      await this.applySavedViewEnvelope(msg.view);
+      return;
+    }
+    if (!msg.accepted && msg.error?.code === 'staleKeyEpoch' && this.config.refreshKey) {
+      const fresh = await this.config.refreshKey();
+      if (fresh) {
+        this.setKey(fresh);
+        await this.pushPendingSavedViews();
       }
     }
   }
@@ -1102,6 +1221,35 @@ export class TrackerSyncEngine {
       model,
       isTombstone,
     });
+    return true;
+  }
+
+  private async applySavedViewEnvelope(envelope: EncryptedTrackerSavedViewEnvelope): Promise<boolean> {
+    const hooks = this.config.savedViewSync;
+    if (!hooks) return true;
+    const isTombstone = envelope.encryptedPayload === null;
+    let payload: string | null = null;
+    if (!isTombstone) {
+      if (this.serverManaged) {
+        try {
+          payload = decodeTrackerSavedViewEnvelopePlaintext(envelope);
+        } catch {
+          return false;
+        }
+      } else {
+        try {
+          payload = await decryptTrackerSavedViewEnvelope(envelope, this.encryptionKey!);
+        } catch (err) {
+          // A wrong-key envelope is reported as not-applied so the caller can
+          // refresh the org key and retry; anything else is a real fault.
+          if (err !== null && typeof err === 'object' && (err as { name?: string }).name === 'OperationError') {
+            return false;
+          }
+          throw err;
+        }
+      }
+    }
+    await hooks.applyRemote({ viewId: envelope.viewId, payload, syncId: envelope.syncId });
     return true;
   }
 
@@ -1278,6 +1426,49 @@ export class TrackerSyncEngine {
         schemaType: def.type,
         encryptedPayload: enc.encryptedPayload,
         iv: enc.iv,
+        orgKeyFingerprint: this.orgKeyFingerprint,
+      });
+    }
+  }
+
+  private async pushPendingSavedViews(): Promise<void> {
+    const hooks = this.config.savedViewSync;
+    if (!hooks || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.serverManaged && !this.orgKeyFingerprint) return;
+    const pending = await hooks.listUnsynced();
+    for (const view of pending) {
+      const clientMutationId = generateClientMutationId();
+      if (view.deleted || view.payload === null) {
+        this.send({
+          type: 'trackerSavedViewMutation',
+          clientMutationId,
+          viewId: view.viewId,
+          encryptedPayload: null,
+          orgKeyFingerprint: this.orgKeyFingerprint,
+        });
+        continue;
+      }
+      if (this.serverManaged) {
+        this.send({
+          type: 'trackerSavedViewMutation',
+          clientMutationId,
+          viewId: view.viewId,
+          encryptedPayload: view.payload,
+          orgKeyFingerprint: null,
+        });
+        continue;
+      }
+      const encrypted = await encryptTrackerSavedViewPayload(
+        view.payload,
+        this.encryptionKey!,
+        view.viewId,
+      );
+      this.send({
+        type: 'trackerSavedViewMutation',
+        clientMutationId,
+        viewId: view.viewId,
+        encryptedPayload: encrypted.encryptedPayload,
+        iv: encrypted.iv,
         orgKeyFingerprint: this.orgKeyFingerprint,
       });
     }

@@ -11,6 +11,7 @@ import type { TrackerRecord } from '../../../core/TrackerRecord';
 import type { TrackerSchemaRole, FieldDefinition } from '../models/TrackerDataModel';
 import { globalRegistry } from '../models';
 import { resolveRoleFieldName, getFieldByRole, getItemShareState } from '../trackerRecordAccessors';
+import { resolveCellEditor, READONLY_STRUCTURAL_COLUMNS, type CellEditorKind } from './trackerCellEditors';
 
 // ============================================================================
 // Types
@@ -39,6 +40,10 @@ export interface TrackerColumnDef {
   builtin: boolean;
   /** Schema role this column fulfills (if any). Used for rendering hints. */
   role?: TrackerSchemaRole;
+  /** Whether the grid may edit this column's cells in place. */
+  editable: boolean;
+  /** Which cell editor to open on edit. `readonly` when `editable` is false. */
+  edit: CellEditorKind;
 }
 
 /** Per-type column configuration (persisted) */
@@ -55,13 +60,13 @@ export interface TypeColumnConfig {
 // Structural Columns (not driven by schema fields)
 // ============================================================================
 
-/** Columns that exist independent of schema field definitions */
+/** Columns that exist independent of schema field definitions. All derived, so none are editable. */
 const STRUCTURAL_COLUMNS: TrackerColumnDef[] = [
-  { id: 'type', label: 'Type', width: 64, minWidth: 64, sortable: true, render: 'type-icon', defaultVisible: true, builtin: true },
-  { id: 'key', label: 'Key', width: 90, sortable: true, render: 'text', defaultVisible: true, sortKey: 'issueKey', builtin: true },
-  { id: 'updated', label: 'Updated', width: 100, sortable: true, render: 'date', defaultVisible: true, sortKey: 'lastIndexed', builtin: true },
-  { id: 'module', label: 'Source', width: 150, minWidth: 100, sortable: true, render: 'module', defaultVisible: false, builtin: true },
-  { id: 'shared', label: 'Shared', width: 90, minWidth: 70, sortable: true, render: 'badge', defaultVisible: false, builtin: true },
+  { id: 'type', label: 'Type', width: 64, minWidth: 64, sortable: true, render: 'type-icon', defaultVisible: true, builtin: true, editable: false, edit: 'readonly' },
+  { id: 'key', label: 'Key', width: 90, sortable: true, render: 'text', defaultVisible: true, sortKey: 'issueKey', builtin: true, editable: false, edit: 'readonly' },
+  { id: 'updated', label: 'Updated', width: 100, sortable: true, render: 'date', defaultVisible: true, sortKey: 'lastIndexed', builtin: true, editable: false, edit: 'readonly' },
+  { id: 'module', label: 'Source', width: 150, minWidth: 100, sortable: true, render: 'module', defaultVisible: false, builtin: true, editable: false, edit: 'readonly' },
+  { id: 'shared', label: 'Shared', width: 90, minWidth: 70, sortable: true, render: 'badge', defaultVisible: false, builtin: true, editable: false, edit: 'readonly' },
 ];
 
 /**
@@ -106,12 +111,13 @@ const ROLE_PRIORITY: Record<string, number> = {
 export function resolveColumnsForType(type: string): TrackerColumnDef[] {
   const model = globalRegistry.get(type);
   if (!model) {
-    // No model: return structural columns + conventional field columns
+    // No model: return structural columns + conventional field columns. These stay
+    // editable so an unregistered type still gets inline title/status/priority edits.
     return [
       ...STRUCTURAL_COLUMNS,
-      { id: 'title', label: 'Title', width: 'auto', minWidth: 200, sortable: true, render: 'text', defaultVisible: true, builtin: true, role: 'title' },
-      { id: 'status', label: 'Status', width: 120, sortable: true, render: 'badge', defaultVisible: true, builtin: true, role: 'workflowStatus' },
-      { id: 'priority', label: 'Priority', width: 100, sortable: true, render: 'badge', defaultVisible: true, builtin: true, role: 'priority' },
+      { id: 'title', label: 'Title', width: 'auto', minWidth: 200, sortable: true, render: 'text', defaultVisible: true, builtin: true, role: 'title', editable: true, edit: 'text' },
+      { id: 'status', label: 'Status', width: 120, sortable: true, render: 'badge', defaultVisible: true, builtin: true, role: 'workflowStatus', editable: true, edit: 'select' },
+      { id: 'priority', label: 'Priority', width: 100, sortable: true, render: 'badge', defaultVisible: true, builtin: true, role: 'priority', editable: true, edit: 'select' },
     ];
   }
 
@@ -137,6 +143,7 @@ export function resolveColumnsForType(type: string): TrackerColumnDef[] {
     const render = inferRenderType(field);
     const width = inferWidth(field, role);
     const label = field.name.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
+    const editor = resolveCellEditor(field);
 
     columns.push({
       id: field.name,
@@ -148,11 +155,13 @@ export function resolveColumnsForType(type: string): TrackerColumnDef[] {
       defaultVisible: role != null || (model.tableView?.defaultColumns?.includes(field.name) ?? false),
       builtin: role != null,
       role,
+      editable: editor.kind !== 'readonly' && !READONLY_STRUCTURAL_COLUMNS.has(field.name),
+      edit: editor.kind,
     });
   }
 
   // Add 'created' column (always available but not visible by default)
-  columns.push({ id: 'created', label: 'Created', width: 100, sortable: true, render: 'date', defaultVisible: false, builtin: true });
+  columns.push({ id: 'created', label: 'Created', width: 100, sortable: true, render: 'date', defaultVisible: false, builtin: true, editable: false, edit: 'readonly' });
 
   return columns;
 }
@@ -304,6 +313,15 @@ export function getCellValue(record: TrackerRecord, columnId: string): any {
     case 'shared': return getItemShareState(record);
     default: return record.fields[columnId];
   }
+}
+
+/**
+ * Resolve the schema field backing a column, if any.
+ * Structural columns are derived rather than stored, so they have no field.
+ */
+export function getFieldForColumn(type: string, columnId: string): FieldDefinition | undefined {
+  if (READONLY_STRUCTURAL_COLUMNS.has(columnId)) return undefined;
+  return globalRegistry.get(type)?.fields.find(f => f.name === columnId);
 }
 
 /**

@@ -29,6 +29,14 @@ const BOOLEAN_FLAGS = new Set([
   'version',
 ]);
 
+/**
+ * Flags that are boolean on their own but take a value when one follows.
+ * `--version` is the CLI's own version flag (`nim --version`) *and* the release
+ * version (`nim release finalize --version 0.71.0`); which one it is depends on
+ * whether a value comes next.
+ */
+const VALUE_OR_BOOLEAN_FLAGS = new Set(['version']);
+
 /** Flags that may be repeated; their values accumulate into an array. */
 const REPEATABLE_FLAGS = new Set(['where', 'tag', 'field', 'unset', 'column', 'label', 'type-tag']);
 
@@ -59,6 +67,18 @@ export function parseArgs(argv: string[]): ParsedArgs {
       let name = eq >= 0 ? body.slice(0, eq) : body;
       let inlineValue = eq >= 0 ? body.slice(eq + 1) : undefined;
       name = ALIASES[name] ?? name;
+
+      if (VALUE_OR_BOOLEAN_FLAGS.has(name) && inlineValue === undefined) {
+        const next = argv[i + 1];
+        if (next === undefined || next.startsWith('-')) {
+          flags[name] = true;
+          i += 1;
+          continue;
+        }
+        assignFlag(flags, name, next);
+        i += 2;
+        continue;
+      }
 
       if (BOOLEAN_FLAGS.has(name) && inlineValue === undefined) {
         flags[name] = true;

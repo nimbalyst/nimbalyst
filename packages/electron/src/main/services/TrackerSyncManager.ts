@@ -65,6 +65,14 @@ import {
   getMaxTrackerNavigationSyncId,
   listUnsyncedTrackerNavigationEntries,
 } from './tracker/trackerNavigationStore';
+import {
+  getMaxSharedSavedViewSyncId,
+  listUnsyncedSharedSavedViews,
+} from './tracker/trackerSavedViewStore';
+import {
+  applyRemoteWorkspaceSharedSavedView,
+  registerTrackerSavedViewFlushHandler,
+} from './TrackerSavedViewService';
 import { windows, windowStates } from '../window/windowState';
 import { getEffectiveTrackerSyncPolicy, decideBackfillAction } from './TrackerPolicyService';
 import { rowToTrackerItem } from '../mcp/tools/trackerToolHandlers';
@@ -104,6 +112,10 @@ const engines = new Map<string, EngineEntry>();
 
 registerTrackerNavigationFlushHandler((workspacePath) =>
   engines.get(workspacePath)?.engine.flushNavigation(),
+);
+
+registerTrackerSavedViewFlushHandler((workspacePath) =>
+  engines.get(workspacePath)?.engine.flushSavedViews(),
 );
 
 /**
@@ -337,6 +349,11 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
       getMaxSyncId: () => getMaxTrackerNavigationSyncId(workspacePath),
       listUnsynced: () => listUnsyncedTrackerNavigationEntries(workspacePath),
       applyRemote: (def) => applyRemoteWorkspaceTrackerNavigationEntry(workspacePath, def),
+    },
+    savedViewSync: {
+      getMaxSyncId: () => getMaxSharedSavedViewSyncId(workspacePath),
+      listUnsynced: () => listUnsyncedSharedSavedViews(workspacePath),
+      applyRemote: (def) => applyRemoteWorkspaceSharedSavedView(workspacePath, def),
     },
     getJwt: () => getOrgScopedJwt(team.orgId),
     // Legacy-only: server-managed mode never hits staleKeyEpoch (server owns

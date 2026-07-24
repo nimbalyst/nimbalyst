@@ -16,6 +16,8 @@ import decisionYaml from './builtins/decision.yaml?raw';
 import bugYaml from './builtins/bug.yaml?raw';
 import taskYaml from './builtins/task.yaml?raw';
 import ideaYaml from './builtins/idea.yaml?raw';
+import milestoneYaml from './builtins/milestone.yaml?raw';
+import releaseYaml from './builtins/release.yaml?raw';
 // import featureYaml from './builtins/feature.yaml?raw';
 // import automationYaml from './builtins/automation.yaml?raw';
 
@@ -29,6 +31,8 @@ export const BUILTIN_TRACKER_YAML: ReadonlyArray<{ type: string; yaml: string }>
   { type: 'bug', yaml: bugYaml },
   { type: 'task', yaml: taskYaml },
   { type: 'idea', yaml: ideaYaml },
+  { type: 'milestone', yaml: milestoneYaml },
+  { type: 'release', yaml: releaseYaml },
   // { type: 'feature', yaml: featureYaml },
   // { type: 'automation', yaml: automationYaml },
 ];

@@ -1,0 +1,88 @@
+type: milestone
+displayName: Milestone
+displayNamePlural: Milestones
+icon: flag
+color: "#8b5cf6"
+
+modes:
+  inline: false
+  fullDocument: true
+
+sync:
+  mode: shared
+  scope: project
+
+idPrefix: mst
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+
+  - name: status
+    type: select
+    default: planned
+    options:
+      - value: planned
+        label: Planned
+        icon: schedule
+        color: "#6b7280"
+      - value: active
+        label: Active
+        icon: play_circle
+        color: "#eab308"
+      - value: done
+        label: Done
+        icon: check_circle
+        color: "#22c55e"
+      - value: cancelled
+        label: Cancelled
+        icon: cancel
+        color: "#ef4444"
+
+  - name: owner
+    type: user
+
+  - name: startDate
+    type: date
+
+  - name: targetDate
+    type: date
+
+  - name: description
+    type: text
+
+  # Membership edge. The inverse (`collection` on each member) is written by
+  # inverse-relationship propagation, so adding an item here is a single write.
+  - name: items
+    type: relationship
+    relationshipTypeKey: has-item
+    inverseRelationshipTypeKey: in-collection
+    inverseFieldId: collection
+    targetTrackerTypes: "*"
+    multiValue: true
+    childRelationship: true
+
+  - name: tags
+    type: array
+    itemType: string
+    displayInline: false
+
+roles:
+  title: title
+  workflowStatus: status
+  assignee: owner
+  startDate: startDate
+  dueDate: targetDate
+  tags: tags
+
+tableView:
+  defaultColumns:
+    - title
+    - status
+    - owner
+    - targetDate
+  sortable: true
+  filterable: true
+  exportable: true

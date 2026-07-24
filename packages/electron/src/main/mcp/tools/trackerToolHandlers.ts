@@ -25,7 +25,10 @@ import { applyRelationshipFieldWrites } from '../../services/tracker/relationshi
 import { appendActivity } from '../../services/tracker/trackerActivity';
 import { extractItemCustomFields } from '../../services/tracker/trackerRowCustomFields';
 import { nestRelationshipFieldsIntoCustomFields, readStoredFieldValue } from '../../services/tracker/relationshipFieldStorage';
-import { isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { isRelationshipField, matchesFilterSet, isUntriaged } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { humanOnlyStatusMessage, isHumanOnlyStatus } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerReview';
+import { trackerItemToRecord } from '@nimbalyst/runtime/core/TrackerRecord';
+import { resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { getWorkspaceState } from '../../utils/store';
 import { getVisibleTrackerLinkedSessions, shouldPersistTrackerLinkedSessions } from '../../../shared/trackerSessionLinks';
 import {
@@ -570,20 +573,32 @@ export const trackerToolSchemas = [
         },
         limit: {
           type: "number",
-          description: "Maximum number of items to return (default: 50)",
+          description: "Maximum number of items to return (default: 50, capped at 250). Bulk export only: -1 returns up to 10,000 items at once and is expensive -- prefer a narrower `type`/`where` filter over dumping everything.",
         },
         where: {
           type: "array",
-          description: "Field-level filters for querying on any schema-defined field. Each entry is { field, op, value }. Supported ops: '=', '!=', 'contains', 'in'.",
+          description: "Field-level filters for querying on any schema-defined field. Each entry is { field, op, value }. This is the same filter language the tracker grid's column filters and saved views use. Ops: '=', '!=', 'contains', 'not-contains', 'in', 'not-in', '>', '>=', '<', '<=', 'between' (value is a 2-element array), 'is-empty', 'is-not-empty' (no value). Comparisons are case-insensitive; date and number fields compare in order.",
           items: {
             type: "object",
             properties: {
               field: { type: "string", description: "Field name in the tracker data (e.g., 'severity', 'component')" },
-              op: { type: "string", description: "Operator: '=', '!=', 'contains', 'in'" },
-              value: { description: "Value to compare against" },
+              op: { type: "string", description: "Operator: '=', '!=', 'contains', 'not-contains', 'in', 'not-in', '>', '>=', '<', '<=', 'between', 'is-empty', 'is-not-empty'" },
+              value: { description: "Value to compare against. Array for 'in'/'not-in', 2-element array for 'between', omitted for 'is-empty'/'is-not-empty'." },
             },
-            required: ["field", "op", "value"],
+            required: ["field", "op"],
           },
+        },
+        whereCombinator: {
+          type: "string",
+          description: "How `where` clauses combine: 'and' (default) or 'or'.",
+        },
+        inbox: {
+          type: "boolean",
+          description: "Only items that still need triage: no assignee, no priority, not in a milestone/release, and still on their type's initial status. This is the same queue the tracker's triage inbox shows. Combine with `type` to scope it to one type.",
+        },
+        full: {
+          type: "boolean",
+          description: "Return every stored field per item (custom fields, linked sessions/commits, source refs, origin). Off by default so results stay small; only turn it on when you actually need those extra fields, and pair it with `type`/`where` to keep the set narrow.",
         },
       },
     },
@@ -1027,7 +1042,15 @@ export async function handleTrackerList(
   workspacePath: string | undefined
 ): Promise<McpToolResult> {
   try {
-    const limit = Math.min(args.limit || 50, 250);
+    const requestedLimit = Number(args.limit);
+    const limit = requestedLimit < 0
+      ? 10_000
+      : Math.min(Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 50, 250);
+    // Register custom (.nimbalyst/trackers/*.yaml) types before any role/inbox
+    // resolution runs. Without this, a custom type's workflowStatus role falls
+    // back to `status` and its inbox/collection predicates answer wrongly --
+    // and the answer would depend on whether an earlier tool warmed the registry.
+    if (workspacePath) ensureWorkspaceTrackerSchemasLoaded(workspacePath);
     const { documentServices } = await import("../../window/WindowManager");
     let docService = workspacePath ? documentServices.get(workspacePath) : undefined;
     let tempDocService: { destroy?: () => void } | undefined;
@@ -1056,6 +1079,18 @@ export async function handleTrackerList(
       return fallback;
     };
 
+    // A `where` clause with `=`/`!=` and an empty operand means "match items
+    // whose field is empty" (the idiom before `is-empty` existed). The shared
+    // matcher SKIPS a blank binary clause -- right for a half-typed grid filter,
+    // wrong for an explicit API query -- so rewrite those to the unary ops here.
+    const whereClauses = (Array.isArray(args.where) ? args.where : []).map((clause: any) => {
+      if (clause && (clause.op === '=' || clause.op === '!=')
+        && (clause.value === '' || clause.value === null || clause.value === undefined)) {
+        return { field: clause.field, op: clause.op === '=' ? 'is-empty' : 'is-not-empty' };
+      }
+      return clause;
+    });
+
     const items = rawItems
       .filter((item) => !workspacePath || item.workspace === workspacePath)
       .filter((item) => args.archived ? item.archived === true : item.archived !== true)
@@ -1077,23 +1112,26 @@ export async function handleTrackerList(
         return String(getFieldValue(item, priorityField) ?? '').toLowerCase() === String(args.priority).toLowerCase();
       })
       .filter((item) => {
-        if (!args.where || !Array.isArray(args.where)) return true;
-        return args.where.every((clause: any) => {
-          if (!clause?.field || !clause?.op) return true;
-          const value = getFieldValue(item, clause.field);
-          switch (clause.op) {
-            case '=':
-              return String(value ?? '') === String(clause.value);
-            case '!=':
-              return String(value ?? '') !== String(clause.value);
-            case 'contains':
-              return String(value ?? '').toLowerCase().includes(String(clause.value ?? '').toLowerCase());
-            case 'in':
-              return Array.isArray(clause.value) ? clause.value.map(String).includes(String(value ?? '')) : true;
-            default:
-              return true;
-          }
+        if (!args.inbox) return true;
+        // The same predicate the triage inbox renders, so "what still needs a
+        // decision?" means one thing to an agent and to the UI. Snoozes are
+        // personal and deliberately not applied here.
+        // Roles resolve per record, not per `args.type`: a global inbox spans
+        // types that name the same role differently.
+        return isUntriaged(trackerItemToRecord(item), {
+          getStatus: (record) => String(record.fields[resolveRoleFieldName(record.primaryType, 'workflowStatus')] ?? ''),
+          getPriority: (record) => String(record.fields[resolveRoleFieldName(record.primaryType, 'priority')] ?? ''),
+          getAssignee: (record) => record.fields[resolveRoleFieldName(record.primaryType, 'assignee')],
         });
+      })
+      .filter((item) => {
+        if (whereClauses.length === 0) return true;
+        // Shared with the grid's column filters and saved views, so an agent
+        // query and a saved view are literally the same filter object.
+        return matchesFilterSet(
+          { combinator: args.whereCombinator === 'or' ? 'or' : 'and', clauses: whereClauses },
+          (field) => getFieldValue(item, field),
+        );
       })
       .filter((item) => {
         if (!args.search) return true;
@@ -1119,10 +1157,19 @@ export async function handleTrackerList(
         status: item.status || '',
         priority: item.priority || '',
         tags: item.tags || [],
+        customFields: item.customFields || {},
         archived: item.archived ?? false,
         source: item.source || 'native',
+        sourceRef: item.sourceRef,
         syncStatus: item.syncStatus || 'local',
+        workspace: item.workspace,
+        module: item.module,
+        lineNumber: item.lineNumber,
+        created: item.created,
         updated: item.updated,
+        linkedSessions: item.linkedSessions,
+        linkedCommitSha: item.linkedCommitSha,
+        origin: item.origin,
       }));
     tempDocService?.destroy?.();
 
@@ -1140,7 +1187,12 @@ export async function handleTrackerList(
     if (args.priority) filters.priority = args.priority;
     if (args.owner) filters.owner = args.owner;
     if (args.search) filters.search = args.search;
+    if (args.inbox) filters.inbox = 'true';
 
+    // Lean by default so an ordinary agent list stays small; `full` adds the
+    // heavy fields (custom fields, links, origin) the CLI/export path needs.
+    // Passing every stored field on every list was a large, silent token cost.
+    const full = args.full === true;
     const structured = {
       action: "listed" as const,
       filters,
@@ -1154,6 +1206,22 @@ export async function handleTrackerList(
         title: item.title,
         status: item.status,
         priority: item.priority,
+        tags: item.tags,
+        archived: item.archived,
+        source: item.source,
+        syncStatus: item.syncStatus,
+        updated: item.updated,
+        ...(full ? {
+          customFields: item.customFields,
+          sourceRef: item.sourceRef,
+          workspace: item.workspace,
+          module: item.module,
+          lineNumber: item.lineNumber,
+          created: item.created,
+          linkedSessions: item.linkedSessions,
+          linkedCommitSha: item.linkedCommitSha,
+          origin: item.origin,
+        } : {}),
       })),
     };
 
@@ -1678,15 +1746,43 @@ export async function handleTrackerGet(
   }
 }
 
+/**
+ * Refuse an agent write that promotes an item past review. Agents may move work
+ * to `in-review`; only a person approves it. Returns the error result to send
+ * back, or null when the write is allowed.
+ */
+function rejectHumanOnlyStatus(args: any, trackerType?: string): McpToolResult | null {
+  const workflowFields = new Set<string>(['status']);
+  const models = trackerType
+    ? [globalRegistry.get(trackerType)].filter(Boolean)
+    : globalRegistry.getAll();
+  for (const model of models) {
+    const fieldName = model
+      ? getTrackerRoleField(model.type, 'workflowStatus') ?? 'status'
+      : 'status';
+    workflowFields.add(fieldName);
+  }
+
+  const candidates = [args?.status];
+  if (args?.fields && typeof args.fields === 'object') {
+    for (const fieldName of workflowFields) {
+      candidates.push(args.fields[fieldName]);
+    }
+  }
+  const blocked = candidates.find((value) => isHumanOnlyStatus(value));
+  if (!blocked) return null;
+  return {
+    content: [{ type: "text", text: humanOnlyStatusMessage(String(blocked)) }],
+    isError: true,
+  };
+}
+
 export async function handleTrackerCreate(
   args: any,
   workspacePath: string | undefined,
   sessionId?: string | undefined
 ): Promise<McpToolResult> {
   try {
-    const { getDatabase } = await import("../../database/initialize");
-    const db = getDatabase();
-
     if (!workspacePath) {
       return {
         content: [
@@ -1702,6 +1798,12 @@ export async function handleTrackerCreate(
     // Make custom (.nimbalyst/trackers/*.yaml) types visible to the registry so
     // type validation below accepts them (NIM-760).
     ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+
+    const humanOnly = rejectHumanOnlyStatus(args, args.type);
+    if (humanOnly) return humanOnly;
+
+    const { getDatabase } = await import("../../database/initialize");
+    const db = getDatabase();
 
     // Check if this type allows creation
     const model = globalRegistry.get(args.type);
@@ -2019,11 +2121,18 @@ export async function handleTrackerUpdate(
       delete args.fields.description;
     }
 
-    const { getDatabase } = await import("../../database/initialize");
-    const db = getDatabase();
     // Make custom (.nimbalyst/trackers/*.yaml) types visible so primaryType
     // reassignment and schema validation accept them (NIM-760).
     ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+
+    // Updates name only an item id, so inspect all registered workflow-role
+    // field names. This keeps the approval boundary fail-closed before opening
+    // the database even when a custom schema calls the field something else.
+    const humanOnly = rejectHumanOnlyStatus(args);
+    if (humanOnly) return humanOnly;
+
+    const { getDatabase } = await import("../../database/initialize");
+    const db = getDatabase();
     const { docService, tempDocService } = await getDocumentServiceForWorkspace(workspacePath);
 
     try {

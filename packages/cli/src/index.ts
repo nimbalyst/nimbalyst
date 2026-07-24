@@ -11,6 +11,7 @@ import { runTracker } from './commands/tracker.js';
 import { runStatus } from './commands/status.js';
 import { runWorkspace } from './commands/workspace.js';
 import { runSession, runDoc } from './commands/sessionDoc.js';
+import { runRelease } from './commands/release.js';
 
 export const VERSION = '0.1.0';
 
@@ -21,6 +22,7 @@ Usage:
 
 Nouns:
   tracker     trackers (bugs, tasks, decisions, imported records) — read in v1
+  release     release items — list, finalize at build time, generate notes
   session     AI sessions (read-only in v1)
   doc         workspace documents (read-only in v1)
   workspace   list / show workspaces
@@ -50,6 +52,12 @@ Tracker (importers — live mode only):
                      [--search TXT] [--limit N]
   nim tracker import <providerId> <externalId> [--type <trackerType>]
   nim tracker import resnapshot <urn>                    (e.g. github://owner/repo#42)
+
+Release (live mode for writes):
+  nim release list [--pending] [--json]
+  nim release finalize [<id|KEY>] --version X.Y.Z [--tag vX.Y.Z] [--channel alpha|stable]
+                     [--date <iso>]        (fills the existing item, flips it to released)
+  nim release notes [<id|KEY>] [--json]    (markdown from the release's members)
 
 Cross-cutting flags:
   --workspace <path>   target workspace (default: resolve from cwd)
@@ -87,6 +95,8 @@ export async function main(argv: string[]): Promise<number> {
     switch (args.noun) {
       case 'tracker':
         return await runTracker(args);
+      case 'release':
+        return await runRelease(args);
       case 'status':
         return await runStatus(args);
       case 'workspace':

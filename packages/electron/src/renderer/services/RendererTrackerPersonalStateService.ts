@@ -5,6 +5,8 @@ export interface TrackerPersonalStateDto {
   isFavorite: boolean;
   favoriteUpdatedAt: number;
   lastOpenedAt: number | null;
+  /** Epoch ms until which the triage inbox hides this item; null = not snoozed. */
+  snoozedUntil: number | null;
   updatedAt: number;
 }
 
@@ -33,5 +35,9 @@ export const trackerPersonalStateService = {
   async recordOpened(input: { itemId: string; lastOpenedAt: number; workspacePath: string }): Promise<TrackerPersonalStateDto | null> {
     const { workspacePath, ...payload } = input;
     return unwrap(await window.electronAPI.invoke('tracker-personal-state:record-opened', payload, workspacePath), 'record tracker open');
+  },
+  async setSnooze(input: { itemId: string; snoozedUntil: number | null; workspacePath: string }): Promise<TrackerPersonalStateDto | null> {
+    const { workspacePath, ...payload } = input;
+    return unwrap(await window.electronAPI.invoke('tracker-personal-state:set-snooze', payload, workspacePath), 'snooze tracker item');
   },
 };

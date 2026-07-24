@@ -610,7 +610,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // Escape to close
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      // Grid editors prevent Escape after using it to cancel the active cell
+      // edit. Do not also close the detail panel on that same keystroke.
+      if (e.key === 'Escape' && !e.defaultPrevented) onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);

@@ -187,6 +187,16 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Minimize', shortcut: KeyboardShortcuts.window.minimize }, // shared/KeyboardShortcuts.ts:83 - Cmd+M
       ],
     },
+    {
+      title: 'Tracker Grid',
+      shortcuts: [
+        { label: 'Move between cells', shortcut: 'Arrow keys / Tab' },
+        { label: 'Edit focused cell', shortcut: 'F2 or start typing' },
+        { label: 'Open focused item details', shortcut: 'Enter' },
+        { label: 'Commit edit / next row', shortcut: 'Enter (while editing)' },
+        { label: 'Cancel edit / close details', shortcut: 'Escape' },
+      ],
+    },
   ];
 
   // Editor shortcuts are defined in: packages/runtime/src/editor/plugins/ShortcutsPlugin/shortcuts.ts
