@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2020",
+    "module": "ESNext",
+    "jsx": "react-jsx",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@nimbalyst/runtime": ["./packages/runtime/src/index.ts"],
+      "@nimbalyst/runtime/*": ["./packages/runtime/src/*"],
+      "@nimbalyst/extension-sdk": ["./packages/extension-sdk/src/index.ts"],
+      "@nimbalyst/extension-sdk/file-tree": ["./packages/extension-sdk/src/fileDirectoryTree.ts"],
+      "@nimbalyst/extension-sdk/*": ["./packages/extension-sdk/src/*"]
+    }
+  },
+  "exclude": [
+    "**/node_modules",
+    "**/dist",
+    "**/e2e/**",
+    "packages/electron/marketing/fixtures",
+    "packages/collabv3",
+    "packages/marketplace",
+    "packages/electron/release",
+    "packages/extension-sdk-docs/examples",
+    "worktrees",
+    "test-utils"
+  ]
+}
