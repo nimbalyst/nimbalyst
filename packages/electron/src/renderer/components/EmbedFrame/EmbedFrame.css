@@ -1,0 +1,304 @@
+/* Inline-embed chrome and body. Lives inside a Lexical DecoratorNode, so
+ * margins go on the outer container rather than on internal elements to
+ * keep block flow predictable. */
+
+.embed-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--nim-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--nim-bg);
+  margin: 0.75em 0;
+}
+
+.embed-frame--resizing {
+  /* While dragging a handle we want the embed body to ignore pointer
+   * events so the embedded editor doesn't interpret the drag. */
+  user-select: none;
+}
+
+.embed-frame--resizing .embed-frame__body {
+  pointer-events: none;
+}
+
+/* Editor wrapper. Establishes its own stacking context so Excalidraw's
+ * internal z-indexes (which go up to 999999 for popovers) can't escape
+ * and paint over the click-to-select shield. */
+.embed-frame__editor-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  isolation: isolate;
+}
+
+/* Click-to-select shield. Sits over the embedded editor whenever the
+ * embed is not the active Lexical NodeSelection, swallowing pointer and
+ * wheel events so scrolling over the embed scrolls the host document
+ * (instead of, say, zooming Excalidraw). A single click selects the
+ * node, the shield drops out, and the embedded editor receives input
+ * directly until the user clicks elsewhere. */
+.embed-frame__shield {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  cursor: pointer;
+  background: transparent;
+}
+
+/* Faint outline when this embed is the active NodeSelection -- mirrors
+ * the affordance the image plugin gives selected images. */
+.embed-frame--selected {
+  outline: 2px solid color-mix(in srgb, var(--nim-primary, #60a5fa) 60%, transparent);
+  outline-offset: -1px;
+}
+
+.embed-frame__chrome {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--nim-bg-secondary);
+  border-bottom: 1px solid var(--nim-border);
+  font-size: 12px;
+  color: var(--nim-text-muted);
+  user-select: none;
+}
+
+.embed-frame__breadcrumb {
+  flex: 1 1 auto;
+}
+
+.embed-frame__path {
+  font-family: var(--nim-font-mono, ui-monospace, SFMono-Regular, monospace);
+  color: var(--nim-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.embed-frame__label {
+  color: var(--nim-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.embed-frame__label::before {
+  content: '— ';
+  color: var(--nim-text-faint);
+}
+
+.embed-frame__spacer {
+  flex: 1 1 auto;
+}
+
+.embed-frame__edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.embed-frame__edit-btn:hover {
+  background: var(--nim-bg-tertiary);
+  border-color: var(--nim-border);
+}
+
+.embed-frame__mode-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  margin-right: 2px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text-muted);
+  cursor: pointer;
+}
+
+.embed-frame__mode-btn:hover {
+  background: var(--nim-bg-tertiary);
+  border-color: var(--nim-border);
+  color: var(--nim-text);
+}
+
+.embed-frame__mode-btn[data-mode='edit'] {
+  color: var(--nim-primary, #60a5fa);
+  background: color-mix(in srgb, var(--nim-primary, #60a5fa) 12%, transparent);
+  border-color: color-mix(in srgb, var(--nim-primary, #60a5fa) 30%, transparent);
+}
+
+/* Tinted border in edit mode so it's obvious the embed has lit up its
+ * editing UI. Edits autosave to the embedded file. */
+.embed-frame--edit-mode {
+  border-color: color-mix(in srgb, var(--nim-primary, #60a5fa) 35%, var(--nim-border));
+}
+
+/* Dirty dot next to the file path. Visible whenever the extension has
+ * marked unsaved changes -- clears on the next autosave flush. */
+.embed-frame__dirty-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--nim-warning, #fbbf24);
+  flex-shrink: 0;
+}
+
+.embed-frame__body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  overflow: hidden;
+  background: var(--nim-bg);
+}
+
+.embed-frame__body > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.embed-frame__body--placeholder {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--nim-text-muted);
+  text-align: center;
+  height: auto !important;
+}
+
+.embed-frame__body--placeholder p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.embed-frame__body--placeholder code {
+  font-family: var(--nim-font-mono, ui-monospace, SFMono-Regular, monospace);
+  padding: 2px 6px;
+  background: var(--nim-bg-secondary);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.embed-frame__loading {
+  padding: 16px;
+  text-align: center;
+  color: var(--nim-text-muted);
+  font-size: 12px;
+}
+
+.embed-frame__error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  color: var(--nim-error);
+  background: color-mix(in srgb, var(--nim-error) 10%, transparent);
+  font-size: 13px;
+}
+
+.embed-frame__error-footer {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--nim-error);
+  background: color-mix(in srgb, var(--nim-error) 8%, transparent);
+  border-top: 1px solid var(--nim-border);
+}
+
+/* Resize handles. Absolutely positioned on the edges of the embed
+ * frame, sitting above the embedded editor's pointer events. Match the
+ * image resizer's visual style: small, transparent by default, faint
+ * highlight on hover, primary highlight while dragging. */
+
+.embed-frame__resizer {
+  position: absolute;
+  background: transparent;
+  z-index: 2;
+  transition: background 120ms ease;
+}
+
+.embed-frame__resizer::before {
+  /* Larger invisible hit-target so the handle is easy to grab without
+   * making the visible affordance bigger. */
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.embed-frame__resizer:hover,
+.embed-frame--resizing .embed-frame__resizer {
+  background: var(--nim-primary, #60a5fa);
+}
+
+.embed-frame__resizer--e {
+  top: 0;
+  right: -1px;
+  bottom: 0;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.embed-frame__resizer--s {
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.embed-frame__resizer--se {
+  right: -1px;
+  bottom: -1px;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  z-index: 3;
+  background: var(--nim-border);
+  border-top-left-radius: 4px;
+}
+
+.embed-frame__resizer--se:hover,
+.embed-frame--resizing .embed-frame__resizer--se {
+  background: var(--nim-primary, #60a5fa);
+}
+
+/* Fallback placeholder rendered by the runtime when no renderer is
+ * registered (e.g. inside a share viewer before Phase 6 lands). */
+.embedded-file-placeholder {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px dashed var(--nim-border);
+  border-radius: 4px;
+  background: var(--nim-bg-secondary);
+  margin: 0.5em 0;
+  font-size: 13px;
+}
+
+.embedded-file-placeholder__label {
+  color: var(--nim-text);
+}
+
+.embedded-file-placeholder__path {
+  font-family: var(--nim-font-mono, ui-monospace, SFMono-Regular, monospace);
+  color: var(--nim-text-muted);
+  font-size: 11px;
+}
