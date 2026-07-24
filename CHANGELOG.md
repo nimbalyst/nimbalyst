@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added a `Claude agent - DeepSeek` model with High/Max effort and reasoning controls.
+
 - Fixed delayed queued prompts after a long-running session's original window closes or reloads.
 
 ### Added

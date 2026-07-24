@@ -11,6 +11,7 @@ import { ModeTag, AIMode } from './ModeTag';
 import { ModelSelector } from './ModelSelector';
 import { EffortLevelSelector } from './EffortLevelSelector';
 import { ThinkingModeSelector } from './ThinkingModeSelector';
+import { isDeepSeekClaudeAgentModel } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import { registerPendingVoiceCommandSetter } from './VoiceModeButton.tsx';
 import { PendingVoiceCommand } from './PendingVoiceCommand';
 import { pendingVoiceCommandAtom, voiceActiveSessionIdAtom, type PendingVoiceCommand as PendingVoiceCommandType } from '../../store/atoms/voiceModeState';
@@ -1407,6 +1408,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               <EffortLevelSelector
                 level={effortLevel}
                 onLevelChange={onEffortLevelChange}
+                allowedLevels={isDeepSeekClaudeAgentModel(currentModel) ? ['high', 'max'] : undefined}
                 disabled={reasoningControlsDisabled}
                 disabledTitle={reasoningControlsDisabledTitle}
               />

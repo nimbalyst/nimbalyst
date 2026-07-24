@@ -22,6 +22,7 @@ import {
   type ClaudeCodeVariant,
 } from '@nimbalyst/runtime/ai/modelConstants';
 import { CLAUDE_CODE_VARIANTS, ModelIdentifier, isClaudeCodeFamily } from '@nimbalyst/runtime/ai/server/types';
+import { isDeepSeekClaudeAgentModel } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 
 export {
   type EffortLevel,
@@ -84,6 +85,7 @@ function getClaudeCodeFamilyPrefix(modelId?: string): string {
 }
 
 export function getClaudeCodeModelLabel(modelId?: string): string {
+  if (isDeepSeekClaudeAgentModel(modelId)) return 'Claude agent - DeepSeek';
   const variant = extractClaudeCodeVariant(modelId) ?? 'sonnet';
   const parsed = modelId ? ModelIdentifier.tryParse(modelId) : null;
   const version = CLAUDE_CODE_VARIANT_VERSIONS[variant];
@@ -92,6 +94,7 @@ export function getClaudeCodeModelLabel(modelId?: string): string {
 }
 
 export function getClaudeCodeModelShortLabel(modelId?: string): string {
+  if (isDeepSeekClaudeAgentModel(modelId)) return 'DeepSeek';
   const variant = extractClaudeCodeVariant(modelId) ?? 'sonnet';
   const parsed = modelId ? ModelIdentifier.tryParse(modelId) : null;
   const version = CLAUDE_CODE_VARIANT_VERSIONS[variant];
@@ -254,6 +257,7 @@ export function getModelShortName(provider: string, modelId: string): string {
  */
 export function supportsEffortLevel(modelId?: string): boolean {
   if (!modelId) return false;
+  if (isDeepSeekClaudeAgentModel(modelId)) return true;
   const variant = extractClaudeCodeVariant(modelId);
   if (
     variant === 'fable' ||
@@ -281,6 +285,7 @@ export function supportsEffortLevel(modelId?: string): boolean {
  */
 export function supportsThinkingToggle(modelId?: string): boolean {
   if (!modelId) return false;
+  if (isDeepSeekClaudeAgentModel(modelId)) return true;
   const variant = extractClaudeCodeVariant(modelId);
   if (!variant) return false;
   return variant.startsWith('opus') || variant.startsWith('sonnet');

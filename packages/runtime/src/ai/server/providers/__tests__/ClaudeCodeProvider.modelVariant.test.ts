@@ -35,6 +35,10 @@ describe('resolveClaudeCodeModelVariant', () => {
     it('uses default model when config model is empty string', () => {
       expect(resolveClaudeCodeModelVariant('', DEFAULT_MODEL)).toBe('opus[1m]');
     });
+
+    it('routes the DeepSeek picker model through the Sonnet harness', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:deepseek', DEFAULT_MODEL)).toBe('sonnet');
+    });
   });
 
   describe('extended context (1M) variants', () => {

@@ -100,6 +100,7 @@ import {
 } from './claudeCode/toolAuthorization';
 import { ClaudeCodeDeps } from './claudeCode/dependencyInjection';
 import { buildSdkOptions, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
+import { applyDeepSeekClaudeAgentProfile, DEEPSEEK_CLAUDE_AGENT_MODEL_ID } from '../deepSeekClaudeAgent';
 import { resolveEffectiveSessionMode } from './claudeCode/resolveEffectiveSessionMode';
 import {
   hasRunningTasks as computeHasRunningTasks,
@@ -506,7 +507,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     //   config: safeConfig
     // }, null, 2));
 
-    this.config = config;
+    this.config = applyDeepSeekClaudeAgentProfile(config);
 
     // Claude Code manages its own authentication - do not require or use API key
   }
@@ -3687,6 +3688,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       }
 
     }
+
+    models.push({
+      id: DEEPSEEK_CLAUDE_AGENT_MODEL_ID,
+      name: 'Claude agent - DeepSeek',
+      provider: 'claude-code' as const,
+      maxTokens: 8192,
+      contextWindow: 128000,
+    });
 
     return models;
   }

@@ -12,6 +12,7 @@ import { app } from 'electron';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { type ThinkingMode } from '../../effortLevels';
+import { DEEPSEEK_CLAUDE_BACKEND_ID, normalizeDeepSeekEffort, normalizeDeepSeekThinkingMode } from '../../deepSeekClaudeAgent';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
 
@@ -42,7 +43,7 @@ export interface BuildSdkOptionsDeps {
     resolveTeamContext: (sessionId?: string) => Promise<string | undefined>;
   };
   sessions: { getSessionId: (sessionId: string) => string | null | undefined };
-  config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode };
+  config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode; customBackend?: string };
   abortController: AbortController;
 }
 
@@ -426,6 +427,18 @@ export async function buildSdkOptions(
       }),
   };
 
+  if (config.customBackend === DEEPSEEK_CLAUDE_BACKEND_ID) {
+    delete env.ANTHROPIC_API_KEY;
+    env.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
+    if (config.apiKey) env.ANTHROPIC_AUTH_TOKEN = config.apiKey;
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'deepseek-v4-pro[1m]';
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'deepseek-v4-pro[1m]';
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'deepseek-v4-flash';
+    env.CLAUDE_CODE_SUBAGENT_MODEL = 'deepseek-v4-flash';
+    env.CLAUDE_CODE_EFFORT_LEVEL = normalizeDeepSeekEffort(config.effortLevel);
+    options.thinking = { type: normalizeDeepSeekThinkingMode(config.thinkingMode) };
+  }
+
   // NIM-376: Overlay enhanced PATH so the Claude Code SDK can find stdio MCP
   // subprocess binaries (`npx`, `uvx`, `docker`, ...) when Nimbalyst is launched
   // from Dock/Finder. GUI-launched Electron on macOS has a minimal PATH
@@ -486,7 +499,7 @@ export async function buildSdkOptions(
   }
 
   // Per-session API key
-  if (config.apiKey) {
+  if (config.apiKey && config.customBackend !== DEEPSEEK_CLAUDE_BACKEND_ID) {
     env.ANTHROPIC_API_KEY = config.apiKey;
     if (teammateManager.packagedBuildOptions?.env) {
       teammateManager.packagedBuildOptions.env.ANTHROPIC_API_KEY = config.apiKey;

@@ -12,6 +12,7 @@ import {
   CLAUDE_CODE_PINNED_SDK_MODELS,
   normalizeClaudeCodeVariant,
 } from '../modelConstants';
+import { isDeepSeekClaudeAgentModel } from './deepSeekClaudeAgent';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
 export type { ToolDefinition } from '../tools';
 export { ModelIdentifier } from './ModelIdentifier';
@@ -249,6 +250,8 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
   type ClaudeCodeVariant = typeof CLAUDE_CODE_VARIANTS[number];
   const configured = configuredModel || defaultModel;
 
+  if (isDeepSeekClaudeAgentModel(configured)) return 'sonnet';
+
   const toSdkBase = (variant: string): string => CLAUDE_CODE_PINNED_SDK_MODELS[variant as ClaudeCodeVariant] ?? variant;
 
   // Try parsing with ModelIdentifier
@@ -411,6 +414,7 @@ export interface ProviderConfig {
   allowedTools?: string[];  // List of allowed tool names, ['*'] for all tools
   effortLevel?: EffortLevel;  // Effort level for Opus 4.6 adaptive reasoning (low/medium/high/max)
   thinkingMode?: ThinkingMode;  // Extended thinking mode for Claude Agent (enabled/disabled)
+  customBackend?: string;  // Per-session Claude Agent backend selected by a synthetic model profile
   responseFormat?: ProviderResponseFormat;  // Response format constraint (extension chat completions)
   skipLogging?: boolean;  // Skip message logging to DB (extension stateless completions)
 }

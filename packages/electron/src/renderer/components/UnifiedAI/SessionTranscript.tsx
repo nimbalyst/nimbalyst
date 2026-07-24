@@ -109,6 +109,7 @@ import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } fro
 import { usePostHog } from 'posthog-js/react';
 import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom, developerModeAtom } from '../../store/atoms/appSettings';
 import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, parseThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
+import { isDeepSeekClaudeAgentModel, normalizeDeepSeekEffort, normalizeDeepSeekThinkingMode } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
@@ -518,15 +519,18 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   // Effort level: read from session metadata, fall back to global default
   const showEffortLevel = useMemo(() => supportsEffortLevel(currentModel), [currentModel]);
-  const effortLevel = useMemo(() => {
-    return rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
-  }, [rawEffortLevel, defaultEffortLevel]);
+  const effortLevel = useMemo(() => isDeepSeekClaudeAgentModel(currentModel)
+    ? normalizeDeepSeekEffort(rawEffortLevel)
+    : rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel,
+  [rawEffortLevel, defaultEffortLevel, currentModel]);
   // Extended-thinking is a power-user control: only surface the selector in
   // developer mode. When hidden, thinkingMode is never set, so the default
   // (adaptive/enabled) applies.
   const developerMode = useAtomValue(developerModeAtom);
-  const showThinkingToggle = useMemo(() => developerMode && supportsThinkingToggle(currentModel), [developerMode, currentModel]);
-  const thinkingMode = useMemo(() => parseThinkingMode(rawThinkingMode), [rawThinkingMode]);
+  const showThinkingToggle = useMemo(() => (developerMode || isDeepSeekClaudeAgentModel(currentModel)) && supportsThinkingToggle(currentModel), [developerMode, currentModel]);
+  const thinkingMode = useMemo(() => isDeepSeekClaudeAgentModel(currentModel)
+    ? normalizeDeepSeekThinkingMode(rawThinkingMode)
+    : parseThinkingMode(rawThinkingMode), [rawThinkingMode, currentModel]);
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -1535,12 +1539,16 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         await window.electronAPI.terminal.setClaudeCliModel(sessionId, modelId);
       }
       await window.electronAPI.invoke('sessions:update-metadata', sessionId, { model: modelId });
+      if (isDeepSeekClaudeAgentModel(modelId)) {
+        await updateSessionMetadataField(sessionId, 'effortLevel', normalizeDeepSeekEffort(rawEffortLevel), null, updateSessionStore);
+        await updateSessionMetadataField(sessionId, 'thinkingMode', normalizeDeepSeekThinkingMode(rawThinkingMode), null, updateSessionStore);
+      }
     } catch (error) {
       console.error('[SessionTranscript] Failed to update model:', error);
       setCurrentModel(previousModel);
       setAgentModeSettings({ defaultModel: previousModel });
     }
-  }, [currentModel, sessionId, setCurrentModel, setAgentModeSettings, provider, cliSessionCommitted]);
+  }, [currentModel, sessionId, setCurrentModel, setAgentModeSettings, provider, cliSessionCommitted, rawEffortLevel, rawThinkingMode, updateSessionStore]);
 
   const handleEffortLevelChange = useCallback(async (level: EffortLevel) => {
     const previousLevel = effortLevel;

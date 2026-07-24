@@ -30,6 +30,7 @@ import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStat
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { parseThinkingMode, resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { applyDeepSeekClaudeAgentProfile, isDeepSeekClaudeAgentModel } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -759,7 +760,11 @@ export class AIService {
     workspacePath?: string
   ): Promise<ProviderConfig> {
     const effectiveWorkspacePath = session.workspacePath || workspacePath;
-    const apiKey = this.getApiKeyForProvider('claude-code', effectiveWorkspacePath);
+    const selectedModel = session.model || session.providerConfig?.model;
+    const apiKey = this.getApiKeyForProvider(
+      isDeepSeekClaudeAgentModel(selectedModel) ? 'deepseek' : 'claude-code',
+      effectiveWorkspacePath,
+    );
 
     const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
     const config: ProviderConfig = {
@@ -781,7 +786,7 @@ export class AIService {
       config.model = CLAUDE_CODE_SAFE_FALLBACK_MODEL;
     }
 
-    return config;
+    return applyDeepSeekClaudeAgentProfile(config);
   }
 
   /**
