@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Session-pane workstream and worktree labels now reveal their full names on hover.
+- Session-pane session, workstream, and worktree labels now reveal their complete names in wrapped hover tooltips.
 - Agent-mode document embeds now recover when their target file is created after the document opens.
 - Automations no longer rerun the same scheduled occurrence after restarting while a run is waiting or fails.
 - Voice Mode now explains blocked or missing microphones on Windows and links directly to microphone privacy settings.

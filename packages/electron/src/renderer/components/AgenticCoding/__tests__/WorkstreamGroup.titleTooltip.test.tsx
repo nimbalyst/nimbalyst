@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 vi.mock('jotai', () => ({
   useAtomValue: () => ({}),
@@ -43,7 +43,7 @@ const childTitle = 'A child session name that is long enough to be clipped by th
 afterEach(() => cleanup());
 
 describe('WorkstreamGroup - full name on hover', () => {
-  it('exposes complete workstream and child session names in native tooltips', () => {
+  it('wraps complete workstream and child session names in in-app tooltips', () => {
     const { container } = render(
       <WorkstreamGroup
         type="workstream"
@@ -59,7 +59,13 @@ describe('WorkstreamGroup - full name on hover', () => {
       />,
     );
 
-    expect(container.querySelector('.workstream-group-name')?.getAttribute('title')).toBe(groupTitle);
-    expect(container.querySelector('.workstream-session-item-title')?.getAttribute('title')).toBe(childTitle);
+    const groupName = container.querySelector('.workstream-group-name');
+    fireEvent.mouseEnter(groupName!);
+    expect(screen.getByRole('tooltip').textContent).toBe(groupTitle);
+
+    fireEvent.mouseLeave(groupName!);
+    const childName = container.querySelector('.workstream-session-item-title');
+    fireEvent.mouseEnter(childName!);
+    expect(screen.getByRole('tooltip').textContent).toBe(childTitle);
   });
 });
