@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 vi.mock('jotai', () => ({
-  useAtomValue: () => ({}),
+  useAtomValue: (target: { __testValue?: unknown }) => target?.__testValue ?? null,
   useSetAtom: () => () => {},
 }));
 vi.mock('@nimbalyst/runtime', () => ({
@@ -13,16 +13,25 @@ vi.mock('@nimbalyst/runtime', () => ({
   copyToClipboard: () => {},
 }));
 vi.mock('../../../store', () => ({
-  sessionProcessingAtom: () => ({}),
-  sessionUnreadAtom: () => ({}),
-  sessionPendingPromptAtom: () => ({}),
-  sessionHasPendingInteractivePromptAtom: () => ({}),
-  groupSessionStatusAtom: () => ({}),
+  sessionRegistryAtom: { __testValue: new Map() },
+  sessionListTitleAtom: () => ({ __testValue: null }),
+  sessionProcessingAtom: () => ({ __testValue: false }),
+  sessionUnreadAtom: () => ({ __testValue: false }),
+  sessionPendingPromptAtom: () => ({ __testValue: false }),
+  sessionHasPendingInteractivePromptAtom: () => ({ __testValue: false }),
+  groupSessionStatusAtom: () => ({
+    __testValue: {
+      hasPendingInteractivePrompt: false,
+      hasProcessing: false,
+      hasPendingPrompt: false,
+      hasUnread: false,
+    },
+  }),
   reparentSessionAtom: () => ({}),
   refreshSessionListAtom: () => ({}),
-  sessionShareAtom: () => ({}),
+  sessionShareAtom: () => ({ __testValue: null }),
   removeSessionShareAtom: () => ({}),
-  shareKeysAtom: () => ({}),
+  shareKeysAtom: { __testValue: new Map() },
   buildShareUrl: () => '',
 }));
 vi.mock('../../../services/ErrorNotificationService', () => ({

@@ -27,6 +27,8 @@ vi.mock('../../../store', () => {
     __testSetter: testSetter,
   });
   return {
+    sessionRegistryAtom: value(new Map()),
+    sessionListTitleAtom: () => value(null),
     sessionProcessingAtom: () => value(false),
     sessionUnreadAtom: () => value(false),
     sessionPendingPromptAtom: () => value(false),
