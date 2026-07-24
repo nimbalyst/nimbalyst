@@ -272,8 +272,26 @@ export class TranscriptRuntime {
     return this.routingStore.getSessionEvents(sessionId, options);
   }
 
-  async getViewMessages(sessionId: string, provider: string): Promise<TranscriptViewMessage[]> {
-    const events = await this.getCanonicalEvents(sessionId, provider);
+  /**
+   * Materialize the transcript view for a session.
+   *
+   * By default only the most recent `maxEvents` canonical events are loaded.
+   * Without a bound, opening a very large session loads its entire history
+   * into the renderer's JS heap on open and can exhaust it (nimbalyst#892:
+   * a big session pushed the heap to the ~3.5 GB V8 limit and froze the app).
+   * Older events remain in the store and can be paged in on demand. Pass
+   * `maxEvents: 0` to force loading the full history.
+   */
+  async getViewMessages(
+    sessionId: string,
+    provider: string,
+    opts?: { maxEvents?: number },
+  ): Promise<TranscriptViewMessage[]> {
+    const maxEvents = opts?.maxEvents ?? 5000;
+    const events =
+      maxEvents > 0
+        ? await this.getTailEvents(sessionId, provider, maxEvents)
+        : await this.getCanonicalEvents(sessionId, provider);
     const viewModel = TranscriptProjector.project(events);
     return viewModel.messages;
   }
