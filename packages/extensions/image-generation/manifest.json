@@ -1,0 +1,69 @@
+{
+  "id": "com.nimbalyst.image-generation",
+  "name": "Image Generation",
+  "version": "1.0.2",
+  "description": "AI-powered image generation with support for sketches, diagrams, and illustrations",
+  "author": "Nimbalyst",
+  "main": "dist/index.js",
+  "styles": "dist/index.css",
+  "apiVersion": "1.0.0",
+  "requiredReleaseChannel": "alpha",
+  "marketplace": {
+    "changelog": "1.0.2: Compatibility with the latest Nimbalyst runtime.\n1.0.1: Light-theme readability and external file edit fixes.",
+    "categories": ["ai-tools"],
+    "tags": ["image", "generation", "ai", "sketch", "illustration", "diagram"],
+    "icon": "image",
+    "tagline": "Generate images from text prompts with multiple style options",
+    "longDescription": "Create sketches, diagrams, illustrations, and other images by describing what you want. Manage multiple generations in a project file, compare variations, and iterate on prompts. Configurable style presets and generation settings.",
+    "highlights": [
+      "Generate images from natural language prompts",
+      "Multiple style presets: sketch, diagram, illustration",
+      "Project files to organize and compare generations",
+      "AI tool integration for generating images during conversations"
+    ],
+    "fileTypes": [".imgproj"],
+    "screenshots": [
+      {
+        "alt": "Image generation project with AI-generated sketches and style options",
+        "src": "screenshots/com.nimbalyst.image-generation-0-dark.png",
+        "srcLight": "screenshots/com.nimbalyst.image-generation-0-light.png",
+        "fileToOpen": "samples/demo.imgproj"
+      }
+    ]
+  },
+  "permissions": {
+    "filesystem": true,
+    "ai": true,
+    "network": true
+  },
+  "contributions": {
+    "customEditors": [
+      {
+        "filePatterns": ["*.imgproj"],
+        "displayName": "Image Generation Project",
+        "component": "ImageProjectEditor",
+        "supportsSourceMode": true,
+        "supportsDiffMode": false
+      }
+    ],
+    "aiTools": [
+      "image_generation.generate_image"
+    ],
+    "settingsPanel": {
+      "component": "ImageGenerationSettings",
+      "title": "Image Generation",
+      "icon": "image"
+    },
+    "fileIcons": {
+      "*.imgproj": "image"
+    },
+    "newFileMenu": [
+      {
+        "extension": ".imgproj",
+        "displayName": "Image Generation Project",
+        "icon": "image",
+        "defaultContent": "{\"version\":1,\"name\":\"New Image Project\",\"created\":\"\",\"provider\":\"nano-banana\",\"generations\":[],\"settings\":{\"defaultStyle\":\"sketch\",\"variationsPerPrompt\":3}}"
+      }
+    ]
+  }
+}

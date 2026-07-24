@@ -1,0 +1,26 @@
+{
+  "id": "com.nimbalyst.extension-dev-kit",
+  "name": "Extension Developer Kit",
+  "version": "1.0.0",
+  "description": "Tools for building Nimbalyst extensions with AI assistance",
+  "main": "dist/index.js",
+  "apiVersion": "1.0.0",
+  "permissions": {
+    "filesystem": true,
+    "ai": true
+  },
+  "contributions": {
+    "claudePlugin": {
+      "path": "claude-plugin",
+      "displayName": "Extension Developer Kit",
+      "description": "Provides /new-extension command for creating starter extension scaffolds",
+      "enabledByDefault": true,
+      "commands": [
+        {
+          "name": "new-extension",
+          "description": "Create a new Nimbalyst extension project from a starter scaffold"
+        }
+      ]
+    }
+  }
+}

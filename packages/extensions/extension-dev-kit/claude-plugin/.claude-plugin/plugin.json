@@ -1,0 +1,10 @@
+{
+  "name": "extension-dev-kit",
+  "version": "1.0.0",
+  "description": "Commands and tools for creating and developing Nimbalyst extensions",
+  "author": {
+    "name": "Nimbalyst",
+    "url": "https://nimbalyst.com"
+  },
+  "keywords": ["extension", "scaffold", "template", "development", "build", "reload"]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "mockuplm",
+  "version": "1.0.0",
+  "description": "Visual UX mockup creation with HTML/CSS for Nimbalyst",
+  "author": {
+    "name": "Nimbalyst",
+    "url": "https://nimbalyst.com"
+  },
+  "keywords": ["mockup", "ui", "ux", "design", "html", "css", "wireframe"]
+}

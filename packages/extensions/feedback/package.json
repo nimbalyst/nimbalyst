@@ -1,0 +1,7 @@
+{
+  "name": "@nimbalyst/feedback",
+  "version": "1.0.0",
+  "private": true,
+  "description": "In-app feedback flow that drives bug reports and feature requests through a Claude agent",
+  "author": "Nimbalyst"
+}

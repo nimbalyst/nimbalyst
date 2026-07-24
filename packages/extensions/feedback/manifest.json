@@ -1,0 +1,30 @@
+{
+  "id": "com.nimbalyst.feedback",
+  "name": "Feedback",
+  "version": "1.0.0",
+  "description": "In-app feedback flow that drives bug reports and feature requests through a Claude agent",
+  "author": "Nimbalyst",
+  "apiVersion": "1.0.0",
+  "permissions": {
+    "filesystem": false,
+    "ai": true
+  },
+  "contributions": {
+    "claudePlugin": {
+      "path": "claude-plugin",
+      "displayName": "Feedback",
+      "description": "Guided bug reporting and feature request workflow",
+      "enabledByDefault": true,
+      "commands": [
+        {
+          "name": "bug-report",
+          "description": "Guide the user through filing a bug report on GitHub"
+        },
+        {
+          "name": "feature-request",
+          "description": "Guide the user through filing a feature request on GitHub"
+        }
+      ]
+    }
+  }
+}

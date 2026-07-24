@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "name": "Architecture Sketches",
+  "created": "2026-03-15T10:00:00Z",
+  "provider": "nano-banana",
+  "generations": [
+    {
+      "id": "gen-001",
+      "prompt": "A minimalist sketch of a client-server architecture with load balancer, three app servers, and a database cluster",
+      "style": "sketch",
+      "createdAt": "2026-03-15T10:05:00Z",
+      "status": "complete"
+    },
+    {
+      "id": "gen-002",
+      "prompt": "Diagram showing a CI/CD pipeline from code push to production deployment with testing stages",
+      "style": "diagram",
+      "createdAt": "2026-03-15T10:12:00Z",
+      "status": "complete"
+    },
+    {
+      "id": "gen-003",
+      "prompt": "Illustration of a microservices ecosystem with service mesh, API gateway, and observability stack",
+      "style": "illustration",
+      "createdAt": "2026-03-15T10:20:00Z",
+      "status": "complete"
+    }
+  ],
+  "settings": {
+    "defaultStyle": "sketch",
+    "variationsPerPrompt": 3
+  }
+}
