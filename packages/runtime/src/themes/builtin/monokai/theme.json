@@ -1,0 +1,32 @@
+{
+  "id": "monokai",
+  "name": "Monokai",
+  "version": "1.0.0",
+  "author": "Wimer Hazenberg (adapted for Nimbalyst)",
+  "description": "The iconic dark theme for developers",
+  "license": "MIT",
+  "isDark": true,
+  "colors": {
+    "bg": "#272822",
+    "bg-secondary": "#1e1f1c",
+    "bg-tertiary": "#3e3d32",
+    "bg-hover": "rgba(255, 255, 255, 0.05)",
+    "bg-selected": "rgba(166, 226, 46, 0.15)",
+    "bg-active": "#49483e",
+    "text": "#f8f8f2",
+    "text-muted": "#a6a6a0",
+    "text-faint": "#75715e",
+    "text-disabled": "#5a5a55",
+    "border": "#3e3d32",
+    "border-focus": "#a6e22e",
+    "primary": "#a6e22e",
+    "primary-hover": "#c8f76e",
+    "link": "#66d9ef",
+    "link-hover": "#9ee6f5",
+    "success": "#a6e22e",
+    "warning": "#e6db74",
+    "error": "#f92672",
+    "info": "#66d9ef"
+  },
+  "tags": ["dark", "monokai", "vibrant"]
+}

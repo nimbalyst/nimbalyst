@@ -1,0 +1,32 @@
+{
+  "id": "solarized-light",
+  "name": "Solarized Light",
+  "version": "1.0.0",
+  "author": "Ethan Schoonover (adapted for Nimbalyst)",
+  "description": "Precision colors for machines and people - light variant",
+  "license": "MIT",
+  "isDark": false,
+  "colors": {
+    "bg": "#fdf6e3",
+    "bg-secondary": "#eee8d5",
+    "bg-tertiary": "#e4ddc8",
+    "bg-hover": "rgba(0, 0, 0, 0.05)",
+    "bg-selected": "rgba(38, 139, 210, 0.15)",
+    "bg-active": "#d9d2bf",
+    "text": "#657b83",
+    "text-muted": "#839496",
+    "text-faint": "#93a1a1",
+    "text-disabled": "#b0bfbf",
+    "border": "#e4ddc8",
+    "border-focus": "#268bd2",
+    "primary": "#268bd2",
+    "primary-hover": "#2aa198",
+    "link": "#268bd2",
+    "link-hover": "#2aa198",
+    "success": "#859900",
+    "warning": "#b58900",
+    "error": "#dc322f",
+    "info": "#268bd2"
+  },
+  "tags": ["light", "solarized", "low-contrast"]
+}

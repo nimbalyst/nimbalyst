@@ -1,0 +1,71 @@
+type: task
+displayName: Task
+displayNamePlural: Tasks
+icon: task_alt
+color: "#2563eb"
+
+modes:
+  inline: true
+  fullDocument: false
+
+sync:
+  mode: shared
+  scope: project
+
+idPrefix: tsk
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+
+  - name: status
+    type: select
+    default: to-do
+    options:
+      - value: to-do
+        label: To Do
+        icon: circle
+      - value: in-progress
+        label: In Progress
+        icon: motion_photos_on
+      - value: in-review
+        label: In Review
+        icon: rate_review
+        color: "#3b82f6"
+      - value: done
+        label: Done
+        icon: check_circle
+
+  - name: priority
+    type: select
+    options:
+      - value: low
+        label: Low
+      - value: medium
+        label: Medium
+      - value: high
+        label: High
+      - value: critical
+        label: Critical
+
+  - name: owner
+    type: user
+
+  - name: description
+    type: text
+
+  - name: tags
+    type: array
+    itemType: string
+    displayInline: false
+
+inlineTemplate: "{icon} {title} {status} {owner}"
+
+roles:
+  title: title
+  workflowStatus: status
+  priority: priority
+  assignee: owner
+  tags: tags

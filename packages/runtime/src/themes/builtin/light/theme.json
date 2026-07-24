@@ -1,0 +1,23 @@
+{
+  "id": "light",
+  "name": "Light",
+  "version": "1.0.0",
+  "author": "Nimbalyst",
+  "description": "Default light theme",
+  "isDark": false,
+  "colors": {
+    "bg": "#ffffff",
+    "bg-secondary": "#f5f5f5",
+    "bg-tertiary": "#e5e5e5",
+    "text": "#1e1e1e",
+    "text-muted": "#666666",
+    "border": "#e5e5e5",
+    "primary": "#007acc",
+    "link": "#0066cc",
+    "success": "#4caf50",
+    "warning": "#ff9800",
+    "error": "#f44336",
+    "info": "#2196f3"
+  },
+  "tags": ["light", "default"]
+}

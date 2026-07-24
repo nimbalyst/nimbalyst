@@ -1,0 +1,50 @@
+type: idea
+displayName: Idea
+displayNamePlural: Ideas
+icon: lightbulb
+color: "#ca8a04"
+
+modes:
+  inline: true
+  fullDocument: false
+
+sync:
+  mode: local
+  scope: project
+
+idPrefix: id
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+
+  - name: status
+    type: select
+    default: new
+    options:
+      - value: new
+        label: New
+        icon: fiber_new
+      - value: considering
+        label: Considering
+        icon: psychology
+      - value: accepted
+        label: Accepted
+        icon: thumb_up
+      - value: rejected
+        label: Rejected
+        icon: thumb_down
+
+  - name: tags
+    type: array
+    itemType: string
+    displayInline: false
+
+inlineTemplate: "{icon} {title} {status}"
+
+roles:
+  title: title
+  workflowStatus: status
+  tags: tags

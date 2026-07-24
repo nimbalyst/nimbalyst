@@ -1,0 +1,23 @@
+{
+  "id": "dark",
+  "name": "Dark",
+  "version": "1.0.0",
+  "author": "Nimbalyst",
+  "description": "Default dark theme",
+  "isDark": true,
+  "colors": {
+    "bg": "#1e1e1e",
+    "bg-secondary": "#252525",
+    "bg-tertiary": "#2d2d2d",
+    "text": "#d4d4d4",
+    "text-muted": "#858585",
+    "border": "#3c3c3c",
+    "primary": "#0e639c",
+    "link": "#4fc3f7",
+    "success": "#4caf50",
+    "warning": "#ff9800",
+    "error": "#f44336",
+    "info": "#2196f3"
+  },
+  "tags": ["dark", "default"]
+}
