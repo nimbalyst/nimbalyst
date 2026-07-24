@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Delegated agent sessions now report their resolved launch model and reasoning settings, accept auditable priority prompts without stale-turn interrupts, and automatically resume ordinary queued prompts after turns and restarts without overlapping an interrupted priority turn.
+- Delegated agent sessions now report their resolved launch model and reasoning settings, accept auditable priority prompts without stale-turn interrupts, and automatically resume ordinary queued prompts after turns, restarts, and interactive replies without overlapping an interrupted priority turn.
 - Agent-mode document embeds now recover when their target file is created after the document opens.
 - Orchestrator sessions can launch isolated worktree agents from their source project into another loaded project and retain status, result, queue, prompt, and reply control.
 - Automations no longer rerun the same scheduled occurrence after restarting while a run is waiting or fails.

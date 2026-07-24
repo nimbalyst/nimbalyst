@@ -186,6 +186,16 @@ export class AIService {
   // afterward, but cannot release a newer dispatch's lease or drain FIFO.
   private queueProcessingLeases = new Map<string, symbol>();
 
+  /**
+   * Exposes the dispatch-owned lease guard to the streaming lifecycle without
+   * reviving the old broad processing set. A newer priority dispatch owns a
+   * distinct lease, so stale completion/error handlers can only observe the
+   * current owner through this map.
+   */
+  hasActiveQueueLease(sessionId: string): boolean {
+    return this.queueProcessingLeases.has(sessionId);
+  }
+
   // Track mobile session creation requests to prevent duplicate processing
   // (can happen if the same request is delivered multiple times)
   private processingMobileSessionRequests = new Set<string>();

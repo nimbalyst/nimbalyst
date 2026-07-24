@@ -272,6 +272,8 @@ describe('queuedPromptDispatcher', () => {
     const priorityStarted = deferred();
     const oldTurn = deferred();
     const priorityTurn = deferred();
+    const structuredPromptPersisted = deferred();
+    const structuredReply = deferred();
     const ordinaryCompleted = deferred();
 
     const queueStore: QueuedPromptStoreLike = {
@@ -316,6 +318,9 @@ describe('queuedPromptDispatcher', () => {
         effects.push('PRIORITY_ACK');
       } else {
         effects.push('ORDINARY_MARKER');
+        structuredPromptPersisted.resolve();
+        await structuredReply.promise;
+        effects.push('STRUCTURED_REPLY_CONTINUED');
       }
       return { content: message };
     });
@@ -362,11 +367,21 @@ describe('queuedPromptDispatcher', () => {
     expect(continueQueuedPromptChain).not.toHaveBeenCalled();
 
     priorityTurn.resolve();
+    await structuredPromptPersisted.promise;
+
+    // AskUserQuestion is now durable and waiting for its response. The FIFO
+    // dispatch must keep its own lease until that structured reply settles;
+    // completion must not clear the lease early or start a duplicate drain.
+    expect(processingSet.has(sessionId)).toBe(true);
+    expect(rows.get(ordinaryPrompt.id)?.status).toBe('executing');
+    expect(completions).toEqual([priorityPrompt.id]);
+
+    structuredReply.resolve();
     await ordinaryCompleted.promise;
 
     expect(claims).toEqual([oldPrompt.id, priorityPrompt.id, ordinaryPrompt.id]);
     expect(completions).toEqual([priorityPrompt.id, ordinaryPrompt.id]);
-    expect(effects).toEqual(['PRIORITY_ACK', 'ORDINARY_MARKER']);
+    expect(effects).toEqual(['PRIORITY_ACK', 'ORDINARY_MARKER', 'STRUCTURED_REPLY_CONTINUED']);
     expect(sendMessageHandler).toHaveBeenCalledTimes(3);
   });
 });
