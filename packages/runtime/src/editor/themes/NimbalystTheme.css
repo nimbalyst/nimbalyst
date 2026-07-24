@@ -1,0 +1,116 @@
+/**
+ * Nimbalyst Unified Theme System
+ *
+ * This file defines the `--nim-*` CSS variables with DEFAULT (light theme) values.
+ *
+ * IMPORTANT: Theme colors are applied via inline styles on document.documentElement
+ * by the theme system (useTheme.ts). This CSS only provides fallback defaults.
+ *
+ * DO NOT add theme-specific selectors like [data-theme="dark"] or .dark-theme here.
+ * Those would override the inline styles set by the theme system, breaking custom themes.
+ *
+ * The naming follows CSS/Tailwind conventions:
+ * - --nim-bg: Main background (matches Tailwind's `bg-*`)
+ * - --nim-text: Main text color (matches Tailwind's `text-*`)
+ * - --nim-border: Border color (matches Tailwind's `border-*`)
+ * - --nim-primary: Primary action/brand color
+ *
+ * Usage:
+ * - CSS: background-color: var(--nim-bg);
+ * - Tailwind: bg-nim, text-nim, border-nim, etc.
+ */
+
+/* ===== DEFAULT VALUES (Light Theme Fallbacks) ===== */
+:root {
+  /* Backgrounds */
+  --nim-bg: #ffffff;
+  --nim-bg-secondary: #f9fafb;
+  --nim-bg-tertiary: #f3f4f6;
+  --nim-bg-hover: rgba(0, 0, 0, 0.05);
+  --nim-bg-selected: rgba(59, 130, 246, 0.1);
+  --nim-bg-active: rgba(59, 130, 246, 0.2);
+
+  /* Text */
+  --nim-text: #111827;
+  --nim-text-muted: #6b7280;
+  --nim-text-faint: #9ca3af;
+  --nim-text-disabled: #d1d5db;
+
+  /* Borders */
+  --nim-border: #e5e7eb;
+  --nim-border-focus: #3b82f6;
+
+  /* Primary (action/brand color) */
+  --nim-primary: #3b82f6;
+  --nim-primary-hover: #2563eb;
+  /* Foreground for use on top of --nim-primary backgrounds. Themes that
+     contribute a light/pastel --nim-primary should override this with a
+     dark color; the theme system also luminance-derives a fallback when
+     a theme contributes `primary` but not `on-primary`. */
+  --nim-on-primary: #ffffff;
+
+  /* Links */
+  --nim-link: rgb(33, 111, 219);
+  --nim-link-hover: rgb(33, 111, 219);
+
+  /* Accent subtle (for override banners, etc.) */
+  --nim-accent-subtle: rgba(59, 130, 246, 0.1);
+
+  /* Status */
+  --nim-success: #10b981;
+  --nim-warning: #f59e0b;
+  --nim-error: #ef4444;
+  --nim-info: #3b82f6;
+  --nim-purple: #7c3aed;
+
+  /* Code blocks */
+  --nim-code-bg: rgb(240, 242, 245);
+  --nim-code-text: #111827;
+  --nim-code-border: #ccc;
+  --nim-code-gutter: #eee;
+
+  /* Table */
+  --nim-table-border: #bbb;
+  --nim-table-header: #f2f3f5;
+  --nim-table-cell: #ffffff;
+  --nim-table-stripe: #f2f5fb;
+
+  /* Toolbar */
+  --nim-toolbar-bg: #ffffff;
+  --nim-toolbar-border: #e5e7eb;
+  --nim-toolbar-hover: #f3f4f6;
+  --nim-toolbar-active: rgba(59, 130, 246, 0.2);
+
+  /* Special */
+  --nim-highlight-bg: rgba(255, 212, 0, 0.14);
+  --nim-highlight-border: rgba(255, 212, 0, 0.3);
+  --nim-quote-text: rgb(101, 103, 107);
+  --nim-quote-border: rgb(206, 208, 212);
+
+  /* Scrollbar */
+  --nim-scrollbar-thumb: #d1d5db;
+  --nim-scrollbar-thumb-hover: #9ca3af;
+  --nim-scrollbar-track: transparent;
+
+  /* Diff */
+  --nim-diff-add-bg: #e6ffed;
+  --nim-diff-add-border: #e6ffed;
+  --nim-diff-remove-bg: #ffebe9;
+  --nim-diff-remove-border: #ffebe9;
+
+  /* Syntax highlighting */
+  --nim-code-comment: slategray;
+  --nim-code-punctuation: #999;
+  --nim-code-property: #905;
+  --nim-code-selector: #690;
+  --nim-code-operator: #9a6e3a;
+  --nim-code-attr: #07a;
+  --nim-code-variable: #e90;
+  --nim-code-function: #dd4a68;
+
+  /* File status colors (for FilesEditedSidebar) */
+  --nim-file-new: #2d8a6e;
+  --nim-file-edited: #4a7ab8;
+  --nim-file-deleted: #b85c5c;
+  --nim-file-committed: var(--nim-text-muted);
+}

@@ -1,0 +1,955 @@
+/**
+ * Nimbalyst Editor Theme CSS
+ *
+ * Lexical editor styles with unified `nim-` class prefixes.
+ * Uses `--nim-*` CSS variables from NimbalystTheme.css for theming.
+ *
+ * This file contains:
+ * - Base editor node styles
+ * - Code block and syntax highlighting
+ * - Table styles
+ * - List styles
+ * - Diff visualization
+ * - Theme-specific overrides
+ */
+
+/* Import the unified theme CSS variables */
+@import './NimbalystTheme.css';
+
+/* ===== BASE STYLES ===== */
+
+.nim-ltr {
+  text-align: left;
+}
+
+.nim-rtl {
+  text-align: right;
+}
+
+.nim-paragraph {
+  margin: 0;
+  position: relative;
+}
+
+.nim-quote {
+  margin: 0;
+  margin-left: 20px;
+  margin-bottom: 10px;
+  font-size: 15px;
+  color: var(--nim-quote-text);
+  border-left-color: var(--nim-quote-border);
+  border-left-width: 4px;
+  border-left-style: solid;
+  padding-left: 16px;
+}
+
+/* ===== HEADINGS ===== */
+
+.nim-h1 {
+  font-size: 28px;
+  color: var(--nim-text);
+  font-weight: 500;
+  margin: 0;
+}
+
+.nim-h2 {
+  font-size: 20px;
+  color: var(--nim-text-muted);
+  font-weight: 600;
+  margin: 0;
+}
+
+.nim-h3 {
+  font-size: 16px;
+  color: var(--nim-text-muted);
+  margin: 0;
+}
+
+.nim-h4 {
+  font-size: 14px;
+  color: var(--nim-text-muted);
+  margin: 0;
+}
+
+.nim-h5 {
+  font-size: 12px;
+  color: var(--nim-text-muted);
+  margin: 0;
+}
+
+.nim-h6 {
+  font-size: 10px;
+  color: var(--nim-text-muted);
+  margin: 0;
+}
+
+/* ===== TEXT FORMATTING ===== */
+
+.nim-indent {
+  --lexical-indent-base-value: 40px;
+}
+
+.nim-text-bold {
+  font-weight: bold;
+}
+
+.nim-paragraph mark {
+  background-color: unset;
+}
+
+.nim-text-highlight {
+  background: var(--nim-highlight-bg);
+  border-bottom: 2px solid var(--nim-highlight-border);
+}
+
+.nim-text-italic {
+  font-style: italic;
+}
+
+.nim-text-underline {
+  text-decoration: underline;
+}
+
+.nim-text-strikethrough {
+  text-decoration: line-through;
+}
+
+.nim-text-underline-strikethrough {
+  text-decoration: underline line-through;
+}
+
+.nim-tab-node {
+  position: relative;
+  text-decoration: none;
+}
+
+.nim-tab-node.nim-text-underline::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0.15em;
+  border-bottom: 0.1em solid currentColor;
+}
+
+.nim-tab-node.nim-text-strikethrough::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0.69em;
+  border-top: 0.1em solid currentColor;
+}
+
+.nim-tab-node.nim-text-underline-strikethrough::before,
+.nim-tab-node.nim-text-underline-strikethrough::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.nim-tab-node.nim-text-underline-strikethrough::before {
+  top: 0.69em;
+  border-top: 0.1em solid currentColor;
+}
+
+.nim-tab-node.nim-text-underline-strikethrough::after {
+  bottom: 0.05em;
+  border-bottom: 0.1em solid currentColor;
+}
+
+.nim-text-subscript {
+  font-size: 0.8em;
+  vertical-align: sub !important;
+}
+
+.nim-text-superscript {
+  font-size: 0.8em;
+  vertical-align: super;
+}
+
+.nim-text-code {
+  background-color: var(--nim-code-bg);
+  padding: 1px 0.25rem;
+  font-family: Menlo, Consolas, Monaco, monospace;
+  font-size: 94%;
+}
+
+.nim-text-lowercase {
+  text-transform: lowercase;
+}
+
+.nim-text-uppercase {
+  text-transform: uppercase;
+}
+
+.nim-text-capitalize {
+  text-transform: capitalize;
+}
+
+/* ===== HASHTAGS ===== */
+
+.nim-hashtag {
+  background-color: color-mix(in srgb, var(--nim-primary) 15%, transparent);
+  border-radius: 4px;
+  padding-left: 3px;
+  padding-right: 3px;
+  display: inline-block;
+}
+
+/* ===== LINKS ===== */
+
+.nim-link {
+  color: var(--nim-link);
+  text-decoration: none;
+}
+
+.nim-link:hover {
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ===== BLOCK CURSOR ===== */
+
+.nim-block-cursor {
+  display: block;
+  pointer-events: none;
+  position: absolute;
+}
+
+.nim-block-cursor:after {
+  content: '';
+  display: block;
+  position: absolute;
+  top: -2px;
+  width: 20px;
+  border-top: 1px solid var(--nim-text);
+  animation: CursorBlink 1.1s steps(2, start) infinite;
+}
+
+@keyframes CursorBlink {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* ===== CODE BLOCKS ===== */
+
+.nim-code {
+  background-color: var(--nim-code-bg);
+  font-family: Menlo, Consolas, Monaco, monospace;
+  display: block;
+  padding: 8px 8px 8px 52px;
+  line-height: 1.53;
+  font-size: 13px;
+  margin: 0;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  overflow-x: auto;
+  position: relative;
+  tab-size: 2;
+}
+
+.nim-code:before {
+  content: attr(data-gutter);
+  position: absolute;
+  background-color: var(--nim-code-gutter);
+  left: 0;
+  top: 0;
+  border-right: 1px solid var(--nim-code-border);
+  padding: 8px;
+  color: var(--nim-text-faint);
+  white-space: pre-wrap;
+  text-align: right;
+  min-width: 25px;
+}
+
+/* ===== SYNTAX HIGHLIGHTING ===== */
+
+.nim-token-comment {
+  color: var(--nim-code-comment);
+}
+
+.nim-token-punctuation {
+  color: var(--nim-code-punctuation);
+}
+
+.nim-token-property {
+  color: var(--nim-code-property);
+}
+
+.nim-token-selector {
+  color: var(--nim-code-selector);
+}
+
+.nim-token-operator {
+  color: var(--nim-code-operator);
+}
+
+.nim-token-attr {
+  color: var(--nim-code-attr);
+}
+
+.nim-token-variable {
+  color: var(--nim-code-variable);
+}
+
+.nim-token-function {
+  color: var(--nim-code-function);
+}
+
+/* ===== TABLES ===== */
+
+.nim-table-scrollable-wrapper {
+  overflow-x: auto;
+  margin: 0px 25px 30px 0px;
+}
+
+.nim-table-scrollable-wrapper > .nim-table {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.nim-table-alignment-center {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.nim-table-alignment-right {
+  margin-left: auto;
+}
+
+.nim-table {
+  border-collapse: collapse;
+  border-spacing: 0;
+  overflow-y: scroll;
+  overflow-x: scroll;
+  table-layout: fixed;
+  margin-top: 25px;
+  margin-bottom: 30px;
+}
+
+.nim-table-scrollable-wrapper.nim-table-frozen-row {
+  overflow-x: clip;
+}
+
+.nim-table-frozen-row tr:nth-of-type(1) > td {
+  overflow: clip;
+  background-color: var(--nim-table-cell);
+  position: sticky;
+  z-index: 2;
+  top: 44px;
+}
+
+.nim-table-frozen-row tr:nth-of-type(1) > th {
+  overflow: clip;
+  background-color: var(--nim-table-header);
+  position: sticky;
+  z-index: 2;
+  top: 44px;
+}
+
+.nim-table-frozen-row tr:nth-of-type(1) > th:after,
+.nim-table-frozen-row tr:nth-of-type(1) > td:after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  border-bottom: 1px solid var(--nim-table-border);
+}
+
+.nim-table-frozen-column tr > td:first-child {
+  background-color: var(--nim-table-cell);
+  position: sticky;
+  z-index: 2;
+  left: 0;
+}
+
+.nim-table-frozen-column tr > th:first-child {
+  background-color: var(--nim-table-header);
+  position: sticky;
+  z-index: 2;
+  left: 0;
+}
+
+.nim-table-frozen-column tr > :first-child::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  height: 100%;
+  border-right: 1px solid var(--nim-table-border);
+}
+
+.nim-table-row-striping tr:nth-child(even),
+.nim-table-frozen-column .nim-table.nim-table-row-striping tr:nth-child(even) > td:first-child {
+  background-color: var(--nim-table-stripe);
+}
+
+.nim-table-selection *::selection {
+  background-color: transparent;
+}
+
+.nim-table-selected {
+  outline: 2px solid var(--nim-primary);
+}
+
+.nim-table-cell {
+  border: 1px solid var(--nim-table-border);
+  vertical-align: top;
+  text-align: start;
+  padding: 6px 8px;
+  position: relative;
+  outline: none;
+  overflow: auto;
+  min-width: 50px;
+}
+
+.nim-table-cell > * {
+  overflow: inherit;
+}
+
+.nim-table-cell-resizer {
+  position: absolute;
+  right: -4px;
+  height: 100%;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 10;
+  top: 0;
+}
+
+.nim-table-cell-header {
+  background-color: var(--nim-table-header);
+  text-align: start;
+}
+
+.nim-table-cell-selected {
+  caret-color: transparent;
+}
+
+.nim-table-cell-selected::after {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: 0;
+  background-color: highlight;
+  mix-blend-mode: multiply;
+  content: '';
+  pointer-events: none;
+}
+
+.nim-table-add-columns {
+  position: absolute;
+  background-color: var(--nim-bg-tertiary);
+  height: 100%;
+  animation: table-controls 0.2s ease;
+  border: 0;
+  cursor: pointer;
+}
+
+.nim-table-add-columns:after {
+  background-image: url(../images/icons/plus.svg);
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: block;
+  content: ' ';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.4;
+}
+
+.nim-table-add-columns:hover,
+.nim-table-add-rows:hover {
+  background-color: var(--nim-bg-hover);
+}
+
+.nim-table-add-rows {
+  position: absolute;
+  width: calc(100% - 25px);
+  background-color: var(--nim-bg-tertiary);
+  animation: table-controls 0.2s ease;
+  border: 0;
+  cursor: pointer;
+}
+
+.nim-table-add-rows:after {
+  background-image: url(../images/icons/plus.svg);
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: block;
+  content: ' ';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.4;
+}
+
+@keyframes table-controls {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.nim-table-cell-resize-ruler {
+  display: block;
+  position: absolute;
+  width: 1px;
+  background-color: var(--nim-primary);
+  height: 100%;
+  top: 0;
+}
+
+.nim-table-cell-action-button-container {
+  display: block;
+  right: 5px;
+  top: 6px;
+  position: absolute;
+  z-index: 4;
+  width: 20px;
+  height: 20px;
+}
+
+.nim-table-cell-action-button {
+  background-color: var(--nim-bg-tertiary);
+  display: block;
+  border: 0;
+  border-radius: 20px;
+  width: 20px;
+  height: 20px;
+  color: var(--nim-text);
+  cursor: pointer;
+}
+
+.nim-table-cell-action-button:hover {
+  background-color: var(--nim-bg-hover);
+}
+
+/* ===== LISTS ===== */
+
+.nim-ol1 {
+  padding: 0;
+  margin: 0;
+  list-style: decimal inside;
+}
+
+.nim-ol2 {
+  padding: 0;
+  margin: 0;
+  list-style: upper-alpha inside;
+}
+
+.nim-ol3 {
+  padding: 0;
+  margin: 0;
+  list-style: lower-alpha inside;
+}
+
+.nim-ol4 {
+  padding: 0;
+  margin: 0;
+  list-style: upper-roman inside;
+}
+
+.nim-ol5 {
+  padding: 0;
+  margin: 0;
+  list-style: lower-roman inside;
+}
+
+.nim-ul {
+  padding: 0;
+  margin: 0;
+  list-style: disc inside;
+  max-width: var(--max-text-width);
+}
+
+.nim-list-item {
+  margin: 0 24px;
+}
+
+.nim-list-item::marker {
+  color: var(--nim-text);
+}
+
+.nim-list-item-checked,
+.nim-list-item-unchecked {
+  position: relative;
+  margin-left: 8px;
+  margin-right: 8px;
+  padding-left: 24px;
+  padding-right: 24px;
+  list-style-type: none;
+  outline: none;
+}
+
+.nim-list-item-checked {
+  text-decoration: line-through;
+}
+
+.nim-list-item-unchecked:before,
+.nim-list-item-checked:before {
+  content: '';
+  width: 16px;
+  height: 16px;
+  top: 2px;
+  left: 0;
+  cursor: pointer;
+  display: block;
+  background-size: cover;
+  position: absolute;
+}
+
+.nim-list-item-unchecked[dir='rtl']:before,
+.nim-list-item-checked[dir='rtl']:before {
+  left: auto;
+  right: 0;
+}
+
+.nim-list-item-unchecked:focus:before,
+.nim-list-item-checked:focus:before {
+  box-shadow: 0 0 0 2px var(--nim-primary);
+  border-radius: 2px;
+}
+
+.nim-list-item-unchecked:before {
+  border: 1px solid var(--nim-text-muted);
+  border-radius: 2px;
+}
+
+.nim-list-item-checked:before {
+  border: 1px solid var(--nim-primary);
+  border-radius: 2px;
+  background-color: var(--nim-primary);
+  background-repeat: no-repeat;
+}
+
+.nim-list-item-checked:after {
+  content: '';
+  cursor: pointer;
+  border-color: #fff;
+  border-style: solid;
+  position: absolute;
+  display: block;
+  top: 6px;
+  width: 3px;
+  left: 7px;
+  right: 7px;
+  height: 6px;
+  transform: rotate(45deg);
+  border-width: 0 2px 2px 0;
+}
+
+.nim-nested-list-item {
+  list-style-type: none;
+}
+
+.nim-nested-list-item:before,
+.nim-nested-list-item:after {
+  display: none;
+}
+
+/* ===== MARKS ===== */
+
+.nim-mark {
+  background: var(--nim-highlight-bg);
+  border-bottom: 2px solid var(--nim-highlight-border);
+  padding-bottom: 2px;
+}
+
+.nim-mark-overlap {
+  background: rgba(255, 212, 0, 0.3);
+  border-bottom: 2px solid rgba(255, 212, 0, 0.7);
+}
+
+.nim-mark.selected {
+  background: rgba(255, 212, 0, 0.5);
+  border-bottom: 2px solid rgba(255, 212, 0, 1);
+}
+
+.nim-mark-overlap.selected {
+  background: rgba(255, 212, 0, 0.7);
+  border-bottom: 2px solid rgba(255, 212, 0, 0.7);
+}
+
+/* Resolved comment threads keep their mark but render muted (dotted, faint). */
+.nim-mark.resolved {
+  background: transparent;
+  border-bottom: 1px dotted var(--nim-text-faint);
+}
+.nim-mark.resolved.selected {
+  background: var(--nim-highlight-bg);
+  border-bottom: 1px dotted var(--nim-highlight-border);
+}
+
+/* ===== EMBED BLOCKS ===== */
+
+.nim-embed-block {
+  user-select: none;
+}
+
+.nim-embed-block-focus {
+  outline: 2px solid var(--nim-primary);
+}
+
+/* ===== LAYOUT ===== */
+
+.nim-layout-container {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.nim-layout-item {
+  border: 1px dashed var(--nim-border);
+  padding: 8px 16px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* ===== AUTOCOMPLETE ===== */
+
+.nim-autocomplete {
+  color: var(--nim-text-faint);
+}
+
+/* ===== HORIZONTAL RULE ===== */
+
+.nim-hr {
+  padding: 2px 2px;
+  border: none;
+  margin: 1em 0;
+  cursor: pointer;
+}
+
+.nim-hr:after {
+  content: '';
+  display: block;
+  height: 2px;
+  background-color: var(--nim-border);
+  line-height: 2px;
+}
+
+.nim-hr.nim-hr-selected {
+  outline: 2px solid var(--nim-primary);
+  user-select: none;
+}
+
+/* ===== SPECIAL TEXT ===== */
+
+.nim-special-text {
+  background-color: yellow;
+  font-weight: bold;
+}
+
+/* ===== CHARACTER LIMIT ===== */
+
+.nim-character-limit {
+  display: inline;
+  background-color: #ffbbbb !important;
+}
+
+/* ===== DIFF VISUALIZATION ===== */
+
+.nim-diff-add {
+  background-color: var(--nim-diff-add-bg);
+  border-radius: 2px;
+  width: fit-content;
+}
+
+table.nim-diff-add {
+  width: auto;
+}
+
+.nim-diff-remove {
+  background-color: var(--nim-diff-remove-bg);
+  text-decoration: none;
+  border-radius: 2px;
+  width: fit-content;
+}
+
+.mermaid-container.nim-diff-remove {
+  outline: 3px solid var(--nim-diff-remove-border);
+}
+
+.mermaid-container.nim-diff-remove .mermaid-header {
+  background: var(--nim-diff-remove-bg);
+}
+
+.mermaid-container.nim-diff-add {
+  outline: 3px solid var(--nim-diff-add-border);
+}
+
+.mermaid-container.nim-diff-add .mermaid-header {
+  background: var(--nim-diff-add-bg);
+}
+
+/* Mermaid SVG dark theme overrides.
+   Mermaid renders inline styles, so !important is needed to override them.
+   Uses CSS variables so they adapt to any dark theme variant. */
+.dark-theme .mermaid-render-container svg {
+  /* Node/box fills */
+  & .node rect,
+  & .node circle,
+  & .node ellipse,
+  & .node polygon,
+  & .node path {
+    fill: var(--nim-bg-tertiary) !important;
+    stroke: var(--nim-border) !important;
+  }
+
+  /* All text in the diagram */
+  & text,
+  & .nodeLabel,
+  & .label,
+  & .edgeLabel,
+  & .node .label {
+    fill: var(--nim-text) !important;
+    color: var(--nim-text) !important;
+  }
+
+  /* Edge/arrow lines */
+  & .edge path,
+  & .flowchart-link,
+  & path.transition {
+    stroke: var(--nim-text-muted) !important;
+  }
+
+  /* Arrowheads */
+  & marker path {
+    fill: var(--nim-text-muted) !important;
+    stroke: var(--nim-text-muted) !important;
+  }
+
+  /* Edge labels background */
+  & .edgeLabel rect,
+  & .edgeLabel span {
+    background-color: var(--nim-bg) !important;
+    fill: var(--nim-bg) !important;
+    color: var(--nim-text) !important;
+  }
+
+  /* Cluster/subgraph backgrounds */
+  & .cluster rect {
+    fill: var(--nim-bg-secondary) !important;
+    stroke: var(--nim-border) !important;
+  }
+
+  & .cluster text {
+    fill: var(--nim-text-muted) !important;
+  }
+
+  /* Sequence diagram actors */
+  & .actor {
+    fill: var(--nim-bg-tertiary) !important;
+    stroke: var(--nim-border) !important;
+  }
+
+  & .actor-line {
+    stroke: var(--nim-text-muted) !important;
+  }
+
+  & text.actor > tspan {
+    fill: var(--nim-text) !important;
+  }
+
+  /* Sequence diagram signals/messages */
+  & .messageLine0,
+  & .messageLine1 {
+    stroke: var(--nim-text-muted) !important;
+  }
+
+  & .messageText {
+    fill: var(--nim-text) !important;
+  }
+
+  /* Notes */
+  & .note {
+    fill: var(--nim-bg-tertiary) !important;
+    stroke: var(--nim-border) !important;
+  }
+
+  & .noteText > tspan {
+    fill: var(--nim-text) !important;
+  }
+
+  /* Activation boxes in sequence diagrams */
+  & .activation0,
+  & .activation1,
+  & .activation2 {
+    fill: var(--nim-bg-hover) !important;
+    stroke: var(--nim-border) !important;
+  }
+
+  /* Loop/alt/opt boxes */
+  & .loopLine {
+    stroke: var(--nim-border) !important;
+  }
+
+  & .loopText > tspan,
+  & .labelText > tspan {
+    fill: var(--nim-text-muted) !important;
+  }
+
+  /* Title text */
+  & text.titleText {
+    fill: var(--nim-text) !important;
+  }
+}
+
+.nim-code.nim-diff-add,
+.editor-image.nim-diff-add {
+  background-color: var(--nim-diff-add-bg);
+  outline: 4px solid var(--nim-diff-add-border);
+}
+
+.nim-code.nim-diff-remove,
+.editor-image.nim-diff-remove {
+  background-color: var(--nim-diff-remove-bg);
+  outline: 4px solid var(--nim-diff-remove-border);
+}
+
+/* Empty paragraphs with diffs */
+.nim-diff-add:has(br:only-child),
+.nim-diff-remove:has(br:only-child) {
+  background-color: transparent;
+  outline: none;
+}
+
+.nim-diff-add:has(br:only-child) {
+  border-left: 10px solid var(--nim-diff-add-border);
+}
+
+.nim-diff-remove:has(br:only-child) {
+  border-left: 10px solid var(--nim-diff-remove-border);
+}
+
+.nim-diff-modify {
+  /* Reserved for future use */
+}
+
+/* ===== DARK THEME OVERRIDES ===== */
+
+.dark-theme .nim-diff-add {
+  outline: 1px solid var(--nim-diff-add-border);
+}
+
+.dark-theme .nim-diff-remove {
+  outline: 1px solid var(--nim-diff-remove-border);
+  text-decoration: line-through;
+  text-decoration-color: var(--nim-diff-remove-border);
+}

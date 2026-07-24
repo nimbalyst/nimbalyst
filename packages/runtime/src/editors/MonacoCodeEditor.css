@@ -1,0 +1,85 @@
+/**
+ * Monaco Code Editor Styles
+ *
+ * Container styles for Monaco editor integration.
+ * Monaco's own styles are loaded automatically via @monaco-editor/react.
+ */
+
+.monaco-code-editor {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--nim-bg);
+}
+
+/* Ensure Monaco editor fills the container */
+.monaco-code-editor > div {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Override Monaco's default background to match Nimbalyst theme */
+.monaco-code-editor .monaco-editor {
+  background-color: var(--nim-bg) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.monaco-code-editor .monaco-editor .margin {
+  background-color: var(--nim-bg) !important;
+}
+
+/* Unfocused selection highlight - shows when editor loses focus */
+.monaco-unfocused-selection {
+  background-color: rgba(173, 214, 255, 0.4);
+}
+
+/* Dark theme variant */
+.dark-theme .monaco-unfocused-selection {
+  background-color: color-mix(in srgb, var(--nim-info) 40%, transparent);
+}
+
+/*
+ * Diff editor styling — match the git-changes-inline-diff-peek mockup
+ * (nimbalyst-local/mockups/git-changes-inline-diff-peek.mockup.html).
+ *
+ * Monaco's inline diff renders, per inserted/removed line:
+ *   .editor.modified  > .margin-view-overlays  > .cmdr.gutter-insert
+ *     > .line-numbers (left:0,  width:42)   - the modified-pane line number
+ *     > .cldr.codicon-diff-insert (left:42, width:10)  - the + or - glyph
+ * The glyph sits flush against the digit and the content. The glyph itself
+ * is absolutely positioned, so padding on it doesn't shift anything; we
+ * shrink the visible width of the line-number column from the right (with
+ * border-box, padding-right pushes the right-aligned digit left) and pad
+ * `.view-lines` from the left, opening symmetric gaps around the +/-.
+ *
+ * Scoped to the AI-edit diff wrapper so non-diff Monaco editors are
+ * untouched.
+ */
+.monaco-code-editor[data-diff-mode="true"] .editor.modified .line-numbers,
+.monaco-code-editor[data-diff-mode="true"] .editor.original .line-numbers {
+  padding-right: 18px !important;
+  box-sizing: border-box !important;
+  color: var(--nim-text-faint) !important;
+  font-weight: 400 !important;
+}
+.monaco-code-editor[data-diff-mode="true"] .editor.modified .view-lines {
+  padding-left: 18px !important;
+}
+.monaco-code-editor[data-diff-mode="true"] .codicon-diff-insert {
+  color: #4ade80 !important;
+  font-weight: 700 !important;
+}
+.monaco-code-editor[data-diff-mode="true"] .codicon-diff-remove,
+.monaco-code-editor[data-diff-mode="true"] .codicon-diff-delete {
+  color: #ef4444 !important;
+  font-weight: 700 !important;
+}
+.monaco-code-editor[data-diff-mode="true"] .editor.modified .margin,
+.monaco-code-editor[data-diff-mode="true"] .editor.modified .margin-view-overlays,
+.monaco-code-editor[data-diff-mode="true"] .editor.original .margin,
+.monaco-code-editor[data-diff-mode="true"] .editor.original .margin-view-overlays {
+  background-color: var(--nim-bg-tertiary) !important;
+}

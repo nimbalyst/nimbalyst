@@ -1,0 +1,77 @@
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *
+ */
+
+.nimbalyst-editor .dropdown.table-of-contents {
+    max-height: 90%;
+    overflow: auto;
+}
+
+.nimbalyst-editor .dropdown .item.toc-item {
+    padding: 4px 8px;
+    text-align: left;
+    justify-content: flex-start;
+    line-height: 1.3;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.nimbalyst-editor .dropdown .item.toc-item .text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 220px;
+}
+
+.nimbalyst-editor .dropdown .item.toc-item-empty {
+    padding: 6px 8px;
+    color: #999;
+    font-style: italic;
+    cursor: default;
+    font-size: 13px;
+}
+
+.nimbalyst-editor .dropdown .item.toc-item-empty:hover {
+    background-color: transparent;
+}
+
+/* H1 - Largest, no indent */
+.nimbalyst-editor .dropdown .item.toc-heading-1 {
+    font-weight: 600;
+    padding-left: 8px;
+    font-size: 14px;
+}
+
+/* H2 - Medium size, 12px indent */
+.nimbalyst-editor .dropdown .item.toc-heading-2 {
+    font-weight: 500;
+    padding-left: 20px;
+    font-size: 13px;
+}
+
+/* H3 - Smallest size, 24px indent */
+.nimbalyst-editor .dropdown .item.toc-heading-3 {
+    font-weight: 400;
+    padding-left: 32px;
+    font-size: 12px;
+}
+
+/* Active heading indicator */
+.nimbalyst-editor .dropdown .item.toc-item .active-indicator {
+    position: absolute;
+    left: -4px;
+    color: #3578e5;
+    font-size: 18px;
+    font-weight: bold;
+    line-height: 1;
+}
+
+.nimbalyst-editor .dropdown .item.toc-item.active-heading {
+    color: #3578e5;
+    /*font-weight: 600;*/
+}
