@@ -841,7 +841,13 @@ export class MetaAgentService {
     }
 
     const parent = await AISessionsRepository.get(parentSessionId);
-    if (!parent || parent.workspacePath !== workspaceId) {
+    if (!parent?.workspacePath) {
+      throw new Error(`Parent session ${parentSessionId} not found in this workspace`);
+    }
+    const sourceWorkspaceId = resolveProjectPath(parent.workspacePath);
+    const requestWorkspaceId = resolveProjectPath(workspaceId);
+    const requestedTargetWorkspace = args.targetWorkspacePath?.trim();
+    if (!requestedTargetWorkspace && sourceWorkspaceId !== requestWorkspaceId) {
       throw new Error(`Parent session ${parentSessionId} not found in this workspace`);
     }
 
@@ -862,11 +868,10 @@ export class MetaAgentService {
     });
 
     const isolated = args.isolated === true;
-    const requestedTargetWorkspace = args.targetWorkspacePath?.trim();
     const targetWorkspaceId = requestedTargetWorkspace
       ? resolveProjectPath(requestedTargetWorkspace)
-      : workspaceId;
-    const isCrossProject = targetWorkspaceId !== workspaceId;
+      : sourceWorkspaceId;
+    const isCrossProject = targetWorkspaceId !== sourceWorkspaceId;
 
     if (isCrossProject) {
       if (!isolated) {
@@ -891,7 +896,7 @@ export class MetaAgentService {
     let workstreamId: string | null = null;
     let promotedParent = false;
     if (!isolated) {
-      const resolved = await this.resolveOrCreateWorkstream(parent, workspaceId);
+      const resolved = await this.resolveOrCreateWorkstream(parent, sourceWorkspaceId);
       workstreamId = resolved.workstreamId;
       promotedParent = resolved.promotedParent;
     }
@@ -935,7 +940,7 @@ export class MetaAgentService {
     return JSON.stringify({
       ...childResult,
       isolated,
-      sourceWorkspacePath: workspaceId,
+      sourceWorkspacePath: sourceWorkspaceId,
       targetWorkspacePath: targetWorkspaceId,
       workstreamId,
       promotedParent,

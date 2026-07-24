@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Delegated agent sessions now report their resolved launch model and reasoning settings, accept auditable priority prompts without stale-turn interrupts, and automatically resume ordinary queued prompts after turns and restarts.
 - Expanded workstream rows now show external session renames immediately without reloading the session view.
 - Empty workstreams now remain explicit containers instead of exposing another session's transcript or becoming draggable sessions.
-- Orchestrator sessions can launch isolated worktree agents in another loaded project and retain status, result, queue, prompt, and reply control.
+- Orchestrator sessions can launch isolated worktree agents from their source project into another loaded project and retain status, result, queue, prompt, and reply control.
 
 ### Removed
 <!-- Removed features go here -->
