@@ -16,6 +16,7 @@ import {
   DEFAULT_MODELS,
   normalizeClaudeCodeVariant,
 } from '../modelConstants';
+import { DEEPSEEK_CLAUDE_AGENT_MODEL_VARIANT } from './deepSeekClaudeAgent';
 
 /**
  * Valid Claude Code model suffixes (e.g., -1m for 1M context window)
@@ -172,6 +173,10 @@ export class ModelIdentifier {
           suffix = validSuffix;
           break;
         }
+      }
+
+      if (baseVariant === DEEPSEEK_CLAUDE_AGENT_MODEL_VARIANT) {
+        return new ModelIdentifier(provider, baseVariant);
       }
 
       const normalizedVariant = normalizeClaudeCodeVariant(baseVariant);

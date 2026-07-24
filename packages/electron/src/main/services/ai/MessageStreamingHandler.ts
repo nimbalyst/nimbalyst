@@ -36,6 +36,7 @@ import {
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { resolveEffortLevel, resolveThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { applyDeepSeekClaudeAgentProfile, isDeepSeekClaudeAgentModel } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository, resolveClaudeCodeParentContextWindow } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
@@ -581,7 +582,9 @@ export class MessageStreamingHandler {
 
       const reinitEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
       const reinitConfig: any = {
-        apiKey,
+        apiKey: isProviderClaudeCode && isDeepSeekClaudeAgentModel(session.model || session.providerConfig?.model)
+          ? this.svc.getApiKeyForProvider('deepseek', workspacePath)
+          : apiKey,
         maxTokens: (session.providerConfig as any)?.maxTokens,
         temperature: (session.providerConfig as any)?.temperature,
         // Effort level: explicit session value, else the app-wide default the
@@ -639,6 +642,8 @@ export class MessageStreamingHandler {
           }
         }
       }
+
+      if (isProviderClaudeCode) Object.assign(reinitConfig, applyDeepSeekClaudeAgentProfile(reinitConfig));
 
       if (isProviderClaudeCode) {
         const safeConfig = { ...reinitConfig, apiKey: reinitConfig.apiKey ? '***' : undefined };

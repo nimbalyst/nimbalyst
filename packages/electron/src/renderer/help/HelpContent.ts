@@ -248,6 +248,14 @@ export const HelpContent: Record<string, HelpEntry> = {
     title: 'Claude Agent (Claude Code Based)',
     body: 'The in-app agent built on Claude Code with full Nimbalyst integration: it sees your active document and selection, renders the rich inline transcript, and tracks every file it edits. Uses your configured Anthropic API key.',
   },
+  'deepseek-effort-selector': {
+    title: 'DeepSeek Effort',
+    body: 'High and Max control how much reasoning work DeepSeek applies.',
+  },
+  'deepseek-reasoning-selector': {
+    title: 'DeepSeek Reasoning',
+    body: 'Turn DeepSeek reasoning on or off for the next request.',
+  },
   'model-picker-provider-claude-code-cli': {
     title: 'Claude Code CLI (Terminal Mode)',
     body: 'Runs the genuine claude terminal binary in an embedded terminal, billed to your Claude subscription. You get native CLI behavior — its slash commands and TUI — in the Raw terminal drawer, while Nimbalyst mirrors the conversation into the rich transcript.',
