@@ -1,0 +1,217 @@
+/**
+ * Regression tests for the Codex usage rate-limit expiry filter (#120).
+ *
+ * Before the fix, `extractRateLimitsFromEvent` returned any token_count event
+ * whose `primary` block was non-null, regardless of whether its `resets_at`
+ * timestamp had already passed. After a user's 5-hour window reset, the
+ * scan-backward loop in `extractUsageSnapshotFromFile` kept matching the same
+ * stale JSONL line and the bottom-left indicator sat on the historical
+ * percentage (91% in the reporter's case) forever - across panel refreshes,
+ * app relaunches, and machine restarts.
+ *
+ * These tests pin the per-bucket expiry filter that drops resolution after
+ * each window's `resets_at` moment passes, while still surfacing a
+ * still-active sibling window.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  convertAccountRateLimitsResponse,
+  filterRateLimitsByExpiry,
+} from '../CodexUsageService';
+
+// 2026-05-14T12:00:00Z, in Unix seconds. Each test pins a specific "now"
+// relative to this anchor so resets_at math is human-readable.
+const NOW_SECONDS = 1778832000;
+const FIVE_HOURS = 5 * 60 * 60;
+const SEVEN_DAYS = 7 * 24 * 60 * 60;
+
+function primary(used_percent: number, resets_at: number) {
+  return { used_percent, window_minutes: 300, resets_at };
+}
+
+function secondary(used_percent: number, resets_at: number) {
+  return { used_percent, window_minutes: 7 * 24 * 60, resets_at };
+}
+
+describe('filterRateLimitsByExpiry', () => {
+  it('returns the block unchanged when both windows are still active', () => {
+    const input = {
+      primary: primary(42, NOW_SECONDS + FIVE_HOURS),
+      secondary: secondary(18, NOW_SECONDS + SEVEN_DAYS),
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    expect(out).not.toBeNull();
+    expect(out!.primary?.used_percent).toBe(42);
+    expect(out!.secondary?.used_percent).toBe(18);
+  });
+
+  it('drops only the primary when its resets_at has passed', () => {
+    const input = {
+      primary: primary(91, NOW_SECONDS - 60),
+      secondary: secondary(18, NOW_SECONDS + SEVEN_DAYS),
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    expect(out).not.toBeNull();
+    expect(out!.primary).toBeNull();
+    expect(out!.secondary?.used_percent).toBe(18);
+  });
+
+  it('drops only the secondary when its resets_at has passed', () => {
+    const input = {
+      primary: primary(42, NOW_SECONDS + FIVE_HOURS),
+      secondary: secondary(99, NOW_SECONDS - 60),
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    expect(out).not.toBeNull();
+    expect(out!.primary?.used_percent).toBe(42);
+    expect(out!.secondary).toBeNull();
+  });
+
+  it('AnisminC #120 scenario: returns null when primary is stale and there is no secondary', () => {
+    // Reporter's stuck-91% case. Recent JSONL line had primary used_percent=91
+    // with a resets_at that has since passed; no secondary block at all.
+    const input = {
+      primary: primary(91, NOW_SECONDS - 3 * 60 * 60),
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    // Returning null lets the caller keep scanning older lines / files for a
+    // still-active block. If nothing is active anywhere, the higher-level
+    // snapshot falls through to limitsAvailable: false and the renderer
+    // shows `--` instead of the stale 91%.
+    expect(out).toBeNull();
+  });
+
+  it('returns null when both windows are expired', () => {
+    const input = {
+      primary: primary(91, NOW_SECONDS - 60),
+      secondary: secondary(50, NOW_SECONDS - 60),
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    expect(out).toBeNull();
+  });
+
+  it('treats resets_at exactly equal to now as expired (boundary)', () => {
+    const input = {
+      primary: primary(80, NOW_SECONDS),
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    expect(out).toBeNull();
+  });
+
+  it('treats missing resets_at (undefined) as active so an upstream schema gap does not silently drop the signal', () => {
+    // A token_count event with rate_limits.primary present but resets_at absent
+    // (older Codex SDK builds, missing field on a partial write, etc.) should
+    // be surfaced rather than dropped. NaN, by contrast, is treated as expired
+    // (NaN > x is false) - we fail-closed on genuinely garbage data.
+    const input = {
+      primary: { used_percent: 30, window_minutes: 300 } as unknown as {
+        used_percent: number;
+        window_minutes: number;
+        resets_at: number;
+      },
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    expect(out).not.toBeNull();
+    expect(out!.primary?.used_percent).toBe(30);
+  });
+
+  it('preserves the credits block on the active side', () => {
+    const input = {
+      primary: primary(42, NOW_SECONDS + FIVE_HOURS),
+      credits: { has_credits: true, unlimited: false, balance: 12.5 },
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    expect(out).not.toBeNull();
+    expect(out!.credits?.balance).toBe(12.5);
+  });
+
+  it('preserves the limit_id field on the active side', () => {
+    const input = {
+      limit_id: 'usage-bucket-7',
+      primary: primary(42, NOW_SECONDS + FIVE_HOURS),
+    };
+    const out = filterRateLimitsByExpiry(input, NOW_SECONDS);
+    expect(out).not.toBeNull();
+    expect(out!.limit_id).toBe('usage-bucket-7');
+  });
+});
+
+describe('convertAccountRateLimitsResponse', () => {
+  it('uses window duration rather than the primary slot to identify a weekly-only limit', () => {
+    const usage = convertAccountRateLimitsResponse({
+      rateLimits: {
+        limitId: 'codex',
+        limitName: null,
+        primary: {
+          usedPercent: 36,
+          windowDurationMins: 10_080,
+          resetsAt: 1_784_666_300,
+        },
+        secondary: null,
+        credits: null,
+        individualLimit: null,
+        planType: 'pro',
+        rateLimitReachedType: null,
+      },
+      rateLimitsByLimitId: null,
+      rateLimitResetCredits: null,
+    });
+
+    expect(usage.limits).toHaveLength(1);
+    expect(usage.limits[0].windows).toEqual([
+      {
+        slot: 'primary',
+        usedPercent: 36,
+        windowDurationMins: 10_080,
+        resetsAt: '2026-07-21T20:38:20.000Z',
+      },
+    ]);
+  });
+
+  it('preserves dual windows, named limit buckets, and earned resets', () => {
+    const usage = convertAccountRateLimitsResponse({
+      rateLimits: {
+        limitId: 'codex',
+        limitName: null,
+        primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1_784_620_000 },
+        secondary: { usedPercent: 40, windowDurationMins: 10_080, resetsAt: 1_784_900_000 },
+        credits: { hasCredits: false, unlimited: false, balance: '0' },
+        individualLimit: null,
+        planType: 'pro',
+        rateLimitReachedType: null,
+      },
+      rateLimitsByLimitId: {
+        codex: {
+          limitId: 'codex',
+          limitName: null,
+          primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1_784_620_000 },
+          secondary: { usedPercent: 40, windowDurationMins: 10_080, resetsAt: 1_784_900_000 },
+          credits: { hasCredits: false, unlimited: false, balance: '0' },
+          individualLimit: null,
+          planType: 'pro',
+          rateLimitReachedType: null,
+        },
+        codex_bengalfox: {
+          limitId: 'codex_bengalfox',
+          limitName: 'GPT-5.3-Codex-Spark',
+          primary: { usedPercent: 0, windowDurationMins: 10_080, resetsAt: 1_784_736_735 },
+          secondary: null,
+          credits: null,
+          individualLimit: null,
+          planType: 'pro',
+          rateLimitReachedType: null,
+        },
+      },
+      rateLimitResetCredits: {
+        availableCount: 4,
+        credits: null,
+      },
+    });
+
+    expect(usage.limits.map((limit) => [limit.id, limit.windows.length])).toEqual([
+      ['codex', 2],
+      ['codex_bengalfox', 1],
+    ]);
+    expect(usage.rateLimitResetCredits?.availableCount).toBe(4);
+  });
+});
