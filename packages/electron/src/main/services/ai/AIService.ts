@@ -181,10 +181,10 @@ export class AIService {
   // so file edits are linked to tool calls promptly (not just at session end).
   private matchDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  // Track sessions currently processing a queued prompt to prevent concurrent execution.
-  // Without this, the completion handler and triggerQueueProcessing IPC can race,
-  // each claiming a different prompt and sending both to the AI concurrently.
-  private sessionsProcessingQueue = new Set<string>();
+  // Track the owning lease for each queued-prompt dispatch. Interrupts revoke
+  // the prior lease before priority delivery; a stale dispatch may settle
+  // afterward, but cannot release a newer dispatch's lease or drain FIFO.
+  private queueProcessingLeases = new Map<string, symbol>();
 
   // Track mobile session creation requests to prevent duplicate processing
   // (can happen if the same request is delivered multiple times)
@@ -405,7 +405,7 @@ export class AIService {
     }
 
     const sweepInterruptedQueue = async () => {
-      this.sessionsProcessingQueue.delete(sessionId);
+      this.queueProcessingLeases.delete(sessionId);
       try {
         const { getQueuedPromptsStore } = await import('../RepositoryManager');
         const queueStore = getQueuedPromptsStore();
@@ -915,7 +915,7 @@ export class AIService {
       },
       onChainSettled: async ({ sessionId: settledSessionId, source: settledSource }) => {
         // The completion handler in MessageStreamingHandler deferred endSession
-        // because processingSet still contained this session while the inner
+        // because processingLeases still contained this session while the inner
         // sendMessage was running. Now that the chain has fully drained, mark
         // the session idle and stop its file watcher.
         const stateManager = getSessionStateManager();
@@ -934,7 +934,7 @@ export class AIService {
           promptId,
         });
       },
-      processingSet: this.sessionsProcessingQueue,
+      processingLeases: this.queueProcessingLeases,
       queueStore,
       sendMessageHandler: this.sendMessageHandler,
       sessionId,
@@ -3003,7 +3003,7 @@ export class AIService {
         // marked completed instead of rolled back, so the queue trigger
         // that follows the abort doesn't immediately re-claim and re-send
         // the same input (NIM-615).
-        this.sessionsProcessingQueue.delete(sessionId);
+        this.queueProcessingLeases.delete(sessionId);
         try {
           const { getQueuedPromptsStore } = await import('../RepositoryManager');
           const queueStore = getQueuedPromptsStore();
@@ -3033,7 +3033,7 @@ export class AIService {
     // distinguish the two paths.
     //
     // Defensive cleanup runs before the interrupt: clear the in-memory
-    // sessionsProcessingQueue guard and unwedge any PGLite rows stuck in
+    // queueProcessingLeases guard and unwedge any PGLite rows stuck in
     // 'executing' via sweepExecutingForSession (delivery-aware -- already
     // delivered prompts are marked completed, not rolled back, so the
     // follow-up ai:triggerQueueProcessing doesn't re-send the same input

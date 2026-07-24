@@ -32,7 +32,7 @@ describe('queuedPromptDispatcher', () => {
       }),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new Map<string, symbol>();
     const targetWindow = {
       isDestroyed: () => false,
       webContents: {
@@ -52,7 +52,7 @@ describe('queuedPromptDispatcher', () => {
       onPromptClaimed: ({ sessionId, promptId }) => {
         targetWindow.webContents.send('ai:promptClaimed', { sessionId, promptId });
       },
-      processingSet,
+      processingLeases: processingSet,
       queueStore,
       sendMessageHandler: vi.fn(async () => {
         order.push('sendMessage');
@@ -94,7 +94,7 @@ describe('queuedPromptDispatcher', () => {
       fail: vi.fn(async () => {}),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new Map<string, symbol>();
     const targetWindow = {
       isDestroyed: () => false,
       webContents: { send: vi.fn(), mainFrame: {} },
@@ -110,7 +110,7 @@ describe('queuedPromptDispatcher', () => {
       logInfo: vi.fn(),
       onChainSettled,
       onPromptClaimed: () => {},
-      processingSet,
+      processingLeases: processingSet,
       queueStore,
       sendMessageHandler: vi.fn(async () => ({ content: 'ok' })),
       sessionId: 'session-1',
@@ -148,16 +148,16 @@ describe('queuedPromptDispatcher', () => {
       fail: vi.fn(async () => {}),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new Map<string, symbol>();
     const targetWindow = {
       isDestroyed: () => false,
       webContents: { send: vi.fn(), mainFrame: {} },
     } as unknown as Electron.BrowserWindow;
 
     const onChainSettled = vi.fn(async () => {});
-    // continueQueuedPromptChain dispatches a follow-on by re-adding to processingSet.
+    // continueQueuedPromptChain dispatches a follow-on by acquiring a new lease.
     const continueQueuedPromptChain = vi.fn(async (sessionId: string) => {
-      processingSet.add(sessionId);
+      processingSet.set(sessionId, Symbol('follow-on'));
     });
 
     await tryClaimAndDispatchNextQueuedPrompt({
@@ -166,7 +166,7 @@ describe('queuedPromptDispatcher', () => {
       logInfo: vi.fn(),
       onChainSettled,
       onPromptClaimed: () => {},
-      processingSet,
+      processingLeases: processingSet,
       queueStore,
       sendMessageHandler: vi.fn(async () => ({ content: 'ok' })),
       sessionId: 'session-1',
@@ -202,7 +202,7 @@ describe('queuedPromptDispatcher', () => {
       fail: vi.fn(async () => {}),
     };
     const sendMessageHandler = vi.fn(async () => ({ content: 'ok' }));
-    const processingSet = new Set<string>();
+    const processingSet = new Map<string, symbol>();
     const targetWindow = {
       isDestroyed: () => false,
       webContents: { send: vi.fn(), mainFrame: {} },
@@ -212,7 +212,7 @@ describe('queuedPromptDispatcher', () => {
       logError: vi.fn(),
       logInfo: vi.fn(),
       onPromptClaimed: vi.fn(),
-      processingSet,
+      processingLeases: processingSet,
       queueStore,
       sendMessageHandler,
       sessionId: 'session-1',
@@ -233,5 +233,140 @@ describe('queuedPromptDispatcher', () => {
     expect(queueStore.claim).toHaveBeenCalledTimes(2);
     expect(sendMessageHandler).toHaveBeenCalledTimes(1);
     expect(queueStore.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an ordinary FIFO prompt fenced while an interrupting priority dispatch owns the lease', async () => {
+    const deferred = () => {
+      let resolve!: () => void;
+      let reject!: (reason?: unknown) => void;
+      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      return { promise, resolve, reject };
+    };
+
+    const sessionId = 'interrupted-session';
+    const oldPrompt: ClaimedQueuedPrompt = {
+      id: 'initial-executing',
+      prompt: 'initial turn',
+    };
+    const priorityPrompt: ClaimedQueuedPrompt = {
+      id: 'priority-control',
+      prompt: 'priority turn',
+    };
+    const ordinaryPrompt: ClaimedQueuedPrompt = {
+      id: 'ordinary-fifo',
+      prompt: 'ordinary turn',
+    };
+    const rows = new Map([
+      [oldPrompt.id, { prompt: oldPrompt, status: 'pending' }],
+      [priorityPrompt.id, { prompt: priorityPrompt, status: 'held' }],
+      [ordinaryPrompt.id, { prompt: ordinaryPrompt, status: 'held' }],
+    ]);
+    const claims: string[] = [];
+    const completions: string[] = [];
+    const failures: string[] = [];
+    const effects: string[] = [];
+    const oldStarted = deferred();
+    const priorityStarted = deferred();
+    const oldTurn = deferred();
+    const priorityTurn = deferred();
+    const ordinaryCompleted = deferred();
+
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () =>
+        [...rows.values()]
+          .filter((row) => row.status === 'pending')
+          .map((row) => row.prompt)),
+      claim: vi.fn(async (promptId) => {
+        const row = rows.get(promptId);
+        if (!row || row.status !== 'pending') return null;
+        row.status = 'executing';
+        claims.push(promptId);
+        return row.prompt;
+      }),
+      complete: vi.fn(async (promptId) => {
+        const row = rows.get(promptId);
+        if (row) row.status = 'completed';
+        completions.push(promptId);
+        if (promptId === ordinaryPrompt.id) ordinaryCompleted.resolve();
+      }),
+      fail: vi.fn(async (promptId) => {
+        const row = rows.get(promptId);
+        if (row) row.status = 'failed';
+        failures.push(promptId);
+      }),
+    };
+    const processingSet = new Map<string, symbol>();
+    const targetWindow = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+    const sendMessageHandler = vi.fn(async (
+      _event: Electron.IpcMainInvokeEvent,
+      message: string,
+    ) => {
+      if (message === oldPrompt.prompt) {
+        oldStarted.resolve();
+        await oldTurn.promise;
+      } else if (message === priorityPrompt.prompt) {
+        priorityStarted.resolve();
+        await priorityTurn.promise;
+        effects.push('PRIORITY_ACK');
+      } else {
+        effects.push('ORDINARY_MARKER');
+      }
+      return { content: message };
+    });
+    let dispatch!: (source: string) => Promise<boolean>;
+    const continueQueuedPromptChain = vi.fn(async () => {
+      await dispatch('test continuation');
+    });
+    dispatch = (source) => tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain,
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: vi.fn(),
+      processingLeases: processingSet,
+      queueStore,
+      sendMessageHandler,
+      sessionId,
+      source,
+      startSession: vi.fn(async () => {}),
+      targetWindow,
+      workspacePath: '/workspace/project',
+    });
+
+    expect(await dispatch('initial queue')).toBe(true);
+    await oldStarted.promise;
+
+    // Priority interruption revokes the initial dispatch lease before claiming
+    // the control prompt. The replacement priority dispatch must remain fenced
+    // when the interrupted dispatch's stale finally block later runs.
+    processingSet.delete(sessionId);
+    rows.get(priorityPrompt.id)!.status = 'pending';
+    expect(await dispatch('priority queue')).toBe(true);
+    await priorityStarted.promise;
+    rows.get(ordinaryPrompt.id)!.status = 'pending';
+
+    oldTurn.reject(new Error('native abort'));
+    await vi.waitFor(() => {
+      expect(failures).toEqual([oldPrompt.id]);
+    });
+
+    expect(processingSet.has(sessionId)).toBe(true);
+    expect(claims).toEqual([oldPrompt.id, priorityPrompt.id]);
+    expect(completions).toEqual([]);
+    expect(effects).toEqual([]);
+    expect(continueQueuedPromptChain).not.toHaveBeenCalled();
+
+    priorityTurn.resolve();
+    await ordinaryCompleted.promise;
+
+    expect(claims).toEqual([oldPrompt.id, priorityPrompt.id, ordinaryPrompt.id]);
+    expect(completions).toEqual([priorityPrompt.id, ordinaryPrompt.id]);
+    expect(effects).toEqual(['PRIORITY_ACK', 'ORDINARY_MARKER']);
+    expect(sendMessageHandler).toHaveBeenCalledTimes(3);
   });
 });

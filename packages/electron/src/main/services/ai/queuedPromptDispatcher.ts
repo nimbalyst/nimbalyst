@@ -26,7 +26,7 @@ interface DispatchClaimedQueuedPromptOptions {
   onAfterSettled?: () => Promise<void>;
   onChainSettled?: (payload: { sessionId: string; workspacePath: string; source: string }) => Promise<void>;
   onPromptClaimed: (payload: { sessionId: string; promptId: string }) => void;
-  processingSet: Set<string>;
+  processingLeases: Map<string, symbol>;
   queueStore: QueuedPromptStoreLike;
   sendMessageHandler: (
     event: Electron.IpcMainInvokeEvent,
@@ -52,7 +52,7 @@ export async function dispatchClaimedQueuedPrompt(
     onAfterSettled,
     onChainSettled,
     onPromptClaimed,
-    processingSet,
+    processingLeases,
     queueStore,
     sendMessageHandler,
     sessionId,
@@ -62,12 +62,15 @@ export async function dispatchClaimedQueuedPrompt(
     workspacePath,
   } = options;
 
-  processingSet.add(sessionId);
+  const dispatchLease = Symbol(`queued-prompt:${sessionId}:${claimed.id}`);
+  processingLeases.set(sessionId, dispatchLease);
 
   try {
     await startSession({ sessionId, workspacePath });
   } catch (error) {
-    processingSet.delete(sessionId);
+    if (processingLeases.get(sessionId) === dispatchLease) {
+      processingLeases.delete(sessionId);
+    }
     throw error;
   }
 
@@ -95,7 +98,14 @@ export async function dispatchClaimedQueuedPrompt(
         queueError instanceof Error ? queueError.message : 'Unknown error',
       );
     } finally {
-      processingSet.delete(sessionId);
+      // An interrupt revokes this dispatch's lease before a priority prompt
+      // acquires a replacement. The interrupted dispatch can settle later, but
+      // its stale finally block must not release the replacement lease or
+      // continue the ordinary FIFO chain concurrently with priority delivery.
+      if (processingLeases.get(sessionId) !== dispatchLease) {
+        return;
+      }
+      processingLeases.delete(sessionId);
       try {
         await continueQueuedPromptChain(
           sessionId,
@@ -108,9 +118,9 @@ export async function dispatchClaimedQueuedPrompt(
       }
       // If no follow-on prompt was dispatched, the chain has fully settled.
       // The inner sendMessage's completion handler deferred endSession because
-      // processingSet still contained this session (we hadn't reached this
+      // processingLeases still contained this session (we hadn't reached this
       // delete yet), so nobody has marked the session idle. Do it now.
-      if (!processingSet.has(sessionId) && onChainSettled) {
+      if (!processingLeases.has(sessionId) && onChainSettled) {
         try {
           await onChainSettled({ sessionId, workspacePath, source });
         } catch (settledErr) {
@@ -135,7 +145,7 @@ interface TryClaimAndDispatchNextQueuedPromptOptions {
   onAfterSettled?: DispatchClaimedQueuedPromptOptions['onAfterSettled'];
   onChainSettled?: DispatchClaimedQueuedPromptOptions['onChainSettled'];
   onPromptClaimed: DispatchClaimedQueuedPromptOptions['onPromptClaimed'];
-  processingSet: Set<string>;
+  processingLeases: Map<string, symbol>;
   queueStore: QueuedPromptStoreLike;
   sendMessageHandler: DispatchClaimedQueuedPromptOptions['sendMessageHandler'] | null;
   sessionId: string;
@@ -155,7 +165,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     onAfterSettled,
     onChainSettled,
     onPromptClaimed,
-    processingSet,
+    processingLeases,
     queueStore,
     sendMessageHandler,
     sessionId,
@@ -170,7 +180,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     return false;
   }
 
-  if (processingSet.has(sessionId)) {
+  if (processingLeases.has(sessionId)) {
     logInfo(`[AIService] ${source}: session ${sessionId} already processing a queued prompt, skipping`);
     return false;
   }
@@ -203,7 +213,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     onAfterSettled,
     onChainSettled,
     onPromptClaimed,
-    processingSet,
+    processingLeases,
     queueStore,
     sendMessageHandler,
     sessionId,
