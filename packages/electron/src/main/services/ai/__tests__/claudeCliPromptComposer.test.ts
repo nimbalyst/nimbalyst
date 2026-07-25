@@ -36,6 +36,38 @@ describe('composeClaudeCliPtySubmission', () => {
   });
 
   /**
+   * The composer's contract is a SINGLE logical line: a real newline reaching
+   * the PTY is Enter, which submits the turn early and drops everything after
+   * it. The selection preamble was already flattened; the typed prompt was not.
+   */
+  describe('newline flattening', () => {
+    it('flattens newlines in the typed prompt', () => {
+      expect(
+        composeClaudeCliPtySubmission({ prompt: 'fix auth.ts\nalso update the tests' }),
+      ).toBe('fix auth.ts\\nalso update the tests');
+    });
+
+    it('flattens CRLF and bare CR the same way', () => {
+      expect(composeClaudeCliPtySubmission({ prompt: 'a\r\nb\rc' })).toBe('a\\nb\\nc');
+    });
+
+    it('keeps blank lines between paragraphs', () => {
+      expect(composeClaudeCliPtySubmission({ prompt: 'para one\n\npara two' })).toBe(
+        'para one\\n\\npara two',
+      );
+    });
+
+    it('emits no real newline once attachments and context are appended', () => {
+      const out = composeClaudeCliPtySubmission({
+        prompt: 'line one\nline two',
+        attachments: [{ filepath: '/tmp/a.png' }],
+        documentContext: { filePath: '/ws/notes.md', textSelection: { text: 'sel\nected' } },
+      });
+      expect(out).not.toMatch(/[\r\n]/);
+    });
+  });
+
+  /**
    * NIM-818: the CLI is never told which document "this" is — the SDK path's
    * active-doc preamble was skipped entirely. The composer now appends a
    * compact single-line context block (active-doc URI + selection, NOT full

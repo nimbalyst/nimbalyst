@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Long or multi-line messages sent to a Claude Code CLI session are no longer truncated or split into several pasted-text placeholders.
 
 ### Removed
 <!-- Removed features go here -->

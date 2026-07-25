@@ -26,6 +26,34 @@ import {
 const SUBMIT_TERMINATOR = '\r';
 /** Gap between the text write and the Enter write so the TUI consumes both. */
 export const SUBMIT_WRITE_GAP_MS = 25;
+/** Upper bound on the scaled gap, so a huge paste can't stall submission. */
+export const SUBMIT_WRITE_GAP_MAX_MS = 1000;
+
+/**
+ * Bracketed-paste markers. A single large `pty.write` is fragmented by the OS
+ * PTY layer, and the CLI's paste detector treats each fragment as a SEPARATE
+ * paste — one message becomes several "[Pasted text #N]" placeholders and only
+ * the tail stays inline. Wrapping the payload makes the TUI consume it as one
+ * atomic paste. Measured on Windows/ConPTY with CLI 2.1.220: a 20k-char prompt
+ * produced 8 placeholders unwrapped, 1 wrapped.
+ */
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
+
+/**
+ * How long to wait between the payload and Enter.
+ *
+ * The gap was a flat 25ms, which is fine for ordinary prompts but loses large
+ * ones: Enter arriving while the payload is still draining submits a partial
+ * line. Scale with payload size, keeping 25ms as the floor so short prompts are
+ * unaffected. (20k chars needs >25ms; 75ms was sufficient in testing.)
+ */
+export function submitWriteGapMs(payloadLength: number): number {
+  return Math.min(
+    SUBMIT_WRITE_GAP_MAX_MS,
+    Math.max(SUBMIT_WRITE_GAP_MS, Math.ceil(payloadLength / 100)),
+  );
+}
 
 export interface SubmitClaudeCliPromptInput {
   sessionId: string;
@@ -109,8 +137,14 @@ export async function submitClaudeCliPrompt(
       return { submitted: false };
     }
 
-    deps.writeToTerminal(input.sessionId, ptyText);
-    await deps.delay(SUBMIT_WRITE_GAP_MS);
+    // Wrapped, so the CLI sees one paste instead of one per PTY fragment.
+    // The slash/# branch above is deliberately NOT wrapped: the trigger char
+    // has to land as a real keystroke to open the TUI's command menu.
+    deps.writeToTerminal(
+      input.sessionId,
+      BRACKETED_PASTE_START + ptyText + BRACKETED_PASTE_END,
+    );
+    await deps.delay(submitWriteGapMs(ptyText.length));
     deps.writeToTerminal(input.sessionId, SUBMIT_TERMINATOR);
   }
 
