@@ -95,6 +95,7 @@ import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/wor
 import { inferWorktreePathFromFilePath, inferWorktreePathFromCommand } from './worktreeInference';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
+import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -511,6 +512,22 @@ export class AIService {
       };
     }
 
+    // A response is a one-shot consumption. Reject duplicates before writing a
+    // second durable row or waking the same blocked waiter twice.
+    if (promptType === 'ask_user_question_request') {
+      const { rows: existingResponses } = await database.query<{ id: string }>(
+        `SELECT id FROM ai_agent_messages
+         WHERE session_id = $1
+           AND content LIKE '%"type":"ask_user_question_response"%'
+           AND content LIKE $2
+         LIMIT 1`,
+        [sessionId, `%"questionId":"${promptId}"%`]
+      );
+      if (existingResponses.length > 0) {
+        return { success: true };
+      }
+    }
+
     await database.query(
       `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -570,9 +587,12 @@ export class AIService {
         });
       }
 
-      return resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter || hasPersistedQuestionRequest
-        ? { success: true }
-        : { success: false, error: 'Question not found' };
+      const accepted = resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter || hasPersistedQuestionRequest;
+      if (accepted) {
+        await setSessionPendingPrompt(sessionId, false);
+        return { success: true };
+      }
+      return { success: false, error: 'Question not found' };
     }
 
     const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);

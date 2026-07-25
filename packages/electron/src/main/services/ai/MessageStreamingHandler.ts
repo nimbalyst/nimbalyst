@@ -2595,9 +2595,15 @@ export class MessageStreamingHandler {
             const willResume = session.provider === 'claude-code'
               && typeof (provider as any).willResumeAfterCompletion === 'function'
               && (provider as any).willResumeAfterCompletion();
+            const persistedSession = await AISessionsRepository.get(session.id);
+            const hasPendingStructuredPrompt = Boolean(
+              persistedSession?.metadata
+              && typeof persistedSession.metadata === 'object'
+              && (persistedSession.metadata as Record<string, unknown>).hasPendingPrompt === true,
+            );
             const queuedChainAlreadyActive = this.hasActiveQueueLease(session.id);
             let queuedContinuationScheduled = false;
-            if (!hasTeammates && !willResume && !queuedChainAlreadyActive) {
+            if (!hasPendingStructuredPrompt && !hasTeammates && !willResume && !queuedChainAlreadyActive) {
               queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
                 session.id,
                 workspacePath,
@@ -2605,8 +2611,10 @@ export class MessageStreamingHandler {
                 'completion-handler queue',
               );
             }
-            if (hasTeammates || willResume || queuedChainAlreadyActive || queuedContinuationScheduled) {
-              const reason = hasTeammates
+            if (hasPendingStructuredPrompt || hasTeammates || willResume || queuedChainAlreadyActive || queuedContinuationScheduled) {
+              const reason = hasPendingStructuredPrompt
+                ? 'structured prompt pending'
+                : hasTeammates
                 ? 'teammates still active'
                 : willResume
                 ? 'lead resuming'
