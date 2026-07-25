@@ -14,6 +14,15 @@ describe('detectInteractiveCliCommand', () => {
     expect(detectInteractiveCliCommand('/MCP')).toBe('mcp');
   });
 
+  it('matches /btw so the drawer reveals its inline answer', () => {
+    // `/btw` answers a side question outside the main conversation, so the
+    // reply never lands in the transcript Nimbalyst renders. Without revealing
+    // the drawer the user sees nothing at all.
+    expect(detectInteractiveCliCommand('/btw')).toBe('btw');
+    expect(detectInteractiveCliCommand('/btw what does this regex do?')).toBe('btw');
+    expect(detectInteractiveCliCommand('  /BTW quick question  ')).toBe('btw');
+  });
+
   it('returns null for output-only / non-interactive slash commands', () => {
     expect(detectInteractiveCliCommand('/clear')).toBeNull();
     expect(detectInteractiveCliCommand('/context')).toBeNull();

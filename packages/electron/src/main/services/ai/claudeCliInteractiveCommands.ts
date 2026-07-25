@@ -12,14 +12,23 @@
  */
 
 /**
- * Curated set of slash commands that open a native TUI picker with NO Nimbalyst
- * equivalent. Output-only commands (`/clear`, `/compact`, `/cost`, `/context`,
- * `/help`, `/status`) are intentionally excluded — Nimbalyst already surfaces
- * their result in the transcript, so revealing the raw drawer for them is noise.
+ * Curated set of slash commands whose UI lives ONLY in the raw CLI drawer, with
+ * no Nimbalyst equivalent. Output-only commands (`/clear`, `/compact`, `/cost`,
+ * `/context`, `/help`, `/status`) are intentionally excluded — Nimbalyst already
+ * surfaces their result in the transcript, so revealing the raw drawer for them
+ * is noise.
+ *
+ * Most entries open a keyboard-driven picker (`/model`, `/config`, ...). `/btw`
+ * is the exception: it takes its question as an argument and renders the answer
+ * inline in the TUI. It still belongs here because that answer is deliberately
+ * kept out of the main conversation, so it never reaches the session transcript
+ * Nimbalyst renders — without revealing the drawer the reply is invisible and
+ * the command looks broken.
  *
  * Names are the bare command (no leading slash), lowercase.
  */
 export const INTERACTIVE_CLI_SLASH_COMMANDS: ReadonlySet<string> = new Set([
+  'btw',
   'model',
   'config',
   'login',

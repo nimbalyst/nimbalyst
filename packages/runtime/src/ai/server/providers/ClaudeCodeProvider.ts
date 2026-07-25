@@ -13,9 +13,27 @@ interface Query extends AsyncGenerator<SDKMessage, void> {
   streamInput(stream: AsyncIterable<any>): Promise<void>;
   mcpServerStatus(): Promise<McpServerStatusInfo[]>;
   reconnectMcpServer(serverName: string): Promise<void>;
+  /**
+   * Ask a question answered outside the main conversation — the control
+   * request behind the CLI's `/btw`. The answer is NOT appended to the
+   * session's context, so it costs nothing on subsequent turns.
+   *
+   * Optional on purpose: the method exists in the shipped SDK bundle but is
+   * absent from its published `.d.ts`, so older/newer CLIs may not carry it.
+   * Every call site must feature-detect before invoking.
+   */
+  askSideQuestion?(question: string): Promise<{ response: string; synthetic: boolean } | null>;
   /** Close the query and terminate the underlying CLI subprocess. */
   close(): void;
 }
+
+/**
+ * Outcome of a `/btw` side question. Every failure is a distinct, explainable
+ * state rather than an exception, so the UI can say *why* nothing came back.
+ */
+export type SideQuestionResult =
+  | { ok: true; response: string; synthetic: boolean }
+  | { ok: false; reason: 'idle' | 'unsupported' | 'empty' | 'no-answer' | 'error'; message?: string };
 
 /** MCP server status as reported by the SDK */
 export interface McpServerStatusInfo {
@@ -2037,6 +2055,53 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     } catch (error) {
       // Best-effort -- never let fallback metadata disrupt the main session.
       console.warn('[CLAUDE-CODE] Session phase fallback failed:', (error as Error)?.message ?? error);
+    }
+  }
+
+  /**
+   * Ask a side question about the running turn without disturbing it.
+   *
+   * Backs Nimbalyst's `/btw`, mirroring the CLI command of the same name: the
+   * question and its answer stay out of the main conversation, so the running
+   * turn's context — and every turn after it — is unchanged.
+   *
+   * Returns a discriminated result rather than throwing, because all three
+   * failure modes are ordinary states the UI must explain differently:
+   * - `idle`: `leadQuery` only exists while a turn is streaming (it is nulled
+   *   at the end of each one), and a side question needs that live control
+   *   channel. There is nothing to ask "alongside" when the session is idle.
+   * - `unsupported`: the bundled CLI predates the `side_question` control
+   *   request. Feature-detected rather than assumed — it is missing from the
+   *   SDK's published types.
+   * - `error`: the transport rejected or closed mid-request.
+   */
+  async askSideQuestion(question: string): Promise<SideQuestionResult> {
+    const trimmed = question?.trim();
+    if (!trimmed) {
+      return { ok: false, reason: 'empty' };
+    }
+
+    const q = this.leadQuery;
+    if (!q) {
+      return { ok: false, reason: 'idle' };
+    }
+
+    if (typeof q.askSideQuestion !== 'function') {
+      return { ok: false, reason: 'unsupported' };
+    }
+
+    try {
+      const result = await q.askSideQuestion(trimmed);
+      // The control request resolves with a null response when the CLI
+      // declined to answer; surface that as its own state so the UI doesn't
+      // render an empty bubble.
+      if (!result || !result.response) {
+        return { ok: false, reason: 'no-answer' };
+      }
+      return { ok: true, response: result.response, synthetic: result.synthetic === true };
+    } catch (err) {
+      console.warn('[CLAUDE-CODE] askSideQuestion failed:', err);
+      return { ok: false, reason: 'error', message: err instanceof Error ? err.message : String(err) };
     }
   }
 
