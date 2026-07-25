@@ -127,6 +127,24 @@ export function hasPersistedPendingPrompt(metadata: unknown): boolean {
   );
 }
 
+export async function runTerminalPromptTransition(params: {
+  metadata: unknown;
+  hasActiveLease: boolean;
+  tryDispatch: () => Promise<boolean>;
+  endSession: () => Promise<void>;
+  sync?: (hasPendingPrompt: boolean) => void;
+}): Promise<{ deferred: boolean; hasPendingPrompt: boolean }> {
+  const hasPendingPrompt = hasPersistedPendingPrompt(params.metadata);
+  let dispatched = false;
+  if (!hasPendingPrompt && !params.hasActiveLease) {
+    dispatched = await params.tryDispatch();
+  }
+  const deferred = hasPendingPrompt || params.hasActiveLease || dispatched;
+  if (!deferred) await params.endSession();
+  if (!params.hasActiveLease) params.sync?.(hasPendingPrompt);
+  return { deferred, hasPendingPrompt };
+}
+
 function resolveWorkspaceFileAttributionMode(
   providerName: string,
   provider: AIProvider | null | undefined,
