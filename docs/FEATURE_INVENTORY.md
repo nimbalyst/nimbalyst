@@ -390,6 +390,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Claude Code CLI sessions: mid-session model switching from the model picker (drives the CLI's `/model` command; idle turns only)
 - Claude Fable 5 selectable across all Claude providers (chat, Claude Agent, Claude Code CLI)
 - Claude Sonnet 5 selectable across all Claude providers, with the previous Sonnet 4.6 still selectable as a pinned choice
+- Claude Opus 5 selectable across all Claude providers, with the previous Opus 4.8 still selectable as a pinned choice
 
 ## Settings
 

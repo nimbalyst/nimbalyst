@@ -8,6 +8,8 @@ describe('supportsEffortLevel', () => {
     'claude-code:sonnet',
     'claude-code:fable',
     'claude-code-cli:fable-1m',
+    'claude-code:opus-4-8',
+    'claude-code-cli:opus-4-8-1m',
     'claude-code:opus-4-7',
     'claude-code-cli:opus-4-7-1m',
     'claude-code:sonnet-4-6',

@@ -10,14 +10,14 @@ final class ModelLabelTests: XCTestCase {
 
     func testClaudeCodeCanonicalVariants() {
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable"), "Fable 5")
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus"), "Opus 4.8")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus"), "Opus 5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet"), "Sonnet 5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:haiku"), "Haiku 4.5")
     }
 
     func testClaudeCodeExtendedContextVariants() {
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-1m"), "Fable 5")
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-1m"), "Opus 4.8")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-1m"), "Opus 5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet-1m"), "Sonnet 5")
     }
 
@@ -26,9 +26,16 @@ final class ModelLabelTests: XCTestCase {
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-5"), "Fable 5")
     }
 
-    func testClaudeCodeOpus48AliasVariants() {
+    func testClaudeCodeOpus48PinnedVariants() {
+        // Pinned after the canonical `opus` rolled forward to 5, so an
+        // Opus 4.8 session keeps its own badge instead of reading "Opus 5".
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-4-8"), "Opus 4.8")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-4-8-1m"), "Opus 4.8")
+    }
+
+    func testClaudeCodeOpus5AliasVariants() {
+        // `opus-5` is accepted as an input alias for canonical `opus`.
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-5"), "Opus 5")
     }
 
     func testClaudeCodePinnedVariant() {
@@ -39,6 +46,8 @@ final class ModelLabelTests: XCTestCase {
 
     func testClaudeCodeRawSDKModelIds() {
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-fable-5"), "Fable 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-opus-5"), "Opus 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-opus-4-8"), "Opus 4.8")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-opus-4-7"), "Opus 4.7")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-opus-4-6"), "Opus 4.6")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-sonnet-4-5-20250929"), "Sonnet 4.5")
@@ -58,8 +67,8 @@ final class ModelLabelTests: XCTestCase {
         // The subscription CLI shares the variant set with the SDK provider, so
         // the model badge resolves the same way (must NOT collapse to Sonnet).
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:fable"), "Fable 5")
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus"), "Opus 4.8")
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus-1m"), "Opus 4.8")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus"), "Opus 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus-1m"), "Opus 5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:sonnet-1m"), "Sonnet 5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus-4-6"), "Opus 4.6")
     }

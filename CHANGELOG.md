@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Trackers now offer an editable grid, field-filter pills, shareable saved views, triage inboxes, release and review workflows, and expanded CLI commands.
 - Sharing a markdown document to your team now offers to share the documents it embeds, and teammates see those embeds live inline.
 - Voice agents can inspect the current Nimbalyst view, selected file, and active session, and capture the app window with explicit permission.
+- Claude Opus 5 is selectable across chat, Claude Agent, and the Claude Code CLI, and Opus 4.8 stays selectable as a pinned choice.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

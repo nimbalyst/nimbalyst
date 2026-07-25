@@ -61,6 +61,34 @@ describe('ClaudeProvider.supportsTemperature', () => {
     });
   });
 
+  describe('rejects temperature for Opus 5+', () => {
+    it('returns false for claude-opus-5', () => {
+      // Opus 5 dropped the `4-` minor-version segment, so the
+      // `claude-opus-4-N` branch can't see it. Without a dedicated major
+      // check it would fail open and send `temperature` -> HTTP 400.
+      expect(ClaudeProvider.supportsTemperature('claude-opus-5')).toBe(false);
+    });
+
+    it('returns false for a future dated/minor Opus 5 id', () => {
+      expect(ClaudeProvider.supportsTemperature('claude-opus-5-1')).toBe(false);
+      expect(ClaudeProvider.supportsTemperature('claude-opus-6')).toBe(false);
+    });
+
+    it('matches case-insensitively', () => {
+      expect(ClaudeProvider.supportsTemperature('CLAUDE-OPUS-5')).toBe(false);
+    });
+
+    it('does not misclassify Opus 4.x via the major-version branch', () => {
+      // The major branch must run AFTER the `claude-opus-4-N` branch:
+      // `claude-opus-4-7` matches both, and major 4 would wrongly accept.
+      expect(ClaudeProvider.supportsTemperature('claude-opus-4-7')).toBe(false);
+      expect(ClaudeProvider.supportsTemperature('claude-opus-4-8')).toBe(false);
+      // ...while genuinely older Opus 4.x still accepts it.
+      expect(ClaudeProvider.supportsTemperature('claude-opus-4-6')).toBe(true);
+      expect(ClaudeProvider.supportsTemperature('claude-opus-4-20250514')).toBe(true);
+    });
+  });
+
   describe('rejects temperature for Sonnet 5+', () => {
     it('returns false for claude-sonnet-5', () => {
       // Sonnet 5 adopted the Opus 4.7+ posture: adaptive thinking, effort

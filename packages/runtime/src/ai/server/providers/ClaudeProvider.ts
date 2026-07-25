@@ -974,7 +974,8 @@ export class ClaudeProvider extends BaseAIProvider {
    * same pattern.
    *
    * Strategy: denylist of known-rejecting prefixes. Today that is
-   * `claude-opus-4-N` for N >= 7 and `claude-sonnet-N` for N >= 5 (Sonnet 5
+   * `claude-opus-4-N` for N >= 7, `claude-opus-N` for N >= 5 (Opus 5 dropped
+   * the minor-version segment), and `claude-sonnet-N` for N >= 5 (Sonnet 5
    * adopted the same deprecation). Everything else -- Sonnet 3.x / 4.x, all
    * Haiku variants, Opus 4 / 4.1 / 4.5 / 4.6, and any `claude-3-*` Opus model
    * -- still accepts `temperature`.
@@ -1003,6 +1004,18 @@ export class ClaudeProvider extends BaseAIProvider {
     if (opusMinor) {
       const minor = parseInt(opusMinor[1], 10);
       return minor < 7;
+    }
+
+    // Opus 5+ dropped the `4-` minor-version segment, so the check above can't
+    // see it. Same deprecation as Opus 4.7+ -- `temperature` returns HTTP 400.
+    // This must stay AFTER the `claude-opus-4-N` branch: `claude-opus-4-7`
+    // would otherwise match here with major 4 and be misclassified as
+    // accepting. The date-suffixed `claude-opus-4-20250514` falls through to
+    // here (major 4, accepts), which is correct.
+    const opusMajor = id.match(/^claude-opus-(\d{1,2})(?:-|$)/);
+    if (opusMajor) {
+      const major = parseInt(opusMajor[1], 10);
+      return major < 5;
     }
 
     // Sonnet 5+ adopted the same deprecation as Opus 4.7+ (adaptive thinking,

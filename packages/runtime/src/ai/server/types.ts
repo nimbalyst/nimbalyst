@@ -218,10 +218,10 @@ export function shouldBlockStartedSessionProviderSwitch(
  * Claude Code uses simplified variant names (opus, sonnet, haiku) instead of full model IDs.
  * These are ONLY valid for the claude-code provider.
  *
- * `opus-4-7`, `opus-4-6`, and `sonnet-4-6` are pinned-version variants retained
- * after bumping the canonical `opus`/`sonnet` aliases (to 4.8 / 5), so users can
- * still choose previous generations. See CLAUDE_CODE_PINNED_SDK_MODELS in
- * modelConstants.ts.
+ * `opus-4-8`, `opus-4-7`, `opus-4-6`, and `sonnet-4-6` are pinned-version
+ * variants retained after bumping the canonical `opus`/`sonnet` aliases (to
+ * Opus 5 / Sonnet 5), so users can still choose previous generations. See
+ * CLAUDE_CODE_PINNED_SDK_MODELS in modelConstants.ts.
  *
  * `fable` is the Fable 5 tier above Opus — the CLI accepts it as a first-class
  * alias (`--model fable`, `/model fable`). On the current CLI plain `fable`
@@ -231,7 +231,7 @@ export function shouldBlockStartedSessionProviderSwitch(
  * real on CLI 2.1.175 but is now stale. Note it requires usage credits on
  * subscription plans (the CLI surfaces that itself when unavailable).
  */
-export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-4-6', 'haiku'] as const;
+export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-8', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-4-6', 'haiku'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.

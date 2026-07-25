@@ -34,8 +34,8 @@ vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
       const provider = id.slice(0, i);
       const model = id.slice(i + 1);
       if (provider === 'claude-code') {
-        if (model === 'opus-4-8') return { provider, model: 'opus', combined: 'claude-code:opus' };
-        if (model === 'opus-4-8-1m') return { provider, model: 'opus-1m', combined: 'claude-code:opus-1m' };
+        if (model === 'opus-5') return { provider, model: 'opus', combined: 'claude-code:opus' };
+        if (model === 'opus-5-1m') return { provider, model: 'opus-1m', combined: 'claude-code:opus-1m' };
         if (model === 'unknown') throw new Error(`Unsupported Claude Agent model "${id}"`);
       }
       return { provider, model, combined: `${provider}:${model}` };
@@ -223,13 +223,13 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
     expect(created.model).toBe('openai-codex:gpt-5.5');
   });
 
-  it('normalizes explicit claude-code opus-4-8 aliases before persisting the child session', async () => {
+  it('normalizes explicit claude-code opus-5 aliases before persisting the child session', async () => {
     const service = MetaAgentService.getInstance();
     (service as any).aiService = { queuePromptForSession: vi.fn() };
     vi.mocked(AISessionsRepository.get).mockResolvedValue(GEMINI_PARENT as any);
 
     await (service as any).createChildSessionInternal('parent-gemini-session', '/workspace/path', {
-      model: 'claude-code:opus-4-8-1m',
+      model: 'claude-code:opus-5-1m',
     });
 
     const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
