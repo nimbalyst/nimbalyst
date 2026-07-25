@@ -2851,9 +2851,15 @@ export class MessageStreamingHandler {
         const willResumeOnError = session.provider === 'claude-code'
           && typeof (provider as any).willResumeAfterCompletion === 'function'
           && (provider as any).willResumeAfterCompletion();
+        const persistedErrorSession = await AISessionsRepository.get(session.id);
+        const hasPendingStructuredPromptOnError = Boolean(
+          persistedErrorSession?.metadata
+          && typeof persistedErrorSession.metadata === 'object'
+          && (persistedErrorSession.metadata as Record<string, unknown>).hasPendingPrompt === true,
+        );
         const queuedChainAlreadyActiveOnError = this.hasActiveQueueLease(session.id);
         let queuedContinuationScheduledOnError = false;
-        if (!hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
+        if (!hasPendingStructuredPromptOnError && !hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
           queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
             session.id,
             workspacePath,
@@ -2861,8 +2867,10 @@ export class MessageStreamingHandler {
             'error-handler queue',
           );
         }
-        if (hasTeammatesOnError || willResumeOnError || queuedChainAlreadyActiveOnError || queuedContinuationScheduledOnError) {
-          const reason = hasTeammatesOnError
+        if (hasPendingStructuredPromptOnError || hasTeammatesOnError || willResumeOnError || queuedChainAlreadyActiveOnError || queuedContinuationScheduledOnError) {
+          const reason = hasPendingStructuredPromptOnError
+            ? 'structured prompt pending'
+            : hasTeammatesOnError
             ? 'teammates still active'
             : willResumeOnError
             ? 'lead resuming'
@@ -2881,7 +2889,7 @@ export class MessageStreamingHandler {
         if (syncProvider && !this.hasActiveQueueLease(session.id)) {
           syncProvider.pushChange(session.id, {
             type: 'metadata_updated',
-            metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+            metadata: { isExecuting: false, hasPendingPrompt: hasPendingStructuredPromptOnError, updatedAt: Date.now() },
           });
 
           // Request mobile push notification for agent error (only when truly away)
