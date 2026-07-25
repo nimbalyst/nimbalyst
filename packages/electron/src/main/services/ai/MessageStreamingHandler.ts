@@ -130,16 +130,17 @@ export function hasPersistedPendingPrompt(metadata: unknown): boolean {
 export async function runTerminalPromptTransition(params: {
   metadata: unknown;
   hasActiveLease: boolean;
+  hasOtherDeferral?: boolean;
   tryDispatch: () => Promise<boolean>;
   endSession: () => Promise<void>;
   sync?: (hasPendingPrompt: boolean) => void;
 }): Promise<{ deferred: boolean; hasPendingPrompt: boolean }> {
   const hasPendingPrompt = hasPersistedPendingPrompt(params.metadata);
   let dispatched = false;
-  if (!hasPendingPrompt && !params.hasActiveLease) {
+  if (!hasPendingPrompt && !params.hasActiveLease && !params.hasOtherDeferral) {
     dispatched = await params.tryDispatch();
   }
-  const deferred = hasPendingPrompt || params.hasActiveLease || dispatched;
+  const deferred = hasPendingPrompt || params.hasActiveLease || Boolean(params.hasOtherDeferral) || dispatched;
   if (!deferred) await params.endSession();
   if (!params.hasActiveLease) params.sync?.(hasPendingPrompt);
   return { deferred, hasPendingPrompt };
@@ -2629,16 +2630,15 @@ export class MessageStreamingHandler {
             const persistedSession = await AISessionsRepository.get(session.id);
             const hasPendingStructuredPrompt = hasPersistedPendingPrompt(persistedSession?.metadata);
             const queuedChainAlreadyActive = this.hasActiveQueueLease(session.id);
-            let queuedContinuationScheduled = false;
-            if (!hasPendingStructuredPrompt && !hasTeammates && !willResume && !queuedChainAlreadyActive) {
-              queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
-                session.id,
-                workspacePath,
-                BrowserWindow.fromWebContents(event.sender),
-                'completion-handler queue',
-              );
-            }
-            if (hasPendingStructuredPrompt || hasTeammates || willResume || queuedChainAlreadyActive || queuedContinuationScheduled) {
+            const terminalTransition = await runTerminalPromptTransition({
+              metadata: persistedSession?.metadata,
+              hasActiveLease: queuedChainAlreadyActive,
+              hasOtherDeferral: hasTeammates || willResume,
+              tryDispatch: () => this.svc.tryDispatchNextQueuedPrompt(session.id, workspacePath, BrowserWindow.fromWebContents(event.sender), 'completion-handler queue'),
+              endSession: () => stateManager.endSession(session.id),
+            });
+            const queuedContinuationScheduled = terminalTransition.deferred && !hasPendingStructuredPrompt && !hasTeammates && !willResume && !queuedChainAlreadyActive;
+            if (terminalTransition.deferred) {
               const reason = hasPendingStructuredPrompt
                 ? 'structured prompt pending'
                 : hasTeammates
@@ -2650,7 +2650,6 @@ export class MessageStreamingHandler {
                 : 'queued continuation scheduled';
               // logger.main.info(`[AIService] Deferring endSession for ${session.id} - ${reason}`);
             } else {
-              await stateManager.endSession(session.id);
               // Stop file watcher after a brief delay to let pending
               // watcher events drain through WorkspaceFileEditAttributionService.
               // The manager cancels the scheduled stop if a new turn starts
@@ -2883,16 +2882,19 @@ export class MessageStreamingHandler {
         const persistedErrorSession = await AISessionsRepository.get(session.id);
         const hasPendingStructuredPromptOnError = hasPersistedPendingPrompt(persistedErrorSession?.metadata);
         const queuedChainAlreadyActiveOnError = this.hasActiveQueueLease(session.id);
-        let queuedContinuationScheduledOnError = false;
-        if (!hasPendingStructuredPromptOnError && !hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
-          queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
-            session.id,
-            workspacePath,
-            BrowserWindow.fromWebContents(event.sender),
-            'error-handler queue',
-          );
-        }
-        if (hasPendingStructuredPromptOnError || hasTeammatesOnError || willResumeOnError || queuedChainAlreadyActiveOnError || queuedContinuationScheduledOnError) {
+        const errorTransition = await runTerminalPromptTransition({
+          metadata: persistedErrorSession?.metadata,
+          hasActiveLease: queuedChainAlreadyActiveOnError,
+          hasOtherDeferral: hasTeammatesOnError || willResumeOnError,
+          tryDispatch: () => this.svc.tryDispatchNextQueuedPrompt(session.id, workspacePath, BrowserWindow.fromWebContents(event.sender), 'error-handler queue'),
+          endSession: async () => {
+            await stateManager.endSession(session.id);
+            await this.svc.hooklessWatcher.stopForSession(session.id);
+            codexEditWindowRegistry.clearSession(session.id);
+          },
+        });
+        const queuedContinuationScheduledOnError = errorTransition.deferred && !hasPendingStructuredPromptOnError && !hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError;
+        if (errorTransition.deferred) {
           const reason = hasPendingStructuredPromptOnError
             ? 'structured prompt pending'
             : hasTeammatesOnError
@@ -2903,11 +2905,6 @@ export class MessageStreamingHandler {
             ? 'queued continuation already active'
             : 'queued continuation scheduled';
           logger.main.info(`[AIService] Deferring endSession for ${session.id} on error - ${reason}`);
-        } else {
-          await stateManager.endSession(session.id);
-          // Stop file watcher - session ended on error
-          await this.svc.hooklessWatcher.stopForSession(session.id);
-          codexEditWindowRegistry.clearSession(session.id);
         }
 
         // Clear executing and pending prompt flags for mobile sync on error
