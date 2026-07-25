@@ -101,6 +101,15 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | `session_view_mode_switched` | `SessionHistory.tsx` | User switches between list and kanban views for session history | `fromMode` (list/card/kanban)<br/>`toMode` (list/card/kanban) | (pending release) |  |
 | `session_list_filter_applied` | `SessionHistory.tsx` | User applies a tag filter or searches in the sessions list panel | `filterType` (tag/search)<br/>`activeTagCount` (number of active tag filters) | (pending release) |  |
 
+### Contextual Tips
+
+| Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
+| --- | --- | --- | --- | --- | --- |
+| `tip_shown` | `TipProvider.tsx:169, 289`<br/>`FilesEmptyTipDisplay.tsx` | A contextual tip card is displayed (floating card, developer menu, or Files empty state) | `tip_id`<br/>`tip_name`<br/>`source` (developer_menu, when triggered manually)<br/>`surface` (files_empty, when shown on the Files empty state) | v0.56.8 (2026-03-23) | (pending release as of 6ddf1d7): Added files_empty surface |
+| `tip_action_clicked` | `TipProvider.tsx:185, 200`<br/>`InlineTipDisplay.tsx:111, 127`<br/>`FilesEmptyTipDisplay.tsx` | User clicks a tip's primary or secondary action button | `tip_id`<br/>`tip_name`<br/>`action_label`<br/>`action_type` (secondary, when applicable)<br/>`surface` (inline_empty_transcript / files_empty) | v0.56.8 (2026-03-23) | (pending release as of 6ddf1d7): Added files_empty surface |
+| `tip_all_tips_opened` | `InlineTipDisplay.tsx:143`<br/>`FilesEmptyTipDisplay.tsx` | User opens the All Tips dialog from an inline tip card | `from_tip_id`<br/>`surface` (inline_empty_transcript / files_empty) | v0.56.8 (2026-03-23) | (pending release as of 6ddf1d7): Added files_empty surface |
+| `tip_navigated` | `FilesEmptyTipDisplay.tsx` | User clicks "Next tip" on the Files empty-state tip card | `from_tip_id`<br/>`to_tip_id`<br/>`direction` (next)<br/>`reason` (next_button)<br/>`surface` (files_empty) | (pending release as of 6ddf1d7) |  |
+
 ### Session Kanban Board
 
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
@@ -135,6 +144,7 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | `ai_diff_rejected` | `DiffApprovalBar.tsx:380, 450`<br/>`TabEditor.tsx:1442` | User rejects diff or all diffs (markdown/code/mockup) | `rejectType` (partial/all)<br/>`replacementCount`<br/>`fileType` (mockup, optional) | v0.45.25 (2025-11-14) |  |
 | `session_reparented` | `SessionListItem.tsx:290` | User drags session to change parent (workstream reassignment) | `had_previous_parent`<br/>`workspace_path` | (pending release) |  |
 | `ai_effort_level_changed` | `SessionTranscript.tsx` | User changes effort level for Opus 4.6 adaptive reasoning | `effort_level` (low/medium/high/max)<br/>`previous_level` (low/medium/high/max) | (pending release) |  |
+| `ai_thinking_mode_changed` | `SessionTranscript.tsx` | User changes Claude Agent extended thinking mode | `thinking_mode` (enabled/disabled)<br/>`previous_mode` (enabled/disabled)<br/>`model` | (pending release) |  |
 | `ai_mode_changed` | `SessionTranscript.tsx` | User switches session mode via ModeTag or Shift+Tab | `from` (planning/agent)<br/>`to` (planning/agent)<br/>`provider` (string)<br/>`session_id` (string) | (pending release) | Auto mode is no longer user-selectable; it activates transparently via the "Allow All" trust level for supported providers |
 | `exit_plan_mode_response` | `SessionTranscript.tsx:923, 943, 974, 1060` | User responds to plan completion confirmation | `decision` (approved/denied/start_new_session/cancelled)<br/>`has_feedback` (boolean, for denied only)<br/>`is_worktree` (boolean, for start_new_session only) | (pending release) |  |
 | `ask_user_question_answered` | `SessionTranscript.tsx:1081` | User answers an AskUserQuestion prompt from Claude | `numQuestions` (number of questions answered) | (pending release) |  |
@@ -302,7 +312,7 @@ The `known_error` event uses an `errorId` property to identify specific error co
 | `unified_onboarding_skipped` | `App.tsx` | User skips the unified onboarding flow | None | (pending release) | Replaces `onboarding_skipped` |
 | ~~`feature_walkthrough_completed`~~ | ~~`FeatureWalkthrough.tsx`~~ | ~~User completes or skips the feature walkthrough~~ | ~~`total_time_ms`<br/>`slide_times` (object with editor/mockup/agent keys)<br/>`skipped` (boolean)<br/>`skipped_at_slide` (editor/mockup/agent, only if skipped)~~ | v0.45.25 (2025-11-14) | **DEPRECATED**: No longer sent; walkthrough slides removed in unified onboarding |
 | ~~`onboarding_completed`~~ | ~~`OnboardingDialog.tsx`~~ | ~~User completes the role/email onboarding dialog~~ | ~~`user_role`<br/>`custom_role_provided`<br/>`custom_role_text`<br/>`email_provided`~~ | v0.45.25 (2025-11-14) | **DEPRECATED**: Replaced by `unified_onboarding_completed`, then re-used (see below) |
-| `onboarding_completed` | `useOnboarding.ts` | User completes the unified onboarding dialog (has role or referral data) | `user_role` (raw value, e.g. `developer`, `product_manager`, `other`)<br/>`custom_role_text` (only when user typed a custom role)<br/>`referral_source` (raw value, e.g. `search`, `social`, `ai`, `other`)<br/>`referral_ai_detail` (only for `ai` referral)<br/>`referral_other_detail` (only for `other` referral)<br/>`referral_social_detail` (only for `social` referral)<br/>`developer_mode` (boolean)<br/>`email_provided` (boolean) | (pending release) | Replaces programmatic `survey sent` for the Onboarding Profile Survey. Property names and raw values match the existing `Devs` / `Product Managers` / `role_other` cohorts. |
+| `onboarding_completed` | `useOnboarding.ts` | User completes the unified onboarding dialog (has role or referral data) | `user_role` (raw value, e.g. `developer`, `product_manager`, `other`)<br/>`custom_role_text` (only when user typed a custom role)<br/>`referral_source` (raw value: `search`, `social`, `friend`, `ai`, `ad`, `youtube`, `github`, `course_training`, `podcast`, `newsletter_article`, or `other`)<br/>`referral_search_detail` (only for `search` referral)<br/>`referral_ai_detail` (only for `ai` referral)<br/>`referral_other_detail` (only for `other` referral)<br/>`referral_social_detail` (only for `social` referral)<br/>`developer_mode` (boolean)<br/>`email_provided` (boolean) | (pending release) | Replaces programmatic `survey sent` for the Onboarding Profile Survey. Property names and raw values match the existing `Devs` / `Product Managers` / `role_other` cohorts.<br/>(pending release): Added YouTube, GitHub, Course/Training, Podcast, and Newsletter/Article referral sources and search query details. |
 | ~~`onboarding_deferred`~~ | ~~`App.tsx`~~ | ~~User clicks "Ask me later" on onboarding dialog~~ | ~~None~~ | v0.45.25 (2025-11-14) | **DEPRECATED**: Removed in unified onboarding |
 | ~~`onboarding_skipped`~~ | ~~`App.tsx`~~ | ~~User clicks "Never ask again" on onboarding dialog~~ | ~~None~~ | v0.45.25 (2025-11-14) | **DEPRECATED**: Replaced by `unified_onboarding_skipped` |
 | `claude_commands_toast_shown` | `App.tsx:894` | Claude commands install toast is displayed | None | v0.47.2 (2025-12-10) |  |
@@ -399,14 +409,14 @@ Events from the iOS companion app. These events share the same PostHog project a
 
 - **Total Events**: 118 unique event names
 - **Main Process Events**: 57 (via AnalyticsService)
-- **Renderer Process Events**: 53 (via usePostHog hook)
+- **Renderer Process Events**: 54 (via usePostHog hook)
 - **Mobile Events**: 7 (via Capacitor AnalyticsService)
 - **File Operations**: 7 events
 - **Workspace Operations**: 4 events
 - **Navigation & Editor Mode**: 4 events
 - **Session Kanban Board**: 6 events
 - **File History**: 2 events
-- **AI-Related**: 23 events
+- **AI-Related**: 24 events
 - **Blitz Mode**: 1 event
 - **Session/File Sharing**: 2 events
 - **Session Export**: 1 event
@@ -439,7 +449,8 @@ Person properties are attached to user profiles in PostHog via `posthog.people.s
 | `email` | `string` | `useOnboarding.ts` | User's email address (if provided during onboarding) |
 | `user_role` | `string` | `useOnboarding.ts` | User's role as raw enum value (`developer`, `product_manager`, `designer`, `writer`, `researcher`, `marketing`, `sales`, `finance`, `student`, `hobbyist`, `other`). Cohorts and breakdowns filter on these exact values. |
 | `custom_role_text` | `string` | `useOnboarding.ts` | Free-text role typed by the user when they picked "Other" (only set in that case) |
-| `referral_source` | `string` | `useOnboarding.ts` | How user heard about Nimbalyst as raw enum value (`search`, `social`, `friend`, `ai`, `ad`, `other`) |
+| `referral_source` | `string` | `useOnboarding.ts` | How user heard about Nimbalyst as raw enum value (`search`, `social`, `friend`, `ai`, `ad`, `youtube`, `github`, `course_training`, `podcast`, `newsletter_article`, `other`) |
+| `referral_search_detail` | `string` | `useOnboarding.ts` | Search terms entered when `referral_source = 'search'` |
 | `referral_ai_detail` | `string` | `useOnboarding.ts` | Specific AI tool when `referral_source = 'ai'` |
 | `referral_other_detail` | `string` | `useOnboarding.ts` | Free-text detail when `referral_source = 'other'` |
 | `referral_social_detail` | `string` | `useOnboarding.ts` | Specific platform when `referral_source = 'social'` |

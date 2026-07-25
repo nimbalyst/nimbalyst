@@ -11,7 +11,7 @@ import path from 'path';
 import { app } from 'electron';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
-import { DEFAULT_EFFORT_LEVEL } from '../../effortLevels';
+import { type ThinkingMode } from '../../effortLevels';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
 
@@ -23,7 +23,11 @@ type SDKUserMessage = {
 
 export interface BuildSdkOptionsDeps {
   resolveModelVariant: () => string;
-  mcpConfigService: { getMcpServersConfig: (params: { sessionId?: string; workspacePath: string }) => Promise<Record<string, any>> };
+  getMcpServersSnapshot: (params: {
+    sessionId?: string;
+    workspacePath: string;
+    profile?: 'standard' | 'meta-agent';
+  }) => Promise<Record<string, any>>;
   createCanUseToolHandler: (sessionId?: string, workspacePath?: string, permissionsPath?: string) => any;
   toolHooksService: {
     createPreToolUseHook: () => any;
@@ -38,7 +42,7 @@ export interface BuildSdkOptionsDeps {
     resolveTeamContext: (sessionId?: string) => Promise<string | undefined>;
   };
   sessions: { getSessionId: (sessionId: string) => string | null | undefined };
-  config: { model?: string; apiKey?: string; effortLevel?: string };
+  config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode };
   abortController: AbortController;
 }
 
@@ -83,6 +87,14 @@ export interface BuildSdkOptionsResult {
   promptInput: AsyncIterable<SDKUserMessage>;
   promptController: PromptStreamController;
   helperMethod: 'native' | 'custom';
+}
+
+function canDisableThinkingForModel(model: string | undefined): boolean {
+  const normalized = model?.toLowerCase() ?? '';
+  if (!normalized || normalized.includes('fable') || normalized.includes('haiku')) {
+    return false;
+  }
+  return normalized.includes('opus') || normalized.includes('sonnet');
 }
 
 export function createPersistentPromptStream(
@@ -147,7 +159,7 @@ export async function buildSdkOptions(
 ): Promise<BuildSdkOptionsResult> {
   const {
     resolveModelVariant,
-    mcpConfigService,
+    getMcpServersSnapshot,
     createCanUseToolHandler,
     toolHooksService,
     teammateManager,
@@ -215,9 +227,15 @@ export async function buildSdkOptions(
   }
   const effectivePath = customPath || resolvedBinaryPath;
   // console.log(`[CLAUDE-CODE] Binary path: custom=${customPath || '(none)'} resolved=${resolvedBinaryPath ?? '(none)'} effective=${effectivePath ?? '(none)'}`);
+  const resolvedModel = resolveModelVariant();
 
   const options: any = {
     pathToClaudeCodeExecutable: effectivePath,
+    // NOTE: this `append` string is re-sent on EVERY resumed turn and sits at
+    // the front of the prompt-cache prefix. It MUST be byte-identical across a
+    // session's turns — any per-turn variation (e.g. a naming section that flips
+    // once the agent names the session) forces a system_changed cache miss on
+    // the whole prefix. See ClaudeCodeProvider.buildSystemPrompt / NIM-1988.
     systemPrompt: isMetaAgent
       ? systemPrompt  // Plain string — fully replaces CC system prompt
       : {
@@ -226,7 +244,16 @@ export async function buildSdkOptions(
           append: systemPrompt
         },
     settingSources,
-    mcpServers: await mcpConfigService.getMcpServersConfig({ sessionId, workspacePath: mcpConfigWorkspacePath || workspacePath }),
+    // NIM-1988: this is the provider-owned, first-build snapshot, not a live
+    // config read. The SDK rebuilds the API tool prefix on resumed turns, so a
+    // server appearing/disappearing here would force a tools_changed miss over
+    // the whole cached conversation. Do not move the live McpConfigService read
+    // back into this per-turn builder; ClaudeCodeProvider freezes it once.
+    mcpServers: await getMcpServersSnapshot({
+      sessionId,
+      workspacePath: mcpConfigWorkspacePath || workspacePath,
+      profile: isMetaAgent ? 'meta-agent' : 'standard',
+    }),
     // NIM-843 (SDK path): use ONLY the mcpServers we pass above and ignore the
     // SDK's own discovery (~/.claude.json, project .mcp.json, user settings,
     // claude.ai connectors). settingSources includes 'user'/'project' to load
@@ -238,7 +265,7 @@ export async function buildSdkOptions(
     strictMcpConfig: true,
     cwd: workspacePath,
     abortController,
-    model: resolveModelVariant(),
+    model: resolvedModel,
     // IMPORTANT: Do NOT add manual tool restrictions or prompt injections for plan mode here.
     // The SDK's `permissionMode: 'plan'` natively enforces planning restrictions (scopes
     // Write to the plan file only). Manual filtering was removed in favour of this approach.
@@ -270,6 +297,14 @@ export async function buildSdkOptions(
       'PermissionDenied': [{ hooks: [toolHooksService.createPermissionDeniedHook()] }],
     },
   };
+
+  if (config.thinkingMode === 'disabled') {
+    if (canDisableThinkingForModel(resolvedModel)) {
+      options.thinking = { type: 'disabled' as const };
+    } else {
+      console.warn(`[CLAUDE-CODE] Extended thinking cannot be disabled for model "${resolvedModel}"; omitting SDK thinking option.`);
+    }
+  }
 
   if (currentMode === 'planning') {
     console.log('[CLAUDE-CODE] Plan mode active: delegating tool restrictions to SDK permissionMode=plan');
@@ -352,7 +387,10 @@ export async function buildSdkOptions(
     // the official CLI and removes that asymmetry. The user can still
     // override via their own env var if they want the original sdk-ts label.
     ...(process.env.CLAUDE_CODE_ENTRYPOINT == null && { CLAUDE_CODE_ENTRYPOINT: 'cli' }),
-    ...(config.effortLevel && config.effortLevel !== DEFAULT_EFFORT_LEVEL && {
+    // The Claude CLI currently defaults to xhigh when this variable is absent.
+    // Always forward a resolved Nimbalyst selection, including "high", so the
+    // effort shown in the selector matches the request sent to the CLI.
+    ...(config.effortLevel && {
       CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
     }),
     // The bundled claude binary runs a per-tool idle-timeout watchdog (default

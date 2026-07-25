@@ -12,7 +12,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { NimbalystEditor, MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import type { EditorConfig } from '@nimbalyst/runtime/editor';
 import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimbalyst/runtime/editor';
-import { $getRoot } from 'lexical';
+import { $getRoot, $setSelection } from 'lexical';
 import * as Y from 'yjs';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
@@ -33,8 +33,13 @@ import { errorNotificationService } from '../../services/ErrorNotificationServic
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { useTrackerContentCollab } from '../../hooks/useTrackerContentCollab';
 import { useColdPaintFallback } from '../../hooks/useColdPaintFallback';
+import { useCollabSyncCurtain } from '../../hooks/useCollabSyncCurtain';
 import { useMarkTrackerViewed } from '../../hooks/useTrackerUnread';
+import { useRecordTrackerOpened } from '../../hooks/useRecordTrackerOpened';
 import { reconcileExternalFieldChanges } from './trackerDetailFieldSync';
+import { sanitizeTitleInput, useAutoSizedTitle } from './trackerTitleAutoSize';
+import { invokeTrackerCommentMutation } from './trackerCommentMutation';
+import { formatTrackerActivity } from './trackerActivityPresentation';
 
 interface TrackerItemDetailProps {
   itemId: string;
@@ -43,6 +48,7 @@ interface TrackerItemDetailProps {
   onSwitchToFilesMode?: () => void;
   onSwitchToAgentMode?: (sessionId: string) => void;
   onLaunchSession?: (trackerItemId: string) => void;
+  onLaunchWorktree?: (trackerItemId: string) => void;
   onArchive?: (itemId: string, archive: boolean) => void;
   onDelete?: (itemId: string) => void;
   /** Open another tracker item (relationship pill / backlink click). */
@@ -199,6 +205,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   onSwitchToFilesMode,
   onSwitchToAgentMode,
   onLaunchSession,
+  onLaunchWorktree,
   onArchive,
   onDelete,
   onOpenItem,
@@ -235,6 +242,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // Mark this item read while it is open (debounced; refires when a newer
   // version arrives). Clears its unread dot in the list/board views.
   useMarkTrackerViewed(item, workspacePath);
+  useRecordTrackerOpened(item?.id, workspacePath);
 
   // Detect whether this workspace has a team. The team check feeds the
   // content editor mode (collab vs local); the member list feeds the
@@ -439,6 +447,8 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
 
   // Local state for text fields (debounced save)
   const [localTitle, setLocalTitle] = useState(item ? getRecordTitle(item) : '');
+  // Title is a textarea so long titles wrap; it grows with its content (NIM-1615).
+  const titleRef = useAutoSizedTitle(localTitle);
   const [localDescription, setLocalDescription] = useState(item ? (item.fields.description as string ?? '') : '');
   const [localCustomFields, setLocalCustomFields] = useState<Record<string, any>>({});
   // Per-field debounce timers (not one shared timer) so editing one field never
@@ -600,7 +610,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // Escape to close
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      // Grid editors prevent Escape after using it to cancel the active cell
+      // edit. Do not also close the detail panel on that same keystroke.
+      if (e.key === 'Escape' && !e.defaultPrevented) onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -710,19 +722,16 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     itemShared: isItemShared,
   });
 
-  // Track whether the collab provider has ever reached 'connected' for this
-  // item/provider lifecycle. We show a static loading indicator over the
-  // editor until then, because the editor may mount with an empty Y.Doc
-  // while the WebSocket sync is still in flight -- without this the user
-  // would see a blank editor and mistake it for "no content".
-  const [hasSyncedOnce, setHasSyncedOnce] = useState(false);
-  useEffect(() => {
-    // Reset when a fresh provider is created (new item or new session).
-    setHasSyncedOnce(false);
-  }, [providerEpoch]);
-  useEffect(() => {
-    if (collabStatus === 'connected') setHasSyncedOnce(true);
-  }, [collabStatus]);
+  // Whether the collab provider has reached 'connected' for the CURRENT
+  // provider generation. We show a static loading indicator over the editor
+  // until then, because the editor may mount with an empty Y.Doc while the
+  // WebSocket sync is still in flight -- without this the user would see a
+  // blank editor and mistake it for "no content".
+  //
+  // NIM-1985: this must be epoch-aware, not two order-dependent effects.
+  // See useCollabSyncCurtain's doc comment for the warm-reopen inversion
+  // that left the curtain permanently covering a fully-painted body.
+  const hasSyncedOnce = useCollabSyncCurtain(collabStatus, providerEpoch);
 
   // Defensive cold-paint fallback for shared `fullDocument` trackers.
   //
@@ -776,6 +785,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         { itemId, mdLen: bodyCacheMarkdown.length, providerEpoch },
       );
       editor.update(() => {
+        // Clearing a selected node without moving selection first makes
+        // Lexical throw "selection has been lost ..." (NIM-2005).
+        $setSelection(null);
         const root = $getRoot();
         root.clear();
         $convertFromEnhancedMarkdownString(bodyCacheMarkdown, getEditorTransformers());
@@ -1098,6 +1110,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
             ? () => {
                 console.log('[TrackerItemDetail] initialEditorState fn CALLED',
                   { itemId: item?.id, mdContentLen: mdContent.length });
+                // Clearing a selected node without moving selection first makes
+                // Lexical throw "selection has been lost ..." (NIM-2005).
+                $setSelection(null);
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(mdContent, getEditorTransformers());
@@ -1160,17 +1175,25 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         </span>
         <div className="flex-1 min-w-0">
           {editable ? (
-            <input
-              type="text"
+            <textarea
+              ref={titleRef}
+              rows={1}
               value={localTitle}
-              onChange={(e) => handleTextFieldChange('title', e.target.value)}
-              onKeyDown={(e) => e.stopPropagation()}
-              className="w-full bg-transparent border-none outline-none text-base font-semibold text-nim placeholder:text-nim-faint p-0"
+              onChange={(e) => handleTextFieldChange('title', sanitizeTitleInput(e.target.value))}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                // Titles stay single-line: Enter commits instead of adding a row.
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
+              }}
+              className="w-full bg-transparent border-none outline-none text-base font-semibold text-nim placeholder:text-nim-faint p-0 m-0 resize-none overflow-hidden leading-snug break-words"
               placeholder="Item title..."
               data-testid="tracker-detail-title"
             />
           ) : (
-            <h3 className="text-base font-semibold text-nim m-0 leading-snug">{getRecordTitle(item)}</h3>
+            <h3 className="text-base font-semibold text-nim m-0 leading-snug break-words">{getRecordTitle(item)}</h3>
           )}
           <div className="flex items-center gap-2 mt-1 flex-wrap">
             <span
@@ -1408,7 +1431,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         {!focusActive && (
         <>
         {/* Linked Sessions -- kept at the top so they're visible without scrolling */}
-        {(linkedSessions.length > 0 || onLaunchSession || canLinkExistingSession || isLinkingExistingSession) && (
+        {(linkedSessions.length > 0 || onLaunchSession || onLaunchWorktree || canLinkExistingSession || isLinkingExistingSession) && (
           <div className="tracker-sessions-section">
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[11px] font-medium text-nim-muted uppercase tracking-[0.5px]">
@@ -1438,6 +1461,16 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                   >
                     <MaterialSymbol icon="add" size={14} />
                     Launch Session
+                  </button>
+                )}
+                {onLaunchWorktree && (
+                  <button
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-nim-muted hover:text-nim hover:bg-nim-tertiary transition-colors"
+                    onClick={() => onLaunchWorktree(item.id)}
+                    title="Launch a new isolated worktree session for this item"
+                  >
+                    <MaterialSymbol icon="account_tree" size={14} />
+                    Launch Worktree
                   </button>
                 )}
               </div>
@@ -1720,11 +1753,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                 <div key={entry.id} className="flex items-start gap-2 text-[11px]">
                   <span className="text-nim-muted shrink-0">{entry.authorIdentity?.displayName || 'Unknown'}</span>
                   <span className="text-nim-faint">
-                    {entry.action === 'created' ? 'created this item' :
-                     entry.action === 'commented' ? 'added a comment' :
-                     entry.action === 'status_changed' ? `changed status to ${entry.newValue}` :
-                     entry.action === 'archived' ? (entry.newValue === 'true' ? 'archived' : 'unarchived') :
-                     entry.field ? `updated ${entry.field}` : entry.action}
+                    {formatTrackerActivity(entry)}
                   </span>
                   <span className="text-nim-faint ml-auto shrink-0">{getRelativeTimeString(entry.timestamp)}</span>
                 </div>
@@ -1923,6 +1952,7 @@ const CommentsSection: React.FC<{ itemId: string; comments?: any[] }> = ({ itemI
   const [currentIdentity, setCurrentIdentity] = useState<TrackerIdentity | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState('');
+  const [commentError, setCommentError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1939,27 +1969,31 @@ const CommentsSection: React.FC<{ itemId: string; comments?: any[] }> = ({ itemI
   const handleEditSave = useCallback(async (commentId: string) => {
     const body = editBody.trim();
     if (!body) return;
-    setEditingId(null);
+    setCommentError(null);
     try {
-      await window.electronAPI.invoke('document-service:tracker-item-update-comment', {
+      await invokeTrackerCommentMutation(window.electronAPI.invoke, 'document-service:tracker-item-update-comment', {
         itemId,
         commentId,
         body,
       });
+      setEditingId(null);
     } catch (err) {
       console.error('Failed to edit comment:', err);
+      setCommentError(err instanceof Error ? err.message : String(err));
     }
   }, [itemId, editBody]);
 
   const handleDelete = useCallback(async (commentId: string) => {
+    setCommentError(null);
     try {
-      await window.electronAPI.invoke('document-service:tracker-item-update-comment', {
+      await invokeTrackerCommentMutation(window.electronAPI.invoke, 'document-service:tracker-item-update-comment', {
         itemId,
         commentId,
         deleted: true,
       });
     } catch (err) {
       console.error('Failed to delete comment:', err);
+      setCommentError(err instanceof Error ? err.message : String(err));
     }
   }, [itemId]);
 
@@ -1984,6 +2018,7 @@ const CommentsSection: React.FC<{ itemId: string; comments?: any[] }> = ({ itemI
     if (!newComment.trim() || submitting) return;
     const body = newComment.trim();
     setSubmitting(true);
+    setCommentError(null);
     // Optimistically show the comment immediately
     setOptimisticComments(prev => [...prev, {
       id: `optimistic_${Date.now()}`,
@@ -1995,7 +2030,7 @@ const CommentsSection: React.FC<{ itemId: string; comments?: any[] }> = ({ itemI
     }]);
     setNewComment('');
     try {
-      await window.electronAPI.invoke('document-service:tracker-item-add-comment', {
+      await invokeTrackerCommentMutation(window.electronAPI.invoke, 'document-service:tracker-item-add-comment', {
         itemId,
         body,
       });
@@ -2003,6 +2038,8 @@ const CommentsSection: React.FC<{ itemId: string; comments?: any[] }> = ({ itemI
       console.error('Failed to add comment:', err);
       // Remove the optimistic comment on failure
       setOptimisticComments(prev => prev.filter(c => c.body !== body));
+      setNewComment(body);
+      setCommentError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
@@ -2089,6 +2126,11 @@ const CommentsSection: React.FC<{ itemId: string; comments?: any[] }> = ({ itemI
           Post
         </button>
       </div>
+      {commentError && (
+        <p className="tracker-comment-error m-0 text-xs text-nim-error" role="alert">
+          {commentError}
+        </p>
+      )}
     </div>
   );
 };

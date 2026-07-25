@@ -14,6 +14,7 @@ interface Query extends AsyncGenerator<SDKMessage, void> {
 import path from 'path';
 import fsp from 'fs/promises';
 import os from 'os';
+import { resolveClaudeConfigDir } from './claudeCode/claudeConfigDir';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -408,7 +409,7 @@ export class TeammateManager {
 
   private async resolveTeamContextFromClaudeDirectories(): Promise<string | undefined> {
     try {
-      const teamRoot = path.join(os.homedir(), '.claude', 'teams');
+      const teamRoot = path.join(resolveClaudeConfigDir(), 'teams');
       try {
         await fsp.access(teamRoot);
       } catch {
@@ -521,7 +522,9 @@ export class TeammateManager {
         return leadAgentMatch[1];
       }
 
-      const configPathMatch = trimmed.match(/\.claude[\/\\]teams[\/\\]([a-zA-Z0-9_-]+)[\/\\]config\.json/);
+      // Not anchored on `.claude/`: CLAUDE_CONFIG_DIR can put teams/ under any
+      // directory name, so match on the teams/<name>/config.json tail instead.
+      const configPathMatch = trimmed.match(/teams[\/\\]([a-zA-Z0-9_-]+)[\/\\]config\.json/);
       if (configPathMatch?.[1]) {
         return configPathMatch[1];
       }
@@ -651,8 +654,7 @@ export class TeammateManager {
       const sanitizedTeamName = this.sanitizeName(teamName, 'team');
       const sanitizedName = this.sanitizeName(name, 'teammate');
 
-      const homeDir = os.homedir();
-      const teamConfigPath = path.join(homeDir, '.claude', 'teams', sanitizedTeamName, 'config.json');
+      const teamConfigPath = path.join(resolveClaudeConfigDir(), 'teams', sanitizedTeamName, 'config.json');
       const teamDir = path.dirname(teamConfigPath);
 
       await fsp.mkdir(teamDir, { recursive: true });
@@ -747,8 +749,7 @@ export class TeammateManager {
     try {
       const sanitizedTeamName = this.sanitizeName(teamName, 'team');
 
-      const homeDir = os.homedir();
-      const teamConfigPath = path.join(homeDir, '.claude', 'teams', sanitizedTeamName, 'config.json');
+      const teamConfigPath = path.join(resolveClaudeConfigDir(), 'teams', sanitizedTeamName, 'config.json');
 
       try {
         await fsp.access(teamConfigPath);
@@ -893,7 +894,7 @@ export class TeammateManager {
       }
 
       const sanitizedTeammateName = this.sanitizeName(teammateName, 'teammate');
-      const inboxDir = path.join(os.homedir(), '.claude', 'teams', teamName, 'inboxes');
+      const inboxDir = path.join(resolveClaudeConfigDir(), 'teams', teamName, 'inboxes');
       const inboxPath = path.join(inboxDir, `${sanitizedTeammateName}.json`);
       const lockPath = `${inboxPath}.lock`;
       await fsp.mkdir(inboxDir, { recursive: true });

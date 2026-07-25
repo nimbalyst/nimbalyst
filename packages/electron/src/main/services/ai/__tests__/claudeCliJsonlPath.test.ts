@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import path from 'path';
 import {
   encodeClaudeProjectDirName,
   resolveClaudeCliJsonlPath,
@@ -34,16 +35,26 @@ describe('claudeCliJsonlPath', () => {
   });
 
   describe('resolveClaudeCliJsonlPath', () => {
-    it('builds ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl', () => {
+    it('builds <config dir>/projects/<encoded-cwd>/<sessionId>.jsonl', () => {
       expect(
         resolveClaudeCliJsonlPath({
-          homedir: '/Users/ghinkle',
+          configDir: '/Users/ghinkle/.claude',
           cwd: '/Users/ghinkle/sources/stravu-editor',
           sessionId: 'c261169b-d681-43e7-9c59-de4035b65cef',
         }),
       ).toBe(
         '/Users/ghinkle/.claude/projects/-Users-ghinkle-sources-stravu-editor/c261169b-d681-43e7-9c59-de4035b65cef.jsonl',
       );
+    });
+
+    it('follows a relocated CLAUDE_CONFIG_DIR instead of assuming ~/.claude', () => {
+      expect(
+        resolveClaudeCliJsonlPath({
+          configDir: 'D:\\claude-config',
+          cwd: '/repo',
+          sessionId: 'abc',
+        }),
+      ).toBe(path.join('D:\\claude-config', 'projects', '-repo', 'abc.jsonl'));
     });
   });
 

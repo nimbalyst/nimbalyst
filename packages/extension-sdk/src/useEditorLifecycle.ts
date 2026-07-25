@@ -289,6 +289,7 @@ export function useEditorLifecycle<T = string>(
           opts.applyContent(parsed);
         }
         if (!mounted) return;
+        setError(null);
         setIsLoading(false);
         optionsRef.current.onLoaded?.();
       } catch (err) {
@@ -350,6 +351,7 @@ export function useEditorLifecycle<T = string>(
         const parsed = parseContent(newRawContent);
         lastSavedContentRef.current = newRawContent;
         opts.applyContent(parsed);
+        setError(null);
         clearDirty();
         opts.onExternalChange?.(parsed);
       } catch (err) {

@@ -44,9 +44,10 @@
  *
  * HOW THIS ADAPTER SOLVES IT: the per-mount editor-doc bridge.
  *
- * `getYDoc()` returns a FRESH, initially-empty `editorDoc` created per
- * adapter instance (one adapter per editor mount), NOT the sync provider's
- * long-lived shared doc. The two docs are bridged bidirectionally with
+ * `getYDoc()` returns a fresh, initially-empty `editorDoc` created per
+ * CollaborationPlugin binding, NOT the sync provider's long-lived shared doc.
+ * The adapter may survive binding remounts; prepareForBinding() rotates the
+ * editorDoc before each replacement binding. The two docs are bridged with
  * `Y.applyUpdate`, using per-direction origin markers to stop echo loops.
  * At `connect()` -- which CollaborationPlugin calls only AFTER its observers
  * are attached -- the shared doc's full state is applied to the editorDoc,
@@ -115,8 +116,9 @@
  *   keeps feeding a dead editorDoc.
  * - disconnect() must not tear down the sync provider or the bridge (it runs
  *   on StrictMode/HMR remounts); destroy() is the real teardown.
- * - One adapter instance per editor mount. Reusing an adapter across mounts
- *   re-binds Lexical to an already-populated editorDoc -- failure #1 again.
+ * - One editorDoc per CollaborationPlugin binding. The adapter may outlive a
+ *   binding, but the host must call prepareForBinding() before handing it to a
+ *   new binding so that binding receives a fresh, empty editorDoc.
  *
  * Regression tests: packages/runtime/src/sync/__tests__/CollabLexicalProvider.test.ts
  * ("per-mount editor doc bridge (NIM-1764)") cover paint-after-connect, both
@@ -193,6 +195,12 @@ export class CollabLexicalProvider implements Provider {
   // relative positions are client/clock-based and both docs share history.
   private editorDoc: Y.Doc = new Y.Doc();
   private bridgeAttached = false;
+  // Whether the current editorDoc has been claimed by a binding (bridged at
+  // connect()). A subsequent binding mount must NOT reuse a claimed editorDoc:
+  // it may be populated, and Lexical renders blank when a fresh binding attaches
+  // to an already-populated doc (it only paints post-attach events). See
+  // prepareForBinding() / NIM-1826.
+  private editorDocClaimed = false;
   // Distinct origin markers so each bridge direction can ignore its own
   // echoes. The editor->shared origin is intentionally NOT one of
   // DocumentSync's internal origins, so bridged local edits are still
@@ -268,6 +276,36 @@ export class CollabLexicalProvider implements Provider {
     return this.editorDoc;
   }
 
+  /**
+   * Called by the host at the start of each providerFactory invocation -- i.e.
+   * every time a new Lexical CollaborationPlugin binding mounts on this adapter.
+   *
+   * The adapter (and its editorDoc) outlives an individual editor mount: on a
+   * renderer reload / tab remount the host reuses the same CollabLexicalProvider
+   * (same editorDoc) for a fresh binding. If that editorDoc was already claimed
+   * by a previous binding it is populated with the connect()-time replay, and a
+   * fresh binding attaching to a populated doc renders BLANK -- Lexical only
+   * paints Y.Doc events observed AFTER its observeDeep attaches, and applying
+   * state a doc already has emits none. (NIM-1826, sibling of NIM-1764 failure
+   * #1 but at the editorDoc layer.)
+   *
+   * Mint a fresh empty editorDoc + drop the old bridge so connect()'s replay is
+   * observed by the new binding and paints. First mount (unclaimed) is a no-op.
+   * The old editorDoc is intentionally NOT destroyed here -- the previous
+   * binding may still be tearing down and referencing it; it is GC'd with that
+   * binding. destroy() still tears down whichever editorDoc is current.
+   */
+  prepareForBinding(): void {
+    if (!this.editorDocClaimed) return;
+    if (this.bridgeAttached) {
+      this.bridgeAttached = false;
+      this.syncProvider.getYDoc().off('update', this.onSharedDocUpdate);
+      this.editorDoc.off('update', this.onEditorDocUpdate);
+    }
+    this.editorDoc = new Y.Doc();
+    this.editorDocClaimed = false;
+  }
+
   // --------------------------------------------------------------------------
   // Provider interface: connect / disconnect
   // --------------------------------------------------------------------------
@@ -320,6 +358,9 @@ export class CollabLexicalProvider implements Provider {
     // doc already has is a no-op that emits no events.
     if (!this.bridgeAttached) {
       this.bridgeAttached = true;
+      // Mark this editorDoc as claimed: the NEXT binding mount must start from a
+      // fresh empty doc (prepareForBinding), or it renders blank (NIM-1826).
+      this.editorDocClaimed = true;
       this.syncProvider.getYDoc().on('update', this.onSharedDocUpdate);
       this.editorDoc.on('update', this.onEditorDocUpdate);
     }

@@ -299,6 +299,7 @@ export class TranscriptWriter {
       teamName?: string | null;
       teammateMode?: string | null;
       model?: string | null;
+      reasoningEffort?: string | null;
       color?: string | null;
       isBackground?: boolean;
       prompt: string;
@@ -312,6 +313,7 @@ export class TranscriptWriter {
       teamName: params.teamName ?? null,
       teammateMode: params.teammateMode ?? null,
       model: params.model ?? null,
+      reasoningEffort: params.reasoningEffort ?? null,
       color: params.color ?? null,
       isBackground: params.isBackground ?? false,
       prompt: params.prompt,
@@ -334,13 +336,22 @@ export class TranscriptWriter {
       resultSummary?: string;
       toolCallCount?: number;
       durationMs?: number;
+      model?: string | null;
+      reasoningEffort?: string | null;
     },
   ): Promise<void> {
     const existing = await this.store.getEventById(eventId);
     if (!existing) {
       throw new Error(`TranscriptWriter: event ${eventId} not found`);
     }
-    await this.store.mergeEventPayload(eventId, update as unknown as Record<string, unknown>);
+    await this.store.mergeEventPayload(eventId, {
+      status: update.status,
+      ...(update.resultSummary !== undefined ? { resultSummary: update.resultSummary } : {}),
+      ...(update.toolCallCount !== undefined ? { toolCallCount: update.toolCallCount } : {}),
+      ...(update.durationMs !== undefined ? { durationMs: update.durationMs } : {}),
+      ...(update.model !== undefined ? { model: update.model } : {}),
+      ...(update.reasoningEffort !== undefined ? { reasoningEffort: update.reasoningEffort } : {}),
+    });
   }
 
   // ---------------------------------------------------------------------------

@@ -31,7 +31,12 @@ const injectLoginWidgetStyles = () => {
   document.head.appendChild(style);
 };
 
-export const LoginRequiredWidget: React.FC = () => {
+interface LoginRequiredWidgetProps {
+  /** Project/worktree folder to open the login terminal in, if known. */
+  workspacePath?: string;
+}
+
+export const LoginRequiredWidget: React.FC<LoginRequiredWidgetProps> = ({ workspacePath }) => {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
   const [loginStatus, setLoginStatus] = useState<{
@@ -111,7 +116,7 @@ export const LoginRequiredWidget: React.FC = () => {
         return;
       }
 
-      const result = await window.electronAPI.invoke('claude-code:login');
+      const result = await window.electronAPI.invoke('claude-code:login', workspacePath);
 
       if (result.success) {
         setLoginStatus({

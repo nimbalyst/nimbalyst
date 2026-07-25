@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import https from 'https';
 import { spawn } from 'child_process';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 // Marketplace data cache
 let marketplaceCache: MarketplaceData | null = null;
@@ -228,7 +229,7 @@ async function fetchMarketplace(): Promise<MarketplaceData> {
  * Get the Claude Code plugins directory
  */
 function getPluginsDirectory(): string {
-  return path.join(os.homedir(), '.claude', 'plugins');
+  return path.join(resolveClaudeConfigDir(), 'plugins');
 }
 
 /**
@@ -287,7 +288,7 @@ async function readEnabledPlugins(settingsPath: string): Promise<Record<string, 
  * Project-level settings override user-level ones; settings.local.json wins last.
  */
 async function loadEnabledPlugins(workspacePath?: string): Promise<Record<string, boolean>> {
-  const userSettings = await readEnabledPlugins(path.join(os.homedir(), '.claude', 'settings.json'));
+  const userSettings = await readEnabledPlugins(path.join(resolveClaudeConfigDir(), 'settings.json'));
   if (!workspacePath) {
     return userSettings;
   }

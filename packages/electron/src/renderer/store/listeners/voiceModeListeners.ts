@@ -38,7 +38,8 @@ import {
 } from '../atoms/voiceModeState';
 import { voiceModeSettingsAtom, type VoiceModeSettings } from '../atoms/appSettings';
 import { VoiceListenWindowController } from './voiceListenWindow';
-import { activeSessionIdAtom, sessionRegistryAtom, sessionHasPendingInteractivePromptAtom, sessionPendingPromptsAtom, respondToPromptAtom, refreshSessionListAtom, reloadSessionDataAtom } from '../atoms/sessions';
+import { formatGitCommitProposalForVoice } from './voiceInteractivePrompt';
+import { activeSessionIdAtom, sessionRegistryAtom, sessionHasPendingInteractivePromptAtom, sessionPendingPromptsAtom, sessionProcessingAtom, respondToPromptAtom, refreshSessionListAtom, reloadSessionDataAtom } from '../atoms/sessions';
 import { windowModeAtom } from '../atoms/windowMode';
 
 /**
@@ -53,6 +54,25 @@ let _onLinkedSessionChanged: ((newSessionId: string) => void) | null = null;
  */
 export function onLinkedSessionChanged(callback: ((newSessionId: string) => void) | null): void {
   _onLinkedSessionChanged = callback;
+}
+
+export function getCurrentVoiceFilePath(): string | null {
+  const mode = store.get(windowModeAtom);
+
+  if (mode === 'files') {
+    const activeTabKey = store.get(activeTabIdAtom('main'));
+    return activeTabKey ? getFilePathFromKey(activeTabKey) : null;
+  }
+
+  if (mode === 'agent') {
+    const sessionId = store.get(activeSessionIdAtom);
+    if (!sessionId) return null;
+    const context = makeEditorContext(sessionId);
+    const activeTabKey = store.get(activeTabIdAtom(context));
+    return activeTabKey ? getFilePathFromKey(activeTabKey) : null;
+  }
+
+  return null;
 }
 
 // =========================================================================
@@ -346,16 +366,7 @@ function formatPromptForVoice(prompt: { promptType: string; promptId: string; da
   }
 
   if (prompt.promptType === 'git_commit_proposal_request') {
-    // Multi-line commit messages are too long for voice -- read the title only.
-    // Body paragraphs (after the first blank line) belong in the widget, not aloud.
-    const fullMessage: string = prompt.data?.commitMessage || '';
-    const titleLine = fullMessage.split('\n')[0]?.trim() || '';
-    const files = Array.isArray(prompt.data?.filesToStage) ? prompt.data.filesToStage : [];
-    const fileCount = files.length;
-    const fileSummary = fileCount === 0
-      ? ''
-      : ` Across ${fileCount} file${fileCount === 1 ? '' : 's'}.`;
-    return `Commit proposal:${fileSummary} Commit message: "${titleLine}". Say "approve" to commit or "reject" to cancel.`;
+    return formatGitCommitProposalForVoice(prompt.data);
   }
 
   if (prompt.promptType === 'request_user_input_request') {
@@ -439,6 +450,57 @@ export function initVoiceModeListeners(): () => void {
   cleanups.push(
     window.electronAPI.on('voice-mode:settings-changed', (settings: VoiceModeSettings) => {
       store.set(voiceModeSettingsAtom, settings);
+    })
+  );
+
+  // =========================================================================
+  // Current UI Context (voice tool request/response)
+  // =========================================================================
+  cleanups.push(
+    window.electronAPI.on('voice-mode:request-ui-context', (payload: {
+      workspacePath: string;
+      resultChannel: string;
+    }) => {
+      const activeWorkspacePath = store.get(voiceWorkspacePathAtom);
+      if (!isVoiceActive()) {
+        window.electronAPI.send(payload.resultChannel, {
+          workspacePath: payload.workspacePath,
+          error: 'Voice mode is not active.',
+        });
+        return;
+      }
+      if (!payload.workspacePath || payload.workspacePath !== activeWorkspacePath) {
+        window.electronAPI.send(payload.resultChannel, {
+          workspacePath: payload.workspacePath,
+          error: 'The UI context request does not match the active voice workspace.',
+        });
+        return;
+      }
+
+      const activeSessionId = store.get(activeSessionIdAtom);
+      const sessionMeta = activeSessionId
+        ? store.get(sessionRegistryAtom).get(activeSessionId)
+        : undefined;
+      const sessionStatus = activeSessionId && store.get(sessionHasPendingInteractivePromptAtom(activeSessionId))
+        ? 'waiting_for_input'
+        : activeSessionId && store.get(sessionProcessingAtom(activeSessionId))
+          ? 'running'
+          : 'idle';
+
+      window.electronAPI.send(payload.resultChannel, {
+        workspacePath: payload.workspacePath,
+        context: {
+          activeView: store.get(windowModeAtom),
+          selectedFilePath: getCurrentVoiceFilePath(),
+          activeSession: activeSessionId
+            ? {
+                id: activeSessionId,
+                title: sessionMeta?.title || 'Untitled',
+                status: sessionStatus,
+              }
+            : null,
+        },
+      });
     })
   );
 
@@ -606,7 +668,7 @@ export function initVoiceModeListeners(): () => void {
           error?: string;
         };
 
-        let message = 'Use the developer_git_commit_proposal tool to create a commit.';
+        let message = 'Use the developer_git_commit_proposal tool to create a commit. If its schema is not loaded, use ToolSearch to load it first.';
 
         if (commitContext.success && commitContext.files.length > 0) {
           const fileList = commitContext.files
@@ -1050,25 +1112,6 @@ export function initVoiceModeListeners(): () => void {
   // the main process so the voice agent knows what document is open.
   // This is pure Jotai -- no React state involved.
 
-  function getCurrentFilePath(): string | null {
-    const mode = store.get(windowModeAtom);
-
-    if (mode === 'files') {
-      const activeTabKey = store.get(activeTabIdAtom('main'));
-      return activeTabKey ? getFilePathFromKey(activeTabKey) : null;
-    }
-
-    if (mode === 'agent') {
-      const sessionId = store.get(activeSessionIdAtom);
-      if (!sessionId) return null;
-      const context = makeEditorContext(sessionId);
-      const activeTabKey = store.get(activeTabIdAtom(context));
-      return activeTabKey ? getFilePathFromKey(activeTabKey) : null;
-    }
-
-    return null;
-  }
-
   let editorContextDebounce: ReturnType<typeof setTimeout> | null = null;
   function checkAndReportFileChange(): void {
     const voiceSessionId = store.get(voiceActiveSessionIdAtom);
@@ -1076,7 +1119,7 @@ export function initVoiceModeListeners(): () => void {
 
     if (editorContextDebounce) clearTimeout(editorContextDebounce);
     editorContextDebounce = setTimeout(() => {
-      const currentFile = getCurrentFilePath();
+      const currentFile = getCurrentVoiceFilePath();
       const lastReported = store.get(voiceLastReportedFileAtom);
 
       if (currentFile !== lastReported) {

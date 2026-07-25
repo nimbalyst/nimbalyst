@@ -36,11 +36,19 @@ interface ScheduledAutomation {
 }
 
 /** Result returned by the onFire callback. */
-export interface AutomationFireResult {
-  response: string;
-  sessionId?: string;
-  outputFile?: string;
-}
+export type AutomationFireResult =
+  | {
+      success: true;
+      response: string;
+      sessionId?: string;
+      outputFile?: string;
+    }
+  | {
+      success: false;
+      response: string;
+      error: string;
+      outputFile?: string;
+    };
 
 /** Callback invoked when an automation fires. */
 export type OnAutomationFire = (
@@ -54,6 +62,7 @@ export class AutomationScheduler {
   private fs: ExtensionFileSystem;
   private ui: ExtensionUI;
   private onFire: OnAutomationFire | null = null;
+  private activeRuns = new Map<string, Promise<AutomationFireResult>>();
   private disposed = false;
 
   constructor(fs: ExtensionFileSystem, ui: ExtensionUI) {
@@ -97,8 +106,9 @@ export class AutomationScheduler {
     for (const filePath of files) {
       try {
         const content = await this.fs.readFile(filePath);
-        const status = parseAutomationStatus(content);
-        if (!status) continue;
+        const parsedStatus = parseAutomationStatus(content);
+        if (!parsedStatus) continue;
+        const status = await this.repairStaleCompletedOccurrence(filePath, content, parsedStatus);
 
         const existing = this.automations.get(filePath);
         if (existing) {
@@ -173,7 +183,20 @@ export class AutomationScheduler {
   }
 
   /** Manually run an automation immediately. */
-  async runNow(filePath: string): Promise<void> {
+  async runNow(filePath: string): Promise<AutomationFireResult> {
+    const activeRun = this.activeRuns.get(filePath);
+    if (activeRun) return activeRun;
+
+    const run = this.startRun(filePath).finally(() => {
+      if (this.activeRuns.get(filePath) === run) {
+        this.activeRuns.delete(filePath);
+      }
+    });
+    this.activeRuns.set(filePath, run);
+    return run;
+  }
+
+  private async startRun(filePath: string): Promise<AutomationFireResult> {
     const automation = this.automations.get(filePath);
     if (!automation) {
       // Try to load it fresh
@@ -181,17 +204,19 @@ export class AutomationScheduler {
         const content = await this.fs.readFile(filePath);
         const status = parseAutomationStatus(content);
         if (!status) {
-          this.ui.showError('No valid automation found in this file.');
-          return;
+          const error = 'No valid automation found in this file.';
+          this.ui.showError(error);
+          return { success: false, response: error, error };
         }
-        await this.executeAutomation(filePath, status);
+        return await this.executeAutomation(filePath, status);
       } catch (err) {
-        this.ui.showError(`Failed to run automation: ${err}`);
+        const error = `Failed to run automation: ${err}`;
+        this.ui.showError(error);
+        return { success: false, response: error, error };
       }
-      return;
     }
 
-    await this.executeAutomation(automation.filePath, automation.status);
+    return this.executeAutomation(automation.filePath, automation.status);
   }
 
   /** Get all tracked automations. */
@@ -247,7 +272,7 @@ export class AutomationScheduler {
         return;
       }
 
-      await this.executeAutomation(automation.filePath, automation.status);
+      await this.runNow(automation.filePath);
 
       // Compute the next target from a fresh now (a single overdue run catches
       // up, then cadence resumes going forward).
@@ -271,6 +296,37 @@ export class AutomationScheduler {
     return ms === null ? null : Date.now() + ms;
   }
 
+  /**
+   * Older scheduler versions could record a completed attempt without moving
+   * `nextRun`. If `lastRun` proves that the persisted occurrence was already
+   * handled, roll it forward instead of treating it as restart catch-up work.
+   */
+  private async repairStaleCompletedOccurrence(
+    filePath: string,
+    content: string,
+    status: AutomationStatus,
+  ): Promise<AutomationStatus> {
+    if (!status.nextRun || !status.lastRun) return status;
+
+    const nextRunAt = Date.parse(status.nextRun);
+    const lastRunAt = Date.parse(status.lastRun);
+    if (
+      Number.isNaN(nextRunAt) ||
+      Number.isNaN(lastRunAt) ||
+      nextRunAt > Date.now() ||
+      lastRunAt < nextRunAt
+    ) {
+      return status;
+    }
+
+    const repairedNextRun = calculateNextRun(status.schedule);
+    if (!repairedNextRun) return status;
+
+    const nextRun = repairedNextRun.toISOString();
+    await this.fs.writeFile(filePath, updateAutomationStatus(content, { nextRun }));
+    return { ...status, nextRun };
+  }
+
   private clearTimer(automation: ScheduledAutomation): void {
     if (automation.timerId !== null) {
       clearTimeout(automation.timerId);
@@ -278,10 +334,12 @@ export class AutomationScheduler {
     }
   }
 
-  private async executeAutomation(filePath: string, status: AutomationStatus): Promise<void> {
+  private async executeAutomation(filePath: string, status: AutomationStatus): Promise<AutomationFireResult> {
     if (!this.onFire) {
+      const error = 'Automation execution is not available.';
       console.warn('[Automations] No onFire callback set, skipping execution');
-      return;
+      this.ui.showError(error);
+      return { success: false, response: error, error };
     }
 
     this.ui.showInfo(`Running automation: ${status.title}`);
@@ -292,9 +350,33 @@ export class AutomationScheduler {
       const content = await this.fs.readFile(filePath);
       const prompt = extractPromptBody(content);
 
+      // Claim this scheduled occurrence before starting the AI session. The
+      // invocation may remain pending for user input or be interrupted by an
+      // app restart, so waiting until completion would leave the old due time
+      // on disk and cause startup to catch up the same occurrence again.
+      const claimedNextRun = calculateNextRun(status.schedule);
+      const claimedContent = updateAutomationStatus(content, {
+        nextRun: claimedNextRun?.toISOString(),
+      });
+      await this.fs.writeFile(filePath, claimedContent);
+
+      const tracked = this.automations.get(filePath);
+      if (tracked) {
+        tracked.status = {
+          ...tracked.status,
+          nextRun: claimedNextRun?.toISOString(),
+        };
+      }
+
       const result = await this.onFire(filePath, status, prompt);
       // console.log('[Automations] onFire result keys:', Object.keys(result), 'outputFile:', result.outputFile);
       const durationMs = Date.now() - startTime;
+
+      if (!result.success) {
+        await this.recordFailure(filePath, status, result.error, durationMs, result.outputFile);
+        this.ui.showError(`Automation "${status.title}" failed: ${result.error}`);
+        return result;
+      }
 
       // Update frontmatter with run results
       const now = new Date().toISOString();
@@ -320,10 +402,10 @@ export class AutomationScheduler {
       });
 
       // Update in-memory status
-      const tracked = this.automations.get(filePath);
-      if (tracked) {
-        tracked.status = {
-          ...tracked.status,
+      const completedTracked = this.automations.get(filePath);
+      if (completedTracked) {
+        completedTracked.status = {
+          ...completedTracked.status,
           lastRun: now,
           lastRunStatus: 'success',
           lastRunError: undefined,
@@ -333,34 +415,60 @@ export class AutomationScheduler {
       }
 
       this.ui.showInfo(`Automation "${status.title}" completed. Output: ${result.response.slice(0, 100)}...`);
+      return result;
     } catch (err) {
       const durationMs = Date.now() - startTime;
       const errorMsg = err instanceof Error ? err.message : String(err);
+      await this.recordFailure(filePath, status, errorMsg, durationMs);
+      this.ui.showError(`Automation "${status.title}" failed: ${errorMsg}`);
+      return {
+        success: false,
+        response: errorMsg,
+        error: errorMsg,
+      };
+    }
+  }
 
-      // Update frontmatter with error
-      try {
-        const now = new Date().toISOString();
-        const freshContent = await this.fs.readFile(filePath);
-        const updated = updateAutomationStatus(freshContent, {
+  private async recordFailure(
+    filePath: string,
+    status: AutomationStatus,
+    error: string,
+    durationMs: number,
+    outputFile?: string,
+  ): Promise<void> {
+    try {
+      const now = new Date().toISOString();
+      const nextRun = calculateNextRun(status.schedule);
+      const freshContent = await this.fs.readFile(filePath);
+      const updated = updateAutomationStatus(freshContent, {
+        lastRun: now,
+        lastRunStatus: 'error',
+        lastRunError: error,
+        nextRun: nextRun?.toISOString(),
+      });
+      await this.fs.writeFile(filePath, updated);
+
+      await this.appendHistory(status, {
+        id: `run_${Date.now()}`,
+        timestamp: now,
+        durationMs,
+        status: 'error',
+        error,
+        outputFile,
+      });
+
+      const tracked = this.automations.get(filePath);
+      if (tracked) {
+        tracked.status = {
+          ...tracked.status,
           lastRun: now,
           lastRunStatus: 'error',
-          lastRunError: errorMsg,
-        });
-        await this.fs.writeFile(filePath, updated);
-
-        // Record failed execution history
-        await this.appendHistory(status, {
-          id: `run_${Date.now()}`,
-          timestamp: now,
-          durationMs,
-          status: 'error',
-          error: errorMsg,
-        });
-      } catch {
-        // Best effort
+          lastRunError: error,
+          nextRun: nextRun?.toISOString(),
+        };
       }
-
-      this.ui.showError(`Automation "${status.title}" failed: ${errorMsg}`);
+    } catch (recordError) {
+      console.error('[Automations] Failed to record automation error:', recordError);
     }
   }
 

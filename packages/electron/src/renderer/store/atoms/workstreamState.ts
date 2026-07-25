@@ -97,6 +97,14 @@ export type WorkstreamLayoutMode = 'editor' | 'split' | 'transcript';
  */
 export type FileScopeMode = 'current-changes' | 'session-files' | 'all-changes';
 
+/**
+ * Content displayed in the Agent mode right panel.
+ * - edited-files: the existing navigable file tree
+ * - review: collapsed inline diffs for the workstream's changes
+ * - session-chat: a paired conversation that can inspect and interact with the active session
+ */
+export type AgentRightPanelMode = 'edited-files' | 'review' | 'session-chat';
+
 // ============================================================
 // Workstream Resources (typed editor tabs)
 // ============================================================
@@ -199,6 +207,10 @@ export interface WorkstreamState {
   splitRatio: number;
   /** Whether the files edited sidebar is visible */
   filesSidebarVisible: boolean;
+  /** Content displayed in the Agent mode right panel */
+  rightPanelMode: AgentRightPanelMode;
+  /** Normal chat session paired with each source session in the right panel. */
+  sessionChatSessionIds: Record<string, string>;
 
   // ===== Editor Tabs (within this workstream) =====
   /**
@@ -238,6 +250,8 @@ function createDefaultState(id: string): WorkstreamState {
     layoutMode: 'transcript', // Start with transcript maximized
     splitRatio: 0.5,
     filesSidebarVisible: true,
+    rightPanelMode: 'edited-files',
+    sessionChatSessionIds: {},
     openResources: [],
     activeResourceId: null,
     stagedFiles: [],
@@ -440,6 +454,20 @@ export const workstreamSplitRatioAtom = atomFamily((id: string) =>
  */
 export const workstreamFilesSidebarVisibleAtom = atomFamily((id: string) =>
   atom((get) => get(workstreamStateAtom(id)).filesSidebarVisible)
+);
+
+/**
+ * Active content mode for the Agent right panel.
+ */
+export const workstreamRightPanelModeAtom = atomFamily((id: string) =>
+  atom((get) => get(workstreamStateAtom(id)).rightPanelMode)
+);
+
+/**
+ * Normal chat sessions paired with source sessions in the Agent right panel.
+ */
+export const workstreamSessionChatIdsAtom = atomFamily((id: string) =>
+  atom((get) => get(workstreamStateAtom(id)).sessionChatSessionIds)
 );
 
 /**
@@ -662,6 +690,49 @@ export const toggleWorkstreamFilesSidebarAtom = atom(
   (get, set, workstreamId: string) => {
     const current = get(workstreamFilesSidebarVisibleAtom(workstreamId));
     set(workstreamStateAtom(workstreamId), { filesSidebarVisible: !current });
+  }
+);
+
+/**
+ * Select the content displayed in the Agent right panel.
+ */
+export const setWorkstreamRightPanelModeAtom = atom(
+  null,
+  (
+    _get,
+    set,
+    { workstreamId, mode }: { workstreamId: string; mode: AgentRightPanelMode }
+  ) => {
+    set(workstreamStateAtom(workstreamId), { rightPanelMode: mode });
+  }
+);
+
+/**
+ * Persist or clear the normal chat session paired with a source session.
+ */
+export const setWorkstreamSessionChatIdAtom = atom(
+  null,
+  (
+    get,
+    set,
+    {
+      workstreamId,
+      targetSessionId,
+      chatSessionId,
+    }: {
+      workstreamId: string;
+      targetSessionId: string;
+      chatSessionId: string | null;
+    }
+  ) => {
+    const current = get(workstreamSessionChatIdsAtom(workstreamId));
+    const next = { ...current };
+    if (chatSessionId) {
+      next[targetSessionId] = chatSessionId;
+    } else {
+      delete next[targetSessionId];
+    }
+    set(workstreamStateAtom(workstreamId), { sessionChatSessionIds: next });
   }
 );
 
@@ -992,6 +1063,8 @@ export const convertToWorkstreamAtom = atom(
       layoutMode: currentState.layoutMode,
       splitRatio: currentState.splitRatio,
       filesSidebarVisible: currentState.filesSidebarVisible,
+      rightPanelMode: currentState.rightPanelMode,
+      sessionChatSessionIds: currentState.sessionChatSessionIds,
       openResources: currentState.openResources,
       activeResourceId: currentState.activeResourceId,
       // Inherit git state from original session
@@ -1013,6 +1086,8 @@ export const convertToWorkstreamAtom = atom(
       layoutMode: 'transcript',
       splitRatio: 0.5,
       filesSidebarVisible: true,
+      rightPanelMode: 'edited-files',
+      sessionChatSessionIds: {},
       openResources: [],
       activeResourceId: null,
       stagedFiles: [],
@@ -1190,6 +1265,9 @@ export async function loadWorkstreamState(workstreamId: string): Promise<void> {
         layoutMode: (saved as WorkstreamState).layoutMode ?? current.layoutMode,
         splitRatio: (saved as WorkstreamState).splitRatio ?? current.splitRatio,
         filesSidebarVisible: (saved as WorkstreamState).filesSidebarVisible ?? current.filesSidebarVisible,
+        rightPanelMode: (saved as WorkstreamState).rightPanelMode ?? current.rightPanelMode,
+        sessionChatSessionIds:
+          (saved as WorkstreamState).sessionChatSessionIds ?? current.sessionChatSessionIds,
         openResources,
         activeResourceId,
         // Cached worktree path (available synchronously on remount)

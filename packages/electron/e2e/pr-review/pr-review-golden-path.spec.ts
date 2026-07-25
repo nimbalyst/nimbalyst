@@ -102,4 +102,25 @@ test.describe('PR review golden path', () => {
       timeout: TEST_TIMEOUTS.EDITOR_LOAD,
     });
   });
+
+  test('uses theme colors without Prism backgrounds in the collapsed diff', async () => {
+    await page.locator('[data-testid="pr-files-mode-patch"]').click();
+
+    const operator = page.locator('.pr-diff-view .token.operator').first();
+    await expect(operator).toBeVisible({ timeout: TEST_TIMEOUTS.EDITOR_LOAD });
+    await expect(operator).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+
+    const colors = await operator.evaluate((element) => {
+      const themeProbe = document.createElement('span');
+      themeProbe.style.color = 'var(--nim-code-operator)';
+      document.body.appendChild(themeProbe);
+      const theme = getComputedStyle(themeProbe).color;
+      themeProbe.remove();
+      return {
+        operator: getComputedStyle(element).color,
+        theme,
+      };
+    });
+    expect(colors.operator).toBe(colors.theme);
+  });
 });

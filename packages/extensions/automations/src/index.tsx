@@ -39,7 +39,7 @@ export async function activate(context: {
       sendPrompt: (options: {
         prompt: string;
         sessionName?: string;
-        provider?: 'claude-code' | 'claude' | 'openai';
+        provider?: 'claude-code' | 'claude' | 'openai' | 'openai-codex';
         model?: string;
       }) => Promise<{ sessionId: string; response: string }>;
     };
@@ -74,19 +74,32 @@ export async function activate(context: {
         sessionId = result.sessionId;
       } catch (err) {
         response = `*Automation "${status.title}" failed at ${new Date().toLocaleString()}.*\n\nError: ${err}`;
-        ui.showError(`Automation "${status.title}" failed: ${err}`);
+        const outputFile = await outputWriter.write(status.output, response, status.title);
+        return {
+          success: false,
+          response,
+          error: err instanceof Error ? err.message : String(err),
+          outputFile,
+        };
       }
     } else {
       response = `*Automation "${status.title}" fired at ${new Date().toLocaleString()}.*\n\nThe AI service is not available. Check that the extension has AI permissions enabled.`;
+      const outputFile = await outputWriter.write(status.output, response, status.title);
+      return {
+        success: false,
+        response,
+        error: 'The AI service is not available. Check that the extension has AI permissions enabled.',
+        outputFile,
+      };
     }
 
     const outputFile = await outputWriter.write(status.output, response, status.title);
-    return { response, sessionId, outputFile };
+    return { success: true, response, sessionId, outputFile };
   });
 
   // Wire up "Run Now" from the document header
-  setRunNowCallback((filePath: string) => {
-    scheduler?.runNow(filePath);
+  setRunNowCallback(async (filePath: string) => {
+    await scheduler?.runNow(filePath);
   });
 
   // Re-arm immediately when the header edits a definition (enable toggle,
@@ -138,7 +151,7 @@ const listAutomationsTool: ExtensionAITool = {
     type: 'object',
     properties: {},
   },
-  handler: async (_args: Record<string, unknown>, context: AIToolContext): Promise<ExtensionToolResult> => {
+  handler: async (_args: Record<string, unknown>, _context: AIToolContext): Promise<ExtensionToolResult> => {
     if (!scheduler) {
       return { success: false, error: 'Automation scheduler is not initialized' };
     }
@@ -267,7 +280,13 @@ const runAutomationTool: ExtensionAITool = {
     const filePath = id.endsWith('.md') ? id : `nimbalyst-local/automations/${id}.md`;
 
     try {
-      await scheduler.runNow(filePath);
+      const result = await scheduler.runNow(filePath);
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error,
+        };
+      }
       return {
         success: true,
         message: `Automation "${id}" has been triggered. Check the output location for results.`,

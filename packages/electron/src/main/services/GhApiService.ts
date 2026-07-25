@@ -30,6 +30,7 @@ const DEFAULT_CACHE_LIST_SECONDS = 60;
 const DEFAULT_CACHE_DETAIL_SECONDS = 30;
 /** Page size for paginated REST fetches (`per_page=N`) and GraphQL `first:N`. */
 const API_PAGE_SIZE = 100;
+const PULL_REQUEST_ACTIVITY_BATCH_SIZE = 50;
 
 /**
  * GraphQL query for a PR's inline review threads. Extracted and exported so the
@@ -44,6 +45,69 @@ export function buildReviewThreadsQuery(pageSize: number = API_PAGE_SIZE): strin
     `comments(first:${pageSize}){nodes{id author{login} body createdAt url}}} ` +
     `pageInfo{hasNextPage}}}}}`
   );
+}
+
+interface PullRequestActivityNode {
+  __typename: 'PullRequestCommit' | 'IssueComment' | 'PullRequestReview';
+  commit?: {
+    committedDate?: string | null;
+    pushedDate?: string | null;
+  };
+  createdAt?: string | null;
+  submittedAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface PullRequestActivityPayload {
+  number: number;
+  createdAt: string;
+  /** GitHub's aggregate timestamp; intentionally not used as meaningful activity. */
+  updatedAt?: string;
+  timelineItems?: {
+    nodes?: PullRequestActivityNode[] | null;
+  } | null;
+}
+
+/**
+ * GitHub's aggregate PR `updatedAt` changes when the base branch is updated,
+ * which can stamp every open PR with the same time. Query the most recent
+ * human/head activity separately so the list remains useful after that churn.
+ */
+export function buildPullRequestActivityQuery(numbers: number[]): string {
+  const uniqueNumbers = Array.from(new Set(numbers.filter((number) => Number.isInteger(number) && number > 0)));
+  const pullRequests = uniqueNumbers
+    .map(
+      (number, index) =>
+        `pr${index}:pullRequest(number:${number}){number createdAt ` +
+        `timelineItems(last:1,itemTypes:[PULL_REQUEST_COMMIT,ISSUE_COMMENT,PULL_REQUEST_REVIEW]){` +
+        `nodes{__typename ... on PullRequestCommit{commit{committedDate pushedDate}} ` +
+        `... on IssueComment{createdAt updatedAt} ` +
+        `... on PullRequestReview{submittedAt updatedAt}}}}`,
+    )
+    .join(' ');
+  return `query($owner:String!,$name:String!){` + `repository(owner:$owner,name:$name){${pullRequests}}}`;
+}
+
+function parseActivityTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Return the latest commit/comment/review time, never the aggregate PR updatedAt. */
+export function derivePullRequestActivityAt(payload: PullRequestActivityPayload): number {
+  const timestamps = [parseActivityTimestamp(payload.createdAt)];
+  for (const node of payload.timelineItems?.nodes ?? []) {
+    timestamps.push(
+      parseActivityTimestamp(node.commit?.committedDate),
+      parseActivityTimestamp(node.commit?.pushedDate),
+      parseActivityTimestamp(node.createdAt),
+      parseActivityTimestamp(node.submittedAt),
+      parseActivityTimestamp(node.updatedAt),
+    );
+  }
+  const valid = timestamps.filter((value): value is number => value != null);
+  return valid.length > 0 ? Math.max(...valid) : 0;
 }
 
 /**
@@ -413,7 +477,12 @@ function isNotFoundError(error: unknown): boolean {
   return error instanceof GhApiError && /Not Found|HTTP 404/i.test(error.stderr);
 }
 
-function mapPullToRow(workspaceId: string, remote: Remote, payload: GhPullPayload): PullRequestRow {
+function mapPullToRow(
+  workspaceId: string,
+  remote: Remote,
+  payload: GhPullPayload,
+  activityAt?: number,
+): PullRequestRow {
   const isMerged = payload.merged === true || Boolean(payload.merged_at);
   const state: PullRequestRow['state'] = isMerged
     ? 'merged'
@@ -460,7 +529,7 @@ function mapPullToRow(workspaceId: string, remote: Remote, payload: GhPullPayloa
     raw: payload,
     etag: null,
     createdAt: new Date(payload.created_at).getTime(),
-    updatedAt: new Date(payload.updated_at).getTime(),
+    updatedAt: activityAt && activityAt > 0 ? activityAt : new Date(payload.updated_at).getTime(),
     fetchedAt: now,
   };
 }
@@ -617,6 +686,59 @@ export class GhApiService {
     return result.stdout;
   }
 
+  private async getPullRequestActivityTimes(
+    workspaceId: string,
+    remote: Remote,
+    numbers: number[],
+    cacheSeconds: number,
+  ): Promise<Map<number, number>> {
+    const separator = remote.indexOf('/');
+    if (separator <= 0 || separator === remote.length - 1) {
+      throw new Error(`Invalid GitHub remote: ${remote}`);
+    }
+    const owner = remote.slice(0, separator);
+    const name = remote.slice(separator + 1);
+    const activityByNumber = new Map<number, number>();
+
+    for (let offset = 0; offset < numbers.length; offset += PULL_REQUEST_ACTIVITY_BATCH_SIZE) {
+      const batch = numbers.slice(offset, offset + PULL_REQUEST_ACTIVITY_BATCH_SIZE);
+      const args = [
+        'api',
+        'graphql',
+        '-f',
+        `query=${buildPullRequestActivityQuery(batch)}`,
+        '-F',
+        `owner=${owner}`,
+        '-F',
+        `name=${name}`,
+      ];
+      if (cacheSeconds > 0) {
+        args.push('--cache', `${cacheSeconds}s`);
+      }
+
+      const stdout = await this.ghApi(args, workspaceId);
+      const result = JSON.parse(stdout.trim()) as {
+        data?: {
+          repository?: Record<string, PullRequestActivityPayload | null> | null;
+        };
+        errors?: Array<{ message?: string }>;
+      };
+      if (!result.data?.repository) {
+        const message = result.errors
+          ?.map((error) => error.message)
+          .filter(Boolean)
+          .join('; ');
+        throw new Error(message || 'GitHub returned no pull request activity data');
+      }
+      for (const payload of Object.values(result.data.repository)) {
+        if (!payload) continue;
+        activityByNumber.set(payload.number, derivePullRequestActivityAt(payload));
+      }
+    }
+
+    return activityByNumber;
+  }
+
   async listPullRequests(
     workspaceId: string,
     remote: Remote,
@@ -661,7 +783,31 @@ export class GhApiService {
       payloads = parsePagedJson<GhPullPayload>(stdout);
     }
 
-    let rows = payloads.map((p) => mapPullToRow(workspaceId, remote, p));
+    let activityByNumber = new Map<number, number>();
+    try {
+      activityByNumber = await this.getPullRequestActivityTimes(
+        workspaceId,
+        remote,
+        payloads.map((payload) => payload.number),
+        DEFAULT_CACHE_LIST_SECONDS,
+      );
+    } catch (error) {
+      logger.warn('PR activity fetch failed; preserving cached timestamps when available', { remote, error });
+    }
+    await Promise.all(
+      payloads
+        .filter((payload) => !activityByNumber.has(payload.number))
+        .map(async (payload) => {
+          const cached = await this.store.getByNumber(workspaceId, remote, payload.number);
+          if (cached?.updatedAt) {
+            activityByNumber.set(payload.number, cached.updatedAt);
+          }
+        }),
+    );
+
+    let rows = payloads.map((payload) =>
+      mapPullToRow(workspaceId, remote, payload, activityByNumber.get(payload.number)),
+    );
     if (filters.createdByMe && filters.search === undefined) {
       // createdByMe is a client-side filter against the authed user; the
       // caller passes the user separately via the IPC layer where we have
@@ -697,7 +843,24 @@ export class GhApiService {
       }),
     workspaceId,);
     const payload = JSON.parse(stdout.trim()) as GhPullPayload;
-    const row = mapPullToRow(workspaceId, remote, payload);
+    let activityAt: number | undefined;
+    try {
+      const activityByNumber = await this.getPullRequestActivityTimes(
+        workspaceId,
+        remote,
+        [number],
+        options.noCache ? 0 : DEFAULT_CACHE_DETAIL_SECONDS,
+      );
+      activityAt = activityByNumber.get(number);
+    } catch (error) {
+      logger.warn('PR activity fetch failed; preserving cached timestamp when available', {
+        remote,
+        number,
+        error,
+      });
+      activityAt = (await this.store.getByNumber(workspaceId, remote, number))?.updatedAt;
+    }
+    const row = mapPullToRow(workspaceId, remote, payload, activityAt);
     await this.store.upsertOne(row);
     return row;
   }

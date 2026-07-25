@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
 import type { TabData } from '../contexts/TabsContext';
 import { getTextSelection } from '../components/UnifiedAI/TextSelectionIndicator';
-import type { MockupSelection, EditorContext } from '@nimbalyst/runtime';
-import { getEditorContext } from '../stores/editorContextStore';
+import type { MockupSelection, EditorContextItem } from '@nimbalyst/runtime';
+import { getActiveEditorContextItems } from '../stores/editorContextStore';
 import { isCollabUri } from '../utils/collabUri';
 
 export interface DocumentContext {
@@ -25,9 +25,8 @@ export interface DocumentContext {
     timestamp: number;
   };
   textSelectionTimestamp?: number | null; // Timestamp when text was selected
-  /** Extension-provided editor context (e.g., selected screen in a mockup project) */
-  editorContext?: EditorContext;
-  editorContextTimestamp?: number;
+  /** Extension-provided selected items (node-like editors), non-dismissed only. */
+  editorContextItems?: EditorContextItem[];
 }
 
 /**
@@ -46,8 +45,7 @@ export interface SerializableDocumentContext {
   textSelectionTimestamp?: number;
   mockupSelection?: MockupSelection;
   mockupDrawing?: string;
-  editorContext?: EditorContext;
-  editorContextTimestamp?: number;
+  editorContextItems?: EditorContextItem[];
 }
 
 interface UseDocumentContextProps {
@@ -149,14 +147,9 @@ export function useDocumentContext({ activeTab, getContentRef }: UseDocumentCont
       ? textSelectionData
       : undefined;
 
-    // Get extension-provided editor context
-    const editorContextEntry = getEditorContext();
-    const editorContext = editorContextEntry?.filePath === (activeTab.filePath || '')
-      ? editorContextEntry.context
-      : undefined;
-    const editorContextTimestamp = editorContextEntry?.filePath === (activeTab.filePath || '')
-      ? editorContextEntry.timestamp
-      : undefined;
+    // Get extension-provided selected items (node-like editors), excluding any
+    // the user has dismissed. Only for the currently active file.
+    const editorContextItems = getActiveEditorContextItems(activeTab.filePath || '');
 
     return {
       filePath: activeTab.filePath || '',
@@ -170,8 +163,7 @@ export function useDocumentContext({ activeTab, getContentRef }: UseDocumentCont
       mockupAnnotationTimestamp,
       textSelection,
       textSelectionTimestamp: textSelection?.timestamp ?? undefined,
-      editorContext,
-      editorContextTimestamp,
+      editorContextItems: editorContextItems && editorContextItems.length > 0 ? editorContextItems : undefined,
     };
   }, [activeTab, activeTab?.filePath, getContentRef.current]);
 }

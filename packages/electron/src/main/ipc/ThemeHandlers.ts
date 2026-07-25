@@ -24,6 +24,7 @@ import {
   clearPendingThemeFallback,
 } from '../utils/store';
 import { updateNativeTheme, updateWindowTitleBars } from '../theme/ThemeManager';
+import { resolveDevelopmentBuiltinThemesDirectory } from '../theme/builtinThemesDirectory';
 
 /**
  * Platform service implementation for Electron.
@@ -121,7 +122,7 @@ async function getUserThemesDir(): Promise<string> {
 /**
  * Get the built-in themes directory path.
  */
-function getBuiltInThemesDir(): string {
+async function getBuiltInThemesDir(): Promise<string> {
   // Built-in themes are in the runtime package
   // In development: packages/runtime/src/themes/builtin
   // In production: Resources/node_modules/@nimbalyst/runtime/dist/themes/builtin (extraResources)
@@ -130,9 +131,10 @@ function getBuiltInThemesDir(): string {
   let themesDir: string;
   if (isDev) {
     const appPath = app.getAppPath();
-    // Development: appPath is packages/electron, so go up one level to packages/
-    // then into runtime/src/themes/builtin
-    themesDir = path.join(appPath, '..', 'runtime', 'src', 'themes', 'builtin');
+    themesDir = await resolveDevelopmentBuiltinThemesDirectory(
+      appPath,
+      candidatePath => platformService.exists(candidatePath),
+    );
   } else {
     // Production: Themes are in extraResources (Resources/ not app.asar/)
     // process.resourcesPath points to app.asar/../ (the Resources directory)
@@ -253,7 +255,7 @@ export async function registerThemeHandlers() {
   // Discover themes on startup
   const userThemesDir = await getUserThemesDir();
   cachedUserThemesDir = userThemesDir;
-  const builtInThemesDir = getBuiltInThemesDir();
+  const builtInThemesDir = await getBuiltInThemesDir();
 
   console.log('[ThemeHandlers] User themes directory:', userThemesDir);
   console.log('[ThemeHandlers] Built-in themes directory:', builtInThemesDir);
@@ -432,7 +434,7 @@ export async function registerThemeHandlers() {
   // Reload themes (rescan directories)
   safeHandle('theme:reload', async () => {
     const userThemesDir = await getUserThemesDir();
-    const builtInThemesDir = getBuiltInThemesDir();
+    const builtInThemesDir = await getBuiltInThemesDir();
 
     await themeLoader.reload(userThemesDir);
     await themeLoader.discoverThemes(builtInThemesDir);

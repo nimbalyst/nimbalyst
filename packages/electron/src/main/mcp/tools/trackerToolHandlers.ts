@@ -8,9 +8,12 @@ import {
   getAllTrackerSchemas,
   getTrackerRoleField,
   isBuiltinTrackerSchema,
+  resetWorkspaceTrackerSchemaOverride,
   TrackerTypeExistsError,
   upsertWorkspaceTrackerSchema,
+  upsertWorkspaceTrackerSchemaPatch,
 } from '../../services/TrackerSchemaService';
+import type { TrackerSchemaPatch } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import {
   getEffectiveTrackerSyncPolicy,
   getInitialTrackerSyncStatus,
@@ -19,9 +22,13 @@ import {
 import { isTrackerSyncActive, syncTrackerItem } from '../../services/TrackerSyncManager';
 import { applyHeadlessBodyMarkdown } from '../../services/MainBodyDocService';
 import { applyRelationshipFieldWrites } from '../../services/tracker/relationshipFieldWrite';
+import { appendActivity } from '../../services/tracker/trackerActivity';
 import { extractItemCustomFields } from '../../services/tracker/trackerRowCustomFields';
 import { nestRelationshipFieldsIntoCustomFields, readStoredFieldValue } from '../../services/tracker/relationshipFieldStorage';
-import { isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { isRelationshipField, matchesFilterSet, isUntriaged } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { humanOnlyStatusMessage, isHumanOnlyStatus } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerReview';
+import { trackerItemToRecord } from '@nimbalyst/runtime/core/TrackerRecord';
+import { resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { getWorkspaceState } from '../../utils/store';
 import { getVisibleTrackerLinkedSessions, shouldPersistTrackerLinkedSessions } from '../../../shared/trackerSessionLinks';
 import {
@@ -167,31 +174,6 @@ function buildTrackerSchemaValidationError(
 //   - The NIM-436 guard is intentionally absent: the cost-benefit landed in
 //     favor of MCP being able to author descriptions in any sync mode, and
 //     the BodyDocCache will eventually mediate writes through the Y.Doc.
-
-/** Append an activity entry to a tracker item's data.activity array */
-function appendActivity(
-  data: Record<string, any>,
-  authorIdentity: any,
-  action: string,
-  details?: { field?: string; oldValue?: string; newValue?: string }
-): void {
-  const activity = data.activity || [];
-  activity.push({
-    id: `activity_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    authorIdentity,
-    action,
-    field: details?.field,
-    oldValue: details?.oldValue,
-    newValue: details?.newValue,
-    timestamp: Date.now(),
-  });
-  // Keep activity log bounded (last 100 entries)
-  if (activity.length > 100) {
-    data.activity = activity.slice(-100);
-  } else {
-    data.activity = activity;
-  }
-}
 
 /**
  * Read linkedTrackerItemIds from a raw ai_sessions.metadata column value.
@@ -591,20 +573,32 @@ export const trackerToolSchemas = [
         },
         limit: {
           type: "number",
-          description: "Maximum number of items to return (default: 50)",
+          description: "Maximum number of items to return (default: 50, capped at 250). Bulk export only: -1 returns up to 10,000 items at once and is expensive -- prefer a narrower `type`/`where` filter over dumping everything.",
         },
         where: {
           type: "array",
-          description: "Field-level filters for querying on any schema-defined field. Each entry is { field, op, value }. Supported ops: '=', '!=', 'contains', 'in'.",
+          description: "Field-level filters for querying on any schema-defined field. Each entry is { field, op, value }. This is the same filter language the tracker grid's column filters and saved views use. Ops: '=', '!=', 'contains', 'not-contains', 'in', 'not-in', '>', '>=', '<', '<=', 'between' (value is a 2-element array), 'is-empty', 'is-not-empty' (no value). Comparisons are case-insensitive; date and number fields compare in order.",
           items: {
             type: "object",
             properties: {
               field: { type: "string", description: "Field name in the tracker data (e.g., 'severity', 'component')" },
-              op: { type: "string", description: "Operator: '=', '!=', 'contains', 'in'" },
-              value: { description: "Value to compare against" },
+              op: { type: "string", description: "Operator: '=', '!=', 'contains', 'not-contains', 'in', 'not-in', '>', '>=', '<', '<=', 'between', 'is-empty', 'is-not-empty'" },
+              value: { description: "Value to compare against. Array for 'in'/'not-in', 2-element array for 'between', omitted for 'is-empty'/'is-not-empty'." },
             },
-            required: ["field", "op", "value"],
+            required: ["field", "op"],
           },
+        },
+        whereCombinator: {
+          type: "string",
+          description: "How `where` clauses combine: 'and' (default) or 'or'.",
+        },
+        inbox: {
+          type: "boolean",
+          description: "Only items that still need triage: no assignee, no priority, not in a milestone/release, and still on their type's initial status. This is the same queue the tracker's triage inbox shows. Combine with `type` to scope it to one type.",
+        },
+        full: {
+          type: "boolean",
+          description: "Return every stored field per item (custom fields, linked sessions/commits, source refs, origin). Off by default so results stay small; only turn it on when you actually need those extra fields, and pair it with `type`/`where` to keep the set narrow.",
         },
       },
     },
@@ -839,36 +833,44 @@ export const trackerToolSchemas = [
   {
     name: "tracker_define_type",
     description:
-      "Define or update a custom tracker type schema in the current workspace. The schema is persisted to .nimbalyst/trackers and becomes available in the tracker UI and MCP validation.",
+      "Define or update a tracker type schema in the current workspace. Two modes: (1) pass `schema` to define/replace a CUSTOM type (full schema object). (2) pass `patch` to override a BUILT-IN type (feature, bug, task, plan, decision, idea, automation) with a small delta — add/rename/remove status options, tweak labels/icons/colors, add fields — without redeclaring the whole schema. Patches resolve against the live built-in at load, so upstream improvements still flow through. Persisted to .nimbalyst/trackers.",
     inputSchema: {
       type: "object" as const,
       properties: {
         schema: {
           type: "object",
-          description: "Full tracker type schema object to persist.",
+          description: "Full custom tracker type schema object to persist. Cannot target a built-in type — use `patch` for those.",
+        },
+        patch: {
+          type: "object",
+          description:
+            "Delta override for a tracker type (required: `type`). Merge semantics: `fields[]` by name (`{name, set?, options?, remove?}`); select options by value (`options: {set?: [{value,label,icon?,color?}], remove?: [value], order?: [value]}`); scalars (displayName, icon, color, inlineTemplate) last-writer; `sync`/`roles` shallow-merged. Example — add a status: {\"type\":\"feature\",\"fields\":[{\"name\":\"status\",\"options\":{\"set\":[{\"value\":\"wont-do\",\"label\":\"Won't Do\",\"icon\":\"do_not_disturb_on\",\"color\":\"#64748b\"}]}}]}.",
         },
         fileName: {
           type: "string",
-          description: "Optional YAML filename to use within .nimbalyst/trackers.",
+          description: "Optional YAML filename to use within .nimbalyst/trackers (full-schema mode only).",
         },
         overwrite: {
           type: "boolean",
-          description: "Replace an existing custom type of the same name. Defaults to false, which refuses to clobber. When true, the existing YAML is backed up first.",
+          description: "Full-schema mode: replace an existing custom type of the same name. Defaults to false, which refuses to clobber. When true, the existing YAML is backed up first. (Patch mode always backs up and refines the existing patch.)",
         },
       },
-      required: ["schema"],
     },
   },
   {
     name: "tracker_delete_type",
     description:
-      "Delete a custom tracker type schema from the current workspace. Built-in types cannot be deleted.",
+      "Delete a custom tracker type schema, or reset a built-in type's override back to its shipped default. Pass `resetOverride: true` with a built-in `type` to remove its .patch.yaml/override and restore the default.",
     inputSchema: {
       type: "object" as const,
       properties: {
         type: {
           type: "string",
-          description: "The tracker type key to delete.",
+          description: "The tracker type key to delete (custom) or reset (built-in with resetOverride).",
+        },
+        resetOverride: {
+          type: "boolean",
+          description: "When true and `type` is a built-in, remove its workspace override (patch or full snapshot) and restore the shipped default instead of refusing.",
         },
       },
       required: ["type"],
@@ -1040,7 +1042,15 @@ export async function handleTrackerList(
   workspacePath: string | undefined
 ): Promise<McpToolResult> {
   try {
-    const limit = Math.min(args.limit || 50, 250);
+    const requestedLimit = Number(args.limit);
+    const limit = requestedLimit < 0
+      ? 10_000
+      : Math.min(Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 50, 250);
+    // Register custom (.nimbalyst/trackers/*.yaml) types before any role/inbox
+    // resolution runs. Without this, a custom type's workflowStatus role falls
+    // back to `status` and its inbox/collection predicates answer wrongly --
+    // and the answer would depend on whether an earlier tool warmed the registry.
+    if (workspacePath) ensureWorkspaceTrackerSchemasLoaded(workspacePath);
     const { documentServices } = await import("../../window/WindowManager");
     let docService = workspacePath ? documentServices.get(workspacePath) : undefined;
     let tempDocService: { destroy?: () => void } | undefined;
@@ -1069,6 +1079,18 @@ export async function handleTrackerList(
       return fallback;
     };
 
+    // A `where` clause with `=`/`!=` and an empty operand means "match items
+    // whose field is empty" (the idiom before `is-empty` existed). The shared
+    // matcher SKIPS a blank binary clause -- right for a half-typed grid filter,
+    // wrong for an explicit API query -- so rewrite those to the unary ops here.
+    const whereClauses = (Array.isArray(args.where) ? args.where : []).map((clause: any) => {
+      if (clause && (clause.op === '=' || clause.op === '!=')
+        && (clause.value === '' || clause.value === null || clause.value === undefined)) {
+        return { field: clause.field, op: clause.op === '=' ? 'is-empty' : 'is-not-empty' };
+      }
+      return clause;
+    });
+
     const items = rawItems
       .filter((item) => !workspacePath || item.workspace === workspacePath)
       .filter((item) => args.archived ? item.archived === true : item.archived !== true)
@@ -1090,23 +1112,26 @@ export async function handleTrackerList(
         return String(getFieldValue(item, priorityField) ?? '').toLowerCase() === String(args.priority).toLowerCase();
       })
       .filter((item) => {
-        if (!args.where || !Array.isArray(args.where)) return true;
-        return args.where.every((clause: any) => {
-          if (!clause?.field || !clause?.op) return true;
-          const value = getFieldValue(item, clause.field);
-          switch (clause.op) {
-            case '=':
-              return String(value ?? '') === String(clause.value);
-            case '!=':
-              return String(value ?? '') !== String(clause.value);
-            case 'contains':
-              return String(value ?? '').toLowerCase().includes(String(clause.value ?? '').toLowerCase());
-            case 'in':
-              return Array.isArray(clause.value) ? clause.value.map(String).includes(String(value ?? '')) : true;
-            default:
-              return true;
-          }
+        if (!args.inbox) return true;
+        // The same predicate the triage inbox renders, so "what still needs a
+        // decision?" means one thing to an agent and to the UI. Snoozes are
+        // personal and deliberately not applied here.
+        // Roles resolve per record, not per `args.type`: a global inbox spans
+        // types that name the same role differently.
+        return isUntriaged(trackerItemToRecord(item), {
+          getStatus: (record) => String(record.fields[resolveRoleFieldName(record.primaryType, 'workflowStatus')] ?? ''),
+          getPriority: (record) => String(record.fields[resolveRoleFieldName(record.primaryType, 'priority')] ?? ''),
+          getAssignee: (record) => record.fields[resolveRoleFieldName(record.primaryType, 'assignee')],
         });
+      })
+      .filter((item) => {
+        if (whereClauses.length === 0) return true;
+        // Shared with the grid's column filters and saved views, so an agent
+        // query and a saved view are literally the same filter object.
+        return matchesFilterSet(
+          { combinator: args.whereCombinator === 'or' ? 'or' : 'and', clauses: whereClauses },
+          (field) => getFieldValue(item, field),
+        );
       })
       .filter((item) => {
         if (!args.search) return true;
@@ -1132,10 +1157,19 @@ export async function handleTrackerList(
         status: item.status || '',
         priority: item.priority || '',
         tags: item.tags || [],
+        customFields: item.customFields || {},
         archived: item.archived ?? false,
         source: item.source || 'native',
+        sourceRef: item.sourceRef,
         syncStatus: item.syncStatus || 'local',
+        workspace: item.workspace,
+        module: item.module,
+        lineNumber: item.lineNumber,
+        created: item.created,
         updated: item.updated,
+        linkedSessions: item.linkedSessions,
+        linkedCommitSha: item.linkedCommitSha,
+        origin: item.origin,
       }));
     tempDocService?.destroy?.();
 
@@ -1153,7 +1187,12 @@ export async function handleTrackerList(
     if (args.priority) filters.priority = args.priority;
     if (args.owner) filters.owner = args.owner;
     if (args.search) filters.search = args.search;
+    if (args.inbox) filters.inbox = 'true';
 
+    // Lean by default so an ordinary agent list stays small; `full` adds the
+    // heavy fields (custom fields, links, origin) the CLI/export path needs.
+    // Passing every stored field on every list was a large, silent token cost.
+    const full = args.full === true;
     const structured = {
       action: "listed" as const,
       filters,
@@ -1167,6 +1206,22 @@ export async function handleTrackerList(
         title: item.title,
         status: item.status,
         priority: item.priority,
+        tags: item.tags,
+        archived: item.archived,
+        source: item.source,
+        syncStatus: item.syncStatus,
+        updated: item.updated,
+        ...(full ? {
+          customFields: item.customFields,
+          sourceRef: item.sourceRef,
+          workspace: item.workspace,
+          module: item.module,
+          lineNumber: item.lineNumber,
+          created: item.created,
+          linkedSessions: item.linkedSessions,
+          linkedCommitSha: item.linkedCommitSha,
+          origin: item.origin,
+        } : {}),
       })),
     };
 
@@ -1281,13 +1336,62 @@ export async function handleTrackerDefineType(
     // an agent doesn't think the type is missing (NIM-760).
     ensureWorkspaceTrackerSchemasLoaded(workspacePath);
 
-    const schema = buildTrackerSchemaFromArgs(args);
-    if (typeof schema.type === 'string' && isBuiltinTrackerSchema(schema.type)) {
+    // Patch mode: a delta override, the sanctioned path for customizing a
+    // built-in (or refining a custom type) without redeclaring the whole schema.
+    if (args?.patch && typeof args.patch === 'object' && !Array.isArray(args.patch)) {
+      const patch = args.patch as TrackerSchemaPatch;
+      if (typeof patch.type !== 'string' || patch.type.trim().length === 0) {
+        return {
+          content: [{ type: "text", text: "Error: patch requires a string 'type'." }],
+          isError: true,
+        };
+      }
+      const { model, filePath, backupPath } = await upsertWorkspaceTrackerSchemaPatch(
+        workspacePath,
+        patch,
+        { overwrite: args?.overwrite !== false },
+      );
+      // Mirror the RESOLVED model so offline consumers (the `nim` CLI) and the
+      // schema-sync rail carry the full resolved snapshot. Best-effort.
+      await materializeTrackerTypeDef(workspacePath, model, 'cli');
+
+      const backupNote = backupPath
+        ? ` Previous override backed up to ${path.basename(backupPath)}.`
+        : '';
       return {
         content: [
           {
             type: "text",
-            text: `Cannot redefine built-in tracker type '${schema.type}'. Use a new custom type instead.`,
+            text: JSON.stringify({
+              structured: {
+                action: "defined-type" as const,
+                type: model.type,
+                model,
+                fileName: path.basename(filePath),
+                backupFileName: backupPath ? path.basename(backupPath) : undefined,
+                mode: "patch" as const,
+              },
+              summary: `Applied override patch to tracker type '${model.type}' (.nimbalyst/trackers/${path.basename(filePath)}).${backupNote}`,
+            }),
+          },
+        ],
+        isError: false,
+      };
+    }
+
+    const schema = buildTrackerSchemaFromArgs(args);
+    if (typeof schema.type !== 'string' || schema.type.trim().length === 0) {
+      return {
+        content: [{ type: "text", text: "Error: tracker_define_type requires a `schema` (custom type) or a `patch` (override)." }],
+        isError: true,
+      };
+    }
+    if (isBuiltinTrackerSchema(schema.type)) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Cannot replace built-in tracker type '${schema.type}' with a full schema. Pass a \`patch\` to override it (add/rename status options, tweak fields), or define a new custom type instead.`,
           },
         ],
         isError: true,
@@ -1362,8 +1466,37 @@ export async function handleTrackerDeleteType(
     }
 
     if (isBuiltinTrackerSchema(args.type)) {
+      // Built-ins can't be deleted, but their workspace override can be reset back
+      // to the shipped default (removes the .patch.yaml / full-snapshot override).
+      if (args?.resetOverride === true) {
+        // resetWorkspaceTrackerSchemaOverride restores the builtin in the registry
+        // AND tombstones the mirror row (which propagates the reset to the team).
+        const reset = await resetWorkspaceTrackerSchemaOverride(workspacePath, args.type);
+        if (!reset.reset) {
+          return {
+            content: [{ type: "text", text: `Built-in tracker type '${args.type}' has no workspace override to reset.` }],
+            isError: true,
+          };
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                structured: {
+                  action: "reset-override" as const,
+                  type: args.type,
+                  fileName: reset.filePath ? path.basename(reset.filePath) : undefined,
+                },
+                summary: `Reset built-in tracker type '${args.type}' to its shipped default.`,
+              }),
+            },
+          ],
+          isError: false,
+        };
+      }
       return {
-        content: [{ type: "text", text: `Cannot delete built-in tracker type '${args.type}'.` }],
+        content: [{ type: "text", text: `Cannot delete built-in tracker type '${args.type}'. Pass resetOverride: true to restore its shipped default instead.` }],
         isError: true,
       };
     }
@@ -1613,15 +1746,43 @@ export async function handleTrackerGet(
   }
 }
 
+/**
+ * Refuse an agent write that promotes an item past review. Agents may move work
+ * to `in-review`; only a person approves it. Returns the error result to send
+ * back, or null when the write is allowed.
+ */
+function rejectHumanOnlyStatus(args: any, trackerType?: string): McpToolResult | null {
+  const workflowFields = new Set<string>(['status']);
+  const models = trackerType
+    ? [globalRegistry.get(trackerType)].filter(Boolean)
+    : globalRegistry.getAll();
+  for (const model of models) {
+    const fieldName = model
+      ? getTrackerRoleField(model.type, 'workflowStatus') ?? 'status'
+      : 'status';
+    workflowFields.add(fieldName);
+  }
+
+  const candidates = [args?.status];
+  if (args?.fields && typeof args.fields === 'object') {
+    for (const fieldName of workflowFields) {
+      candidates.push(args.fields[fieldName]);
+    }
+  }
+  const blocked = candidates.find((value) => isHumanOnlyStatus(value));
+  if (!blocked) return null;
+  return {
+    content: [{ type: "text", text: humanOnlyStatusMessage(String(blocked)) }],
+    isError: true,
+  };
+}
+
 export async function handleTrackerCreate(
   args: any,
   workspacePath: string | undefined,
   sessionId?: string | undefined
 ): Promise<McpToolResult> {
   try {
-    const { getDatabase } = await import("../../database/initialize");
-    const db = getDatabase();
-
     if (!workspacePath) {
       return {
         content: [
@@ -1637,6 +1798,12 @@ export async function handleTrackerCreate(
     // Make custom (.nimbalyst/trackers/*.yaml) types visible to the registry so
     // type validation below accepts them (NIM-760).
     ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+
+    const humanOnly = rejectHumanOnlyStatus(args, args.type);
+    if (humanOnly) return humanOnly;
+
+    const { getDatabase } = await import("../../database/initialize");
+    const db = getDatabase();
 
     // Check if this type allows creation
     const model = globalRegistry.get(args.type);
@@ -1954,11 +2121,18 @@ export async function handleTrackerUpdate(
       delete args.fields.description;
     }
 
-    const { getDatabase } = await import("../../database/initialize");
-    const db = getDatabase();
     // Make custom (.nimbalyst/trackers/*.yaml) types visible so primaryType
     // reassignment and schema validation accept them (NIM-760).
     ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+
+    // Updates name only an item id, so inspect all registered workflow-role
+    // field names. This keeps the approval boundary fail-closed before opening
+    // the database even when a custom schema calls the field something else.
+    const humanOnly = rejectHumanOnlyStatus(args);
+    if (humanOnly) return humanOnly;
+
+    const { getDatabase } = await import("../../database/initialize");
+    const db = getDatabase();
     const { docService, tempDocService } = await getDocumentServiceForWorkspace(workspacePath);
 
     try {
@@ -2964,7 +3138,7 @@ export async function handleTrackerAddComment(
     const authorIdentity = getCurrentIdentity(workspacePath);
 
     // Add comment to the comments array
-    const comments = data.comments || [];
+    const comments = data.comments || data.customFields?.comments || [];
     const commentId = `comment_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const newComment = {
       id: commentId,
@@ -2976,6 +3150,10 @@ export async function handleTrackerAddComment(
     };
     comments.push(newComment);
     data.comments = comments;
+    if (data.customFields?.comments) {
+      delete data.customFields.comments;
+      if (Object.keys(data.customFields).length === 0) delete data.customFields;
+    }
 
     // Also stamp lastModifiedBy and record activity
     data.lastModifiedBy = authorIdentity;

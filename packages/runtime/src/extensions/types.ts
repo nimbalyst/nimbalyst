@@ -11,8 +11,10 @@ import type {
   ExtensionManifest,
   ExtensionModule,
   PanelContribution,
+  SettingsRouteContribution,
   PanelGutterButtonProps,
   PanelHostProps,
+  SettingsPanelProps,
 } from '@nimbalyst/extension-sdk';
 
 export type {
@@ -50,6 +52,9 @@ export type {
   Disposable,
   PanelContribution,
   SettingsPanelContribution,
+  SettingsRouteContribution,
+  ExtensionSettingsRouteScope,
+  SettingsRouteProjectTarget,
   PanelHostProps,
   PanelGutterButtonProps,
   PanelHost,
@@ -142,4 +147,20 @@ export interface LoadedPanel {
 
   /** Optional settings component */
   settingsComponent?: ComponentType<PanelHostProps>;
+}
+
+/** A resolved first-class settings route from a loaded extension. */
+export interface LoadedExtensionSettingsRoute {
+  /** Namespaced route id: `ext:<extensionId>:<localId>`. */
+  id: `ext:${string}`;
+
+  extensionId: string;
+  scope: SettingsRouteContribution['scope'];
+  label: string;
+  group: string;
+  icon: string;
+  order: number;
+  componentName: string;
+  contribution: SettingsRouteContribution;
+  component: ComponentType<SettingsPanelProps>;
 }

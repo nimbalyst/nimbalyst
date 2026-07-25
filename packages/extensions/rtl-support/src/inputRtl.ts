@@ -26,9 +26,41 @@ const INPUT_SELECTOR = [
   '[role="textbox"]',
 ].join(',');
 
+/**
+ * Selectors for the overlay elements that visually render the composer input.
+ *
+ * Since 0.68, the composer renders its visible text in a sibling overlay
+ * (`.command-pill-overlay` / `.command-pill-overlay-text`) on top of a
+ * transparent textarea, so @mention / @@session / /command tokens can be
+ * highlighted. The textarea's own text is invisible, so setting `dir` only on
+ * it leaves the visible overlay at LTR and RTL text appears on the left.
+ */
+const OVERLAY_SELECTOR = ['.command-pill-overlay', '.command-pill-overlay-text'].join(',');
+
 let observer: MutationObserver | null = null;
 let activeInputs: Set<HTMLElement> = new Set();
 let currentSettings: RtlSettings | null = null;
+
+/** Find the sibling overlays that mirror the input's visible text. */
+function findOverlays(input: HTMLElement): HTMLElement[] {
+  const root = input.closest('.ai-chat-input-textarea-wrap') || input.parentElement;
+  if (!root) return [];
+  return [...root.querySelectorAll<HTMLElement>(OVERLAY_SELECTOR)];
+}
+
+/** Apply the detected direction to the input and its visible-text overlays. */
+function applyDirection(input: HTMLElement, dir: 'rtl' | 'ltr'): void {
+  if (input.getAttribute('dir') !== dir) {
+    input.setAttribute('dir', dir);
+    debug('input direction changed to', dir);
+  }
+  for (const overlay of findOverlays(input)) {
+    if (overlay.getAttribute('dir') !== dir) {
+      overlay.setAttribute('dir', dir);
+      debug('overlay direction changed to', dir);
+    }
+  }
+}
 
 function handleInput(e: Event): void {
   if (!currentSettings?.inputRtl) return;
@@ -38,10 +70,7 @@ function handleInput(e: Event): void {
   if (!text.trim()) return;
 
   const dir = detectDirection(text, currentSettings.threshold);
-  if (target.getAttribute('dir') !== dir) {
-    target.setAttribute('dir', dir);
-    debug('input direction changed to', dir);
-  }
+  applyDirection(target, dir);
 }
 
 function getInputText(el: HTMLElement): string {

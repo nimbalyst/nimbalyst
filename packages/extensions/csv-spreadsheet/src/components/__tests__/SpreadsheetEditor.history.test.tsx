@@ -55,6 +55,7 @@ function createHost(): EditorHostProps['host'] {
     isActive: true,
     readOnly: false,
     setDirty: vi.fn(),
+    setEditorContextItems: vi.fn(),
     registerEditorAPI: vi.fn(),
   } as unknown as EditorHostProps['host'];
 }

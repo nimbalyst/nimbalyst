@@ -46,6 +46,22 @@ export interface EnhancedImportResult {
 }
 
 /**
+ * Upgrade the retired screenshot-plus-`{mockup:...}` syntax to the universal
+ * paragraph-link contract used by EmbeddedFileNode. Keeping this migration at
+ * the markdown import boundary lets old plans repair themselves on their next
+ * save without teaching the image transformer about custom editors.
+ */
+export function upgradeLegacyMockupEmbeds(markdown: string): string {
+  return markdown.replace(
+    /!\[([^\]]*)\]\(([^)]*)\)\{mockup:([^}]+)\}(?:\{(\d+)x(\d+)\})?/g,
+    (_match, altText: string, _screenshotPath: string, embeddedPath: string, width?: string, height?: string) => {
+      const title = width && height ? ` "width=${width} height=${height}"` : '';
+      return `[${altText || embeddedPath}](${embeddedPath}${title})`;
+    },
+  );
+}
+
+/**
  * Convert markdown string to Lexical nodes with frontmatter support.
  * This function will:
  * 1. Extract frontmatter from the markdown if present
@@ -88,6 +104,8 @@ export function $convertFromEnhancedMarkdownString(
       $setFrontmatter(frontmatter);
     }
   }
+
+  content = upgradeLegacyMockupEmbeds(content);
 
   // Normalize the markdown if requested
   if (normalize) {

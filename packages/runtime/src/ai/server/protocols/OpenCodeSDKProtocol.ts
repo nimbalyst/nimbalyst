@@ -72,12 +72,24 @@ export interface OpenCodeSSEEvent {
  */
 export type OpenCodeClientFactory = (options: { baseUrl: string }) => OpenCodeClientLike;
 
+/** Module-level guard so process-exit cleanup is only registered once. */
+let processCleanupRegistered = false;
+
+/** Default startup deadline; overridable per-user for slow cold boots. */
+const DEFAULT_STARTUP_TIMEOUT_MS = 30000;
+
 /**
  * Singleton manager for the OpenCode server subprocess.
  * Reference-counted: starts on first session, stops when last session ends.
  */
-class OpenCodeServerManager {
+export class OpenCodeServerManager {
   private static instance: OpenCodeServerManager | null = null;
+
+  /**
+   * Test hook: overrides the startup health-check deadline (ms). Leave null in
+   * production so the env var / default is used.
+   */
+  static startupTimeoutOverrideMs: number | null = null;
 
   private serverProcess: ChildProcess | null = null;
   private port: number = 0;
@@ -85,12 +97,50 @@ class OpenCodeServerManager {
   private ready = false;
   private readyPromise: Promise<void> | null = null;
   private workspacePath: string = '';
+  /** Last spawn error (e.g. ENOENT) so we can surface it instead of a 30s timeout. */
+  private lastSpawnError: Error | null = null;
+  /** Rolling tail of server stderr lines, included in startup failure messages. */
+  private stderrTail: string[] = [];
+
+  private constructor() {
+    // Kill any spawned server when the host process exits so `opencode serve`
+    // doesn't outlive the app and accumulate as a zombie. Registered once.
+    if (!processCleanupRegistered) {
+      processCleanupRegistered = true;
+      process.once('exit', () => {
+        const proc = OpenCodeServerManager.instance?.serverProcess;
+        if (proc) {
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            // best-effort; process is exiting anyway
+          }
+        }
+      });
+    }
+  }
 
   static getInstance(): OpenCodeServerManager {
     if (!OpenCodeServerManager.instance) {
       OpenCodeServerManager.instance = new OpenCodeServerManager();
     }
     return OpenCodeServerManager.instance;
+  }
+
+  /** Test-only: tear down and drop the singleton so each test starts clean. */
+  static resetForTests(): void {
+    OpenCodeServerManager.instance?.killServerProcess();
+    OpenCodeServerManager.instance = null;
+  }
+
+  private getStartupTimeoutMs(): number {
+    if (OpenCodeServerManager.startupTimeoutOverrideMs != null) {
+      return OpenCodeServerManager.startupTimeoutOverrideMs;
+    }
+    const raw = process.env.NIMBALYST_OPENCODE_STARTUP_TIMEOUT_MS;
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    return DEFAULT_STARTUP_TIMEOUT_MS;
   }
 
   get baseUrl(): string {
@@ -143,6 +193,9 @@ class OpenCodeServerManager {
       ...(env || {}),
     };
 
+    this.lastSpawnError = null;
+    this.stderrTail = [];
+
     this.serverProcess = spawn('opencode', [
       'serve',
       '--port', String(this.port),
@@ -155,6 +208,9 @@ class OpenCodeServerManager {
 
     this.serverProcess.on('error', (error) => {
       console.error('[OPENCODE-PROTOCOL] Server process error:', error.message);
+      // Record the spawn error so waitForReady bails out immediately (e.g. a
+      // missing CLI surfaces as ENOENT instead of a full startup timeout).
+      this.lastSpawnError = error;
       this.ready = false;
       this.readyPromise = null;
     });
@@ -166,25 +222,43 @@ class OpenCodeServerManager {
       this.readyPromise = null;
     });
 
-    // Capture stderr for debugging
+    // Capture stderr so startup failures can report the real reason.
     this.serverProcess.stderr?.on('data', (data: Buffer) => {
-      const text = data.toString().trim();
-      if (text) {
-        // console.log('[OPENCODE-PROTOCOL] Server stderr:', text);
-      }
+      this.recordStderr(data.toString());
     });
 
-    // Wait for the server to be ready by polling the health endpoint
-    await this.waitForReady();
-    this.ready = true;
-    this.readyPromise = null;
+    // Wait for the server to be ready by polling the health endpoint.
+    try {
+      await this.waitForReady();
+      this.ready = true;
+      this.readyPromise = null;
+    } catch (startError) {
+      // The server may have finished booting right at/after the deadline;
+      // adopt the healthy process instead of orphaning it.
+      if (this.serverProcess && (await this.probeHealthOnce())) {
+        console.log(`[OPENCODE-PROTOCOL] Adopting late-ready OpenCode server on port ${this.port}`);
+        this.ready = true;
+        this.readyPromise = null;
+        return;
+      }
+      // Otherwise kill the still-booting child and clear all state so the next
+      // message retries cleanly rather than re-failing on a cached rejection.
+      const failure = this.buildStartupError(startError);
+      this.killServerProcess();
+      throw failure;
+    }
   }
 
-  private async waitForReady(timeoutMs = 30000): Promise<void> {
+  private async waitForReady(timeoutMs = this.getStartupTimeoutMs()): Promise<void> {
     const startTime = Date.now();
     const pollIntervalMs = 200;
 
     while (Date.now() - startTime < timeoutMs) {
+      // A spawn error (e.g. ENOENT) means the process will never become healthy;
+      // fail fast instead of polling a dead port until the deadline.
+      if (this.lastSpawnError) {
+        throw this.lastSpawnError;
+      }
       try {
         const response = await fetch(`${this.baseUrl}/global/health`);
         if (response.ok) {
@@ -201,24 +275,75 @@ class OpenCodeServerManager {
   }
 
   private stopServer(): void {
-    if (this.serverProcess) {
-      console.log('[OPENCODE-PROTOCOL] Stopping OpenCode server');
-      this.serverProcess.kill('SIGTERM');
+    this.killServerProcess();
+  }
 
-      // Force kill after 5 seconds if still running
-      const forceKillTimeout = setTimeout(() => {
-        if (this.serverProcess) {
-          this.serverProcess.kill('SIGKILL');
-        }
-      }, 5000);
+  /**
+   * Kill the spawned server (SIGTERM, then SIGKILL after a grace period) and
+   * clear all manager state. Safe to call when no server is running.
+   */
+  private killServerProcess(): void {
+    const proc = this.serverProcess;
+    this.serverProcess = null;
+    this.ready = false;
+    this.readyPromise = null;
+    if (!proc) return;
 
-      this.serverProcess.on('exit', () => {
-        clearTimeout(forceKillTimeout);
-      });
-
-      this.serverProcess = null;
-      this.ready = false;
+    console.log('[OPENCODE-PROTOCOL] Stopping OpenCode server');
+    try {
+      proc.kill('SIGTERM');
+    } catch {
+      // already gone
     }
+
+    // Force kill after 5 seconds if still running.
+    const forceKillTimeout = setTimeout(() => {
+      try {
+        proc.kill('SIGKILL');
+      } catch {
+        // already gone
+      }
+    }, 5000);
+    proc.once('exit', () => clearTimeout(forceKillTimeout));
+    if (typeof forceKillTimeout.unref === 'function') forceKillTimeout.unref();
+  }
+
+  /** Record a stderr line into the rolling tail (last 20 lines). */
+  private recordStderr(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    this.stderrTail.push(trimmed);
+    if (this.stderrTail.length > 20) this.stderrTail.shift();
+  }
+
+  /** Single health probe; true only when the server answers with an ok response. */
+  private async probeHealthOnce(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.baseUrl}/global/health`);
+      return !!response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Build a useful startup-failure error: an ENOENT spawn error becomes a
+   * "CLI not found" message, and the last few stderr lines are appended so the
+   * real reason is visible instead of a bare "failed to start within 30000ms".
+   */
+  private buildStartupError(cause: unknown): Error {
+    let message = cause instanceof Error ? cause.message : String(cause);
+
+    const spawnError = this.lastSpawnError as NodeJS.ErrnoException | null;
+    if (spawnError?.code === 'ENOENT') {
+      message = `OpenCode CLI not found ("opencode"). Ensure it is installed and on PATH (PATH=${process.env.PATH ?? ''}).`;
+    }
+
+    const tail = this.stderrTail.slice(-5).join('\n');
+    if (tail) {
+      message += `\nLast OpenCode server output:\n${tail}`;
+    }
+    return new Error(message);
   }
 
   private async findAvailablePort(): Promise<number> {

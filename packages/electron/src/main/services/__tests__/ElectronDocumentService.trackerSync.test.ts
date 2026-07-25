@@ -101,6 +101,7 @@ let service: ElectronDocumentService;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mockQuery.mockReset();
   mockGetWorkspaceState.mockReturnValue({});
   mockGlobalRegistryGet.mockReturnValue(undefined);
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tracker-sync-test-'));
@@ -195,9 +196,7 @@ describe('archiveTrackerItem sync integration', () => {
 
     // Lookup row
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ source: 'tracked' })] });
-    // UPDATE archived
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-    // SELECT after update
+    // UPDATE archived RETURNING the exact mutation snapshot
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ archived: true })] });
 
     await service.archiveTrackerItem('bug-001', true);
@@ -212,7 +211,6 @@ describe('archiveTrackerItem sync integration', () => {
     mockSyncTrackerItem.mockResolvedValue(undefined);
 
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ archived: true, source: 'tracked' })] });
-    mockQuery.mockResolvedValueOnce({ rows: [] });
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ archived: false })] });
 
     await service.archiveTrackerItem('bug-001', false);
@@ -224,7 +222,6 @@ describe('archiveTrackerItem sync integration', () => {
     mockIsTrackerSyncActive.mockReturnValue(false);
 
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ source: 'tracked' })] });
-    mockQuery.mockResolvedValueOnce({ rows: [] });
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ archived: true })] });
 
     await service.archiveTrackerItem('bug-001', true);
@@ -237,7 +234,6 @@ describe('archiveTrackerItem sync integration', () => {
     mockSyncTrackerItem.mockRejectedValue(new Error('Sync failed'));
 
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ source: 'tracked' })] });
-    mockQuery.mockResolvedValueOnce({ rows: [] });
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ archived: true })] });
 
     // Should not throw
@@ -352,7 +348,6 @@ describe('tracker change event watchers', () => {
     mockIsTrackerSyncActive.mockReturnValue(false);
 
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ source: 'tracked' })] });
-    mockQuery.mockResolvedValueOnce({ rows: [] });
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ archived: true })] });
 
     const events: any[] = [];

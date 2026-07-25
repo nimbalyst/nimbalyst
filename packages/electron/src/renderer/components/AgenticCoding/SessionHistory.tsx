@@ -56,7 +56,14 @@ import { superLoopListAtom, upsertSuperLoopAtom, removeSuperLoopAtom } from '../
 import { useSuperLoopDialog } from '../../hooks/useSuperLoop';
 import { workspaceSessionTurnActivityAtom } from '../../store/atoms/sessionActivity';
 import { sessionKanbanTagsAtom } from '../../store/atoms/sessionKanban';
-import { sessionListTagFilterAtom } from '../../store/atoms/sessionListFilter';
+import {
+  isWorkstreamParentSession,
+  matchesSessionListTag,
+  SESSION_LIST_VIRTUAL_TAGS,
+  sessionListTagFilterAtom,
+  VIRTUAL_TAG_WORKSTREAMS,
+  VIRTUAL_TAG_WORKTREE,
+} from '../../store/atoms/sessionListFilter';
 import type { SuperLoop } from '../../../shared/types/superLoop';
 import { store } from '@nimbalyst/runtime/store';
 import { createMetaAgentSession } from '../../utils/metaAgentUtils';
@@ -108,10 +115,6 @@ type UnifiedListItem =
   | { type: 'blitz'; blitzId: string; worktrees: { worktreeId: string; sessions: SessionItem[] }[]; timestamp: number; rank: number }
   | { type: 'superLoop'; loop: SuperLoop; timestamp: number; rank: number }
   | { type: 'metaAgent'; metaSession: SessionItem; childSessions: SessionItem[]; timestamp: number; rank: number };
-
-// Virtual tag name used in the search-by-tag picker to filter sessions
-// attached to a worktree. Not stored on any session.
-const VIRTUAL_TAG_WORKTREE = 'worktree';
 
 // Search filter options for content search
 type SearchTimeRange = '7d' | '30d' | '90d' | 'all';
@@ -272,7 +275,9 @@ const SessionHistoryComponent: React.FC = () => {
     void dispatchCreateNewSession(undefined);
   }, [dispatchCreateNewSession]);
   const onNewWorktreeSession: ((options?: { baseBranch?: string; name?: string }) => void | Promise<void>) | undefined = isWorktreesFeatureAvailable
-    ? (options?: { baseBranch?: string; name?: string }) => dispatchCreateNewWorktreeSession(options)
+    ? async (options?: { baseBranch?: string; name?: string }) => {
+        await dispatchCreateNewWorktreeSession(options);
+      }
     : undefined;
   const onAddSessionToWorktree: ((worktreeId: string) => void) | undefined = isWorktreesFeatureAvailable
     ? (worktreeId: string) => { void dispatchAddSessionToWorktree(worktreeId); }
@@ -449,7 +454,7 @@ const SessionHistoryComponent: React.FC = () => {
   const searchTrackDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Tags available for selection: exclude already-active tags, optionally narrow by typed query.
-  // Includes the virtual `#worktree` tag, which matches any session attached to a worktree.
+  // Virtual tags match structural session groups and are not persisted on sessions.
   const filteredTagOptions = useMemo(() => {
     const activeSet = new Set(tagFilter.tags);
     const q = tagQuery.toLowerCase();
@@ -461,8 +466,15 @@ const SessionHistoryComponent: React.FC = () => {
         virtuals.push({ name: VIRTUAL_TAG_WORKTREE, count: worktreeCount });
       }
     }
+    if (!activeSet.has(VIRTUAL_TAG_WORKSTREAMS)) {
+      let workstreamCount = 0;
+      for (const s of allSessions) if (isWorkstreamParentSession(s)) workstreamCount++;
+      if (workstreamCount > 0) {
+        virtuals.push({ name: VIRTUAL_TAG_WORKSTREAMS, count: workstreamCount });
+      }
+    }
     const real = allWorkspaceTags.filter(
-      t => !activeSet.has(t.name) && t.name !== VIRTUAL_TAG_WORKTREE,
+      t => !activeSet.has(t.name) && !SESSION_LIST_VIRTUAL_TAGS.has(t.name),
     );
     return [...virtuals, ...real].filter(
       t => !q || t.name.toLowerCase().includes(q),
@@ -808,16 +820,13 @@ const SessionHistoryComponent: React.FC = () => {
         return false;
       }
       if (hasTagFilter) {
-        const sessionTags = session.tags ?? [];
-        const matchesAny = activeTags.some(t =>
-          t === VIRTUAL_TAG_WORKTREE ? !!session.worktreeId : sessionTags.includes(t),
-        );
+        const matchesAny = activeTags.some(t => matchesSessionListTag(session, t, sessionRegistry));
         if (!matchesAny) return false;
       }
       return true;
     });
     setSessions(filtered.sort(compareSessionOrder));
-  }, [searchQuery, tagFilter.tags, allSessions, mode, compareSessionOrder]);
+  }, [searchQuery, tagFilter.tags, allSessions, mode, compareSessionOrder, sessionRegistry]);
 
   useEffect(() => {
     const commitOrderMap = (nextMap: Map<string, number>) => {
@@ -835,7 +844,16 @@ const SessionHistoryComponent: React.FC = () => {
         clearTimeout(orderThrottleTimerRef.current);
         orderThrottleTimerRef.current = null;
       }
-      commitOrderMap(liveOrderTimestampMap);
+      // Guard the commit the same way the throttled path does below (#924).
+      // `commitOrderMap` sets `displayOrderRankMap`, and `buildCommittedRankMap`
+      // — which depends on that state and is in this effect's deps — gets a new
+      // identity on every commit, re-running this effect. Without an equality
+      // check that is an unconditional setState → dep-change → setState loop
+      // (React #185), which crashed the app whenever sortOrder was 'created'.
+      const currentDisplayMap = displayOrderTimestampMapRef.current;
+      if (!mapsHaveEqualEntries(currentDisplayMap, liveOrderTimestampMap)) {
+        commitOrderMap(liveOrderTimestampMap);
+      }
       return;
     }
 

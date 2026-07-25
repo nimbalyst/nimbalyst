@@ -149,6 +149,7 @@ function registerVoiceCallbacks() {
     window.electronAPI.send('voice-mode:agent-task-complete', {
       sessionId: data.sessionId,
       summary,
+      error: data.error,
     });
   });
 

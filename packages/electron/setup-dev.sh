@@ -2,11 +2,14 @@
 
 echo "Setting up electron for development..."
 
-# Download electron binary if not present
-npx -y electron@37.2.6 --version > /dev/null 2>&1
+# Electron 42+ dropped the download from its own package postinstall, so this
+# package's postinstall runs `install-electron` explicitly -- a normal
+# `npm install` already leaves the binary in place. This script is the manual
+# repair path for a tree installed with --ignore-scripts or an interrupted
+# download; it's a fast no-op when the right version is already present.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+npx --no-install install-electron
 
 echo "Electron binary ready. You can now run:"
 echo "  npm run dev  (from packages/electron directory)"
-echo ""
-echo "Note: Due to pnpm/electron incompatibility, the first time you run"
-echo "npm run dev it will fail. Just run it a second time and it will work."

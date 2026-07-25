@@ -84,7 +84,18 @@ interface TrackerSchemaServiceModule {
     workspacePath: string,
     def: { type: string; model: string | null; syncId: number },
   ) => Promise<{ applied: boolean; deleted?: boolean; reason?: string }>;
+  upsertWorkspaceTrackerSchemaPatch: (
+    workspacePath: string,
+    patch: unknown,
+    options?: { overwrite?: boolean },
+  ) => Promise<{ model: { type: string; fields: any[] }; filePath: string; backupPath?: string }>;
   TrackerTypeExistsError: new (...args: any[]) => Error;
+}
+
+function statusOptionValues(service: TrackerSchemaServiceModule, type: string): string[] {
+  const model = service.getTrackerSchema(type) as unknown as { fields: any[] } | undefined;
+  const status = model?.fields.find((f) => f.name === 'status');
+  return (status?.options ?? []).map((o: any) => o.value);
 }
 
 function buildCustomYaml(type: string, displayName: string): string {
@@ -277,6 +288,137 @@ describe('tracker_define_type clobber guard (NIM-760)', () => {
   });
 });
 
+describe('TrackerSchemaService builtin override via patch', () => {
+  let workspacePath: string;
+  let trackersDir: string;
+  let service: TrackerSchemaServiceModule;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), 'tracker-schema-patch-'));
+    trackersDir = path.join(workspacePath, '.nimbalyst', 'trackers');
+    await fs.mkdir(trackersDir, { recursive: true });
+
+    service = (await import('../TrackerSchemaService')) as unknown as TrackerSchemaServiceModule;
+    service.initTrackerSchemaService(workspacePath);
+  });
+
+  afterEach(async () => {
+    service.updateTrackerSchemaWorkspace(null);
+    await fs.rm(workspacePath, { recursive: true, force: true });
+  });
+
+  it('writes <type>.patch.yaml and registers the resolved builtin override', async () => {
+    // 'task' is a builtin; adding a status via patch must NOT be refused and
+    // must resolve against the live builtin (keeping its shipped options).
+    const before = statusOptionValues(service, 'task');
+    expect(before).toContain('to-do');
+    expect(before).not.toContain('archived');
+
+    const result = await service.upsertWorkspaceTrackerSchemaPatch(workspacePath, {
+      type: 'task',
+      fields: [
+        { name: 'status', options: { set: [{ value: 'archived', label: 'Archived', icon: 'inventory_2' }] } },
+      ],
+    });
+
+    expect(path.basename(result.filePath)).toBe('task.patch.yaml');
+    // On-disk artifact is a small delta, not a full snapshot.
+    const onDisk = await fs.readFile(result.filePath, 'utf-8');
+    expect(onDisk).toContain('type: task');
+    expect(onDisk).toContain('archived');
+    expect(onDisk).not.toContain('displayNamePlural'); // not a full schema copy
+
+    // Registry now holds the resolved model: shipped options + the new one.
+    const after = statusOptionValues(service, 'task');
+    expect(after).toContain('to-do');
+    expect(after).toContain('archived');
+    expect(service.isBuiltinTrackerSchema('task')).toBe(true);
+  });
+
+  it('re-resolves a patch on load and reports the override', async () => {
+    // Write a patch file directly, then re-load the workspace from disk.
+    await fs.writeFile(
+      path.join(trackersDir, 'bug.patch.yaml'),
+      `type: bug\nfields:\n  - name: status\n    options:\n      set:\n        - value: cannot-reproduce\n          label: Cannot Reproduce\n          icon: help\n`,
+      'utf-8',
+    );
+    service.updateTrackerSchemaWorkspace(null);
+    service.updateTrackerSchemaWorkspace(workspacePath);
+
+    expect(statusOptionValues(service, 'bug')).toContain('cannot-reproduce');
+    const override = await service.getWorkspaceTrackerSchemaOverride(workspacePath, 'bug');
+    expect(override.overridden).toBe(true);
+    expect(path.basename(override.filePath!)).toBe('bug.patch.yaml');
+  });
+
+  it('resets a patch override back to the builtin default', async () => {
+    await service.upsertWorkspaceTrackerSchemaPatch(workspacePath, {
+      type: 'task',
+      fields: [{ name: 'status', options: { set: [{ value: 'archived', label: 'Archived' }] } }],
+    });
+    expect(statusOptionValues(service, 'task')).toContain('archived');
+
+    const reset = await service.resetWorkspaceTrackerSchemaOverride(workspacePath, 'task');
+    expect(reset.reset).toBe(true);
+
+    // Builtin restored: the patched option is gone.
+    expect(statusOptionValues(service, 'task')).not.toContain('archived');
+    const after = await service.getWorkspaceTrackerSchemaOverride(workspacePath, 'task');
+    expect(after.overridden).toBe(false);
+  });
+});
+
+describe('TrackerSchemaService reset propagates a tombstone', () => {
+  let workspacePath: string;
+  let service: TrackerSchemaServiceModule;
+  let removeMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    removeMock = vi.fn(async () => undefined);
+    vi.doMock('../tracker/trackerTypeDefStore', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../tracker/trackerTypeDefStore')>();
+      return { ...actual, removeTrackerTypeDef: removeMock };
+    });
+
+    workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), 'tracker-schema-reset-'));
+    await fs.mkdir(path.join(workspacePath, '.nimbalyst', 'trackers'), { recursive: true });
+
+    service = (await import('../TrackerSchemaService')) as unknown as TrackerSchemaServiceModule;
+    service.initTrackerSchemaService(workspacePath);
+  });
+
+  afterEach(async () => {
+    service.updateTrackerSchemaWorkspace(null);
+    vi.doUnmock('../tracker/trackerTypeDefStore');
+    await fs.rm(workspacePath, { recursive: true, force: true });
+  });
+
+  it('tombstones the mirror row so the reset reaches the team', async () => {
+    await service.upsertWorkspaceTrackerSchemaPatch(workspacePath, {
+      type: 'task',
+      fields: [{ name: 'status', options: { set: [{ value: 'archived', label: 'Archived' }] } }],
+    });
+
+    const reset = await service.resetWorkspaceTrackerSchemaOverride(workspacePath, 'task');
+    expect(reset.reset).toBe(true);
+    // The tombstone is what propagates the reset (pending delete → pushed → peers
+    // restore the builtin). Without it the stale override row keeps syncing.
+    expect(removeMock).toHaveBeenCalledWith(workspacePath, 'task');
+  });
+
+  it('does not tombstone when there was no override to reset', async () => {
+    const reset = await service.resetWorkspaceTrackerSchemaOverride(workspacePath, 'task');
+    expect(reset.reset).toBe(false);
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('TrackerSchemaService remote schema sync apply', () => {
   let workspacePath: string;
   let service: TrackerSchemaServiceModule;
@@ -359,5 +501,57 @@ describe('TrackerSchemaService remote schema sync apply', () => {
     expect(result).toEqual({ applied: true, deleted: true });
     expect(service.getTrackerSchema('remoteEpic')).toBeUndefined();
     expect(mockWindowSend).toHaveBeenCalledWith('tracker-schema:changed', expect.any(Array));
+  });
+
+  it('applies a synced BUILTIN override on a peer, and a tombstone restores the builtin', async () => {
+    // A resolved-snapshot override for a builtin arrives from the admin. The peer
+    // must register it over the builtin (task gains an extra status), keeping
+    // isBuiltin true; a later tombstone restores the shipped builtin.
+    const overrideModel = JSON.stringify({
+      type: 'task',
+      displayName: 'Task',
+      displayNamePlural: 'Tasks',
+      icon: 'task_alt',
+      color: '#2563eb',
+      modes: { inline: true, fullDocument: false },
+      idPrefix: 'tsk',
+      idFormat: 'ulid',
+      sync: { mode: 'shared', scope: 'project' },
+      fields: [
+        { name: 'title', type: 'string', required: true },
+        {
+          name: 'status',
+          type: 'select',
+          options: [
+            { value: 'to-do', label: 'To Do' },
+            { value: 'archived', label: 'Archived' },
+          ],
+        },
+      ],
+      roles: { title: 'title', workflowStatus: 'status' },
+    });
+
+    const applied = await service.applyRemoteWorkspaceTrackerSchemaDef(workspacePath, {
+      type: 'task',
+      model: overrideModel,
+      syncId: 10,
+    });
+    expect(applied.applied).toBe(true);
+    expect(service.isBuiltinTrackerSchema('task')).toBe(true);
+    const taskModel = service.getTrackerSchema('task') as unknown as { fields: any[] };
+    const values = taskModel.fields.find((f) => f.name === 'status')?.options?.map((o: any) => o.value);
+    expect(values).toContain('archived');
+
+    // Tombstone (reset from the admin) restores the shipped builtin.
+    const del = await service.applyRemoteWorkspaceTrackerSchemaDef(workspacePath, {
+      type: 'task',
+      model: null,
+      syncId: 11,
+    });
+    expect(del).toEqual({ applied: true, deleted: true });
+    expect(service.isBuiltinTrackerSchema('task')).toBe(true);
+    const restored = service.getTrackerSchema('task') as unknown as { fields: any[] };
+    const restoredValues = restored.fields.find((f) => f.name === 'status')?.options?.map((o: any) => o.value);
+    expect(restoredValues).not.toContain('archived');
   });
 });

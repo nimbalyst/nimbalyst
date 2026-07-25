@@ -174,6 +174,32 @@ describe('trackerRecordToItem round-trip', () => {
     expect(restored.documentId).toBe(original.documentId);
   });
 
+  it('preserves system collections carried through legacy customFields', () => {
+    const comments = [
+      { id: 'comment-1', authorIdentity: { displayName: 'Alice' }, body: 'hello', createdAt: 1 },
+    ];
+    const activity = [
+      { id: 'activity-1', authorIdentity: { displayName: 'Alice' }, action: 'commented', timestamp: 1 },
+    ];
+    const linkedPullRequests = [
+      { remote: 'nimbalyst/nimbalyst', number: 42, url: 'https://github.com/nimbalyst/nimbalyst/pull/42' },
+    ];
+    const original = makeTrackerItem({
+      customFields: {
+        severity: 'high',
+        comments,
+        activity,
+        linkedPullRequests,
+      },
+    });
+
+    const restored = trackerRecordToItem(trackerItemToRecord(original));
+
+    expect(restored.customFields?.comments).toEqual(comments);
+    expect(restored.customFields?.activity).toEqual(activity);
+    expect(restored.customFields?.linkedPullRequests).toEqual(linkedPullRequests);
+  });
+
   it('preserves custom fields in customFields', () => {
     const original = makeTrackerItem();
     const record = trackerItemToRecord(original);
@@ -259,6 +285,37 @@ describe('dbRowToRecord', () => {
     const record = dbRowToRecord(row);
     expect(record.fields.title).toBe('Stringified');
     expect(record.fields.status).toBe('open');
+  });
+
+  it('normalizes timestamp values from parsed database JSON', () => {
+    const row = {
+      id: 'x',
+      type: 'bug',
+      type_tags: ['bug'],
+      data: {
+        title: 'Timestamp shapes',
+        created: new Date('2026-07-23T10:00:00.000Z'),
+        updated: Date.parse('2026-07-24T11:30:00.000Z'),
+      },
+      workspace: '/ws',
+      document_path: '',
+      line_number: null,
+      created: new Date('2026-07-23T10:00:00.000Z'),
+      updated: new Date('2026-07-24T11:30:00.000Z'),
+      last_indexed: new Date('2026-07-24T11:30:00.000Z'),
+      issue_number: null,
+      issue_key: null,
+      content: null,
+      archived: false,
+      source: 'native',
+      source_ref: null,
+      sync_status: 'local',
+    };
+
+    const record = dbRowToRecord(row);
+
+    expect(record.system.createdAt).toBe('2026-07-23T10:00:00.000Z');
+    expect(record.system.updatedAt).toBe('2026-07-24T11:30:00.000Z');
   });
 
   it('falls back to [type] when type_tags is empty', () => {

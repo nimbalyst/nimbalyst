@@ -7,6 +7,7 @@ export type {
   EditorHostProps,
   EditorMenuItem,
   EditorContext,
+  EditorContextItem,
   DiffConfig,
   DiffResult,
   CollaborationContext,

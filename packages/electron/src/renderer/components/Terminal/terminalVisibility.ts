@@ -40,6 +40,13 @@ export interface WaitUntilMeasurableOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+export interface WaitUntilTerminalPaintedOptions {
+  /** Polled after each frame; `true` ends the wait without revealing the terminal. */
+  isDisposed: () => boolean;
+  /** Injectable for tests. Defaults to requestAnimationFrame. */
+  scheduleFrame?: (callback: FrameRequestCallback) => number;
+}
+
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -57,4 +64,25 @@ export async function waitUntilElementMeasurable(
     if (isElementMeasurable(element)) return 'measurable';
     await sleep(pollMs);
   }
+}
+
+/**
+ * Wait for Ghostty's render loop to consume the final restore writes and for
+ * that completed canvas to reach a paint boundary before revealing it.
+ *
+ * Ghostty schedules its next render frame before TerminalPanel queues this
+ * wait. The first frame consumes the dirty terminal buffer; the second keeps
+ * React's reveal from sharing that same pre-paint callback turn.
+ */
+export async function waitUntilTerminalPainted(
+  options: WaitUntilTerminalPaintedOptions,
+): Promise<'painted' | 'disposed'> {
+  const { isDisposed, scheduleFrame = requestAnimationFrame } = options;
+
+  for (let frame = 0; frame < 2; frame += 1) {
+    if (isDisposed()) return 'disposed';
+    await new Promise<void>((resolve) => scheduleFrame(() => resolve()));
+  }
+
+  return isDisposed() ? 'disposed' : 'painted';
 }

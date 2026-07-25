@@ -155,13 +155,15 @@ useEffect(() => {
     }
   };
 
-  window.electronAPI.on('show-my-dialog', handleShowMyDialog);
+  const unsubscribe = window.electronAPI.on('show-my-dialog', handleShowMyDialog);
 
   return () => {
-    window.electronAPI.off?.('show-my-dialog', handleShowMyDialog);
+    unsubscribe();
   };
 }, [workspacePath]);
 ```
+
+Unsubscribe with the closure `on()` returns. There is no `off(channel, callback)` — see [IPC_LISTENERS.md](./IPC_LISTENERS.md).
 
 ## Best Practices
 

@@ -36,7 +36,7 @@ import { buildSdkOptions } from '../claudeCode/sdkOptionsBuilder';
 function makeDeps(overrides: Partial<Parameters<typeof buildSdkOptions>[0]> = {}) {
   return {
     resolveModelVariant: () => 'opus',
-    mcpConfigService: { getMcpServersConfig: async () => ({}) },
+    getMcpServersSnapshot: async () => ({}),
     createCanUseToolHandler: () => () => true,
     toolHooksService: {
       createPreToolUseHook: () => () => ({}),
@@ -169,6 +169,45 @@ describe('buildSdkOptions env-key hardening', () => {
     // 'auto:2' default meant a 20K-token eager floor on 1M-context models.
     expect(options.env.ENABLE_TOOL_SEARCH).toBe('true');
     expect(options.env.CLAUDE_CODE_ENTRYPOINT).toBe('cli');
+  });
+
+  it('forwards an explicit high effort selection instead of using the CLI default', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({ config: { effortLevel: 'high' } }),
+      makeParams()
+    );
+
+    expect(options.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high');
+  });
+
+  it('disables SDK extended thinking for supported Claude Agent models', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({ config: { thinkingMode: 'disabled' } }),
+      makeParams()
+    );
+
+    expect(options.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('omits the SDK thinking option when extended thinking is enabled', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({ config: { thinkingMode: 'enabled' } }),
+      makeParams()
+    );
+
+    expect(options.thinking).toBeUndefined();
+  });
+
+  it('omits the SDK thinking option for unsupported Claude Agent models', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({
+        resolveModelVariant: () => 'claude-fable-4-6-20260615',
+        config: { thinkingMode: 'disabled' },
+      }),
+      makeParams()
+    );
+
+    expect(options.thinking).toBeUndefined();
   });
 
   it('disables the CLI self-updater by default on every spawn (NIM-1573)', async () => {

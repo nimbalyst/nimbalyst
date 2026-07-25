@@ -155,6 +155,13 @@ export interface TurnStartResponse {
 
 export interface TurnInterruptParams {
   threadId: string;
+  /**
+   * The active turn to interrupt. The app server rejects the request with
+   * `-32600 missing field 'turnId'` if this is omitted, which silently leaves
+   * the turn running and the session stuck 'running' forever (NIM-1607
+   * follow-on). Captured from the `turn/start` response as `raw.activeTurnId`.
+   */
+  turnId: string;
 }
 
 // ---- Notifications we consume ----

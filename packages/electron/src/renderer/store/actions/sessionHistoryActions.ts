@@ -82,6 +82,22 @@ export const blitzDialogOpenAtom = atom<boolean>(false);
  */
 export const isGitRepoAtom = atomFamily((_workspacePath: string) => atom<boolean>(false));
 
+export interface CreateNewWorktreeSessionOptions {
+  baseBranch?: string;
+  name?: string;
+  initialDraft?: string;
+}
+
+export interface CreateNewSessionOptions {
+  initialDraft?: string;
+  sessionId?: string;
+  model?: string;
+  metadata?: Record<string, unknown>;
+  mode?: 'agent' | 'planning';
+  /** Select the new session in Agent mode. Defaults to true for existing callers. */
+  selectSession?: boolean;
+}
+
 // ============================================================
 // Internal helpers — shared logic between several action atoms
 // ============================================================
@@ -371,29 +387,37 @@ export const branchSessionActionAtom = atom(null, async (get, set, sessionId: st
 /**
  * Create a new (non-worktree) session.
  *
- * Returns the new session id (or undefined). Accepts an optional initial
- * draft string which is persisted via `setSessionDraftInputAtom` before the
- * session is selected, so the AIInput is pre-populated when the session
- * component mounts.
+ * Returns the new session id (or undefined). The legacy string argument is
+ * treated as an initial draft; callers that need to reserve a session id or
+ * choose a model before creation can pass CreateNewSessionOptions.
  */
 export const createNewSessionActionAtom = atom(
   null,
-  async (get, set, initialDraft?: string): Promise<string | undefined> => {
+  async (
+    get,
+    set,
+    input?: string | CreateNewSessionOptions,
+  ): Promise<string | undefined> => {
     const workspacePath = getWorkspacePath(get);
     if (!workspacePath || typeof window === 'undefined' || !window.electronAPI) return undefined;
 
-    const defaultModel = get(defaultAgentModelAtom);
+    const options: CreateNewSessionOptions = typeof input === 'string'
+      ? { initialDraft: input }
+      : input ?? {};
+    const model = options.model ?? get(defaultAgentModelAtom);
 
     try {
-      const sessionId = crypto.randomUUID();
-      const parsedModel = defaultModel ? ModelIdentifier.tryParse(defaultModel) : null;
+      const sessionId = options.sessionId ?? crypto.randomUUID();
+      const parsedModel = model ? ModelIdentifier.tryParse(model) : null;
       const provider = parsedModel?.provider || 'claude-code';
       const result = await window.electronAPI.invoke('sessions:create', {
         session: {
           id: sessionId,
           provider,
-          model: defaultModel,
+          model,
           title: 'New Session',
+          mode: options.mode,
+          metadata: options.metadata,
         },
         workspaceId: workspacePath,
       });
@@ -405,7 +429,7 @@ export const createNewSessionActionAtom = atom(
           createdAt: Date.now(),
           updatedAt: Date.now(),
           provider,
-          model: defaultModel,
+          model,
           sessionType: 'session',
           messageCount: 0,
           workspaceId: workspacePath,
@@ -417,19 +441,21 @@ export const createNewSessionActionAtom = atom(
           uncommittedCount: 0,
         });
 
-        if (initialDraft) {
+        if (options.initialDraft) {
           set(setSessionDraftInputAtom, {
             sessionId: result.id,
-            draftInput: initialDraft,
+            draftInput: options.initialDraft,
             workspacePath,
             persist: true,
           });
         }
 
-        set(setSelectedWorkstreamAtom, {
-          workspacePath,
-          selection: { type: 'session', id: result.id },
-        });
+        if (options.selectSession !== false) {
+          set(setSelectedWorkstreamAtom, {
+            workspacePath,
+            selection: { type: 'session', id: result.id },
+          });
+        }
 
         return result.id;
       }
@@ -446,17 +472,23 @@ export const createNewSessionActionAtom = atom(
  */
 export const createNewWorktreeSessionActionAtom = atom(
   null,
-  async (get, set, options?: { baseBranch?: string; name?: string }) => {
+  async (
+    get,
+    set,
+    options?: CreateNewWorktreeSessionOptions,
+  ): Promise<string | undefined> => {
     const workspacePath = getWorkspacePath(get);
-    if (!workspacePath || typeof window === 'undefined' || !window.electronAPI) return;
+    if (!workspacePath || typeof window === 'undefined' || !window.electronAPI) return undefined;
 
-    if (!get(worktreesFeatureAvailableAtom)) return;
-    if (!get(isGitRepoAtom(workspacePath))) return;
+    if (!get(worktreesFeatureAvailableAtom)) return undefined;
+    if (!get(isGitRepoAtom(workspacePath))) return undefined;
 
     const defaultModel = get(defaultAgentModelAtom);
 
     try {
-      const ipcOptions = options?.baseBranch || options?.name ? options : undefined;
+      const ipcOptions = options?.baseBranch || options?.name
+        ? { baseBranch: options.baseBranch, name: options.name }
+        : undefined;
       const worktreeResult: WorktreeCreateResult = await window.electronAPI.invoke(
         'worktree:create',
         workspacePath,
@@ -503,15 +535,25 @@ export const createNewWorktreeSessionActionAtom = atom(
           type: 'worktree',
           worktreeId: worktree.id,
         });
+        if (options?.initialDraft) {
+          set(setSessionDraftInputAtom, {
+            sessionId: result.id,
+            draftInput: options.initialDraft,
+            workspacePath,
+            persist: true,
+          });
+        }
         set(setSelectedWorkstreamAtom, {
           workspacePath,
           selection: { type: 'worktree', id: result.id },
         });
+        return result.id;
       }
     } catch (error) {
       console.error('[sessionHistoryActions] Failed to create worktree session:', error);
       throw error;
     }
+    return undefined;
   },
 );
 
@@ -662,9 +704,10 @@ export function dispatchCreateNewSession(initialDraft?: string): Promise<string 
 }
 
 export function dispatchCreateNewWorktreeSession(
-  options?: { baseBranch?: string; name?: string },
+  options?: CreateNewWorktreeSessionOptions,
 ): Promise<void> {
-  return store.set(createNewWorktreeSessionActionAtom, options) as Promise<void>;
+  return (store.set(createNewWorktreeSessionActionAtom, options) as Promise<string | undefined>)
+    .then(() => undefined);
 }
 
 export function dispatchOpenSessionInTab(sessionId: string): Promise<void> {

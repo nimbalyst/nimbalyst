@@ -35,6 +35,61 @@ describe('PGLiteSessionStore archive filters', () => {
   });
 });
 
+// Regression (GitHub #925 item 3 / NIM-1831): archiving a workstream PARENT
+// left its child sessions (linked by parent_session_id) with is_archived=FALSE,
+// so they became invisible orphans still counting toward the active total.
+// updateMetadata must cascade an is_archived toggle down to direct children.
+describe('PGLiteSessionStore archive cascade to workstream children', () => {
+  const captureDb = () => {
+    const calls: Array<{ sql: string; params: any[] }> = [];
+    const db = {
+      query: vi.fn(async (sql: string, params: any[] = []) => {
+        calls.push({ sql, params });
+        return { rows: [] };
+      }),
+    };
+    return { db, calls };
+  };
+
+  it('cascades is_archived=true to child sessions by parent_session_id when archiving', async () => {
+    const { db, calls } = captureDb();
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('parent-1', { isArchived: true });
+
+    const cascade = calls.find(
+      (c) => /UPDATE ai_sessions SET is_archived/i.test(c.sql) && /parent_session_id/i.test(c.sql),
+    );
+    expect(cascade, 'expected a cascade UPDATE keyed on parent_session_id').toBeTruthy();
+    expect(cascade!.params).toContain('parent-1');
+    expect(cascade!.params).toContain(true);
+  });
+
+  it('cascades is_archived=false to children when unarchiving', async () => {
+    const { db, calls } = captureDb();
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('parent-1', { isArchived: false });
+
+    const cascade = calls.find(
+      (c) => /UPDATE ai_sessions SET is_archived/i.test(c.sql) && /parent_session_id/i.test(c.sql),
+    );
+    expect(cascade, 'expected a cascade UPDATE keyed on parent_session_id').toBeTruthy();
+    expect(cascade!.params).toContain('parent-1');
+    expect(cascade!.params).toContain(false);
+  });
+
+  it('does NOT emit a parent_session_id cascade when isArchived is not part of the update', async () => {
+    const { db, calls } = captureDb();
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('parent-1', { title: 'Renamed' });
+
+    const cascade = calls.find((c) => /parent_session_id/i.test(c.sql));
+    expect(cascade).toBeFalsy();
+  });
+});
+
 // Regression: under SQLite, `metadata` / `document_context` / `provider_config`
 // / `last_document_state` come back from the driver as raw JSON strings, not
 // parsed objects. Without normalization at this boundary, downstream callers

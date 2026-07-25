@@ -30,7 +30,8 @@ import type { LinkedPullRequest } from '@nimbalyst/runtime/core/TrackerRecord';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
 import { dispatchOpenSessionInTab } from '../../store/actions/sessionHistoryActions';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
-import { statusOptionFor } from './PrTrackerBadge';
+import { statusOptionFor, trackerColorStyle } from './PrTrackerBadge';
+import { compareTrackerUpdatedAtDesc } from './prTrackerSort';
 import { usePrTrackerContext } from './usePrTrackerContext';
 import type { SessionMeta } from '../../store/atoms/sessions';
 
@@ -65,7 +66,7 @@ function StatusPill({ record }: { record: TrackerRecord }): JSX.Element | null {
   const option = statusOptionFor(record);
   const options = getStatusOptions(record.primaryType);
   if (!option) return null;
-  const color = option.color || '#6b7280';
+  const style = trackerColorStyle(option.color);
 
   const setStatus = async (value: string) => {
     menu.setIsOpen(false);
@@ -91,7 +92,7 @@ function StatusPill({ record }: { record: TrackerRecord }): JSX.Element | null {
         disabled={busy || options.length === 0}
         onClick={() => menu.setIsOpen(!menu.isOpen)}
         className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-[filter] hover:brightness-125 disabled:opacity-60"
-        style={{ color, backgroundColor: `${color}20` }}
+        style={style}
         title="Change review status"
       >
         {option.icon && <MaterialSymbol icon={option.icon} size={12} />}
@@ -222,7 +223,7 @@ function LinkTrackerItemButton({
           getRecordTitle(item).toLowerCase().includes(q) ||
           item.issueKey?.toLowerCase().includes(q),
       )
-      .sort((a, b) => (b.system.updatedAt || '').localeCompare(a.system.updatedAt || ''))
+      .sort(compareTrackerUpdatedAtDesc)
       .slice(0, 8);
   }, [allItems, alreadyLinkedIds, query]);
 

@@ -2,7 +2,7 @@
  * AutomationDocumentHeader - Compact schedule controls above the editor.
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { AutomationStatus, AutomationSchedule, DayOfWeek, ScheduleType, ExecutionRecord } from '../frontmatter/types';
 
 interface AIModel {
@@ -13,7 +13,7 @@ interface AIModel {
 
 import { ALL_DAYS, DAY_LABELS } from '../frontmatter/types';
 import { parseAutomationStatus, updateAutomationStatus } from '../frontmatter/parser';
-import { formatSchedule, formatRelativeTime, calculateNextRun } from '../scheduler/scheduleUtils';
+import { formatRelativeTime, calculateNextRun } from '../scheduler/scheduleUtils';
 
 /** Load execution history from history.json in the output directory. */
 function useExecutionHistory(outputLocation: string | undefined) {
@@ -76,8 +76,8 @@ interface DocumentHeaderComponentProps {
   editor?: unknown;
 }
 
-let runNowCallback: ((filePath: string) => void) | null = null;
-export function setRunNowCallback(cb: (filePath: string) => void): void {
+let runNowCallback: ((filePath: string) => Promise<void>) | null = null;
+export function setRunNowCallback(cb: (filePath: string) => Promise<void>): void {
   runNowCallback = cb;
 }
 
@@ -189,28 +189,29 @@ export const AutomationDocumentHeader: React.FC<DocumentHeaderComponentProps> = 
     (model: string) => {
       if (!status) return;
       const [provider] = model.split(':');
-      const providerValue = (provider === 'claude-code' || provider === 'claude' || provider === 'openai')
-        ? provider as 'claude-code' | 'claude' | 'openai'
+      const providerValue = (provider === 'claude-code' || provider === 'claude' || provider === 'openai' || provider === 'openai-codex')
+        ? provider as 'claude-code' | 'claude' | 'openai' | 'openai-codex'
         : undefined;
       handleUpdate({ model: model || undefined, provider: providerValue });
     },
     [status, handleUpdate],
   );
 
-  const handleRunNow = useCallback(() => {
-    if (runNowCallback && !isRunning) {
-      setIsRunning(true);
-      runNowCallback(filePath);
-      // The scheduler handles execution asynchronously and shows its own
-      // success/error toasts. We just show a brief "running" state on the button.
-      // Reset after a reasonable timeout since we don't have a completion callback.
-      setTimeout(() => setIsRunning(false), 5000);
-    }
-  }, [filePath, isRunning]);
-
   const { records: historyRecords, openFile: openHistoryFile, refresh: refreshHistory } = useExecutionHistory(status?.output?.location);
   const [showHistory, setShowHistory] = useState(false);
   const historyRef = useRef<HTMLDivElement>(null);
+
+  const handleRunNow = useCallback(async () => {
+    if (runNowCallback && !isRunning) {
+      setIsRunning(true);
+      try {
+        await runNowCallback(filePath);
+        await refreshHistory();
+      } finally {
+        setIsRunning(false);
+      }
+    }
+  }, [filePath, isRunning, refreshHistory]);
 
   // Close dropdown on outside click
   useEffect(() => {

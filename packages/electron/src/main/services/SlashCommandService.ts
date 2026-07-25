@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import { parseCommandFile, parseSkillFile, SlashCommand, validateCommand } from './CommandFileParser';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 // Re-export SlashCommand type for use by handlers
 export type { SlashCommand };
@@ -57,12 +58,18 @@ function isFileEntry(entry: fs.Dirent, fullPath: string): boolean {
 export class SlashCommandService {
   private workspacePath: string;
   private userHomePath: string;
+  private userClaudeConfigDir: string;
   private commandsCache = new Map<string, CachedSlashCommands>();
   private readonly CACHE_TTL = 5000; // 5 seconds
 
   constructor(workspacePath: string, options?: { userHomePath?: string }) {
     this.workspacePath = workspacePath;
     this.userHomePath = options?.userHomePath ?? homedir();
+    // An injected home (tests) pins the config dir under it for isolation;
+    // otherwise follow the CLI's own CLAUDE_CONFIG_DIR resolution.
+    this.userClaudeConfigDir = options?.userHomePath
+      ? path.join(options.userHomePath, '.claude')
+      : resolveClaudeConfigDir();
   }
 
   /**
@@ -135,17 +142,17 @@ export class SlashCommandService {
       );
       commands.push(...projectSkills);
 
-      const userCommandsPath = path.join(this.userHomePath, '.claude', 'commands');
+      const userCommandsPath = path.join(this.userClaudeConfigDir, 'commands');
       const userCommands = await this.scanCommandsDirectory(userCommandsPath, 'user');
       commands.push(...userCommands);
 
-      const userSkillsPath = path.join(this.userHomePath, '.claude', 'skills');
+      const userSkillsPath = path.join(this.userClaudeConfigDir, 'skills');
       const userSkills = await this.scanSkillsDirectory(userSkillsPath, 'user');
       commands.push(...userSkills);
 
       const pluginSkillRoots = pluginPaths.length > 0
         ? pluginPaths
-        : [path.join(this.userHomePath, '.claude', 'plugins')];
+        : [path.join(this.userClaudeConfigDir, 'plugins')];
       const pluginSkills = await this.scanPluginSkillsDirectories(pluginSkillRoots);
       commands.push(...pluginSkills);
     }

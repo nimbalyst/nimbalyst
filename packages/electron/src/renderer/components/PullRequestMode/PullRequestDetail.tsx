@@ -31,6 +31,8 @@ interface PullRequestDetailProps {
   remote: string;
   pr: PullRequestRow;
   onClose: () => void;
+  /** Starts a standalone agent session with this PR's review command prefilled. */
+  onStartReviewSession: () => void;
   /** Wires the "Open in Worktree" action; omitted hides the button. */
   onOpenInWorktree?: () => void;
 }
@@ -54,6 +56,7 @@ export function PullRequestDetail({
   remote,
   pr,
   onClose,
+  onStartReviewSession,
   onOpenInWorktree,
 }: PullRequestDetailProps): JSX.Element {
   const layout = useAtomValue(prModeLayoutAtom);
@@ -95,6 +98,15 @@ export function PullRequestDetail({
               refreshToken={refreshToken}
               onActed={() => setRefreshToken((t) => t + 1)}
             />
+            <button
+              className="flex items-center gap-1 px-2 py-1 text-xs text-nim-muted hover:text-nim border border-nim rounded transition-colors"
+              onClick={onStartReviewSession}
+              data-testid="pr-start-review-session"
+              title={`Start a new session to review #${pr.number}`}
+            >
+              <MaterialSymbol icon="chat" size={14} />
+              Review in Session
+            </button>
             {htmlUrl && (
               <button
                 className="flex items-center gap-1 px-2 py-1 text-xs text-nim-muted hover:text-nim border border-nim rounded transition-colors"

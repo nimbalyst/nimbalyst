@@ -6,7 +6,7 @@
  * Content state lives in a Zustand store, not React state.
  */
 
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import { DataModelCanvas, type DataModelCanvasRef } from './DataModelCanvas';
 import { DataModelToolbar } from './DataModelToolbar';
@@ -21,6 +21,7 @@ import {
 } from '@nimbalyst/extension-sdk';
 import { DataModelBinding } from '../collab/datamodelBinding';
 import { isDataModelYDocEmpty, seedDataModelYDoc } from '../collab/seed';
+import { buildEntitySelectionContextItem, buildRelationshipSelectionContextItem } from '../selectionContext';
 
 export function DatamodelLMEditor({ host }: EditorHostProps) {
   const { filePath } = host;
@@ -108,6 +109,27 @@ export function DatamodelLMEditor({ host }: EditorHostProps) {
     });
     return unsubscribe;
   }, [store]);
+
+  const selectionState = store.getState();
+  const editorContextItem = useMemo(() => {
+    if (selectionState.selectedEntityId) {
+      const entity = selectionState.entities.find((candidate) => candidate.id === selectionState.selectedEntityId);
+      return entity ? buildEntitySelectionContextItem(entity, selectionState.database) : null;
+    }
+    if (selectionState.selectedRelationshipId) {
+      const relationship = selectionState.relationships.find(
+        (candidate) => candidate.id === selectionState.selectedRelationshipId,
+      );
+      return relationship ? buildRelationshipSelectionContextItem(relationship, selectionState.database) : null;
+    }
+    return null;
+  }, [selectionState.database, selectionState.entities, selectionState.relationships, selectionState.selectedEntityId, selectionState.selectedRelationshipId]);
+
+  useEffect(() => {
+    host.setEditorContextItems(editorContextItem ? [editorContextItem] : null);
+  }, [editorContextItem, host]);
+
+  useEffect(() => () => host.setEditorContextItems(null), [host]);
 
   // Register store for AI tool access via the central registry
   useEffect(() => {

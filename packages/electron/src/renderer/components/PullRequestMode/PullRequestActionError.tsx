@@ -28,7 +28,7 @@ export function PullRequestActionError({ error }: PullRequestActionErrorProps): 
       {hasWorkflowScopeRecovery && (
         <button
           type="button"
-          className="ml-2 text-nim-accent hover:underline text-[11px]"
+          className="ml-2 text-nim-link hover:text-nim-link-hover hover:underline text-[11px]"
           onClick={copyRecoveryCommand}
           data-testid="pr-copy-workflow-scope-command"
         >

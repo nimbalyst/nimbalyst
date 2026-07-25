@@ -57,7 +57,10 @@ export class LiveGateway implements TrackerGateway {
     if (filters.owner) args.owner = filters.owner;
     if (filters.search) args.search = filters.search;
     if (filters.includeArchived) args.archived = true;
-    if (filters.limit && filters.limit > 0) args.limit = filters.limit;
+    if (filters.limit !== undefined) args.limit = filters.limit;
+    // The CLI maps custom fields (release version, members) into the record, so
+    // it always needs the full per-item payload, not the lean agent default.
+    args.full = true;
     if (filters.where?.length) {
       args.where = filters.where.map((w) => ({
         field: w.field,

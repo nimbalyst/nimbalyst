@@ -22,6 +22,7 @@ import { createPGLiteDocumentsRepository } from './PGLiteDocumentsRepository';
 import { createPGLiteQueuedPromptsStore, type QueuedPromptsStore } from './PGLiteQueuedPromptsStore';
 import { createPGLiteSessionWakeupsStore, type SessionWakeupsStore } from './PGLiteSessionWakeupsStore';
 import { runAgentMessagesBackfill } from './AgentMessagesBackfill';
+import { healArchivedWorkstreamChildren } from './healArchivedWorkstreamChildren';
 import { runWhenFirstUsable } from './startupMaintenanceGate';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { createSQLiteStoreAdapter } from '../database/sqlite/SQLiteStoreAdapter';
@@ -171,6 +172,18 @@ class RepositoryManager {
       // long maintenance query head-of-line-blocks everything queued behind it.
       // NIM-899.
       runWhenFirstUsable('agent-messages-backfill', () => runAgentMessagesBackfill(dbAdapter));
+
+      // GitHub #925 / NIM-1831: heal pre-existing orphans -- active child
+      // sessions left under an already-archived workstream parent before the
+      // archive-cascade fix landed. Idempotent; issues no write once clean.
+      // Deferred like the backfill above so it never head-of-line-blocks the
+      // shared SQLite worker while the first window loads.
+      runWhenFirstUsable('archive-orphan-heal', async () => {
+        const { healed } = await healArchivedWorkstreamChildren(dbAdapter);
+        if (healed > 0) {
+          logger.main.info(`[RepositoryManager] Archived ${healed} orphaned workstream child session(s) whose parent was archived (NIM-1831)`);
+        }
+      });
 
       // Subscribe to auth state changes to reinitialize sync when user authenticates
       // This handles the case where Stytch is lazy-initialized after repositories are ready

@@ -34,6 +34,10 @@ import {
 import { registerFileExtension, clearRegisteredExtensions } from '../extensions/RegisteredFileTypes';
 import { getBuiltinExtensionsDirectory } from '../extensions/builtinExtensionsDirectory';
 import {
+  detectStaleBuiltinExtensionBundle,
+  formatStaleBundleWarning,
+} from '../extensions/staleExtensionBundle';
+import {
   startExtensionBackendModules,
   stopExtensionBackendModules,
   getDefaultBackendModuleLifecycleDeps,
@@ -50,6 +54,7 @@ import type {
   BackendModuleContribution,
   ExtensionManifest,
 } from '@nimbalyst/extension-sdk';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 /**
  * Validate the SHAPE of `contributions.backendModules` on a parsed manifest.
@@ -646,8 +651,7 @@ async function getClaudeCliPluginPaths(workspacePath?: string): Promise<Array<{ 
   const plugins: Array<{ type: 'local'; path: string }> = [];
 
   try {
-    const os = await import('os');
-    const installedPluginsPath = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+    const installedPluginsPath = path.join(resolveClaudeConfigDir(), 'plugins', 'installed_plugins.json');
 
     let content: string;
     try {
@@ -901,6 +905,7 @@ export function registerExtensionHandlers(): void {
   // Write binary content to a file (base64 encoded)
   safeHandle('extensions:write-binary', async (_event, filePath: string, base64Content: string) => {
     try {
+      SessionFileWatcher.markEditorSave(filePath);
       const dir = path.dirname(filePath);
       await fs.mkdir(dir, { recursive: true });
       const buffer = Buffer.from(base64Content, 'base64');
@@ -1099,6 +1104,23 @@ export function registerExtensionHandlers(): void {
                     }
                   }
                 }
+              }
+            }
+
+            // Dev-only: warn when a built-in extension's built bundle is
+            // older than its source, so features that run at activate() time
+            // (e.g. collab codec registration) aren't silently broken by a
+            // stale dev bundle. See NIM-1983.
+            if (isBuiltinDir && !app.isPackaged) {
+              try {
+                const stale = await detectStaleBuiltinExtensionBundle(
+                  extensionId,
+                  extensionPath,
+                  typeof manifest.main === 'string' ? manifest.main : undefined,
+                );
+                if (stale) logger.main.warn(formatStaleBundleWarning(stale));
+              } catch {
+                // Diagnostic only -- never block loading.
               }
             }
 

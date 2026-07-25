@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { usePostHog } from 'posthog-js/react';
 import { useAtom, useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
@@ -9,8 +9,14 @@ import {
   releaseChannelAtom,
   type SyncConfig,
 } from '../../../store/atoms/appSettings';
-import { personalAccountsAtom, personalSyncProfilesAtom } from '../../../store/atoms/settingsDomains';
-import { useDialog } from '../../../contexts/DialogContext';
+import { organizationDirectoryAtom, personalAccountsAtom, personalSyncProfilesAtom } from '../../../store/atoms/settingsDomains';
+import { stytchAuthAtom } from '../../../store/atoms/stytchAuth';
+import { dialogRef, useDialog } from '../../../contexts/DialogContext';
+import { DIALOG_IDS } from '../../../dialogs';
+import { AccountLoginForm } from '../../Accounts/AccountLoginForm';
+import { AccountOrgList } from './AccountOrgList';
+import { groupOrganizationsByAccount } from './accountOrganizations';
+import { applyProjectSyncChange, persistProjectSyncSelection, selectionState } from './projectSyncSelection';
 
 /** Format a timestamp as relative time (e.g., "5 minutes ago") */
 function formatRelativeTime(timestamp: number): string {
@@ -62,59 +68,9 @@ interface DeviceInfo {
 // NOTE: Props have been removed - SyncPanel now uses Jotai atoms directly.
 // The component is self-contained and doesn't need external config management.
 
-interface StytchAuthState {
-  isAuthenticated: boolean;
-  user: {
-    user_id: string;
-    emails: Array<{ email: string }>;
-    name?: { first_name?: string; last_name?: string };
-  } | null;
-}
+export type PersonalSyncSection = 'accounts' | 'mobile' | 'devices';
 
-function SharingCallout({ className = '' }: { className?: string }) {
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <div className={`sync-mobile-section provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] ${className}`}>
-      <div className="p-3.5 bg-nim-primary/8 border border-nim-primary/20 rounded-lg">
-        <div className="flex items-start gap-2.5">
-          <MaterialSymbol icon="share" size={18} className="text-[var(--nim-primary)] shrink-0 mt-0.5" />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-[13px] font-semibold text-[var(--nim-text)]">
-                Sharing Sessions & Documents
-              </span>
-              <button
-                className="inline-flex items-center justify-center w-[18px] h-[18px] p-0 border-none rounded-full bg-[var(--nim-bg-tertiary)] cursor-pointer hover:bg-[var(--nim-bg-active)] transition-colors"
-                onClick={() => setExpanded(!expanded)}
-                title={expanded ? 'Hide details' : 'How does sharing work?'}
-              >
-                <MaterialSymbol icon={expanded ? 'expand_less' : 'help'} size={14} className="text-[var(--nim-text-muted)]" />
-              </button>
-            </div>
-            <p className="m-0 text-[12px] text-[var(--nim-text-muted)] leading-relaxed">
-              Right-click any session or document to create an encrypted share link for collaborators.
-            </p>
-          </div>
-        </div>
-        {expanded && (
-          <div className="mt-3 pt-3 border-t border-nim-primary/15">
-            <ul className="m-0 pl-5 text-[12px] text-[var(--nim-text-muted)] leading-7 list-disc">
-              <li>In <strong className="text-[var(--nim-text)]">Agent mode</strong>, right-click a session in the sidebar and select &quot;Share link&quot;</li>
-              <li>In <strong className="text-[var(--nim-text)]">Files mode</strong>, right-click a document in the file tree and select &quot;Share Link&quot;</li>
-              <li>Links are end-to-end encrypted and you choose the expiration (1, 7, or 30 days)</li>
-              <li>View and manage all your shared links under <strong className="text-[var(--nim-text)]">Shared Links</strong> in settings</li>
-            </ul>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-export type PersonalSyncSection = 'all' | 'accounts' | 'mobile' | 'devices';
-
-export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }) {
+export function SyncPanel({ section }: { section: PersonalSyncSection }) {
   const posthog = usePostHog();
   const { confirm } = useDialog();
   const isDevelopment = import.meta.env.DEV;
@@ -137,18 +93,37 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
   const [projects, setProjects] = useState<Project[]>([]);
   const [showQRModal, setShowQRModal] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
-  const [showAddProject, setShowAddProject] = useState(false);
   const [connectedDevices, setConnectedDevices] = useState<DeviceInfo[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [devicesError, setDevicesError] = useState<string | null>(null);
-  const [stytchAuth, setStytchAuth] = useState<StytchAuthState>({
-    isAuthenticated: false,
-    user: null,
-  });
+  const [, setAuthError] = useState<string | null>(null);
+  const stytchAuth = useAtomValue(stytchAuthAtom) ?? { isAuthenticated: false, user: null };
 
   // Personal account and profile state stay separate from organization state.
   const [allAccounts, setAllAccounts] = useAtom(personalAccountsAtom);
+  const organizationDirectory = useAtomValue(organizationDirectoryAtom);
   const [, setPersonalSyncProfiles] = useAtom(personalSyncProfilesAtom);
+  const [refreshingOrganizations, setRefreshingOrganizations] = useState(false);
+  // One bucket per signed-in login, in the same order as `allAccounts`, so each
+  // account row can render its own organizations inline beneath it.
+  const accountOrganizationGroups = React.useMemo(
+    () => groupOrganizationsByAccount(allAccounts, organizationDirectory),
+    [allAccounts, organizationDirectory],
+  );
+
+  // Force a server round-trip, then let the central Stytch listener re-derive
+  // the directory atom (components never subscribe to IPC directly).
+  const handleRefreshOrganizations = async () => {
+    setRefreshingOrganizations(true);
+    try {
+      await window.electronAPI?.team?.list({ forceRefresh: true });
+      window.dispatchEvent(new CustomEvent('nimbalyst:organizations-changed'));
+    } catch (error) {
+      console.warn('[SyncPanel] Failed to refresh organizations:', error);
+    } finally {
+      setRefreshingOrganizations(false);
+    }
+  };
   useEffect(() => {
     setPersonalSyncProfiles(config.personalSyncProfiles ?? {});
   }, [config.personalSyncProfiles, setPersonalSyncProfiles]);
@@ -158,16 +133,6 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-
-  // Auth UI state
-  const [showAuthForm, setShowAuthForm] = useState(false);
-  const [email, setEmail] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [magicLinkSent, setMagicLinkSent] = useState(false);
-
-  const wasAuthenticatedRef = useRef(stytchAuth.isAuthenticated);
-  useEffect(() => { wasAuthenticatedRef.current = stytchAuth.isAuthenticated; }, [stytchAuth.isAuthenticated]);
 
   const isStytchAvailable = !!window.electronAPI?.stytch;
 
@@ -188,60 +153,11 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
     }
   };
 
-  // Load Stytch auth state on mount and validate session server-side
+  // Validate the sync account server-side. Centralized Stytch listeners own
+  // auth/account state and refresh the atoms used by this panel.
   useEffect(() => {
-    async function loadStytchAuth() {
-      if (!window.electronAPI?.stytch) return;
-      try {
-        const state = await window.electronAPI.stytch.getAuthState();
-        setStytchAuth({
-          isAuthenticated: state.isAuthenticated,
-          user: state.user,
-        });
-
-        // Validate session is actually alive server-side.
-        // If dead, this triggers signOut which broadcasts auth state change
-        // and the onAuthStateChange listener below will update the UI.
-        if (state.isAuthenticated) {
-          window.electronAPI.stytch.refreshSession();
-        }
-      } catch (error) {
-        console.error('Failed to load Stytch auth state:', error);
-      }
-    }
-
-    loadStytchAuth();
-    loadAccounts();
-
-    if (!window.electronAPI?.stytch) return;
-
-    // Subscribe to auth state changes in main process (registers the IPC broadcast listener)
-    window.electronAPI.stytch.subscribeAuthState();
-
-    // Listen for auth state change IPC events
-    const unsubscribe = window.electronAPI.stytch.onAuthStateChange((state: StytchAuthState) => {
-      // Track sign-in completion (transition from not authenticated to authenticated)
-      if (!wasAuthenticatedRef.current && state.isAuthenticated && posthog) {
-        posthog.capture('sync_sign_in_completed');
-      }
-
-      setStytchAuth({
-        isAuthenticated: state.isAuthenticated,
-        user: state.user,
-      });
-
-      // Refresh accounts list on auth state change
-      loadAccounts();
-
-      // Set email in PostHog for identity linking when user logs in via Stytch
-      const userEmail = state.user?.emails?.[0]?.email;
-      if (state.isAuthenticated && userEmail && posthog) {
-        posthog.people.set({ email: userEmail });
-      }
-    });
-
-    return unsubscribe;
-  }, [posthog]);
+    if (stytchAuth.isAuthenticated) void window.electronAPI?.stytch?.refreshSession();
+  }, [stytchAuth.isAuthenticated]);
 
   // Load projects from workspace store
   useEffect(() => {
@@ -296,42 +212,67 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
     }
   }, [config.enabled, effectiveServerUrl]);
 
-  const handleAddProject = async (projectPath: string) => {
-    const currentEnabled = config.enabledProjects ?? [];
-    if (currentEnabled.includes(projectPath)) return;
-
-    const updated = [...currentEnabled, projectPath];
-    setConfig({ ...config, enabledProjects: updated, enabled: true });
-
-    if (!config.enabled) {
-      posthog?.capture('sync_enabled', { projectCount: updated.length });
+  // Single write path for the project multi-select: one checkbox and
+  // "Select all" go through the same helper and the same one-shot IPC, so a
+  // bulk change is one config write and one sync trigger regardless of size.
+  const applyProjectSync = async (
+    axis: 'mobile' | 'docs',
+    projectPaths: string[],
+    enabled: boolean,
+  ) => {
+    const previousConfig = config;
+    const { next, syncToggles, docSyncTurnedOn } = applyProjectSyncChange(
+      {
+        enabledProjects: config.enabledProjects ?? [],
+        docSyncEnabledProjects: config.docSyncEnabledProjects ?? [],
+      },
+      { axis, projectPaths, enabled },
+    );
+    if (syncToggles.length === 0 && next.docSyncEnabledProjects.length === (config.docSyncEnabledProjects ?? []).length) {
+      return;
     }
 
-    try {
-      await window.electronAPI.invoke('sync:toggle-project', projectPath, true);
-    } catch (error) {
-      console.error('[SyncPanel] Failed to add project sync:', error);
-    }
+    const newConfig = { ...config, ...next };
+    setConfig(newConfig);
 
-    setShowAddProject(false);
-  };
-
-  const handleRemoveProject = async (projectPath: string) => {
-    const currentEnabled = config.enabledProjects ?? [];
-    const updated = currentEnabled.filter(p => p !== projectPath);
-    const docSyncUpdated = (config.docSyncEnabledProjects ?? []).filter(p => p !== projectPath);
-
-    const shouldEnable = updated.length > 0;
-    setConfig({ ...config, enabledProjects: updated, docSyncEnabledProjects: docSyncUpdated, enabled: shouldEnable });
-
-    if (!shouldEnable && config.enabled) {
+    if (next.enabled && !config.enabled) {
+      posthog?.capture('sync_enabled', { projectCount: next.enabledProjects.length });
+    } else if (!next.enabled && config.enabled) {
       posthog?.capture('sync_disabled', { projectCount: 0 });
     }
 
+    for (const path of docSyncTurnedOn) {
+      updateDocSyncStatus(path, { pending: true, error: null });
+    }
+
     try {
-      await window.electronAPI.invoke('sync:toggle-project', projectPath, false);
+      await persistProjectSyncSelection(window.electronAPI.invoke, next);
     } catch (error) {
-      console.error('[SyncPanel] Failed to remove project sync:', error);
+      console.error('[SyncPanel] Failed to persist project sync selection:', error);
+      setConfig(previousConfig);
+      for (const path of docSyncTurnedOn) {
+        updateDocSyncStatus(path, {
+          pending: false,
+          error: `Failed to enable document sync: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+      return;
+    }
+
+    // Projects that lost doc sync have no status to show any more.
+    setDocSyncStatus(prev => {
+      const remaining = new Set(next.docSyncEnabledProjects);
+      const cleaned: typeof prev = {};
+      for (const [path, status] of Object.entries(prev)) {
+        if (remaining.has(path)) cleaned[path] = status;
+      }
+      return cleaned;
+    });
+
+    // Newly doc-synced projects connect asynchronously; poll so the user sees
+    // the toggle take effect (or an error if it never does).
+    for (const path of docSyncTurnedOn) {
+      void pollDocSyncUntilConnected(path);
     }
   };
 
@@ -378,40 +319,7 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleDocSyncToggle = async (projectPath: string, enabled: boolean) => {
-    const current = config.docSyncEnabledProjects ?? [];
-    const updated = enabled
-      ? [...current, projectPath]
-      : current.filter(p => p !== projectPath);
-
-    const newConfig = { ...config, docSyncEnabledProjects: updated };
-    setConfig(newConfig);
-    updateDocSyncStatus(projectPath, { pending: true, error: null });
-
-    try {
-      await window.electronAPI.invoke('sync:set-config', newConfig);
-    } catch (error) {
-      console.error('[SyncPanel] Failed to toggle doc sync:', error);
-      // Revert the checkbox so the UI reflects what is actually persisted
-      setConfig({ ...config, docSyncEnabledProjects: current });
-      updateDocSyncStatus(projectPath, {
-        pending: false,
-        error: `Failed to ${enabled ? 'enable' : 'disable'} document sync: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      return;
-    }
-
-    if (!enabled) {
-      setDocSyncStatus(prev => {
-        const next = { ...prev };
-        delete next[projectPath];
-        return next;
-      });
-      return;
-    }
-
-    // The initial sweep + room connection are async; poll until connected so
-    // the user sees the toggle actually take effect (or an error if it never does).
+  const pollDocSyncUntilConnected = async (projectPath: string) => {
     for (const delayMs of [700, 1500, 3000, 5000]) {
       await new Promise(resolve => setTimeout(resolve, delayMs));
       if (await fetchDocSyncStatus(projectPath)) {
@@ -464,52 +372,6 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
     }
   };
 
-  // Auth handlers
-  const handleGoogleSignIn = async () => {
-    if (!window.electronAPI?.stytch) return;
-    setAuthLoading(true);
-    setAuthError(null);
-    posthog?.capture('sync_sign_in_started', { method: 'google' });
-    try {
-      const result = await window.electronAPI.stytch.signInWithGoogle();
-      if (!result.success && result.error) {
-        setAuthError(result.error);
-      } else {
-        setShowAuthForm(false);
-      }
-    } catch (err) {
-      setAuthError(String(err));
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const handleSendMagicLink = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!window.electronAPI?.stytch) return;
-    if (!email) {
-      setAuthError('Email is required');
-      return;
-    }
-
-    setAuthLoading(true);
-    setAuthError(null);
-    posthog?.capture('sync_sign_in_started', { method: 'magic_link' });
-    try {
-      const result = await window.electronAPI.stytch.sendMagicLink(email);
-
-      if (!result.success && result.error) {
-        setAuthError(result.error);
-      } else {
-        setMagicLinkSent(true);
-      }
-    } catch (err) {
-      setAuthError(String(err));
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
   const handleSignOut = async () => {
     if (!window.electronAPI?.stytch) return;
     try {
@@ -533,13 +395,8 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
   };
 
   const handleAddAccount = async () => {
-    if (!window.electronAPI?.stytch?.addAccount) return;
     posthog?.capture('sync_add_account');
-    try {
-      await window.electronAPI.stytch.addAccount();
-    } catch (err) {
-      console.error('Add account error:', err);
-    }
+    dialogRef.current?.open(DIALOG_IDS.ACCOUNT_LOGIN, { mode: 'add-account' });
   };
 
   const handleRemoveAccount = async (personalOrgId: string) => {
@@ -590,28 +447,23 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
     }
   };
 
-  // Only show projects that are enabled for sync
-  const syncedProjects = projects.filter(p => enabledProjects.includes(p.path));
-  // Projects available to add (not yet synced)
-  const availableProjects = projects.filter(p => !enabledProjects.includes(p.path));
-  const sectionClass = (target: Exclude<PersonalSyncSection, 'all'>) =>
-    section === 'all' || section === target ? '' : 'hidden';
+  const allProjectPaths = projects.map((project) => project.path);
+  const docSyncEnabledProjects = config.docSyncEnabledProjects ?? [];
+  const mobileSelection = selectionState(enabledProjects, allProjectPaths);
+  const sectionClass = (target: PersonalSyncSection) =>
+    section === target ? '' : 'hidden';
   const heading = section === 'accounts'
     ? ['Accounts', 'Manage signed-in personal accounts and choose the one used for personal/mobile sync.']
     : section === 'devices'
       ? ['Devices', 'View devices paired to the active personal sync account.']
-      : ['Mobile App', 'Choose personal projects for mobile access. Personal sync remains zero-knowledge encrypted.'];
+      : ['Mobile App', 'Pair your phone and choose which projects it can reach. Personal sync stays zero-knowledge encrypted.'];
 
   return (
     <div className="personal-sync-panel provider-panel flex flex-col" data-component="SyncPanel" data-testid={`personal-sync-${section}`}>
       {/* Header */}
       <div className="provider-panel-header mb-5 pb-4 border-b border-[var(--nim-border)]">
-        <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-1.5 text-[var(--nim-text)]">{section === 'all' ? 'Account & Sync' : heading[0]}</h3>
-        <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
-          {section === 'all'
-            ? 'Access and control Nimbalyst from the mobile app. Personal sync data is end-to-end encrypted.'
-            : heading[1]}
-        </p>
+        <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-1.5 text-[var(--nim-text)]">{heading[0]}</h3>
+        <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">{heading[1]}</p>
       </div>
 
       {section === 'mobile' && config.personalSyncProfiles && Object.keys(config.personalSyncProfiles).length > 0 && (
@@ -676,214 +528,115 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
 
       {/* Account Section */}
       <div className={`sync-account-section provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0 ${sectionClass('accounts')}`}>
-        {stytchAuth.isAuthenticated && stytchAuth.user ? (
-          <div className="flex flex-col gap-2">
-            {/* Show all accounts if multiple, otherwise show primary */}
-            {allAccounts.length > 1 ? (
-              allAccounts.map((acct) => {
-                const isSyncAccount = config.personalOrgId
-                  ? acct.personalOrgId === config.personalOrgId
-                  : acct.isPrimary;
-                return (
-                  <div key={acct.personalOrgId} className={`flex items-center gap-3 p-2.5 rounded-lg ${isSyncAccount ? 'bg-nim-primary/8 border border-nim-primary/20' : 'bg-nim-secondary'}`}>
-                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white font-semibold text-sm shrink-0 ${isSyncAccount ? 'bg-nim-primary' : 'bg-nim-tertiary'}`}>
-                      {(acct.email?.[0] || '?').toUpperCase()}
+        {allAccounts.length > 0 ? (
+          <div className="sync-account-list flex flex-col gap-2">
+            <div className="sync-account-list-header flex items-center justify-between">
+              <h4 className="m-0 text-[13px] font-semibold text-[var(--nim-text)]">Accounts and organizations</h4>
+              <button
+                type="button"
+                onClick={handleRefreshOrganizations}
+                disabled={refreshingOrganizations}
+                className="rounded border border-[var(--nim-border)] bg-transparent px-2 py-0.5 text-[11px] text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)] disabled:cursor-wait"
+                data-testid="sync-organizations-refresh"
+              >
+                {refreshingOrganizations ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
+            {allAccounts.map((account, accountIndex) => {
+              const isSyncAccount = account.isSyncAccount || account.personalOrgId === config.personalOrgId;
+
+              return (
+                <article
+                  key={account.personalOrgId}
+                  className={`sync-account-row flex flex-col rounded-lg border p-2.5 ${
+                    isSyncAccount
+                      ? 'border-[var(--nim-primary)] bg-[color-mix(in_srgb,var(--nim-primary)_8%,transparent)]'
+                      : 'border-[var(--nim-border)] bg-[var(--nim-bg-secondary)]'
+                  }`}
+                  data-testid="sync-account-row"
+                >
+                  <div className="sync-account-identity flex items-center gap-3">
+                    <div className={`sync-account-avatar flex size-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
+                      isSyncAccount
+                        ? 'bg-[var(--nim-primary)] text-[var(--nim-on-primary)]'
+                        : 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]'
+                    }`}>
+                      {(account.email?.[0] || '?').toUpperCase()}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium text-nim text-[13px] truncate">
-                        {acct.email || 'Unknown'}
-                      </div>
-                      <div className="text-[11px] text-nim-faint">
-                        {isSyncAccount ? 'Sync account' : (
-                          <button
-                            onClick={async () => {
-                              try {
-                                await window.electronAPI.invoke('sync:switch-sync-account', acct.personalOrgId);
-                                // Reload config from main process to get updated personalOrgId
-                                const freshConfig = await window.electronAPI.invoke('sync:get-config');
-                                if (freshConfig) setConfig(freshConfig);
-                                loadAccounts();
-                              } catch (err) {
-                                console.error('Failed to switch sync account:', err);
-                              }
-                            }}
-                            className="text-nim-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-[11px]"
-                          >
-                            Use for sync
-                          </button>
+                    <div className="sync-account-summary min-w-0 flex-1 select-text">
+                      <div className="truncate text-[13px] font-medium text-[var(--nim-text)]">{account.email}</div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--nim-text-muted)]">
+                        {isSyncAccount && (
+                          <span className="rounded-full bg-[var(--nim-primary)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--nim-on-primary)]">
+                            Used for sync
+                          </span>
+                        )}
+                        {account.sessionStatus === 'expired' && (
+                          <span className="rounded-full bg-[var(--nim-warning-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--nim-warning)]">
+                            Session expired
+                          </span>
                         )}
                       </div>
                     </div>
-                    <button
-                      onClick={() => handleRemoveAccount(acct.personalOrgId)}
-                      className="px-3 py-1.5 text-xs bg-transparent border border-nim rounded text-nim-muted cursor-pointer hover:bg-nim-hover shrink-0"
-                    >
-                      Sign Out
-                    </button>
+                    <div className="sync-account-actions flex shrink-0 items-center gap-1.5">
+                      {account.sessionStatus === 'expired' && (
+                        <button
+                          type="button"
+                          onClick={() => dialogRef.current?.open(DIALOG_IDS.ACCOUNT_LOGIN, { mode: 'reauth', account })}
+                          className="rounded border border-[var(--nim-warning)] bg-transparent px-2.5 py-1.5 text-xs text-[var(--nim-warning)] hover:bg-[var(--nim-bg-hover)]"
+                        >
+                          Reconnect
+                        </button>
+                      )}
+                      {!isSyncAccount && account.sessionStatus !== 'expired' && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const result = await window.electronAPI?.stytch?.setSyncAccount(account.personalOrgId);
+                            if (!result?.success) return;
+                            const freshConfig = await window.electronAPI.invoke('sync:get-config');
+                            if (freshConfig) setConfig(freshConfig);
+                            await loadAccounts();
+                          }}
+                          className="rounded border border-[var(--nim-border)] bg-transparent px-2.5 py-1.5 text-xs text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+                        >
+                          Set as sync account
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveAccount(account.personalOrgId)}
+                        className="rounded border border-[var(--nim-border)] bg-transparent px-2.5 py-1.5 text-xs text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)]"
+                      >
+                        Sign out
+                      </button>
+                    </div>
                   </div>
-                );
-              })
-            ) : (
-              <div className="flex items-center gap-3 p-2.5 bg-nim-secondary rounded-lg">
-                <div className="w-9 h-9 rounded-full bg-nim-primary flex items-center justify-center text-nim-on-primary font-semibold text-sm">
-                  {(stytchAuth.user.name?.first_name?.[0] || stytchAuth.user.emails[0]?.email[0] || '?').toUpperCase()}
-                </div>
-                <div className="flex-1">
-                  <div className="font-medium text-nim text-[13px]">
-                    {stytchAuth.user.name?.first_name
-                      ? `${stytchAuth.user.name.first_name} ${stytchAuth.user.name.last_name || ''}`.trim()
-                      : stytchAuth.user.emails[0]?.email}
-                  </div>
-                  <div className="text-[11px] text-nim-faint">
-                    {stytchAuth.user.emails[0]?.email}
-                  </div>
-                </div>
-                <button
-                  onClick={handleSignOut}
-                  className="px-3 py-1.5 text-xs bg-transparent border border-nim rounded text-nim-muted cursor-pointer hover:bg-nim-hover"
-                >
-                  Sign Out
-                </button>
-              </div>
-            )}
-            {/* Add Account button */}
+                  <AccountOrgList group={accountOrganizationGroups[accountIndex]} />
+                </article>
+              );
+            })}
             <button
+              type="button"
               onClick={handleAddAccount}
-              className="flex items-center gap-2 px-3 py-2 text-xs text-nim-muted bg-transparent border border-dashed border-nim rounded-lg cursor-pointer hover:bg-nim-hover hover:text-nim transition-colors"
+              className="sync-add-account-button flex items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--nim-border)] bg-transparent px-3 py-2 text-xs text-[var(--nim-text-muted)] transition-colors hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-              Add Account
+              <MaterialSymbol icon="person_add" size={16} />
+              Add account
             </button>
           </div>
-        ) : showAuthForm ? (
-          <div className="p-4 bg-nim-secondary rounded-lg">
-            {magicLinkSent ? (
-              // Magic link sent confirmation
-              <div className="text-center">
-                <div className="w-12 h-12 mx-auto mb-3 bg-nim-primary rounded-full flex items-center justify-center">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
-                    <path d="M22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6z" />
-                    <path d="M22 6l-10 7L2 6" />
-                  </svg>
-                </div>
-                <h4 className="m-0 mb-2 text-nim text-[15px]">
-                  Check your email
-                </h4>
-                <p className="m-0 mb-4 text-nim-muted text-[13px]">
-                  We sent a sign-in link to <strong>{email}</strong>
-                </p>
-                <button
-                  onClick={() => {
-                    setMagicLinkSent(false);
-                    setEmail('');
-                    setShowAuthForm(false);
-                  }}
-                  className="px-4 py-2 bg-transparent border border-nim rounded-md text-nim-muted text-[13px] cursor-pointer hover:bg-nim-hover"
-                >
-                  Done
-                </button>
-              </div>
-            ) : (
-              <>
-                {/* Google Sign In */}
-                <button
-                  onClick={handleGoogleSignIn}
-                  disabled={authLoading || !isStytchAvailable}
-                  className={`w-full px-4 py-2.5 flex items-center justify-center gap-2.5 bg-white border border-nim rounded-md text-[#333] font-medium text-[13px] ${
-                    authLoading ? 'cursor-wait opacity-70' : 'cursor-pointer opacity-100'
-                  }`}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24">
-                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-                  </svg>
-                  Continue with Google
-                </button>
-
-                <div className="flex items-center gap-3 my-4 text-nim-faint text-xs">
-                  <div className="flex-1 h-px bg-nim" />
-                  or
-                  <div className="flex-1 h-px bg-nim" />
-                </div>
-
-                {/* Email Magic Link Form */}
-                <form onSubmit={handleSendMagicLink}>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="Enter your email"
-                    disabled={!isStytchAvailable || authLoading}
-                    className="w-full px-3 py-2 mb-3 border border-nim rounded-md bg-nim text-nim text-[13px]"
-                  />
-                  <button
-                    type="submit"
-                    disabled={authLoading || !isStytchAvailable || !email}
-                    className={`w-full px-4 py-2.5 bg-nim-primary border-none rounded-md text-nim-on-primary font-medium text-[13px] ${
-                      authLoading ? 'cursor-wait' : 'cursor-pointer'
-                    } ${(authLoading || !email) ? 'opacity-70' : 'opacity-100'}`}
-                  >
-                    {authLoading ? 'Sending...' : 'Send Sign-In Link'}
-                  </button>
-                </form>
-
-                {authError && (
-                  <p className="text-nim-error text-xs mt-2 mb-0">
-                    {authError}
-                  </p>
-                )}
-
-                <button
-                  onClick={() => {
-                    setShowAuthForm(false);
-                    setAuthError(null);
-                    setEmail('');
-                  }}
-                  className="block w-full mt-3 bg-transparent border-none text-nim-faint cursor-pointer text-xs hover:text-nim-muted"
-                >
-                  Cancel
-                </button>
-              </>
-            )}
-          </div>
+        ) : isStytchAvailable ? (
+          <AccountLoginForm mode="first-sign-in" />
         ) : (
-          <div className="p-4 bg-nim-secondary rounded-lg text-center">
-            <p className="text-[13px] text-nim-muted m-0 mb-3">
-              Sign in to sync sessions across all your devices.
-            </p>
-            <button
-              onClick={() => setShowAuthForm(true)}
-              disabled={!isStytchAvailable}
-              className={`px-5 py-2 bg-nim-primary border-none rounded-md text-nim-on-primary font-medium text-[13px] ${
-                isStytchAvailable ? 'cursor-pointer opacity-100' : 'cursor-not-allowed opacity-50'
-              }`}
-            >
-              Sign In or Create Account
-            </button>
-            {!isStytchAvailable && (
-              <p className="text-[11px] text-nim-faint mt-2 mb-0">
-                Restart the app to enable authentication.
-              </p>
-            )}
+          <div className="sync-auth-unavailable rounded-lg bg-[var(--nim-bg-secondary)] p-4 text-center text-xs text-[var(--nim-text-muted)]">
+            Restart the app to enable authentication.
           </div>
         )}
       </div>
-
-      {/* Sharing Discovery Callout */}
-      {stytchAuth.isAuthenticated && (
-        <SharingCallout className={sectionClass('mobile')} />
-      )}
-
-
       {/* Mobile App - compact card combining app info + QR pairing */}
       {stytchAuth.isAuthenticated && (
           <div className={`sync-mobile-section provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0 ${sectionClass('mobile')}`}>
-            <h4 className="provider-panel-section-title text-[15px] font-semibold mb-3 text-[var(--nim-text)]">Mobile App</h4>
+            <h4 className="provider-panel-section-title text-[15px] font-semibold mb-3 text-[var(--nim-text)]">Pair a device</h4>
             <div className="flex gap-3.5 p-3.5 bg-nim-secondary rounded-lg">
               <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shrink-0">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
@@ -979,114 +732,98 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
         </div>
       )}
 
-      {/* Synced Projects */}
+      {/* Projects on mobile: one multi-select list, bulk-selectable */}
       <div className={`sync-mobile-section provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0 ${sectionClass('mobile')}`}>
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between mb-1">
           <h4 className="provider-panel-section-title text-[15px] font-semibold text-[var(--nim-text)] m-0">Projects accessible on mobile</h4>
-          {availableProjects.length > 0 && !showAddProject && (
+          {projects.length > 0 && (
             <button
-              onClick={() => setShowAddProject(true)}
-              className="flex items-center gap-1 px-2 py-0.5 text-[11px] bg-transparent border border-nim rounded text-nim-muted cursor-pointer hover:bg-nim-hover hover:text-nim"
+              type="button"
+              onClick={() => applyProjectSync('mobile', allProjectPaths, mobileSelection !== 'all')}
+              className="rounded border border-nim bg-transparent px-2 py-0.5 text-[11px] text-nim-muted hover:bg-nim-hover hover:text-nim"
+              data-testid="sync-project-select-all"
             >
-              <MaterialSymbol icon="add" size={14} />
-              Add
+              {mobileSelection === 'all' ? 'Deselect all' : 'Select all'}
             </button>
           )}
         </div>
+        <p className="m-0 mb-2 text-[11px] text-nim-faint">
+          {enabledProjectCount === 0
+            ? 'No projects selected.'
+            : `${enabledProjectCount} of ${projects.length} selected.`}
+          {isAlpha && ' Docs also syncs each project\u2019s .md files.'}
+        </p>
 
-        {syncedProjects.length === 0 && !showAddProject ? (
-          <button
-            onClick={() => setShowAddProject(true)}
-            disabled={availableProjects.length === 0}
-            className={`flex items-center gap-2 px-3 py-2 text-[12px] bg-transparent border border-dashed border-nim rounded-lg w-full ${
-              availableProjects.length === 0
-                ? 'text-nim-disabled cursor-not-allowed'
-                : 'text-nim-muted cursor-pointer hover:bg-nim-hover hover:text-nim'
-            }`}
-          >
-            <MaterialSymbol icon="add" size={16} />
-            Add a project to sync
-          </button>
+        {projects.length === 0 ? (
+          <p className="m-0 rounded-lg border border-dashed border-nim px-3 py-2 text-[12px] text-nim-faint">
+            No projects yet. Open a project to make it available on mobile.
+          </p>
         ) : (
-          <div className="bg-nim-secondary rounded-lg overflow-hidden">
-            {syncedProjects.map((project) => {
-              const docSyncEnabled = (config.docSyncEnabledProjects ?? []).includes(project.path);
+          <ul className="sync-project-select-list m-0 list-none overflow-hidden rounded-lg bg-nim-secondary p-0" data-testid="sync-project-select-list">
+            {projects.map((project) => {
+              const mobileEnabled = enabledProjects.includes(project.path);
+              const docSyncEnabled = docSyncEnabledProjects.includes(project.path);
               const status = docSyncStatus[project.path];
               return (
-                <div key={project.path} className="border-b border-[var(--nim-border)] last:border-b-0 group">
+                <li key={project.path} className="sync-project-row border-b border-[var(--nim-border)] last:border-b-0" data-testid="sync-project-row" data-project-path={project.path}>
                   <div className="flex items-center gap-2 px-2.5 py-1.5">
-                    <span className="text-[13px] text-nim truncate flex-1">{project.name}</span>
+                    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={mobileEnabled}
+                        onChange={(event) => applyProjectSync('mobile', [project.path], event.target.checked)}
+                        className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-[var(--nim-primary)]"
+                        aria-label={`Sync ${project.name} to mobile`}
+                      />
+                      <span className="truncate text-[13px] text-nim">{project.name}</span>
+                    </label>
                     {isAlpha && docSyncEnabled && status && (
                       status.pending ? (
-                        <span className="flex items-center gap-1 text-[10px] text-nim-faint shrink-0" title="Starting document sync">
+                        <span className="flex shrink-0 items-center gap-1 text-[10px] text-nim-faint" title="Starting document sync">
                           <MaterialSymbol icon="progress_activity" size={12} className="animate-spin" />
                           Syncing...
                         </span>
                       ) : status.error ? (
-                        <span className="flex items-center gap-1 text-[10px] text-nim-error shrink-0" title={status.error}>
+                        <span className="flex shrink-0 items-center gap-1 text-[10px] text-nim-error" title={status.error}>
                           <MaterialSymbol icon="error" size={12} />
                           Error
                         </span>
                       ) : status.connected ? (
                         <span
-                          className="flex items-center gap-1 text-[10px] text-nim-faint shrink-0"
+                          className="flex shrink-0 items-center gap-1 text-[10px] text-nim-faint"
                           title={`Document sync connected (${status.fileCount ?? 0} files)`}
                         >
-                          <span className="w-1.5 h-1.5 rounded-full bg-nim-success" />
+                          <span className="h-1.5 w-1.5 rounded-full bg-nim-success" />
                           {status.fileCount ?? 0} docs
                         </span>
                       ) : (
-                        <span className="flex items-center gap-1 text-[10px] text-nim-warning shrink-0" title="Document sync is enabled but not connected">
-                          <span className="w-1.5 h-1.5 rounded-full bg-nim-warning" />
+                        <span className="flex shrink-0 items-center gap-1 text-[10px] text-nim-warning" title="Document sync is enabled but not connected">
+                          <span className="h-1.5 w-1.5 rounded-full bg-nim-warning" />
                           Not connected
                         </span>
                       )
                     )}
                     {isAlpha && (
-                      <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Sync .md files to mobile">
+                      <label className="flex shrink-0 cursor-pointer items-center gap-1" title="Sync .md files to mobile">
                         <input
                           type="checkbox"
                           checked={docSyncEnabled}
                           disabled={status?.pending}
-                          onChange={(e) => handleDocSyncToggle(project.path, e.target.checked)}
-                          className="w-3 h-3 cursor-pointer accent-[var(--nim-primary)]"
+                          onChange={(event) => applyProjectSync('docs', [project.path], event.target.checked)}
+                          className="h-3 w-3 cursor-pointer accent-[var(--nim-primary)]"
+                          aria-label={`Sync documents in ${project.name}`}
                         />
                         <span className="text-[10px] text-nim-faint">Docs</span>
                       </label>
                     )}
-                    <button
-                      onClick={() => handleRemoveProject(project.path)}
-                      className="opacity-0 group-hover:opacity-100 p-0.5 bg-transparent border-none text-nim-faint cursor-pointer hover:text-nim-muted shrink-0"
-                      title="Remove from sync"
-                    >
-                      <MaterialSymbol icon="close" size={14} />
-                    </button>
                   </div>
                   {isAlpha && status?.error && (
                     <p className="m-0 px-2.5 pb-1.5 text-[10px] text-nim-error">{status.error}</p>
                   )}
-                </div>
+                </li>
               );
             })}
-            {showAddProject && availableProjects.map((project) => (
-              <button
-                key={project.path}
-                onClick={() => handleAddProject(project.path)}
-                className="flex items-center gap-2 px-2.5 py-1.5 w-full bg-transparent border-none border-b border-[var(--nim-border)] last:border-b-0 cursor-pointer hover:bg-nim-hover text-left"
-              >
-                <MaterialSymbol icon="add" size={14} className="text-[var(--nim-primary)] shrink-0" />
-                <span className="text-[13px] text-nim-muted truncate">{project.name}</span>
-              </button>
-            ))}
-            {showAddProject && (
-              <button
-                onClick={() => setShowAddProject(false)}
-                className="w-full py-1 text-[11px] text-nim-faint bg-transparent border-none border-t border-[var(--nim-border)] cursor-pointer hover:bg-nim-hover"
-              >
-                Done
-              </button>
-            )}
-          </div>
+          </ul>
         )}
 
         {/* Idle timeout */}
@@ -1110,7 +847,7 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
       {/* Paired Devices */}
       <div className={`sync-devices-section provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0 ${sectionClass('devices')}`}>
         <h4 className="provider-panel-section-title text-[15px] font-semibold mb-3 text-[var(--nim-text)]">
-          Devices
+          Paired devices
           <button
             onClick={loadDevices}
             disabled={devicesLoading}

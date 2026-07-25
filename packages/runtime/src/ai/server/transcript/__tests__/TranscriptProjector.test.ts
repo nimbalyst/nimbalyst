@@ -131,6 +131,7 @@ describe('TranscriptProjector', () => {
           teamName: null,
           teammateMode: null,
           model: null,
+          reasoningEffort: null,
           color: null,
           isBackground: false,
           prompt: 'Find files',

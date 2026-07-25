@@ -36,7 +36,7 @@ vi.mock('posthog-js/react', () => ({
   usePostHog: () => undefined,
 }));
 
-function setupElectronApiMock() {
+function setupElectronApiMock(trackerItems: unknown[] = []) {
   const appSettings = new Map<string, unknown>();
   const invoke = vi.fn().mockImplementation(async (channel: string, ...args: unknown[]) => {
     if (channel === 'app-settings:get') {
@@ -63,6 +63,9 @@ function setupElectronApiMock() {
     if (channel === 'sessions:list') {
       return { success: true, sessions: [] };
     }
+    if (channel === 'document-service:tracker-items-list') {
+      return trackerItems;
+    }
     throw new Error(`Unexpected invoke channel: ${channel}`);
   });
 
@@ -75,6 +78,10 @@ function setupElectronApiMock() {
   ]);
 
   const getOpenWorkspaces = vi.fn().mockResolvedValue(['/Users/ghinkle/sources/crystal']);
+  const semanticSearch = {
+    isAvailable: vi.fn().mockResolvedValue(false),
+    query: vi.fn().mockResolvedValue([]),
+  };
 
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
@@ -92,13 +99,11 @@ function setupElectronApiMock() {
       buildQuickOpenCache: vi.fn().mockResolvedValue(undefined),
       searchWorkspaceFileNames: vi.fn().mockResolvedValue([]),
       searchWorkspaceFileContent: vi.fn().mockResolvedValue([]),
-      semanticSearch: {
-        isAvailable: vi.fn().mockResolvedValue(false),
-      },
+      semanticSearch,
     },
   });
 
-  return { invoke, getRecentWorkspaces, getOpenWorkspaces, appSettings };
+  return { invoke, getRecentWorkspaces, getOpenWorkspaces, appSettings, semanticSearch };
 }
 
 describe('UnifiedQuickOpen — Projects tab', () => {
@@ -172,6 +177,57 @@ describe('UnifiedQuickOpen — Projects tab', () => {
     });
 
     expect(screen.getByText('aurora')).toBeTruthy();
+  });
+
+  it('finds a shared file in the Files tab and opens it collaboratively', async () => {
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+    const store = createStore();
+    const onClose = vi.fn();
+    const onFileSelect = vi.fn();
+    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    store.set(workspaceHasTeamAtom, true);
+    store.set(sharedDocumentsAtom, [
+      {
+        documentId: 'doc-roadmap',
+        title: 'Planning/Product Roadmap',
+        documentType: 'markdown',
+        createdBy: 'user-1',
+        createdAt: 100,
+        updatedAt: 200,
+      },
+    ]);
+
+    render(
+      <JotaiProvider store={store}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={onClose}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="files"
+          onFileSelect={onFileSelect}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
+      target: { value: 'roadmap' },
+    });
+
+    const sharedResult = await screen.findByTestId('shared-file-quick-open-doc-roadmap');
+    expect(sharedResult.textContent).toContain('Product Roadmap');
+    expect(sharedResult.textContent).toContain('Shared');
+
+    fireEvent.click(sharedResult);
+
+    expect(onFileSelect).not.toHaveBeenCalled();
+    expect(store.get(pendingCollabDocumentAtom)).toEqual({
+      documentId: 'doc-roadmap',
+      documentType: 'markdown',
+    });
+    expect(store.get(windowModeAtom)).toBe('collab');
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('passes the file mask to file-name search before result truncation', async () => {
@@ -288,6 +344,172 @@ describe('UnifiedQuickOpen — Projects tab', () => {
       expect(screen.getByRole('tab', { name: /Trackers/ }).getAttribute('aria-selected')).toBe('true');
       expect(screen.getByPlaceholderText('custom-type')).toBeTruthy();
     });
+  });
+});
+
+describe('UnifiedQuickOpen — Memory tab', () => {
+  beforeEach(() => {
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  });
+
+  it('merges Tracker navigation into visible single-select Memory bubbles', async () => {
+    const { semanticSearch } = setupElectronApiMock();
+    semanticSearch.isAvailable.mockResolvedValue(true);
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={vi.fn()}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="search"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    expect(await screen.findByRole('tab', { name: /Memory/ })).toBeTruthy();
+    const visibleTabs = screen.getAllByRole('tab');
+    expect(visibleTabs[visibleTabs.length - 1].textContent).toContain('Memory');
+    expect(screen.queryByRole('tab', { name: /Trackers/ })).toBeNull();
+    await screen.findByRole('group', { name: 'Search in' });
+    const allScope = screen.getByRole('button', { name: 'All' });
+    const docsScope = screen.getByRole('button', { name: 'Docs' });
+    const trackersScope = screen.getByRole('button', { name: 'Trackers' });
+    const sessionsScope = screen.getByRole('button', { name: 'Sessions' });
+
+    expect(allScope.getAttribute('aria-pressed')).toBe('true');
+    expect(docsScope.getAttribute('aria-pressed')).toBe('false');
+    expect(trackersScope.getAttribute('aria-pressed')).toBe('false');
+    expect(sessionsScope.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(trackersScope);
+    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
+      target: { value: 'login failure' },
+    });
+
+    await waitFor(() => {
+      expect(semanticSearch.query).toHaveBeenLastCalledWith(
+        '/Users/ghinkle/sources/crystal',
+        'login failure',
+        25,
+        ['trackers'],
+      );
+    });
+    expect(trackersScope.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(docsScope);
+
+    await waitFor(() => {
+      expect(semanticSearch.query).toHaveBeenLastCalledWith(
+        '/Users/ghinkle/sources/crystal',
+        'login failure',
+        25,
+        ['design', 'docs', 'plans', 'claude', 'facts'],
+      );
+    });
+    expect(docsScope.getAttribute('aria-pressed')).toBe('true');
+    expect(trackersScope.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(docsScope);
+    expect(allScope.getAttribute('aria-pressed')).toBe('true');
+    expect(docsScope.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('adds semantic tracker hits to the rich Tracker results', async () => {
+    const { semanticSearch } = setupElectronApiMock([
+      {
+        id: 'tracker-semantic',
+        issueKey: 'NIM-4242',
+        title: 'Collaboration retry policy',
+        description: 'Handles reconnect backoff for shared rooms.',
+        type: 'bug',
+        typeTags: [],
+        status: 'open',
+        priority: 'high',
+        tags: [],
+        archived: false,
+        updated: '2026-07-23T12:00:00.000Z',
+      },
+    ]);
+    semanticSearch.isAvailable.mockResolvedValue(true);
+    semanticSearch.query.mockResolvedValue([
+      {
+        refType: 'tracker',
+        refId: 'tracker-semantic',
+        sourceClass: 'trackers',
+        sourcePath: 'tracker:tracker-semantic',
+        title: 'Collaboration retry policy',
+        snippet: 'Handles reconnect backoff for shared rooms.',
+        score: 0.91,
+        signals: { dense: true, sparse: false },
+      },
+    ]);
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={vi.fn()}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="search"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    await screen.findByRole('group', { name: 'Search in' });
+    fireEvent.click(screen.getByRole('button', { name: 'Trackers' }));
+    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
+      target: { value: 'shared room resilience' },
+    });
+
+    expect(await screen.findByText('Collaboration retry policy')).toBeTruthy();
+    expect(screen.getByText('NIM-4242')).toBeTruthy();
+    expect(screen.getByText('open')).toBeTruthy();
+    expect(screen.getByText('bug')).toBeTruthy();
+  });
+
+  it('keeps local file-content search on the separate ripgrep route', async () => {
+    const { semanticSearch } = setupElectronApiMock();
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={vi.fn()}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="in-files"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
+      target: { value: 'UnifiedQuickOpen' },
+    });
+
+    await waitFor(() => {
+      expect(window.electronAPI.searchWorkspaceFileContent).toHaveBeenCalledWith(
+        '/Users/ghinkle/sources/crystal',
+        'UnifiedQuickOpen',
+      );
+    });
+    expect(semanticSearch.query).not.toHaveBeenCalled();
+    expect(screen.queryByRole('group', { name: 'Search in' })).toBeNull();
   });
 });
 

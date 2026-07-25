@@ -18,7 +18,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ulid } from 'ulid';
 import log from 'electron-log/main';
-import { getAllFilesInDirectory } from '../utils/fileUtils';
+import { getUntrackedFilesInDirectory } from '../utils/gitUtils';
 import { gitOperationLock } from './GitOperationLock';
 
 const logger = log.scope('GitWorktreeService');
@@ -2273,9 +2273,12 @@ ${newLines.map(line => '+' + line).join('\n')}`;
           try {
             const stats = fs.statSync(absolutePath);
             if (stats.isDirectory()) {
-              // Expand directory to get all files inside (returns relative paths with forward slashes)
-              const filesInDir = getAllFilesInDirectory(absolutePath, { basePath: worktreePath, normalizeSlashes: true });
-              for (const filePath of filesInDir) {
+              // Expand the untracked directory to individual files, honoring
+              // .gitignore so an installed node_modules/dist doesn't explode
+              // into tens of thousands of paths (NIM-1782). git ls-files emits
+              // worktree-relative, forward-slashed paths already.
+              const relFiles = getUntrackedFilesInDirectory(worktreePath, absolutePath);
+              for (const filePath of relFiles) {
                 changedFiles.push({ path: filePath, status: 'added', staged: false });
               }
               continue; // Skip adding the directory itself

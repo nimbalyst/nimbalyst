@@ -54,6 +54,7 @@ export { SuperProgressSnapshotWidget } from './SuperProgressSnapshotWidget';
 export { SuperLoopProgressWidget } from './SuperLoopProgressWidget';
 export { UpdateSessionMetaWidget } from './UpdateSessionMetaWidget';
 export { TrackerToolWidget } from './TrackerToolWidget';
+export { CrossSessionToolWidget } from './CrossSessionToolWidget';
 export { MemoryToolWidget } from './MemoryToolWidget';
 export { ToolWidgetErrorBoundary } from './ToolWidgetErrorBoundary';
 
@@ -110,6 +111,7 @@ import { SuperLoopProgressWidget } from './SuperLoopProgressWidget';
 import { UpdateSessionMetaWidget } from './UpdateSessionMetaWidget';
 import { TrackerToolWidget } from './TrackerToolWidget';
 import { MemoryToolWidget } from './MemoryToolWidget';
+import { CrossSessionToolWidget } from './CrossSessionToolWidget';
 
 import {
   getTranscriptToolWidget,
@@ -201,6 +203,17 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   'memory_recall': MemoryToolWidget,
   'search_project_knowledge': MemoryToolWidget,
   'memory_search_project_knowledge': MemoryToolWidget,
+
+  // Meta-agent (child-session orchestration) tools - render a clickable session
+  // chip for the target/child session(s) instead of the raw UUID.
+  'send_prompt': CrossSessionToolWidget,
+  'respond_to_prompt': CrossSessionToolWidget,
+  'spawn_session': CrossSessionToolWidget,
+  'create_session': CrossSessionToolWidget,
+  'get_session_status': CrossSessionToolWidget,
+  'get_session_result': CrossSessionToolWidget,
+  'list_queued_prompts': CrossSessionToolWidget,
+  'list_spawned_sessions': CrossSessionToolWidget,
 };
 
 // Identifier used when the host registers built-in widgets to the runtime

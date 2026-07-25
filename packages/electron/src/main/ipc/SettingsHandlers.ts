@@ -43,6 +43,7 @@ import { getEnhancedPath } from '../services/CLIManager';
 import { logger } from '../utils/logger';
 import { getSettingsService, isSettingKey } from '../services/SettingsService';
 import { SessionNamingService } from '../services/SessionNamingService';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 import { SoundNotificationService } from '../services/SoundNotificationService';
 import { autoUpdaterService } from '../services/autoUpdater';
 import type { OnboardingState } from '../utils/store';
@@ -66,6 +67,7 @@ import {
     switchPersonalSyncProfile,
 } from '../services/PersonalSyncProfiles';
 import { purgeOfflineCollabAccounts } from '../services/CollabOfflineAccountLifecycle';
+import { listPersonalSyncDevices } from '../services/PersonalSyncDevicesService';
 
 // Track if we've subscribed to sync status changes
 let syncStatusListenerSetup = false;
@@ -152,8 +154,18 @@ export function registerSettingsHandlers() {
         return getAppSetting(key);
     });
 
-    safeHandle('app-settings:set', (_event, key: string, value: unknown) => {
+    safeHandle('app-settings:set', (event, key: string, value: unknown) => {
         setAppSetting(key, value);
+        // Broadcast to every OTHER window so cross-window state (e.g.
+        // navigation-gutter customization) stays in lockstep without a reload.
+        // Exclude the sender: it already applied the change locally before
+        // invoking, and re-applying its own write would be redundant.
+        const payload = { key, value };
+        for (const win of BrowserWindow.getAllWindows()) {
+            if (win.isDestroyed()) continue;
+            if (win.webContents.id === event.sender.id) continue;
+            win.webContents.send('app-settings:changed', payload);
+        }
     });
 
     // Spellcheck toggle - controls Chromium's built-in spellchecker for all windows
@@ -422,6 +434,9 @@ export function registerSettingsHandlers() {
             buttonLabel: 'Use Sound',
             properties: ['openFile'],
             filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'] }],
+            // Deliberately window-less: sound files live in the user's music
+            // library, not inside the open workspace.
+            defaultPath: getDialogDefaultPath(),
         };
         const result = window
             ? await dialog.showOpenDialog(window, dialogOptions)
@@ -431,6 +446,7 @@ export function registerSettingsHandlers() {
         }
 
         const sourcePath = result.filePaths[0];
+        rememberDialogSelection(sourcePath, 'file');
 
         // Reject oversized files: the bytes are read into memory and cloned over
         // IPC on every completion, so a huge file means churn / OOM risk.
@@ -875,6 +891,9 @@ export function registerSettingsHandlers() {
         if (!account) {
             return { success: false, error: 'Account not found' };
         }
+        if (!StytchAuth.setSyncAccount(personalOrgId)) {
+            return { success: false, error: 'Unable to select sync account' };
+        }
 
         const currentConfig = getSessionSyncConfig();
         if (!currentConfig) {
@@ -955,51 +974,10 @@ export function registerSettingsHandlers() {
         }
     });
 
-    // Get connected devices from the sync server
-    safeHandle('sync:get-devices', async () => {
-        const config = getSessionSyncConfig();
-
-        if (!config?.enabled || !config.serverUrl) {
-            return { success: false, devices: [], error: 'Sync not configured' };
-        }
-
-        // Require Stytch authentication
-        const jwt = StytchAuth.getSessionJwt();
-        if (!jwt) {
-            return { success: false, devices: [], error: 'Not authenticated' };
-        }
-
-        try {
-            // Fetch via the /api/sessions endpoint which forwards to IndexRoom status
-            const httpUrl = config.serverUrl
-                .replace(/^ws:/, 'http:')
-                .replace(/^wss:/, 'https:')
-                .replace(/\/$/, '');
-
-            const response = await fetch(`${httpUrl}/api/sessions`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${jwt}`,
-                },
-                signal: AbortSignal.timeout(5000),
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                return {
-                    success: true,
-                    devices: data.devices || [],
-                    sessionCount: data.session_count || 0,
-                    projectCount: data.project_count || 0,
-                };
-            } else {
-                return { success: false, devices: [], error: `Server returned ${response.status}` };
-            }
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to get devices';
-            return { success: false, devices: [], error: message };
-        }
-    });
+    // Read the personal account's device list with the canonical derived sync
+    // URL and personal-org JWT. The stored config intentionally omits serverUrl
+    // when production is selected, and a team JWT targets a different member.
+    safeHandle('sync:get-devices', listPersonalSyncDevices);
 
     // Get sync status for the navigation gutter button
     safeHandle('sync:get-status', async (_event, workspacePath?: string) => {
@@ -1103,6 +1081,54 @@ export function registerSettingsHandlers() {
             const message = error instanceof Error ? error.message : 'Failed to get doc sync status';
             return { success: false, error: message };
         }
+    });
+
+    // Apply a whole project selection at once. The multi-select UI can change
+    // every project in one interaction; routing that through per-project
+    // toggles meant N read-modify-writes and up to N sync triggers.
+    safeHandle('sync:set-project-selection', async (
+        _event,
+        selection: { enabledProjects?: string[]; docSyncEnabledProjects?: string[] },
+    ) => {
+        const config = getSessionSyncConfig() ?? { enabled: false, serverUrl: '', enabledProjects: [] };
+        const previousEnabled = config.enabledProjects ?? [];
+        const previousDocSync = config.docSyncEnabledProjects ?? [];
+        const enabledProjects = [...new Set(selection?.enabledProjects ?? [])];
+        const docSyncEnabledProjects = [...new Set(selection?.docSyncEnabledProjects ?? [])];
+
+        const addedProjects = enabledProjects.filter((path) => !previousEnabled.includes(path));
+        const docSyncChanged = docSyncEnabledProjects.length !== previousDocSync.length
+            || docSyncEnabledProjects.some((path) => !previousDocSync.includes(path));
+
+        // One write for the whole selection.
+        setSessionSyncConfig(persistActivePersonalSyncProfile({
+            ...config,
+            enabledProjects,
+            docSyncEnabledProjects,
+            enabled: enabledProjects.length > 0,
+        }));
+        logger.store.info(
+            `[sync:set-project-selection] ${enabledProjects.length} project(s) enabled, `
+            + `${docSyncEnabledProjects.length} with document sync`,
+        );
+
+        // ...and one sync trigger. Doc-sync membership is applied during
+        // reinitialization; a project that only gained session sync just needs
+        // its sessions pushed.
+        try {
+            if (docSyncChanged || !isSyncProviderReady()) {
+                await repositoryManager.reinitializeSyncWithNewConfig();
+            } else if (addedProjects.length > 0) {
+                triggerIncrementalSync().catch(err => {
+                    logger.store.error('[sync:set-project-selection] Failed to trigger sync:', err);
+                });
+            }
+        } catch (error) {
+            logger.store.error('[sync:set-project-selection] Failed to apply sync config:', error);
+            return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+
+        return { success: true, enabledProjects, docSyncEnabledProjects };
     });
 
     // Toggle sync for a specific project
@@ -1262,6 +1288,16 @@ export function registerSettingsHandlers() {
     safeHandle('stytch:get-accounts', () => {
         ensureStytchInitialized();
         return StytchAuth.getAccounts();
+    });
+
+    safeHandle('stytch:get-sync-account', () => {
+        ensureStytchInitialized();
+        return StytchAuth.getSyncAccount();
+    });
+
+    safeHandle('stytch:set-sync-account', (_event, personalOrgId: string) => {
+        ensureStytchInitialized();
+        return { success: StytchAuth.setSyncAccount(personalOrgId) };
     });
 
     // Check if user is authenticated with Stytch

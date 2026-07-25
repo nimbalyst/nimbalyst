@@ -36,6 +36,7 @@ import * as Y from 'yjs';
 import type * as awarenessProtocol from 'y-protocols/awareness';
 import { COLLAB_INIT_ORIGIN } from '@nimbalyst/extension-sdk';
 import { getYCsv } from './seed';
+import { extractRemotePresences, type RemotePresence } from './presence';
 
 const SYNC_DEBOUNCE_MS = 150;
 
@@ -213,23 +214,12 @@ export class CsvBinding {
   }
 
   /**
-   * Map of remote userId -> currently-editing cell, for "X is editing B5"
-   * overlays. The selected-cell list (without editing) lives at
-   * `getRemoteSelections()`.
+   * Render-ready list of remote collaborators' presence (selected/editing cell
+   * plus name+color), for the in-grid presence overlay. The local client is
+   * excluded and malformed states are dropped. See `extractRemotePresences`.
    */
-  getRemoteEditing(): Map<string, { row: number; col: number }> {
-    const out = new Map<string, { row: number; col: number }>();
-    if (!this.awareness) return out;
-    const states = this.awareness.getStates();
-    for (const [clientId, state] of states) {
-      if (clientId === this.awareness.clientID) continue;
-      const userId = (state.user as { id?: string } | undefined)?.id;
-      if (!userId) continue;
-      const cell = (state as { editingCell?: { row: number; col: number } | null }).editingCell;
-      if (cell && typeof cell.row === 'number' && typeof cell.col === 'number') {
-        out.set(userId, cell);
-      }
-    }
-    return out;
+  getRemotePresences(): RemotePresence[] {
+    if (!this.awareness) return [];
+    return extractRemotePresences(this.awareness.getStates(), this.awareness.clientID);
   }
 }

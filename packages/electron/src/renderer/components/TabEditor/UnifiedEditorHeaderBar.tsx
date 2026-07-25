@@ -151,6 +151,10 @@ interface UnifiedEditorHeaderBarProps {
   showSharedDocButton?: boolean;
   showHistoryAction?: boolean;
   showCommonFileActions?: boolean;
+  sharedDocumentLinkTarget?: {
+    documentId: string;
+    orgId: string;
+  };
 }
 
 export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
@@ -179,6 +183,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   showSharedDocButton = true,
   showHistoryAction = true,
   showCommonFileActions = true,
+  sharedDocumentLinkTarget,
 }) => {
   const openHistoryDialog = useSetAtom(historyDialogFileAtom);
 
@@ -238,20 +243,35 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
     sharedDocMenu,
   ]);
 
-  // Copy a deep link to the linked shared document (only meaningful for shared docs)
-  const sharedDocDeepLinkAvailable = Boolean(sharedDocLink.binding?.documentId && teamOrgId);
-  const handleCopyDeepLink = useCallback(async () => {
+  // Open collaborative tabs provide their identity directly. Local files fall
+  // back to their saved shared-document binding.
+  const sharedDocumentDeepLink = useMemo(() => {
+    if (sharedDocumentLinkTarget?.documentId && sharedDocumentLinkTarget.orgId) {
+      return buildSharedDocumentDeepLink(
+        sharedDocumentLinkTarget.documentId,
+        sharedDocumentLinkTarget.orgId,
+      );
+    }
     const documentId = sharedDocLink.binding?.documentId;
-    if (!documentId || !teamOrgId) return;
-    const url = buildSharedDocumentDeepLink(documentId, teamOrgId);
+    if (!documentId || !teamOrgId) return null;
+    return buildSharedDocumentDeepLink(documentId, teamOrgId);
+  }, [
+    sharedDocumentLinkTarget?.documentId,
+    sharedDocumentLinkTarget?.orgId,
+    sharedDocLink.binding?.documentId,
+    teamOrgId,
+  ]);
+
+  const handleCopyDeepLink = useCallback(async () => {
+    if (!sharedDocumentDeepLink) return;
     try {
-      await copyToClipboard(url);
+      await copyToClipboard(sharedDocumentDeepLink);
       console.log('[UnifiedHeaderBar] Shared document link copied to clipboard');
     } catch (err) {
       console.error('[UnifiedHeaderBar] Failed to copy shared document link:', err);
     }
     setShowActionsMenu(false);
-  }, [sharedDocLink.binding?.documentId, teamOrgId, setShowActionsMenu]);
+  }, [sharedDocumentDeepLink, setShowActionsMenu]);
 
   // Dev mode check
   const isDevMode = import.meta.env.DEV;
@@ -918,7 +938,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
               )}
 
               {/* Copy link (shared docs only) */}
-              {sharedDocDeepLinkAvailable && (
+              {sharedDocumentDeepLink && (
                 <button
                   className="dropdown-item copy-shared-doc-link w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
                   onClick={handleCopyDeepLink}

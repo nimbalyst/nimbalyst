@@ -20,6 +20,10 @@ import {
   fileResource,
   trackerResource,
   trackerResourceId,
+  setWorkstreamRightPanelModeAtom,
+  workstreamRightPanelModeAtom,
+  setWorkstreamSessionChatIdAtom,
+  workstreamSessionChatIdsAtom,
 } from '../workstreamState';
 
 /**
@@ -177,6 +181,27 @@ describe('workstream resource actions', () => {
     ).toEqual(['/a.ts', trackerResourceId('T1'), '/b.ts']);
   });
 
+  it('mirrors the active editor tab to workstreamActiveFileAtom for agent-chat selection scoping', () => {
+    // AgentWorkstreamPanel reads workstreamActiveFileAtom to scope the agent
+    // chat's "+ selection" chip to the active editor tab. WorkstreamEditorTabs'
+    // persist effect writes the live tab set through setWorkstreamResourcesAtom;
+    // this pins that a file-active tab surfaces its path (chip scopes to it) and
+    // a tracker-active tab surfaces null (chat passes '' -> no cross-tab leak).
+    store.set(setWorkstreamResourcesAtom, {
+      workstreamId: wsId,
+      resources: [fileResource('/a.ts'), trackerResource('T1')],
+      activeResourceId: '/a.ts',
+    });
+    expect(store.get(workstreamActiveFileAtom(wsId))).toBe('/a.ts');
+
+    store.set(setWorkstreamResourcesAtom, {
+      workstreamId: wsId,
+      resources: [fileResource('/a.ts'), trackerResource('T1')],
+      activeResourceId: trackerResourceId('T1'),
+    });
+    expect(store.get(workstreamActiveFileAtom(wsId))).toBeNull();
+  });
+
   it('closing the active resource moves focus to the left neighbor', () => {
     store.set(addWorkstreamFileAtom, { workstreamId: wsId, filePath: '/a.ts' });
     store.set(addWorkstreamFileAtom, { workstreamId: wsId, filePath: '/b.ts' });
@@ -299,5 +324,54 @@ describe('per-tab tracker content focus', () => {
       (t) => t.resource.resourceId === trackerResourceId('T1')
     );
     expect(trackerTab?.presentation?.trackerContentFocus).toBe(true);
+  });
+});
+
+describe('Agent right panel mode', () => {
+  it('defaults to Edited Files and switches modes without hiding the panel', () => {
+    const testStore = createStore();
+    const workstreamId = 'right-panel-workstream';
+
+    expect(testStore.get(workstreamRightPanelModeAtom(workstreamId))).toBe('edited-files');
+    expect(testStore.get(workstreamStateAtom(workstreamId)).filesSidebarVisible).toBe(true);
+
+    testStore.set(setWorkstreamRightPanelModeAtom, {
+      workstreamId,
+      mode: 'review',
+    });
+
+    expect(testStore.get(workstreamRightPanelModeAtom(workstreamId))).toBe('review');
+    expect(testStore.get(workstreamStateAtom(workstreamId)).filesSidebarVisible).toBe(true);
+  });
+
+  it('persists one normal chat pairing per source session', () => {
+    const testStore = createStore();
+    const workstreamId = 'right-panel-workstream';
+
+    testStore.set(setWorkstreamSessionChatIdAtom, {
+      workstreamId,
+      targetSessionId: 'source-a',
+      chatSessionId: 'chat-a',
+    });
+    testStore.set(setWorkstreamSessionChatIdAtom, {
+      workstreamId,
+      targetSessionId: 'source-b',
+      chatSessionId: 'chat-b',
+    });
+
+    expect(testStore.get(workstreamSessionChatIdsAtom(workstreamId))).toEqual({
+      'source-a': 'chat-a',
+      'source-b': 'chat-b',
+    });
+
+    testStore.set(setWorkstreamSessionChatIdAtom, {
+      workstreamId,
+      targetSessionId: 'source-a',
+      chatSessionId: null,
+    });
+
+    expect(testStore.get(workstreamSessionChatIdsAtom(workstreamId))).toEqual({
+      'source-b': 'chat-b',
+    });
   });
 });

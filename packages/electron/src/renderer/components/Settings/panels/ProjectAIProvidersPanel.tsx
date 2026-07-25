@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { useAtomValue } from 'jotai';
 import { MaterialSymbol, getProviderIcon } from '@nimbalyst/runtime';
+import { advancedSettingsAtom } from '../../../store/atoms/appSettings';
+import { isProviderVisible } from '../../../utils/chatProviderVisibility';
 
 interface ProviderOverride {
   enabled?: boolean;
@@ -17,6 +20,7 @@ interface GlobalProviderSettings {
   enabled?: boolean;
   models?: string[];
   defaultModel?: string;
+  baseUrl?: string;
 }
 
 interface Model {
@@ -50,6 +54,7 @@ const PROVIDERS: ProviderInfo[] = [
 ];
 
 export function ProjectAIProvidersPanel({ workspacePath, workspaceName }: ProjectAIProvidersPanelProps) {
+  const { showDirectChatProviders } = useAtomValue(advancedSettingsAtom);
   const [globalSettings, setGlobalSettings] = useState<Record<string, GlobalProviderSettings>>({});
   const [globalApiKeys, setGlobalApiKeys] = useState<Record<string, string>>({});
   const [projectOverrides, setProjectOverrides] = useState<AIProviderOverrides>({});
@@ -260,7 +265,11 @@ export function ProjectAIProvidersPanel({ workspacePath, workspaceName }: Projec
 
       <div className="panel-content flex-1 overflow-y-auto">
         <div className="providers-list flex flex-col gap-3">
-          {PROVIDERS.map(provider => {
+          {PROVIDERS.filter((provider) => isProviderVisible(provider.id, {
+            revealAll: showDirectChatProviders,
+            settings: { providers: globalSettings, apiKeys: globalApiKeys },
+            hasProjectOverride: isOverriding(provider.id),
+          })).map(provider => {
             const globalEnabled = globalSettings[provider.id]?.enabled ?? false;
             const overriding = isOverriding(provider.id);
             const effectiveEnabled = getEffectiveEnabled(provider.id);

@@ -145,6 +145,38 @@ export interface SettingsPanelContribution {
   order?: number;
 }
 
+/** Settings scopes that extensions may contribute first-class routes to. */
+export type ExtensionSettingsRouteScope = 'application' | 'project';
+
+/**
+ * A first-class route contributed to the Settings sidebar.
+ *
+ * The route id is unique within the extension. The host namespaces it as
+ * `ext:<extensionId>:<id>` so it cannot collide with built-in settings routes.
+ */
+export interface SettingsRouteContribution {
+  /** Unique route id within the extension. */
+  id: string;
+
+  /** Settings scope where the route appears. */
+  scope: ExtensionSettingsRouteScope;
+
+  /** User-facing sidebar label. */
+  label: string;
+
+  /** Sidebar group heading. Defaults to "Extensions". */
+  group?: string;
+
+  /** Material Symbol name. Defaults to "extension". */
+  icon?: string;
+
+  /** Sort order among extension routes in the same group. Defaults to 100. */
+  order?: number;
+
+  /** Name of the component exported from `ExtensionModule.settingsPanel`. */
+  component: string;
+}
+
 // ============================================================================
 // Panel Module Exports (what extensions export)
 // ============================================================================
@@ -749,4 +781,21 @@ export interface SettingsPanelProps {
     toolName: string,
     args?: Record<string, unknown>
   ) => Promise<unknown>;
+
+  /**
+   * Active local workspace for a project-scoped settings route. Omitted for
+   * application routes and legacy nested settings panels.
+   */
+  workspacePath?: string;
+
+  /**
+   * Full project target for a project-scoped settings route. Omitted for
+   * application routes and legacy nested settings panels.
+   */
+  projectTarget?: SettingsRouteProjectTarget;
 }
+
+/** Project context passed to project-scoped extension settings routes. */
+export type SettingsRouteProjectTarget =
+  | { kind: 'workspace'; workspacePath: string }
+  | { kind: 'organizationProject'; orgId: string; projectId: string };

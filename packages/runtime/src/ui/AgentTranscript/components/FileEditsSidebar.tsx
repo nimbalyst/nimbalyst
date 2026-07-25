@@ -1,4 +1,15 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import {
+  useFloating,
+  offset,
+  flip,
+  shift,
+  useDismiss,
+  useRole,
+  useInteractions,
+  FloatingPortal,
+  type VirtualElement,
+} from '@floating-ui/react';
 import type { FileEditSummary } from '../types';
 import { MaterialSymbol } from '../../icons/MaterialSymbol';
 import { useDiffPeek } from '../../git/useDiffPeek';
@@ -140,6 +151,18 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
   const setGroupByDirectory = onGroupByDirectoryChange ?? setLocalGroupByDirectory;
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ isOpen: false, x: 0, y: 0, filePath: '' });
+
+  const { refs: contextMenuRefs, floatingStyles: contextMenuStyles, context: contextMenuContext } = useFloating({
+    open: contextMenu.isOpen,
+    onOpenChange: (open) => {
+      if (!open) setContextMenu({ isOpen: false, x: 0, y: 0, filePath: '' });
+    },
+    placement: 'bottom-start',
+    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 })],
+  });
+  const contextMenuDismiss = useDismiss(contextMenuContext);
+  const contextMenuRole = useRole(contextMenuContext, { role: 'menu' });
+  const { getFloatingProps: getContextMenuFloatingProps } = useInteractions([contextMenuDismiss, contextMenuRole]);
 
   // Convert absolute path to relative path from workspace root
   const getRelativePath = useCallback((filePath: string): string => {
@@ -406,15 +429,19 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
     setContextMenu({ isOpen: false, x: 0, y: 0, filePath: '' });
   };
 
-  // Close context menu when clicking outside
+  // Anchor the menu to a virtual element at the cursor so floating-ui can
+  // flip/shift it back on screen near viewport edges.
   useEffect(() => {
-    if (contextMenu.isOpen) {
-      const handleClick = () => closeContextMenu();
-      document.addEventListener('click', handleClick);
-      return () => document.removeEventListener('click', handleClick);
+    if (!contextMenu.isOpen) {
+      contextMenuRefs.setPositionReference(null);
+      return;
     }
-    return undefined;
-  }, [contextMenu.isOpen]);
+    const virtual: VirtualElement = {
+      getBoundingClientRect: () =>
+        DOMRect.fromRect({ x: contextMenu.x, y: contextMenu.y, width: 0, height: 0 }),
+    };
+    contextMenuRefs.setPositionReference(virtual);
+  }, [contextMenu.isOpen, contextMenu.x, contextMenu.y, contextMenuRefs]);
 
   const renderContextMenu = () => {
     if (!contextMenu.isOpen) return null;
@@ -423,75 +450,78 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
     if (!hasContextActions) return null;
 
     return (
-      <div
-        className="file-edits-sidebar__context-menu fixed z-50 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-md shadow-lg py-1 min-w-[180px]"
-        style={{ left: contextMenu.x, top: contextMenu.y }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {onOpenInFiles && (
-          <button
-            className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
-            onClick={() => {
-              onOpenInFiles(contextMenu.filePath);
-              closeContextMenu();
-            }}
-          >
-            <MaterialSymbol icon="open_in_new" size={16} className="text-[var(--nim-text-muted)]" />
-            Open in Files
-          </button>
-        )}
-        {onViewDiff && (
-          <button
-            className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
-            onClick={() => {
-              onViewDiff(contextMenu.filePath);
-              closeContextMenu();
-            }}
-          >
-            <MaterialSymbol icon="difference" size={16} className="text-[var(--nim-text-muted)]" />
-            View Diff
-          </button>
-        )}
-        {onOpenInExternalEditor && externalEditorName && (
-          <button
-            className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
-            onClick={() => {
-              onOpenInExternalEditor(contextMenu.filePath);
-              closeContextMenu();
-            }}
-          >
-            <MaterialSymbol icon="open_in_new" size={16} className="text-[var(--nim-text-muted)]" />
-            Open in {externalEditorName}
-          </button>
-        )}
-        {(onOpenInFiles || onViewDiff || onOpenInExternalEditor) && (onCopyPath || onRevealInFinder) && (
-          <div className="file-edits-sidebar__context-menu-divider h-px bg-[var(--nim-border)] my-1" />
-        )}
-        {onCopyPath && (
-          <button
-            className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
-            onClick={() => {
-              onCopyPath(contextMenu.filePath);
-              closeContextMenu();
-            }}
-          >
-            <MaterialSymbol icon="content_copy" size={16} className="text-[var(--nim-text-muted)]" />
-            Copy Path
-          </button>
-        )}
-        {onRevealInFinder && (
-          <button
-            className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
-            onClick={() => {
-              onRevealInFinder(contextMenu.filePath);
-              closeContextMenu();
-            }}
-          >
-            <MaterialSymbol icon="folder_open" size={16} className="text-[var(--nim-text-muted)]" />
-            Reveal in Finder
-          </button>
-        )}
-      </div>
+      <FloatingPortal>
+        <div
+          ref={contextMenuRefs.setFloating}
+          className="file-edits-sidebar__context-menu z-50 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-md shadow-lg py-1 min-w-[180px]"
+          style={contextMenuStyles}
+          {...getContextMenuFloatingProps({ onClick: (e) => e.stopPropagation() })}
+        >
+          {onOpenInFiles && (
+            <button
+              className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
+              onClick={() => {
+                onOpenInFiles(contextMenu.filePath);
+                closeContextMenu();
+              }}
+            >
+              <MaterialSymbol icon="open_in_new" size={16} className="text-[var(--nim-text-muted)]" />
+              Open in Files
+            </button>
+          )}
+          {onViewDiff && (
+            <button
+              className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
+              onClick={() => {
+                onViewDiff(contextMenu.filePath);
+                closeContextMenu();
+              }}
+            >
+              <MaterialSymbol icon="difference" size={16} className="text-[var(--nim-text-muted)]" />
+              View Diff
+            </button>
+          )}
+          {onOpenInExternalEditor && externalEditorName && (
+            <button
+              className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
+              onClick={() => {
+                onOpenInExternalEditor(contextMenu.filePath);
+                closeContextMenu();
+              }}
+            >
+              <MaterialSymbol icon="open_in_new" size={16} className="text-[var(--nim-text-muted)]" />
+              Open in {externalEditorName}
+            </button>
+          )}
+          {(onOpenInFiles || onViewDiff || onOpenInExternalEditor) && (onCopyPath || onRevealInFinder) && (
+            <div className="file-edits-sidebar__context-menu-divider h-px bg-[var(--nim-border)] my-1" />
+          )}
+          {onCopyPath && (
+            <button
+              className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
+              onClick={() => {
+                onCopyPath(contextMenu.filePath);
+                closeContextMenu();
+              }}
+            >
+              <MaterialSymbol icon="content_copy" size={16} className="text-[var(--nim-text-muted)]" />
+              Copy Path
+            </button>
+          )}
+          {onRevealInFinder && (
+            <button
+              className="file-edits-sidebar__context-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[0.8125rem] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] text-left"
+              onClick={() => {
+                onRevealInFinder(contextMenu.filePath);
+                closeContextMenu();
+              }}
+            >
+              <MaterialSymbol icon="folder_open" size={16} className="text-[var(--nim-text-muted)]" />
+              Reveal in Finder
+            </button>
+          )}
+        </div>
+      </FloatingPortal>
     );
   };
 

@@ -19,7 +19,7 @@ On this machine, those Gradle tasks passed when `JAVA_HOME` was set to `/Users/g
 - Room migration tests
 - WebSocket sync integration tests (scaffolded and gated — see "Sync verification (gated)" below)
 - emulator smoke tests for the native shell and transcript host
-- emulator verification for `nimbalyst://pair` and `nimbalyst://auth/callback` deep links
+- emulator verification for `nimbalyst://auth/callback` deep links and in-app pairing QR scans
 - emulator verification for queued prompt submission and queue clearing
 - emulator verification for interactive widget responses in the transcript view
 - emulator verification for camera QR scanning across permission states

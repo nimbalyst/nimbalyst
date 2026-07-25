@@ -197,8 +197,9 @@ export class PermissionService {
   }
 
   /**
-   * Whether "Allow All" routes agent sessions through the auto-mode classifier
-   * (issue #628). Off by default — "Allow All" is literal allow-all.
+   * Whether "Allow All" routes supported agent sessions through their native
+   * automatic reviewer (issue #628). Off by default — "Allow All" is literal
+   * allow-all.
    */
   public getAllowAllUsesClassifier(workspacePath: string): boolean {
     const projectPath = resolvePermissionReadPath(workspacePath);
@@ -207,7 +208,7 @@ export class PermissionService {
   }
 
   /**
-   * Toggle the "Allow All" classifier opt-in for a workspace (issue #628).
+   * Toggle the "Allow All" automatic-review opt-in for a workspace (issue #628).
    */
   public setAllowAllUsesClassifier(workspacePath: string, enabled: boolean): void {
     const projectPath = resolveProjectPath(workspacePath);

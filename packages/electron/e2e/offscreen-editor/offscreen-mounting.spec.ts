@@ -10,6 +10,8 @@ import { launchElectronApp, createTempWorkspace, waitForAppReady } from '../help
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+const COLD_MOUNT_BUDGET_MS = 6000;
+
 test.describe('Offscreen Editor Mounting', () => {
   let electronApp: ElectronApplication;
   let page: Page;
@@ -79,7 +81,9 @@ test.describe('Offscreen Editor Mounting', () => {
     console.log(`[Test] ✓ First mount: ${mount1Duration}ms`);
 
     expect(mount1Result.success).toBe(true);
-    expect(mount1Duration).toBeLessThan(3000); // Performance baseline
+    // Cold mount includes the capture window's 1s initialization delay and
+    // the editor's 3s settle delay before renderer readiness is assumed.
+    expect(mount1Duration).toBeLessThan(COLD_MOUNT_BUDGET_MS);
 
     // STEP 3: Verify editor is available and cached
     const stats1 = await page.evaluate(async () => {
@@ -175,10 +179,10 @@ test.describe('Offscreen Editor Mounting', () => {
     console.log('\n[Test] ═══════════════════════════════════════');
     console.log('[Test] Performance Baselines Established:');
     console.log('[Test] ═══════════════════════════════════════');
-    console.log(`[Test] Initial mount:     ${mount1Duration}ms (target: <3000ms) ✓`);
+    console.log(`[Test] Initial mount:     ${mount1Duration}ms (target: <${COLD_MOUNT_BUDGET_MS}ms) ✓`);
     console.log(`[Test] Cached mount:      ${mount2Duration}ms (${Math.round(mount1Duration / mount2Duration)}x faster) ✓`);
     console.log(`[Test] Screenshot:        ${screenshotDuration}ms (target: <2000ms) ✓`);
-    console.log(`[Test] Improvement:       ${Math.round((3000 - screenshotDuration) / 3000 * 100)}% faster than old implementation`);
+    console.log(`[Test] Screenshot delta:  ${Math.round((COLD_MOUNT_BUDGET_MS - screenshotDuration) / COLD_MOUNT_BUDGET_MS * 100)}% below cold-mount budget`);
     console.log('[Test] ═══════════════════════════════════════');
   });
 });

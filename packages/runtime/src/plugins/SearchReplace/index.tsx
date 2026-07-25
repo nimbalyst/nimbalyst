@@ -3,6 +3,7 @@ import { FixedTabHeaderRegistry } from '../shared/fixedTabHeader/FixedTabHeaderR
 import type { TabContext } from '../shared/fixedTabHeader/types';
 import { SearchReplaceBar } from './SearchReplaceBar';
 import { SearchReplaceStateManager } from './SearchReplaceStateManager';
+import { isLexicalSearchEditor } from './isLexicalSearchEditor';
 
 /**
  * SearchReplacePlugin
@@ -19,8 +20,7 @@ export function SearchReplacePlugin() {
       id: 'search-replace-bar',
       priority: 90, // Lower than the diff approval header (priority 100) so the diff bar renders first
       shouldRender: (context: TabContext) => {
-        // Always render if there's an editor - the component will handle visibility internally
-        return !!(context.editor && context.filePath);
+        return !!context.filePath && isLexicalSearchEditor(context.editor);
       },
       component: SearchReplaceBar,
     });
@@ -36,4 +36,5 @@ export function SearchReplacePlugin() {
 // Export components and utilities for external use
 export { SearchReplaceBar } from './SearchReplaceBar';
 export { SearchReplaceStateManager } from './SearchReplaceStateManager';
+export { isLexicalSearchEditor } from './isLexicalSearchEditor';
 export type { SearchReplaceState } from './SearchReplaceStateManager';

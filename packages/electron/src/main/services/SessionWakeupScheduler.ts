@@ -279,6 +279,13 @@ function notifyWakeupFired(row: SessionWakeup): void {
       ? `${row.reason}`
       : 'A scheduled wakeup has fired.';
     const notification = new Notification({ title, body, silent: false });
+    notification.on('failed', (_event, error) => {
+      logger.warn('Wakeup notification failed', {
+        sessionId: row.sessionId,
+        workspaceId: row.workspaceId,
+        error,
+      });
+    });
     notification.on('click', () => {
       const win = findWindowByWorkspace(row.workspaceId);
       if (win && !win.isDestroyed()) {

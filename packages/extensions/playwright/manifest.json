@@ -1,7 +1,7 @@
 {
   "id": "com.nimbalyst.playwright",
   "name": "Playwright",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Test runner, trace viewer, and screenshot automation for Playwright",
   "author": "Nimbalyst",
   "main": "dist/index.js",

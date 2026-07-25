@@ -273,9 +273,20 @@ export function ContextUsageDisplay({
             </div>
           )}
 
-          {/* Show input/output breakdown if available */}
+          {/* Show input/output breakdown if available. These rows are the
+              CUMULATIVE session spend (uncached input + output summed across
+              turns), a different quantity from the header-right total, which
+              is the CURRENT context-window fill (input + cache reads + cache
+              creation of the last turn). Label them when both are visible so
+              the two numbers do not read as contradicting each other (#824:
+              76k "Total" under a 12k window fill). */}
           {(inputTokens > 0 || outputTokens > 0) && (
             <div className="tooltip-io-breakdown flex flex-col gap-1 py-2 border-b border-[var(--nim-border)] mb-2">
+              {hasContextWindow && (
+                <div className="tooltip-io-heading text-[11px] font-semibold text-[var(--nim-text-muted)]">
+                  Session totals (cumulative)
+                </div>
+              )}
               <div className="tooltip-io-row flex justify-between text-[11px]">
                 <span className="tooltip-io-label text-[var(--nim-text-muted)]">Input:</span>
                 <span className="tooltip-io-value text-[var(--nim-text)] tabular-nums">{inputTokens.toLocaleString()}</span>

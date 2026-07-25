@@ -19,10 +19,6 @@ let updateSessionMetadataFn:
   | ((sessionId: string, metadata: Record<string, unknown>) => Promise<void>)
   | null = null;
 
-let getWorkspaceTagsFn:
-  | ((sessionId: string) => Promise<{ name: string; count: number }[]>)
-  | null = null;
-
 let getSessionTagsFn:
   | ((sessionId: string) => Promise<string[]>)
   | null = null;
@@ -51,15 +47,6 @@ export function setUpdateSessionMetadataFn(
   updateMetadataFn: (sessionId: string, metadata: Record<string, unknown>) => Promise<void>
 ) {
   updateSessionMetadataFn = updateMetadataFn;
-}
-
-/**
- * Set the function to get workspace tags (called once at startup)
- */
-export function setGetWorkspaceTagsFn(
-  getTagsFn: (sessionId: string) => Promise<{ name: string; count: number }[]>
-) {
-  getWorkspaceTagsFn = getTagsFn;
 }
 
 /**
@@ -97,24 +84,12 @@ export function setGetSessionPhaseFn(
 // injected fns above.
 
 /**
- * Build the `update_session_meta` tool schema, with the `add` description
- * augmented by the workspace's existing tags (looked up via the injected
- * `getWorkspaceTagsFn`). Async because the tag lookup is async.
+ * Build the `update_session_meta` tool schema. This eager schema must remain
+ * byte-stable for the lifetime of a Claude cache lineage: embedding live
+ * workspace tag names, counts, or count-derived ordering here turns ordinary
+ * tag updates into a full `tools_changed` cache miss.
  */
-export async function buildSessionMetaToolSchemas(aiSessionId: string): Promise<any[]> {
-  let addTagDescription = 'Tags to add: type of work (bug-fix, feature, refactor) and area/module (electron, runtime, ios).';
-  if (getWorkspaceTagsFn) {
-    try {
-      const existingTags = await getWorkspaceTagsFn(aiSessionId);
-      if (existingTags.length > 0) {
-        const tagList = existingTags.slice(0, 20).map(t => `${t.name} (${t.count})`).join(', ');
-        addTagDescription += ` Prefer existing workspace tags: ${tagList}.`;
-      }
-    } catch {
-      // Ignore - just use default description
-    }
-  }
-
+export async function buildSessionMetaToolSchemas(_aiSessionId: string): Promise<any[]> {
   return [
     {
       name: "update_session_meta",
@@ -131,7 +106,7 @@ export async function buildSessionMetaToolSchemas(aiSessionId: string): Promise<
           add: {
             type: "array",
             items: { type: "string" },
-            description: addTagDescription,
+            description: "Tags to add: lowercase hyphen-separated type of work (bug-fix, feature, refactor) and area/module (electron, runtime, ios). Reuse existing workspace tags when known.",
           },
           remove: {
             type: "array",

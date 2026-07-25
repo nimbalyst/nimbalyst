@@ -80,7 +80,7 @@ export function GhOnboardingBanner({
       className="gh-onboarding-banner flex items-start gap-3 px-4 py-3 border-b border-[var(--nim-border)] bg-nim-tertiary"
       role="status"
     >
-      <MaterialSymbol icon="info" size={20} className="text-nim-accent shrink-0 mt-0.5" />
+      <MaterialSymbol icon="info" size={20} className="text-nim-info shrink-0 mt-0.5" />
 
       <div className="flex-1 min-w-0">
         {notInstalled ? (
@@ -96,12 +96,12 @@ export function GhOnboardingBanner({
             <div className="font-medium text-nim text-sm">Sign in to GitHub</div>
             <div className="text-nim-muted text-xs mt-1 flex items-center gap-2 flex-wrap">
               Run
-              <code className="font-mono bg-nim-bg-primary px-1.5 py-0.5 rounded text-nim">
+              <code className="font-mono bg-nim px-1.5 py-0.5 rounded text-nim">
                 {GH_LOGIN_COMMAND}
               </code>
               <button
                 type="button"
-                className="text-nim-accent hover:underline text-xs"
+                className="text-nim-link hover:text-nim-link-hover hover:underline text-xs"
                 onClick={handleCopyCommand}
                 title="Copy command"
               >

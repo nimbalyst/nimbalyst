@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
@@ -8,10 +8,16 @@ import { SettingsSidebar, type SettingsCategory } from './SettingsSidebar';
 import {
   getDefaultSettingsCategory,
   getSettingsRoutesForScope,
+  isExtensionSettingsRouteId,
   normalizeSettingsDestination,
   type SettingsDestination,
   type SettingsScope,
 } from './settingsRoutes';
+import {
+  ExtensionSettingsRoutePanel,
+  toSettingsRoute,
+  useExtensionSettingsRoutes,
+} from './ExtensionSettingsRoutes';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom } from '../../store';
 
 // Import provider panels from GlobalSettings
@@ -31,7 +37,6 @@ import { VoiceModePanel } from './VoiceModePanel';
 import { MCPServersPanel } from '../GlobalSettings/panels/MCPServersPanel';
 import { ToolsMcpPanel } from './panels/ToolsMcpPanel';
 import { ClaudeCodePluginsPanel } from '../GlobalSettings/panels/ClaudeCodePluginsPanel';
-import { SharedLinksPanel } from '../GlobalSettings/panels/SharedLinksPanel';
 import { ProjectPermissionsPanel } from './panels/ProjectPermissionsPanel';
 import { ProviderOverrideWrapper } from './panels/ProviderOverrideWrapper';
 import { InstalledExtensionsPanel } from './panels/InstalledExtensionsPanel';
@@ -43,6 +48,7 @@ import { ExtensionMarketplacePanel } from './panels/ExtensionMarketplacePanel';
 import { walkthroughs } from '../../walkthroughs';
 import {
   aiProviderSettingsAtom,
+  advancedSettingsAtom,
   developerModeAtom,
   setAIProviderSettingsAtom,
   setProviderConfigAtom,
@@ -52,17 +58,14 @@ import {
   type ProviderConfig,
   type AIModel,
 } from '../../store/atoms/appSettings';
+import { shouldShowDirectChatProviderSettings } from '../../utils/chatProviderVisibility';
 import { omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
-import { selectedOrgIdAtom } from '../../store/atoms/orgScope';
-import { organizationDirectoryAtom } from '../../store/atoms/settingsDomains';
-import { PersonalAccountsPanel } from './panels/PersonalAccountsPanel';
-import { PersonalMobileAppPanel } from './panels/PersonalMobileAppPanel';
-import { PersonalDevicesPanel } from './panels/PersonalDevicesPanel';
-import { OrganizationMembersRolesPanel } from './panels/OrganizationMembersRolesPanel';
-import { OrganizationProjectsPanel } from './panels/OrganizationProjectsPanel';
-import { OrganizationSecurityPanel } from './panels/OrganizationSecurityPanel';
-import { OrganizationBillingPanel } from './panels/OrganizationBillingPanel';
-import { OrganizationDangerZone } from './panels/OrganizationDangerZone';
+import {
+  AccountDevicesSettingsPanel,
+  AccountSettingsPanel,
+  AccountSharedLinksSettingsPanel,
+  MobileAppSettingsPanel,
+} from './panels/AccountSettingsPanel';
 import { ProjectSharingPanel, type ProjectSettingsTarget } from './panels/ProjectSharingPanel';
 import { ProjectAIProvidersPanel } from './panels/ProjectAIProvidersPanel';
 
@@ -78,9 +81,6 @@ export interface Model {
 
 // Note: The ProviderConfig interface has been moved to appSettings.ts
 
-// Epic H3 P3: a third "Organization" scope, keyed to the org selected in the
-// OrgSwitcher (not the active workspace). Org admin (members, encryption, the
-// project registry, consolidation) lives here rather than in Project scope.
 export type { SettingsScope } from './settingsRoutes';
 
 interface MarketplaceInstallRequest {
@@ -287,64 +287,16 @@ export function SettingsView({
       ? requestedDestination.target
       : (workspacePath ? { kind: 'workspace', workspacePath } : undefined),
   );
+  const loadedExtensionSettingsRoutes = useExtensionSettingsRoutes();
+  const extensionSettingsRoutes = useMemo(
+    () => loadedExtensionSettingsRoutes.map(toSettingsRoute),
+    [loadedExtensionSettingsRoutes],
+  );
 
-  // Epic H3 P3: Organization scope. The selected org is shared with the
-  // OrgSwitcher; the tab is enabled only when the user belongs to a team org.
-  const [selectedOrgId, setSelectedOrgId] = useAtom(selectedOrgIdAtom);
-  useEffect(() => {
-    if (requestedDestination?.scope === 'organization') {
-      setSelectedOrgId(requestedDestination.orgId);
-    } else if (requestedDestination?.scope === 'project') {
-      setProjectTarget(requestedDestination.target);
-    }
-  }, [requestedDestination, setSelectedOrgId]);
-  const [organizationDirectory, setOrganizationDirectory] = useAtom(organizationDirectoryAtom);
-  const orgChoices = organizationDirectory
-    .filter((entry) => !entry.membershipType || entry.membershipType === 'active_member')
-    .map((entry) => ({ orgId: entry.orgId, name: entry.name }));
-  const pendingInviteCount = organizationDirectory.filter(
-    (entry) => entry.membershipType && entry.membershipType !== 'active_member',
-  ).length;
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await (window as any).electronAPI?.team?.list?.();
-        if (cancelled || !res?.success || !Array.isArray(res.teams)) return;
-        setOrganizationDirectory(res.teams);
-        const orgs: { orgId: string; name: string }[] = res.teams
-          .filter((t: { membershipType?: string }) => !t.membershipType || t.membershipType === 'active_member')
-          .map((t: { orgId: string; name: string }) => ({ orgId: t.orgId, name: t.name }));
-        if (cancelled) return;
-        if (orgs.length === 0) return;
-        // Default the Organization scope to the CURRENT PROJECT's org (not just
-        // the first team in the list) so opening settings from a project lands on
-        // that project's org. An existing valid selection (e.g. set by the
-        // OrgSwitcher's "Manage organization…" deep-link) is preserved.
-        let preferred: string | null = null;
-        if (workspacePath) {
-          try {
-            const ws = await (window as any).electronAPI?.team?.findForWorkspace?.(workspacePath);
-            const wsOrgId: string | undefined = ws?.team?.orgId ?? ws?.orgId;
-            if (wsOrgId && orgs.some(o => o.orgId === wsOrgId)) preferred = wsOrgId;
-          } catch { /* fall back to first org */ }
-        }
-        if (cancelled) return;
-        setSelectedOrgId((prev) => (prev && orgs.some(o => o.orgId === prev) ? prev : (preferred ?? orgs[0].orgId)));
-      } catch {
-        /* non-fatal: Organization scope just stays disabled */
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [setOrganizationDirectory, setSelectedOrgId, workspacePath]);
-  // The org the Organization scope operates on: the shared selection if valid,
-  // else the first team org.
-  const effectiveOrgId = (selectedOrgId && orgChoices.some(o => o.orgId === selectedOrgId))
-    ? selectedOrgId
-    : (orgChoices[0]?.orgId ?? null);
 
   // AI Provider settings - using Jotai atoms (Phase 5b)
   const [aiProviderSettings] = useAtom(aiProviderSettingsAtom);
+  const advancedSettings = useAtomValue(advancedSettingsAtom);
   const [, updateAIProviderSettings] = useAtom(setAIProviderSettingsAtom);
   const [, updateProviderConfig] = useAtom(setProviderConfigAtom);
   const [, updateApiKey] = useAtom(setApiKeyAtom);
@@ -352,6 +304,10 @@ export function SettingsView({
 
   // Destructure for easier access (these update when atom updates)
   const { providers, apiKeys, availableModels } = aiProviderSettings;
+  const showDirectChatProviders = shouldShowDirectChatProviderSettings(
+    advancedSettings.showDirectChatProviders,
+    aiProviderSettings,
+  );
 
   // Local setters that wrap atom updates for backward compatibility
   const setProviders = useCallback((updater: Record<string, ProviderConfig> | ((prev: Record<string, ProviderConfig>) => Record<string, ProviderConfig>)) => {
@@ -405,14 +361,13 @@ export function SettingsView({
     const destination = requestedDestination ?? normalizeSettingsDestination({
       category: initialCategory,
       scope: initialScope,
-      orgId: effectiveOrgId ?? undefined,
       workspacePath: workspacePath ?? undefined,
     });
     if (destination) {
       setSelectedCategory(destination.category);
       setScope(destination.scope);
     }
-  }, [effectiveOrgId, initialCategory, initialScope, requestedDestination, workspacePath]);
+  }, [initialCategory, initialScope, requestedDestination, workspacePath]);
 
   // Push navigation entry when settings category/scope changes (unified cross-mode navigation)
   const pushNavigationEntry = useSetAtom(pushNavigationEntryAtom);
@@ -430,7 +385,7 @@ export function SettingsView({
         mode: 'settings',
         settings: {
           category: selectedCategory,
-          scope,
+          scope: scope as any,
         },
       });
     }
@@ -438,14 +393,24 @@ export function SettingsView({
 
   // When scope changes, ensure selected category is valid for that scope
   useEffect(() => {
-    const validCategories = getSettingsRoutesForScope(scope, { developerMode }).map((route) => route.id);
+    const validCategories = getSettingsRoutesForScope(scope, {
+      developerMode,
+      showDirectChatProviders,
+    }, extensionSettingsRoutes).map((route) => route.id);
     // Extension-contributed agent providers (e.g. antigravity-gemini-agent) are
     // valid selectable categories too; don't bounce the user off them.
     const isExtensionProvider = scope === 'application' && extAgentProviders.some((pr) => pr.id === selectedCategory);
     if (!isExtensionProvider && !validCategories.includes(selectedCategory as typeof validCategories[number])) {
       setSelectedCategory(getDefaultSettingsCategory(scope));
     }
-  }, [scope, selectedCategory, developerMode, extAgentProviders]);
+  }, [
+    scope,
+    selectedCategory,
+    developerMode,
+    extAgentProviders,
+    extensionSettingsRoutes,
+    showDirectChatProviders,
+  ]);
 
   useEffect(() => {
     if (!developerMode && selectedCategory === 'github') {
@@ -843,6 +808,31 @@ export function SettingsView({
       return panel;
     };
 
+    const selectedCategoryId = String(selectedCategory);
+    if (isExtensionSettingsRouteId(selectedCategoryId)) {
+      const extensionRoute = loadedExtensionSettingsRoutes.find(
+        (route) => route.id === selectedCategoryId && route.scope === scope,
+      );
+      if (!extensionRoute) {
+        return (
+          <p className="settings-extension-route-unavailable text-sm text-[var(--nim-text-muted)]">
+            This extension settings route is no longer available.
+          </p>
+        );
+      }
+      return (
+        <ExtensionSettingsRoutePanel
+          route={extensionRoute}
+          workspacePath={
+            scope === 'project' && projectTarget?.kind === 'workspace'
+              ? projectTarget.workspacePath
+              : undefined
+          }
+          projectTarget={scope === 'project' ? projectTarget : undefined}
+        />
+      );
+    }
+
     switch (selectedCategory) {
       case 'claude':
         return wrapWithOverride('claude', 'Claude', <ClaudePanel {...commonProps} />);
@@ -895,7 +885,7 @@ export function SettingsView({
       case 'installed-extensions':
         return (
           <InstalledExtensionsPanel
-            scope={scope === 'application' || scope === 'personal' ? 'user' : scope}
+            scope={scope === 'application' || scope === 'account' ? 'user' : scope}
             workspacePath={workspacePath ?? undefined}
           />
         );
@@ -936,43 +926,31 @@ export function SettingsView({
             workspacePath={scope === 'project' ? workspacePath ?? undefined : undefined}
           />
         );
+      // One account route, one panel — no stacked headers. Legacy personal-*
+      // ids resolve to the route that now owns that section.
+      case 'account':
       case 'personal-accounts':
-        return <PersonalAccountsPanel />;
+        return <AccountSettingsPanel />;
+      // 'sync' is the mobile tips' deep link: they want pairing and the
+      // prevent-sleep control, which both live in the Mobile App panel.
+      case 'account-mobile':
       case 'personal-mobile':
       case 'sync':
-        return <PersonalMobileAppPanel />;
+        return <MobileAppSettingsPanel />;
+      case 'account-devices':
       case 'personal-devices':
-        return <PersonalDevicesPanel />;
+        return <AccountDevicesSettingsPanel />;
+      case 'account-shared-links':
       case 'personal-shared-links':
       case 'shared-links':
-        return <SharedLinksPanel />;
+        return <AccountSharedLinksSettingsPanel />;
       case 'themes':
         return (
           <ThemesPanel
-            scope={scope === 'application' || scope === 'personal' ? 'user' : scope}
+            scope={scope === 'application' || scope === 'account' ? 'user' : scope}
             workspacePath={workspacePath ?? undefined}
           />
         );
-      case 'organization-members':
-      case 'org':
-        return <OrganizationMembersRolesPanel orgId={effectiveOrgId ?? undefined} />;
-      case 'organization-projects':
-        return (
-          <OrganizationProjectsPanel
-            orgId={effectiveOrgId ?? undefined}
-            onManageAccess={(orgId, projectId) => {
-              setProjectTarget({ kind: 'organizationProject', orgId, projectId });
-              setScope('project');
-              setSelectedCategory('project-sharing');
-            }}
-          />
-        );
-      case 'organization-security':
-        return <OrganizationSecurityPanel orgId={effectiveOrgId ?? undefined} />;
-      case 'organization-billing':
-        return <OrganizationBillingPanel />;
-      case 'organization-danger':
-        return <OrganizationDangerZone orgId={effectiveOrgId ?? undefined} />;
       case 'project-sharing':
       case 'team':
         return <ProjectSharingPanel target={projectTarget} />;
@@ -1054,16 +1032,8 @@ export function SettingsView({
     }
   };
 
-  // Handle scope changes. When entering Organization scope, make sure a team org
-  // is selected; category validity for the new scope is enforced by the
-  // validation effect above (it keeps the current category when it's valid in the
-  // target scope -- e.g. 'team' carries across Project<->Organization -- and
-  // otherwise bounces to that scope's default).
   const handleScopeChange = (newScope: SettingsScope) => {
     setScope(newScope);
-    if (newScope === 'organization' && effectiveOrgId) {
-      setSelectedOrgId(effectiveOrgId);
-    }
     if (newScope === 'project' && workspacePath) {
       setProjectTarget({ kind: 'workspace', workspacePath });
     }
@@ -1089,26 +1059,15 @@ export function SettingsView({
               Application
             </button>
             <button
-              className={`settings-scope-tab settings-scope-tab-personal py-1.5 px-4 rounded-md text-xs font-medium cursor-pointer transition-all duration-150 border-none ${
-                scope === 'personal'
+              className={`settings-scope-tab settings-scope-tab-account py-1.5 px-4 rounded-md text-xs font-medium cursor-pointer transition-all duration-150 border-none ${
+                scope === 'account'
                   ? 'bg-[var(--nim-primary)] text-white shadow-sm'
                   : 'bg-transparent text-[var(--nim-text-muted)] hover:text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]'
               }`}
-              onClick={() => handleScopeChange('personal')}
-              data-testid="settings-scope-personal"
+              onClick={() => handleScopeChange('account')}
+              data-testid="settings-scope-account"
             >
-              Personal
-            </button>
-            <button
-              className={`settings-scope-tab settings-scope-tab-organization py-1.5 px-4 rounded-md text-xs font-medium cursor-pointer transition-all duration-150 border-none disabled:opacity-50 disabled:cursor-not-allowed ${
-                scope === 'organization'
-                  ? 'bg-[var(--nim-primary)] text-white shadow-sm'
-                  : 'bg-transparent text-[var(--nim-text-muted)] hover:text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]'
-              }`}
-              onClick={() => handleScopeChange('organization')}
-              data-testid="settings-scope-organizations"
-            >
-              Organizations
+              Account
             </button>
             <button
               className={`settings-scope-tab py-1.5 px-4 rounded-md text-xs font-medium cursor-pointer transition-all duration-150 border-none disabled:opacity-50 disabled:cursor-not-allowed ${
@@ -1124,18 +1083,13 @@ export function SettingsView({
               Project
             </button>
           </div>
-          {/* Org scope's org picker lives at the top of the sidebar (so "which
-              org am I editing" sits with the org admin nav, not in global
-              chrome). Only User/Project scopes show a hint here. */}
-          {scope !== 'organization' && (
-            <span className="settings-scope-hint text-[13px] text-[var(--nim-text-muted)]">
-              {scope === 'application'
-                ? 'These settings apply to all projects'
-                : scope === 'personal'
-                  ? 'Personal accounts and zero-knowledge mobile sync'
-                  : `Settings for ${workspaceName || 'this project'}`}
-            </span>
-          )}
+          <span className="settings-scope-hint text-[13px] text-[var(--nim-text-muted)]">
+            {scope === 'application'
+              ? 'These settings apply to all projects'
+              : scope === 'account'
+                ? 'Accounts, personal sync, devices, and shared links'
+                : `Settings for ${workspaceName || 'this project'}`}
+          </span>
         </div>
 
         <span className="flex-1" />
@@ -1157,11 +1111,8 @@ export function SettingsView({
           onSelectCategory={setSelectedCategory}
           providerStatus={providerStatus}
           scope={scope}
-          orgChoices={orgChoices}
-          selectedOrgId={effectiveOrgId}
-          onSelectOrg={setSelectedOrgId}
-          pendingInviteCount={pendingInviteCount}
-          onNewOrganization={() => setSelectedCategory('organization-members')}
+          showDirectChatProviders={showDirectChatProviders}
+          extensionRoutes={extensionSettingsRoutes}
           // releaseChannel now comes from Jotai atom in SettingsSidebar
         />
 

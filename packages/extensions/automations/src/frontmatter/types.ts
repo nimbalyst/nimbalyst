@@ -52,6 +52,8 @@ export type AutomationSchedule = IntervalSchedule | DailySchedule | WeeklySchedu
 
 export type OutputMode = 'new-file' | 'append' | 'replace';
 
+export type AutomationProvider = 'claude-code' | 'claude' | 'openai' | 'openai-codex';
+
 export interface AutomationOutput {
   mode: OutputMode;
   /** Relative path from workspace root to output directory or file */
@@ -66,8 +68,8 @@ export interface AutomationStatus {
   enabled: boolean;
   schedule: AutomationSchedule;
   output: AutomationOutput;
-  provider?: 'claude-code' | 'claude' | 'openai';
-  /** Model ID to use (e.g. 'claude-code:opus', 'claude-code:sonnet', 'claude:claude-sonnet-4-5-20241022') */
+  provider?: AutomationProvider;
+  /** Model ID to use (e.g. 'claude-code:opus', 'openai-codex:gpt-5.6-sol') */
   model?: string;
   lastRun?: string;
   lastRunStatus?: 'success' | 'error';

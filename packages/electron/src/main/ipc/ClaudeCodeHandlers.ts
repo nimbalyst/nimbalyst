@@ -14,6 +14,27 @@ import { safeHandle, safeOn } from '../utils/ipcRegistry';
 const log = logger.ipc;
 const analytics = AnalyticsService.getInstance();
 
+/** Wrap a path for safe inclusion in a POSIX shell command (handles spaces and quotes). */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Resolve the working directory to open the login terminal in. Falls back to
+ * undefined (terminal's default cwd) when no valid project folder is supplied.
+ */
+function resolveLoginCwd(workspacePath?: string): string | undefined {
+  if (!workspacePath || typeof workspacePath !== 'string') return undefined;
+  try {
+    if (fs.existsSync(workspacePath) && fs.statSync(workspacePath).isDirectory()) {
+      return workspacePath;
+    }
+  } catch (err: any) {
+    log.warn('[ClaudeCodeHandlers] Ignoring invalid login cwd:', workspacePath, err?.message);
+  }
+  return undefined;
+}
+
 /**
  * Register Claude Code related IPC handlers
  */
@@ -143,7 +164,7 @@ export function registerClaudeCodeHandlers() {
   });
 
   // Handle claude login command
-  safeHandle('claude-code:login', async () => {
+  safeHandle('claude-code:login', async (_event, workspacePath?: string) => {
     try {
       const platform = process.platform;
       analytics.sendEvent('do_claude_code_login', {platform: platform});
@@ -156,11 +177,16 @@ export function registerClaudeCodeHandlers() {
         throw new Error(`Claude Agent SDK native binary not found (looking for ${expectedPkg}, arch=${process.arch}). Check main.log for details.`);
       }
 
+      // Open the login terminal in the current project folder so the CLI's
+      // /login lands in the same directory the user is working in.
+      const cwd = resolveLoginCwd(workspacePath);
+
       if (platform === 'darwin') {
+        const cdPrefix = cwd ? `cd ${shellQuote(cwd)} && ` : '';
         const script = `
 tell application "Terminal"
   activate
-  do script "clear && echo 'Claude Code Authentication' && echo '' && echo 'Type /login and press Enter to authenticate.' && echo 'Complete the OAuth flow in your browser when prompted.' && echo 'When finished, type /quit to exit and close this window.' && echo '' && '${binaryPath}'"
+  do script "${cdPrefix}clear && echo 'Claude Code Authentication' && echo '' && echo 'Type /login and press Enter to authenticate.' && echo 'Complete the OAuth flow in your browser when prompted.' && echo 'When finished, type /quit to exit and close this window.' && echo '' && '${binaryPath}'"
 end tell`;
 
         spawn('osascript', ['-e', script], {
@@ -171,17 +197,20 @@ end tell`;
         spawn('cmd', ['/c', 'start', '"Claude Code Authentication"', 'cmd', '/k', `echo Claude Code Authentication && echo. && echo Type /login and press Enter to authenticate. && echo Complete the OAuth flow in your browser when prompted. && echo When finished, type /quit to exit and close this window. && echo. && "${binaryPath}"`], {
           detached: true,
           stdio: 'ignore',
-          shell: true
+          shell: true,
+          ...(cwd ? { cwd } : {})
         }).unref();
       } else {
+        const cdPrefix = cwd ? `cd ${shellQuote(cwd)}; ` : '';
         const terminals = ['gnome-terminal', 'konsole', 'xterm', 'x-terminal-emulator'];
         let terminalOpened = false;
 
         for (const terminal of terminals) {
           try {
-            spawn(terminal, ['-e', `bash -c "clear; echo 'Claude Code Authentication'; echo ''; echo 'Type /login and press Enter to authenticate.'; echo 'Complete the OAuth flow in your browser when prompted.'; echo 'When finished, type /quit to exit.'; echo ''; '${binaryPath}'"`], {
+            spawn(terminal, ['-e', `bash -c "${cdPrefix}clear; echo 'Claude Code Authentication'; echo ''; echo 'Type /login and press Enter to authenticate.'; echo 'Complete the OAuth flow in your browser when prompted.'; echo 'When finished, type /quit to exit.'; echo ''; '${binaryPath}'"`], {
               detached: true,
-              stdio: 'ignore'
+              stdio: 'ignore',
+              ...(cwd ? { cwd } : {})
             }).unref();
             terminalOpened = true;
             break;

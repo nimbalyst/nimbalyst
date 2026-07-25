@@ -68,6 +68,7 @@ import { NimbalystMarkdownEditor } from '../components/editors/NimbalystMarkdown
 
 // Import DataModel platform service for datamodellm extension
 import { DataModelPlatformServiceImpl } from './DataModelPlatformServiceImpl';
+import { buildExtensionFileWriteInvocation } from './extensionFileWriteInvocation';
 
 // Declare importShim global from es-module-shims
 declare global {
@@ -242,15 +243,19 @@ ${exportNames.map((name) => `export const ${name} = __mod?.${name};`).join('\n')
   }
 
   /**
-   * Write content to a file.
+   * Write text or binary content to a file.
    */
-  async writeFile(filePath: string, content: string): Promise<void> {
+  async writeFile(
+    filePath: string,
+    content: string | Uint8Array | ArrayBuffer,
+  ): Promise<void> {
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI) {
       throw new Error('electronAPI not available');
     }
 
-    return electronAPI.invoke('extensions:write-file', filePath, content);
+    const invocation = buildExtensionFileWriteInvocation(filePath, content);
+    return electronAPI.invoke(invocation.channel, ...invocation.args);
   }
 
   /**

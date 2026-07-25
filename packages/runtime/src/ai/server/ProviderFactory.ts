@@ -17,6 +17,7 @@ import { ProviderConfig, AIProviderType, assertExhaustiveProvider } from './type
 
 export class ProviderFactory {
   private static providers: Map<string, AIProvider> = new Map();
+  private static providerOwners: Map<string, string> = new Map();
 
   /**
    * Get an existing AI provider instance
@@ -87,6 +88,7 @@ export class ProviderFactory {
     
     // Cache the provider
     this.providers.set(key, provider);
+    this.providerOwners.set(key, sessionId);
     // console.log(`[ProviderFactory] Created ${type} provider in ${Date.now() - startTime}ms`);
 
     return provider;
@@ -127,6 +129,7 @@ export class ProviderFactory {
       model: args.model,
     });
     this.providers.set(key, provider);
+    this.providerOwners.set(key, args.sessionId);
     return provider;
   }
 
@@ -153,17 +156,28 @@ export class ProviderFactory {
       const key = `${type}-${sessionId}`;
       const provider = this.providers.get(key);
       if (provider) {
-        provider.destroy();
-        this.providers.delete(key);
+        this.destroyProviderEntry(key, provider);
       }
     } else {
       // Destroy all providers for this session
-      for (const [key, provider] of this.providers.entries()) {
-        if (key.endsWith(`-${sessionId}`)) {
-          provider.destroy();
-          this.providers.delete(key);
+      for (const [key, provider] of [...this.providers.entries()]) {
+        if (this.providerOwners.get(key) === sessionId) {
+          this.destroyProviderEntry(key, provider);
         }
       }
+    }
+  }
+
+  private static destroyProviderEntry(key: string, provider: AIProvider): void {
+    try {
+      provider.destroy();
+    } catch (error) {
+      console.error(`[ProviderFactory] Error destroying provider ${key}:`, error);
+    } finally {
+      // Never retain a failed provider handle. Reusing a half-destroyed
+      // instance is more dangerous than recreating it on the next turn.
+      this.providers.delete(key);
+      this.providerOwners.delete(key);
     }
   }
 
@@ -174,19 +188,15 @@ export class ProviderFactory {
     // console.log(`[ProviderFactory] Destroying ${this.providers.size} providers`);
 
     // Try to destroy each provider individually with error handling
-    for (const [key, provider] of this.providers.entries()) {
-      try {
-        // console.log(`[ProviderFactory] Destroying provider: ${key}`);
-        provider.destroy();
-      } catch (error) {
-        console.error(`[ProviderFactory] Error destroying provider ${key}:`, error);
-        // Continue destroying other providers
-      }
+    for (const [key, provider] of [...this.providers.entries()]) {
+      // console.log(`[ProviderFactory] Destroying provider: ${key}`);
+      this.destroyProviderEntry(key, provider);
     }
     
     // Clear the map even if some providers failed to destroy
     try {
       this.providers.clear();
+      this.providerOwners.clear();
     } catch (error) {
       console.error('[ProviderFactory] Error clearing providers map:', error);
     }

@@ -2,20 +2,45 @@
  * ClaudeUsageService - Tracks Claude Code API usage limits
  *
  * This service:
- * - Reads OAuth credentials from the platform credential store:
- *   - macOS: macOS Keychain (where Claude Code stores them)
- *   - Windows/Linux: ~/.claude/.credentials.json file
+ * - Reads OAuth credentials from the platform credential store, resolved the
+ *   same way the Claude Code CLI resolves it (honoring CLAUDE_CONFIG_DIR):
+ *   - macOS: macOS Keychain, falling back to the credentials file when secure
+ *     storage is unavailable (headless/SSH logins)
+ *   - Windows/Linux: `<config dir>/.credentials.json`
  * - Calls Anthropic's usage API to get 5-hour session and 7-day weekly limits
  * - Implements activity-aware polling (active when using Claude, sleeps when idle)
  * - Broadcasts usage updates to renderer via IPC
+ *
+ * The environment used for that resolution is layered exactly like the env we
+ * hand to spawned Claude Code sessions (process env < login shell env <
+ * ~/.claude/settings.json env, see sdkOptionsBuilder). Anything less and the
+ * meter reports on a different login than the user's sessions actually use —
+ * which is precisely GitHub #975, where sessions worked while the meter 401'd
+ * forever against an abandoned ~/.claude/.credentials.json.
  */
 
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { BrowserWindow } from 'electron';
+// Imported by subpath, not from the '@nimbalyst/runtime' barrel: that barrel is
+// also the renderer's entry, and claudeKeychain needs node:crypto for the macOS
+// Keychain scope hash. Pulling it into the renderer graph makes Vite substitute
+// crypto-browserify, which throws "global is not defined" on load.
+import {
+  resolveClaudeConfigDir,
+  resolveClaudeCredentialsPath,
+} from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
+import {
+  describeClaudeCredentialSource,
+  resolveClaudeKeychainServiceNames,
+} from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeKeychain';
 import { logger } from '../utils/logger';
+import { getShellEnvironment } from './CLIManager';
+import { ClaudeSettingsManager } from './ClaudeSettingsManager';
+
+/** Env shape the Claude config-dir resolvers read. */
+type ClaudeEnv = Record<string, string | undefined>;
 
 export interface ClaudeUsageData {
   fiveHour: {
@@ -41,7 +66,6 @@ interface KeychainCredentials {
 }
 
 const USAGE_API_URL = 'https://api.anthropic.com/api/oauth/usage';
-const KEYCHAIN_SERVICES = ['Claude Code-credentials', 'Claude Code']; // Primary and fallback
 const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes before going to sleep
 const KEYCHAIN_RETRY_DELAY_MS = 2000; // Retry delay for keychain errors (post-unlock)
@@ -122,18 +146,20 @@ class ClaudeUsageServiceImpl {
 
   private async doRefresh(): Promise<ClaudeUsageData> {
     try {
-      const token = this.getAccessToken();
+      const env = await this.resolveClaudeEnv();
+      const token = this.getAccessToken(env);
       if (!token) {
-        const source = process.platform === 'darwin' ? 'macOS Keychain' : '~/.claude/.credentials.json';
         logger.main.warn(
-          `[ClaudeUsageService] No Claude OAuth token found in ${source}. ` +
+          `[ClaudeUsageService] No Claude OAuth token found in ${describeClaudeCredentialSource(env)}. ` +
           'Claude usage indicator will remain hidden until Claude Code login is restored.'
         );
         const errorData: ClaudeUsageData = {
           fiveHour: { utilization: 0, resetsAt: null },
           sevenDay: { utilization: 0, resetsAt: null },
           lastUpdated: Date.now(),
-          error: 'No Claude Code credentials found. Please log in to Claude Code.',
+          error:
+            `No Claude Code credentials found for config dir ${resolveClaudeConfigDir(env)}. ` +
+            'Please log in to Claude Code.',
         };
         this.cachedUsage = errorData;
         this.broadcastUpdate();
@@ -199,19 +225,50 @@ class ClaudeUsageServiceImpl {
     await this.refresh();
   }
 
-  private getAccessToken(): string | null {
-    if (process.platform === 'darwin') {
-      return this.getAccessTokenFromKeychain();
+  /**
+   * Environment used to resolve the Claude config dir, layered the same way
+   * sdkOptionsBuilder layers the env for spawned sessions: process env, then
+   * the captured login-shell env, then ~/.claude/settings.json env. The shell
+   * layer matters on macOS/Linux, where a GUI-launched Electron inherits none
+   * of the user's shell exports — so `process.env.CLAUDE_CONFIG_DIR` alone
+   * would miss a setting our own sessions honor.
+   */
+  private async resolveClaudeEnv(): Promise<ClaudeEnv> {
+    let shellEnv: Record<string, string> = {};
+    try {
+      shellEnv = getShellEnvironment() ?? {};
+    } catch (error) {
+      logger.main.warn('[ClaudeUsageService] Failed to read shell environment:', error);
     }
-    // Windows and Linux: read from ~/.claude/.credentials.json
-    return this.getAccessTokenFromCredentialsFile();
+
+    let settingsEnv: Record<string, string> = {};
+    try {
+      settingsEnv = await ClaudeSettingsManager.getInstance().getUserLevelEnv();
+    } catch (error) {
+      logger.main.warn('[ClaudeUsageService] Failed to read Claude settings environment:', error);
+    }
+
+    return { ...process.env, ...shellEnv, ...settingsEnv };
   }
 
-  private getAccessTokenFromKeychain(): string | null {
-    // Try each keychain service name (primary and fallback)
-    for (const serviceName of KEYCHAIN_SERVICES) {
+  private getAccessToken(env: ClaudeEnv): string | null {
+    if (process.platform === 'darwin') {
+      const keychainToken = this.getAccessTokenFromKeychain(env);
+      if (keychainToken) return keychainToken;
+      // Keychain miss is not proof of "logged out": the CLI writes a plain
+      // credentials file when secure storage is unavailable (headless/SSH).
+    }
+    return this.getAccessTokenFromCredentialsFile(env);
+  }
+
+  private getAccessTokenFromKeychain(env: ClaudeEnv): string | null {
+    // CLAUDE_CONFIG_DIR does not move a file on macOS — it renames the Keychain
+    // entry to `Claude Code-credentials-<sha256(configDir):8>`. Reading the
+    // unscoped name would return a stale pre-move credential.
+    for (const serviceName of resolveClaudeKeychainServiceNames(env)) {
       const token = this.tryGetTokenFromKeychain(serviceName);
       if (token) {
+        logger.main.debug(`[ClaudeUsageService] Using keychain entry: ${serviceName}`);
         return token;
       }
     }
@@ -220,9 +277,9 @@ class ClaudeUsageServiceImpl {
     return null;
   }
 
-  private getAccessTokenFromCredentialsFile(): string | null {
+  private getAccessTokenFromCredentialsFile(env: ClaudeEnv): string | null {
     try {
-      const credentialsPath = path.join(os.homedir(), '.claude', '.credentials.json');
+      const credentialsPath = resolveClaudeCredentialsPath(env);
       if (!fs.existsSync(credentialsPath)) {
         logger.main.debug('[ClaudeUsageService] Credentials file not found:', credentialsPath);
         return null;

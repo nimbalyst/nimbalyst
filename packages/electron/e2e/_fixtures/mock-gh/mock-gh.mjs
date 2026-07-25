@@ -77,7 +77,7 @@ if (argv[0] === 'api') {
         status: 'modified',
         additions: 10,
         deletions: 2,
-        patch: '@@ -1 +1 @@\n-old\n+new',
+        patch: '@@ -1 +1 @@\n-const answer: number = 41;\n+const answer: number = 42;',
       },
     ]);
   }

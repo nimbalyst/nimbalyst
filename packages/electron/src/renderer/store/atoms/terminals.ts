@@ -256,10 +256,10 @@ export function initTerminalListeners(workspacePath: string): () => void {
     }
   };
 
-  window.electronAPI.on('terminal:list-changed', handleTerminalListChanged);
+  const unsubscribe = window.electronAPI.on('terminal:list-changed', handleTerminalListChanged);
 
   // Return cleanup function
   return () => {
-    window.electronAPI.off?.('terminal:list-changed', handleTerminalListChanged);
+    unsubscribe();
   };
 }

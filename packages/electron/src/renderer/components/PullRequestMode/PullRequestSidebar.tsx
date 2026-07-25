@@ -17,6 +17,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 import { getRecordStatus, getStatusOptions } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { prListAtom, type PrFilterChip } from '../../store/atoms/pullRequests';
 import { usePrTrackerReferences } from './usePrTrackerContext';
+import { FALLBACK_TRACKER_COLOR, trackerColorStyle } from './PrTrackerBadge';
 
 interface PullRequestSidebarProps {
   remote: string | null;
@@ -121,7 +122,7 @@ export function PullRequestSidebar({
                 data-testid={`pr-filter-${chip.id}`}
                 className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
                   isActive
-                    ? 'bg-[var(--nim-primary)] text-white'
+                    ? 'bg-[var(--nim-primary)] text-nim-on-primary'
                     : 'bg-nim-tertiary text-nim-muted hover:bg-nim-active hover:text-nim'
                 }`}
                 onClick={() => onToggleFilter(chip.id)}
@@ -142,18 +143,18 @@ export function PullRequestSidebar({
           <div className="flex flex-wrap gap-1">
             {trackerStatusChips.map((chip) => {
               const isActive = activeTrackerStatusFilters.includes(chip.value);
-              const color = chip.color || '#6b7280';
+              const color = chip.color || FALLBACK_TRACKER_COLOR;
               return (
                 <button
                   key={chip.value}
                   data-testid={`pr-tracker-status-${chip.value}`}
                   className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                    isActive ? 'text-white' : 'text-nim-muted hover:text-nim hover:bg-nim-active'
+                    isActive ? 'text-nim-on-primary' : 'text-nim-muted hover:text-nim hover:bg-nim-active'
                   }`}
                   style={
                     isActive
                       ? { backgroundColor: color }
-                      : { backgroundColor: `${color}20`, color }
+                      : trackerColorStyle(chip.color)
                   }
                   onClick={() => onToggleTrackerStatusFilter(chip.value)}
                 >

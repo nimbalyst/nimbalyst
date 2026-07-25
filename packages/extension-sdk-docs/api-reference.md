@@ -111,7 +111,8 @@ interface ExtensionServices {
 ```ts
 interface ExtensionFileSystemService {
   readFile(path: string): Promise<string>;
-  writeFile(path: string, content: string): Promise<void>;
+  /** Writes UTF-8 text or byte-exact binary content. */
+  writeFile(path: string, content: string | Uint8Array): Promise<void>;
   fileExists(path: string): Promise<boolean>;
   findFiles(pattern: string): Promise<string[]>;
 }
@@ -473,8 +474,15 @@ interface PanelAIContext {
 interface SettingsPanelProps {
   storage: ExtensionStorage;
   theme: string;
+  callBackendTool?: (toolName: string, args?: Record<string, unknown>) => Promise<unknown>;
+  workspacePath?: string;
+  projectTarget?:
+    | { kind: 'workspace'; workspacePath: string }
+    | { kind: 'organizationProject'; orgId: string; projectId: string };
 }
 ```
+
+`workspacePath` and `projectTarget` are present only for project-scoped `settingsRoutes` contributions. Application routes and nested `settingsPanel` components omit them.
 
 ## Extension Storage
 
@@ -534,6 +542,7 @@ interface ExtensionContributions {
   claudePlugin?: ClaudePluginContribution;
   panels?: PanelContribution[];
   settingsPanel?: SettingsPanelContribution;
+  settingsRoutes?: SettingsRouteContribution[];
   documentHeaders?: DocumentHeaderContribution[];
   themes?: ThemeContribution[];
   backendModules?: BackendModuleContribution[];

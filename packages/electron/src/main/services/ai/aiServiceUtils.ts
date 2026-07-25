@@ -235,6 +235,15 @@ export function getFileExtensionForAnalytics(filePath: string | undefined): stri
 }
 
 /**
+ * Whether the extension `sendPrompt` bridge must require a host-managed API key.
+ * Claude Code and OpenAI Codex authenticate through their own signed-in CLI/app
+ * sessions, while the direct API providers still require explicitly configured keys.
+ */
+export function extensionPromptRequiresConfiguredApiKey(provider: AIProviderType): boolean {
+  return provider !== 'claude-code' && provider !== 'openai-codex';
+}
+
+/**
  * Extract the model part from a full model ID for passing to provider APIs.
  * For claude-code, returns the full model (with suffix if any).
  * For other providers, strips the provider prefix.

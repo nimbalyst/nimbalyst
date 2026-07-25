@@ -28,6 +28,7 @@ import { WebContentsView, BrowserWindow, session as electronSession } from 'elec
 import { EventEmitter } from 'events';
 import { logger } from '../utils/logger';
 import { ensureNimPreviewProtocolForSession } from '../protocols/nimPreviewProtocol';
+import { installMicrophoneGate } from '../mediaPermissionGate';
 
 export interface BrowserSessionInitOptions {
   /** Stable session id chosen by the caller. */
@@ -222,6 +223,12 @@ export class BrowserSessionService extends EventEmitter {
 
     const partitionName = resolveBrowserPartitionName(opts.partition);
     const ses = electronSession.fromPartition(partitionName);
+    // Belt-and-suspenders with the global session-created hook: browsed web
+    // content must remain microphone-denied even after Voice Mode is granted.
+    installMicrophoneGate(ses, {
+      allowWhenGranted: false,
+      label: partitionName,
+    });
     // Custom partitions do not inherit the default session's protocol
     // handlers; without this, nim-preview:// is an unknown scheme in the view
     // (issue #612).

@@ -31,6 +31,7 @@ import type {
   ReadReceiptEntityKind,
   SyncedReadReceipt,
 } from '@nimbalyst/runtime/readReceipts/readReceipts';
+import { resolveTrackerProjectScope } from '../services/TrackerProjectScope';
 
 const logger = log.scope('ReadReceiptHandlers');
 
@@ -79,6 +80,16 @@ function pushReceiptToPersonalSync(row: ReadReceiptRow): void {
     .catch((err) => logger.debug('read receipt personal-sync push failed', { err }));
 }
 
+async function resolveReceiptScope(
+  entityKind: ReadReceiptEntityKind,
+  requestedScope: string,
+  workspacePath?: string,
+): Promise<{ scope: string; syncable: boolean }> {
+  if (entityKind !== 'tracker') return { scope: requestedScope, syncable: true };
+  if (!workspacePath) throw new Error('workspacePath required for tracker read receipts');
+  return resolveTrackerProjectScope(workspacePath);
+}
+
 /**
  * Apply a read receipt that arrived from another device (personal-sync inbound
  * or server replay). Advance-only persist, then notify all renderer windows so
@@ -120,7 +131,8 @@ export function registerReadReceiptHandlers(): void {
       }
       try {
         const userEmail = resolveUserEmail(workspacePath);
-        const rows = await getStore().getForScope(userEmail, entityKind, scope);
+        const resolved = await resolveReceiptScope(entityKind, scope, workspacePath);
+        const rows = await getStore().getForScope(userEmail, entityKind, resolved.scope);
         return { success: true, data: rows };
       } catch (error: unknown) {
         logger.error('read-receipts:get-for-scope failed', { entityKind, scope, error });
@@ -147,17 +159,18 @@ export function registerReadReceiptHandlers(): void {
       }
       try {
         const userEmail = resolveUserEmail(workspacePath);
+        const resolved = await resolveReceiptScope(input.entityKind, input.scope, workspacePath);
         const row = await getStore().markViewed({
           userEmail,
           entityKind: input.entityKind,
           entityId: input.entityId,
-          scope: input.scope,
+          scope: resolved.scope,
           lastViewedAt: input.lastViewedAt,
           lastSeenVersion: input.lastSeenVersion ?? null,
         });
         // Push through the personal sync provider so read state follows the
         // user cross-device (skipped when row === null, i.e. no advance).
-        if (row) pushReceiptToPersonalSync(row);
+        if (row && resolved.syncable) pushReceiptToPersonalSync(row);
         return { success: true, data: row };
       } catch (error: unknown) {
         logger.error('read-receipts:mark-viewed failed', {

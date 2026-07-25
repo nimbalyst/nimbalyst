@@ -172,6 +172,50 @@ describe('CodexSDKProtocol', () => {
     expect('additionalDirectories' in passedOptions).toBe(false);
   });
 
+  it('uses automatic review config for Agent-verified workspaces', async () => {
+    const codexOptions: Record<string, unknown>[] = [];
+    const startThread = vi.fn((_options?: Record<string, unknown>) => ({
+      id: 'thread-agent-verified',
+      runStreamed: vi.fn(),
+    }));
+    const protocol = new CodexSDKProtocol(
+      'test-key',
+      async () =>
+        ({
+          Codex: class {
+            constructor(options: Record<string, unknown>) {
+              codexOptions.push(options);
+            }
+            startThread = startThread;
+            resumeThread = vi.fn();
+          },
+        }) as any
+    );
+
+    await protocol.createSession({
+      workspacePath: '/projects/main',
+      permissionMode: 'bypass-all',
+      raw: {
+        agentVerified: true,
+        codexConfigOverrides: { show_raw_agent_reasoning: true },
+      },
+    });
+
+    expect(codexOptions).toEqual([
+      expect.objectContaining({
+        config: {
+          show_raw_agent_reasoning: true,
+          approvals_reviewer: 'auto_review',
+        },
+      }),
+    ]);
+    expect(startThread).toHaveBeenCalledWith(expect.objectContaining({
+      sandboxMode: 'workspace-write',
+      approvalPolicy: 'on-request',
+    }));
+    expect(startThread.mock.calls[0]![0]).not.toHaveProperty('agentVerified');
+  });
+
   it('passes image attachments as structured local_image inputs', async () => {
     const runStreamed = vi.fn(async () => ({
       events: createAsyncEventStream([

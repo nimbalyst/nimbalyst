@@ -628,4 +628,4 @@ Bridge between local workspace and shared filesystem.
 - **Requires**: `collab://` tab infrastructure (Phase 9 / Document Collaboration Phase 6) -- NOT STARTED
 - **Enables**: Full collaborative workspace with organized shared documents and granular access control
 
-![Tracker Mode Layout](tracker-mode-layout.png){mockup:design/Collaboration/tracker-mode-layout.mockup.html}
+[Tracker Mode Layout](design/Collaboration/tracker-mode-layout.mockup.html)

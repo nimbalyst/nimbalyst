@@ -15,6 +15,10 @@ export {
 } from './TrackerReferenceNode';
 
 export { TrackerReferenceTransformer } from './TrackerReferenceTransformer';
+export {
+  setTrackerReferenceNodeRenderer,
+  type TrackerReferenceNodeRendererProps,
+} from './TrackerReferenceNodeRenderer';
 
 export {
   TrackerReferenceChip,

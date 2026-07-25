@@ -27,7 +27,7 @@ import type { JSX } from 'react';
 import { $applyNodeReplacement, DecoratorNode } from 'lexical';
 import * as React from 'react';
 
-import { TrackerReferenceChip } from './TrackerReferenceChip';
+import { getTrackerReferenceNodeRenderer } from './TrackerReferenceNodeRenderer';
 
 export const TRACKER_REFERENCE_URN_SCHEME = 'nimbalyst://';
 
@@ -116,8 +116,19 @@ export class TrackerReferenceNode extends DecoratorNode<JSX.Element> {
   }
 
   decorate(): JSX.Element {
+    const Renderer = getTrackerReferenceNodeRenderer();
+    if (!Renderer) {
+      return (
+        <span
+          className="tracker-reference"
+          data-issue-key={this.__referenceKey}
+        >
+          {this.__referenceKey}
+        </span>
+      );
+    }
     return (
-      <TrackerReferenceChip
+      <Renderer
         referenceKey={this.__referenceKey}
         nodeKey={this.getKey()}
       />

@@ -35,6 +35,8 @@ describe('applyCommentMutation', () => {
     const c1 = r.comments.find((c) => c.id === 'c1')!;
     expect(c1.body).toBe('hello edited');
     expect(c1.updatedAt).toBe(1000);
+    expect(r.previous.body).toBe('hello');
+    expect(r.comment.body).toBe('hello edited');
   });
 
   it('lets the author soft-delete their own comment (body preserved)', () => {
@@ -45,6 +47,8 @@ describe('applyCommentMutation', () => {
     expect(c2.deleted).toBe(true);
     expect(c2.body).toBe('world'); // retained for audit
     expect(c2.updatedAt).toBe(2000);
+    expect(r.previous.deleted).toBe(false);
+    expect(r.comment.deleted).toBe(true);
   });
 
   it('rejects a non-author trying to edit', () => {

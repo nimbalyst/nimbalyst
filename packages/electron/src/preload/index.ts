@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { createIpcSubscriber } from './ipcSubscriptions.ts';
 import {ClaudeForWindowsInstallation} from "../main/services/CLIManager.ts";
 import type { GhCliStatus } from '../main/services/GhCliDetector.ts';
 import type {
@@ -19,6 +20,8 @@ import type {
 // our use case and prevents spurious "memory leak" warnings.
 // The real fix is also in place: using stable references in useEffect deps.
 ipcRenderer.setMaxListeners(100);
+
+const subscribeToIpcChannel = createIpcSubscriber(ipcRenderer);
 
 interface ArchiveTask {
   worktreeId: string;
@@ -259,6 +262,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   setTheme: (theme: string) => ipcRenderer.invoke('set-theme', theme),
+  setTitleBarOverlayColors: (colors: { color: string; symbolColor: string }) =>
+    ipcRenderer.send('window-chrome:set-overlay-colors', colors),
 
   // File operations
   openFile: () => ipcRenderer.invoke('open-file'),
@@ -295,16 +300,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('export:sessionToClipboard', options) as Promise<{ success: boolean; error?: string }>,
 
   // Share operations
-  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number }) =>
-    ipcRenderer.invoke('share:sessionAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>,
+  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number; personalOrgId?: string }) =>
+    ipcRenderer.invoke('share:sessionAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>,
+  getShareAccountOptions: (options: { contentType: 'session' | 'file'; sessionId?: string; filePath?: string }) =>
+    ipcRenderer.invoke('share:get-account-options', options) as Promise<{ success: boolean; accounts?: Array<{ personalOrgId: string; email: string; isSyncAccount: boolean; sessionStatus: 'active' | 'expired' }>; defaultPersonalOrgId?: string; defaultSource?: 'workspace-binding' | 'sync-account' | 'only-account'; error?: string }>,
   listShares: () =>
-    ipcRenderer.invoke('share:list') as Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number }>; error?: string }>,
-  deleteShare: (options: { shareId: string; sessionId?: string }) =>
+    ipcRenderer.invoke('share:list') as Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number; owningPersonalOrgId: string }>; error?: string }>,
+  deleteShare: (options: { shareId: string; sessionId?: string; owningPersonalOrgId?: string }) =>
     ipcRenderer.invoke('share:delete', options) as Promise<{ success: boolean; error?: string }>,
   getShareKeys: () =>
     ipcRenderer.invoke('share:getKeys') as Promise<Record<string, string>>,
-  shareFileAsLink: (options: { filePath: string; expirationDays?: number }) =>
-    ipcRenderer.invoke('share:fileAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>,
+  shareFileAsLink: (options: { filePath: string; expirationDays?: number; personalOrgId?: string }) =>
+    ipcRenderer.invoke('share:fileAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>,
   getShareExpirationPreference: () =>
     ipcRenderer.invoke('share:getExpirationPreference') as Promise<number>,
   setShareExpirationPreference: (days: number) =>
@@ -526,6 +533,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: any, payload: { key: string; value: unknown }) => callback(payload);
     ipcRenderer.on('settings:changed', handler);
     return () => ipcRenderer.removeListener('settings:changed', handler);
+  },
+  // Generic app-settings store writes broadcast app-settings:changed to every
+  // OTHER window so cross-window state (e.g. navigation-gutter customization)
+  // stays in lockstep without a reload.
+  onAppSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => {
+    const handler = (_event: any, payload: { key: string; value: unknown }) => callback(payload);
+    ipcRenderer.on('app-settings:changed', handler);
+    return () => ipcRenderer.removeListener('app-settings:changed', handler);
   },
 
   getAISettings: () => ipcRenderer.invoke('ai:getSettings'),
@@ -876,7 +891,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Global semantic search (nimbalyst-memory engine). Returns empty / false when
-  // the memory extension is disabled so the Quick Open Search tab can hide.
+  // the memory extension is disabled so the Quick Open Memory tab can hide.
   semanticSearch: {
     isAvailable: (workspacePath: string) =>
       ipcRenderer.invoke('semantic-search:available', workspacePath) as Promise<boolean>,
@@ -945,6 +960,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
           userId: string;
           userName?: string;
           userEmail?: string;
+          urlExtraQuery?: string;
           pendingUpdateBase64?: string;
         };
         error?: string;
@@ -1057,13 +1073,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
         documentType,
         content,
       }) as Promise<{ success: boolean; error?: string }>,
-    // Forward a serializable collab adapter descriptor so the main process can
-    // rebuild the adapter (dynamic main-process adapters for any extension).
-    registerCollabAdapterDescriptor: (descriptor: unknown) =>
-      ipcRenderer.invoke('collab-adapter:register-descriptor', descriptor) as Promise<{
-        success: boolean;
-        error?: string;
-      }>,
     getLocalOrigin: (workspacePath: string, documentId: string) =>
       ipcRenderer.invoke('document-sync:get-local-origin', {
         workspacePath,
@@ -1479,6 +1488,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAll: () => ipcRenderer.invoke('feature-usage:get-all'),
   },
 
+  // Per-tool usage (tip targeting rollup + AI Usage Report Tools tab)
+  toolUsage: {
+    getRollup: () => ipcRenderer.invoke('tool-usage:get-rollup'),
+    getReport: (workspaceId?: string) => ipcRenderer.invoke('tool-usage:get-report', workspaceId),
+    backfill: () => ipcRenderer.invoke('tool-usage:backfill'),
+  },
+
   // Credentials (for sync and mobile pairing)
   credentials: {
     get: () => ipcRenderer.invoke('credentials:get'),
@@ -1503,6 +1519,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stytch: {
     getAuthState: () => ipcRenderer.invoke('stytch:get-auth-state'),
     getAccounts: () => ipcRenderer.invoke('stytch:get-accounts'),
+    getSyncAccount: () => ipcRenderer.invoke('stytch:get-sync-account'),
+    setSyncAccount: (personalOrgId: string) =>
+      ipcRenderer.invoke('stytch:set-sync-account', personalOrgId),
     isAuthenticated: () => ipcRenderer.invoke('stytch:is-authenticated'),
     signInWithGoogle: () => ipcRenderer.invoke('stytch:sign-in-google'),
     sendMagicLink: (email: string) =>
@@ -1528,7 +1547,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Team Management (all member ops take explicit orgId -- per-workspace, not global)
   team: {
-    list: () => ipcRenderer.invoke('team:list'),
+    list: (options?: { forceRefresh?: boolean }) => ipcRenderer.invoke('team:list', options),
+    /** Open (or focus + retarget) the dedicated org-management window. */
+    openManagementWindow: (target?: { orgId?: string; workspacePath?: string }) =>
+      ipcRenderer.invoke('team-window:open', target),
     findForWorkspace: (workspacePath: string) => ipcRenderer.invoke('team:find-for-workspace', workspacePath),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
     create: (name: string, workspacePath?: string, accountOrgId?: string) => ipcRenderer.invoke('team:create', name, workspacePath, accountOrgId),
@@ -1559,11 +1581,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getEncryptionMigrationStatus: (orgId: string) => ipcRenderer.invoke('team:get-encryption-migration-status', orgId) as Promise<{
       success: boolean;
       migration?:
-        | { status: 'migrating'; startedAt: string }
+        | { status: 'migrating'; startedAt: string; documentsCompleted?: number; documentsTotal?: number; phase?: 'custody' | 'titles' | 'documents' | 'verifying' }
         | { status: 'complete'; finishedAt: string }
-        | { status: 'stuck'; failedAt: string; message: string }
+        | { status: 'stuck'; failedAt: string; message: string; retryAt?: string }
         | null;
     }>,
+    retryEncryptionMigration: (orgId: string) => ipcRenderer.invoke('team:retry-encryption-migration', orgId),
     listKeyEnvelopes: (orgId: string) => ipcRenderer.invoke('team:list-key-envelopes', orgId),
     setProjectIdentity: (orgId: string, workspacePath: string) => ipcRenderer.invoke('team:set-project-identity', orgId, workspacePath),
     clearProjectIdentity: (orgId: string) => ipcRenderer.invoke('team:clear-project-identity', orgId),
@@ -1599,6 +1622,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     deleteOrganization: (orgId: string) => ipcRenderer.invoke('team:delete', orgId),
     getEncryptionStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId),
     getEncryptionMigrationStatus: (orgId: string) => ipcRenderer.invoke('team:get-encryption-migration-status', orgId),
+    retryEncryptionMigration: (orgId: string) => ipcRenderer.invoke('team:retry-encryption-migration', orgId),
   },
 
   // Epic H1: org / project access model. `canAccess` is the single client-side
@@ -1960,36 +1984,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Generic IPC methods for services that need them
+  captureHeapSnapshot: (): Promise<{ path: string; sizeBytes: number }> =>
+    ipcRenderer.invoke('heap-snapshot:capture'),
   invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
   send: (channel: string, ...args: any[]) => ipcRenderer.send(channel, ...args),
-  on: (channel: string, callback: (...args: any[]) => void) => {
-    const handler = (_event: any, ...args: any[]) => callback(...args);
-
-    // Increase max listeners for document service channels that may have multiple watchers
-    if (channel.startsWith('document-service:')) {
-      const currentMax = ipcRenderer.getMaxListeners();
-      if (currentMax !== 0 && currentMax < 50) {
-        ipcRenderer.setMaxListeners(50);
-      }
-    }
-
-    ipcRenderer.on(channel, handler);
-    // Store mapping from callback to handler for proper removal
-    if (!(window as any).__ipcHandlers) {
-      (window as any).__ipcHandlers = new WeakMap();
-    }
-    (window as any).__ipcHandlers.set(callback, { channel, handler });
-    return () => ipcRenderer.removeListener(channel, handler);
-  },
-  off: (channel: string, callback: (...args: any[]) => void) => {
-    // Look up the actual handler that was registered
-    const handlerInfo = (window as any).__ipcHandlers?.get(callback);
-    if (handlerInfo && handlerInfo.channel === channel) {
-      ipcRenderer.removeListener(channel, handlerInfo.handler);
-      (window as any).__ipcHandlers.delete(callback);
-    } else {
-      // Fallback: try to remove callback directly (won't work but maintains backward compat)
-      ipcRenderer.removeListener(channel, callback);
-    }
-  }
+  // Subscribe to an IPC channel. Call the returned closure to unsubscribe --
+  // there is deliberately no `off(channel, callback)` counterpart, because
+  // contextBridge re-proxies the callback on every crossing and identity-based
+  // removal can never match. See ipcSubscriptions.ts.
+  on: subscribeToIpcChannel
 });

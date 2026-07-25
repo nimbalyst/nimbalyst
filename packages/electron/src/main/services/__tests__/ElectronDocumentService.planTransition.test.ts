@@ -61,6 +61,7 @@ let service: ElectronDocumentService;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mockQuery.mockReset();
   mockGetWorkspaceState.mockReturnValue({});
   mockGlobalRegistryGet.mockReturnValue(undefined);
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'plan-transition-test-'));
@@ -468,10 +469,10 @@ describe('per-item sync gating for body-save and archive', () => {
 
   it('does not push the body of an unflagged hybrid item (no leak)', async () => {
     const row = nativeRow({ title: 'Local bug', status: 'open' }, { body_version: 0 });
+    const persisted = nativeRow({ title: 'Local bug', status: 'open' }, { body_version: 1 });
     mockQuery.mockResolvedValueOnce({ rows: [row] }); // resolve (direct SELECT)
-    mockQuery.mockResolvedValueOnce({ rows: [{ body_version: 1 }] }); // UPDATE RETURNING
+    mockQuery.mockResolvedValueOnce({ rows: [persisted] }); // UPDATE RETURNING
     mockQuery.mockResolvedValueOnce({ rows: [] }); // INSERT body_cache
-    mockQuery.mockResolvedValueOnce({ rows: [row] }); // SELECT for change event
 
     await service.updateTrackerItemContent('bug-1', { some: 'content' });
 
@@ -483,9 +484,8 @@ describe('per-item sync gating for body-save and archive', () => {
     const row = nativeRow(sharedData, { body_version: 0 });
     const persisted = nativeRow(sharedData, { body_version: 1 });
     mockQuery.mockResolvedValueOnce({ rows: [row] }); // resolve
-    mockQuery.mockResolvedValueOnce({ rows: [{ body_version: 1 }] }); // UPDATE RETURNING
+    mockQuery.mockResolvedValueOnce({ rows: [persisted] }); // UPDATE RETURNING
     mockQuery.mockResolvedValueOnce({ rows: [] }); // INSERT body_cache
-    mockQuery.mockResolvedValueOnce({ rows: [persisted] }); // SELECT for change event
 
     await service.updateTrackerItemContent('bug-1', { some: 'content' });
 
@@ -495,8 +495,7 @@ describe('per-item sync gating for body-save and archive', () => {
   it('does not push the archive toggle of an unflagged hybrid item (no leak)', async () => {
     const row = nativeRow({ title: 'Local bug', status: 'open' });
     mockQuery.mockResolvedValueOnce({ rows: [row] }); // resolve
-    mockQuery.mockResolvedValueOnce({ rows: [] }); // UPDATE archived
-    mockQuery.mockResolvedValueOnce({ rows: [row] }); // SELECT for change event
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...row, archived: true }] }); // UPDATE RETURNING
 
     await service.archiveTrackerItem('bug-1', true);
 
@@ -507,8 +506,7 @@ describe('per-item sync gating for body-save and archive', () => {
     const sharedData = { title: 'Shared bug', status: 'open', shared: true };
     const row = nativeRow(sharedData);
     mockQuery.mockResolvedValueOnce({ rows: [row] }); // resolve
-    mockQuery.mockResolvedValueOnce({ rows: [] }); // UPDATE archived
-    mockQuery.mockResolvedValueOnce({ rows: [row] }); // SELECT for change event
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...row, archived: true }] }); // UPDATE RETURNING
 
     await service.archiveTrackerItem('bug-1', true);
 

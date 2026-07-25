@@ -252,6 +252,8 @@ describe('TranscriptWriter', () => {
         subagentId: 'sub-1',
         agentType: 'Explore',
         prompt: 'Find all test files',
+        model: 'gpt-5.4',
+        reasoningEffort: 'high',
       });
 
       expect(event.eventType).toBe('subagent');
@@ -259,6 +261,8 @@ describe('TranscriptWriter', () => {
       expect(event.subagentId).toBe('sub-1');
       expect((event.payload as any).status).toBe('running');
       expect((event.payload as any).agentType).toBe('Explore');
+      expect((event.payload as any).model).toBe('gpt-5.4');
+      expect((event.payload as any).reasoningEffort).toBe('high');
     });
   });
 
@@ -269,18 +273,24 @@ describe('TranscriptWriter', () => {
         agentType: 'Explore',
         prompt: 'Find files',
       });
+      expect((event.payload as any).model).toBeNull();
+      expect((event.payload as any).reasoningEffort).toBeNull();
 
       await writer.updateSubagent(event.id, {
         status: 'completed',
         resultSummary: 'Found 5 files',
         toolCallCount: 3,
         durationMs: 2000,
+        model: 'gpt-5.4',
+        reasoningEffort: 'high',
       });
 
       const updated = await store.getEventById(event.id);
       expect((updated!.payload as any).status).toBe('completed');
       expect((updated!.payload as any).resultSummary).toBe('Found 5 files');
       expect((updated!.payload as any).toolCallCount).toBe(3);
+      expect((updated!.payload as any).model).toBe('gpt-5.4');
+      expect((updated!.payload as any).reasoningEffort).toBe('high');
       // Original fields preserved
       expect((updated!.payload as any).agentType).toBe('Explore');
       expect((updated!.payload as any).prompt).toBe('Find files');

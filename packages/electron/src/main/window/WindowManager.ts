@@ -19,6 +19,7 @@ import {
   setFileSystemServiceFor,
 } from '@nimbalyst/runtime';
 import { navigationHistoryService } from '../services/NavigationHistoryService';
+import { runWhenAppIsActive } from './AppActivationGuard';
 import { signalFirstWindowLoaded } from '../services/startupMaintenanceGate';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { FeatureTrackingService } from '../services/analytics/FeatureTrackingService';
@@ -26,8 +27,12 @@ import { ExtensionLogService } from '../services/ExtensionLogService';
 import { getMcpConfigService } from '../mcpConfigServiceRef';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
 import { addNimPreviewWorkspaceRoot } from '../protocols/nimPreviewProtocol';
-import { windows, windowStates, anyWindowReferencesWorkspace, resolveDocumentServicePath } from './windowState';
+import { windows, windowStates, anyWindowReferencesWorkspace, resolveDocumentServicePath, getWindowIdForWindow } from './windowState';
 import { shouldSaveSessionOnWindowClose } from './sessionSaveOnClose';
+import {
+    registerCustomTitleBarWindow,
+    titleBarOptionsForWindow,
+} from './windowChrome';
 
 // Window management
 export { windows, windowStates };
@@ -55,6 +60,9 @@ interface RecentlyDeletedEntry {
 }
 const recentlyDeletedEntries = new Map<string, RecentlyDeletedEntry>();
 const RECENTLY_DELETED_FALLBACK_MS = 5 * 60 * 1000;
+
+/** Renderer crashes seen this run; logged so repeat crashes are distinguishable from a one-off. */
+let rendererCrashCount = 0;
 
 export function markRecentlyDeleted(filePath: string): void {
     // If already tracked, refresh the fallback timer.
@@ -153,6 +161,8 @@ export function getFocusedOrNewWindow(): BrowserWindow {
 export interface CreateWindowOptions {
     /** Show the window without activating the app (no focus steal). */
     showInactive?: boolean;
+    /** Keep a restored window hidden if the user switched away during startup. */
+    deferShowUntilAppActive?: boolean;
 }
 
 export function createWindow(
@@ -253,7 +263,11 @@ export function createWindow(
                 webviewTag: false
             },
             show: false,
-            titleBarStyle: process.platform === 'darwin' ? undefined : 'default',
+            ...titleBarOptionsForWindow({
+                customTitleBar: isWorkspaceMode,
+                platform: process.platform,
+                overlayColors: getTitleBarColors(),
+            }),
         };
 
         if (iconPath) {
@@ -261,6 +275,9 @@ export function createWindow(
         }
 
         const window = new BrowserWindow(windowOptions);
+        if (isWorkspaceMode) {
+            registerCustomTitleBarWindow(window);
+        }
 
         // Generate a unique window ID
         const windowId = ++windowIdCounter;
@@ -571,16 +588,40 @@ export function createWindow(
         // Show window when ready
         window.once('ready-to-show', () => {
             // console.log('[MAIN] Window ready to show at', new Date().toISOString(), 'elapsed:', Date.now() - startTime, 'ms');
-            if (options?.showInactive) {
-                window.showInactive();
-            } else {
-                window.show();
+            const showWindow = options?.showInactive
+                ? () => window.showInactive()
+                : () => window.show();
+
+            if (options?.deferShowUntilAppActive) {
+                runWhenAppIsActive(window, showWindow);
+                return;
             }
+
+            showWindow();
         });
 
-        // Handle renderer process crashes
+        // Handle renderer process crashes.
+        //
+        // Log the fields explicitly rather than relying on the crash reporter:
+        // when a user files a crash report (issue #943) the reason/exitCode and
+        // the memory footprint at the time are the whole diagnosis, and a
+        // reloaded window loses the renderer's state forever.
         window.webContents.on('render-process-gone', (event, details) => {
-            console.error('[MAIN] Renderer process gone:', details);
+            rendererCrashCount++;
+            const memory = process.memoryUsage();
+            console.error(
+                '[MAIN] Renderer process gone:',
+                {
+                    reason: details.reason,
+                    exitCode: details.exitCode,
+                    crashCountThisRun: rendererCrashCount,
+                    uptimeSeconds: Math.round(process.uptime()),
+                    mainRssMb: Math.round(memory.rss / 1024 / 1024),
+                    mainHeapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
+                    windowId: window.id,
+                    url: window.webContents.getURL(),
+                }
+            );
             if (!window.isDestroyed()) {
                 // Reload the window
                 window.reload();
@@ -831,12 +872,7 @@ export function getMostRecentlyFocusedWorkspaceWindow(): BrowserWindow | null {
 
 // Find custom window ID from BrowserWindow
 export function getWindowId(browserWindow: BrowserWindow): number | null {
-    for (const [windowId, window] of windows) {
-        if (window === browserWindow) {
-            return windowId;
-        }
-    }
-    return null;
+    return getWindowIdForWindow(browserWindow);
 }
 
 // IPC handler to check if a window is focused

@@ -1,7 +1,7 @@
 {
   "id": "com.nimbalyst.browser",
   "name": "Browser",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Native in-app browser surface for previewing HTML files and viewing live URLs",
   "author": "Nimbalyst",
   "main": "dist/index.js",

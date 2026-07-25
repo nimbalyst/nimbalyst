@@ -837,4 +837,84 @@ function test6() {
       expect(result.documentContext.documentDiff).toBeUndefined();
     });
   });
+
+  describe('editor context items (multi-selection)', () => {
+    it('emits a SELECTED_ITEMS block with each item label and description', () => {
+      const rawContext: RawDocumentContext = {
+        filePath: '/test/diagram.excalidraw',
+        fileType: 'excalidraw',
+        content: '{}',
+        editorContextItems: [
+          { id: 'a1', label: 'Rectangle 3', description: 'A rectangle at (10, 20).' },
+          { id: 'b2', label: 'Arrow 7', description: 'An arrow from Rectangle 3 to Ellipse 1.' },
+        ],
+      };
+
+      const result = service.prepareContext(rawContext, 'session-items', 'claude', undefined);
+      const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+      expect(prompt).toContain('<SELECTED_ITEMS>');
+      expect(prompt).toContain('selected the following 2 items');
+      expect(prompt).toContain('<ITEM label="Rectangle 3">');
+      expect(prompt).toContain('A rectangle at (10, 20).');
+      expect(prompt).toContain('<ITEM label="Arrow 7">');
+      expect(prompt).toContain('An arrow from Rectangle 3 to Ellipse 1.');
+    });
+
+    it('inlines structured data only when includeData is set', () => {
+      const rawContext: RawDocumentContext = {
+        filePath: '/test/board.circuit.tsx',
+        fileType: 'code',
+        content: '{}',
+        editorContextItems: [
+          { id: 'r12', label: 'R12', description: 'A resistor.', data: { value: '10k' }, includeData: true },
+          { id: 'c3', label: 'C3', description: 'A capacitor.', data: { value: '100n' } },
+        ],
+      };
+
+      const result = service.prepareContext(rawContext, 'session-data', 'claude', undefined);
+      const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+      // R12 opted in -> data present; C3 did not -> data omitted
+      expect(prompt).toContain('<DATA>{&quot;value&quot;:&quot;10k&quot;}</DATA>');
+      expect(prompt).not.toContain('100n');
+    });
+
+    it('escapes item markup and omits data that cannot be serialized safely', () => {
+      const rawContext: RawDocumentContext = {
+        filePath: '/test/diagram.excalidraw',
+        fileType: 'excalidraw',
+        content: '{}',
+        editorContextItems: [
+          {
+            id: 'unsafe',
+            label: 'Text "quoted" <node>',
+            description: 'Contains </ITEM> & more',
+            data: { count: 1n },
+            includeData: true,
+          },
+        ],
+      };
+
+      const result = service.prepareContext(rawContext, 'session-unsafe', 'claude', undefined);
+      const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+      expect(prompt).toContain('label="Text &quot;quoted&quot; &lt;node&gt;"');
+      expect(prompt).toContain('Contains &lt;/ITEM&gt; &amp; more');
+      expect(prompt).not.toContain('<DATA>');
+    });
+
+    it('produces no SELECTED_ITEMS block when there are no items', () => {
+      const rawContext: RawDocumentContext = {
+        filePath: '/test/file.ts',
+        fileType: 'typescript',
+        content: 'const x = 1;',
+      };
+
+      const result = service.prepareContext(rawContext, 'session-empty', 'claude', undefined);
+      const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+      expect(prompt).not.toContain('<SELECTED_ITEMS>');
+    });
+  });
 });

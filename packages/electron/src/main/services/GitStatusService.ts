@@ -1,14 +1,36 @@
 import { execSync } from 'child_process';
-import { existsSync, statSync } from 'fs';
+import { existsSync, realpathSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
-import { isGitAvailable, logEbadfDiagnostic } from '../utils/gitUtils';
-import { getAllFilesInDirectory } from '../utils/fileUtils';
+import { getUntrackedFilesInDirectory, isGitAvailable, logEbadfDiagnostic } from '../utils/gitUtils';
 import { resolveGitContext } from './GitContextService';
 
 export interface FileGitStatus {
   filePath: string;
   status: 'modified' | 'staged' | 'untracked' | 'unchanged' | 'deleted';
   gitStatusCode?: string; // Raw git status code (M, A, D, ??, etc.)
+}
+
+/**
+ * Base directory for turning git output into absolute paths (and back).
+ *
+ * `resolveGitContext` returns git's physical toplevel (symlinks resolved).
+ * When the workspace IS the repo root, prefer the caller's own path form so
+ * a symlinked workspace path (macOS /tmp -> /private/tmp) round-trips
+ * through the status APIs unchanged; only a workspace that sits below the
+ * root (#124) switches to the physical root git reported.
+ */
+function resolveStatusPathBase(workspacePath: string, gitRoot: string | null): string {
+  if (!gitRoot || gitRoot === workspacePath) {
+    return workspacePath;
+  }
+  try {
+    if (realpathSync(workspacePath) === gitRoot) {
+      return workspacePath;
+    }
+  } catch {
+    // Workspace path cannot be resolved; use the physical root.
+  }
+  return gitRoot;
 }
 
 export interface GitStatusResult {
@@ -30,6 +52,31 @@ export interface GitStatusResult {
  *
  * Exported for unit testing.
  */
+// Per-directory cache of `.git` existence. findGitRootForFile is called once
+// per file by getFileStatus, walking up the tree with an existsSync at every
+// level; without caching this is an O(files x depth) synchronous FS storm on
+// the main thread under multi-session editing of a large repo (nimbalyst#868).
+// Git roots do not move during a session, so memoizing is safe.
+const gitDirExistsCache = new Map<string, boolean>();
+
+/** Test-only: reset the git-root existence cache. */
+export function __resetGitRootCache(): void {
+  gitDirExistsCache.clear();
+}
+
+function hasGitDir(dir: string): boolean {
+  let cached = gitDirExistsCache.get(dir);
+  if (cached === undefined) {
+    try {
+      cached = existsSync(join(dir, '.git'));
+    } catch {
+      cached = false;
+    }
+    gitDirExistsCache.set(dir, cached);
+  }
+  return cached;
+}
+
 export function findGitRootForFile(filePath: string, boundary: string): string | null {
   const boundaryAbs = resolve(boundary);
   const fileAbs = isAbsolute(filePath) ? filePath : resolve(boundaryAbs, filePath);
@@ -48,7 +95,7 @@ export function findGitRootForFile(filePath: string, boundary: string): string |
   // Walk up until we leave the boundary, hit fs root, or find `.git`.
   while (true) {
     try {
-      if (existsSync(join(dir, '.git'))) {
+      if (hasGitDir(dir)) {
         return dir;
       }
     } catch {
@@ -105,7 +152,7 @@ export class GitStatusService {
     // relative to the wrong root (workspace IS a repo but the file lives in
     // a nested submodule-style repo with its own .git).
     const { gitRoot } = resolveGitContext(workspacePath);
-    const rootBoundary = gitRoot ?? workspacePath;
+    const rootBoundary = resolveStatusPathBase(workspacePath, gitRoot);
 
     const filesByRoot = new Map<string, string[]>();
     const filesWithoutRoot: string[] = [];
@@ -359,7 +406,7 @@ export class GitStatusService {
     if (!isRepo) {
       return [];
     }
-    const root = gitRoot ?? workspacePath;
+    const root = resolveStatusPathBase(workspacePath, gitRoot);
 
     // Check cache
     const cacheKey = `${workspacePath}:uncommitted`;
@@ -398,9 +445,12 @@ export class GitStatusService {
             try {
               const stats = statSync(absolutePath);
               if (stats.isDirectory()) {
-                // Expand directory to get all files inside (returns absolute paths)
-                const filesInDir = getAllFilesInDirectory(absolutePath);
-                for (const filePath of filesInDir) {
+                // Expand the untracked directory to individual files, honoring
+                // .gitignore so an installed node_modules/dist doesn't explode
+                // into tens of thousands of paths (NIM-1782).
+                const relFiles = getUntrackedFilesInDirectory(root, absolutePath);
+                for (const relFile of relFiles) {
+                  const filePath = resolve(root, relFile);
                   uncommittedFiles.push(filePath);
                   cacheResult[filePath] = {
                     filePath,
@@ -604,7 +654,7 @@ export class GitStatusService {
     try {
       // Resolve the owning git root; may sit above workspacePath (#124).
       const { gitRoot } = resolveGitContext(workspacePath);
-      const root = gitRoot ?? workspacePath;
+      const root = resolveStatusPathBase(workspacePath, gitRoot);
 
       // Get the current branch of this worktree
       const worktreeBranch = this.getCurrentBranch(root);
@@ -705,7 +755,7 @@ export class GitStatusService {
     if (!isRepo) {
       return {};
     }
-    const root = gitRoot ?? workspacePath;
+    const root = resolveStatusPathBase(workspacePath, gitRoot);
 
     // Check cache (use null byte separator to avoid path collisions with colons on Windows)
     const cacheKey = `${workspacePath}\0all-statuses`;
@@ -733,9 +783,12 @@ export class GitStatusService {
             try {
               const stats = statSync(absolutePath);
               if (stats.isDirectory()) {
-                // Expand directory to get all files inside (returns absolute paths)
-                const filesInDir = getAllFilesInDirectory(absolutePath);
-                for (const filePath of filesInDir) {
+                // Expand the untracked directory to individual files, honoring
+                // .gitignore so an installed node_modules/dist doesn't explode
+                // into tens of thousands of paths (NIM-1782).
+                const relFiles = getUntrackedFilesInDirectory(root, absolutePath);
+                for (const relFile of relFiles) {
+                  const filePath = resolve(root, relFile);
                   result[filePath] = {
                     filePath,
                     status: 'untracked',

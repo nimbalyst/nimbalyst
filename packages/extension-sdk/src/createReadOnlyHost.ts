@@ -93,6 +93,7 @@ export function createReadOnlyHost(
     registerMenuItems: (_items: EditorMenuItem[]) => {},
     registerEditorAPI: () => {},
     setEditorContext: (_context: EditorContext | null) => {},
+    setEditorContextItems: () => {},
 
     // -- Storage (in-memory, non-persistent) --
     storage: {

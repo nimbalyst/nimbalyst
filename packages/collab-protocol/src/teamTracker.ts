@@ -57,6 +57,24 @@ export interface EncryptedTrackerSchemaEnvelope {
   orgKeyFingerprint: string | null;
 }
 
+/**
+ * One team-shared saved view. Mirrors {@link EncryptedTrackerSchemaEnvelope}
+ * but keyed by a client-generated `viewId`. The encrypted payload is the
+ * JSON-serialized SavedView (name + definition); the server never reads it.
+ * Tombstones (view unshared or deleted): `encryptedPayload: null`, `iv`
+ * omitted, `deletedAt` populated. Saved views carry their OWN monotonic syncId
+ * cursor, independent of the item, schema, and navigation cursors.
+ */
+export interface EncryptedTrackerSavedViewEnvelope {
+  viewId: string;
+  syncId: SyncId;
+  encryptedPayload: string | null;
+  iv?: string;
+  updatedAt: number;
+  deletedAt: number | null;
+  orgKeyFingerprint: string | null;
+}
+
 /** One shared tracker-sidebar navigation entry (folder or type placement). */
 export interface EncryptedTrackerNavigationEnvelope {
   entryId: string;
@@ -80,7 +98,27 @@ export type TrackerClientMessage =
   | TrackerSchemaMutationRequestMessage
   | TrackerNavigationSyncRequestMessage
   | TrackerNavigationMutationRequestMessage
+  | TrackerSavedViewSyncRequestMessage
+  | TrackerSavedViewMutationRequestMessage
   | TrackerPingMessage;
+
+/** Request the saved-view delta since a cursor. `sinceSyncId: 0` bootstraps. */
+export interface TrackerSavedViewSyncRequestMessage {
+  type: 'trackerSavedViewSync';
+  sinceSyncId: SyncId;
+}
+
+/** Upsert (encryptedPayload set) or unshare/delete (null = tombstone) one view. */
+export interface TrackerSavedViewMutationRequestMessage {
+  type: 'trackerSavedViewMutation';
+  clientMutationId: string;
+  viewId: string;
+  /** Null for delete (tombstone). */
+  encryptedPayload: string | null;
+  /** Omitted for delete. */
+  iv?: string;
+  orgKeyFingerprint: string | null;
+}
 
 export interface TrackerNavigationSyncRequestMessage {
   type: 'trackerNavigationSync';
@@ -159,9 +197,36 @@ export type TrackerServerMessage =
   | TrackerNavigationSyncResponseMessage
   | TrackerNavigationDeltaMessage
   | TrackerNavigationMutationAckMessage
+  | TrackerSavedViewSyncResponseMessage
+  | TrackerSavedViewDeltaMessage
+  | TrackerSavedViewMutationAckMessage
   | TrackerPongMessage
   | TrackerRoomMovedMessage
   | TrackerErrorMessage;
+
+export interface TrackerSavedViewSyncResponseMessage {
+  type: 'trackerSavedViewSyncResponse';
+  views: EncryptedTrackerSavedViewEnvelope[];
+  cursorSyncId: SyncId;
+  hasMore: boolean;
+}
+
+export interface TrackerSavedViewDeltaMessage {
+  type: 'trackerSavedViewDelta';
+  view: EncryptedTrackerSavedViewEnvelope;
+}
+
+export interface TrackerSavedViewMutationAckMessage {
+  type: 'trackerSavedViewMutationAck';
+  clientMutationId: string;
+  accepted: boolean;
+  syncId?: SyncId;
+  view?: EncryptedTrackerSavedViewEnvelope;
+  error?: {
+    code: TrackerMutationRejectCode;
+    message: string;
+  };
+}
 
 export interface TrackerNavigationSyncResponseMessage {
   type: 'trackerNavigationSyncResponse';

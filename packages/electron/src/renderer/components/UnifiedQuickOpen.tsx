@@ -35,6 +35,7 @@ import { setTrackerModeLayoutAtom } from '../store/atoms/trackers';
 import {
   pendingCollabDocumentAtom,
   sharedDocumentsAtom,
+  sharedFoldersAtom,
   workspaceHasTeamAtom,
   type SharedDocument,
 } from '../store/atoms/collabDocuments';
@@ -43,7 +44,8 @@ import {
   collabFavoritesAtom,
   recentSharedDocsAtom,
 } from '../store/atoms/collabDiscovery';
-import { getCollabNodeName } from './CollabMode/collabTree';
+import { getCollabParentPath, getSharedDocumentDisplayName } from './CollabMode/collabTree';
+import { searchSharedDocuments } from '../utils/sharedDocumentSearch';
 import type { TypeaheadOption } from './Typeahead/GenericTypeahead';
 import type { SessionMeta as SessionItem } from '../store';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../shared/KeyboardShortcuts';
@@ -86,11 +88,11 @@ interface DisabledTabSpec {
   soon: true;
 }
 
-// Global semantic-search tab. Prepended to the tab strip only when the
-// nimbalyst-memory engine is running (soft launch — hidden otherwise).
-const SEARCH_TAB_SPEC: TabSpec = {
+// Project-memory tab. Appended to the tab strip only when the nimbalyst-memory
+// engine is running (soft launch — hidden otherwise).
+const MEMORY_TAB_SPEC: TabSpec = {
   id: 'search',
-  label: 'Search',
+  label: 'Memory',
   shortcut: KeyboardShortcuts.window.globalSearch,
 };
 
@@ -144,6 +146,25 @@ const RECENT_FILE_EXT_KEY = 'unifiedQuickOpen.recentFileMasks';
 const RECENT_TRACKER_TYPE_KEY = 'unifiedQuickOpen.recentTrackerTypes';
 const SELECTED_FILE_EXT_KEY = 'unifiedQuickOpen.selectedFileMask';
 const SELECTED_TRACKER_TYPE_KEY = 'unifiedQuickOpen.selectedTrackerType';
+
+type SemanticSearchScope = 'all' | 'docs' | 'trackers' | 'sessions';
+
+interface SemanticSearchScopeSpec {
+  id: SemanticSearchScope;
+  label: string;
+  sourceClasses?: string[];
+}
+
+const SEMANTIC_SEARCH_SCOPES: SemanticSearchScopeSpec[] = [
+  { id: 'all', label: 'All' },
+  {
+    id: 'docs',
+    label: 'Docs',
+    sourceClasses: ['design', 'docs', 'plans', 'claude', 'facts'],
+  },
+  { id: 'trackers', label: 'Trackers', sourceClasses: ['trackers'] },
+  { id: 'sessions', label: 'Sessions', sourceClasses: ['sessions'] },
+];
 
 // Tracker status badge colors. Kept here so the Trackers pane and any future
 // status filter stay consistent with the tracker mode UI.
@@ -267,21 +288,26 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
   const [sessionContentStatus, setSessionContentStatus] = useState<
     'idle' | 'searching' | 'results'
   >('idle');
+  // Memory search merges indexed docs, trackers, and sessions behind one tab.
+  // The standalone Trackers tab remains available only when Memory is off.
+  const [memoryScope, setMemoryScope] = useState<SemanticSearchScope>('all');
   // Per-tab filter chip values, hoisted so they survive tab switches.
   const [fileExtFilter, setFileExtFilter] = usePersistedFilterValue(SELECTED_FILE_EXT_KEY);
   const [trackerTypeFilter, setTrackerTypeFilter] = usePersistedFilterValue(SELECTED_TRACKER_TYPE_KEY);
   const inputRef = useRef<HTMLInputElement>(null);
   const trackerTypeFilterRef = useRef<FilterChipHandle>(null);
   // Whether the nimbalyst-memory engine is running for this workspace. `null`
-  // until the async check resolves (so we don't bounce off the Search tab while
-  // it's still being determined). When false, the Search tab is hidden entirely.
+  // until the async check resolves (so we don't bounce off the Memory tab while
+  // it's still being determined). When false, the Memory tab is hidden entirely.
   const [searchAvailable, setSearchAvailable] = useState<boolean | null>(null);
   const hasTeam = useAtomValue(workspaceHasTeamAtom);
   const visibleTabs = useMemo(
     () => [
-      ...(searchAvailable === true ? [SEARCH_TAB_SPEC] : []),
-      ...TAB_SPECS,
+      ...TAB_SPECS.filter(
+        (tab) => searchAvailable !== true || tab.id !== 'trackers',
+      ),
       ...(hasTeam ? [TEAM_TAB_SPEC] : []),
+      ...(searchAvailable === true ? [MEMORY_TAB_SPEC] : []),
     ],
     [searchAvailable, hasTeam],
   );
@@ -311,6 +337,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
   useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
+      setMemoryScope(initialTab === 'trackers' ? 'trackers' : 'all');
       setQuery('');
       setSessionFileFilter(null);
       // Focus shortly after mount so React has time to render the input.
@@ -318,7 +345,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
     }
   }, [isOpen, initialTab]);
 
-  // Probe memory-engine availability each time the dialog opens so the Search
+  // Probe memory-engine availability each time the dialog opens so the Memory
   // tab appears/disappears with the extension's enabled state.
   useEffect(() => {
     if (!isOpen) return;
@@ -336,12 +363,21 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
     };
   }, [isOpen, workspacePath]);
 
-  // If we opened straight onto the Search tab (Cmd+Shift+O) but memory turned
-  // out to be off, fall back to Files rather than showing an empty pane. Only
-  // fires once the check has resolved (false, not null).
+  // If Memory turns off while its merged Tracker scope is active, preserve
+  // access by falling back to the standalone Trackers tab. Other Memory scopes
+  // fall back to Files.
   useEffect(() => {
     if (activeTab === 'search' && searchAvailable === false) {
-      setActiveTab('files');
+      setActiveTab(memoryScope === 'trackers' ? 'trackers' : 'files');
+    }
+  }, [activeTab, memoryScope, searchAvailable]);
+
+  // Once Memory availability resolves, fold a requested standalone Tracker
+  // open into the merged Memory tab without losing the requested destination.
+  useEffect(() => {
+    if (activeTab === 'trackers' && searchAvailable === true) {
+      setMemoryScope('trackers');
+      setActiveTab('search');
     }
   }, [activeTab, searchAvailable]);
 
@@ -360,9 +396,14 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
   }, []);
 
   const openTrackerTypeFilter = useCallback(() => {
-    setActiveTab('trackers');
+    if (searchAvailable === true) {
+      setMemoryScope('trackers');
+      setActiveTab('search');
+    } else {
+      setActiveTab('trackers');
+    }
     setTimeout(() => trackerTypeFilterRef.current?.open(), 0);
-  }, []);
+  }, [searchAvailable]);
 
   // Tab / Shift+Tab cycles tabs. We use capture to win over any per-pane
   // handler that might also listen to Tab.
@@ -431,11 +472,14 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
         switchTab('prompts');
         return;
       }
-      // Cmd+Shift+O → Search (only when memory is available)
+      // Cmd+Shift+O → Memory (only when memory is available)
       if (e.shiftKey && (e.key === 'O' || e.key === 'o')) {
         e.preventDefault();
         e.stopPropagation();
-        if (searchAvailable === true) switchTab('search');
+        if (searchAvailable === true) {
+          setMemoryScope('all');
+          switchTab('search');
+        }
         return;
       }
       // Cmd+Shift+D → Team (only when this workspace has a team)
@@ -474,7 +518,13 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
 
   const placeholder =
     activeTab === 'search'
-      ? 'Search everything by meaning — trackers, docs, sessions...'
+      ? memoryScope === 'trackers'
+        ? 'Search trackers by title, key, or meaning...'
+        : memoryScope === 'docs'
+          ? 'Search indexed docs by meaning...'
+          : memoryScope === 'sessions'
+            ? 'Search indexed sessions by meaning...'
+            : 'Search project memory — docs, trackers, sessions...'
       : activeTab === 'team'
         ? 'Search shared team documents...'
       : activeTab === 'projects'
@@ -605,7 +655,8 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
                 placeholder="*.ts,*.tsx"
               />
             )}
-            {activeTab === 'trackers' && (
+            {(activeTab === 'trackers' ||
+              (activeTab === 'search' && memoryScope === 'trackers')) && (
               <FilterChip
                 ref={trackerTypeFilterRef}
                 label="Type"
@@ -627,16 +678,33 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
         <div className="unified-quick-open-results flex-1 overflow-hidden flex flex-col min-h-[260px]">
           {searchAvailable === true && (
             <div className={activeTab === 'search' ? 'contents' : 'hidden'}>
-              <SearchPane
-                isOpen={isOpen}
-                isActive={activeTab === 'search'}
-                query={activeTab === 'search' ? query : ''}
-                workspacePath={workspacePath}
-                onTrackerSelect={handleTrackerSelectDefault}
-                onFileSelect={onFileSelect}
-                onSessionSelect={onSessionSelect}
-                onClose={onClose}
-              />
+              <div className="memory-search-pane flex-1 min-h-0 flex flex-col">
+                <MemoryScopeBubbles scope={memoryScope} onChange={setMemoryScope} />
+                {memoryScope === 'trackers' ? (
+                  <TrackersPane
+                    isOpen={isOpen}
+                    isActive={activeTab === 'search'}
+                    query={activeTab === 'search' ? query : ''}
+                    typeFilter={trackerTypeFilter}
+                    workspacePath={workspacePath}
+                    includeSemantic
+                    onTrackerSelect={handleTrackerSelectDefault}
+                    onClose={onClose}
+                  />
+                ) : (
+                  <SearchPane
+                    isOpen={isOpen}
+                    isActive={activeTab === 'search'}
+                    query={activeTab === 'search' ? query : ''}
+                    scope={memoryScope}
+                    workspacePath={workspacePath}
+                    onTrackerSelect={handleTrackerSelectDefault}
+                    onFileSelect={onFileSelect}
+                    onSessionSelect={onSessionSelect}
+                    onClose={onClose}
+                  />
+                )}
+              </div>
             </div>
           )}
           <div className={activeTab === 'files' ? 'contents' : 'hidden'}>
@@ -667,17 +735,19 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
               onClose={onClose}
             />
           </div>
-          <div className={activeTab === 'trackers' ? 'contents' : 'hidden'}>
-            <TrackersPane
-              isOpen={isOpen}
-              isActive={activeTab === 'trackers'}
-              query={activeTab === 'trackers' ? query : ''}
-              typeFilter={trackerTypeFilter}
-              workspacePath={workspacePath}
-              onTrackerSelect={handleTrackerSelectDefault}
-              onClose={onClose}
-            />
-          </div>
+          {searchAvailable !== true && (
+            <div className={activeTab === 'trackers' ? 'contents' : 'hidden'}>
+              <TrackersPane
+                isOpen={isOpen}
+                isActive={activeTab === 'trackers'}
+                query={activeTab === 'trackers' ? query : ''}
+                typeFilter={trackerTypeFilter}
+                workspacePath={workspacePath}
+                onTrackerSelect={handleTrackerSelectDefault}
+                onClose={onClose}
+              />
+            </div>
+          )}
           {hasTeam && (
             <div className={activeTab === 'team' ? 'contents' : 'hidden'}>
               <SharedDocsPane
@@ -734,7 +804,10 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
               label={activeTab === 'prompts' ? 'Open at this prompt' : 'Open'}
             />
             <FooterHint kbd="Tab" label="Next tab" />
-            {activeTab === 'trackers' && <FooterHint kbd="Ctrl+T" label="Type" />}
+            {(activeTab === 'trackers' ||
+              (activeTab === 'search' && memoryScope === 'trackers')) && (
+              <FooterHint kbd="Ctrl+T" label="Type" />
+            )}
             <FooterHint kbd="Esc" label="Close" />
           </div>
         </div>
@@ -763,10 +836,6 @@ interface SharedDocsPaneProps {
   onClose: () => void;
 }
 
-function sharedDocDisplayName(doc: SharedDocument): string {
-  return getCollabNodeName(doc.title) || doc.title || doc.documentId;
-}
-
 const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
   isOpen,
   isActive,
@@ -774,6 +843,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
   onClose,
 }) => {
   const documents = useAtomValue(sharedDocumentsAtom);
+  const folders = useAtomValue(sharedFoldersAtom);
   const favorites = useAtomValue(collabFavoritesAtom);
   const changedDocIds = useAtomValue(changedDocIdsAtom);
   const recentDocuments = useAtomValue(recentSharedDocsAtom);
@@ -789,9 +859,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
     const normalizedQuery = query.trim().toLowerCase();
 
     if (normalizedQuery) {
-      return openable
-        .filter((doc) => sharedDocDisplayName(doc).toLowerCase().includes(normalizedQuery))
-        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+      return searchSharedDocuments(documents, folders, query).map(({ document }) => document);
     }
 
     const favoriteRank = new Map(favorites.map((id, index) => [id, index]));
@@ -816,7 +884,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
       }
       return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
     });
-  }, [documents, query, favorites, changedDocIds, recentDocuments]);
+  }, [documents, folders, query, favorites, changedDocIds, recentDocuments]);
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -920,7 +988,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
                 </span>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-nim truncate">
-                    {sharedDocDisplayName(doc)}
+                    {getSharedDocumentDisplayName(doc.title, doc.documentId)}
                   </div>
                   <div className="text-xs text-nim-faint mt-0.5">
                     {getRelativeTimeString(doc.updatedAt ?? doc.createdAt ?? Date.now())}
@@ -956,6 +1024,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
 // =============================================================================
 
 interface FileItem {
+  source: 'local' | 'shared';
   path: string;
   name: string;
   type?: 'file' | 'directory';
@@ -963,6 +1032,7 @@ interface FileItem {
   matches?: Array<{ line: number; text: string; start: number; end: number }>;
   isFileNameMatch?: boolean;
   isContentMatch?: boolean;
+  sharedDocument?: SharedDocument;
 }
 
 interface FilesPaneProps {
@@ -993,6 +1063,10 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
 }) => {
   const posthog = usePostHog();
   const revealFolder = useSetAtom(revealFolderAtom);
+  const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const sharedFolders = useAtomValue(sharedFoldersAtom);
+  const setPendingCollabDocument = useSetAtom(pendingCollabDocumentAtom);
+  const setWindowMode = useSetAtom(setWindowModeAtom);
   const [results, setResults] = useState<FileItem[]>([]);
   const [recentFiles, setRecentFiles] = useState<string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -1043,6 +1117,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
         );
         if (Array.isArray(fileNameResults)) {
           const processed: FileItem[] = fileNameResults.map((r: any) => ({
+            source: 'local',
             path: r.path,
             name: getFileName(r.path),
             type: r.type,
@@ -1093,7 +1168,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
     () =>
       recentFiles
         .filter((p) => p !== currentFilePath)
-        .map((p) => ({ path: p, name: getFileName(p), isRecent: true })),
+        .map((p) => ({ source: 'local' as const, path: p, name: getFileName(p), isRecent: true })),
     [recentFiles, currentFilePath],
   );
 
@@ -1104,13 +1179,28 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
     [extFilter],
   );
   const displayFiles = useMemo(() => {
-    const base = query ? results : recentItems;
-    if (maskPatterns.length === 0) return base;
-    return base.filter((f) => {
+    const localFiles = query ? results : recentItems;
+    const filteredLocalFiles = maskPatterns.length === 0 ? localFiles : localFiles.filter((f) => {
       if (f.type === 'directory') return false;
       return matchesFileMask(f.path, maskPatterns);
     });
-  }, [query, results, recentItems, maskPatterns]);
+
+    if (!query.trim()) return filteredLocalFiles;
+
+    const sharedFiles = searchSharedDocuments(sharedDocuments, sharedFolders, query)
+      .filter(({ displayPath }) => (
+        maskPatterns.length === 0 || matchesFileMask(displayPath, maskPatterns)
+      ))
+      .map<FileItem>(({ document, displayName, displayPath }) => ({
+        source: 'shared',
+        path: displayPath,
+        name: displayName,
+        type: 'file',
+        sharedDocument: document,
+      }));
+
+    return [...sharedFiles, ...filteredLocalFiles];
+  }, [query, results, recentItems, maskPatterns, sharedDocuments, sharedFolders]);
 
   // Track mouse movement
   useEffect(() => {
@@ -1130,6 +1220,15 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
 
   const handleSelect = useCallback(
     (file: FileItem) => {
+      if (file.source === 'shared' && file.sharedDocument) {
+        setPendingCollabDocument({
+          documentId: file.sharedDocument.documentId,
+          documentType: file.sharedDocument.documentType,
+        });
+        setWindowMode('collab');
+        onClose();
+        return;
+      }
       if (file.type === 'directory') {
         onFolderSelect?.(file.path);
         revealFolder(file.path);
@@ -1139,7 +1238,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
       onFileSelect(file.path);
       onClose();
     },
-    [onFileSelect, onFolderSelect, onClose, revealFolder],
+    [onFileSelect, onFolderSelect, onClose, revealFolder, setPendingCollabDocument, setWindowMode],
   );
 
   // Keyboard navigation — only when this pane is active
@@ -1184,6 +1283,9 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
           {displayFiles.map((file, index) => (
             <li
               key={`${file.path}-${index}`}
+              data-testid={file.source === 'shared'
+                ? `shared-file-quick-open-${file.sharedDocument?.documentId}`
+                : undefined}
               className={`unified-quick-open-item relative group px-4 py-2.5 cursor-pointer border-l-[3px] transition-all duration-100 ${
                 index === selectedIndex
                   ? 'selected bg-nim-selected border-l-nim-primary'
@@ -1194,7 +1296,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
                 if (mouseHasMoved) setSelectedIndex(index);
               }}
             >
-              {onShowFileSessions && file.type !== 'directory' && (
+              {onShowFileSessions && file.source === 'local' && file.type !== 'directory' && (
                 <button
                   className={`absolute right-3 top-2.5 p-1 rounded border-none cursor-pointer bg-transparent text-nim-faint hover:text-[var(--nim-primary)] hover:bg-[var(--nim-accent-subtle)] ${
                     index === selectedIndex ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
@@ -1212,16 +1314,27 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
                 </button>
               )}
               <div className="text-sm font-medium flex items-center gap-2 text-nim">
-                {file.type === 'directory' && (
+                {file.source === 'shared' ? (
+                  <MaterialSymbol
+                    icon="groups"
+                    size={16}
+                    className="text-[var(--nim-primary)] shrink-0"
+                  />
+                ) : file.type === 'directory' && (
                   <MaterialSymbol icon="folder" size={16} className="text-nim-faint shrink-0" />
                 )}
                 {file.type === 'directory' ? file.name + '/' : file.name}
+                {file.source === 'shared' && (
+                  <span className="nim-badge-primary text-[10px]">Shared</span>
+                )}
                 {file.isRecent && !query && (
                   <span className="nim-badge-primary text-[10px]">Recent</span>
                 )}
               </div>
               <div className="text-xs mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap text-nim-faint">
-                {getRelativeDir(file.path, workspacePath)}
+                {file.source === 'shared'
+                  ? getCollabParentPath(file.path) || 'Team'
+                  : getRelativeDir(file.path, workspacePath)}
               </div>
             </li>
           ))}
@@ -1293,6 +1406,7 @@ const InFilesPane: React.FC<InFilesPaneProps> = memo(({
         const contentResults = await api.searchWorkspaceFileContent(workspacePath, query);
         if (Array.isArray(contentResults)) {
           const processed: FileItem[] = contentResults.map((r: any) => ({
+            source: 'local',
             path: r.path,
             name: getFileName(r.path),
             matches: r.matches || [],
@@ -2325,13 +2439,51 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = memo(({
 });
 
 // =============================================================================
-// SearchPane — global semantic search across trackers / docs / sessions
+// Memory search — global semantic search plus merged rich Tracker results
 // =============================================================================
+
+interface MemoryScopeBubblesProps {
+  scope: SemanticSearchScope;
+  onChange: (scope: SemanticSearchScope) => void;
+}
+
+const MemoryScopeBubbles: React.FC<MemoryScopeBubblesProps> = memo(({
+  scope,
+  onChange,
+}) => (
+  <div
+    className="memory-search-scopes shrink-0 flex items-center gap-1.5 px-3 py-2 border-b border-nim bg-nim-secondary"
+    role="group"
+    aria-label="Search in"
+  >
+    <span className="mr-1 text-xs text-nim-faint">Search in</span>
+    {SEMANTIC_SEARCH_SCOPES.map((candidate) => {
+      const active = candidate.id === scope;
+      return (
+        <button
+          key={candidate.id}
+          type="button"
+          aria-pressed={active}
+          className={`memory-search-scope px-2.5 py-1 text-xs font-medium rounded-full border cursor-pointer transition-colors duration-100 ${
+            active
+              ? 'bg-nim-primary border-[var(--nim-primary)] text-white'
+              : 'bg-nim border-nim text-nim-muted hover:bg-nim-hover hover:text-nim'
+          }`}
+          onClick={() => onChange(active ? 'all' : candidate.id)}
+          tabIndex={-1}
+        >
+          {candidate.label}
+        </button>
+      );
+    })}
+  </div>
+));
 
 interface SearchPaneProps {
   isOpen: boolean;
   isActive: boolean;
   query: string;
+  scope: SemanticSearchScope;
   workspacePath: string;
   onTrackerSelect: (trackerId: string) => void;
   onFileSelect: (filePath: string) => void;
@@ -2369,6 +2521,7 @@ const SearchPane: React.FC<SearchPaneProps> = memo(({
   isOpen,
   isActive,
   query,
+  scope,
   workspacePath,
   onTrackerSelect,
   onFileSelect,
@@ -2383,10 +2536,17 @@ const SearchPane: React.FC<SearchPaneProps> = memo(({
   // Guards against out-of-order responses clobbering a newer query's results.
   const latestReq = useRef(0);
   const visibleQuery = isActive ? query : '';
+  const scopeSpec =
+    SEMANTIC_SEARCH_SCOPES.find((candidate) => candidate.id === scope) ??
+    SEMANTIC_SEARCH_SCOPES[0];
 
   useEffect(() => {
     setSelectedIndex(0);
-  }, [visibleQuery]);
+  }, [visibleQuery, scope]);
+
+  useEffect(() => {
+    setResults([]);
+  }, [scope]);
 
   // Debounced query → engine. Embedding the query is per-submit, not per
   // keystroke, so a short debounce keeps the dialog responsive.
@@ -2402,7 +2562,7 @@ const SearchPane: React.FC<SearchPaneProps> = memo(({
     const reqId = ++latestReq.current;
     const timer = setTimeout(() => {
       window.electronAPI.semanticSearch
-        .query(workspacePath, q, 25)
+        .query(workspacePath, q, 25, scopeSpec.sourceClasses)
         .then((res) => {
           if (reqId === latestReq.current) setResults(Array.isArray(res) ? res : []);
         })
@@ -2414,7 +2574,7 @@ const SearchPane: React.FC<SearchPaneProps> = memo(({
         });
     }, 200);
     return () => clearTimeout(timer);
-  }, [isOpen, isActive, visibleQuery, workspacePath]);
+  }, [isOpen, isActive, visibleQuery, workspacePath, scopeSpec]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -2479,16 +2639,22 @@ const SearchPane: React.FC<SearchPaneProps> = memo(({
   }, [isOpen, isActive, results, selectedIndex, handleSelect, onClose]);
 
   const hasQuery = !!visibleQuery.trim();
+  const emptySearchLabel =
+    scope === 'all'
+      ? 'trackers, documents, and sessions'
+      : scope === 'docs'
+        ? 'indexed documents'
+        : scope;
 
   return (
     <div className="search-pane flex-1 overflow-y-auto">
       {results.length === 0 ? (
         <div className="p-10 text-center text-nim-faint">
           {!hasQuery
-            ? 'Search trackers, documents, and sessions by meaning'
+            ? `Search ${emptySearchLabel} by meaning`
             : isLoading
               ? 'Searching...'
-              : 'No semantic matches'}
+              : `No semantic matches in ${emptySearchLabel}`}
         </div>
       ) : (
         <ul
@@ -2551,6 +2717,8 @@ interface TrackersPaneProps {
   /** Tracker type filter (e.g. "bug"). Null means show all types. */
   typeFilter: string | null;
   workspacePath: string;
+  /** Merge ranked semantic tracker hits after exact title/key matches. */
+  includeSemantic?: boolean;
   onTrackerSelect: (trackerId: string) => void;
   onClose: () => void;
 }
@@ -2560,15 +2728,19 @@ const TrackersPane: React.FC<TrackersPaneProps> = memo(({
   isActive,
   query,
   typeFilter,
-  workspacePath: _workspacePath,
+  workspacePath,
+  includeSemantic = false,
   onTrackerSelect,
   onClose,
 }) => {
   const [items, setItems] = useState<TrackerItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [semanticResultIds, setSemanticResultIds] = useState<string[]>([]);
+  const [isSemanticSearching, setIsSemanticSearching] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mouseHasMoved, setMouseHasMoved] = useState(false);
   const listRef = useRef<HTMLUListElement>(null);
+  const latestSemanticReq = useRef(0);
   const visibleQuery = isActive ? query : '';
 
   useEffect(() => {
@@ -2589,7 +2761,42 @@ const TrackersPane: React.FC<TrackersPaneProps> = memo(({
       .finally(() => setIsLoading(false));
   }, [isOpen]);
 
-  // Hide archived items; apply type and text filters in-memory.
+  // The merged Memory Tracker scope keeps exact issue-key/title lookup first,
+  // then appends semantic tracker hits in engine rank order.
+  useEffect(() => {
+    const reqId = ++latestSemanticReq.current;
+    const q = visibleQuery.trim();
+    if (!isOpen || !isActive || !includeSemantic || !q) {
+      setSemanticResultIds([]);
+      setIsSemanticSearching(false);
+      return;
+    }
+
+    setIsSemanticSearching(true);
+    const timer = setTimeout(() => {
+      window.electronAPI.semanticSearch
+        .query(workspacePath, q, 25, ['trackers'])
+        .then((results) => {
+          if (reqId !== latestSemanticReq.current) return;
+          setSemanticResultIds(
+            results
+              .filter((result) => result.refType === 'tracker')
+              .map((result) => result.refId),
+          );
+        })
+        .catch(() => {
+          if (reqId === latestSemanticReq.current) setSemanticResultIds([]);
+        })
+        .finally(() => {
+          if (reqId === latestSemanticReq.current) setIsSemanticSearching(false);
+        });
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [includeSemantic, isActive, isOpen, visibleQuery, workspacePath]);
+
+  // Hide archived items; apply type and exact-text filters in-memory, then
+  // append any additional semantic matches without duplicating exact hits.
   const displayItems = useMemo(() => {
     let pool = items.filter((it) => !it.archived);
     if (typeFilter) {
@@ -2597,24 +2804,38 @@ const TrackersPane: React.FC<TrackersPaneProps> = memo(({
         (it) => it.type === typeFilter || (it.typeTags ?? []).includes(typeFilter),
       );
     }
-    if (visibleQuery.trim()) {
-      const q = visibleQuery.toLowerCase();
-      pool = pool.filter((it) => {
+    const byRecency = (a: TrackerItem, b: TrackerItem) => {
+      const ta = a.updated ? Date.parse(a.updated) : 0;
+      const tb = b.updated ? Date.parse(b.updated) : 0;
+      return tb - ta;
+    };
+    if (!visibleQuery.trim()) return pool.sort(byRecency).slice(0, 200);
+
+    const q = visibleQuery.toLowerCase();
+    const exactItems = pool
+      .filter((it) => {
         if (it.title.toLowerCase().includes(q)) return true;
         if (it.issueKey?.toLowerCase().includes(q)) return true;
         if (it.description?.toLowerCase().includes(q)) return true;
         if (it.id.toLowerCase().includes(q)) return true;
         return false;
-      });
-    }
-    // Most recently updated first.
-    pool.sort((a, b) => {
-      const ta = a.updated ? Date.parse(a.updated) : 0;
-      const tb = b.updated ? Date.parse(b.updated) : 0;
-      return tb - ta;
-    });
-    return pool.slice(0, 200);
-  }, [items, visibleQuery, typeFilter]);
+      })
+      .sort(byRecency);
+    if (!includeSemantic) return exactItems.slice(0, 200);
+
+    const exactIds = new Set(exactItems.map((item) => item.id));
+    const semanticRank = new Map(
+      semanticResultIds.map((id, index) => [id, index]),
+    );
+    const semanticItems = pool
+      .filter((item) => semanticRank.has(item.id) && !exactIds.has(item.id))
+      .sort(
+        (a, b) =>
+          (semanticRank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (semanticRank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+      );
+    return [...exactItems, ...semanticItems].slice(0, 200);
+  }, [includeSemantic, items, semanticResultIds, visibleQuery, typeFilter]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -2671,6 +2892,8 @@ const TrackersPane: React.FC<TrackersPaneProps> = memo(({
         <div className="p-10 text-center text-nim-faint">
           {isLoading
             ? 'Loading trackers...'
+            : isSemanticSearching
+              ? 'Searching trackers...'
             : query || typeFilter
               ? 'No matching trackers'
               : 'No trackers yet'}

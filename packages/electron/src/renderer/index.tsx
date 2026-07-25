@@ -60,6 +60,7 @@ import {
   hydrateSettingsAtoms,
   registerSettingsChangeListener,
 } from './store/atoms/settingAtomFamily';
+import { registerGutterCustomizationListener } from './store/listeners/gutterCustomizationListeners';
 
 // console.log('[RENDERER] Imports complete at', new Date().toISOString());
 
@@ -151,6 +152,9 @@ await Promise.allSettled([
   }),
   initGutterCustomization().then((state) => {
     store.set(gutterCustomizationAtom, state);
+    // Subscribe after seeding so other-window gutter changes (hide/show/reorder)
+    // mirror into this window live instead of only after reload.
+    registerGutterCustomizationListener();
   }),
   initSyncConfig().then((config) => {
     store.set(syncConfigAtom, config);

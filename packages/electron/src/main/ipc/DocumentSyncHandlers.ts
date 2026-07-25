@@ -16,9 +16,10 @@ import { getCollabSyncWsUrl, getCollabSyncHttpUrl } from '../utils/collabSyncUrl
 import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalOrgId, getPersonalUserId, getPersonalSessionJwt, refreshPersonalSession } from '../services/StytchAuthService';
 import { findTeamForWorkspace, getOrgScopedJwt } from '../services/TeamService';
 import { getOrgIdFromJwt, getJwtExp } from '../services/jwtOrg';
-import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey, fetchTeamKeyStatus, getArchivedOrgKeys } from '../services/OrgKeyService';
+import { getOrgKey, getOrgKeyFingerprint, getOrCreateIdentityKeyPair, uploadIdentityKeyToOrg, fetchAndUnwrapOrgKey, clearOrgKey, fetchTeamKeyStatus, getLastKnownTeamKeyStatus, getArchivedOrgKeys } from '../services/OrgKeyService';
 import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
 import { createSingleFlight } from '../utils/asyncCache';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 import { getPersonalDocSyncConfig, isSyncEnabled } from '../services/SyncManager';
 import { resolveCollabDocumentType } from './collabDocumentTypeResolver';
 import { getSyncId } from '../services/DocSyncService';
@@ -43,8 +44,6 @@ import {
   reuploadFromLocalOrigin,
   seedSharedDocumentFromContent,
 } from '../services/CollabLocalOriginService';
-import { registerCollabContentAdapterFromDescriptor } from '../services/collabContentAdapterRegistration';
-import type { CollabAdapterDescriptor } from '@nimbalyst/runtime';
 import WebSocket from 'ws';
 import { getCollabDocumentReplicaStore } from '../services/CollabDocumentReplicaStore';
 import { getCollabOutboxDrainCoordinator } from '../services/CollabOutboxDrainerService';
@@ -99,6 +98,32 @@ function assertReplicaAccess(identity: LocalReplicaIdentity): void {
  * (and trigger Node's MaxListenersExceededWarning at 10+ docs).
  */
 const senderDestroyedHooked = new Set<number>();
+
+/**
+ * Return only the legacy org-key epochs already persisted on this device.
+ *
+ * Server-managed collaboration must never put the retired ECDH envelope API
+ * on the document-open critical path. Pre-migration rows are a best-effort
+ * recovery concern: devices may contribute whatever current/archived epochs
+ * they already hold, while current server-managed rows need no client key.
+ */
+async function getLocalLegacyOrgKeysBase64(orgId: string): Promise<string[]> {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  const current = await getOrgKey(orgId);
+  if (current) {
+    const raw = Buffer.from(await crypto.subtle.exportKey('raw', current)).toString('base64');
+    seen.add(raw);
+    keys.push(raw);
+  }
+  for (const archived of getArchivedOrgKeys(orgId)) {
+    if (!seen.has(archived.rawKeyBase64)) {
+      seen.add(archived.rawKeyBase64);
+      keys.push(archived.rawKeyBase64);
+    }
+  }
+  return keys;
+}
 
 // Single-flight + TTL cache for the org-key-fingerprint verify call.
 // The fingerprint endpoint is per-org, not per-document, so one check
@@ -228,7 +253,10 @@ export function registerDocumentSyncHandlers(): void {
       const orgJwt = await getOrgScopedJwt(orgId);
       serverManaged = (await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed';
     } catch (err) {
-      logger.main.warn('[DocumentSyncHandlers] key-status fetch failed; assuming legacy-e2e:', err);
+      // Offline JWT mint failure (NIM-1778): fall back to the last-known mode
+      // instead of assuming legacy-e2e, which bricks a server-managed team.
+      serverManaged = getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed';
+      logger.main.warn('[DocumentSyncHandlers] key-status resolve failed; using last-known mode (serverManaged:', serverManaged, '):', err);
     }
 
     // Get org encryption key (legacy mode only).
@@ -280,39 +308,15 @@ export function registerDocumentSyncHandlers(): void {
       // managed still have legacy-e2e AES-ciphertext rows on the server (passed
       // through with their original iv), and those rows may span multiple org-
       // key epochs if the key was rotated while the team was still legacy-e2e.
-      // Gather EVERY candidate epoch (fresh current + cached current + all
-      // archived) so the renderer can decrypt old rows regardless of which
-      // epoch wrote them -- mirroring the doc-index multi-epoch path (NIM-906/
-      // 910). If none are available, those rows simply skip on read -- never a
-      // crash.
-      const seen = new Set<string>();
-      const pushKey = async (key: CryptoKey | null | undefined) => {
-        if (!key) return;
-        const raw = Buffer.from(await crypto.subtle.exportKey('raw', key)).toString('base64');
-        if (!seen.has(raw)) { seen.add(raw); legacyOrgKeysBase64.push(raw); }
-      };
+      // Gather only epochs already stored on this device. Do not refresh the
+      // retired ECDH envelope here: current server-managed rows need no client
+      // key, and a recovery-only network call must not delay every doc open.
       try {
-        // Refresh to the CURRENT org key from the server (the cached one may be
-        // a stale epoch that predates a rotation).
-        try {
-          const orgJwt = await getOrgScopedJwt(orgId);
-          await getOrCreateIdentityKeyPair();
-          await pushKey(await fetchAndUnwrapOrgKey(orgId, orgJwt));
-        } catch (fetchErr) {
-          logger.main.info('[DocumentSyncHandlers] could not refresh current org key for doc:', fetchErr);
-        }
-        // Cached current key (may differ from the freshly fetched one).
-        await pushKey(await getOrgKey(orgId));
-        // All archived epochs from prior rotations.
-        for (const archived of getArchivedOrgKeys(orgId)) {
-          if (!seen.has(archived.rawKeyBase64)) {
-            seen.add(archived.rawKeyBase64);
-            legacyOrgKeysBase64.push(archived.rawKeyBase64);
-          }
-        }
+        legacyOrgKeysBase64.push(...await getLocalLegacyOrgKeysBase64(orgId));
       } catch (err) {
         logger.main.info('[DocumentSyncHandlers] no legacy org keys for server-managed migration read (pre-migration rows may not load):', err);
       }
+      logPhase('getLocalLegacyKeys', keyStart);
       // logger.main.info('[DocumentSyncHandlers] doc server-managed legacy key epochs available:', legacyOrgKeysBase64.length);
     }
     logPhase('total', handlerStart);
@@ -885,18 +889,6 @@ export function registerDocumentSyncHandlers(): void {
     }
   });
 
-  // Renderer forwards serializable adapter descriptors for any installed
-  // extension (marketplace or built-in) so the main process can rebuild the
-  // adapter and reach parity (seed/reupload/history) for that documentType.
-  safeHandle('collab-adapter:register-descriptor', async (_event, descriptor: CollabAdapterDescriptor) => {
-    try {
-      const ok = registerCollabContentAdapterFromDescriptor(descriptor);
-      return { success: ok };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
   safeHandle('document-sync:get-local-origin', async (_event, payload: {
     workspacePath: string;
     documentId: string;
@@ -1162,7 +1154,11 @@ export function registerDocumentSyncHandlers(): void {
       const orgJwt = await getOrgScopedJwt(orgId);
       serverManaged = (await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed';
     } catch (err) {
-      logger.main.warn('[DocumentSyncHandlers] index key-status fetch failed; assuming legacy-e2e:', err);
+      // Offline JWT mint failure (NIM-1778): fall back to the last-known mode
+      // instead of assuming legacy-e2e -- the wrong lane makes every doc-index
+      // title fail decrypt and surface as locked until restart.
+      serverManaged = getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed';
+      logger.main.warn('[DocumentSyncHandlers] index key-status resolve failed; using last-known mode (serverManaged:', serverManaged, '):', err);
     }
 
     let orgKeyBase64 = '';
@@ -1195,35 +1191,10 @@ export function registerDocumentSyncHandlers(): void {
       orgKeyFingerprint = (await getOrgKeyFingerprint(orgId)) ?? null;
     } else {
       // logger.main.info('[DocumentSyncHandlers] index for', orgId, 'is server-managed; skipping ECDH org-key unwrap');
-      // NIM-906/910: gather EVERY candidate legacy org-key epoch so the renderer
-      // can read (and self-heal) pre-migration ciphertext titles, even when the
-      // org key was rotated and titles span epochs. If none are available, those
-      // titles surface as locked entries rather than raw base64 -- never a crash.
-      const seen = new Set<string>();
-      const pushKey = async (key: CryptoKey | null | undefined) => {
-        if (!key) return;
-        const raw = Buffer.from(await crypto.subtle.exportKey('raw', key)).toString('base64');
-        if (!seen.has(raw)) { seen.add(raw); legacyOrgKeysBase64.push(raw); }
-      };
-      const pushRaw = (rawBase64: string) => {
-        if (rawBase64 && !seen.has(rawBase64)) { seen.add(rawBase64); legacyOrgKeysBase64.push(rawBase64); }
-      };
+      // Use only keys already persisted on this device. Resolving the current
+      // server-managed index must not block on the retired envelope API.
       try {
-        // Refresh to the CURRENT org key from the server (the cached one may be a
-        // stale epoch that predates a rotation -- the bug behind NIM-910).
-        try {
-          const orgJwt = await getOrgScopedJwt(orgId);
-          await getOrCreateIdentityKeyPair();
-          await pushKey(await fetchAndUnwrapOrgKey(orgId, orgJwt));
-        } catch (fetchErr) {
-          logger.main.info('[DocumentSyncHandlers] could not refresh current org key for index:', fetchErr);
-        }
-        // Cached current key (may differ from the freshly fetched one).
-        await pushKey(await getOrgKey(orgId));
-        // All archived epochs from prior rotations.
-        for (const archived of getArchivedOrgKeys(orgId)) {
-          pushRaw(archived.rawKeyBase64);
-        }
+        legacyOrgKeysBase64.push(...await getLocalLegacyOrgKeysBase64(orgId));
       } catch (err) {
         logger.main.info('[DocumentSyncHandlers] no legacy org keys for server-managed index (pre-migration titles may show as locked):', err);
       }
@@ -1422,7 +1393,7 @@ export function registerDocumentSyncHandlers(): void {
 
     const dialogOptions: Electron.SaveDialogOptions = {
       title: 'Save a copy',
-      defaultPath: payload.defaultFileName,
+      defaultPath: getDialogDefaultPath({ window, explicitPath: payload.defaultFileName }),
       filters: filterExtensions.length > 0
         ? [{ name: payload.documentType, extensions: filterExtensions }]
         : undefined,
@@ -1435,6 +1406,8 @@ export function registerDocumentSyncHandlers(): void {
     if (result.canceled || !result.filePath) {
       return { success: false, cancelled: true };
     }
+
+    rememberDialogSelection(result.filePath, 'file');
 
     try {
       const buffer = payload.bytes instanceof Uint8Array

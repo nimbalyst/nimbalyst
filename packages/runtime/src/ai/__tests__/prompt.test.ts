@@ -11,7 +11,7 @@ describe('buildClaudeCodeSystemPrompt', () => {
     expect(prompt).toContain('`AskUserQuestion` (server: `nimbalyst`)');
     expect(prompt).toContain('`PromptForUserInput` (server: `nimbalyst`)');
     expect(prompt).toContain('call an interactive tool instead');
-    expect(prompt).toContain('Combine multiple questions into one multi-field prompt');
+    expect(prompt).toContain('Combine questions into one multi-field prompt');
   });
 
   it('formats interactive input tool references for claude-style prompts', () => {
@@ -47,9 +47,78 @@ describe('buildClaudeCodeSystemPrompt', () => {
       hasSessionNaming: true,
     });
 
-    expect(prompt).toContain('Update phase for plan-only work: `{ "phase": "planning" }`');
-    expect(prompt).toContain('If the session only produced a plan/design/research artifact, it stays "planning"');
-    expect(prompt).toContain('Use "validating" only after implementation exists and is being tested or reviewed.');
+    expect(prompt).toContain('stays "planning" even when that deliverable is complete');
+    expect(prompt).toContain('"validating" once implementation is being tested or reviewed');
+  });
+
+  it('includes name guidelines only when naming is in-band', () => {
+    const inBand = buildClaudeCodeSystemPrompt({
+      hasSessionNaming: true,
+      hasOutOfBandNaming: false,
+    });
+    expect(inBand).toContain('### Name guidelines');
+    expect(inBand).toContain('CRITICAL: You MUST call this tool');
+
+    const outOfBand = buildClaudeCodeSystemPrompt({
+      hasSessionNaming: true,
+      hasOutOfBandNaming: true,
+    });
+    expect(outOfBand).not.toContain('### Name guidelines');
+    expect(outOfBand).toContain('do NOT set `name`');
+    expect(outOfBand).toContain('Tags and phase are NOT auto-assigned');
+    expect(outOfBand).toContain('call this tool early in your first turn');
+    expect(outOfBand).toContain('### Commit tracking');
+  });
+
+  it('includes the worktree section only when a worktree path is set', () => {
+    const prompt = buildClaudeCodeSystemPrompt({
+      worktreePath: '/tmp/wt/session-1',
+    });
+    expect(prompt).toContain('## Git Worktree Environment');
+    expect(prompt).toContain('/tmp/wt/session-1');
+    expect(prompt).toContain('do not modify files in the main checkout unless explicitly asked');
+    expect(buildClaudeCodeSystemPrompt({})).not.toContain('## Git Worktree Environment');
+  });
+
+  it('retains the key behavioral rules after prose tightening', () => {
+    const prompt = buildClaudeCodeSystemPrompt({ hasSessionNaming: true });
+    expect(prompt).toContain('Prefer charts over text tables');
+    expect(prompt).toContain('never manually');
+    expect(prompt).toContain('pre-fill defaults');
+    expect(prompt).toContain('[relativeName](/absolute/path/to/file.ext)');
+    expect(prompt).toContain('%20');
+    expect(prompt).toContain('`mcp__nimbalyst__developer_git_commit_proposal`');
+    expect(prompt).toContain('Fixes #123');
+    expect(prompt).toContain('never invent an issue key');
+  });
+
+  it('documents only the current custom-editor embed contract', () => {
+    const prompt = buildClaudeCodeSystemPrompt({});
+
+    expect(prompt).toContain('[Label](relative/path/file.ext "width=1000 height=650")');
+    expect(prompt).toContain('Never use the legacy `{mockup:...}` image-attribute syntax');
+    expect(prompt).not.toContain('](screenshot.png){mockup:');
+  });
+
+  // Context-size regression gate (NIM-1988): the addendum is injected into every
+  // claude-code session, so its size is a per-session token cost. If this fails,
+  // trim prose rather than raising the budget.
+  it('keeps the static feature-rich addendum under the size budget', () => {
+    const prompt = buildClaudeCodeSystemPrompt({
+      hasSessionNaming: true,
+      hasOutOfBandNaming: true,
+      trackersEnabled: true,
+      planTrackingEnabled: true,
+      worktreePath: '/tmp/wt/session-1',
+      isVoiceMode: true,
+    });
+    expect(prompt.length).toBeLessThan(9500);
+
+    const typical = buildClaudeCodeSystemPrompt({
+      hasSessionNaming: true,
+      hasOutOfBandNaming: true,
+    });
+    expect(typical.length).toBeLessThan(6500);
   });
 });
 

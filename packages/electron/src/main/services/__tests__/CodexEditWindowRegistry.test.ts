@@ -33,6 +33,11 @@ describe('CodexEditWindowRegistry', () => {
       expect(shouldOpenCodexEditWindow('mcp__nimbalyst-mcp__applyCollabDocEdit')).toBe(true);
     });
 
+    it('does not open an edit window for an interactive commit proposal', () => {
+      expect(isWriteCapableMcpTool('mcp__nimbalyst__developer_git_commit_proposal')).toBe(false);
+      expect(shouldOpenCodexEditWindow('mcp__nimbalyst__developer_git_commit_proposal')).toBe(false);
+    });
+
     it('does not open windows for unknown MCP tools', () => {
       expect(shouldOpenCodexEditWindow('mcp__some-server__unknown_tool')).toBe(false);
     });
@@ -97,6 +102,7 @@ describe('CodexEditWindowRegistry', () => {
       const match = codexEditWindowRegistry.findWindowForEdit({
         sessionId: 'session-1',
         workspacePath: '/ws/a',
+        filePath: '/ws/a/foo.ts',
         fileTimestamp: win.openedAt + 50,
       });
       expect(match).not.toBeNull();
@@ -114,6 +120,7 @@ describe('CodexEditWindowRegistry', () => {
       const match = codexEditWindowRegistry.findWindowForEdit({
         sessionId: 'session-1',
         workspacePath: '/ws/a',
+        filePath: '/ws/a/foo.ts',
         fileTimestamp: win.openedAt - 50,
       });
       expect(match).toBeNull();
@@ -132,6 +139,7 @@ describe('CodexEditWindowRegistry', () => {
       const match = codexEditWindowRegistry.findWindowForEdit({
         sessionId: 'session-1',
         workspacePath: '/ws/a',
+        filePath: '/ws/a/foo.ts',
         fileTimestamp: win.closedAt! + 500,
       });
       expect(match).not.toBeNull();
@@ -150,6 +158,7 @@ describe('CodexEditWindowRegistry', () => {
       const match = codexEditWindowRegistry.findWindowForEdit({
         sessionId: 'session-1',
         workspacePath: '/ws/a',
+        filePath: '/ws/a/foo.ts',
         fileTimestamp: win.closedAt! + 10_000, // way past grace
       });
       expect(match).toBeNull();
@@ -166,6 +175,7 @@ describe('CodexEditWindowRegistry', () => {
       const match = codexEditWindowRegistry.findWindowForEdit({
         sessionId: 'session-B',
         workspacePath: '/ws/a',
+        filePath: '/ws/a/foo.ts',
         fileTimestamp: winA.openedAt + 10,
       });
       expect(match).toBeNull();
@@ -182,9 +192,46 @@ describe('CodexEditWindowRegistry', () => {
       const match = codexEditWindowRegistry.findWindowForEdit({
         sessionId: 'session-1',
         workspacePath: '/ws/other',
+        filePath: '/ws/other/foo.ts',
         fileTimestamp: win.openedAt + 10,
       });
       expect(match).toBeNull();
+    });
+
+    it('does not return a targeted window for a different file', () => {
+      codexEditWindowRegistry.open({
+        sessionId: 'session-1',
+        editGroupId: 'eg-1',
+        toolName: 'mcp__nimbalyst-mcp__applyCollabDocEdit',
+        workspacePath: '/ws/a',
+        targetFilePath: 'docs/target.md',
+      });
+      const win = codexEditWindowRegistry.getWindow('eg-1')!;
+      const match = codexEditWindowRegistry.findWindowForEdit({
+        sessionId: 'session-1',
+        workspacePath: '/ws/a',
+        filePath: '/ws/a/docs/other.md',
+        fileTimestamp: win.openedAt + 10,
+      });
+      expect(match).toBeNull();
+    });
+
+    it('returns a targeted window for the same normalized file', () => {
+      codexEditWindowRegistry.open({
+        sessionId: 'session-1',
+        editGroupId: 'eg-1',
+        toolName: 'mcp__nimbalyst-mcp__applyCollabDocEdit',
+        workspacePath: '/ws/a',
+        targetFilePath: 'docs/target.md',
+      });
+      const win = codexEditWindowRegistry.getWindow('eg-1')!;
+      const match = codexEditWindowRegistry.findWindowForEdit({
+        sessionId: 'session-1',
+        workspacePath: '/ws/a',
+        filePath: '/ws/a/docs/target.md',
+        fileTimestamp: win.openedAt + 10,
+      });
+      expect(match?.editGroupId).toBe('eg-1');
     });
 
     it('prefers the most recent window when multiple match', async () => {
@@ -206,6 +253,7 @@ describe('CodexEditWindowRegistry', () => {
       const match = codexEditWindowRegistry.findWindowForEdit({
         sessionId: 'session-1',
         workspacePath: '/ws/a',
+        filePath: '/ws/a/foo.ts',
         fileTimestamp: winNew.openedAt + 5,
       });
       expect(match).not.toBeNull();

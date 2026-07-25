@@ -5,8 +5,10 @@
 import { BrowserWindow, systemPreferences, shell } from 'electron';
 import Store from 'electron-store';
 import { safeHandle } from '../../utils/ipcRegistry';
-
-type MicAccessStatus = 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
+import {
+  getMicrophoneSettingsUrl,
+  type MicAccessStatus,
+} from './microphoneAccess';
 
 interface SystemPromptConfig {
   prepend?: string;
@@ -101,15 +103,12 @@ export function initVoiceModeSettingsHandler() {
   });
 
   /**
-   * Open the macOS System Settings pane for microphone privacy.
-   *
-   * Why: shell.openExternal handles the x-apple.systempreferences scheme on
-   * macOS, but we want a dedicated channel so it's a no-op on other platforms
-   * rather than a broken hyperlink.
+   * Open the native microphone privacy settings pane on supported platforms.
    */
   safeHandle('voice-mode:open-mic-settings', async () => {
-    if (process.platform === 'darwin') {
-      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+    const settingsUrl = getMicrophoneSettingsUrl(process.platform);
+    if (settingsUrl) {
+      await shell.openExternal(settingsUrl);
       return { success: true };
     }
     return { success: false, error: `unsupported platform: ${process.platform}` };

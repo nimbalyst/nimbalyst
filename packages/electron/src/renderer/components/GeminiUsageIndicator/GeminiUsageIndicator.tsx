@@ -15,7 +15,6 @@ import {
   geminiUsageSessionColorAtom,
   formatResetTime,
 } from '../../store/atoms/geminiUsageAtoms';
-import { useSetting } from '../../hooks/useSetting';
 import { GeminiUsagePopover } from './GeminiUsagePopover';
 import { refreshGeminiUsage } from '../../store/listeners/geminiUsageListeners';
 
@@ -29,7 +28,6 @@ interface GeminiUsageIndicatorProps {
 export const GeminiUsageIndicator: React.FC<GeminiUsageIndicatorProps> = ({ className }) => {
   const usage = useAtomValue(geminiUsageAtom);
   const isAvailable = useAtomValue(geminiUsageAvailableAtom);
-  const isEnabled = useSetting('ai.showGeminiUsageIndicator');
   const sessionColor = useAtomValue(geminiUsageSessionColorAtom);
 
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
@@ -43,7 +41,7 @@ export const GeminiUsageIndicator: React.FC<GeminiUsageIndicatorProps> = ({ clas
     await refreshGeminiUsage();
   }, []);
 
-  if (!isEnabled || !isAvailable) {
+  if (!isAvailable) {
     return null;
   }
 

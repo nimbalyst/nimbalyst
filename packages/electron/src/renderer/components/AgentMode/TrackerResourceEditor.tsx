@@ -35,6 +35,7 @@ interface TrackerResourceEditorProps {
   /** Switch the workstream to Agent Mode for a spawned session. */
   onSwitchToAgentMode?: (sessionId: string) => void;
   onLaunchSession?: (trackerItemId: string) => void;
+  onLaunchWorktree?: (trackerItemId: string) => void;
 }
 
 export const TrackerResourceEditor: React.FC<TrackerResourceEditorProps> = ({
@@ -45,6 +46,7 @@ export const TrackerResourceEditor: React.FC<TrackerResourceEditorProps> = ({
   onOpenTracker,
   onSwitchToAgentMode,
   onLaunchSession,
+  onLaunchWorktree,
 }) => {
   const resourceId = trackerResourceId(trackerItemId);
   const focusKey = workstreamId ? `${workstreamId}::${resourceId}` : '';
@@ -67,6 +69,7 @@ export const TrackerResourceEditor: React.FC<TrackerResourceEditorProps> = ({
         onOpenItem={onOpenTracker}
         onSwitchToAgentMode={onSwitchToAgentMode}
         onLaunchSession={onLaunchSession}
+        onLaunchWorktree={onLaunchWorktree}
         enableContentFocus
         contentFocus={workstreamId ? contentFocus : undefined}
         onContentFocusChange={workstreamId ? handleContentFocusChange : undefined}

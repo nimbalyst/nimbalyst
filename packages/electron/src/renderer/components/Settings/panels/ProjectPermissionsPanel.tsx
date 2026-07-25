@@ -16,6 +16,11 @@ import {
   loadWorkspacePermissions,
   type PermissionMode,
 } from '../../../store/atoms/appSettings';
+import {
+  PROJECT_TRUST_CHOICE_DESCRIPTIONS,
+  PROJECT_TRUST_CHOICE_LABELS,
+  getProjectTrustChoice,
+} from '../../ProjectTrustToast/projectTrustChoices';
 
 interface ProjectPermissionsPanelProps {
   workspacePath: string;
@@ -117,7 +122,7 @@ export const ProjectPermissionsPanel: React.FC<ProjectPermissionsPanelProps> = (
       await loadPermissions();
       posthog?.capture('permission_setting_changed', { action: 'toggle_allow_all_classifier', enabled });
     } catch (err) {
-      console.error('Failed to set Allow All classifier option:', err);
+      console.error('Failed to set agent verification option:', err);
       setError(err instanceof Error ? err.message : 'Failed to update classifier option');
     }
   };
@@ -367,9 +372,9 @@ export const ProjectPermissionsPanel: React.FC<ProjectPermissionsPanelProps> = (
               <div className="permissions-mode-option-content flex items-start gap-3">
                 <span className="material-symbols-outlined text-[var(--nim-text-muted)]">verified_user</span>
                 <div className="permissions-mode-option-text flex flex-col gap-0.5">
-                  <span className="permissions-mode-option-title text-sm font-medium text-[var(--nim-text)]">Ask</span>
+                  <span className="permissions-mode-option-title text-sm font-medium text-[var(--nim-text)]">Ask every time</span>
                   <span className="permissions-mode-option-description text-xs text-[var(--nim-text-muted)]">
-                    Agent asks before running commands. Approvals saved to .claude/settings.local.json.
+                    {PROJECT_TRUST_CHOICE_DESCRIPTIONS['ask-every-time']}
                   </span>
                 </div>
               </div>
@@ -390,9 +395,9 @@ export const ProjectPermissionsPanel: React.FC<ProjectPermissionsPanelProps> = (
               <div className="permissions-mode-option-content flex items-start gap-3">
                 <span className="material-symbols-outlined text-[var(--nim-text-muted)]">check_circle</span>
                 <div className="permissions-mode-option-text flex flex-col gap-0.5">
-                  <span className="permissions-mode-option-title text-sm font-medium text-[var(--nim-text)]">Allow Edits</span>
+                  <span className="permissions-mode-option-title text-sm font-medium text-[var(--nim-text)]">Allow edits only</span>
                   <span className="permissions-mode-option-description text-xs text-[var(--nim-text-muted)]">
-                    File operations auto-approved. Bash and web requests follow Claude Code settings.
+                    {PROJECT_TRUST_CHOICE_DESCRIPTIONS['allow-edits-only']}
                   </span>
                 </div>
               </div>
@@ -413,9 +418,15 @@ export const ProjectPermissionsPanel: React.FC<ProjectPermissionsPanelProps> = (
               <div className="permissions-mode-option-content flex items-start gap-3">
                 <span className="material-symbols-outlined text-[var(--nim-text-muted)]">check_circle</span>
                 <div className="permissions-mode-option-text flex flex-col gap-0.5">
-                  <span className="permissions-mode-option-title text-sm font-medium text-[var(--nim-text)]">Allow All</span>
+                  <span className="permissions-mode-option-title text-sm font-medium text-[var(--nim-text)]">
+                    {PROJECT_TRUST_CHOICE_LABELS[
+                      getProjectTrustChoice('bypass-all', permissions.allowAllUsesClassifier)
+                    ]}
+                  </span>
                   <span className="permissions-mode-option-description text-xs text-[var(--nim-text-muted)]">
-                    All operations auto-approved without any prompts.
+                    {PROJECT_TRUST_CHOICE_DESCRIPTIONS[
+                      getProjectTrustChoice('bypass-all', permissions.allowAllUsesClassifier)
+                    ]}
                   </span>
                 </div>
               </div>
@@ -430,8 +441,8 @@ export const ProjectPermissionsPanel: React.FC<ProjectPermissionsPanelProps> = (
                   className="mt-0.5"
                 />
                 <span className="text-xs text-[var(--nim-text-muted)]">
-                  Run an AI safety classifier on risky operations (Claude Code). When on, deploys and
-                  other destructive commands prompt for confirmation instead of running silently.
+                  Pause risky operations such as deploys and destructive commands for confirmation
+                  with Agent-verified checks.
                 </span>
               </label>
             )}

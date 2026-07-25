@@ -421,7 +421,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
           error?: string;
         };
 
-        let message = 'Use the developer_git_commit_proposal tool to create a commit.';
+        let message = 'Use the developer_git_commit_proposal tool to create a commit. If its schema is not loaded, use ToolSearch to load it first.';
 
         if (commitContext.success && commitContext.files.length > 0) {
           const fileList = commitContext.files

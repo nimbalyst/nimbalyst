@@ -5,7 +5,6 @@ import { setClaudeCliAutoNameApplyTitleFn } from './ai/claudeCliSessionAutoNameS
 import {
   setUpdateSessionTitleFn,
   setUpdateSessionMetadataFn,
-  setGetWorkspaceTagsFn,
   setGetSessionTagsFn,
   setGetSessionTitleFn,
   setGetSessionPhaseFn,
@@ -85,54 +84,6 @@ export class SessionNamingService {
             if (!window.isDestroyed()) {
               window.webContents.send('sessions:session-updated', sessionId, normalizedMetadata);
             }
-          }
-        });
-
-        // Set the workspace tags query function
-        setGetWorkspaceTagsFn(async (sessionId: string) => {
-          const db = getDatabase();
-          if (!db) return [];
-
-          try {
-            // Look up workspace_id from the session row, then query tags across that workspace
-            const wsResult = await db.query<{ workspace_id: string }>(
-              `SELECT workspace_id FROM ai_sessions WHERE id = $1 LIMIT 1`,
-              [sessionId]
-            );
-            const workspaceId = wsResult.rows[0]?.workspace_id;
-            if (!workspaceId) return [];
-
-            // Pull metadata for every non-archived session in the workspace and
-            // explode the tags array in JS. SQL-level array explosion has no
-            // portable form (PGLite jsonb_array_elements_text vs SQLite json_each
-            // produce different row shapes), and the per-workspace volume is
-            // small enough that materializing metadata is cheaper than a
-            // dialect-specific lateral join.
-            const result = await db.query<{ metadata: unknown }>(
-              `SELECT metadata FROM ai_sessions
-               WHERE workspace_id = $1
-                 AND (is_archived = false OR is_archived IS NULL)`,
-              [workspaceId]
-            );
-            const counts = new Map<string, number>();
-            for (const row of result.rows) {
-              const meta = row.metadata;
-              let parsed: any = meta;
-              if (typeof meta === 'string') {
-                try { parsed = JSON.parse(meta); } catch { parsed = null; }
-              }
-              const tags = parsed?.tags;
-              if (!Array.isArray(tags)) continue;
-              for (const tag of tags) {
-                if (typeof tag !== 'string' || tag.length === 0) continue;
-                counts.set(tag, (counts.get(tag) ?? 0) + 1);
-              }
-            }
-            return Array.from(counts.entries())
-              .map(([name, count]) => ({ name, count }))
-              .sort((a, b) => b.count - a.count);
-          } catch {
-            return [];
           }
         });
 

@@ -17,6 +17,7 @@ import {
   COMMAND_PRIORITY_EDITOR,
   COMMAND_PRIORITY_HIGH,
   COMMAND_PRIORITY_LOW,
+  COPY_COMMAND,
   DRAGOVER_COMMAND,
   DRAGSTART_COMMAND,
   DROP_COMMAND,
@@ -28,6 +29,7 @@ import {
 } from 'lexical';
 import { $wrapNodeInElement, mergeRegister } from '@lexical/utils';
 
+import { copyImageToClipboard } from '../../../utils/clipboard';
 import {
   $createImageNode,
   $isImageNode,
@@ -100,6 +102,24 @@ function getDragImageData(event: DragEvent): InsertImagePayload | null {
   return data;
 }
 
+/**
+ * When an image node is the current selection, Lexical's default copy path
+ * serializes `ImageNode.exportDOM()` — which only emits the `collab-asset://`
+ * (or file) URL as `<img src>`, so nothing usable lands on the clipboard. Fetch
+ * the actual image bytes and write them via the native clipboard instead.
+ */
+function $onCopy(event: ClipboardEvent | KeyboardEvent | null): boolean {
+  const node = $getImageNodeInSelection();
+  if (!node) return false;
+  const src = node.__src;
+  if (!src) return false;
+  event?.preventDefault();
+  void copyImageToClipboard({ src }).catch((error) => {
+    console.error('[ImagesExtension] Failed to copy image to clipboard', error);
+  });
+  return true;
+}
+
 function $onDragStart(event: DragEvent): boolean {
   const node = $getImageNodeInSelection();
   if (!node) return false;
@@ -168,6 +188,11 @@ export const ImagesExtension = defineExtension({
           return true;
         },
         COMMAND_PRIORITY_EDITOR,
+      ),
+      editor.registerCommand<ClipboardEvent | KeyboardEvent | null>(
+        COPY_COMMAND,
+        (event) => $onCopy(event),
+        COMMAND_PRIORITY_HIGH,
       ),
       editor.registerCommand<DragEvent>(
         DRAGSTART_COMMAND,

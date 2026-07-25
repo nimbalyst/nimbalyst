@@ -35,9 +35,9 @@ jobs:
           cache: 'npm'
           cache-dependency-path: '**/package-lock.json'
 
-      # node_modules cache short-circuits `npm ci` (~75s -> ~5s) when the lock
-      # file is unchanged. We rely on exact-key match (no restore-keys) so we
-      # never run with a partially-stale tree -- on miss we just `npm ci`.
+      # node_modules cache short-circuits `npm ci` (~75s -> ~5s) when dependency
+      # metadata and patches are unchanged. We rely on exact-key match (no
+      # restore-keys) so we never run with a partially-stale tree.
       - name: Cache node_modules
         id: cache-node-modules
         uses: actions/cache@v6
@@ -46,7 +46,7 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/extensions/*/node_modules
-          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('**/package-lock.json') }}
+          key: node-modules-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json', 'patches/**') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -85,7 +85,7 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/extensions/*/node_modules
-          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('**/package-lock.json') }}
+          key: node-modules-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json', 'patches/**') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -101,13 +101,13 @@ jobs:
 
       # Cache the runtime build output (~46s vite build). Key includes
       # everything the build reads: runtime sources/config, extension-sdk
-      # sources (consumed via workspace), and the root lock file.
+      # sources (consumed via workspace), dependency patches, and the lock file.
       - name: Cache runtime build
         id: cache-runtime-dist
         uses: actions/cache@v6
         with:
           path: packages/runtime/dist
-          key: runtime-dist-${{ runner.os }}-node22-${{ hashFiles('packages/runtime/src/**', 'packages/runtime/vite.config.*', 'packages/runtime/package.json', 'packages/runtime/tsconfig*.json', 'packages/extension-sdk/src/**', 'package-lock.json') }}
+          key: runtime-dist-${{ runner.os }}-node24-${{ hashFiles('packages/runtime/src/**', 'packages/runtime/vite.config.*', 'packages/runtime/package.json', 'packages/runtime/tsconfig*.json', 'packages/extension-sdk/src/**', 'package-lock.json', 'patches/**') }}
 
       - name: Build runtime
         if: steps.cache-runtime-dist.outputs.cache-hit != 'true'
@@ -171,7 +171,7 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/extensions/*/node_modules
-          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('**/package-lock.json') }}
+          key: node-modules-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json', 'patches/**') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'

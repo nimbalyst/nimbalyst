@@ -21,12 +21,16 @@ import {
   type PrFilterChip,
 } from '../../store/atoms/pullRequests';
 import { getPullRequestService } from '../../services/RendererPullRequestService';
-import { dispatchOpenWorktreeSession } from '../../store/actions/sessionHistoryActions';
+import {
+  dispatchCreateNewSession,
+  dispatchOpenWorktreeSession,
+} from '../../store/actions/sessionHistoryActions';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
 import { GhOnboardingBanner } from './GhOnboardingBanner';
 import { PullRequestSidebar } from './PullRequestSidebar';
 import { PullRequestListView } from './PullRequestListView';
 import { PullRequestDetail } from './PullRequestDetail';
+import { buildReviewContributionDraft } from './prFormat';
 import { usePrTrackerReferences } from './usePrTrackerContext';
 
 interface PullRequestModeProps {
@@ -132,6 +136,27 @@ export function PullRequestMode({
       ? prList.find((pr) => pr.id === layout.selectedItemId) ?? null
       : null;
 
+  const linkSessionToPrTrackers = useCallback((sessionId: string, prNumber: number) => {
+    const referencingItems = trackerReferences.get(prNumber) ?? [];
+    for (const item of referencingItems) {
+      void window.electronAPI
+        .invoke('tracker:link-session', { trackerId: item.id, sessionId })
+        .catch((err: unknown) =>
+          console.error('[PullRequestMode] Failed to link session to tracker item', err),
+        );
+    }
+  }, [trackerReferences]);
+
+  const handleStartReviewSession = useCallback(async () => {
+    if (!selectedPr || !remoteForWorkspace) return;
+    const sessionId = await dispatchCreateNewSession(
+      buildReviewContributionDraft(remoteForWorkspace, selectedPr.number),
+    );
+    if (!sessionId) return;
+    linkSessionToPrTrackers(sessionId, selectedPr.number);
+    setWindowMode('agent');
+  }, [selectedPr, remoteForWorkspace, linkSessionToPrTrackers, setWindowMode]);
+
   // Create (or reuse) a worktree on the PR's head branch (the branch being
   // merged), then jump to Agent mode with that worktree selected so the dev
   // can work the branch with an agent.
@@ -154,20 +179,13 @@ export function PullRequestMode({
       // referencing this PR (no auto-create — item creation belongs to the
       // user or their triage workflows).
       if (sessionId) {
-        const referencingItems = trackerReferences.get(selectedPr.number) ?? [];
-        for (const item of referencingItems) {
-          void window.electronAPI
-            .invoke('tracker:link-session', { trackerId: item.id, sessionId })
-            .catch((err: unknown) =>
-              console.error('[PullRequestMode] Failed to link session to tracker item', err),
-            );
-        }
+        linkSessionToPrTrackers(sessionId, selectedPr.number);
       }
       setWindowMode('agent');
     } catch (err) {
       console.error('[PullRequestMode] Failed to open PR worktree', err);
     }
-  }, [selectedPr, remoteForWorkspace, workspacePath, setWindowMode, trackerReferences]);
+  }, [selectedPr, remoteForWorkspace, workspacePath, setWindowMode, linkSessionToPrTrackers]);
 
   if (!remoteForWorkspace) {
     return (
@@ -209,6 +227,7 @@ export function PullRequestMode({
             remote={remoteForWorkspace}
             pr={selectedPr}
             onClose={() => setLayout({ selectedItemId: null })}
+            onStartReviewSession={handleStartReviewSession}
             onOpenInWorktree={handleOpenInWorktree}
           />
         ) : (

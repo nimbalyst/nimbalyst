@@ -7,6 +7,7 @@ import { AISessionsRepository } from '@nimbalyst/runtime';
 import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
 import { exportSessionToHtml, getExportFilename } from '../services/SessionHtmlExporter';
 import { loadViewMessages } from '../utils/transcriptHelpers';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 
 /**
  * Registers IPC handlers for export functionality.
@@ -28,7 +29,7 @@ export function registerExportHandlers() {
         title: 'Export to PDF',
         buttonLabel: 'Export',
         filters: [{ name: 'PDF Files', extensions: ['pdf'] }],
-        defaultPath: options?.defaultPath,
+        defaultPath: getDialogDefaultPath({ window, explicitPath: options?.defaultPath }),
       };
 
       const result = window
@@ -38,6 +39,8 @@ export function registerExportHandlers() {
       if (result.canceled || !result.filePath) {
         return null;
       }
+
+      rememberDialogSelection(result.filePath, 'file');
 
       return result.filePath;
     }
@@ -191,7 +194,7 @@ export function registerExportHandlers() {
           title: 'Export Session as HTML',
           buttonLabel: 'Export',
           filters: [{ name: 'HTML Files', extensions: ['html'] }],
-          defaultPath: defaultFilename,
+          defaultPath: getDialogDefaultPath({ window, explicitPath: defaultFilename }),
         };
 
         const result = window
@@ -201,6 +204,8 @@ export function registerExportHandlers() {
         if (result.canceled || !result.filePath) {
           return { success: false, error: 'Export cancelled' };
         }
+
+        rememberDialogSelection(result.filePath, 'file');
 
         // Write the file
         await writeFile(result.filePath, html, 'utf-8');

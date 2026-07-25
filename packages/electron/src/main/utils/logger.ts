@@ -1,6 +1,7 @@
 import log from 'electron-log/main';
 import Store from 'electron-store';
 import { app, ipcMain } from 'electron';
+import { formatLogArgs } from './formatLogArgs';
 
 // Initialize electron-log for IPC communication with renderer.
 // electron-log registers an IPC handler for '__ELECTRON_LOG__' when initialize() is called.
@@ -426,27 +427,27 @@ export function overrideConsole() {
 
   // Override console methods to log to both file and original console (stdout)
   console.log = (...args: any[]) => {
-    logger.main.info(args.join(' '));
+    logger.main.info(formatLogArgs(args));
     originalConsole.log(...args); // Also log to stdout
   };
 
   console.error = (...args: any[]) => {
-    logger.main.error(args.join(' '));
+    logger.main.error(formatLogArgs(args));
     originalConsole.error(...args); // Also log to stderr
   };
 
   console.warn = (...args: any[]) => {
-    logger.main.warn(args.join(' '));
+    logger.main.warn(formatLogArgs(args));
     originalConsole.warn(...args); // Also log to stderr
   };
 
   console.info = (...args: any[]) => {
-    logger.main.info(args.join(' '));
+    logger.main.info(formatLogArgs(args));
     originalConsole.info(...args); // Also log to stdout
   };
 
   console.debug = (...args: any[]) => {
-    logger.main.debug(args.join(' '));
+    logger.main.debug(formatLogArgs(args));
     originalConsole.debug(...args); // Also log to stdout
   };
 

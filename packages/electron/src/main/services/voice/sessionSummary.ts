@@ -13,6 +13,10 @@
 
 import type { BrowserWindow } from 'electron';
 import { loadVoiceSession } from './voiceSessionLoader';
+import {
+  appendPendingPromptSection,
+  collectPendingPromptDescriptionsFromTranscript,
+} from '../sessionSummaryPrompt';
 
 export interface VoiceSessionSummary {
   success: boolean;
@@ -31,47 +35,6 @@ export interface VoiceSessionSummary {
     pendingPrompts?: string[];
   };
   error?: string;
-}
-
-/** First non-empty line of a string, trimmed. */
-function firstLine(text: string): string {
-  return (text.split('\n').find((l) => l.trim().length > 0) ?? '').trim();
-}
-
-/**
- * Describe an interactive prompt the session is waiting on, in words the voice
- * agent can read aloud. Returns null for prompt shapes we don't surface.
- */
-function describePendingPrompt(prompt: any): string | null {
-  if (!prompt || typeof prompt !== 'object') return null;
-  switch (prompt.promptType) {
-    case 'ask_user_question': {
-      const questions = Array.isArray(prompt.questions) ? prompt.questions : [];
-      const parts = questions
-        .map((q: any) => {
-          const text = typeof q?.question === 'string' ? q.question.trim() : '';
-          if (!text) return null;
-          const options = Array.isArray(q?.options)
-            ? q.options.map((o: any) => o?.label).filter((l: any) => typeof l === 'string' && l)
-            : [];
-          return options.length > 0 ? `${text} (options: ${options.join(', ')})` : text;
-        })
-        .filter(Boolean);
-      return parts.length > 0 ? `Question: ${parts.join(' ')}` : null;
-    }
-    case 'permission_request': {
-      const tool = typeof prompt.toolName === 'string' ? prompt.toolName : 'a tool';
-      const cmd = typeof prompt.rawCommand === 'string' ? prompt.rawCommand.trim() : '';
-      return `Permission needed to run ${tool}${cmd ? `: ${cmd}` : ''}`;
-    }
-    case 'git_commit_proposal': {
-      const count = Array.isArray(prompt.stagedFiles) ? prompt.stagedFiles.length : 0;
-      const msg = typeof prompt.commitMessage === 'string' ? firstLine(prompt.commitMessage) : '';
-      return `Approval needed to commit ${count} file${count === 1 ? '' : 's'}${msg ? `: ${msg}` : ''}`;
-    }
-    default:
-      return null;
-  }
 }
 
 /** Build the human-readable summary + details from a loaded session object. */
@@ -97,10 +60,7 @@ function buildSummary(sessionId: string, session: any): VoiceSessionSummary {
   // Prompts the session is blocked on, awaiting the user. These are the most
   // actionable thing in a summary -- the user may have started the voice agent
   // specifically to deal with an existing session that's stuck on a question.
-  const pendingPrompts = messages
-    .filter((m) => m.type === 'interactive_prompt' && m.interactivePrompt?.status === 'pending')
-    .map((m) => describePendingPrompt(m.interactivePrompt))
-    .filter((p): p is string => Boolean(p));
+  const pendingPrompts = collectPendingPromptDescriptionsFromTranscript(messages);
 
   const conversationEvents = messages.filter(
     (m) => m.type === 'user_message' || m.type === 'assistant_message',
@@ -137,11 +97,6 @@ function buildSummary(sessionId: string, session: any): VoiceSessionSummary {
   summaryParts.push(
     `Session "${sessionName}" has ${userMessages.length} user messages and ${assistantMessages.length} assistant responses over ${sessionDurationMinutes} minutes.`,
   );
-  if (pendingPrompts.length > 0) {
-    summaryParts.push(
-      `This session is waiting for your input:\n${pendingPrompts.map((p) => `- ${p}`).join('\n')}`,
-    );
-  }
   if (recentTopics.length > 0) {
     summaryParts.push(`Recent topics: ${recentTopics.join('; ')}`);
   } else if (conversationEvents.length === 0) {
@@ -156,7 +111,7 @@ function buildSummary(sessionId: string, session: any): VoiceSessionSummary {
 
   return {
     success: true,
-    summary: summaryParts.join('\n\n'),
+    summary: appendPendingPromptSection(summaryParts.join('\n\n'), pendingPrompts),
     details: {
       sessionId,
       sessionName,

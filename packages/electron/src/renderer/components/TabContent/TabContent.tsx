@@ -23,13 +23,15 @@ import { TabEditorErrorBoundary } from '../TabEditorErrorBoundary';
 import { logger } from '../../utils/logger';
 import { useTabsActions, type TabData, notifyDirtyStateChange, isTrackerTabPath } from '../../contexts/TabsContext';
 import { TrackerResourceEditor } from '../AgentMode/TrackerResourceEditor';
+import { SharedDocsListView } from '../CollabMode/SharedDocsListView';
+import { isSharedHomeTab } from '../CollabMode/sharedHomeTab';
 import { isCollabUri, parseCollabUri } from '../../utils/collabUri';
 import {
   getCollabConfig,
   removeCollabConfig,
   resolveCollabConfigForUri,
 } from '../../utils/collabDocumentOpener';
-import { getPersistedCollabDocType } from '../../utils/collabOpenDocsPersistence';
+import { getPersistedCollabDocMetadata } from '../../utils/collabOpenDocsPersistence';
 import { store, editorDirtyAtom, editorHasUnacceptedChangesAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { clearMockupAnnotationsForFile, getMockupFilePath } from '../UnifiedAI/MockupAnnotationIndicator';
 
@@ -137,6 +139,13 @@ const TabContentComponent: React.FC<TabContentProps> = ({
       return '';
     }
 
+    // The Shared Docs Home tab is a virtual surface with no backing content;
+    // short-circuit before the generic virtual:// loader (which would call
+    // documentService.loadVirtual and fail).
+    if (isSharedHomeTab(filePath)) {
+      return '';
+    }
+
     // Collaborative documents don't load from disk -- content comes via Y.Doc
     if (isCollabUri(filePath)) {
       if (!getCollabConfig(filePath)) {
@@ -151,7 +160,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
           // sharedDocumentsAtom hasn't synced yet. Without it, the open
           // routes a shared .excalidraw / .mockup.html Y.Doc through the
           // markdown editor and the canvas comes back blank.
-          const documentType = await getPersistedCollabDocType(
+          const persistedMetadata = await getPersistedCollabDocMetadata(
             propsRef.current.workspaceId,
             documentId,
           );
@@ -160,7 +169,18 @@ const TabContentComponent: React.FC<TabContentProps> = ({
             filePath,
             documentId,
             title,
-            documentType,
+            persistedMetadata?.documentType,
+            {
+              metadata: persistedMetadata?.metadataVersion === 2
+                && persistedMetadata.fileExtension
+                && persistedMetadata.editorId
+                ? {
+                    metadataVersion: 2,
+                    fileExtension: persistedMetadata.fileExtension,
+                    editorId: persistedMetadata.editorId,
+                  }
+                : undefined,
+            },
           );
         } catch (error) {
           logger.ui.error('[TabContent] Failed to resolve collab config:', error);
@@ -265,6 +285,31 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     containerRef.current.appendChild(element);
 
     const root = createRoot(element);
+
+    // Shared Docs Home tab: a self-contained list view over the shared-doc
+    // index. No save/dirty/getContent wiring; opening a row hands off via
+    // pendingCollabDocumentAtom (see SharedDocsListView).
+    if (isSharedHomeTab(tab.filePath)) {
+      root.render(
+        <JotaiProvider store={store}>
+          <TabEditorErrorBoundary
+            filePath={tab.filePath}
+            fileName={tab.fileName}
+            onRetry={() => {
+              removeTabEditor(tab.id);
+              createTabEditor(tab, content);
+            }}
+            onClose={() => {
+              propsRef.current.onTabClose?.(tab.id);
+            }}
+          >
+            <SharedDocsListView workspacePath={propsRef.current.workspaceId ?? ''} />
+          </TabEditorErrorBoundary>
+        </JotaiProvider>
+      );
+      tabInstancesRef.current.set(tab.id, { root, element, tabData: tab, content });
+      return;
+    }
 
     // Tracker resource tabs render the tracker detail host, not a file editor.
     // No save/dirty/getContent wiring — the tracker owns its own persistence

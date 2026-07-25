@@ -1,7 +1,7 @@
 {
   "id": "com.nimbalyst.calc-sheets",
   "name": "Calc Sheets",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Line-oriented calculation worksheets with units, formulas, and live result gutters",
   "author": "Nimbalyst",
   "main": "dist/index.js",

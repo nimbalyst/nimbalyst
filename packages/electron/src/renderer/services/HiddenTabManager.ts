@@ -529,6 +529,9 @@ class HiddenTabManager {
       setEditorContext(): void {
         // Hidden editors don't push context to chat
       },
+      setEditorContextItems(): void {
+        // Hidden editors don't push context to chat
+      },
 
       registerEditorAPI(api: unknown | null): void {
         if (api) {

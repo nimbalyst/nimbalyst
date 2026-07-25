@@ -27,6 +27,7 @@ import { startFileWatcher } from './FileWatcher';
 import { addWorkspaceRecentFile } from '../utils/store';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { logger } from '../utils/logger';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 
 const analytics = AnalyticsService.getInstance();
 
@@ -88,6 +89,7 @@ export interface OpenFileResult {
  */
 export async function openFileWithDialog(sourceWindow: BrowserWindow): Promise<OpenFileResult | null> {
   const result = await dialog.showOpenDialog(sourceWindow, {
+    defaultPath: getDialogDefaultPath({ window: sourceWindow }),
     properties: ['openFile'],
     filters: [
       { name: 'Markdown Files', extensions: ['md', 'markdown'] },
@@ -99,6 +101,8 @@ export async function openFileWithDialog(sourceWindow: BrowserWindow): Promise<O
   if (result.canceled || result.filePaths.length === 0) {
     return null;
   }
+
+  rememberDialogSelection(result.filePaths[0], 'file');
 
   return openFile({
     filePath: result.filePaths[0],

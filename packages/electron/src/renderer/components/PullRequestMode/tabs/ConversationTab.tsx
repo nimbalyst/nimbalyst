@@ -186,7 +186,7 @@ export function ConversationTab({
               data-testid="pr-comment-submit"
             >
               {submitting ? (
-                <div className="spinner w-4 h-4 border-[2px] border-white/25 border-t-white rounded-full animate-spin" />
+                <div className="spinner w-4 h-4 border-[2px] border-[color-mix(in_srgb,var(--nim-on-primary)_25%,transparent)] border-t-nim-on-primary rounded-full animate-spin" />
               ) : (
                 <MaterialSymbol icon="send" size={14} />
               )}
@@ -205,7 +205,7 @@ export function ConversationTab({
 
       {loading && timeline.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-6 text-nim-muted text-sm">
-          <div className="spinner w-4 h-4 border-[2px] border-nim-secondary border-t-nim-accent rounded-full animate-spin" />
+          <div className="spinner w-4 h-4 border-[2px] border-nim-secondary border-t-nim-primary rounded-full animate-spin" />
           Loading conversation…
         </div>
       ) : (
@@ -262,7 +262,7 @@ function ReviewThreadCard({ thread }: { thread: ReviewThread }): JSX.Element {
         {thread.isOutdated && <span className="text-nim-faint shrink-0">outdated</span>}
         <span
           className={`flex items-center gap-1 shrink-0 ${
-            thread.isResolved ? 'text-nim-success' : 'text-nim-accent'
+            thread.isResolved ? 'text-nim-success' : 'text-nim-primary'
           }`}
         >
           <MaterialSymbol

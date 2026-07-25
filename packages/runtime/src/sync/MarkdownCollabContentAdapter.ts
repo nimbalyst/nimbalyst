@@ -16,15 +16,17 @@
  * everything the editor reads.
  */
 import { $getRoot } from 'lexical';
+import { Doc as YDoc, applyUpdate, encodeStateAsUpdate } from 'yjs';
 import type { Doc } from 'yjs';
 import type { Provider } from '@lexical/yjs';
 import type { CollabContentAdapter } from '@nimbalyst/collab-adapters';
 import {
   $convertFromEnhancedMarkdownString,
   $convertToEnhancedMarkdownString,
-  EditorNodes,
+  HeadlessBodyNodes,
   getEditorTransformers,
 } from '../editor';
+import { TrackerReferenceTransformer } from '../plugins/TrackerLinkPlugin/TrackerReferenceTransformer';
 import { HeadlessLexicalYDoc } from './HeadlessLexicalYDoc';
 
 const NOOP_PROVIDER: Provider = {
@@ -42,20 +44,68 @@ const NOOP_PROVIDER: Provider = {
   off: () => {},
 } as unknown as Provider;
 
+/** Origin for bridge traffic, so an update is never echoed back to its source. */
+const BRIDGE_ORIGIN = Symbol('nimbalyst:markdown-adapter-bridge');
+
+function getHeadlessEditorTransformers() {
+  const transformers = getEditorTransformers();
+  return transformers.includes(TrackerReferenceTransformer)
+    ? transformers
+    : [TrackerReferenceTransformer, ...transformers];
+}
+
+/**
+ * Run `fn` against a headless Lexical editor holding `yDoc`'s content.
+ *
+ * Binds to a FRESH working doc and replays `yDoc`'s state into it, rather than
+ * binding to `yDoc` directly. This is the same editor-doc bridge
+ * `CollabLexicalProvider` uses in the renderer, and it exists for the same
+ * reason (its FAILURE HISTORY note 1, NIM-1764): a binding only builds its
+ * collab tree from updates it observes, so binding straight to an
+ * already-populated doc yields an EMPTY editor state.
+ *
+ * That emptiness was silent and destructive: `exportToFile` / `toPlainText`
+ * returned '' for every non-empty document, and `applyFromFile`'s
+ * `$getRoot().clear()` was a no-op against content the editor had never seen.
+ *
+ * Edits made inside `fn` flow back to `yDoc` through the bridge, so callers
+ * still observe their own doc being updated.
+ */
 function withHeadless<T>(yDoc: Doc, fn: (headless: HeadlessLexicalYDoc) => T): T {
+  const workDoc = new YDoc();
   const provider: Provider = {
     ...NOOP_PROVIDER,
-    getYDoc: () => yDoc,
+    getYDoc: () => workDoc,
   } as Provider;
   const headless = new HeadlessLexicalYDoc({
-    doc: yDoc,
-    nodes: EditorNodes,
+    // `HeadlessBodyNodes`, not `EditorNodes`: this adapter runs in the main
+    // process, where the renderer's extension graph never registers the
+    // list/link/hr/image nodes. With the minimal set, any list- or
+    // link-bearing document threw "Node list is not registered" mid-import,
+    // aborting the conversion and leaving the Y.Doc empty.
+    doc: workDoc,
+    nodes: HeadlessBodyNodes,
     provider,
   });
+
+  // Step 1: replay the source state so the binding observes it and builds its
+  // collab tree. Step 2: materialize that tree into the Lexical editor state.
+  // Both are required -- see `hydrateFromYDoc`.
+  applyUpdate(workDoc, encodeStateAsUpdate(yDoc), BRIDGE_ORIGIN);
+  headless.hydrateFromYDoc();
+
+  const forwardToSource = (update: Uint8Array, origin: unknown) => {
+    if (origin === BRIDGE_ORIGIN) return;
+    applyUpdate(yDoc, update, BRIDGE_ORIGIN);
+  };
+  workDoc.on('update', forwardToSource);
+
   try {
     return fn(headless);
   } finally {
+    try { workDoc.off('update', forwardToSource); } catch { /* ignore */ }
     try { headless.destroy(); } catch { /* ignore */ }
+    try { workDoc.destroy(); } catch { /* ignore */ }
   }
 }
 
@@ -82,7 +132,10 @@ export const MarkdownCollabContentAdapter: CollabContentAdapter = {
     withHeadless(yDoc, (headless) => {
       headless.applyUpdate(() => {
         $getRoot().clear();
-        $convertFromEnhancedMarkdownString(markdown, getEditorTransformers());
+        $convertFromEnhancedMarkdownString(
+          markdown,
+          getHeadlessEditorTransformers(),
+        );
       });
     });
   },
@@ -95,7 +148,10 @@ export const MarkdownCollabContentAdapter: CollabContentAdapter = {
     withHeadless(yDoc, (headless) => {
       headless.applyUpdate(() => {
         $getRoot().clear();
-        $convertFromEnhancedMarkdownString(markdown, getEditorTransformers());
+        $convertFromEnhancedMarkdownString(
+          markdown,
+          getHeadlessEditorTransformers(),
+        );
       });
     });
   },
@@ -103,7 +159,9 @@ export const MarkdownCollabContentAdapter: CollabContentAdapter = {
   exportToFile(yDoc) {
     return withHeadless(yDoc, (headless) => {
       return headless.editor.getEditorState().read(() => {
-        return $convertToEnhancedMarkdownString(getEditorTransformers());
+        return $convertToEnhancedMarkdownString(
+          getHeadlessEditorTransformers(),
+        );
       });
     });
   },
@@ -111,7 +169,9 @@ export const MarkdownCollabContentAdapter: CollabContentAdapter = {
   toPlainText(yDoc) {
     return withHeadless(yDoc, (headless) => {
       return headless.editor.getEditorState().read(() => {
-        return $convertToEnhancedMarkdownString(getEditorTransformers());
+        return $convertToEnhancedMarkdownString(
+          getHeadlessEditorTransformers(),
+        );
       });
     });
   },

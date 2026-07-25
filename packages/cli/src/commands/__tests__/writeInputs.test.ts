@@ -14,6 +14,18 @@ describe('parseFields', () => {
   it('rejects entries without =', () => {
     expect(() => parseFields(['bad'])).toThrow(/key=value/);
   });
+  it('collects a repeated --field into an array for multi-value fields', () => {
+    expect(parseFields(['items=plan_a', 'items=plan_b'])).toEqual({ items: ['plan_a', 'plan_b'] });
+  });
+  it('keeps a single --field scalar unwrapped', () => {
+    expect(parseFields(['items=plan_a'])).toEqual({ items: 'plan_a' });
+  });
+  it('collects three or more repeats in order', () => {
+    expect(parseFields(['t=a', 't=b', 't=c'])).toEqual({ t: ['a', 'b', 'c'] });
+  });
+  it('coerces each repeated value independently', () => {
+    expect(parseFields(['n=1', 'n=2'])).toEqual({ n: [1, 2] });
+  });
 });
 
 describe('parseWhere', () => {

@@ -2,6 +2,8 @@ import SwiftUI
 import GRDB
 
 #if canImport(UIKit)
+import UIKit
+
 /// Invisible UIView overlay that intercepts all touches to report user activity
 /// for device presence tracking. Passes all touches through without consuming them.
 /// This mirrors how the Electron app uses document-level event listeners.
@@ -41,7 +43,9 @@ public struct ContentView: View {
 
     public var body: some View {
         Group {
-            if !appState.isPaired {
+            if appState.accountStorageNeedsRepair {
+                AccountStorageRepairView()
+            } else if !appState.isPaired {
                 PairingView()
             } else if !appState.authManager.isAuthenticated {
                 LoginView()
@@ -63,11 +67,57 @@ public struct ContentView: View {
     }
 }
 
+/// Blocks normal pairing when an existing account blob is unreadable. Resetting
+/// is deliberately explicit because it permanently removes the preserved data.
+private struct AccountStorageRepairView: View {
+    @EnvironmentObject var appState: AppState
+    @State private var confirmingReset = false
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(NimbalystColors.warning)
+
+            Text("Account Data Needs Repair")
+                .font(.title2)
+                .fontWeight(.bold)
+
+            Text("Your stored account record could not be read. It has been preserved and was not treated as a signed-out account. Reset only if you are ready to pair this device again.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+
+            Button("Reset and Pair Again", role: .destructive) {
+                confirmingReset = true
+            }
+            .buttonStyle(.bordered)
+
+            Spacer()
+        }
+        .confirmationDialog(
+            "Reset stored account data?",
+            isPresented: $confirmingReset,
+            titleVisibility: .visible
+        ) {
+            Button("Reset Account Data", role: .destructive) {
+                appState.unpair()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the preserved account record from this device. You will need to pair again from the desktop app.")
+        }
+    }
+}
+
 /// Login screen shown after pairing but before authentication.
 /// Offers Google OAuth and email magic link sign-in.
 /// The paired email (from QR code) determines which account to use.
 public struct LoginView: View {
     @EnvironmentObject var appState: AppState
+    @State private var accountSwitchError: String?
 
     private var pairedEmail: String? {
         if let email = KeychainManager.getUserId(), email.contains("@") {
@@ -176,6 +226,36 @@ public struct LoginView: View {
                 .padding(.horizontal, 32)
             }
 
+            if appState.accounts.count > 1 {
+                Menu {
+                    ForEach(appState.accounts) { account in
+                        Button {
+                            do {
+                                try appState.switchAccount(to: account.id)
+                            } catch {
+                                accountSwitchError = error.localizedDescription
+                            }
+                        } label: {
+                            if account.id == appState.activeAccountId {
+                                Label(account.email, systemImage: "checkmark")
+                            } else {
+                                Text(account.email)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Switch Account", systemImage: "person.2")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if let accountSwitchError {
+                Text(accountSwitchError)
+                    .font(.caption)
+                    .foregroundStyle(NimbalystColors.error)
+                    .padding(.horizontal, 32)
+            }
+
             Spacer()
 
             Button("Unpair Device") {
@@ -237,8 +317,10 @@ public struct LoginView: View {
 public struct MainNavigationView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.openURL) private var openURL
     @State private var navigationPath = NavigationPath()
     @State private var showNotificationPrompt = false
+    @State private var showVoiceSettings = false
     @ObservedObject private var notificationManager = NotificationManager.shared
 
     public init() {}
@@ -329,7 +411,63 @@ public struct MainNavigationView: View {
         } message: {
             Text("Your sessions could not be decrypted. The encryption key on this device no longer matches your Mac. Please re-pair by scanning the QR code from your Mac's settings.")
         }
+        #if os(iOS)
+        .alert(item: voiceActivationIssueBinding) { issue in
+            switch issue {
+            case .missingOpenAIKey:
+                return Alert(
+                    title: Text("Voice Agent Unavailable"),
+                    message: Text("Sync an OpenAI API key from Nimbalyst on your Mac before starting the voice agent."),
+                    primaryButton: .default(Text("Open Voice Settings")) {
+                        showVoiceSettings = true
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .microphonePermissionDenied:
+                return Alert(
+                    title: Text("Microphone Access Required"),
+                    message: Text("Allow microphone access in iOS Settings to use the voice agent."),
+                    primaryButton: .default(Text("Open Settings")) {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            openURL(url)
+                        }
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .audioSessionFailed(let message):
+                return Alert(
+                    title: Text("Voice Agent Could Not Start"),
+                    message: Text(message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+        }
+        .sheet(isPresented: $showVoiceSettings) {
+            NavigationStack {
+                SettingsView()
+                    .environmentObject(appState)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showVoiceSettings = false }
+                        }
+                    }
+            }
+        }
+        #endif
     }
+
+    #if os(iOS)
+    private var voiceActivationIssueBinding: Binding<VoiceAgent.ActivationIssue?> {
+        Binding(
+            get: { appState.voiceAgent?.activationIssue },
+            set: { newValue in
+                if newValue == nil {
+                    appState.voiceAgent?.dismissActivationIssue()
+                }
+            }
+        )
+    }
+    #endif
 
     private func navigateToSession(_ sessionId: String) {
         guard sizeClass != .regular else {
@@ -413,6 +551,17 @@ struct IPadNavigationView: View {
             }
         }
         .onAppear { startObservingProjects() }
+        .onReceive(appState.$databaseManager) { database in
+            projectsCancellable?.cancel()
+            projectsCancellable = nil
+            projects = []
+            selectedProject = nil
+            selectedSession = nil
+            selectedDocument = nil
+            if database != nil {
+                startObservingProjects()
+            }
+        }
         .onDisappear { projectsCancellable?.cancel() }
         .sheet(isPresented: $showProjectPicker) {
             projectPickerSheet
@@ -492,6 +641,7 @@ struct IPadNavigationView: View {
 
     private func startObservingProjects() {
         guard let db = appState.databaseManager else { return }
+        projectsCancellable?.cancel()
 
         let observation = ValueObservation.tracking { db in
             try Project
@@ -569,4 +719,3 @@ struct SyncAuthDegradedBanner: View {
         .accessibilityIdentifier("sync-auth-degraded-banner")
     }
 }
-

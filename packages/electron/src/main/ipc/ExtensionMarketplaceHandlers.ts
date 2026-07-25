@@ -196,12 +196,12 @@ export function isManifestOnlyExtension(manifest: ParsedManifest): boolean {
   const onlyClaudePlugin = c.claudePlugin &&
     !c.customEditors && !c.documentHeaders && !c.aiTools && !c.slashCommands &&
     !c.nodes && !c.transformers && !c.hostComponents && !c.panels &&
-    !c.settingsPanel && !c.newFileMenu && !c.configuration && !c.themes;
+    !c.settingsPanel && !c.settingsRoutes && !c.newFileMenu && !c.configuration && !c.themes;
 
   const onlyThemes = c.themes &&
     !c.claudePlugin && !c.customEditors && !c.documentHeaders && !c.aiTools &&
     !c.slashCommands && !c.nodes && !c.transformers && !c.hostComponents &&
-    !c.panels && !c.settingsPanel && !c.newFileMenu && !c.configuration;
+    !c.panels && !c.settingsPanel && !c.settingsRoutes && !c.newFileMenu && !c.configuration;
 
   const noMain = typeof manifest.main !== 'string' || !manifest.main;
 

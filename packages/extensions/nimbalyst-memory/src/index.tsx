@@ -127,7 +127,7 @@ export function deactivate(): void {
 /** Voice-agent AI tools contributed by this extension (see {@link aiTools}). */
 export { aiTools };
 
-/** Settings panel component, referenced by manifest contributions.settingsPanel. */
+/** Project settings route component, referenced by manifest contributions.settingsRoutes. */
 export const settingsPanel = {
   NimbalystMemorySettings,
 };

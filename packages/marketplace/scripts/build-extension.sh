@@ -10,6 +10,7 @@
 #   manifest.json
 #   dist/          (built extension bundle)
 #   claude-plugin/ (if present, when manifest declares contributions.claudePlugin)
+#   agent workflow assets (when manifest declares contributions.agentWorkflows.path)
 #   screenshots/   (if present)
 #   README.md      (if present)
 #
@@ -82,6 +83,37 @@ fi
 # "Claude plugin path not found" and the skill never reaches Claude Code.
 if [ -d "$EXTENSION_PATH/claude-plugin" ]; then
   cp -r "$EXTENSION_PATH/claude-plugin" "$TEMP_DIR/claude-plugin"
+fi
+
+# Copy bundled agent workflows at the exact manifest-relative path. These files
+# are loaded after installation, so omitting them produces an extension whose
+# declared workflow contribution cannot activate. Reject unsafe or missing
+# declared paths instead of silently packaging a broken contribution.
+AGENT_WORKFLOWS_PATH=$(node -e "
+  const path = require('path');
+  const manifest = require('$MANIFEST');
+  const configured = manifest.contributions?.agentWorkflows?.path;
+  if (configured === undefined) process.exit(0);
+  if (typeof configured !== 'string' || configured.trim() === '') {
+    console.error('Error: contributions.agentWorkflows.path must be a non-empty relative path');
+    process.exit(1);
+  }
+  const normalized = path.normalize(configured);
+  if (path.isAbsolute(configured) || normalized === '..' || normalized.startsWith('../')) {
+    console.error('Error: contributions.agentWorkflows.path must stay inside the extension');
+    process.exit(1);
+  }
+  process.stdout.write(normalized);
+")
+
+if [ -n "$AGENT_WORKFLOWS_PATH" ]; then
+  AGENT_WORKFLOWS_SOURCE="$EXTENSION_PATH/$AGENT_WORKFLOWS_PATH"
+  if [ ! -d "$AGENT_WORKFLOWS_SOURCE" ]; then
+    echo "Error: Declared agent workflows directory not found: $AGENT_WORKFLOWS_SOURCE"
+    exit 1
+  fi
+  mkdir -p "$(dirname "$TEMP_DIR/$AGENT_WORKFLOWS_PATH")"
+  cp -r "$AGENT_WORKFLOWS_SOURCE" "$TEMP_DIR/$AGENT_WORKFLOWS_PATH"
 fi
 
 # Copy screenshots if present

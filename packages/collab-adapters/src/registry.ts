@@ -24,6 +24,18 @@ const adaptersByDocumentType = new Map<string, CollabContentAdapter>();
 const adaptersByExtension = new Map<string, CollabContentAdapter>();
 const listeners = new Set<() => void>();
 
+interface AdapterRegistrationEntry {
+  adapter: CollabContentAdapter;
+}
+
+/**
+ * Registrations are ordered so a temporary override can be removed without
+ * destroying the adapter it replaced. This is load-bearing for renderer codec
+ * hosts: bundled codecs stay registered as fallbacks while an activated
+ * extension with the same document type temporarily takes precedence.
+ */
+const registrations: AdapterRegistrationEntry[] = [];
+
 function normalizeExtension(ext: string): string {
   return ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
 }
@@ -32,42 +44,38 @@ export interface CollabContentAdapterRegistration {
   unregister(): void;
 }
 
-export function registerCollabContentAdapter(
-  adapter: CollabContentAdapter,
-): CollabContentAdapterRegistration {
-  if (adaptersByDocumentType.has(adapter.documentType)) {
-    // Last-registered wins; this is intentional so extension hot-
-    // reload can re-register without a host restart.
-    adaptersByDocumentType.delete(adapter.documentType);
-    for (const [ext, current] of adaptersByExtension.entries()) {
-      if (current.documentType === adapter.documentType) {
-        adaptersByExtension.delete(ext);
-      }
+function rebuildAdapterIndexes(): void {
+  adaptersByDocumentType.clear();
+  adaptersByExtension.clear();
+  for (const { adapter } of registrations) {
+    adaptersByDocumentType.set(adapter.documentType, adapter);
+    for (const ext of adapter.fileExtensions) {
+      adaptersByExtension.set(normalizeExtension(ext), adapter);
     }
   }
+}
 
-  adaptersByDocumentType.set(adapter.documentType, adapter);
-  for (const ext of adapter.fileExtensions) {
-    adaptersByExtension.set(normalizeExtension(ext), adapter);
-  }
-
+function notifyListeners(): void {
   for (const listener of listeners) {
     try { listener(); } catch { /* swallow */ }
   }
+}
+
+export function registerCollabContentAdapter(
+  adapter: CollabContentAdapter,
+): CollabContentAdapterRegistration {
+  const entry: AdapterRegistrationEntry = { adapter };
+  registrations.push(entry);
+  rebuildAdapterIndexes();
+  notifyListeners();
 
   return {
     unregister: () => {
-      if (adaptersByDocumentType.get(adapter.documentType) !== adapter) return;
-      adaptersByDocumentType.delete(adapter.documentType);
-      for (const ext of adapter.fileExtensions) {
-        const key = normalizeExtension(ext);
-        if (adaptersByExtension.get(key) === adapter) {
-          adaptersByExtension.delete(key);
-        }
-      }
-      for (const listener of listeners) {
-        try { listener(); } catch { /* swallow */ }
-      }
+      const index = registrations.indexOf(entry);
+      if (index === -1) return;
+      registrations.splice(index, 1);
+      rebuildAdapterIndexes();
+      notifyListeners();
     },
   };
 }
@@ -92,11 +100,9 @@ export function listRegisteredCollabContentAdapters(): CollabContentAdapter[] {
 }
 
 export function clearCollabContentAdapters(): void {
-  adaptersByDocumentType.clear();
-  adaptersByExtension.clear();
-  for (const listener of listeners) {
-    try { listener(); } catch { /* swallow */ }
-  }
+  registrations.length = 0;
+  rebuildAdapterIndexes();
+  notifyListeners();
 }
 
 export function onCollabContentAdaptersChange(listener: () => void): () => void {

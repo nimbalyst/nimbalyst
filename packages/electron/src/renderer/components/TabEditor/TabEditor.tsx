@@ -30,7 +30,7 @@ import {
   $approveDiffs,
   $rejectDiffs
 } from '@nimbalyst/runtime';
-import { $getRoot, $getSelection, $isRangeSelection, SKIP_SCROLL_INTO_VIEW_TAG, SKIP_DOM_SELECTION_TAG, COMMAND_PRIORITY_LOW } from 'lexical';
+import { $getRoot, $getSelection, $isRangeSelection, $setSelection, SKIP_SCROLL_INTO_VIEW_TAG, SKIP_DOM_SELECTION_TAG, COMMAND_PRIORITY_LOW } from 'lexical';
 import { DocumentHeaderContainer } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader';
 // Side-effect import: registers GenericFrontmatterHeader with DocumentHeaderRegistry
 import '@nimbalyst/runtime/plugins/FrontmatterPlugin';
@@ -43,8 +43,9 @@ import { customEditorRegistry, CustomEditorWrapper } from '../CustomEditors';
 import { logger } from '../../utils/logger';
 import { createEditorHost } from './createEditorHost';
 import type { EditorHost, DiffConfig, ProjectFileWriteReceipt, EditorHostFileSystem } from '@nimbalyst/runtime';
-import { createExtensionStorage } from '@nimbalyst/runtime';
-import { setEditorContext, clearEditorContext } from '../../stores/editorContextStore';
+import { createProjectFileSystemHost } from '../../services/projectFileSystemHost';
+import { createExtensionStorage, createElementVisibilityTracker } from '@nimbalyst/runtime';
+import { setEditorContext, setEditorContextItems, clearEditorContext } from '../../stores/editorContextStore';
 import { store, editorHasUnacceptedChangesAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { historyDialogFileAtom } from '../../store';
 import { UnifiedEditorHeaderBar } from './UnifiedEditorHeaderBar';
@@ -53,6 +54,8 @@ import { useDocumentModel } from '../../services/document-model/useDocumentModel
 import { DocumentModelRegistry } from '../../services/document-model/DocumentModelRegistry';
 import type { DiffState } from '../../services/document-model/types';
 import { diffTrace } from '@nimbalyst/runtime/utils/debugFlags';
+import { SearchReplaceStateManager, isLexicalSearchEditor } from '@nimbalyst/runtime/plugins/SearchReplace';
+import { hasEditorFind, registerEditorFindHandler } from './editorFindCommand';
 
 /** Normalize a file path for comparison: backslashes to forward slashes, strip trailing slashes. */
 function normalizePathForCompare(p: string): string {
@@ -293,11 +296,16 @@ export const TabEditor: React.FC<TabEditorProps> = ({
     setSourceMode(false); // Reset source mode when switching files
   }, [filePath]);
 
+
   // Refs for stable access in timers/callbacks
   const contentRef = useRef(initialContent);
   const isDirtyRef = useRef(false);
   const getContentFnRef = useRef<(() => string) | null>(null);
   const editorRef = useRef<any>(null);
+  // The live editor instance as STATE (mirrors editorRef.current). Selection
+  // tracking depends on this so it re-registers when the editor remounts; a ref
+  // alone doesn't trigger the effect and left the listener on a dead instance.
+  const [editorInstance, setEditorInstance] = useState<any>(null);
   const initialContentRef = useRef(initialContent);
   const lastSaveTimeRef = useRef<number | null>(null);
   const lastSavedContentRef = useRef<string>(initialContent);
@@ -335,6 +343,10 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   // Refs for EditorHost stability - these allow editorHost to access current values without recreating
   const themeRef = useRef(theme);
   const isActiveRef = useRef(isActive);
+  // On-screen visibility (tab display toggles AND hidden modes) — observed via
+  // IntersectionObserver on the container; backs host.visible/onVisibilityChanged.
+  const visibleRef = useRef(true);
+  const visibilityCallbacksRef = useRef(new Set<(visible: boolean) => void>());
   const sourceModeRef = useRef(sourceMode);
   // Whether current editor supports source mode toggle (markdown or custom editors that declare it)
   const supportsSourceModeRef = useRef(isMarkdown || customEditorSupportsSourceMode);
@@ -392,6 +404,17 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   useEffect(() => { sourceModeRef.current = sourceMode; }, [sourceMode]);
   useEffect(() => { supportsSourceModeRef.current = isMarkdown || customEditorSupportsSourceMode; }, [isMarkdown, customEditorSupportsSourceMode]);
 
+  useEffect(() => {
+    return registerEditorFindHandler(filePath, () => {
+      const editor = editorRef.current;
+      if (hasEditorFind(editor)) {
+        editor.openFind();
+      } else if (isLexicalSearchEditor(editor)) {
+        SearchReplaceStateManager.toggle(filePath);
+      }
+    });
+  }, [filePath]);
+
   // Clear Lexical editor selection when tab becomes inactive
   // This ensures no stale visual selection when switching back to the tab
   // Note: Monaco handles this internally via the isActive prop
@@ -421,12 +444,19 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   useEffect(() => {
     // Clear selection when tab becomes inactive (switching to different file)
     if (!isActive) {
-      clearTextSelection();
+      clearTextSelection(filePath);
       return undefined;
     }
 
-    // Wait for editor to be ready
-    if (!isEditorReady || !editorRef.current) {
+    // Bind against the LIVE editor instance (state), not editorRef.current.
+    // The Lexical/Monaco editor can remount after the tab is already "ready"
+    // (extension reload, diff-mode swap, theme change) — each remount produces
+    // a NEW editor instance and re-fires onEditorReady. Because `editorInstance`
+    // is a dependency of this effect, we re-register the selection listener on
+    // the new instance. Keying on the ref instead left the listener attached to
+    // the destroyed editor, so selections silently stopped reaching the AI
+    // "+ selection" context after the first remount.
+    if (!isEditorReady || !editorInstance) {
       return undefined;
     }
 
@@ -435,12 +465,12 @@ export const TabEditor: React.FC<TabEditorProps> = ({
 
     // For Lexical editor (markdown in rich text mode)
     if (isMarkdown && !sourceMode) {
-      const editor = editorRef.current;
+      const editor = editorInstance;
       if (editor?.registerUpdateListener) {
         // When tab becomes active, clear any stale selection state
         // The Lexical SelectionAlwaysOnDisplay plugin may show a visual selection,
         // but we want a clean slate - user must re-select to use "+ selection" feature
-        clearTextSelection();
+        clearTextSelection(filePath);
 
         const unregister = editor.registerUpdateListener(() => {
           // Only update selection if the editor has focus
@@ -468,11 +498,11 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                 if (selectedText && selectedText.trim().length > 0) {
                   setTextSelection(selectedText, filePath);
                 } else {
-                  clearTextSelection();
+                  clearTextSelection(filePath);
                 }
               } else {
                 // User clicked in editor without selection - clear it
-                clearTextSelection();
+                clearTextSelection(filePath);
               }
             });
           }, 150); // 150ms debounce
@@ -482,7 +512,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             clearTimeout(debounceTimer);
           }
           unregister();
-          clearTextSelection();
+          clearTextSelection(filePath);
         };
       }
       return undefined;
@@ -490,10 +520,10 @@ export const TabEditor: React.FC<TabEditorProps> = ({
 
     // For Monaco editor (code files or markdown/custom editor in source mode)
     if (!isMarkdown || sourceMode) {
-      const monacoEditor = editorRef.current?.editor;
+      const monacoEditor = editorInstance?.editor;
       if (monacoEditor?.onDidChangeCursorSelection) {
         // When tab becomes active, clear any stale selection state
-        clearTextSelection();
+        clearTextSelection(filePath);
 
         const disposable = monacoEditor.onDidChangeCursorSelection(() => {
           // Only update selection if the editor has focus
@@ -519,12 +549,12 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                 if (selectedText && selectedText.trim().length > 0) {
                   setTextSelection(selectedText, filePath);
                 } else {
-                  clearTextSelection();
+                  clearTextSelection(filePath);
                 }
               }
             } else {
               // User clicked in editor without selection - clear it
-              clearTextSelection();
+              clearTextSelection(filePath);
             }
           }, 150); // 150ms debounce
         });
@@ -533,12 +563,12 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             clearTimeout(debounceTimer);
           }
           disposable.dispose();
-          clearTextSelection();
+          clearTextSelection(filePath);
         };
       }
     }
     return undefined;
-  }, [isActive, isEditorReady, isMarkdown, sourceMode, filePath]);
+  }, [isActive, isEditorReady, isMarkdown, sourceMode, filePath, editorInstance]);
 
   // CRITICAL FIX RC7: On component mount or file path change, check if there are pending AI edits
   // that should show diffs. This handles the case where a tab is closed and reopened.
@@ -693,6 +723,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
           const tReparseStart = performance.now();
           editorRef.current.update(() => {
             const tInsideUpdateStart = performance.now();
+            // Clearing a selected node without moving selection first makes
+            // Lexical throw "selection has been lost ..." (NIM-2005).
+            $setSelection(null);
             const root = $getRoot();
             root.clear();
             const tAfterClear = performance.now();
@@ -858,6 +891,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                 const transformers = getEditorTransformers();
 
                 editorRef.current.update(() => {
+                  // Clearing a selected node without moving selection first makes
+                  // Lexical throw "selection has been lost ..." (NIM-2005).
+                  $setSelection(null);
                   const root = $getRoot();
                   root.clear();
                   $convertFromEnhancedMarkdownString(diskContent, transformers);
@@ -1153,6 +1189,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             if (isMarkdown) {
               const transformers = getEditorTransformers();
               editorRef.current.update(() => {
+                // Clearing a selected node without moving selection first makes
+                // Lexical throw "selection has been lost ..." (NIM-2005).
+                $setSelection(null);
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(content, transformers);
@@ -1239,6 +1278,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
               const transformers = getEditorTransformers();
               diffTrace('TabEditor.applyDiffState resetting editor to oldContent', { filePath, oldLen: oldContent.length, t: performance.now() });
               editorRef.current.update(() => {
+                // Clearing a selected node without moving selection first makes
+                // Lexical throw "selection has been lost ..." (NIM-2005).
+                $setSelection(null);
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(oldContent, transformers);
@@ -1424,6 +1466,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
               // For Lexical (markdown), we need to clear diff nodes and reload content
               const transformers = getEditorTransformers();
               editorRef.current?.update(() => {
+                // Clearing a selected node without moving selection first makes
+                // Lexical throw "selection has been lost ..." (NIM-2005).
+                $setSelection(null);
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(newContent, transformers);
@@ -1468,6 +1513,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
           const transformers = getEditorTransformers();
 
           editorRef.current.update(() => {
+            // Clearing a selected node without moving selection first makes
+            // Lexical throw "selection has been lost ..." (NIM-2005).
+            $setSelection(null);
             const root = $getRoot();
             root.clear();
             $convertFromEnhancedMarkdownString(newContent, transformers);
@@ -1508,6 +1556,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             const transformers = getEditorTransformers();
 
             editorRef.current.update(() => {
+              // Clearing a selected node without moving selection first makes
+              // Lexical throw "selection has been lost ..." (NIM-2005).
+              $setSelection(null);
               const root = $getRoot();
               root.clear();
               $convertFromEnhancedMarkdownString(newContent, transformers);
@@ -1676,6 +1727,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
               const transformers = getEditorTransformers();
 
               editorRef.current.update(() => {
+                // Clearing a selected node without moving selection first makes
+                // Lexical throw "selection has been lost ..." (NIM-2005).
+                $setSelection(null);
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(finalContent, transformers);
@@ -2121,6 +2175,13 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       },
       // Use getter that accesses ref for value that can change but shouldn't recreate host
       get isActive() { return isActiveRef.current; },
+      getVisible: () => visibleRef.current,
+      subscribeToVisibilityChanges: (callback: (visible: boolean) => void): (() => void) => {
+        visibilityCallbacksRef.current.add(callback);
+        return () => {
+          visibilityCallbacksRef.current.delete(callback);
+        };
+      },
       workspaceId,
 
       // Read file content from disk (text)
@@ -2260,25 +2321,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       },
 
       ...(workspaceId && !filePath.startsWith('virtual://') ? {
-        fs: {
-          read: (paths: string[]) =>
-            window.electronAPI.invoke('project-fs:read', paths),
-          write: async (edit) => {
-            const receipt = await window.electronAPI.invoke('project-fs:write', edit) as ProjectFileWriteReceipt;
-            await refreshCurrentFileAfterProjectWrite(receipt);
-            return receipt;
-          },
-          onChanged: (callback: (paths: string[]) => void) => {
-            const offDisk = window.electronAPI.onFileChangedOnDisk((data: { path: string }) => callback([data.path]));
-            const offWrite = window.electronAPI.on('project-fs:changed', (receipt: ProjectFileWriteReceipt) => {
-              callback(receipt.files.map((entry) => entry.path));
-            });
-            return () => {
-              offDisk();
-              offWrite();
-            };
-          },
-        } satisfies EditorHostFileSystem,
+        fs: createProjectFileSystemHost({
+          onAfterWrite: refreshCurrentFileAfterProjectWrite,
+        }) satisfies EditorHostFileSystem,
       } : {}),
 
       // Open only host-normalized HTTPS references outside the renderer.
@@ -2429,6 +2474,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
 
         // Reset editor ready state so the pending diff check can run after new editor mounts
         setIsEditorReady(false);
+        setEditorInstance(null);
         // Reset the pending tags check flag so it runs again after the new editor mounts
         hasCheckedForPendingTagsRef.current = false;
         setSourceMode(!currentlyInSourceMode);
@@ -2455,6 +2501,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       // ============ EDITOR CONTEXT ============
       onEditorContextChanged: (context) => {
         setEditorContext(filePath, context);
+      },
+      onEditorContextItemsChanged: (items) => {
+        setEditorContextItems(filePath, items);
       },
 
       // ============ MENU ITEMS ============
@@ -2495,6 +2544,22 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   // 2. Playwright/synthetic Cmd+S: keydown bubbles up to this container's onKeyDown.
   // Both call handleManualSave via ref to avoid stale closures.
   const editorContainerRef = useRef<HTMLDivElement>(null);
+
+  // Track on-screen visibility of this editor and fan out to host subscribers.
+  useEffect(() => {
+    const el = editorContainerRef.current;
+    if (!el) return;
+    const tracker = createElementVisibilityTracker(el);
+    visibleRef.current = tracker.getVisible();
+    const unsubscribe = tracker.subscribe((visible) => {
+      visibleRef.current = visible;
+      visibilityCallbacksRef.current.forEach((cb) => cb(visible));
+    });
+    return () => {
+      unsubscribe();
+      tracker.disconnect();
+    };
+  }, []);
   const handleManualSaveRef = useRef(handleManualSave);
   handleManualSaveRef.current = handleManualSave;
 
@@ -2549,7 +2614,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
         <FixedTabHeaderContainer
           filePath={filePath}
           fileName={fileName}
-          editor={editorRef.current}
+          editor={isMarkdown && !sourceMode ? editorRef.current : undefined}
         />
         {autosaveConflictDiskContent !== null && (
           <div
@@ -2569,6 +2634,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                     if (isMarkdown) {
                       const transformers = getEditorTransformers();
                       editorRef.current.update(() => {
+                        // Clearing a selected node without moving selection first makes
+                        // Lexical throw "selection has been lost ..." (NIM-2005).
+                        $setSelection(null);
                         const root = $getRoot();
                         root.clear();
                         $convertFromEnhancedMarkdownString(diskContent, transformers);
@@ -2639,6 +2707,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                     }}
                     onEditorReady={(editorWrapper) => {
                       editorRef.current = editorWrapper;
+                      setEditorInstance(editorWrapper);
                       setIsEditorReady(true);
                     }}
                   />
@@ -2780,6 +2849,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                   collaborationConfig={personalSyncConfig || undefined}
                   onEditorReady={(editor) => {
                     editorRef.current = editor;
+                    setEditorInstance(editor);
                     setIsEditorReady(true);
                     // Force FixedTabHeaderRegistry to re-evaluate after editor remounts
                     setTimeout(() => {
@@ -2835,6 +2905,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                 onEditorReady={(editorWrapper) => {
                   // For Monaco, we get a wrapper with editor, setContent, getContent
                   editorRef.current = editorWrapper;
+                  setEditorInstance(editorWrapper);
                   setIsEditorReady(true);
                 }}
               />
@@ -2893,6 +2964,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                 onEditorReady={(editorWrapper) => {
                   // For Monaco, we get a wrapper with editor, setContent, getContent, showDiff, etc.
                   editorRef.current = editorWrapper;
+                  setEditorInstance(editorWrapper);
                   setIsEditorReady(true);
                 }}
                 onDiffChangeCountUpdate={(count) => {

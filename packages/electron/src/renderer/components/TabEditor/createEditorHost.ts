@@ -8,6 +8,7 @@
 import type {
   EditorHost,
   EditorContext,
+  EditorContextItem,
   DiffConfig,
   DiffResult,
   ExtensionStorage,
@@ -32,6 +33,12 @@ export interface EditorHostOptions {
 
   /** Whether this editor's tab is active */
   isActive: boolean;
+
+  /** Current on-screen visibility (see EditorHost.visible). */
+  getVisible?: () => boolean;
+
+  /** Subscribe to visibility changes. Returns an unsubscribe fn. */
+  subscribeToVisibilityChanges?: (callback: (visible: boolean) => void) => () => void;
 
   /** Workspace identifier (if in a workspace) */
   workspaceId?: string;
@@ -113,6 +120,9 @@ export interface EditorHostOptions {
   /** Callback when extension pushes context to the chat */
   onEditorContextChanged?: (context: EditorContext | null) => void;
 
+  /** Callback when extension pushes a list of selected items to the chat */
+  onEditorContextItemsChanged?: (items: EditorContextItem[] | null) => void;
+
   // ============ MENU ITEMS ============
 
   /** Callback when extension registers menu items for the header bar */
@@ -133,7 +143,12 @@ export function createEditorHost(options: EditorHostOptions): EditorHost {
     // Use getters for reactive properties that can change after creation
     get theme() { return options.getTheme(); },
     get isActive() { return options.isActive; },
+    get visible() { return options.getVisible ? options.getVisible() : true; },
     workspaceId: options.workspaceId,
+
+    onVisibilityChanged: options.subscribeToVisibilityChanges
+      ? (callback: (visible: boolean) => void) => options.subscribeToVisibilityChanges!(callback)
+      : undefined,
 
     // ============ THEME CHANGES ============
     onThemeChanged(callback: (theme: string) => void): () => void {
@@ -223,6 +238,10 @@ export function createEditorHost(options: EditorHostOptions): EditorHost {
     // ============ EDITOR CONTEXT ============
     setEditorContext(context: EditorContext | null): void {
       options.onEditorContextChanged?.(context);
+    },
+
+    setEditorContextItems(items: EditorContextItem[] | null): void {
+      options.onEditorContextItemsChanged?.(items);
     },
 
     // ============ EDITOR API REGISTRATION ============

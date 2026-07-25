@@ -17,9 +17,30 @@ When an AI agent runs in Nimbalyst, it can execute various tools: reading files,
 
 ## Permission Modes
 
-When you first open a project with the AI agent, you'll see a trust dialog. There are three permission modes:
+When you first open a project with an AI agent, the trust dialog presents four autonomy levels. The labels map onto the existing stored permission mode plus the Agent-verified reviewer flag.
 
-### Ask for Approval (Recommended)
+### Agent-verified (Recommended)
+
+- Routine work proceeds without interrupting you
+- Risky operations are evaluated by the provider's native automatic reviewer
+- Claude Agent uses the Claude SDK's auto-mode classifier
+- OpenAI Codex uses `workspace-write`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`
+- Stored as `permissionMode: "bypass-all"` with `allowAllUsesClassifier: true`
+
+### Allow everything
+
+- All operations run without approval prompts or automatic review
+- Uses unrestricted provider access where supported
+- Only for projects you fully trust
+- Stored as `permissionMode: "bypass-all"` with `allowAllUsesClassifier: false`
+
+### Allow edits only
+
+- File operations are auto-approved
+- Bash commands and web requests follow provider permission settings
+- Stored as `permissionMode: "allow-all"`
+
+### Ask every time
 
 - Read-only tools are auto-approved (file reads, `git status`, `npm list`, etc.)
 - Writing tools prompt for approval on first use
@@ -28,20 +49,7 @@ When you first open a project with the AI agent, you'll see a trust dialog. Ther
   - **For this session** - Allowed until you close the project
   - **Always in this project** - Permanently saved to `.claude/settings.local.json`
 - All approved patterns can be managed in **Settings > Agent Permissions**
-
-### Always Allow (Risky)
-
-- All file operations (Edit, Write, Read, Glob, etc.) are auto-approved
-- Bash commands and WebFetch still require approval unless in settings
-- Useful for trusted projects with heavy file editing
-- Denied patterns are still respected
-
-### Bypass All (Dangerous)
-
-- **All operations auto-approved, no prompts at all**
-- Bypasses all safety checks and Claude Code settings
-- Only for testing/development on fully trusted code
-- Not recommended for normal use
+- Stored as `permissionMode: "ask"`
 
 ## What Gets Auto-Approved
 
@@ -229,7 +237,9 @@ This is especially useful when:
 ┌─────────────────────────────────────────────────────────────┐
 │                    Runtime Package                           │
 ├─────────────────────────────────────────────────────────────┤
-│  ClaudeCodeProvider  - canUseTool handler, pattern gen      │
+│  ClaudeCodeProvider  - auto-mode + canUseTool handling      │
+│  OpenAICodexProvider - native automatic approval reviewer   │
+│  Codex protocols     - sandbox / approval policy mapping    │
 │  sessionApprovedPatterns - Session-level pattern cache      │
 │  pendingToolPermissions - Awaiting approval requests        │
 └─────────────────────────────────────────────────────────────┘
@@ -247,8 +257,8 @@ This is especially useful when:
 
 ### Data Flow
 
-1. **Agent requests tool** → Claude Code SDK calls `canUseTool` callback
-2. **PermissionService.evaluateCommand()** → Parses command, checks patterns
+1. **Agent requests tool** → Provider evaluates it using its native approval mechanism
+2. **Permission service or provider reviewer evaluates the request**
 3. **Decision returned**:
   - `allow` - Tool executes immediately
   - `deny` - Tool blocked, agent notified
@@ -272,7 +282,8 @@ Trust state is stored per-workspace in Nimbalyst's workspace settings store:
 ```json
 {
   "agentPermissions": {
-    "permissionMode": "ask"
+    "permissionMode": "bypass-all",
+    "allowAllUsesClassifier": true
   }
 }
 ```
@@ -280,9 +291,10 @@ Trust state is stored per-workspace in Nimbalyst's workspace settings store:
 | permissionMode Value | Meaning |
 |---------------------|---------|
 | `null` | Untrusted - agent cannot run, trust dialog shown |
-| `"ask"` | Trusted with smart permissions (recommended) |
-| `"allow-all"` | Trusted with auto-approve for file operations |
-| `"bypass-all"` | Trusted with all operations auto-approved |
+| `"ask"` | Ask every time |
+| `"allow-all"` | Allow edits only |
+| `"bypass-all"` + reviewer on | Agent-verified (recommended) |
+| `"bypass-all"` + reviewer off | Allow everything |
 
 When `permissionMode` is `null` or undefined, the workspace is considered untrusted and the ProjectTrustToast dialog will be shown before the agent can operate.
 

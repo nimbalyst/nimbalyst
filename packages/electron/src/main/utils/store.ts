@@ -74,6 +74,12 @@ interface AppStoreSchema {
   osNotificationsEnabled?: boolean;
   // Release channel
   releaseChannel?: ReleaseChannel;
+  // Shared fallback for native file/folder dialogs outside workspace context.
+  lastDialogDirectory?: string;
+  // Organization the org-management window falls back to when opened without an
+  // explicit orgId (Window > Organization Manager, or the switcher's untargeted
+  // entries). Written whenever the selection changes.
+  lastSelectedOrgId?: string;
   // Default AI model for new sessions (format: "provider:model" e.g., "claude-code:sonnet")
   defaultAIModel?: string;
   // Default GitHub CLI account login for PR review. A per-project
@@ -222,6 +228,9 @@ interface AppStoreSchema {
   // One-shot migration flag: per-project hiddenGutterButtons unioned into the
   // global hiddenGutterItems key above.
   gutterButtonsMigratedToGlobal?: boolean;
+  // One-shot migration flag: ai-settings' ai.show*UsageIndicator (no rail
+  // restore affordance) folded into hiddenGutterItems above (which has one).
+  usageIndicatorsMigratedToGutter?: boolean;
   // Extension marketplace install tracking
   marketplaceInstalls?: Record<string, MarketplaceInstallRecord>;
   // Multi-project rail: opt-in flag to host multiple projects in a single
@@ -395,7 +404,7 @@ export interface AgentPermissions {
   permissionMode: AgentPermissionMode;
   /**
    * Opt-in (issue #628): when true, "Allow All" (bypass-all) routes agent-mode
-   * Claude Code sessions through the SDK auto-mode classifier instead of
+   * sessions through the provider's automatic approval reviewer instead of
    * bypassing every operation. Undefined/false = literal allow-all.
    */
   allowAllUsesClassifier?: boolean;
@@ -464,13 +473,16 @@ export interface WorkspaceState {
   workstreamStates?: Record<string, unknown>;
   // Agent mode file scope mode (shared across all sessions in workspace)
   agentFileScopeMode?: AgentFileScopeMode;
-  // Collab mode tree state (expanded folders and local placeholder folders)
+  // Collab mode tree state.
   collabTree?: {
     expandedFolders: string[];
+    /** @deprecated Legacy local-only path folders. */
     customFolders: string[];
     // Folder path most recently used as the destination for "Share to Team".
-    // Pre-selected on next share so users don't re-pick the same folder.
+    // Retained for compatibility with clients predating first-class folders.
     lastSharedFolder?: string;
+    // Stable first-class folder id most recently used. Null means Team root.
+    lastSharedFolderId?: string | null;
   };
   collabPendingUpdates?: Record<string, {
     mergedUpdateBase64: string;
@@ -486,7 +498,7 @@ export interface WorkspaceState {
   issueKeyPrefix?: string;
   // Account identity bound to this workspace (personalOrgId).
   // Set once when the workspace is first synced. Different workspaces can use different accounts.
-  // Defaults to the primary account if not set.
+  // Defaults to the account selected for personal sync if not set.
   accountId?: string;
   // Hidden gutter buttons (navigation sidebar)
   hiddenGutterButtons?: string[];
@@ -2564,6 +2576,40 @@ export function runMigrations(currentVersion: string): void {
       logger.store.warn('[Migrations] Failed to migrate hiddenGutterButtons to global:', err);
     }
     getAppStore().set('gutterButtonsMigratedToGlobal', true);
+  }
+
+  // One-shot, version-independent migration: the usage-indicator "Disable"
+  // buttons (Claude/Codex/Gemini) used to write ai.show*UsageIndicator, an
+  // ai-settings boolean with no rail-side restore affordance -- only
+  // hiddenGutterItems (NavigationGutter's right-click "Show X" / "Customize
+  // Gutter…" / "Show All") has one. Fold any indicator a user had already
+  // disabled into hiddenGutterItems so it (a) stays hidden across the
+  // upgrade and (b) becomes restorable from the rail. Flag-guarded so it
+  // runs once and doesn't fight a later re-enable from the rail.
+  if (!getAppStore().get('usageIndicatorsMigratedToGutter')) {
+    try {
+      const aiSettings = getAiSettingsStore();
+      const disabledIndicatorGutterIds: Array<[string, string]> = [
+        ['showUsageIndicator', 'claude-usage'],
+        ['showCodexUsageIndicator', 'codex-usage'],
+        ['showGeminiUsageIndicator', 'gemini-usage'],
+      ];
+      const hidden = new Set<string>(getAppStore().get('hiddenGutterItems') ?? []);
+      let changed = false;
+      for (const [settingKey, gutterId] of disabledIndicatorGutterIds) {
+        if (aiSettings.get(settingKey) === false && !hidden.has(gutterId)) {
+          hidden.add(gutterId);
+          changed = true;
+        }
+      }
+      if (changed) {
+        logger.store.info('[Migrations] Migrating disabled usage indicator setting(s) into hiddenGutterItems');
+        getAppStore().set('hiddenGutterItems', Array.from(hidden));
+      }
+    } catch (err) {
+      logger.store.warn('[Migrations] Failed to migrate usage indicator visibility to gutter:', err);
+    }
+    getAppStore().set('usageIndicatorsMigratedToGutter', true);
   }
 
   // Same version - no migration needed

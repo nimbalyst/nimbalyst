@@ -55,6 +55,11 @@ export interface CodexProtocol extends AgentProtocol {
   setApiKey?(apiKey: string): void;
 }
 
+interface ProtocolSessionIdleScheduler {
+  setTimeout(callback: () => void, timeoutMs: number): ReturnType<typeof setTimeout>;
+  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
+}
+
 interface OpenAICodexProviderDeps {
   protocol?: CodexProtocol;
   permissionService?: ToolPermissionService;
@@ -63,6 +68,10 @@ interface OpenAICodexProviderDeps {
   // Legacy: for existing tests that mock the SDK loader
   loadSdkModule?: () => Promise<CodexSdkModuleLike>;
   resolveCodexPathOverride?: () => string | undefined;
+  /** Override the bounded app-server retention window in lifecycle tests. */
+  idleProtocolSessionTimeoutMs?: number;
+  /** Injectable scheduler keeps lifecycle tests deterministic without global fake timers. */
+  idleProtocolSessionScheduler?: ProtocolSessionIdleScheduler;
 }
 
 interface OpenAICodexModelDiscoveryDeps {
@@ -84,6 +93,7 @@ const PERSISTED_APP_SERVER_NOTIFICATION_METHODS = new Set([
 
 export class OpenAICodexProvider extends BaseAgentProvider {
   static readonly DEFAULT_MODEL = DEFAULT_MODELS['openai-codex'];
+  private static readonly APP_SERVER_IDLE_TIMEOUT_MS = 60_000;
   private static readonly CODEX_EXECUTION_PATTERN = 'OpenAICodex(agent-run:*)';
   private static readonly SESSION_NAMING_REMINDER_PROMPT =
     '<SYSTEM_REMINDER>Call the session metadata tool now before continuing. ' +
@@ -185,6 +195,14 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    * `liveProtocolSessions` is in-memory only.
    */
   private readonly liveProtocolSessions = new Map<string, ProtocolSession>();
+  private readonly liveProtocolSessionPermissionKeys = new Map<string, string>();
+  private readonly activeProtocolSessionCounts = new Map<string, number>();
+  private readonly protocolSessionIdleTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly idleProtocolSessionTimeoutMs: number;
+  private readonly idleProtocolSessionScheduler: ProtocolSessionIdleScheduler;
 
   // Analytics initialization data, captured during first sendMessage call
   private _initData: {
@@ -230,7 +248,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   private static additionalDirectoriesLoader: ((workspacePath: string) => string[]) | null = null;
 
   // Codex PreToolUse hook config (injected from electron main process).
-  // When set, every Codex session is configured with a PreToolUse hook
+  // When set, legacy SDK sessions are configured with a PreToolUse hook
   // matching `^apply_patch$` that snapshots each affected file's pre-edit
   // content to a per-session sidecar dir BEFORE Codex applies the patch.
   // This is the only way to capture true pre-edit content reliably -- the
@@ -284,6 +302,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   constructor(config?: { apiKey?: string }, deps?: OpenAICodexProviderDeps) {
     super();
     const apiKey = config?.apiKey || '';
+    this.idleProtocolSessionTimeoutMs = deps?.idleProtocolSessionTimeoutMs
+      ?? OpenAICodexProvider.APP_SERVER_IDLE_TIMEOUT_MS;
+    this.idleProtocolSessionScheduler = deps?.idleProtocolSessionScheduler ?? {
+      setTimeout: (callback, timeoutMs) => setTimeout(callback, timeoutMs),
+      clearTimeout: (handle) => clearTimeout(handle),
+    };
 
     // Resolve transport: explicit dep > registered resolver > SDK-specific test
     // deps > default 'app-server'.
@@ -355,6 +379,10 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
   getProviderName(): string {
     return 'openai-codex';
+  }
+
+  getTransport(): CodexTransport {
+    return this.transport;
   }
 
   public static setTrustChecker(checker: TrustChecker | null): void {
@@ -946,6 +974,14 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     this.abortController = abortController;
 
     let fullText = '';
+    if (sessionId) {
+      // The protocol turn owns the child from this point onward. Keeping the
+      // prior idle deadline through prompt preparation means an early setup
+      // error cannot accidentally remove the only eviction deadline.
+      this.cancelProtocolSessionIdleTimer(sessionId);
+      const activeCount = this.activeProtocolSessionCounts.get(sessionId) ?? 0;
+      this.activeProtocolSessionCounts.set(sessionId, activeCount + 1);
+    }
 
     try {
       // Check permission using ToolPermissionService
@@ -973,7 +1009,20 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       //   2. A persisted thread id (`this.sessions.getSessionId`) from a prior
       //      Nimbalyst process. Call `resumeSession` to attach to it.
       //   3. Otherwise, `createSession`.
-      const cachedLiveSession = sessionId ? this.liveProtocolSessions.get(sessionId) : undefined;
+      const permissionKey = `${permissionDecision.permissionMode ?? 'none'}:${permissionDecision.agentVerified === true}`;
+      let cachedLiveSession = sessionId ? this.liveProtocolSessions.get(sessionId) : undefined;
+      if (
+        sessionId &&
+        cachedLiveSession &&
+        this.liveProtocolSessionPermissionKeys.get(sessionId) !== permissionKey
+      ) {
+        // Sandbox and approval settings are fixed when a Codex thread is
+        // attached to an app-server child. Reattach the persisted thread when
+        // project permissions change so Agent-verified takes effect on the
+        // very next turn rather than after the idle eviction window.
+        this.evictLiveProtocolSession(sessionId);
+        cachedLiveSession = undefined;
+      }
       const existingSessionId = this.sessions.getSessionId(sessionId || '');
       // console.log('[CODEX] Session lookup:', {
       //   sessionId,
@@ -1005,7 +1054,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       // (an Electron binary) run as plain Node so we don't have to ship a
       // separate Node runtime. When the resolver isn't wired up (tests, older
       // electron builds) the hook is simply not configured.
-      const sidecarDir = sessionId
+      const sidecarDir = this.transport === 'sdk' && sessionId
         ? OpenAICodexProvider.preEditSidecarDirResolver?.(sessionId)
         : undefined;
       if (sidecarDir) {
@@ -1049,6 +1098,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         raw: {
           systemPrompt,
           abortSignal: abortController.signal,
+          agentVerified: permissionDecision.agentVerified === true,
           codexConfigOverrides: this.buildCodexConfigOverrides(mcpServers),
           ...(codexEnv ? { codexEnv } : {}),
           ...(this.config?.effortLevel ? { effortLevel: this.config.effortLevel } : {}),
@@ -1101,6 +1151,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       // to key by) and when we just hit the cache (no-op).
       if (sessionId && !cachedLiveSession) {
         this.liveProtocolSessions.set(sessionId, session);
+        this.liveProtocolSessionPermissionKeys.set(sessionId, permissionKey);
       }
 
       // Persist a newly created thread ID immediately, before streaming the
@@ -1333,6 +1384,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       if (this.abortController === abortController) {
         this.abortController = null;
       }
+      if (sessionId) {
+        const remainingTurns = Math.max(
+          0,
+          (this.activeProtocolSessionCounts.get(sessionId) ?? 1) - 1,
+        );
+        if (remainingTurns > 0) {
+          this.activeProtocolSessionCounts.set(sessionId, remainingTurns);
+        } else {
+          this.activeProtocolSessionCounts.delete(sessionId);
+          this.armProtocolSessionIdleTimer(sessionId);
+        }
+      }
     }
   }
 
@@ -1342,11 +1405,38 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    */
   private evictLiveProtocolSession(sessionId: string | undefined): void {
     if (!sessionId) return;
+    this.cancelProtocolSessionIdleTimer(sessionId);
     const cached = this.liveProtocolSessions.get(sessionId);
+    this.liveProtocolSessionPermissionKeys.delete(sessionId);
     if (!cached) return;
     this.liveProtocolSessions.delete(sessionId);
     try { this.protocol.cleanupSession(cached); }
     catch (err) { console.warn('[CODEX] protocol.cleanupSession threw during eviction:', err); }
+  }
+
+  private cancelProtocolSessionIdleTimer(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    const timer = this.protocolSessionIdleTimers.get(sessionId);
+    if (!timer) return;
+    this.protocolSessionIdleTimers.delete(sessionId);
+    this.idleProtocolSessionScheduler.clearTimeout(timer);
+  }
+
+  private armProtocolSessionIdleTimer(sessionId: string): void {
+    this.cancelProtocolSessionIdleTimer(sessionId);
+    if (this.transport !== 'app-server') return;
+    if (!this.liveProtocolSessions.has(sessionId)) return;
+    if (!Number.isFinite(this.idleProtocolSessionTimeoutMs) || this.idleProtocolSessionTimeoutMs < 0) return;
+
+    const timer = this.idleProtocolSessionScheduler.setTimeout(() => {
+      this.protocolSessionIdleTimers.delete(sessionId);
+      if ((this.activeProtocolSessionCounts.get(sessionId) ?? 0) > 0) return;
+      // evictLiveProtocolSession intentionally preserves ProviderSessionManager's
+      // persisted thread id so a later turn resumes instead of starting over.
+      this.evictLiveProtocolSession(sessionId);
+    }, this.idleProtocolSessionTimeoutMs);
+    this.protocolSessionIdleTimers.set(sessionId, timer);
+    (timer as { unref?: () => void }).unref?.();
   }
 
   /**
@@ -1715,12 +1805,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    * Call this when a session is deleted or no longer needed.
    */
   cleanupSession(sessionId: string): void {
+    this.activeProtocolSessionCounts.delete(sessionId);
     this.evictLiveProtocolSession(sessionId);
     this.sessions.deleteSession(sessionId);
     this.appServerNotificationDeduper.delete(sessionId);
   }
 
   destroy(): void {
+    for (const timer of this.protocolSessionIdleTimers.values()) {
+      this.idleProtocolSessionScheduler.clearTimeout(timer);
+    }
+    this.protocolSessionIdleTimers.clear();
+    this.activeProtocolSessionCounts.clear();
     // Tear down every live ProtocolSession so we don't orphan codex child
     // processes when the provider is replaced (e.g., on API key rotation).
     for (const session of this.liveProtocolSessions.values()) {
@@ -1728,6 +1824,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       catch (err) { console.warn('[CODEX] protocol.cleanupSession threw during destroy():', err); }
     }
     this.liveProtocolSessions.clear();
+    this.liveProtocolSessionPermissionKeys.clear();
     this.appServerNotificationDeduper.clear();
     // Clear permission service caches
     this.permissionService.clearSessionCache();
@@ -1886,13 +1983,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       configOverrides.mcp_servers = codexMcpServers;
     }
 
-    // Register a PreToolUse hook for apply_patch that snapshots pre-edit
+    // Legacy SDK only: register a PreToolUse hook for apply_patch that snapshots pre-edit
     // content to a per-session sidecar BEFORE Codex applies the patch. This
     // sidesteps the item.started race -- by the time we observe item.started
     // in the SDK stream, the patch may already be on disk. The hook fires
     // synchronously inside the codex process before any disk write, so the
     // captured content is guaranteed pre-edit.
-    const hookScriptPath = OpenAICodexProvider.preEditHookScriptPathResolver?.();
+    const hookScriptPath = this.transport === 'sdk'
+      ? OpenAICodexProvider.preEditHookScriptPathResolver?.()
+      : undefined;
     if (hookScriptPath) {
       const hookCommand = `"${process.execPath}" "${hookScriptPath}"`;
       configOverrides.hooks = {
@@ -2814,7 +2913,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     workspacePath: string,
     permissionsPath: string,
     signal: AbortSignal
-  ): Promise<{ decision: 'allow' | 'deny'; reason?: string; permissionMode?: PermissionMode }> {
+  ): Promise<{
+    decision: 'allow' | 'deny';
+    reason?: string;
+    permissionMode?: PermissionMode;
+    agentVerified?: boolean;
+  }> {
     const pathForTrust = permissionsPath || workspacePath;
 
     // Check trust status
@@ -2831,12 +2935,17 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         };
       }
 
-      // IMPORTANT: Codex can only be used in "allow-all" or "bypass-all" mode
-      // The Codex SDK does not support tool-level permission checks (no canUseTool callback)
-      // We can only approve/deny entire turns, not individual tools
-      // Therefore, we require users to explicitly opt-in to unrestricted mode
+      // Codex does not expose Nimbalyst's per-tool permission callback. Permit
+      // only project modes that authorize the turn; Agent-verified bypass is
+      // narrowed downstream to Codex's native sandbox plus automatic reviewer.
       if (trustStatus.mode === 'bypass-all' || trustStatus.mode === 'allow-all') {
-        return { decision: 'allow', permissionMode: trustStatus.mode };
+        return {
+          decision: 'allow',
+          permissionMode: trustStatus.mode,
+          agentVerified:
+            trustStatus.mode === 'bypass-all' &&
+            trustStatus.allowAllUsesClassifier === true,
+        };
       }
 
       // Deny Codex in "ask" mode - tool-level permissions are not supported

@@ -24,6 +24,8 @@ import {
 } from '../atoms/sessionFiles';
 import { workstreamStagedFilesAtom, setWorkstreamStagedFilesAtom } from '../atoms/workstreamState';
 import { getRelativeWorkspacePath } from '../../../shared/pathUtils';
+import { createToolCallMatchesCoalescer } from './toolCallMatchesCoalescer';
+import { createPerKeyDebouncer } from './perKeyDebounce';
 
 /**
  * Track which workspace path is currently open.
@@ -214,6 +216,12 @@ export function initFileStateListeners(workspacePath: string): () => void {
   const enrichDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const gitStatusDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const pendingCountDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const sessionFilesFetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const SESSION_FILES_FETCH_DEBOUNCE_MS = 250;
+  // session-files:updated fires once per file edit (hundreds/sec during active
+  // AI tool execution); coalesce its per-session git-status refresh so bursts
+  // collapse into a single trailing git:get-file-status call per session.
+  const sessionGitStatusRefresh = createPerKeyDebouncer(250);
   const GIT_STATUS_DEBOUNCE_MS = 300;
   const PENDING_COUNT_DEBOUNCE_MS = 250;
 
@@ -233,8 +241,9 @@ export function initFileStateListeners(workspacePath: string): () => void {
   // Session Files Updated
   // =========================================================================
 
-  cleanups.push(
-    window.electronAPI.on('session-files:updated', async (sessionId: string) => {
+  // Fetch + enrich + git-status refresh for a single session. Kept as a
+  // sibling helper so the event handler below can debounce its invocation.
+  const runSessionFilesRefresh = async (sessionId: string) => {
       try {
         const result = await window.electronAPI.invoke(
           'session-files:get-by-session',
@@ -271,8 +280,13 @@ export function initFileStateListeners(workspacePath: string): () => void {
             }
           }, 200));
 
-          // Also refresh git status for these files
-          await refreshSessionGitStatus(sessionId);
+          // Also refresh git status for these files. This handler fires once
+          // per file edit (see the note below on session-files:updated volume),
+          // so coalesce the refresh per session instead of running a full
+          // git:get-file-status over the session's edited-file list every time.
+          sessionGitStatusRefresh.schedule(sessionId, () => {
+            void refreshSessionGitStatus(sessionId);
+          });
 
           // Note: we used to also fetch pending-review files here to keep the
           // atom in sync, but that fired once per session-files:updated event
@@ -287,6 +301,24 @@ export function initFileStateListeners(workspacePath: string): () => void {
       } catch (error) {
         console.error('[fileStateListeners] Failed to fetch file edits for session:', sessionId, error);
       }
+  };
+
+  cleanups.push(
+    window.electronAPI.on('session-files:updated', (sessionId: string) => {
+      // The file-attribution service emits session-files:updated once per file
+      // edit during AI tool execution (hundreds/sec). Multiplied by open
+      // windows × active sessions, an un-debounced refresh here serializes in
+      // the single-threaded PGLite worker and stalls the main thread. Debounce
+      // per session so a burst collapses to a single trailing refresh.
+      const existingTimer = sessionFilesFetchTimers.get(sessionId);
+      if (existingTimer) clearTimeout(existingTimer);
+      sessionFilesFetchTimers.set(
+        sessionId,
+        setTimeout(() => {
+          sessionFilesFetchTimers.delete(sessionId);
+          void runSessionFilesRefresh(sessionId);
+        }, SESSION_FILES_FETCH_DEBOUNCE_MS)
+      );
     })
   );
 
@@ -401,6 +433,9 @@ export function initFileStateListeners(workspacePath: string): () => void {
     gitStatusDebounceTimers.clear();
     pendingCountDebounceTimers.forEach(timer => clearTimeout(timer));
     pendingCountDebounceTimers.clear();
+    sessionFilesFetchTimers.forEach(timer => clearTimeout(timer));
+    sessionFilesFetchTimers.clear();
+    sessionGitStatusRefresh.cancelAll();
   };
 }
 
@@ -408,18 +443,32 @@ export function initFileStateListeners(workspacePath: string): () => void {
  * Enrich file edits with tool call match data.
  * Fetches matches from the database and merges tool call info into the edits.
  */
+/**
+ * Coalesces `session-files:get-tool-call-matches` per session so concurrent
+ * enrich calls (initial multi-session load + debounced updates) collapse to a
+ * single worker round-trip instead of piling up on the single-threaded PGLite
+ * worker. Short TTL keeps results fresh during active editing.
+ */
+const toolCallMatchesCoalescer = createToolCallMatchesCoalescer<any[]>(
+  async (sessionId: string) => {
+    const result = await window.electronAPI.invoke(
+      'session-files:get-tool-call-matches',
+      sessionId
+    );
+    return result.success && result.matches ? result.matches : [];
+  },
+  500
+);
+
 async function enrichEditsWithToolCallMatches(
   sessionId: string,
   edits: FileEditWithSession[],
   rawFiles: Array<{ id: string; filePath: string }>
 ): Promise<FileEditWithSession[]> {
   try {
-    const matchResult = await window.electronAPI.invoke(
-      'session-files:get-tool-call-matches',
-      sessionId
-    );
+    const matches = await toolCallMatchesCoalescer.get(sessionId);
 
-    if (!matchResult.success || !matchResult.matches || matchResult.matches.length === 0) {
+    if (!matches || matches.length === 0) {
       return edits;
     }
 
@@ -429,7 +478,7 @@ async function enrichEditsWithToolCallMatches(
     // The match has sessionFileId which maps to a session_files row.
     // For now, store match data on the match itself and merge by message info.
     const matchByFileId = new Map<string, any>();
-    for (const match of matchResult.matches) {
+    for (const match of matches) {
       matchByFileId.set(match.sessionFileId, match);
     }
 

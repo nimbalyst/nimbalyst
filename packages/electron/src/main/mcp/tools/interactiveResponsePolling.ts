@@ -10,6 +10,11 @@ export function findFreshInteractiveResponse(
     idFields: readonly string[];
     acceptedIds: ReadonlySet<string>;
     notBefore: number;
+    // NIM-1981: when set, accept the freshest row of expectedType regardless of
+    // its ids. Used only when a single interactive prompt is pending for the
+    // session, where the persisted response is unambiguously ours even though the
+    // Codex tool-call ids don't line up.
+    matchAnyId?: boolean;
   },
 ): Record<string, unknown> | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -24,10 +29,11 @@ export function findFreshInteractiveResponse(
     try {
       const content = JSON.parse(message.content) as Record<string, unknown>;
       if (content.type !== options.expectedType) continue;
-      const matches = options.idFields.some((field) => {
-        const value = content[field];
-        return typeof value === "string" && options.acceptedIds.has(value);
-      });
+      const matches = options.matchAnyId === true
+        || options.idFields.some((field) => {
+          const value = content[field];
+          return typeof value === "string" && options.acceptedIds.has(value);
+        });
       if (matches) return content;
     } catch {
       // Non-JSON transcript rows are unrelated to interactive responses.

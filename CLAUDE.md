@@ -46,7 +46,7 @@ If you are tempted to add `|| process.env.SOME_API_KEY` as a convenience fallbac
 
 Stytch B2B gives a user a **different member id per org**. The **personal JWT** (`getPersonalSessionJwt()` / `personalUserId`) is for **personal sync ONLY** (the personal index room + session/prompt/draft/settings sync to the **mobile app**). The **team JWT** (`getSessionJwt()` / `getOrgScopedJwt(orgId)`) authorizes **ALL team collaboration** (tracker rooms, schema sync, document rooms, team room, project-access gate). Conflating them is this codebase's most-repeated sync bug.
 
-Use the branded types in `packages/runtime/src/auth/jwtScopes.ts` so a mix-up is a compile error. When "a second client can't see shared data", first check it's actually authenticated (an expired session is silently logged out → no team JWT). See [jwt-scopes.md](./.claude/rules/jwt-scopes.md) and [SYNC_JWT_MODEL.md](./docs/SYNC_JWT_MODEL.md).
+Use the branded types in `packages/runtime/src/auth/jwtScopes.ts` so a mix-up is a compile error. When "a second client can't see shared data", first check it's actually authenticated (an expired session is silently logged out → no team JWT).
 
 ### Database Access Rules
 
@@ -193,7 +193,6 @@ Two-tier architecture — `ai_agent_messages` (raw append-only log, sole source 
 | [TRACKER_WORKFLOWS.md](./docs/TRACKER_WORKFLOWS.md) | Creating decision or bug tracker items as part of a fix or design decision. |
 | [ARCHITECTURE_DIAGRAMS.md](./docs/ARCHITECTURE_DIAGRAMS.md) | Making any architectural decision — create an Excalidraw diagram. |
 | [DEBUGGING_LOGS.md](./docs/DEBUGGING_LOGS.md) | Investigating bugs — use the log access tools, don't ask the user to paste logs. |
-| [SYNC_JWT_MODEL.md](./docs/SYNC_JWT_MODEL.md) | Touching sync/auth — personal vs team JWT scopes, which JWT/identity each room uses, and the branded types that enforce it. |
 | [MAIN_PROCESS_INIT.md](./packages/electron/MAIN_PROCESS_INIT.md) | Working on Electron main-process bootstrap, singleton init, or IPC handler registration. |
 | [DATABASE.md](./packages/electron/DATABASE.md) | Working with PGLite tables, shutdown, or timestamp handling. |
 

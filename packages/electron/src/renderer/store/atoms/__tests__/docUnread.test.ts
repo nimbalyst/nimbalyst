@@ -93,4 +93,22 @@ describe('applyDocReceiptAtom', () => {
     });
     expect(store.get(docUnreadAtom('d1'))).toBe(false);
   });
+
+  it('does not let a stale renderer receipt replace a newer read watermark', () => {
+    const store = createStore();
+    store.set(docReceiptsAtom, new Map([
+      ['d1', { lastSeenVersion: null, lastViewedAt: 3000 }],
+    ]));
+
+    store.set(applyDocReceiptAtom, {
+      documentId: 'd1',
+      orgId: ORG,
+      receipt: { lastSeenVersion: null, lastViewedAt: 1000 },
+    });
+
+    expect(store.get(docReceiptsAtom).get('d1')).toEqual({
+      lastSeenVersion: null,
+      lastViewedAt: 3000,
+    });
+  });
 });

@@ -74,9 +74,22 @@ import {
   detectNimbalystSlashCommand,
   previewForLog,
   LOG_PREVIEW_LENGTH,
+  extensionPromptRequiresConfiguredApiKey,
 } from '../aiServiceUtils';
 
 describe('aiServiceUtils', () => {
+  describe('extensionPromptRequiresConfiguredApiKey', () => {
+    it.each([
+      ['claude-code', false],
+      ['openai-codex', false],
+      ['claude', true],
+      ['openai', true],
+      ['openai-codex-acp', true],
+    ] as const)('%s requires a configured key: %s', (provider, expected) => {
+      expect(extensionPromptRequiresConfiguredApiKey(provider)).toBe(expected);
+    });
+  });
+
   describe('bucketMessageLength', () => {
     it.each([
       [0, 'short'],

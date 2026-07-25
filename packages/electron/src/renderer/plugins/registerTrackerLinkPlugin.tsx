@@ -1,11 +1,6 @@
 /**
- * Register the runtime's tracker-reference node + markdown transformer as a
- * renderer-contributed Lexical extension.
- *
- * Unlike the document-link plugin, there is no editor component to register for
- * V1: the chip resolves its live data from the runtime tracker store and
- * handles its own click (hover-card + navigate). The `#` typeahead picker is a
- * planned V2 follow-up.
+ * Register the runtime's tracker-reference node, markdown transformer, and
+ * renderer-only chip implementation as a Lexical extension.
  */
 
 import { defineExtension } from 'lexical';
@@ -14,6 +9,8 @@ import {
   setExtensionLexicalExtension,
 } from '@nimbalyst/runtime';
 import {
+  setTrackerReferenceNodeRenderer,
+  TrackerReferenceChip,
   TrackerReferenceNode,
   TrackerReferenceTransformer,
 } from '@nimbalyst/runtime/plugins/TrackerLinkPlugin';
@@ -21,6 +18,7 @@ import {
 const SOURCE = 'tracker-link';
 
 export function registerTrackerLinkPlugin(): void {
+  setTrackerReferenceNodeRenderer(TrackerReferenceChip);
   setExtensionLexicalExtension(
     SOURCE,
     defineExtension({

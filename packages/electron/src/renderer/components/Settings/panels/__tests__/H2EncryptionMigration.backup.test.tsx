@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SecurityEncryptionSection } from '../H2EncryptionMigration';
@@ -21,6 +21,7 @@ describe('organization encryption status', () => {
           success: true,
           migration: { status: 'migrating', startedAt: '2026-07-13T12:00:00.000Z' },
         }),
+        retryEncryptionMigration: vi.fn(),
       },
       trackerSync: { migrateToServerManaged },
       collabBackup: { backupAll },
@@ -50,5 +51,25 @@ describe('organization encryption status', () => {
     await waitFor(() => expect(screen.getByText('Encryption update needs support')).toBeTruthy());
     expect(screen.getByText(/backup gate failed/)).toBeTruthy();
     expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('lets an administrator retry a stuck background migration', async () => {
+    (window as any).electronAPI.team.getEncryptionMigrationStatus.mockResolvedValue({
+      success: true,
+      migration: { status: 'stuck', failedAt: '2026-07-13T12:00:00.000Z', message: 'temporary failure' },
+    });
+    (window as any).electronAPI.team.retryEncryptionMigration.mockResolvedValue({
+      success: true,
+      migration: { status: 'complete', finishedAt: '2026-07-13T12:01:00.000Z' },
+    });
+
+    render(<SecurityEncryptionSection orgId="org-1" isAdmin />);
+    const button = await screen.findByRole('button', { name: 'Retry now' });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect((window as any).electronAPI.team.retryEncryptionMigration).toHaveBeenCalledWith('org-1');
+      expect(screen.getByText('Encryption active')).toBeTruthy();
+    });
   });
 });

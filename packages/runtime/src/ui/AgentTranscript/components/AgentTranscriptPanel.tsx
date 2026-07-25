@@ -72,6 +72,17 @@ interface AgentTranscriptPanelProps {
   onUnarchive?: () => void;
   /** Optional: Read a file from the filesystem (for custom widgets that need to load persisted files) */
   readFile?: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
+  /**
+   * Files this session edited, supplied by the host.
+   *
+   * The panel deliberately does NOT fetch or subscribe for these. On desktop
+   * the host reads `sessionFileEditsAtom`, which a central listener already
+   * keeps current (see docs/IPC_LISTENERS.md); the panel used to run its own
+   * duplicate, un-debounced query off the same IPC event. Mobile hosts have no
+   * file-link store, so they pass nothing and the sidebar stays empty -- which
+   * is what they already got.
+   */
+  fileEdits?: FileEditSummary[];
   /** Optional: render additional content above the file edits sidebar (e.g., pending review banner) */
   renderFilesHeader?: () => React.ReactNode;
   /** Optional: Set of file paths that have pending AI edits awaiting review */
@@ -113,6 +124,9 @@ interface AgentTranscriptPanelProps {
   // Note: Interactive widgets read their host from interactiveWidgetHostAtom(sessionId)
 }
 
+/** Stable default so an omitted `fileEdits` prop doesn't churn memo identities. */
+const EMPTY_FILE_EDITS: FileEditSummary[] = [];
+
 const AgentTranscriptPanelComponent = React.forwardRef<
   { scrollToMessage: (index: number) => void; scrollToTop: () => void },
   AgentTranscriptPanelProps
@@ -137,6 +151,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   onCloseAndArchive,
   onUnarchive,
   readFile,
+  fileEdits = EMPTY_FILE_EDITS,
   renderFilesHeader,
   pendingReviewFiles,
   groupByDirectory,
@@ -171,7 +186,6 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   // Removed activeTab state - sidebar now only shows Files tab
 
   const [prompts, setPrompts] = useState<PromptMarker[]>([]);
-  const [fileEdits, setFileEdits] = useState<FileEditSummary[]>([]);
   const transcriptRef = useRef<{ scrollToMessage: (index: number) => void; scrollToTop: () => void }>(null);
 
   // Resize logic
@@ -240,77 +254,6 @@ const AgentTranscriptPanelComponent = React.forwardRef<
 
     setPrompts(markers);
   }, [sessionData.messages, sessionId, isProcessing]);
-
-  // Extract file edits from database
-  useEffect(() => {
-    // Fetch file links from database via IPC
-    const fetchFileLinks = async () => {
-      try {
-        if (typeof window !== 'undefined' && (window as any).electronAPI) {
-          const result = await (window as any).electronAPI.invoke('session-files:get-by-session', sessionId);
-          if (result.success && result.files) {
-            // Transform FileLink[] to FileEditSummary[]
-            const fileEditsFromDb: FileEditSummary[] = result.files.map((file: any) => ({
-              filePath: file.filePath,
-              linkType: file.linkType,
-              operation: file.metadata?.operation,
-              linesAdded: file.metadata?.linesAdded,
-              linesRemoved: file.metadata?.linesRemoved,
-              timestamp: new Date(file.timestamp).toISOString(),
-              metadata: file.metadata
-            }));
-            setFileEdits(fileEditsFromDb);
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch file links:', error);
-      }
-    };
-
-    fetchFileLinks();
-  }, [sessionData.metadata, sessionId]);
-
-  // Memoize the file update handler to prevent listener leaks
-  const handleFileUpdate = useCallback(async (updatedSessionId: string) => {
-    // Only refresh if the update is for this session
-    if (updatedSessionId === sessionId) {
-      // console.log('[AgentTranscriptPanel] Files updated, refreshing...');
-      try {
-        const result = await (window as any).electronAPI.invoke('session-files:get-by-session', sessionId);
-        if (result.success && result.files) {
-          const fileEditsFromDb: FileEditSummary[] = result.files.map((file: any) => ({
-            filePath: file.filePath,
-            linkType: file.linkType,
-            operation: file.metadata?.operation,
-            linesAdded: file.metadata?.linesAdded,
-            linesRemoved: file.metadata?.linesRemoved,
-            timestamp: new Date(file.timestamp).toISOString(),
-            metadata: file.metadata
-          }));
-          setFileEdits(fileEditsFromDb);
-        }
-      } catch (error) {
-        console.error('Failed to refresh file links:', error);
-      }
-    }
-  }, [sessionId]);
-
-  // Listen for file tracking updates and refresh
-  useEffect(() => {
-    if (typeof window === 'undefined' || !(window as any).electronAPI) {
-      return;
-    }
-
-    // Register listener
-    (window as any).electronAPI.on('session-files:updated', handleFileUpdate);
-
-    // Cleanup
-    return () => {
-      if ((window as any).electronAPI?.off) {
-        (window as any).electronAPI.off('session-files:updated', handleFileUpdate);
-      }
-    };
-  }, [handleFileUpdate]);
 
   const handleNavigateToPrompt = useCallback((marker: PromptMarker) => {
     transcriptRef.current?.scrollToMessage(marker.outputIndex);

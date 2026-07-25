@@ -21,6 +21,7 @@ import {
   fileSaveRequestAtom,
   marketplaceInstallProgressAtom,
   newBrowserTabRequestAtom,
+  sessionLaunchPopupRequestAtom,
   navigationGoBackRequestAtom,
   navigationGoForwardRequestAtom,
   newMockupRequestAtom,
@@ -67,6 +68,11 @@ export function initAppCommandListeners(): () => void {
     store.set(newBrowserTabRequestAtom, (v) => v + 1);
   });
   if (typeof uBrowserTab === 'function') cleanups.push(uBrowserTab);
+
+  const uSessionLaunchPopup = window.electronAPI?.on?.('session-launch-popup-open', () => {
+    store.set(sessionLaunchPopupRequestAtom, (v) => v + 1);
+  });
+  if (typeof uSessionLaunchPopup === 'function') cleanups.push(uSessionLaunchPopup);
 
   const u2 = window.electronAPI?.on?.('toggle-ai-chat-panel', () => {
     store.set(toggleAIChatPanelRequestAtom, (v) => v + 1);

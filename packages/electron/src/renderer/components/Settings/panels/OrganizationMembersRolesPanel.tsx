@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { ActionGuard } from './ActionGuard';
+import { AlphaBadge } from '../../common/AlphaBadge';
+import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../../common/TeamAlphaNotice';
 
 interface Member {
   memberId: string;
@@ -23,7 +25,15 @@ interface PersonalAccount {
   email: string | null;
 }
 
-export function OrganizationMembersRolesPanel({ orgId }: { orgId?: string }) {
+export function OrganizationMembersRolesPanel({
+  orgId,
+  readOnlyRoles = false,
+  allowOrganizationCreation = true,
+}: {
+  orgId?: string;
+  readOnlyRoles?: boolean;
+  allowOrganizationCreation?: boolean;
+}) {
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [callerRole, setCallerRole] = useState('member');
@@ -57,7 +67,10 @@ export function OrganizationMembersRolesPanel({ orgId }: { orgId?: string }) {
   return (
     <section className="organization-members-roles-panel" data-testid="organization-members-roles-panel" data-component="OrganizationMembersRolesPanel">
       <header className="mb-5 border-b border-[var(--nim-border)] pb-4">
-        <h2 className="m-0 text-xl font-semibold">Members &amp; Roles</h2>
+        <h2 className="m-0 flex items-center gap-2 text-xl font-semibold">
+          Members &amp; Roles
+          <AlphaBadge size="sm" tooltip={TEAM_ALPHA_TOOLTIP} />
+        </h2>
         <p className="m-0 mt-1 text-sm text-[var(--nim-text-muted)]">
           {selected ? `${selected.name} · ${callerRole}${selected.sourceEmail ? ` · ${selected.sourceEmail}` : ''}` : 'Choose an organization.'}
         </p>
@@ -88,8 +101,9 @@ export function OrganizationMembersRolesPanel({ orgId }: { orgId?: string }) {
         </div>
       )}
 
-      <details className="new-organization-card mb-5 rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3" data-testid="new-organization-card">
+      {allowOrganizationCreation && <details className="new-organization-card mb-5 rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3" data-testid="new-organization-card">
         <summary className="cursor-pointer text-sm font-semibold">New organization</summary>
+        <TeamAlphaNotice className="mt-3" />
         <form
           className="mt-3 flex flex-col gap-2"
           data-testid="new-organization-form"
@@ -111,7 +125,7 @@ export function OrganizationMembersRolesPanel({ orgId }: { orgId?: string }) {
           )}
           <div className="flex gap-2"><input className="min-w-0 flex-1 rounded border border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-2 text-sm" value={newOrganizationName} onChange={(event) => setNewOrganizationName(event.target.value)} placeholder="Organization name" /><button className="rounded bg-[var(--nim-primary)] px-3 py-2 text-sm font-semibold text-white" type="submit">Create</button></div>
         </form>
-      </details>
+      </details>}
 
       {orgId && (
         <>
@@ -122,7 +136,11 @@ export function OrganizationMembersRolesPanel({ orgId }: { orgId?: string }) {
                   <div className="truncate text-sm font-medium">{member.name || member.email}</div>
                   <div className="truncate text-xs text-[var(--nim-text-muted)]">{member.email}</div>
                 </div>
-                <select
+                {readOnlyRoles ? (
+                  <span className="member-role-badge rounded-full bg-[var(--nim-bg-tertiary)] px-2.5 py-1 text-xs capitalize text-[var(--nim-text-muted)]">
+                    {member.role}
+                  </span>
+                ) : <select
                   value={member.role}
                   disabled={!canAdminister}
                   className="member-role-select rounded border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] px-2 py-1 text-xs disabled:cursor-not-allowed"
@@ -132,7 +150,7 @@ export function OrganizationMembersRolesPanel({ orgId }: { orgId?: string }) {
                   <option value="member">Member</option>
                   <option value="admin">Admin</option>
                   <option value="owner">Owner</option>
-                </select>
+                </select>}
               </div>
             ))}
           </div>

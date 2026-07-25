@@ -5,7 +5,7 @@
  * references a PR gets a correct badge.
  */
 
-import type { JSX } from 'react';
+import type { CSSProperties, JSX } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import {
@@ -14,11 +14,19 @@ import {
   getStatusOptions,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 
-const FALLBACK_COLOR = '#6b7280';
+export const FALLBACK_TRACKER_COLOR = 'var(--nim-text-muted)';
 const PRIORITY_MARKERS: Record<string, string> = {
-  critical: '#ef4444',
-  high: '#f97316',
+  critical: 'var(--nim-error)',
+  high: 'var(--nim-warning)',
 };
+
+export function trackerColorStyle(color?: string): CSSProperties {
+  const foreground = color || FALLBACK_TRACKER_COLOR;
+  return {
+    color: foreground,
+    backgroundColor: `color-mix(in srgb, ${foreground} 12%, transparent)`,
+  };
+}
 
 export function statusOptionFor(record: TrackerRecord): {
   value: string;
@@ -43,7 +51,6 @@ interface PrTrackerBadgeProps {
 export function PrTrackerBadge({ record, compact, onClick, title }: PrTrackerBadgeProps): JSX.Element | null {
   const option = statusOptionFor(record);
   if (!option) return null;
-  const color = option.color || FALLBACK_COLOR;
   const priority = getRecordPriority(record);
   const priorityColor = PRIORITY_MARKERS[priority];
 
@@ -64,7 +71,7 @@ export function PrTrackerBadge({ record, compact, onClick, title }: PrTrackerBad
   const className = `pr-tracker-badge inline-flex items-center gap-1 rounded font-medium shrink-0 ${
     compact ? 'px-1 py-px text-[10px]' : 'px-1.5 py-0.5 text-[11px]'
   }`;
-  const style = { color, backgroundColor: `${color}20` };
+  const style = trackerColorStyle(option.color);
 
   if (onClick) {
     return (

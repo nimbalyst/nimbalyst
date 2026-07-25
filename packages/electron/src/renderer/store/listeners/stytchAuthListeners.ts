@@ -13,8 +13,31 @@
 
 import { store } from '@nimbalyst/runtime/store';
 import { stytchAuthAtom, type StytchAuthSnapshot } from '../atoms/stytchAuth';
+import {
+  organizationDirectoryAtom,
+  personalAccountsAtom,
+  type OrganizationDirectoryEntry,
+  type PersonalAccountSummary,
+} from '../atoms/settingsDomains';
+import { createPerKeyDebouncer } from '../listeners/perKeyDebounce';
 
 let initialized = false;
+
+export async function refreshPersonalAccountsDirectory(): Promise<PersonalAccountSummary[]> {
+  const stytch = window.electronAPI?.stytch;
+  if (!stytch) {
+    store.set(personalAccountsAtom, []);
+    return [];
+  }
+  try {
+    const accounts = (await stytch.getAccounts() ?? []) as PersonalAccountSummary[];
+    store.set(personalAccountsAtom, accounts);
+    return accounts;
+  } catch {
+    store.set(personalAccountsAtom, []);
+    return [];
+  }
+}
 
 export function initStytchAuthListeners(): () => void {
   if (initialized) {
@@ -29,14 +52,40 @@ export function initStytchAuthListeners(): () => void {
     };
   }
 
+  const loadIdentityDirectory = async () => {
+    await refreshPersonalAccountsDirectory();
+    try {
+      const result = await window.electronAPI?.team?.list?.();
+      store.set(
+        organizationDirectoryAtom,
+        result?.success && Array.isArray(result.teams)
+          ? result.teams as OrganizationDirectoryEntry[]
+          : [],
+      );
+    } catch {
+      store.set(organizationDirectoryAtom, []);
+    }
+  };
+
+  // Coalesce event-driven refreshes. Auth-state-change and organizations-changed
+  // can arrive in tight bursts (multi-window token churn); without debouncing,
+  // each one fires its own team:list. See NIM-1828 -- this was a symptom-side
+  // amplifier of the auth-state-change storm.
+  const identityDirectoryDebouncer = createPerKeyDebouncer(400);
+  const scheduleIdentityDirectoryReload = () => {
+    identityDirectoryDebouncer.schedule('reload', () => { void loadIdentityDirectory(); });
+  };
+
   // Initial fetch -- atom stays null until this resolves so the UI can
-  // distinguish "still loading" from "loaded and signed out".
+  // distinguish "still loading" from "loaded and signed out". Run it directly
+  // (not debounced) so first paint isn't delayed.
   stytch.getAuthState()
     .then((state) => {
       store.set(stytchAuthAtom, {
         isAuthenticated: !!state?.isAuthenticated,
         user: state?.user ?? null,
       } satisfies StytchAuthSnapshot);
+      void loadIdentityDirectory();
     })
     .catch(() => {
       // Treat fetch failure as signed-out rather than leaving the atom null
@@ -49,10 +98,17 @@ export function initStytchAuthListeners(): () => void {
       isAuthenticated: !!state?.isAuthenticated,
       user: state?.user ?? null,
     });
+    scheduleIdentityDirectoryReload();
   });
+
+  void stytch.subscribeAuthState?.();
+  const handleOrganizationsChanged = () => { scheduleIdentityDirectoryReload(); };
+  window.addEventListener('nimbalyst:organizations-changed', handleOrganizationsChanged);
 
   return () => {
     initialized = false;
+    identityDirectoryDebouncer.cancelAll();
     unsubscribe?.();
+    window.removeEventListener('nimbalyst:organizations-changed', handleOrganizationsChanged);
   };
 }

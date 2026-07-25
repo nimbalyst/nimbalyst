@@ -5,12 +5,13 @@
  * automatically registering custom editors from loaded extensions.
  */
 
-import { getExtensionLoader } from '@nimbalyst/runtime';
+import { getExtensionLoader, type EditorHostProps } from '@nimbalyst/runtime';
 import { customEditorRegistry } from '../components/CustomEditors';
 import { logger } from '../utils/logger';
 
 // Track which extension editors have been registered
 const registeredExtensionEditors = new Map<string, string[]>();
+const registeredEditorComponents = new Map<string, React.ComponentType<EditorHostProps>[]>();
 
 /**
  * Register custom editors from a single extension.
@@ -18,24 +19,18 @@ const registeredExtensionEditors = new Map<string, string[]>();
  */
 function registerExtensionEditors(extensionId: string): string[] {
   const loader = getExtensionLoader();
-  const extension = loader.getExtension(extensionId);
+  const manifest = loader.getExtensionManifest(extensionId);
+  const editors = loader.getCustomEditors().filter(
+    (editor) => editor.extensionId === extensionId,
+  );
 
-  if (!extension || !extension.enabled) {
+  if (!manifest || editors.length === 0) {
     return [];
   }
 
-  const contributions = extension.manifest.contributions?.customEditors || [];
-  const components = extension.module.components || {};
   const registeredExtensions: string[] = [];
 
-  for (const contribution of contributions) {
-    const component = components[contribution.component];
-    if (!component) {
-      console.warn(
-        `[ExtensionEditorBridge] Extension ${extensionId} declares component '${contribution.component}' but does not export it. Available components: ${Object.keys(components).join(', ')}`
-      );
-      continue;
-    }
+  for (const { contribution, component } of editors) {
 
     // Convert file patterns to extensions
     const extensions: string[] = [];
@@ -54,7 +49,7 @@ function registerExtensionEditors(extensionId: string): string[] {
         extensions,
         component: component as React.FC<any>,
         name: contribution.displayName,
-        supportsAI: extension.manifest.permissions?.ai || false,
+        supportsAI: manifest.permissions?.ai || false,
         supportsSourceMode: contribution.supportsSourceMode || false,
         supportsDiffMode: contribution.supportsDiffMode,
         showDocumentHeader: contribution.showDocumentHeader,
@@ -83,6 +78,7 @@ function unregisterExtensionEditors(extensionId: string): void {
   if (extensions && extensions.length > 0) {
     customEditorRegistry.unregister(extensions);
     registeredExtensionEditors.delete(extensionId);
+    registeredEditorComponents.delete(extensionId);
     logger.ui.info(
       `[ExtensionEditorBridge] Unregistered editors for ${extensionId}`
     );
@@ -96,15 +92,14 @@ function unregisterExtensionEditors(extensionId: string): void {
  */
 export function syncExtensionEditors(): void {
   const loader = getExtensionLoader();
-  const loadedExtensions = loader.getLoadedExtensions();
+  const availableEditors = loader.getCustomEditors();
 
-  logger.ui.info(`[ExtensionEditorBridge] Syncing ${loadedExtensions.length} loaded extension(s)`);
-  for (const ext of loadedExtensions) {
-    logger.ui.info(`[ExtensionEditorBridge] - ${ext.manifest.id}: enabled=${ext.enabled}, components=${Object.keys(ext.module.components || {}).join(', ')}`);
-  }
+  logger.ui.info(
+    `[ExtensionEditorBridge] Syncing ${availableEditors.length} editor contribution(s)`,
+  );
 
-  // Get current set of loaded extension IDs
-  const currentIds = new Set(loadedExtensions.map((ext) => ext.manifest.id));
+  // Includes evaluated extensions and manifest-registered deferred editors.
+  const currentIds = new Set(availableEditors.map((editor) => editor.extensionId));
 
   // Unregister editors from extensions that are no longer loaded
   for (const extensionId of registeredExtensionEditors.keys()) {
@@ -113,18 +108,22 @@ export function syncExtensionEditors(): void {
     }
   }
 
-  // Register editors from newly loaded extensions
-  for (const extension of loadedExtensions) {
-    if (!extension.enabled) {
-      // If disabled, unregister any editors it had
-      unregisterExtensionEditors(extension.manifest.id);
-      continue;
-    }
+  // Register editors from newly available manifests/modules.
+  for (const extensionId of currentIds) {
+    const nextComponents = availableEditors
+      .filter(editor => editor.extensionId === extensionId)
+      .map(editor => editor.component);
+    const previousComponents = registeredEditorComponents.get(extensionId);
+    const componentsChanged = !previousComponents
+      || previousComponents.length !== nextComponents.length
+      || previousComponents.some((component, index) => component !== nextComponents[index]);
 
-    if (!registeredExtensionEditors.has(extension.manifest.id)) {
-      const extensions = registerExtensionEditors(extension.manifest.id);
+    if (componentsChanged) {
+      unregisterExtensionEditors(extensionId);
+      const extensions = registerExtensionEditors(extensionId);
       if (extensions.length > 0) {
-        registeredExtensionEditors.set(extension.manifest.id, extensions);
+        registeredExtensionEditors.set(extensionId, extensions);
+        registeredEditorComponents.set(extensionId, nextComponents);
       }
     }
   }

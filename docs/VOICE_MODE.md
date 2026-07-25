@@ -201,6 +201,7 @@ When sleeping:
 | `voice-mode:settings-changed` | Settings changed (broadcast to all windows) |
 | `voice-mode:respond-to-prompt` | Voice agent answered an interactive prompt |
 | `voice-mode:interactive-prompt` | Coding agent needs user input (forwarded to voice) |
+| `voice-mode:request-ui-context` | Request a fresh, bounded snapshot of the active renderer view, file, and coding session |
 
 ### Renderer -> Main (send, fire-and-forget)
 
@@ -210,6 +211,7 @@ When sleeping:
 | `voice-mode:update-linked-session` | User switched coding sessions while voice active |
 | `voice-mode:listen-state-changed` | Listen state transitioned (sleeping/waking) |
 | `voice-mode:editor-context-changed` | User viewing a different file |
+| Dynamic `voice-mode:ui-context-result-*` | Reply to a UI-context request; accepted only from the voice-owning window and matching workspace |
 
 ## Voice Agent Tools
 
@@ -225,8 +227,10 @@ The OpenAI Realtime API session is configured with these function-calling tools:
 | `get_session_summary` | Get a summary of the linked coding session |
 | `list_sessions` | List recent AI sessions in the workspace |
 | `navigate_to_session` | Switch the UI to a specific AI session |
-| `create_session` | Create a new coding session and switch to it. The voice agent's linked session updates automatically via `voiceModeListeners.syncLinkedSession`. |
+| `create_session` | Create a new coding session and switch to it. Repeated creation calls are deduplicated until the next coding prompt, which is pinned to the created session even if the active UI session changes. |
 | `propose_commit` | Trigger the "Commit with AI" feature. Sends `voice-mode:propose-commit` to the renderer, which runs the same logic as the Smart Commit button in `GitOperationsPanel`: pre-fetches files via `git:get-commit-context`, then dispatches an `ai:sendMessage` with the canonical `Use the developer_git_commit_proposal tool to create a commit.` prefix so the `CommitRequestCard` widget appears in the transcript. The resulting `git_commit_proposal_request` interactive prompt flows back to the voice agent through the existing interactive-prompt forwarding for verbal approve/reject. |
+| `get_ui_context` | Read a fresh, concise snapshot of the active Nimbalyst view, selected workspace file, and active coding session. Absolute paths and unrelated renderer state are omitted. |
+| `capture_ui_screenshot` | After explicit user request or confirmation, capture only the visible Nimbalyst application window and inject the bounded in-memory JPEG into the Realtime conversation as image input. |
 
 ## Extension Voice Tools & Context Providers (general core hooks)
 
@@ -296,6 +300,10 @@ Generation happens in the Voice Mode settings panel (`packages/electron/src/rend
 
 There is no main-process IPC handler for summary generation -- the agent does the work through its existing tooling. If no agent is configured (`defaultAgentModel` is empty), the button is disabled and the panel shows a link into the AI Models settings instead. The previous direct-Anthropic-API implementation was removed because it required a chat API key the user might not have, even though voice mode itself only requires an OpenAI key.
 
+## Workspace Command Context
+
+At every desktop voice-session start, `VoiceModeService` clears the shared `AgentWorkflowService` snapshot, reads the same provider-aware command catalog used by the composer, and adds a bounded list of validated slash-command names to the Realtime system instructions. This makes newly added, removed, or renamed workspace commands visible on the next voice session even when they changed inside the catalog's normal cache window; command bodies, descriptions, source paths, allowed tools, and other file-derived metadata are deliberately excluded from the voice prompt.
+
 ## Session Persistence
 
 Voice mode maintains two separate but linked sessions in the database:
@@ -334,6 +342,19 @@ While voice is active, the currently viewed file is tracked and reported to the 
 3. If different from `voiceLastReportedFileAtom`, sends `voice-mode:editor-context-changed` IPC
 4. `VoiceModeService` calls `poc.injectContext()` with `[INTERNAL: User is now viewing {filename}]`
 5. The voice agent silently notes this for context without announcing it
+
+## On-Demand UI Context and Screenshot Capture
+
+The desktop voice agent can inspect the current application state through two built-in, read-only tools:
+
+- `get_ui_context` sends a one-shot `voice-mode:request-ui-context` request to the renderer that owns the active voice session. The centralized voice listener reads the current Jotai atoms and returns the active content view (`files`, `agent`, `tracker`, `collab`, `pr-review`, or `settings`), the active tab's file, and the selected coding session with a coarse `running` / `waiting_for_input` / `idle` status.
+- `capture_ui_screenshot` calls `BrowserWindow.webContents.capturePage()` for that same Nimbalyst window, scales the image to at most 1600×1200, encodes a JPEG capped at 2 MiB, and injects it into the Realtime conversation as `input_image` before returning concise capture metadata. The image stays in memory and is never written to disk.
+
+The UI-context response is accepted only from the expected `webContents`, must echo the active workspace path, and is normalized before it reaches the model. Files inside the workspace may include a workspace-relative path; external files and URI-backed documents expose only a basename, never an absolute host path.
+
+Screenshot capture is a higher-sensitivity operation because visible pixels are sent to OpenAI. Its tool schema requires `userConfirmed: true` plus a short reason, the handler rejects missing confirmation, and the voice system prompt instructs the model to call it only after the user explicitly requests a UI capture/inspection or explicitly confirms after disclosure. The tool cannot capture the desktop, another application, a hidden/minimized window, or an arbitrary screen region.
+
+These tools are desktop-only; the native iOS voice agent does not advertise them.
 
 ## Audio Pipeline
 
@@ -440,5 +461,5 @@ Two mobile-specific behaviors:
 ## Prerequisites
 
 - OpenAI API key configured in Settings (uses the same key as the OpenAI chat provider)
-- Microphone permission granted in System Settings (macOS). The app cannot programmatically request mic access because the audio-input entitlement is intentionally omitted to prevent permission prompts from Claude Agent SDK subprocesses.
+- Microphone permission granted in System Settings (macOS) or Windows Settings > Privacy & security > Microphone (Windows). Windows users must enable microphone access for desktop apps.
 - Voice mode enabled in Settings (toggles visibility of the VoiceModeButton)

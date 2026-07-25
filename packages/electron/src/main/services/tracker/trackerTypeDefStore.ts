@@ -376,6 +376,13 @@ export interface UnsyncedTrackerSchemaDef {
  * deletion (deleted_at set) surfaces with `model = null` so the push path can
  * emit a tombstone. `source = 'sync'` rows are stamped 'synced' and excluded —
  * they came FROM a peer and must never be echoed back.
+ *
+ * Sync-mode gate: a type whose model declares `sync.mode: 'local'` never leaves
+ * the machine — its override (or override-deletion) is filtered out here, the
+ * single push choke point. The `model` column retains the last-known JSON even
+ * for a tombstoned row, so the mode is readable for deletions too. Types with no
+ * explicit sync policy keep their prior behavior (not filtered) so this never
+ * silently stops an existing custom type from syncing.
  */
 export async function listUnsyncedTrackerSchemaDefs(
   workspace: string,
@@ -389,14 +396,34 @@ export async function listUnsyncedTrackerSchemaDefs(
         WHERE workspace = $1 AND sync_status IN ('local', 'pending')`,
       [workspace],
     )) as { rows?: Array<{ type: string; model: string; deleted_at: string | null }> } | undefined;
-    return (result?.rows ?? []).map((r) => ({
-      type: r.type,
-      model: r.deleted_at ? null : r.model,
-      deleted: r.deleted_at != null,
-    }));
+    const out: UnsyncedTrackerSchemaDef[] = [];
+    for (const r of result?.rows ?? []) {
+      if (schemaSyncModeIsLocal(r.model)) continue;
+      out.push({
+        type: r.type,
+        model: r.deleted_at ? null : r.model,
+        deleted: r.deleted_at != null,
+      });
+    }
+    return out;
   } catch (err) {
     logger.main.warn('[trackerTypeDefStore] listUnsyncedTrackerSchemaDefs failed for', workspace, err);
     return [];
+  }
+}
+
+/**
+ * True when a stored model JSON declares `sync.mode: 'local'`. The `model` column
+ * is JSON TEXT (a string on both backends), but parse defensively per DATABASE.md.
+ * Only an EXPLICIT local mode is treated as local — undefined/other modes are not
+ * filtered, preserving existing custom-type sync behavior.
+ */
+function schemaSyncModeIsLocal(rawModel: unknown): boolean {
+  try {
+    const parsed = typeof rawModel === 'string' ? JSON.parse(rawModel) : rawModel;
+    return (parsed as { sync?: { mode?: string } } | null)?.sync?.mode === 'local';
+  } catch {
+    return false;
   }
 }
 

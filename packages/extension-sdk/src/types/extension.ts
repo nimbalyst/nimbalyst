@@ -11,6 +11,7 @@ import type {
   PanelGutterButtonProps,
   PanelHostProps,
   SettingsPanelContribution,
+  SettingsRouteContribution,
   SettingsPanelProps,
 } from './panel';
 import type { BackendModuleContribution, ExtensionPermissionId } from './permissions';
@@ -387,6 +388,12 @@ export interface ExtensionContributions {
    * Settings panel shown in the Settings screen under "Extensions" section.
    */
   settingsPanel?: SettingsPanelContribution;
+
+  /**
+   * First-class routes shown in the Settings sidebar. Route components are
+   * resolved from the module's `settingsPanel` export namespace.
+   */
+  settingsRoutes?: SettingsRouteContribution[];
 
   /**
    * Document headers that render above editors for matching file types.
@@ -801,8 +808,9 @@ export interface ExtensionModule {
   panels?: Record<string, PanelExport>;
 
   /**
-   * Settings panel component for the Settings screen.
-   * Keys match the `settingsPanel.component` in manifest.json.
+   * Settings components for the Settings screen.
+   * Keys match `settingsPanel.component` and `settingsRoutes[].component` in
+   * manifest.json.
    */
   settingsPanel?: Record<string, ComponentType<SettingsPanelProps>>;
 }
@@ -1065,8 +1073,8 @@ export interface ExtensionFileSystemService {
   /** Read a file's contents */
   readFile(path: string): Promise<string>;
 
-  /** Write content to a file */
-  writeFile(path: string, content: string): Promise<void>;
+  /** Write text or binary content to a file. Binary bytes are preserved exactly. */
+  writeFile(path: string, content: string | Uint8Array): Promise<void>;
 
   /** Check if a file exists */
   fileExists(path: string): Promise<boolean>;
@@ -1159,8 +1167,8 @@ export interface ExtensionAIService {
     prompt: string;
     sessionName?: string;
     /** AI provider to use. Defaults to 'claude-code'. */
-    provider?: 'claude-code' | 'claude' | 'openai';
-    /** Model ID (e.g. 'claude-code:opus', 'claude-code:sonnet'). Uses provider default if omitted. */
+    provider?: 'claude-code' | 'claude' | 'openai' | 'openai-codex';
+    /** Model ID (e.g. 'claude-code:opus', 'openai-codex:gpt-5.6-sol'). Uses provider default if omitted. */
     model?: string;
   }): Promise<{
     sessionId: string;

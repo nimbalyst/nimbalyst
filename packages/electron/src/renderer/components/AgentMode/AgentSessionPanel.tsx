@@ -26,6 +26,8 @@ export interface AgentSessionPanelProps {
   onFileClick?: (filePath: string) => void;
   onClearAgentSession?: () => void;
   onCreateWorktreeSession?: (worktreeId: string) => Promise<string | null>;
+  /** Static document context (scopes the "+ selection" chips to the active editor tab) */
+  documentContext?: SerializableDocumentContext;
   /** Getter for document context from the workstream editor (for AI file/selection context) */
   getDocumentContext?: () => Promise<SerializableDocumentContext>;
   /** When true, collapse the transcript but keep input and dialogs visible */
@@ -45,6 +47,7 @@ const AgentSessionPanelComponent = forwardRef<AgentSessionPanelRef, AgentSession
   onFileClick,
   onClearAgentSession,
   onCreateWorktreeSession,
+  documentContext,
   getDocumentContext,
   collapseTranscript = false,
 }, ref) => {
@@ -78,6 +81,7 @@ const AgentSessionPanelComponent = forwardRef<AgentSessionPanelRef, AgentSession
         onFileClick={handleFileClick}
         onClearAgentSession={onClearAgentSession}
         onCreateWorktreeSession={onCreateWorktreeSession}
+        documentContext={documentContext}
         getDocumentContext={getDocumentContext}
       />
     </div>

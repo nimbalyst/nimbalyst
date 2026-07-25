@@ -14,6 +14,7 @@ import {
 } from '../utils/store';
 import { usesCodexStyleAgentWorkflows } from '../../shared/agentWorkflowProviders';
 import { createTtlCache } from '../utils/asyncCache';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 export type AgentWorkflowKind = 'command' | 'skill';
 export type AgentWorkflowInvocation = 'explicit' | 'implicit' | 'both';
@@ -375,6 +376,7 @@ async function syncDirectoryRecursive(
 export class AgentWorkflowService {
   private readonly workspacePath: string;
   private readonly userHomePath: string;
+  private readonly userClaudeConfigDir: string;
   private readonly extensionDirectoriesLoader: () => Promise<string[]>;
   private readonly nativeClaudePluginPathsLoader: (workspacePath?: string) => Promise<Array<{ type: 'local'; path: string }>>;
   private readonly releaseChannelLoader: () => ReleaseChannel;
@@ -390,6 +392,11 @@ export class AgentWorkflowService {
   constructor(workspacePath: string, options: AgentWorkflowServiceOptions = {}) {
     this.workspacePath = workspacePath;
     this.userHomePath = options.userHomePath ?? homedir();
+    // An injected home (tests) pins the config dir under it for isolation;
+    // otherwise follow the CLI's own CLAUDE_CONFIG_DIR resolution.
+    this.userClaudeConfigDir = options.userHomePath
+      ? path.join(options.userHomePath, '.claude')
+      : resolveClaudeConfigDir();
     this.extensionDirectoriesLoader = options.extensionDirectoriesLoader ?? getAllExtensionDirectories;
     this.nativeClaudePluginPathsLoader = options.nativeClaudePluginPathsLoader ?? getNativeClaudePluginPaths;
     this.releaseChannelLoader = options.releaseChannelLoader ?? getReleaseChannel;
@@ -511,8 +518,8 @@ export class AgentWorkflowService {
       }
 
       if (sourceSettings.includeUserClaudeSources) {
-        const userCommandsPath = path.join(this.userHomePath, '.claude', 'commands');
-        const userSkillsPath = path.join(this.userHomePath, '.claude', 'skills');
+        const userCommandsPath = path.join(this.userClaudeConfigDir, 'commands');
+        const userSkillsPath = path.join(this.userClaudeConfigDir, 'skills');
         this.scanCommandDirectory(
           userCommandsPath,
           userCommandsPath,

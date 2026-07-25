@@ -6,6 +6,9 @@
  */
 
 import type { AIProviderType } from '../server/types';
+import type { EditorContextItem } from '@nimbalyst/extension-sdk';
+
+export type { EditorContextItem } from '@nimbalyst/extension-sdk';
 
 /**
  * Types of document context transitions that can occur between messages.
@@ -58,6 +61,10 @@ export interface RawDocumentContext {
     outerHTML: string;
   };
   mockupDrawing?: string;  // Data URL of drawing annotations (truthy if user drew annotations)
+
+  // Extension-provided selected items from node-like editors.
+  // Already filtered to non-dismissed items by the renderer.
+  editorContextItems?: EditorContextItem[];
 }
 
 /**
@@ -95,6 +102,9 @@ export interface PreparedDocumentContext {
     outerHTML: string;
   };
   mockupDrawing?: string;  // Data URL of drawing annotations (truthy if user drew annotations)
+
+  // Extension-provided selected items from node-like editors (non-dismissed).
+  editorContextItems?: EditorContextItem[];
 }
 
 /**

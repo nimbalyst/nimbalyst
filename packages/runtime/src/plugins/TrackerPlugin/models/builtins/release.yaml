@@ -1,0 +1,100 @@
+type: release
+displayName: Release
+displayNamePlural: Releases
+icon: rocket_launch
+color: "#0ea5e9"
+
+modes:
+  inline: false
+  fullDocument: true
+
+sync:
+  mode: shared
+  scope: project
+
+idPrefix: rel
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+
+  # A release exists before it is built, so it starts with no version or tag --
+  # the release scripts fill those in and flip the status at build time.
+  - name: status
+    type: select
+    default: planned
+    options:
+      - value: planned
+        label: Planned
+        icon: schedule
+        color: "#6b7280"
+      - value: in-progress
+        label: In Progress
+        icon: play_circle
+        color: "#eab308"
+      - value: released
+        label: Released
+        icon: rocket_launch
+        color: "#22c55e"
+      - value: cancelled
+        label: Cancelled
+        icon: cancel
+        color: "#ef4444"
+
+  - name: version
+    type: string
+
+  - name: gitTag
+    type: string
+
+  - name: channel
+    type: select
+    options:
+      - value: alpha
+        label: Alpha
+      - value: stable
+        label: Stable
+
+  - name: releasedAt
+    type: datetime
+
+  - name: owner
+    type: user
+
+  - name: description
+    type: text
+
+  # Same membership edge as `milestone`, so both collection types share the
+  # rollup and add-to-collection machinery.
+  - name: items
+    type: relationship
+    relationshipTypeKey: has-item
+    inverseRelationshipTypeKey: in-collection
+    inverseFieldId: collection
+    targetTrackerTypes: "*"
+    multiValue: true
+    childRelationship: true
+
+  - name: tags
+    type: array
+    itemType: string
+    displayInline: false
+
+roles:
+  title: title
+  workflowStatus: status
+  assignee: owner
+  tags: tags
+
+tableView:
+  defaultColumns:
+    - title
+    - status
+    - version
+    - channel
+    - releasedAt
+  sortable: true
+  filterable: true
+  exportable: true

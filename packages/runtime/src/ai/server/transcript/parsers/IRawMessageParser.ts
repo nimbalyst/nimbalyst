@@ -136,6 +136,8 @@ export interface SubagentStartedDescriptor {
   teammateName?: string | null;
   teamName?: string | null;
   teammateMode?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
   isBackground?: boolean;
   prompt: string;
   createdAt?: Date;
@@ -146,6 +148,8 @@ export interface SubagentCompletedDescriptor {
   subagentId: string;
   status: 'completed';
   resultSummary?: string;
+  model?: string | null;
+  reasoningEffort?: string | null;
 }
 
 export interface InteractivePromptCreatedDescriptor {

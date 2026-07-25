@@ -34,6 +34,9 @@ import { getRestartSignalPath, getPackageRoot } from "../utils/appPaths";
 import { requireMcpAuth } from "./mcpAuth";
 import { selectFocusedRestartSessions } from "./restartContinuationSelection";
 import { tailFile, grepTailFile } from "./logTail";
+import { app as electronApp } from "electron";
+import { captureRendererHeapSnapshot } from "../services/HeapSnapshotService";
+import { analyzeHeapSnapshot } from "../services/HeapSnapshotAnalyzer";
 
 // ============================================================================
 // Restart continuation
@@ -152,6 +155,7 @@ function validateManifest(manifestPath: string): {
         contributions.hostComponents?.length ||
         contributions.panels?.length ||
         contributions.settingsPanel ||
+        contributions.settingsRoutes?.length ||
         contributions.newFileMenu?.length ||
         contributions.configuration;
       const isDataOnly =
@@ -1117,7 +1121,7 @@ function createExtensionDevMcpServer(
             },
           },
         },
-        // Only include renderer_eval in development mode
+        // Only include renderer-facing diagnostics in development mode
         ...(process.env.NODE_ENV === "development" ||
         !!process.env.ELECTRON_RENDERER_URL
           ? [
@@ -1140,6 +1144,31 @@ function createExtensionDevMcpServer(
                     },
                   },
                   required: ["expression"],
+                },
+              },
+              {
+                name: "capture_heap_snapshot",
+                description:
+                  "Capture a V8 heap snapshot of the Nimbalyst renderer for this workspace without opening DevTools. Returns the .heapsnapshot path and file size. Development builds only; capture can pause the renderer for a substantial period.",
+                inputSchema: {
+                  type: "object",
+                  properties: {},
+                  required: [],
+                },
+              },
+              {
+                name: "analyze_heap_snapshot",
+                description:
+                  "Stream-analyze a V8 .heapsnapshot without loading the full file into memory. Returns total/node/edge counts, the top 50 constructor or node-type groups by shallow size, and the largest individual strings and arrays.",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    path: {
+                      type: "string",
+                      description: "Absolute path to a .heapsnapshot file",
+                    },
+                  },
+                  required: ["path"],
                 },
               },
               {
@@ -1170,7 +1199,7 @@ function createExtensionDevMcpServer(
               {
                 name: "extension_test_open_file",
                 description:
-                  "Open a file in Nimbalyst for testing. Creates a tab and waits for the editor (including extension editors) to mount. Use this before running Playwright tests that need a specific file open.",
+                  "Visibly open and focus a file tab in Nimbalyst for Playwright testing, then wait for the editor to mount. This interrupts the user's active tab. Use only when a test must interact with a mounted UI; never use it as a prerequisite for extension AI tools, which mount hidden editors automatically.",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -2273,6 +2302,56 @@ function createExtensionDevMcpServer(
             responseChannel,
           });
         });
+      }
+
+      case "capture_heap_snapshot": {
+        if (electronApp.isPackaged) {
+          return {
+            content: [{ type: "text", text: "Error: heap snapshots are only available in development builds" }],
+            isError: true,
+          };
+        }
+        if (!workspacePath) {
+          return {
+            content: [{ type: "text", text: "Error: workspacePath is required to route to the correct window" }],
+            isError: true,
+          };
+        }
+        const targetWindow = findWindowByWorkspace(workspacePath);
+        if (!targetWindow || targetWindow.isDestroyed()) {
+          return {
+            content: [{ type: "text", text: `Error: No window found for workspace: ${workspacePath}` }],
+            isError: true,
+          };
+        }
+
+        const result = await captureRendererHeapSnapshot(targetWindow.webContents);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          isError: false,
+        };
+      }
+
+      case "analyze_heap_snapshot": {
+        if (electronApp.isPackaged) {
+          return {
+            content: [{ type: "text", text: "Error: heap snapshot analysis is only available in development builds" }],
+            isError: true,
+          };
+        }
+        const snapshotPath = args?.path as string;
+        if (!snapshotPath) {
+          return {
+            content: [{ type: "text", text: "Error: path is required" }],
+            isError: true,
+          };
+        }
+
+        const result = await analyzeHeapSnapshot(snapshotPath);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          isError: false,
+        };
       }
 
       case "extension_test_run": {

@@ -44,11 +44,11 @@ export interface ExtensionPlatformService {
   readFile(filePath: string): Promise<string>;
 
   /**
-   * Write content to a file.
+   * Write text or binary content to a file.
    * @param filePath - Absolute path to the file
-   * @param content - Content to write
+   * @param content - UTF-8 text or binary content to write
    */
-  writeFile(filePath: string, content: string): Promise<void>;
+  writeFile(filePath: string, content: string | Uint8Array | ArrayBuffer): Promise<void>;
 
   /**
    * Check if a file exists.

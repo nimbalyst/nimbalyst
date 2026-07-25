@@ -2,16 +2,17 @@
  * CodexEditWindowRegistry -- per-session registry of open Codex edit
  * attribution windows.
  *
- * Codex doesn't emit a clean pre-file-edit hook the way Claude Code does,
- * so we open an attribution window when a write-capable Codex tool starts
- * and close it on completion. While the window is open, file watcher
+ * Listener-backed Codex transports can encounter MCP tools with filesystem
+ * side effects that are not reported as fileChange items, so we open an
+ * attribution window when a known writer starts and close it on completion.
+ * While the window is open, file watcher
  * events whose timestamps fall in the window are attributed to the
  * canonical synthetic edit-group ID for that tool call -- skipping the
  * fuzzy time-based matcher heuristics.
  *
  * Scope:
- *   - `file_change` always opens a window (Codex's native write event)
- *   - Known write-capable MCP tools also open windows
+ *   - Native `file_change` does not use a window
+ *   - Known write-capable MCP tools open windows
  *   - `command_execution` is intentionally excluded for v1 (per the resolved
  *     plan question) because shell-side effects produce too many false
  *     positives. The existing `trackBashEditsFromCommand` path stays.
@@ -20,6 +21,7 @@
  * to disk after the tool's `item.completed` arrives can still attribute.
  */
 
+import * as path from 'path';
 import { logger } from '../utils/logger';
 
 /** How long after closeWindow a window stays match-eligible. */
@@ -51,11 +53,11 @@ export interface CodexEditWindow {
  * Codex tool names that always open an edit attribution window.
  *
  * `file_change` USED to be the lone entry here, but its edits are now
- * attributed via the `pre_edit_snapshot` chunk path -- the codex-sdk emits
- * `item.started` for `file_change` BEFORE applying the patch, which lets
- * us read the real pre-edit baseline straight from disk and bypass the
- * watcher entirely. The registry now only serves write-capable MCP tools
- * (see `isWriteCapableMcpTool`) which have no equivalent lifecycle hook.
+ * attributed via the provider's `pre_edit_snapshot` chunk path. App-server
+ * reconstructs the baseline from the completed item's unified diff, while the
+ * legacy SDK path uses its pre-edit hook/cache fallback. The registry now only
+ * serves write-capable MCP tools whose filesystem side effects are not listed
+ * by their app-server lifecycle items.
  */
 const ALWAYS_OPEN_TOOL_NAMES = new Set<string>([]);
 
@@ -71,7 +73,6 @@ export function isWriteCapableMcpTool(toolName: string): boolean {
   // Known write-capable MCP tool slugs after the `mcp__<server>__` prefix.
   // Keep this list narrow and intentional -- expand as new write tools land.
   const KNOWN_WRITE_SUFFIXES = [
-    'developer_git_commit_proposal',
     'applyCollabDocEdit',
     'threed_update_file',
     'mindmap_add_node',
@@ -191,6 +192,7 @@ class CodexEditWindowRegistryImpl {
   /**
    * Find a window that should claim this file watcher event:
    *   - the session matches
+   *   - any explicit target file matches the watcher event path
    *   - the window is open OR closed within `POST_CLOSE_GRACE_MS`
    *   - the file timestamp falls inside [openedAt, closedAt + grace]
    *
@@ -202,6 +204,7 @@ class CodexEditWindowRegistryImpl {
   findWindowForEdit(params: {
     sessionId: string;
     workspacePath: string;
+    filePath: string;
     fileTimestamp: number;
   }): CodexEditWindow | null {
     const sessionIds = this.bySession.get(params.sessionId);
@@ -212,6 +215,10 @@ class CodexEditWindowRegistryImpl {
       const window = this.byEditGroupId.get(editGroupId);
       if (!window) continue;
       if (window.workspacePath !== params.workspacePath) continue;
+      if (window.targetFilePath !== null) {
+        const targetFilePath = path.resolve(window.workspacePath, window.targetFilePath);
+        if (targetFilePath !== path.resolve(params.filePath)) continue;
+      }
       if (params.fileTimestamp < window.openedAt) continue;
       if (window.closedAt !== null && params.fileTimestamp > window.closedAt + POST_CLOSE_GRACE_MS) continue;
       if (best == null || window.openedAt > best.openedAt) {

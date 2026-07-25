@@ -26,20 +26,21 @@ class PairingStore(context: Context) {
     val state: StateFlow<PairingState> = _state.asStateFlow()
 
     fun savePairing(credentials: PairingCredentials) {
+        val sanitizedCredentials = credentials.sanitizedForServerChange(_state.value.credentials)
         preferences.edit {
-            putString(KEY_SERVER_URL, credentials.serverUrl)
-            putString(KEY_ENCRYPTION_SEED, credentials.encryptionSeed)
-            putString(KEY_PAIRED_USER_ID, credentials.pairedUserId)
-            putString(KEY_AUTH_JWT, credentials.authJwt)
-            putString(KEY_AUTH_USER_ID, credentials.authUserId)
-            putString(KEY_ORG_ID, credentials.orgId)
-            putString(KEY_PERSONAL_USER_ID, credentials.personalUserId)
-            putString(KEY_PERSONAL_ORG_ID, credentials.personalOrgId)
-            putString(KEY_SESSION_TOKEN, credentials.sessionToken)
-            putString(KEY_AUTH_EMAIL, credentials.authEmail)
-            putString(KEY_AUTH_EXPIRES_AT, credentials.authExpiresAt)
+            putString(KEY_SERVER_URL, sanitizedCredentials.serverUrl)
+            putString(KEY_ENCRYPTION_SEED, sanitizedCredentials.encryptionSeed)
+            putString(KEY_PAIRED_USER_ID, sanitizedCredentials.pairedUserId)
+            putString(KEY_AUTH_JWT, sanitizedCredentials.authJwt)
+            putString(KEY_AUTH_USER_ID, sanitizedCredentials.authUserId)
+            putString(KEY_ORG_ID, sanitizedCredentials.orgId)
+            putString(KEY_PERSONAL_USER_ID, sanitizedCredentials.personalUserId)
+            putString(KEY_PERSONAL_ORG_ID, sanitizedCredentials.personalOrgId)
+            putString(KEY_SESSION_TOKEN, sanitizedCredentials.sessionToken)
+            putString(KEY_AUTH_EMAIL, sanitizedCredentials.authEmail)
+            putString(KEY_AUTH_EXPIRES_AT, sanitizedCredentials.authExpiresAt)
         }
-        _state.value = PairingState(credentials)
+        _state.value = PairingState(sanitizedCredentials)
     }
 
     fun saveAuthSession(session: AuthCallbackData) {

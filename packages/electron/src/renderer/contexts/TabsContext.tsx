@@ -67,6 +67,18 @@ function isNonFilesystemTab(filePath: string): boolean {
   );
 }
 
+const UNRESOLVED_COLLAB_TAB_NAME = 'Shared document';
+
+function resolveTabDisplayName(filePath: string, displayName?: string): string {
+  const requestedName = displayName?.trim();
+  if (!isCollabUri(filePath)) return requestedName || getFileName(filePath);
+
+  const transportName = getFileName(filePath);
+  return requestedName && requestedName !== transportName
+    ? requestedName
+    : UNRESOLVED_COLLAB_TAB_NAME;
+}
+
 interface TabsStore {
   tabs: Map<string, TabData>;
   tabOrder: string[];
@@ -80,7 +92,13 @@ interface TabsContextValue {
   getSnapshot: () => TabsStore;
 
   // Actions (don't trigger re-renders in caller)
-  addTab: (filePath: string, content?: string, switchToTab?: boolean) => string | null;
+  addTab: (
+    filePath: string,
+    content?: string,
+    switchToTab?: boolean,
+    displayName?: string,
+    initialState?: Pick<TabData, 'isPinned'>,
+  ) => string | null;
   removeTab: (tabId: string) => void;
   switchTab: (tabId: string) => void;
   updateTab: (tabId: string, updates: Partial<TabData>) => void;
@@ -298,16 +316,31 @@ export function TabsProvider({
   }, [notify]);
 
   // Add a tab
-  const addTab = useCallback((filePath: string, content: string = '', switchToTab: boolean = true): string | null => {
+  const addTab = useCallback((
+    filePath: string,
+    content: string = '',
+    switchToTab: boolean = true,
+    displayName?: string,
+    initialState?: Pick<TabData, 'isPinned'>,
+  ): string | null => {
     const store = slotRef.current.store;
 
     // Check if tab already exists
     const existingTab = Array.from(store.tabs.values()).find(tab => tab.filePath === filePath);
     if (existingTab) {
+      let didChange = false;
+      const nextDisplayName = displayName === undefined
+        ? undefined
+        : resolveTabDisplayName(filePath, displayName);
+      if (nextDisplayName && existingTab.fileName !== nextDisplayName) {
+        store.tabs.set(existingTab.id, { ...existingTab, fileName: nextDisplayName });
+        didChange = true;
+      }
       if (switchToTab && store.activeTabId !== existingTab.id) {
         store.activeTabId = existingTab.id;
-        notify();
+        didChange = true;
       }
+      if (didChange) notify();
       return existingTab.id;
     }
 
@@ -316,8 +349,8 @@ export function TabsProvider({
     // Tracker tabs use the item id as their label fallback; the live title is
     // resolved by the tab bar from the canonical tracker atom.
     const fileName = isTracker
-      ? filePath.slice(TRACKER_TAB_PREFIX.length)
-      : getFileName(filePath);
+      ? displayName?.trim() || filePath.slice(TRACKER_TAB_PREFIX.length)
+      : resolveTabDisplayName(filePath, displayName);
 
     const newTab: TabData = {
       id: tabId,
@@ -325,7 +358,7 @@ export function TabsProvider({
       fileName,
       content,
       isDirty: false,
-      isPinned: false,
+      isPinned: initialState?.isPinned ?? false,
       isVirtual: filePath.startsWith('virtual://'),
       kind: isTracker ? 'tracker' : 'file',
       trackerItemId: isTracker ? filePath.slice(TRACKER_TAB_PREFIX.length) : undefined,
@@ -494,7 +527,12 @@ export function TabsProvider({
         if (!existingTab) {
           try {
             if (isCollabUri(candidateTab.filePath)) {
-              const reopenedTabId = addTab(candidateTab.filePath, '', true);
+              const reopenedTabId = addTab(
+                candidateTab.filePath,
+                '',
+                true,
+                candidateTab.fileName,
+              );
               if (reopenedTabId) {
                 updateTab(reopenedTabId, {
                   fileName: candidateTab.fileName,

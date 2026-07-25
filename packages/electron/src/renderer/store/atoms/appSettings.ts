@@ -425,6 +425,8 @@ export interface AdvancedSettings {
   customPathDirs: string;
   // System spellchecker (applies to all editors and text inputs)
   spellcheckEnabled: boolean;
+  // Reveal direct chat providers in settings and initial model selection.
+  showDirectChatProviders: boolean;
   // Document history settings
   historyMaxAgeDays: number; // Max age in days before snapshots are cleaned up (default: 30)
   historyMaxSnapshots: number; // Max snapshots per file (default: 250)
@@ -450,6 +452,7 @@ const defaultAdvancedSettings: AdvancedSettings = {
   } as Record<BetaFeatureTag, boolean>,
   enableAllBetaFeatures: false,
   spellcheckEnabled: true,
+  showDirectChatProviders: false,
   customPathDirs: '',
   historyMaxAgeDays: 30,
   historyMaxSnapshots: 250,
@@ -540,6 +543,9 @@ function scheduleAdvancedPersist(
           break;
         case 'spellcheckEnabled':
           await window.electronAPI.invoke('spellcheck:set-enabled', settingsToPersist.spellcheckEnabled);
+          break;
+        case 'showDirectChatProviders':
+          await window.electronAPI.invoke('app-settings:set', 'showDirectChatProviders', settingsToPersist.showDirectChatProviders);
           break;
         // walkthroughsViewedCount and walkthroughsTotalCount are read-only from main process
       }
@@ -708,7 +714,7 @@ export async function initAdvancedSettings(): Promise<AdvancedSettings> {
   }
 
   try {
-    const [channel, analyticsEnabled, extensionDevToolsEnabled, walkthroughState, maxHeapSizeMB, alphaFeatures, betaFeatures, enableAllBetaFeatures, customPathDirs, spellcheckEnabled, historyMaxAgeDays, historyMaxSnapshots, preferredTerminalShell] =
+    const [channel, analyticsEnabled, extensionDevToolsEnabled, walkthroughState, maxHeapSizeMB, alphaFeatures, betaFeatures, enableAllBetaFeatures, customPathDirs, spellcheckEnabled, showDirectChatProviders, historyMaxAgeDays, historyMaxSnapshots, preferredTerminalShell] =
       await Promise.all([
         window.electronAPI.invoke('release-channel:get'),
         window.electronAPI.invoke('analytics:is-enabled'),
@@ -720,6 +726,7 @@ export async function initAdvancedSettings(): Promise<AdvancedSettings> {
         window.electronAPI.invoke('beta-features:get-enable-all'),
         window.electronAPI.invoke('app-settings:get', 'customPathDirs'),
         window.electronAPI.invoke('app-settings:get', 'spellcheckEnabled'),
+        window.electronAPI.invoke('app-settings:get', 'showDirectChatProviders'),
         window.electronAPI.invoke('app-settings:get', 'historyMaxAgeDays'),
         window.electronAPI.invoke('app-settings:get', 'historyMaxSnapshots'),
         window.electronAPI.invoke('app-settings:get', 'preferredTerminalShell'),
@@ -742,6 +749,7 @@ export async function initAdvancedSettings(): Promise<AdvancedSettings> {
       betaFeatures: betaFeatures ?? defaultAdvancedSettings.betaFeatures,
       enableAllBetaFeatures: enableAllBetaFeatures ?? false,
       spellcheckEnabled: spellcheckEnabled ?? true,
+      showDirectChatProviders: showDirectChatProviders ?? false,
       customPathDirs: customPathDirs ?? '',
       historyMaxAgeDays: historyMaxAgeDays ?? 30,
       historyMaxSnapshots: historyMaxSnapshots ?? 250,
@@ -805,16 +813,20 @@ const SYNC_PERSIST_DEBOUNCE_MS = 500;
  * Persist sync config to main process.
  * Debounced to avoid excessive IPC calls during rapid changes.
  */
-function scheduleSyncPersist(config: SyncConfig): void {
+function scheduleSyncPersist(): void {
   if (syncPersistTimer) {
     clearTimeout(syncPersistTimer);
   }
   syncPersistTimer = setTimeout(async () => {
     syncPersistTimer = null;
-    if (typeof window !== 'undefined' && window.electronAPI) {
-      // Save null if disabled to clear the config
-      await window.electronAPI.invoke('sync:set-config', config.enabled ? config : null);
-    }
+    if (typeof window === 'undefined' || !window.electronAPI) return;
+    // Re-read at fire time instead of persisting the value captured when this
+    // was scheduled. Other write paths (the mobile project multi-select) update
+    // syncConfigAtom directly inside the debounce window; persisting a stale
+    // snapshot would erase their changes on main while the UI still shows them.
+    const latest = store.get(syncConfigAtom);
+    // Save null if disabled to clear the config
+    await window.electronAPI.invoke('sync:set-config', latest.enabled ? latest : null);
   }, SYNC_PERSIST_DEBOUNCE_MS);
 }
 
@@ -852,7 +864,7 @@ export const setSyncConfigAtom = atom(
     const current = get(syncConfigAtom);
     const newConfig = { ...current, ...updates };
     set(syncConfigAtom, newConfig);
-    scheduleSyncPersist(newConfig);
+    scheduleSyncPersist();
   }
 );
 
@@ -1798,7 +1810,7 @@ export interface WorkspacePermissionsState {
   allowedPatterns: PatternRule[];
   additionalDirectories: AdditionalDirectory[];
   allowedUrlPatterns: AllowedUrlPattern[];
-  /** Issue #628: opt-in classifier for "Allow All" workspaces. */
+  /** Issue #628: opt-in automatic reviewer for "Allow All" workspaces. */
   allowAllUsesClassifier: boolean;
   loading: boolean;
   error: string | null;

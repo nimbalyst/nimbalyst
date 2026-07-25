@@ -30,10 +30,17 @@ import {
   useRole,
   useInteractions,
 } from '@floating-ui/react';
-import { ProviderIcon, MaterialSymbol, SearchReplaceStateManager } from '@nimbalyst/runtime';
+import {
+  ProviderIcon,
+  MaterialSymbol,
+  SearchReplaceStateManager,
+} from '@nimbalyst/runtime';
+import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { WorkstreamEditorTabs, type WorkstreamEditorTabsRef } from './WorkstreamEditorTabs';
 import { WorkstreamSessionTabs } from './WorkstreamSessionTabs';
 import { FilesEditedSidebar } from './FilesEditedSidebar';
+import { AgentReviewPanel } from './AgentReviewPanel';
+import { ChatSidebar } from '../ChatSidebar/ChatSidebar';
 import { LayoutControls } from '../UnifiedAI/LayoutControls';
 import {
   workstreamSessionsAtom,
@@ -49,6 +56,7 @@ import {
   loadSessionDataAtom,
   updateSessionStoreAtom,
   setActiveSessionInWorkstreamAtom,
+  refreshSessionListAtom,
   type WorkstreamType,
 } from '../../store';
 import {
@@ -57,18 +65,24 @@ import {
   workstreamLayoutModeAtom,
   workstreamSplitRatioAtom,
   workstreamFilesSidebarVisibleAtom,
+  workstreamRightPanelModeAtom,
+  workstreamSessionChatIdsAtom,
   workstreamHasOpenResourcesAtom,
   setWorkstreamLayoutModeAtom,
   setWorkstreamSplitRatioAtom,
+  setWorkstreamSessionChatIdAtom,
   toggleWorkstreamFilesSidebarAtom,
   loadWorkstreamState,
   workstreamStatesLoadedAtom,
   workstreamWorktreePathAtom,
+  workstreamActiveFileAtom,
   type WorkstreamLayoutMode,
 } from '../../store/atoms/workstreamState';
 import {
   filesEditedWidthAtom,
   setFilesEditedWidthAtom,
+  clampAgentRightPanelWidth,
+  MIN_AGENT_MAIN_PANEL_WIDTH,
   sessionHistoryCollapsedAtom,
   toggleSessionHistoryCollapsedAtom,
 } from '../../store/atoms/agentMode';
@@ -83,6 +97,7 @@ import {
   sessionKanbanTagsAtom,
   setSessionTagsAtom,
 } from '../../store/atoms/sessionKanban';
+import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
 
 export interface AgentWorkstreamPanelRef {
   closeActiveTab: () => void;
@@ -104,6 +119,56 @@ export interface AgentWorkstreamPanelProps {
   onSwitchToAgentMode?: (planDocumentPath?: string, sessionId?: string) => void;
   /** Open a session in the chat sidebar */
   onOpenSessionInChat?: (sessionId: string) => void;
+}
+
+const pairedChatCreationPromises = new Map<string, Promise<string | null>>();
+
+function sessionMentionDraft(sessionId: string, sessionTitle: string): string {
+  const safeTitle = (sessionTitle.trim() || 'Session')
+    .replace(/[\r\n[\]]+/g, ' ')
+    .trim();
+  return `Regarding @@[${safeTitle}](${sessionId}): `;
+}
+
+async function createPairedStandardChat({
+  workspacePath,
+  targetSessionId,
+  targetSessionTitle,
+  defaultModel,
+}: {
+  workspacePath: string;
+  targetSessionId: string;
+  targetSessionTitle: string;
+  defaultModel: string | null;
+}): Promise<string | null> {
+  const chatSessionId = crypto.randomUUID();
+  const modelId = defaultModel ? ModelIdentifier.tryParse(defaultModel) : null;
+  const provider = modelId?.provider || 'claude-code';
+  const cleanTitle = targetSessionTitle.trim() || 'Session';
+  const result = await window.electronAPI.invoke('sessions:create', {
+    session: {
+      id: chatSessionId,
+      provider,
+      model: defaultModel,
+      title: `Chat with ${cleanTitle}`.slice(0, 120),
+    },
+    workspaceId: workspacePath,
+  });
+
+  if (!result?.success) return null;
+
+  try {
+    await window.electronAPI.invoke(
+      'sessions:update-draft-input',
+      chatSessionId,
+      sessionMentionDraft(targetSessionId, cleanTitle),
+    );
+  } catch (error) {
+    // The session already exists. Preserve its pairing even if draft seeding
+    // races a reconnect; creating a replacement would leave duplicate chats.
+    console.warn('[AgentWorkstreamPanel] Failed to seed paired chat draft:', error);
+  }
+  return chatSessionId;
 }
 
 /**
@@ -401,13 +466,11 @@ const WorkstreamHeader: React.FC<{
   workspacePath: string;
   worktreeId?: string | null;
   worktreePath?: string | null;
-  onToggleSidebar: () => void;
-  sidebarVisible: boolean;
   onArchiveStatusChange?: () => void;
   onOpenTerminal?: () => void;
   onCreateNewTerminal?: () => void;
   onShowArchiveDialog?: () => void;
-}> = React.memo(({ workstreamId, workspacePath, worktreeId, worktreePath, onToggleSidebar, sidebarVisible, onArchiveStatusChange, onOpenTerminal, onCreateNewTerminal, onShowArchiveDialog }) => {
+}> = React.memo(({ workstreamId, workspacePath, worktreeId, worktreePath, onArchiveStatusChange, onOpenTerminal, onCreateNewTerminal, onShowArchiveDialog }) => {
   const title = useAtomValue(workstreamTitleAtom(workstreamId));
   const isProcessing = useAtomValue(workstreamProcessingAtom(workstreamId));
   const sessionData = useAtomValue(sessionStoreAtom(workstreamId));
@@ -647,14 +710,6 @@ const WorkstreamHeader: React.FC<{
           <span>{isArchived ? `Unarchive ${getSessionTypeLabel()}` : `Archive ${getSessionTypeLabel()}`}</span>
         </button>
 
-        {/* Toggle files sidebar */}
-        <button
-          className={`workstream-sidebar-toggle w-8 h-8 flex items-center justify-center rounded cursor-pointer border-none bg-transparent ml-2 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text-muted)] ${sidebarVisible ? 'active text-[var(--nim-primary)]' : 'text-[var(--nim-text-faint)]'}`}
-          onClick={onToggleSidebar}
-          title={sidebarVisible ? 'Hide edited files' : 'Show edited files'}
-        >
-          <MaterialSymbol icon="dock_to_right" size={20} />
-        </button>
       </div>
     </div>
   );
@@ -682,6 +737,8 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
 }, ref) => {
   // Ref to the workstream editor tabs for opening files
   const editorTabsRef = useRef<WorkstreamEditorTabsRef>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const rightPanelRef = useRef<HTMLDivElement>(null);
 
   // Get sessions in this workstream
   const sessions = useAtomValue(workstreamSessionsAtom(workstreamId));
@@ -702,15 +759,108 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
   // Layout state (persisted via workstreamStateAtom)
   const layoutMode = useAtomValue(workstreamLayoutModeAtom(workstreamId));
   const sidebarVisible = useAtomValue(workstreamFilesSidebarVisibleAtom(workstreamId));
+  const rightPanelMode = useAtomValue(workstreamRightPanelModeAtom(workstreamId));
+  const sessionChatSessionIds = useAtomValue(workstreamSessionChatIdsAtom(workstreamId));
   const splitRatio = useAtomValue(workstreamSplitRatioAtom(workstreamId));
   const hasTabs = useAtomValue(workstreamHasOpenResourcesAtom(workstreamId));
   const toggleSidebar = useSetAtom(toggleWorkstreamFilesSidebarAtom);
   const setSplitRatio = useSetAtom(setWorkstreamSplitRatioAtom);
   const setLayoutMode = useSetAtom(setWorkstreamLayoutModeAtom);
+  const setSessionChatId = useSetAtom(setWorkstreamSessionChatIdAtom);
+  const refreshSessions = useSetAtom(refreshSessionListAtom);
+  const defaultModel = useAtomValue(defaultAgentModelAtom);
 
   // Files sidebar width (project-level state from agentMode)
   const sidebarWidth = useAtomValue(filesEditedWidthAtom);
   const setSidebarWidth = useSetAtom(setFilesEditedWidthAtom);
+  const chatTargetId = activeSessionId || (workstreamType === 'session' ? workstreamId : null);
+  const chatTargetSession = useAtomValue(sessionStoreAtom(chatTargetId || '__no_chat_target__'));
+  const chatTargetTitle = chatTargetSession?.title || 'Session';
+  const chatSessionId = chatTargetId ? sessionChatSessionIds[chatTargetId] ?? null : null;
+  const [chatCreationError, setChatCreationError] = useState<string | null>(null);
+  const [chatCreationAttempt, setChatCreationAttempt] = useState(0);
+
+  const handleChatSessionChange = useCallback((nextChatSessionId: string | null) => {
+    if (!chatTargetId) return;
+    setSessionChatId({
+      workstreamId,
+      targetSessionId: chatTargetId,
+      chatSessionId: nextChatSessionId,
+    });
+  }, [chatTargetId, setSessionChatId, workstreamId]);
+
+  useEffect(() => {
+    if (
+      !isActive
+      || !sidebarVisible
+      || rightPanelMode !== 'session-chat'
+      || !chatTargetId
+      || chatSessionId
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const creationKey = `${workspacePath}\0${workstreamId}\0${chatTargetId}`;
+    let creation = pairedChatCreationPromises.get(creationKey);
+    if (!creation) {
+      creation = createPairedStandardChat({
+        workspacePath,
+        targetSessionId: chatTargetId,
+        targetSessionTitle: chatTargetTitle,
+        defaultModel,
+      });
+      pairedChatCreationPromises.set(creationKey, creation);
+      const clearCreation = () => {
+        if (pairedChatCreationPromises.get(creationKey) === creation) {
+          pairedChatCreationPromises.delete(creationKey);
+        }
+      };
+      void creation.then(clearCreation, clearCreation);
+    }
+
+    setChatCreationError(null);
+    void creation
+      .then((createdSessionId) => {
+        if (!createdSessionId) {
+          if (!cancelled) {
+            setChatCreationError('Could not open a chat for this session.');
+          }
+          return;
+        }
+        // Persist the target pairing even if the panel remounted or the user
+        // switched sessions while creation was in flight.
+        setSessionChatId({
+          workstreamId,
+          targetSessionId: chatTargetId,
+          chatSessionId: createdSessionId,
+        });
+        refreshSessions();
+      })
+      .catch((error) => {
+        console.error('[AgentWorkstreamPanel] Failed to create paired chat:', error);
+        if (!cancelled) {
+          setChatCreationError('Could not open a chat for this session.');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    chatCreationAttempt,
+    chatSessionId,
+    chatTargetId,
+    chatTargetTitle,
+    defaultModel,
+    isActive,
+    refreshSessions,
+    rightPanelMode,
+    setSessionChatId,
+    sidebarVisible,
+    workspacePath,
+    workstreamId,
+  ]);
 
   // Session store for updating archived state
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
@@ -868,7 +1018,11 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
   // Ref for the content container (used for resize calculations)
   const contentRef = useRef<HTMLDivElement>(null);
   const verticalResizeRef = useRef({ startY: 0, startRatio: splitRatio, containerHeight: 0 });
-  const sidebarResizeRef = useRef({ startX: 0, startWidth: sidebarWidth });
+  const sidebarResizeRef = useRef({
+    startX: 0,
+    startWidth: sidebarWidth,
+    availableWidth: 0,
+  });
 
   // Ref for the editor area to check focus
   const editorAreaRef = useRef<HTMLDivElement>(null);
@@ -988,10 +1142,6 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
     };
   }, []);
 
-  const handleToggleSidebar = useCallback(() => {
-    toggleSidebar(workstreamId);
-  }, [workstreamId, toggleSidebar]);
-
   // Archive dialog handler
   const handleShowArchiveDialog = useCallback(async () => {
     if (!sessionWorktreeId || !worktreePath) return;
@@ -1086,6 +1236,23 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
   // Collapse the transcript content (hide messages) when in editor mode
   const collapseTranscript = layoutMode === 'editor';
 
+  // Reactive file path of the active workstream editor tab, so the agent chat
+  // scopes its "+ selection" chips to the file the user is actually looking at.
+  // SelectionChips shows a chip only when currentFilePath matches the selection's
+  // filePath (no most-recent fallback — that leaked a selection across modes).
+  // The editor tabs live inside WorkstreamEditorTabs' own TabsProvider; the active
+  // file is mirrored to workstreamState, so workstreamActiveFileAtom is null when
+  // the active tab is a tracker (not a file) or nothing is open. Empty when the
+  // editor area is hidden (transcript-only view) so a stale selection can't leak.
+  // The send path still uses getDocumentContext for the fresh selection.
+  const activeEditorFile = useAtomValue(workstreamActiveFileAtom(workstreamId));
+  // Stable object identity (only changes when the active file does) so the memoized
+  // WorkstreamSessionTabs / AgentSessionPanel aren't re-rendered every parent render.
+  const sessionDocumentContext = React.useMemo(
+    () => ({ filePath: showEditorTabs ? (activeEditorFile ?? '') : '' }),
+    [showEditorTabs, activeEditorFile]
+  );
+
   // Open pending file once editor mounts after layout mode change
   useEffect(() => {
     if (pendingFileOpenRef.current && showEditorTabs && editorTabsRef.current) {
@@ -1131,7 +1298,9 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
     onMove: (event) => {
       const deltaX = sidebarResizeRef.current.startX - event.clientX;
       const newWidth = sidebarResizeRef.current.startWidth + deltaX;
-      setSidebarWidth(newWidth);
+      setSidebarWidth(
+        clampAgentRightPanelWidth(newWidth, sidebarResizeRef.current.availableWidth),
+      );
     },
     onEnd: () => {
       setIsDraggingSidebar(false);
@@ -1140,7 +1309,13 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
 
   const handleSidebarResizeStart = useCallback((event: React.PointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
-    sidebarResizeRef.current = { startX: event.clientX, startWidth: sidebarWidth };
+    const availableWidth = panelRef.current?.getBoundingClientRect().width ?? sidebarWidth;
+    const renderedWidth = rightPanelRef.current?.getBoundingClientRect().width ?? sidebarWidth;
+    sidebarResizeRef.current = {
+      startX: event.clientX,
+      startWidth: renderedWidth,
+      availableWidth,
+    };
     setIsDraggingSidebar(true);
     startSidebarResizeDrag(event);
   }, [sidebarWidth, startSidebarResizeDrag]);
@@ -1274,7 +1449,7 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
   }), []);
 
   return (
-    <div className="agent-workstream-panel flex flex-row h-full overflow-hidden">
+    <div ref={panelRef} className="agent-workstream-panel flex flex-row h-full overflow-hidden">
       {/* Main column - header + content */}
       <div className="agent-workstream-panel-main flex flex-col flex-1 min-w-0 overflow-hidden">
         <WorkstreamHeader
@@ -1282,8 +1457,6 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
           workspacePath={workspacePath}
           worktreeId={sessionWorktreeId}
           worktreePath={worktreePath}
-          onToggleSidebar={handleToggleSidebar}
-          sidebarVisible={sidebarVisible}
           onOpenTerminal={sessionWorktreeId ? handleOpenTerminal : undefined}
           onCreateNewTerminal={sessionWorktreeId ? handleCreateNewTerminal : undefined}
           onShowArchiveDialog={sessionWorktreeId ? handleShowArchiveDialog : undefined}
@@ -1340,6 +1513,7 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
                 onSessionArchive={handleSessionArchive}
                 onSessionUnarchive={handleSessionUnarchive}
                 onSessionRename={handleSessionRename}
+                documentContext={sessionDocumentContext}
                 getDocumentContext={getDocumentContext}
                 collapseTranscript={collapseTranscript}
               />
@@ -1355,25 +1529,82 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
           data-testid="agent-files-sidebar-resize-handle"
           onPointerDown={handleSidebarResizeStart}
           role="separator"
-          aria-label="Resize files edited sidebar"
+          aria-label="Resize Agent right panel"
           aria-orientation="vertical"
         />
       )}
 
-      {/* Files edited sidebar - full height on the right, sibling of main column */}
+      {/* Agent right panel - full height on the right, sibling of main column */}
       {sidebarVisible && (
-        <FilesEditedSidebar
-          workstreamId={workstreamId}
-          activeSessionId={activeSessionId}
-          workspacePath={workspacePath}
-          onFileClick={handleFileClick}
-          onOpenInFilesMode={onFileOpen}
-          width={sidebarWidth}
-          worktreeId={sessionWorktreeId}
-          worktreePath={worktreePath}
-          onWorktreeArchived={onWorktreeArchived}
-          isGitRepo={isGitRepo}
-        />
+        <div
+          ref={rightPanelRef}
+          className="agent-workstream-right-panel shrink-0 min-w-0 h-full overflow-hidden"
+          style={{
+            width: sidebarWidth,
+            maxWidth: `calc(100% - ${MIN_AGENT_MAIN_PANEL_WIDTH}px)`,
+          }}
+        >
+          {rightPanelMode === 'edited-files' && (
+            <FilesEditedSidebar
+              workstreamId={workstreamId}
+              activeSessionId={activeSessionId}
+              workspacePath={workspacePath}
+              onFileClick={handleFileClick}
+              onOpenInFilesMode={onFileOpen}
+              width="100%"
+              worktreeId={sessionWorktreeId}
+              worktreePath={worktreePath}
+              onWorktreeArchived={onWorktreeArchived}
+              isGitRepo={isGitRepo}
+            />
+          )}
+          {rightPanelMode === 'review' && (
+            <AgentReviewPanel
+              workstreamId={workstreamId}
+              activeSessionId={activeSessionId}
+              workspacePath={workspacePath}
+              width="100%"
+              worktreeId={sessionWorktreeId}
+              worktreePath={worktreePath}
+            />
+          )}
+          {rightPanelMode === 'session-chat' && (
+            chatTargetId && chatSessionId ? (
+              <ChatSidebar
+                workspacePath={workspacePath}
+                isActive={isActive}
+                sessionId={chatSessionId}
+                onSessionIdChange={handleChatSessionChange}
+                autoInitializeSession={false}
+                newSessionTitle={`Chat with ${chatTargetTitle}`.slice(0, 120)}
+                newSessionDraft={sessionMentionDraft(chatTargetId, chatTargetTitle)}
+                linkedSession={{ id: chatTargetId, title: chatTargetTitle }}
+                onFileOpen={handleFileClick}
+              />
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center gap-3 px-6 text-center text-sm text-nim-muted">
+                {chatCreationError ? (
+                  <>
+                    <MaterialSymbol icon="error" size={28} className="text-nim-error" />
+                    <span>{chatCreationError}</span>
+                    <button
+                      type="button"
+                      onClick={() => setChatCreationAttempt((attempt) => attempt + 1)}
+                      className="px-3 py-1.5 rounded border border-nim bg-nim-secondary text-xs text-nim cursor-pointer hover:bg-nim-hover"
+                    >
+                      Try again
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="w-5 h-5 border-2 border-nim border-t-nim-primary rounded-full animate-spin" />
+                    <span>{chatTargetId ? 'Opening chat…' : 'Select a session to start chatting.'}</span>
+                  </>
+                )}
+              </div>
+            )
+          )}
+        </div>
       )}
 
       {/* Archive worktree confirmation dialog */}

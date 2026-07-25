@@ -16,6 +16,7 @@ import {
   sessionParentIdAtom,
 } from '../atoms/sessions';
 import { workstreamStateAtom } from '../atoms/workstreamState';
+import { sessionRefMapAtom, type SessionRefMeta } from '@nimbalyst/runtime';
 
 // Track pending refresh to debounce rapid-fire events
 let pendingRefreshTimer: NodeJS.Timeout | null = null;
@@ -179,6 +180,28 @@ export function initSessionListListeners(): () => void {
   cleanups.push(
     window.electronAPI.on('sessions:child-added', handleChildAdded)
   );
+
+  // Mirror the session registry into the runtime `sessionRefMapAtom` so
+  // transcript `SessionReferenceChip`s (used by cross-session tool widgets and
+  // bare-UUID autolinks) can resolve a session's live title/phase without
+  // reaching into electron store atoms. Runs once now and on every registry
+  // change.
+  const mirrorSessionRefs = () => {
+    const registry = store.get(sessionRegistryAtom);
+    const next = new Map<string, SessionRefMeta>();
+    for (const meta of registry.values()) {
+      next.set(meta.id, {
+        id: meta.id,
+        title: meta.title,
+        phase: meta.phase,
+        provider: meta.provider,
+        isAwaitingInput: meta.hasPendingInteractivePrompt || undefined,
+      });
+    }
+    store.set(sessionRefMapAtom, next);
+  };
+  mirrorSessionRefs();
+  cleanups.push(store.sub(sessionRegistryAtom, mirrorSessionRefs));
 
   // Cleanup function
   return () => {

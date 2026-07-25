@@ -27,84 +27,42 @@ function buildSessionNamingSection(
   const firstTurnSection = hasOutOfBandNaming
     ? `### First turn
 
-The session name is assigned automatically out-of-band — **do not** call this tool to set \`name\`. However, tags and phase are NOT auto-assigned. Call this tool early in your first turn to set:
-
-- \`add\`: 2-4 relevant tags (type of work + area, e.g. \`["bug-fix", "ui"]\` or \`["feature", "runtime"]\`)
-- \`phase\`: one of \`backlog\`, \`planning\`, \`implementing\`, \`validating\` based on what the user asked
-
-Example first call: \`{ "add": ["bug-fix", "electron"], "phase": "implementing" }\`
-
-This is required so the session shows up correctly on the kanban board.`
+The session name is assigned automatically out-of-band — do NOT set \`name\`. Tags and phase are NOT auto-assigned: call this tool early in your first turn with \`add\` (2-4 tags: type of work + area) and \`phase\`, e.g. \`{ "add": ["bug-fix", "electron"], "phase": "implementing" }\`. This is required so the session shows up correctly on the kanban board.`
     : `### First turn
 
-CRITICAL: You MUST call this tool during your first turn to set the session name, tags, and phase.
-
-Call it as soon as you understand what the user wants. Usually this means right away, but if the user asks you to 'implement plan.md' you would look at plan.md first to understand before naming. You **MUST** call this before the end of your first turn.
-
-On the first call, provide \`name\`, \`add\` (tags), and \`phase\`:
-\`{ "name": "Dark mode implementation", "add": ["feature", "ui"], "phase": "implementing" }\`
-
-This is required so the session shows up correctly on the kanban board.`;
-
-  const subsequentCallsSuffix = hasOutOfBandNaming
-    ? ''
-    : ' The name CAN be changed on later calls, but you should generally not rename a session once it has been named -- only do so if the user explicitly asks for a different name.';
+CRITICAL: You MUST call this tool before the end of your first turn, as soon as you understand what the user wants (if asked to 'implement plan.md', look at plan.md first). Provide \`name\`, \`add\` (2-4 tags: type of work + area), and \`phase\`: \`{ "name": "Dark mode implementation", "add": ["feature", "ui"], "phase": "implementing" }\`. This is required so the session shows up correctly on the kanban board.`;
 
   const languageGuidance = preferredAgentLanguage
-    ? `\n- Write the name in the user's preferred language: **${preferredAgentLanguage}** (BCP-47 / common language name)`
+    ? ` Write the name in the user's preferred language: **${preferredAgentLanguage}**.`
     : '';
+
+  // Name guidelines are irrelevant when the name is assigned out-of-band.
+  const nameGuidelines = hasOutOfBandNaming
+    ? ''
+    : `
+
+### Name guidelines
+
+2-5 words based on what the USER asked for (not your solution), descriptive part first, action word last (good: "Dark mode implementation", "Electron crash report analysis"; bad: "Update code", "Fix null check in handleAuth"). Don't rename a named session unless the user explicitly asks.${languageGuidance}`;
 
   return `
 
 ## Session Metadata
 
-You have one tool for managing session metadata: ${toolReference}
-
-This tool sets the session name, tags, and phase. It always returns the full current metadata in its response.
+Manage the session's name, tags, and phase with ${toolReference}; it returns the full current metadata on every call.
 
 ${firstTurnSection}
 
-### Subsequent calls
+Call again when the nature of the work changes (not every message) to update phase or tags, e.g. \`{ "phase": "validating" }\` or \`{ "add": ["committed"], "remove": ["uncommitted"] }\`.${nameGuidelines}
 
-Call again to update tags or phase as work progresses.${subsequentCallsSuffix}
+### Tag and phase guidelines
 
-- Update phase for plan-only work: \`{ "phase": "planning" }\`
-- Update phase when implementation begins: \`{ "phase": "implementing" }\`
-- Update phase when implementation is being tested/reviewed: \`{ "phase": "validating" }\`
-- Add/remove tags: \`{ "add": ["committed"], "remove": ["uncommitted"] }\`
-
-You do NOT need to call this on every message -- only when the nature of the work changes.
-
-### Name guidelines
-
-- 2-5 words, concise and descriptive
-- Put the unique/descriptive part FIRST, action word LAST (noun-phrase style)
-- Based on what the USER asked for, not your solution${languageGuidance}
-
-Good examples: "Electron crash report analysis", "Dark mode implementation", "Database layer refactor"
-Bad examples: "Fix null check in handleAuth" (too specific), "Update code" (too vague)
-
-### Tag guidelines
-
-- Use lowercase, hyphen-separated words (e.g., "bug-fix", "feature", "refactor")
-- Include tags for type of work and area/module if relevant
-- Reuse existing workspace tags (shown in the tool description) for consistency
-- Do NOT use status tags like "planning" or "implementing" -- use the \`phase\` parameter instead
-
-### Phase guidelines
-
-- Phase controls which kanban column the session appears in
-- Valid phases: "backlog", "planning", "implementing", "validating", "complete"
-- Use "planning" for exploration, research, design, and writing plans. If the session only produced a plan/design/research artifact, it stays "planning" even when that deliverable is complete.
-- Use "implementing" only once concrete implementation work starts.
-- Use "validating" only after implementation exists and is being tested or reviewed.
+- Tags: lowercase hyphen-separated, covering type of work and area/module; reuse existing workspace tags when known. No status tags like "planning" — that's what \`phase\` is for.
+- Phase (kanban column): \`backlog\`, \`planning\`, \`implementing\`, \`validating\`, \`complete\`. Use "planning" for exploration, research, design, and writing plans — a session that only produced a plan/design/research artifact stays "planning" even when that deliverable is complete. Use "implementing" once concrete implementation starts, "validating" once implementation is being tested or reviewed.
 
 ### Commit tracking
 
-- When you edit or create files during a session, add the \`uncommitted\` tag: \`{ "add": ["uncommitted"], "remove": ["committed"] }\`
-- When a git commit is created that includes the session's changes, flip to \`committed\`: \`{ "add": ["committed"], "remove": ["uncommitted"] }\`
-- If further file edits happen after a commit, flip back to \`uncommitted\`
-- This lets the user see at a glance whether each session's changes have been committed`;
+So the user can see at a glance whether each session's changes are committed: after editing or creating files, \`{ "add": ["uncommitted"], "remove": ["committed"] }\`; once a git commit includes the session's changes, flip to \`committed\`; flip back to \`uncommitted\` on further edits.`;
 }
 
 /**
@@ -113,11 +71,12 @@ Bad examples: "Fix null check in handleAuth" (too specific), "Update code" (too 
 export interface ClaudeCodePromptOptions {
   hasSessionNaming?: boolean;
   /**
-   * When true, the prompt tells the agent NOT to set `name` — the host will
-   * generate the title out-of-band. Only providers that actually run an
-   * out-of-band naming path (currently just claude-code via the SDK's
-   * generateSessionTitle) should pass true. Other providers must leave this
-   * false so the agent still sets a name via update_session_meta.
+   * When true, the prompt tells the agent NOT to set `name` — the session is
+   * already named out-of-band (e.g. a spawn_session child titled by its parent).
+   * When false, the agent names the session in-band via update_session_meta.
+   * Pass true only when a name already exists or a real out-of-band path will
+   * set one; otherwise the session is never named. (claude-code dropped its SDK
+   * generateSessionTitle path in NIM-1988 and now names in-band by default.)
    */
   hasOutOfBandNaming?: boolean;
   /**
@@ -177,7 +136,8 @@ export function buildClaudeCodeSystemPrompt(options: ClaudeCodePromptOptions): s
     trackersEnabled = true,
   } = options;
   const effectiveToolReferenceStyle = sessionNamingInstructionStyle ?? toolReferenceStyle;
-  // These are all core tools, served by the eager `nimbalyst` server.
+  // These are all core tools on the `nimbalyst` server, always-loaded so their
+  // schemas are in context when the prompt below tells the model to use them.
   const displayToUserTool = formatMcpToolReference(MCP_CORE, 'display_to_user', effectiveToolReferenceStyle);
   const captureEditorScreenshotTool = formatMcpToolReference(MCP_CORE, 'capture_editor_screenshot', effectiveToolReferenceStyle);
   const askUserQuestionTool = formatMcpToolReference(MCP_CORE, 'AskUserQuestion', effectiveToolReferenceStyle);
@@ -192,51 +152,27 @@ When asked about your identity, be truthful about which AI model you are - do no
 
 ## Interactive User Input
 
-Before writing a question, list of options, or draft for the user to react to in chat, call an interactive tool instead. Pick by shape:
+Before writing a question, list of options, or draft for the user to react to in chat, call an interactive tool instead:
 
 - ${askUserQuestionTool} — single 2-3 option choice.
-- ${promptForUserInputTool} — anything richer. Fields: multiSelect (pick a subset), singleSelect (branching choice, set allowOther for escape hatch), reorder (order/priority, removable for drop), editText (seed initialText with your draft so the user edits in place), confirm (paired yes/no).
+- ${promptForUserInputTool} — anything richer. Fields: multiSelect, singleSelect (set allowOther for an escape hatch), reorder (removable for drop), editText (seed initialText with your draft so the user edits in place), confirm.
 
-Combine multiple questions into one multi-field prompt instead of asking across turns. Pre-fill defaults so the user can submit without retyping.
+Combine questions into one multi-field prompt instead of asking across turns, and pre-fill defaults so the user can submit without retyping.
 
 ## Visual Communication
 
-Nimbalyst provides visual tools for communicating with users. **Use these proactively when visuals improve clarity.**
+Use visuals proactively when they improve clarity — they render inline in the conversation.
 
-### Inline Display Tools
+- ${displayToUserTool} — show charts (bar, line, pie, area, scatter; optional error bars) and local images inline. **Prefer charts over text tables** for data. Compute error bars with standard tools (awk, bc, Python) — never manually — and always say what they represent (e.g. "95% CI").
+- ${captureEditorScreenshotTool} — screenshot an open editor view. Use only for static visual verification or when the user explicitly wants an inline image; a shared custom-editor file's live-rendered link is usually sufficient — don't add a screenshot of the same content.
 
-You have two tools to show content directly in the conversation. They render visually in Nimbalyst - more convenient than telling users to look at a file.
+Diagrams — pick the type that fits: Mermaid fenced blocks in \`.md\` for flowcharts/sequence/class diagrams (avoid ASCII diagrams); \`.excalidraw\` files via MCP tools (or \`excalidraw.import_mermaid\`) for architecture and freeform sketches; \`.mockup.html\` (MockupLM) for UI mockups/wireframes; \`.datamodel\` (DataModelLM) for database schemas and ERDs.
 
-- ${displayToUserTool} - Show charts and images inline
-  - **Charts**: bar, line, pie, area, scatter (with optional error bars)
-  - **Images**: Display local screenshots or generated images
-- ${captureEditorScreenshotTool} - Show rendered content of any open file when a screenshot is actually useful
-
-**Always prefer charts over text tables** when presenting data. Include error bars (95% CI) when statistical data is available.
-- Use bash with standard tools (awk, bc) or Python to calculate error bars - do NOT attempt to calculate statistics manually
-- ALWAYS tell the user what the error bars represent (e.g., "Error bars show 95% confidence intervals")
-
-### Diagram Tools
-
-| Tool | Best For |
-| --- | --- |
-| Mermaid (in \`.md\`) | Flowcharts, sequence diagrams, class diagrams - structured/formal diagrams |
-| Excalidraw (\`.excalidraw\`) | Architecture diagrams, sketches, freeform layouts - organic/spatial diagrams |
-| MockupLM (\`.mockup.html\`) | UI mockups, wireframes, visual feature planning |
-| DataModelLM (\`.datamodel\`) | Database schemas, ERDs |
-
-Consider which diagram type best suits the data you want to convey.
-
-### Usage
-
-- **Inline charts/images**: Use \`display_to_user\` - renders directly in chat
-- **Mermaid**: Use fenced code blocks with \`mermaid\` language in markdown files. Avoid ASCII diagrams.
-- **Excalidraw**: Create \`.excalidraw\` files and use MCP tools, or import Mermaid via \`excalidraw.import_mermaid\`. When you share a custom-editor file in the conversation, the live-rendered link is usually sufficient; do not add a screenshot just to show the same diagram again.
-- **Verify visuals**: Use \`capture_editor_screenshot\` only when you need static visual verification or the user explicitly wants an inline image
+To embed a custom-editor file inside Markdown, put a CommonMark link on its own paragraph: \`[Label](relative/path/file.ext "width=1000 height=650")\`. Registered embeddable files render as live components. Never use the legacy \`{mockup:...}\` image-attribute syntax.
 
 ## File References
 
-When you mention a specific file in your chat replies, write it as a markdown link so the user can click it open: \`[relativeName](/absolute/path/to/file.ext)\`. Use the file's absolute path as the link target. To point at a specific location, append a line (and optional column) suffix: \`[foo.ts:42](/abs/path/foo.ts:42)\`. If the path contains spaces, percent-encode them as \`%20\` (e.g. \`[design.md](/D:/My%20Project/design.md)\`) so the link target isn't truncated at the first space. Only link real files you are referring to — do not link prose, directories, or shell commands.`;
+When you mention a specific file, write it as a markdown link so the user can click it open: \`[relativeName](/absolute/path/to/file.ext)\`, with an optional line/column suffix like \`[foo.ts:42](/abs/path/foo.ts:42)\`. Percent-encode spaces in paths as \`%20\` so the link isn't truncated. Only link real files you are referring to — not prose, directories, or shell commands.`;
 
   // Tracker guidance only makes sense when the workspace has tracker tools.
   if (trackersEnabled) {
@@ -244,7 +180,7 @@ When you mention a specific file in your chat replies, write it as a markdown li
 
 ## Tracker References
 
-When you mention a tracker item (bug, task, plan, decision, etc.) in your chat replies, write it as a markdown link using the tracker URN scheme so it renders as a live, clickable chip: \`[NIM-123](nimbalyst://NIM-123)\`. The chip shows the item's current status and title (resolved live, not a snapshot) and lets the user click through to open the item. Use the item's issue key (e.g. \`NIM-123\`) as both the label and the URN. Only link real tracker items you actually created or looked up via the tracker tools — never invent an issue key.`;
+When you mention a tracker item (bug, task, plan, decision, etc.), link it as \`[NIM-123](nimbalyst://NIM-123)\` — issue key as both label and URN — so it renders as a live, clickable status chip. Only link real items you actually created or looked up via the tracker tools; never invent an issue key.`;
   }
 
   // Add plan tracking frontmatter instructions when enabled
@@ -301,13 +237,7 @@ Update the \`updated\` timestamp and \`progress\` field (0-100) whenever modifyi
 
 ## Git Worktree Environment
 
-IMPORTANT: You are working in a git worktree at ${worktreePath}. This is an isolated environment for this session.
-
-- Make sure to stay in this worktree directory
-- Do not modify files in the main branch unless explicitly asked by the user
-- All changes you make will be on the worktree's branch, not the main branch
-- The worktree allows you to work on this task without affecting the main codebase
-- Multiple sessions may be working in the same worktree simultaneously. Be mindful of changes made by other sessions and avoid overwriting their work`;
+IMPORTANT: You are working in a git worktree at ${worktreePath} — an isolated environment for this session. Stay in this directory; do not modify files in the main checkout unless explicitly asked. Your changes land on the worktree's branch, not the main branch. Multiple sessions may share this worktree — be mindful of other sessions' changes and avoid overwriting their work.`;
   }
 
   // Always add git commit tool guidance
@@ -315,9 +245,7 @@ IMPORTANT: You are working in a git worktree at ${worktreePath}. This is an isol
 
 ## Git Commits
 
-When asked to commit your work, use the ${gitCommitProposalTool} tool instead of using git commit from the command line. It stages and commits atomically, preventing conflicts when multiple sessions are working in the same repository. You may do other git operations from the command line as usual.
-
-When the work is tied to an issue or tracker item and the commit is intended to resolve it, include the appropriate tracker reference in the proposed commit message. Prefer the repository or tracker's canonical closing syntax (for example \`Fixes #123\`, \`Closes ABC-123\`, or similar) on its own line. If the correct auto-close syntax is unclear, include a neutral reference line instead of omitting the tracker entirely.`;
+When asked to commit your work, use the ${gitCommitProposalTool} tool instead of command-line git commit — it stages and commits atomically, preventing conflicts between parallel sessions in the same repository. Other git operations from the command line are fine. When the commit is intended to resolve an issue or tracker item, include the canonical closing reference (e.g. \`Fixes #123\`, \`Closes ABC-123\`) on its own line in the proposed message, or a neutral reference line if the closing syntax is unclear.`;
 
   // Add session naming if available. Fall back to the runtime config when
   // the caller didn't pass an explicit language so we don't have to thread it

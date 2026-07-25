@@ -40,8 +40,16 @@ export function getEmbeddableExtensions(): readonly string[] {
   return Array.from(embeddable);
 }
 
-export function isEmbeddableUrl(url: string): boolean {
+export function isEmbeddableUrl(url: string, embedType?: string): boolean {
   if (!url) return false;
+  const isCollabReference = /^nimbalyst:\/\/doc\//i.test(url);
+  // Collaborative references intentionally have no file suffix in the URL.
+  // They are embeddable only when Share to Team preserved a registered type
+  // hint in the CommonMark title attributes.
+  if (isCollabReference) {
+    if (!embedType) return false;
+    return embeddable.has(normalize(embedType));
+  }
   // Bare URLs (http/https/mailto/etc.) never upgrade; only filesystem paths.
   if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^file:/i.test(url)) return false;
   const lower = url.toLowerCase();

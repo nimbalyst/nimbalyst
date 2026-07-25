@@ -24,6 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 interface WorktreeBaseBranchPickerProps {
   isOpen: boolean;
   workspacePath: string;
+  initialName?: string;
   onCreate: (options: { baseBranch: string; name?: string }) => Promise<void>;
   onCancel: () => void;
 }
@@ -105,6 +106,7 @@ function validateName(name: string): string | null {
 export function WorktreeBaseBranchPicker({
   isOpen,
   workspacePath,
+  initialName,
   onCreate,
   onCancel,
 }: WorktreeBaseBranchPickerProps) {
@@ -113,7 +115,7 @@ export function WorktreeBaseBranchPicker({
   const [isRefreshingRemotes, setIsRefreshingRemotes] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedBranch, setSelectedBranch] = useState<string>('');
-  const [name, setName] = useState('');
+  const [name, setName] = useState(initialName ?? '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -138,10 +140,10 @@ export function WorktreeBaseBranchPicker({
     setIsRefreshingRemotes(false);
     setLoadError(null);
     setSelectedBranch('');
-    setName('');
+    setName(initialName ?? '');
     setIsSubmitting(false);
     setSubmitError(null);
-  }, [isOpen]);
+  }, [initialName, isOpen]);
 
   // Load branches + background fetch.
   useEffect(() => {

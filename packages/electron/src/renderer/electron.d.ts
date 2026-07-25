@@ -148,10 +148,15 @@ interface ElectronAPI {
     getEncryptionMigrationStatus?: (orgId: string) => Promise<{
       success: boolean;
       migration?:
-        | { status: 'migrating'; startedAt: string }
+        | { status: 'migrating'; startedAt: string; documentsCompleted?: number; documentsTotal?: number; phase?: 'custody' | 'titles' | 'documents' | 'verifying' }
         | { status: 'complete'; finishedAt: string }
-        | { status: 'stuck'; failedAt: string; message: string }
+        | { status: 'stuck'; failedAt: string; message: string; retryAt?: string }
         | null;
+    }>;
+    retryEncryptionMigration?: (orgId: string) => Promise<{
+      success: boolean;
+      migration?: unknown;
+      error?: string;
     }>;
     [method: string]: any;
   };
@@ -213,6 +218,7 @@ interface ElectronAPI {
   onOpenKeyboardShortcuts: (callback: () => void) => () => void;
   onOpenFeedback: (callback: () => void) => () => void;
   onThemeChange: (callback: (theme: string) => void) => () => void;
+  setTitleBarOverlayColors: (colors: { color: string; symbolColor: string }) => void;
   onMcpConfigChanged: (callback: (data: { scope: 'user' | 'workspace'; workspacePath?: string }) => void) => () => void;
 
   // Offscreen editor IPC
@@ -267,11 +273,12 @@ interface ElectronAPI {
   exportSessionToClipboard: (options: { sessionId: string }) => Promise<{ success: boolean; error?: string }>;
 
   // Share operations
-  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>;
-  listShares: () => Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number }>; error?: string }>;
-  deleteShare: (options: { shareId: string; sessionId?: string }) => Promise<{ success: boolean; error?: string }>;
+  shareSessionAsLink: (options: { sessionId: string; expirationDays?: number; personalOrgId?: string }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>;
+  getShareAccountOptions: (options: { contentType: 'session' | 'file'; sessionId?: string; filePath?: string }) => Promise<{ success: boolean; accounts?: Array<{ personalOrgId: string; email: string; isSyncAccount: boolean; sessionStatus: 'active' | 'expired' }>; defaultPersonalOrgId?: string; defaultSource?: 'workspace-binding' | 'sync-account' | 'only-account'; error?: string }>;
+  listShares: () => Promise<{ success: boolean; shares?: Array<{ shareId: string; sessionId: string; title: string; sizeBytes: number; createdAt: string; expiresAt: string | null; viewCount: number; owningPersonalOrgId: string }>; error?: string }>;
+  deleteShare: (options: { shareId: string; sessionId?: string; owningPersonalOrgId?: string }) => Promise<{ success: boolean; error?: string }>;
   getShareKeys: () => Promise<Record<string, string>>;
-  shareFileAsLink: (options: { filePath: string; expirationDays?: number }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; error?: string }>;
+  shareFileAsLink: (options: { filePath: string; expirationDays?: number; personalOrgId?: string }) => Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>;
   getShareExpirationPreference: () => Promise<number>;
   setShareExpirationPreference: (days: number) => Promise<void>;
 
@@ -397,6 +404,7 @@ interface ElectronAPI {
   settingsSet: (key: string, value: unknown) => Promise<{ ok: true }>;
   settingsDelete: (key: string) => Promise<{ ok: true }>;
   onSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => () => void;
+  onAppSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => () => void;
 
   getAISettings: () => Promise<any>;
   saveAISettings: (settings: any) => Promise<void>;
@@ -597,6 +605,19 @@ interface ElectronAPI {
     getAll: () => Promise<Record<string, { count: number; firstUsed: string; lastUsed: string }>>;
   };
 
+  // Per-tool usage (tip targeting rollup + AI Usage Report Tools tab)
+  toolUsage: {
+    getRollup: () => Promise<Record<string, { count: number; firstUsed: string; lastUsed: string }>>;
+    getReport: (workspaceId?: string) => Promise<{
+      topTools: Array<{ toolName: string; mcpServer: string | null; count: number; errorCount: number }>;
+      byKind: { builtin: number; mcp: number };
+      byProvider: Array<{ provider: string; count: number }>;
+      overTime: Array<{ day: string; count: number }>;
+      byProject: Array<{ projectPath: string; count: number }>;
+    }>;
+    backfill: () => Promise<{ sessionsProcessed: number; toolCallsCounted: number }>;
+  };
+
   // Credentials (for E2E encryption key management)
   credentials: {
     get: () => Promise<{ encryptionKeySeed: string; createdAt: number; isSecure: boolean }>;
@@ -653,8 +674,18 @@ interface ElectronAPI {
       personalUserId: string | null;
       email: string | null;
       userName?: string;
-      isPrimary: boolean;
+      isSyncAccount: boolean;
+      sessionStatus: 'active' | 'expired';
     }>>;
+    getSyncAccount: () => Promise<{
+      personalOrgId: string;
+      personalUserId: string | null;
+      email: string | null;
+      userName?: string;
+      isSyncAccount: boolean;
+      sessionStatus: 'active' | 'expired';
+    } | null>;
+    setSyncAccount: (personalOrgId: string) => Promise<{ success: boolean }>;
     addAccount: () => Promise<{ success: boolean; error?: string }>;
     removeAccount: (personalOrgId: string, forceOfflinePurge?: boolean) => Promise<{
       success: boolean;
@@ -984,6 +1015,7 @@ interface ElectronAPI {
         userId: string;
         userName?: string;
         userEmail?: string;
+        urlExtraQuery?: string;
         pendingUpdateBase64?: string;
       };
       error?: string;
@@ -1088,10 +1120,6 @@ interface ElectronAPI {
       documentType: string,
       content: string
     ) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    registerCollabAdapterDescriptor: (descriptor: unknown) => Promise<{
       success: boolean;
       error?: string;
     }>;
@@ -1634,8 +1662,14 @@ interface ElectronAPI {
   // Generic IPC methods for services
   invoke: (channel: string, ...args: any[]) => Promise<any>;
   send: (channel: string, ...args: any[]) => void;
+  /**
+   * Subscribe to an IPC channel. Call the returned closure to unsubscribe.
+   *
+   * There is no `off(channel, callback)` counterpart on purpose: contextBridge
+   * re-proxies the callback on every crossing, so identity-based removal never
+   * matches and the listener leaks (issue #943 / NIM-2019).
+   */
   on: (channel: string, callback: (...args: any[]) => void) => () => void;
-  off: (channel: string, callback: (...args: any[]) => void) => void;
 }
 
 interface InstalledExtension {

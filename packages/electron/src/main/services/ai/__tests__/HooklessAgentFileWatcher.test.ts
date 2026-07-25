@@ -34,6 +34,31 @@ vi.mock('../../../file/WorkspaceEventBus', () => ({
 
 import { extractFilePathsFromCommand, HooklessAgentFileWatcher } from '../HooklessAgentFileWatcher';
 import { FileSnapshotCache } from '../../../file/FileSnapshotCache';
+import { workspaceFileAttributionPolicy } from '../../WorkspaceFileAttributionPolicy';
+
+describe('HooklessAgentFileWatcher attribution modes', () => {
+  it('does not create a filesystem watcher for listener-disabled sessions', async () => {
+    const watcher = new HooklessAgentFileWatcher();
+
+    await watcher.ensureForSession('app-server-session', '/workspace', {
+      attributionMode: 'disabled',
+    });
+
+    expect(watcher.getEntry('app-server-session')).toBeUndefined();
+    expect(workspaceFileAttributionPolicy.isDisabled('app-server-session', '/workspace')).toBe(true);
+    await expect(
+      watcher.trackBashEditsFromCommand(
+        { id: 'app-server-session' } as never,
+        '/workspace',
+        'cat /workspace/file.ts',
+        'command-1',
+      ),
+    ).resolves.toBe(false);
+
+    await watcher.stopForSession('app-server-session');
+    expect(workspaceFileAttributionPolicy.isDisabled('app-server-session', '/workspace')).toBe(false);
+  });
+});
 
 describe('extractFilePathsFromCommand', () => {
   let workspaceRoot: string;

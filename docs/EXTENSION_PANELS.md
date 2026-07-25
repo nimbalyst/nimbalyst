@@ -247,9 +247,46 @@ All keys are automatically namespaced by extension ID. Use cases:
 - **Global storage**: Configured connections, preferences
 - **Secret storage**: Passwords, API tokens (stored in system keychain)
 
-## Settings Panel
+## Settings Routes and Nested Panels
 
-Extensions can contribute a settings panel that appears in the Settings screen:
+Extensions with a substantial configuration or management surface can contribute one or more first-class rows to the Settings sidebar. Each route chooses application or project scope:
+
+```json
+{
+  "contributions": {
+    "settingsRoutes": [
+      {
+        "id": "connections",
+        "scope": "project",
+        "label": "Database Connections",
+        "group": "Extensions",
+        "icon": "storage",
+        "order": 50,
+        "component": "DatabaseSettings"
+      }
+    ]
+  }
+}
+```
+
+Route ids are unique within the extension; the host namespaces them as `ext:<extensionId>:<id>`. `scope` must be `"application"` or `"project"`. `group` defaults to `"Extensions"`, `icon` to `"extension"`, and `order` to `100`.
+
+Route components use the existing `settingsPanel` module export:
+
+```typescript
+export const settingsPanel = {
+  DatabaseSettings: ({ storage, theme, workspacePath, projectTarget }) => (
+    <div>
+      <h2>Database Connections</h2>
+      <p>Workspace: {workspacePath}</p>
+    </div>
+  ),
+};
+```
+
+Project-scoped routes receive `workspacePath` for local workspaces plus `projectTarget`, which can also identify an organization project. Application-scoped routes omit both fields. All settings components receive `storage`, `theme`, and the optional `callBackendTool` bridge.
+
+For a small configuration form that does not need its own sidebar row, the legacy `settingsPanel` contribution remains available under Settings → Extensions → Installed:
 
 ```typescript
 // manifest.json
@@ -274,9 +311,11 @@ export const settingsPanel = {
 };
 ```
 
-Settings panels receive:
+Nested settings panels receive:
 - `storage`: ExtensionStorage instance
 - `theme`: Current application theme
+
+They may also receive `callBackendTool`. They do not receive project context; use a project-scoped `settingsRoutes` contribution when the surface is per-repository.
 
 ## Panel Exports
 

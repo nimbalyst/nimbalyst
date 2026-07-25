@@ -6,7 +6,7 @@
  * user prompts, and markdown content.
  *
  * Architecture (official Nimbalyst APIs):
- *  - hostComponent: RtlTranscriptHost — rehype plugin + component overrides
+ *  - hostComponent: RtlTranscriptHost — rehype direction and inline isolation
  *  - inputRtl: applies RTL to user input fields
  *  - settings: configuration service + localStorage + settingsPanel UI
  *

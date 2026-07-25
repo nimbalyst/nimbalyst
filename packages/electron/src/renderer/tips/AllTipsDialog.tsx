@@ -11,24 +11,36 @@ import { useSetAtom } from 'jotai';
 import { activeTipIdAtom } from './atoms';
 import { recordTipShown } from './TipService';
 import { tips } from './definitions';
+import type { TipDefinition } from './types';
 
 interface AllTipsDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  tipDefinitions?: readonly TipDefinition[];
+  onShowTip?: (tip: TipDefinition) => void;
 }
 
-export function AllTipsDialog({ isOpen, onClose }: AllTipsDialogProps): React.ReactElement | null {
+export function AllTipsDialog({
+  isOpen,
+  onClose,
+  tipDefinitions = tips,
+  onShowTip,
+}: AllTipsDialogProps): React.ReactElement | null {
   const setActiveTipId = useSetAtom(activeTipIdAtom);
 
   if (!isOpen) return null;
 
-  const sorted = [...tips].sort(
+  const sorted = [...tipDefinitions].sort(
     (a, b) => (b.trigger.priority ?? 0) - (a.trigger.priority ?? 0)
   );
 
-  const handleShow = (tipId: string, version?: number) => {
-    setActiveTipId(tipId);
-    recordTipShown(tipId, version);
+  const handleShow = (tip: TipDefinition) => {
+    if (onShowTip) {
+      onShowTip(tip);
+    } else {
+      setActiveTipId(tip.id);
+      recordTipShown(tip.id, tip.version);
+    }
     onClose();
   };
 
@@ -73,7 +85,7 @@ export function AllTipsDialog({ isOpen, onClose }: AllTipsDialogProps): React.Re
               </div>
               <button
                 className="shrink-0 px-3 py-1.5 bg-[var(--nim-bg)] border border-[var(--nim-border)] text-[var(--nim-text)] rounded-md text-[12.5px] font-medium cursor-pointer hover:bg-[var(--nim-bg-hover)] transition-colors"
-                onClick={() => handleShow(tip.id, tip.version)}
+                onClick={() => handleShow(tip)}
               >
                 Show
               </button>

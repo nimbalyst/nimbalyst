@@ -125,7 +125,7 @@ export interface TrackerIdentity {
 export interface TrackerActivity {
   id: string;
   authorIdentity: TrackerIdentity;
-  action: 'created' | 'updated' | 'commented' | 'status_changed' | 'assigned' | 'archived';
+  action: 'created' | 'updated' | 'commented' | 'comment_updated' | 'comment_deleted' | 'status_changed' | 'assigned' | 'archived' | 'type_changed';
   /** Which field changed (for 'updated' actions) */
   field?: string;
   /** Previous value */

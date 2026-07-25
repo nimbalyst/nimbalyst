@@ -73,3 +73,32 @@ describe('payload origin round-trip', () => {
     expect(parsed.origin.external.urn).toBe('github://owner/repo#42');
   });
 });
+
+describe('payload system collection round-trip', () => {
+  it('carries comments, activity, and pull request links into the canonical record', () => {
+    const comments = [
+      { id: 'comment-1', authorIdentity: { displayName: 'Alice' }, body: 'hello', createdAt: 1 },
+    ];
+    const activity = [
+      { id: 'activity-1', authorIdentity: { displayName: 'Alice' }, action: 'commented', timestamp: 1 },
+    ];
+    const linkedPullRequests = [
+      { remote: 'nimbalyst/nimbalyst', number: 42 },
+    ];
+    const payload = {
+      ...makePayload(),
+      comments,
+      activity,
+      system: {
+        ...makePayload().system,
+        linkedPullRequests,
+      },
+    } as TrackerItemPayload;
+
+    const record = payloadToRecord(makeEnvelope('ext_abc'), payload, '/ws');
+
+    expect(record.system.comments).toEqual(comments);
+    expect(record.system.activity).toEqual(activity);
+    expect(record.system.linkedPullRequests).toEqual(linkedPullRequests);
+  });
+});

@@ -108,10 +108,6 @@ export function initClaudeCliTerminalListeners(): () => void {
   const unsubscribe = window.electronAPI.on('claude-cli:reveal-terminal', handleReveal);
 
   return () => {
-    if (typeof unsubscribe === 'function') {
-      unsubscribe();
-    } else {
-      window.electronAPI.off?.('claude-cli:reveal-terminal', handleReveal);
-    }
+    unsubscribe();
   };
 }

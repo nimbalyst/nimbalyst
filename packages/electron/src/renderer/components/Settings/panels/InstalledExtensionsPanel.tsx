@@ -443,6 +443,7 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
               ) : filteredExtensions.map((ext) => (
                 <div
                   key={ext.id}
+                  data-testid={`installed-extension-${ext.id}`}
                   className={`flex items-center gap-2.5 px-3 py-2.5 cursor-pointer border-b border-[var(--nim-border)] transition-colors ${
                     selectedId === ext.id
                       ? 'bg-[rgba(38,139,210,0.15)] border-l-2 border-l-[var(--nim-primary)] pl-2.5'

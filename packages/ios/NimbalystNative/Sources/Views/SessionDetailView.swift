@@ -543,8 +543,7 @@ public struct SessionDetailView: View {
             if let voice = appState.voiceAgent {
                 Button {
                     if voice.state == .disconnected {
-                        voice.activeSessionId = session.id
-                        voice.activate()
+                        voice.start(scope: .session(session.id))
                     } else {
                         voice.deactivate()
                     }

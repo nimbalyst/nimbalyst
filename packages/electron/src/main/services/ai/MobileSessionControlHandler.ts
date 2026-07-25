@@ -30,6 +30,9 @@ import {
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import { getGitSubprocessEnv } from '../gitEnv';
 import { findWindowByWorkspace } from '../../window/WindowManager';
+import { getDatabase } from '../../database/initialize';
+import { createWorktreeStore } from '../WorktreeStore';
+import { resolve as resolvePath } from 'path';
 
 const log = logger.ai;
 
@@ -99,6 +102,22 @@ interface GitCommitResponse {
   action: 'committed' | 'cancelled';
   files?: string[];
   message?: string;
+}
+
+/**
+ * Worktree sessions retain the parent project as `workspacePath` for session
+ * listing and permissions. Commit execution must use the session's actual
+ * worktree path, and fail closed if that native binding is incomplete.
+ */
+export function resolveGitCommitWorkspacePath(session: {
+  workspacePath?: string | null;
+  worktreeId?: string | null;
+  worktreePath?: string | null;
+}): string | null {
+  if (session.worktreeId || session.worktreePath) {
+    return session.worktreeId && session.worktreePath ? session.worktreePath : null;
+  }
+  return session.workspacePath || null;
 }
 
 /**
@@ -683,11 +702,27 @@ async function handleGitCommitResponse(
       return;
     }
 
-    const workspacePath = session.workspacePath;
+    const workspacePath = resolveGitCommitWorkspacePath(session);
     if (!workspacePath) {
-      log.error('GitCommit: no workspace path for session:', sessionId);
-      await emitProposalResponse({ action: 'error', error: 'No workspace path' });
+      const error = session.worktreeId
+        ? 'Worktree session has no valid worktree path; refusing to commit'
+        : 'No workspace path';
+      log.error('GitCommit:', error, sessionId);
+      await emitProposalResponse({ action: 'error', error });
       return;
+    }
+
+    // A worktree ID is the native authority record. Do not trust a stale or
+    // agent-influenced session path when that record no longer matches it.
+    if (session.worktreeId) {
+      const db = getDatabase();
+      const nativeWorktree = db ? await createWorktreeStore(db).get(session.worktreeId) : null;
+      const recordedPath = session.worktreePath;
+      if (!nativeWorktree || !recordedPath || resolvePath(nativeWorktree.path) !== resolvePath(recordedPath)) {
+        log.error('GitCommit: native worktree binding mismatch for session:', sessionId);
+        await emitProposalResponse({ action: 'error', error: 'Worktree binding changed or is unavailable; refusing to commit' });
+        return;
+      }
     }
 
     const {

@@ -57,6 +57,13 @@ export interface SharedDocumentExportResult extends SeedResult {
   content?: string;
 }
 
+export type SharedDocumentEmptiness = 'empty' | 'not-empty' | 'failed' | 'unsupported';
+
+export interface SharedDocumentEmptinessResult {
+  status: SharedDocumentEmptiness;
+  error?: string;
+}
+
 interface SeedParams {
   workspacePath: string;
   documentId: string;
@@ -67,6 +74,66 @@ interface SeedParams {
 
 const CONNECT_TIMEOUT_MS = 8_000;
 const FLUSH_TIMEOUT_MS = 8_000;
+
+/**
+ * Authoritatively inspect a shared document after its DocumentRoom first sync.
+ * A timeout or sync error is never interpreted as empty.
+ */
+export async function inspectSharedDocumentEmptiness(
+  params: Omit<SeedParams, 'content'>,
+): Promise<SharedDocumentEmptinessResult> {
+  const codec = getCollabContentAdapter(params.documentType);
+  if (!codec) return { status: 'unsupported' };
+
+  const config = await resolveCollabConfigForUri(
+    params.workspacePath,
+    `collab://cleanup/${params.documentId}`,
+    params.documentId,
+    params.title,
+    params.documentType,
+  );
+  if (!config) {
+    return { status: 'failed', error: 'Could not resolve collaboration credentials.' };
+  }
+
+  let resolveFirstSync!: () => void;
+  const firstSync = new Promise<void>((resolve) => { resolveFirstSync = resolve; });
+  const provider = new DocumentSyncProvider({
+    serverUrl: config.serverUrl,
+    getJwt: config.getJwt,
+    orgId: config.orgId,
+    keyCustody: config.keyCustody,
+    documentKey: config.documentKey,
+    legacyDocumentKey: config.legacyDocumentKey,
+    legacyDocumentKeys: config.legacyDocumentKeys,
+    orgKeyFingerprint: config.orgKeyFingerprint,
+    userId: config.userId,
+    documentId: config.documentId,
+    createWebSocket: config.createWebSocket,
+    reviewGateEnabled: false,
+    onFirstSyncComplete: resolveFirstSync,
+  });
+
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    await provider.connect();
+    const synced = await Promise.race([
+      firstSync.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(() => resolve(false), CONNECT_TIMEOUT_MS);
+      }),
+    ]);
+    if (!synced) {
+      return { status: 'failed', error: 'Timed out waiting for authoritative document sync.' };
+    }
+    return { status: codec.isEmpty(provider.getYDoc()) ? 'empty' : 'not-empty' };
+  } catch (err) {
+    return { status: 'failed', error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    try { provider.destroy(); } catch { /* Ignore teardown failures. */ }
+  }
+}
 
 /**
  * Seed a shared document's initial content into its collab room, trying the

@@ -99,7 +99,7 @@ function relativeTime(ms: number | null | undefined): string {
 
 export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPanelProps) {
   const isDark = theme === 'dark' || theme === 'crystal-dark';
-  const muted = 'var(--nim-text-secondary)';
+  const muted = 'var(--nim-text-muted)';
 
   const [status, setStatus] = useState<IndexStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -383,11 +383,11 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
 
       {/* ---------------- QUICK OPEN ---------------- */}
       <section style={SECTION}>
-        <h4 style={H4}>Global search</h4>
+        <h4 style={H4}>Memory search</h4>
         <p style={{ margin: 0, color: muted, lineHeight: 1.5 }}>
-          With this extension enabled, Quick Open gains a <strong>Search</strong>{' '}
-          tab that finds any tracker or document by meaning. Trackers are cataloged
-          automatically.
+          With this extension enabled, Quick Open gains a <strong>Memory</strong>{' '}
+          tab that finds documents, trackers, and optional AI sessions by meaning.
+          Trackers are cataloged automatically.
         </p>
         <label
           style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', lineHeight: 1.45 }}
@@ -805,7 +805,7 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={SCORE}>{h.score.toFixed(2)}</span>
                     <span style={{ fontSize: 11, color: 'var(--nim-text-muted)', display: 'flex', gap: 4, alignItems: 'center', minWidth: 0, overflow: 'hidden' }}>
-                      <span style={{ color: 'var(--nim-accent, #60a5fa)', whiteSpace: 'nowrap' }}>
+                      <span style={{ color: 'var(--nim-link)', whiteSpace: 'nowrap' }}>
                         {h.sourcePath.replace(/^.*\//, '')}
                       </span>
                       {(h.headingPath ?? []).map((seg, j) => (
@@ -817,7 +817,7 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
                     </span>
                     {sig && <span style={{ ...signalStyle(sig.tone), marginLeft: 'auto' }}>{sig.text}</span>}
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--nim-text-secondary)', lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 12, color: 'var(--nim-text-muted)', lineHeight: 1.5 }}>
                     {h.text.length > 320 ? `${h.text.slice(0, 320)}…` : h.text}
                   </div>
                 </div>
@@ -872,8 +872,8 @@ function Pill({
         borderRadius: 999,
         cursor: 'pointer',
         border: `1px solid ${active ? 'rgba(96,165,250,0.4)' : 'transparent'}`,
-        background: active ? 'rgba(96,165,250,0.16)' : 'var(--nim-bg-tertiary)',
-        color: active ? 'var(--nim-accent, #60a5fa)' : 'var(--nim-text-muted)',
+        background: active ? 'var(--nim-bg-selected)' : 'var(--nim-bg-tertiary)',
+        color: active ? 'var(--nim-link)' : 'var(--nim-text-muted)',
       }}
     >
       {children}
@@ -894,10 +894,10 @@ function signalLabel(signals?: { dense: boolean; sparse: boolean }) {
 const SECTION = { display: 'flex', flexDirection: 'column' as const, gap: 10 };
 const HEAD = { display: 'flex', alignItems: 'center', justifyContent: 'space-between' };
 const H4 = { margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--nim-text)', display: 'flex', alignItems: 'center', gap: 8 } as const;
-const DIVIDER = { height: 1, background: 'var(--nim-border-subtle, #333)', margin: 0 };
+const DIVIDER = { height: 1, background: 'var(--nim-border)', margin: 0 };
 const CARD = {
   background: 'var(--nim-bg-secondary)',
-  border: '1px solid var(--nim-border-subtle, #333)',
+  border: '1px solid var(--nim-border)',
   borderRadius: 8,
   padding: 14,
   display: 'flex',
@@ -980,7 +980,7 @@ function btnStyle(_isDark: boolean) {
     borderRadius: 6,
     border: '1px solid var(--nim-border)',
     background: 'var(--nim-bg-tertiary)',
-    color: 'var(--nim-text-secondary)',
+    color: 'var(--nim-text-muted)',
     cursor: 'pointer',
   } as const;
 }
@@ -989,8 +989,8 @@ const btnPrimary = {
   fontSize: 12,
   padding: '4px 10px',
   borderRadius: 6,
-  border: '1px solid var(--nim-accent-strong, #3b82f6)',
-  background: 'var(--nim-accent-strong, #3b82f6)',
+  border: '1px solid var(--nim-primary)',
+  background: 'var(--nim-primary)',
   color: '#fff',
   cursor: 'pointer',
 } as const;

@@ -30,11 +30,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DocumentSyncProvider, DocumentSyncStatus, ReviewGateState, CollabLexicalProvider } from '@nimbalyst/runtime/sync';
+import type { DocumentSyncProvider, DocumentSyncStatus, ReviewGateState } from '@nimbalyst/runtime/sync';
+import type { CollabLexicalProvider } from '@nimbalyst/runtime/collab-lexical';
 import type { Doc } from 'yjs';
 import type { Provider } from '@lexical/yjs';
 import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimbalyst/runtime/editor';
-import { $getRoot } from 'lexical';
+import { $getRoot, $setSelection } from 'lexical';
 import { resolveCollabConfigForUri } from '../utils/collabDocumentOpener';
 import { getBodyDocCache, type BodyDocAcquisition, type BodyDocConfigFactory } from '../services/BodyDocCache';
 import { exportCollabRecoveryPlaintext, getCollabContentAdapter } from '@nimbalyst/collab-adapters';
@@ -362,6 +363,9 @@ export function useTrackerContentCollab({
       cursorColor,
       initialEditorState: cachedMarkdown
         ? () => {
+            // Clearing a selected node without moving selection first makes
+            // Lexical throw "selection has been lost ..." (NIM-2005).
+            $setSelection(null);
             const root = $getRoot();
             root.clear();
             $convertFromEnhancedMarkdownString(cachedMarkdown, getEditorTransformers());

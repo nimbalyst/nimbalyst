@@ -43,7 +43,9 @@ import { activeTipIdAtom } from '../../tips/atoms';
 import { supportsWorkspaceSlashCommands } from '../Typeahead/slashCommandAutocomplete';
 import type { TextSelection } from './TextSelectionIndicator';
 import { type SerializableDocumentContext } from '../../hooks/useDocumentContext';
+import { serializeEditorContextItemsForIpc } from './editorContextSerialization';
 import { isClaudeCliTerminalSession } from './claudeCliInputRouting';
+import { expandSessionMentions } from './sessionMentions';
 import { diffTreeGroupByDirectoryAtom, setDiffTreeGroupByDirectoryAtom } from '../../store/atoms/projectState';
 import {
   sessionDraftInputAtom,
@@ -60,6 +62,7 @@ import {
   sessionWorktreePathAtom,
   sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
+  sessionThinkingModeRawAtom,
   sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,
@@ -104,13 +107,14 @@ import {
 } from '../../store/atoms/terminals';
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
-import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom } from '../../store/atoms/appSettings';
-import { supportsEffortLevel, parseEffortLevel, type EffortLevel } from '../../utils/modelUtils';
+import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom, developerModeAtom } from '../../store/atoms/appSettings';
+import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, parseThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
 import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPeekSizeAtoms';
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
+import { sessionFileEditsAtom } from '../../store/atoms/sessionFiles';
 import { SESSION_PHASE_COLUMNS, setSessionPhaseAtom, type SessionPhase } from '../../store/atoms/sessionKanban';
 
 /**
@@ -140,26 +144,6 @@ function isCorruptedSpreadOfString(value: unknown): boolean {
     if (k in obj) return false;
   }
   return true;
-}
-
-/**
- * Expand @@[name](shortId) session mentions to @@[name](fullUuid).
- * Short IDs (5 chars) are used in the textarea for readability;
- * at send time we resolve them to full UUIDs for the agent.
- */
-function expandSessionMentions(
-  message: string,
-  registry: Map<string, import('@nimbalyst/runtime').SessionMeta>
-): string {
-  return message.replace(/@@\[([^\]]+)\]\(([a-f0-9]+)\)/g, (_match, name, shortId) => {
-    for (const [fullId] of registry) {
-      if (fullId.startsWith(shortId)) {
-        return `@@[${name}](${fullId})`;
-      }
-    }
-    // No match found -- leave as-is
-    return _match;
-  });
 }
 
 function makeOptimisticError(text: string, extra?: Partial<TranscriptViewMessage>): TranscriptViewMessage {
@@ -212,6 +196,7 @@ interface Todo {
 
 export interface SessionTranscriptRef {
   focusInput: () => void;
+  insertPrompt: (text: string) => void;
 }
 
 export interface SessionTranscriptProps {
@@ -277,8 +262,7 @@ function serializeDocumentContext(
     textSelectionTimestamp: documentContext.textSelectionTimestamp,
     mockupSelection: documentContext.mockupSelection,
     mockupDrawing: documentContext.mockupDrawing,
-    editorContext: documentContext.editorContext,
-    editorContextTimestamp: documentContext.editorContextTimestamp,
+    editorContextItems: serializeEditorContextItemsForIpc(documentContext.editorContextItems),
   };
 }
 
@@ -466,6 +450,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionWorktreePath = useAtomValue(sessionWorktreePathAtom(sessionId));
   const sessionDocumentContext = useAtomValue(sessionDocumentContextAtom(sessionId));
   const rawEffortLevel = useAtomValue(sessionEffortLevelRawAtom(sessionId));
+  const rawThinkingMode = useAtomValue(sessionThinkingModeRawAtom(sessionId));
   const loadSessionData = useSetAtom(loadSessionDataAtom);
   const reloadSessionData = useSetAtom(reloadSessionDataAtom);
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
@@ -509,6 +494,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       metadata: {
         ...safeMetadata,
         effortLevel: rawEffortLevel ?? (safeMetadata as Record<string, unknown> | undefined)?.effortLevel ?? null,
+        thinkingMode: rawThinkingMode ?? (safeMetadata as Record<string, unknown> | undefined)?.thinkingMode ?? null,
         sessionStatus,
         currentTeammates: metadataTeammates,
         currentTodos,
@@ -524,6 +510,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     sessionDocumentContext,
     sessionWorktreePath,
     rawEffortLevel,
+    rawThinkingMode,
     sessionStatus,
     metadataTeammates,
     currentTodos,
@@ -534,6 +521,12 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const effortLevel = useMemo(() => {
     return rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
   }, [rawEffortLevel, defaultEffortLevel]);
+  // Extended-thinking is a power-user control: only surface the selector in
+  // developer mode. When hidden, thinkingMode is never set, so the default
+  // (adaptive/enabled) applies.
+  const developerMode = useAtomValue(developerModeAtom);
+  const showThinkingToggle = useMemo(() => developerMode && supportsThinkingToggle(currentModel), [developerMode, currentModel]);
+  const thinkingMode = useMemo(() => parseThinkingMode(rawThinkingMode), [rawThinkingMode]);
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -818,6 +811,11 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     });
   }, [sessionId, workspacePath]);
 
+  // Edited files for the transcript's Files sidebar. The atom above is kept
+  // current by fileStateListeners; the panel takes this as a prop rather than
+  // running its own IPC subscription (docs/IPC_LISTENERS.md).
+  const sessionFileEdits = useAtomValue(sessionFileEditsAtom(sessionId));
+
   // ============================================================
   // Auto-focus input when session data loads
   // ============================================================
@@ -1037,7 +1035,11 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // ============================================================
   useImperativeHandle(ref, () => ({
     focusInput: () => inputRef.current?.focus(),
-  }));
+    insertPrompt: (text: string) => {
+      setDraftInput(text);
+      inputRef.current?.focus();
+    },
+  }), [setDraftInput]);
 
   // ============================================================
   // Handlers
@@ -1550,6 +1552,16 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     });
   }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog]);
 
+  const handleThinkingModeChange = useCallback(async (mode: ThinkingMode) => {
+    const previousMode = thinkingMode;
+    await updateSessionMetadataField(sessionId, 'thinkingMode', mode, null, updateSessionStore);
+    posthog?.capture('ai_thinking_mode_changed', {
+      thinking_mode: mode,
+      previous_mode: previousMode,
+      model: currentModel,
+    });
+  }, [sessionId, updateSessionStore, thinkingMode, currentModel, posthog]);
+
   const handleCommandSelect = useCallback((command: string) => {
     setDraftInput(command);
     inputRef.current?.focus();
@@ -2050,13 +2062,6 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const enableAttachments = true;
   const enableHistoryNavigation = true;
 
-  // Last user message timestamp for mockup annotation indicator
-  const lastUserMessageTimestamp = React.useMemo(() => {
-    const userMessages = messages.filter(m => m.type === 'user_message');
-    if (userMessages.length === 0) return null;
-    return userMessages[userMessages.length - 1].createdAt?.getTime() || null;
-  }, [messages]);
-
   // Extra content rendered in the empty-session panel: an inline contextual
   // tip (any provider) above the slash command suggestions (claude-code
   // only). InlineTipDisplay registers itself with TipProvider so tips only
@@ -2390,6 +2395,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             onCloseAndArchive={handleCloseAndArchive}
             onUnarchive={handleUnarchive}
             readFile={readFile}
+            fileEdits={sessionFileEdits}
             renderFilesHeader={mode === 'agent' ? () => (
               <>
                 <WakeupBanner sessionId={sessionId} />
@@ -2600,12 +2606,14 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
         showEffortLevel={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showEffortLevel}
+        thinkingMode={thinkingMode}
+        onThinkingModeChange={handleThinkingModeChange}
+        showThinkingToggle={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showThinkingToggle}
         tokenUsage={tokenUsage}
         provider={provider}
         onQueue={handleQueue}
         queueCount={queuedPrompts.length}
         currentFilePath={currentFilePath}
-        lastUserMessageTimestamp={lastUserMessageTimestamp}
         onLaunchActionInNewSession={handleLaunchActionInNewSession}
       />
     </div>

@@ -13,7 +13,7 @@
  * path; the fs touch is injected at the call site.
  *
  * Path layout (verified live 2026-06-08):
- *   ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl
+ *   <claude config dir>/projects/<encoded-cwd>/<sessionId>.jsonl
  * The CLI encodes the project dir by replacing every non-alphanumeric character
  * with `-` (so `/`, `.`, and `_` all collapse to `-`). Verified against
  * `/Users/ghinkle/sources/stravu-editor` → `-Users-ghinkle-sources-stravu-editor`
@@ -29,8 +29,8 @@ export function encodeClaudeProjectDirName(cwd: string): string {
 }
 
 export interface ResolveClaudeCliJsonlPathInput {
-  /** User home directory (os.homedir()). */
-  homedir: string;
+  /** Claude Code config dir — `resolveClaudeConfigDir()`, NOT the home dir. */
+  configDir: string;
   /** Working directory the CLI was/will-be launched in. */
   cwd: string;
   /** The CLI session id (equals the Nimbalyst session id when it's a UUID). */
@@ -39,10 +39,9 @@ export interface ResolveClaudeCliJsonlPathInput {
 
 /** Deterministic on-disk path of a CLI session's transcript jsonl. */
 export function resolveClaudeCliJsonlPath(input: ResolveClaudeCliJsonlPathInput): string {
-  const { homedir, cwd, sessionId } = input;
+  const { configDir, cwd, sessionId } = input;
   return path.join(
-    homedir,
-    '.claude',
+    configDir,
     'projects',
     encodeClaudeProjectDirName(cwd),
     `${sessionId}.jsonl`,

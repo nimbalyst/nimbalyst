@@ -15,9 +15,9 @@
  *    endpoint paths. `endpointPath` is the path each server's connection targets;
  *    the endpoint selects which `ListTools` subset that connection serves.
  *
- * The eager budget is paid only by `alwaysLoad` servers, so the eager set is
- * kept minimal: only `nimbalyst-core`. Everything else defers (or is conditional)
- * and costs nothing until ToolSearch surfaces it on the user's intent.
+ * The eager budget is paid only by `alwaysLoad` tools, so the eager set is
+ * kept minimal. Everything else defers (or is conditional) until ToolSearch
+ * surfaces it on the user's intent.
  *
  * This descriptor is consumed by:
  *  - `McpConfigService.getMcpServersConfig` — decides which `config[name]`
@@ -49,11 +49,11 @@ export interface McpServerTopologyEntry {
 // First-party server config-keys (stable identifiers used across packages).
 // ---------------------------------------------------------------------------
 
-// The eager core uses the bare `nimbalyst` config-key (not `nimbalyst-core`):
-// it carries ~90% of calls and is the only always-loaded server, so the
-// shortest prefix (`mcp__nimbalyst__<tool>`) on the hottest tools is the right
-// micro-optimization. Feature/extension servers keep `nimbalyst-<x>` so they
-// can defer independently.
+// The core endpoint uses the bare `nimbalyst` config-key (not
+// `nimbalyst-core`). The shortest prefix (`mcp__nimbalyst__<tool>`) stays on
+// the hottest tools, while per-tool metadata controls which core schemas load
+// eagerly. Feature/extension servers keep `nimbalyst-<x>` so they can defer
+// independently.
 export const MCP_CORE = 'nimbalyst';
 export const MCP_HOST = 'nimbalyst-host';
 export const MCP_TRACKERS = 'nimbalyst-trackers';
@@ -83,8 +83,8 @@ export const MCP_RETIRED_SERVER_CONFIG_KEYS: readonly string[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * The eager core: universal agent↔host glue. ~90% of all internal MCP calls,
- * and the ONLY Nimbalyst surface that stays `alwaysLoad`.
+ * Core agent↔host glue. All tools stay registered on the core endpoint, while
+ * CORE_ALWAYS_LOAD_TOOLS selects the interaction-critical eager subset.
  */
 export const CORE_TOOLS: readonly string[] = [
   'AskUserQuestion',
@@ -96,7 +96,7 @@ export const CORE_TOOLS: readonly string[] = [
   // NOTE: `developer_git_log` is NOT here — it is contributed by the built-in
   // "Developer Tools" extension (com.nimbalyst.developer, enabledByDefault) and
   // served on its own deferred `nimbalyst-developer` server
-  // (`mcp__nimbalyst-developer__developer_git_log`), never on eager core. Only
+  // (`mcp__nimbalyst-developer__developer_git_log`), never on core. Only
   // `developer_git_commit_proposal` has a first-party core handler (the
   // interactive commit widget in interactiveToolHandlers).
   'update_session_meta',
@@ -108,17 +108,16 @@ export const CORE_TOOLS: readonly string[] = [
  * `alwaysLoad: true`; instead the `/mcp/core` ListTools marks these tools with
  * `_meta['anthropic/alwaysLoad']`, which the Claude CLI honors per tool.
  *
- * `display_to_user` and `capture_editor_screenshot` stay on core so their
- * `mcp__nimbalyst__*` names (referenced by tool policies, permissions,
- * analytics, and onboarding prompts) never change, but they defer behind tool
- * search — visual output is occasional and their schemas cost ~1.1K tokens on
- * every session.
+ * `display_to_user` stays always-loaded because deferring it made the model
+ * guess its argument shape and broke chart rendering (NIM-1766). The two user
+ * input tools and first-turn `update_session_meta` are likewise required in
+ * every session. Lower-frequency core tools remain registered but defer until
+ * ToolSearch surfaces them.
  */
 export const CORE_ALWAYS_LOAD_TOOLS: readonly string[] = [
   'AskUserQuestion',
   'PromptForUserInput',
-  'get_session_edited_files',
-  'developer_git_commit_proposal',
+  'display_to_user',
   'update_session_meta',
 ];
 
@@ -155,6 +154,7 @@ export const HOST_TOOLS: readonly string[] = [
   'spawn_session',
   'send_prompt',
   'list_queued_prompts',
+  'notify_user',
   'respond_to_prompt',
   'get_session_status',
   'get_session_result',

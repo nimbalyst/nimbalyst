@@ -39,6 +39,13 @@ let electronApp: ElectronApplication;
 let page: Page;
 let workspaceDir: string;
 
+async function sendFindMenuCommand(): Promise<void> {
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const targetWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    targetWindow?.webContents.send('menu:find');
+  });
+}
+
 test.beforeAll(async () => {
   workspaceDir = await createTempWorkspace();
 
@@ -57,6 +64,7 @@ test.beforeAll(async () => {
   // Files for find/replace tests
   await fs.writeFile(path.join(workspaceDir, 'find-test-1.md'), '# Test Document 1\n\nThis is a test document with some searchable content.\n\nThe word "test" appears multiple times.\n\nAnother test here.\n', 'utf8');
   await fs.writeFile(path.join(workspaceDir, 'find-test-2.md'), '# Test Document 2\n\nThis is a test document with some searchable content.\n\nThe word "test" appears multiple times.\n\nAnother test here.\n', 'utf8');
+  await fs.writeFile(path.join(workspaceDir, 'find-test.json'), '{"searchable":"content"}\n', 'utf8');
 
   electronApp = await launchElectronApp({
     workspace: workspaceDir,
@@ -318,18 +326,13 @@ test('should open search/replace bar with Cmd+F and close with Escape', async ()
   await expect(
     page.locator(PLAYWRIGHT_TEST_SELECTORS.tab).filter({ hasText: 'find-test-1.md' })
   ).toBeVisible({ timeout: TEST_TIMEOUTS.TAB_SWITCH });
-  await page.waitForSelector(PLAYWRIGHT_TEST_SELECTORS.contentEditable, {
+  await expect(page.locator(ACTIVE_EDITOR_SELECTOR)).toBeVisible({
     timeout: TEST_TIMEOUTS.EDITOR_LOAD,
   });
 
   await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.searchReplaceBar)).not.toBeVisible();
 
-  await electronApp.evaluate(({ BrowserWindow }) => {
-    const focused = BrowserWindow.getFocusedWindow();
-    if (focused) {
-      focused.webContents.send('menu:find');
-    }
-  });
+  await sendFindMenuCommand();
 
   await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.searchReplaceBar)).toBeVisible({
     timeout: 1000,
@@ -352,16 +355,11 @@ test('should allow typing multiple characters in search box without losing focus
   await expect(
     page.locator(PLAYWRIGHT_TEST_SELECTORS.tab).filter({ hasText: 'find-test-2.md' })
   ).toBeVisible({ timeout: TEST_TIMEOUTS.TAB_SWITCH });
-  await page.waitForSelector(PLAYWRIGHT_TEST_SELECTORS.contentEditable, {
+  await expect(page.locator(ACTIVE_EDITOR_SELECTOR)).toBeVisible({
     timeout: TEST_TIMEOUTS.EDITOR_LOAD,
   });
 
-  await electronApp.evaluate(({ BrowserWindow }) => {
-    const focused = BrowserWindow.getFocusedWindow();
-    if (focused) {
-      focused.webContents.send('menu:find');
-    }
-  });
+  await sendFindMenuCommand();
 
   await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.searchReplaceBar)).toBeVisible();
 
@@ -379,4 +377,27 @@ test('should allow typing multiple characters in search box without losing focus
   await searchInput.press('Escape');
 
   await closeTabByFileName(page, 'find-test-2.md');
+});
+
+test('should use Monaco native find for non-markdown files', async () => {
+  await openFileFromTree(page, 'find-test.json');
+  await expect(page.locator(ACTIVE_FILE_TAB_SELECTOR)).toContainText('find-test.json', {
+    timeout: TEST_TIMEOUTS.TAB_SWITCH,
+  });
+  await expect(page.locator('.monaco-editor')).toBeVisible({
+    timeout: TEST_TIMEOUTS.EDITOR_LOAD,
+  });
+
+  const findWidget = page.locator('.monaco-editor .find-widget');
+  await sendFindMenuCommand();
+  await expect(findWidget).toBeVisible();
+  await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.searchReplaceBar)).not.toBeVisible();
+
+  const findInput = page.getByRole('textbox', { name: 'Find' });
+  await expect(findInput).toBeFocused();
+  await findInput.fill('searchable');
+  await expect(findInput).toHaveValue('searchable');
+
+  await page.keyboard.press('Escape');
+  await closeTabByFileName(page, 'find-test.json');
 });

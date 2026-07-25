@@ -38,6 +38,7 @@ export default defineConfig({
       const logo = resolve(electronDir, 'nimbalyst-logo.png');
       const esModuleShims = resolve(__dirname, '../node_modules/es-module-shims/dist/es-module-shims.js');
       const ghosttyWasm = resolve(__dirname, '../node_modules/ghostty-web/ghostty-vt.wasm');
+      const prismCore = resolve(__dirname, '../node_modules/prismjs/prism.js');
 
       if (fs.existsSync(icon)) {
         targets.push({ src: toPosix(icon), dest: '', overwrite: true });
@@ -50,6 +51,9 @@ export default defineConfig({
       }
       if (fs.existsSync(ghosttyWasm)) {
         targets.push({ src: toPosix(ghosttyWasm), dest: '', overwrite: true });
+      }
+      if (fs.existsSync(prismCore)) {
+        targets.push({ src: toPosix(prismCore), dest: '', overwrite: true });
       }
       return viteStaticCopy({ targets });
     })()

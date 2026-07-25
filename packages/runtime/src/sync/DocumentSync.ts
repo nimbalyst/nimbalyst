@@ -1878,10 +1878,38 @@ export class DocumentSyncProvider {
    * blank Y.Doc can never wipe a room. Resolves true once the server acks.
    */
   async forceReplaceServerState(timeoutMs = 15_000): Promise<boolean> {
+    return this.sendAuthoritativeSnapshot(timeoutMs, {
+      allowEmpty: false,
+      allowUndecoded: true,
+      operation: 'force-replace',
+    });
+  }
+
+  /**
+   * Finalize a successfully decoded pre-migration room under server-managed
+   * custody. Unlike the disaster-recovery override above, this refuses to bury
+   * any payload the client could not decrypt. Empty Y.Docs are allowed because
+   * a decoded-but-empty legacy room still needs a current DEK snapshot.
+   */
+  async finalizeServerManagedState(timeoutMs = 15_000): Promise<boolean> {
+    return this.sendAuthoritativeSnapshot(timeoutMs, {
+      allowEmpty: true,
+      allowUndecoded: false,
+      operation: 'migration-finalize',
+    });
+  }
+
+  private async sendAuthoritativeSnapshot(
+    timeoutMs: number,
+    options: { allowEmpty: boolean; allowUndecoded: boolean; operation: string },
+  ): Promise<boolean> {
     if (this.destroyed) throw new Error('Cannot force-replace a destroyed room provider');
     if (!this.synced) throw new Error('Cannot force-replace before the room has synced');
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('Cannot force-replace while the room is disconnected');
+    }
+    if (!options.allowUndecoded && this.hasUndecodedContent()) {
+      throw new Error('Cannot finalize a room containing content this device could not decrypt');
     }
 
     // Let any just-applied local content reach the server first, so
@@ -1891,12 +1919,12 @@ export class DocumentSyncProvider {
 
     const stateBytes = Y.encodeStateAsUpdate(this.ydoc);
     // An empty Y.Doc encodes to ~2 bytes; never let it wipe the room.
-    if (stateBytes.byteLength <= 2) {
+    if (!options.allowEmpty && stateBytes.byteLength <= 2) {
       throw new Error('Refusing to force-replace the room with an empty document');
     }
 
     const { encrypted, iv } = await this.encryptForWire(stateBytes);
-    const clientCompactId = `force-replace-${this.lastSeq}-${this.config.userId}-${this.forceReplaceCounter++}`;
+    const clientCompactId = `${options.operation}-${this.lastSeq}-${this.config.userId}-${this.forceReplaceCounter++}`;
 
     const acked = new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {

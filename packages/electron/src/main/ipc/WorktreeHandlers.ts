@@ -15,6 +15,7 @@ import { createSuperLoopStore } from '../services/SuperLoopStore';
 import { getDatabase } from '../database/initialize';
 import { archiveProgressManager } from '../services/ArchiveProgressManager';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+import { ProviderFactory } from '@nimbalyst/runtime/ai/server';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { getTerminalSessionManager } from '../services/TerminalSessionManager';
 import { getTerminalsByWorktreeId, deleteTerminalInstance } from '../utils/terminalStore';
@@ -22,6 +23,7 @@ import { gitRefWatcher } from '../file/GitRefWatcher';
 import type { WorktreeCreateResult } from '../../shared/ipc/types';
 import { gitOperationLock } from '../services/GitOperationLock';
 import fs from 'node:fs';
+import { archiveSessionsAndDestroyProviders } from '../services/ai/archiveSessionProviderLifecycle';
 
 const logger = log.scope('WorktreeHandlers');
 
@@ -77,18 +79,32 @@ async function archiveSessionsForWorktree(
   sessionIds: string[],
   archiveLogger: ReturnType<typeof log.scope>
 ): Promise<number> {
-  let failedSessions = 0;
-
-  for (const sessionId of sessionIds) {
-    try {
+  const result = await archiveSessionsAndDestroyProviders(sessionIds, {
+    archiveSession: async (sessionId) => {
       await AISessionsRepository.updateMetadata(sessionId, { isArchived: true });
-    } catch (err) {
-      failedSessions++;
-      archiveLogger.error('Failed to archive session', { sessionId, worktreeId, error: err });
-    }
+    },
+    destroyProvider: (sessionId) => ProviderFactory.destroyProvider(sessionId),
+    onArchiveError: (sessionId, error) => {
+      archiveLogger.error('Failed to archive session', { sessionId, worktreeId, error });
+    },
+    onProviderCleanupError: (sessionId, error) => {
+      archiveLogger.error('Failed to destroy archived session provider', {
+        sessionId,
+        worktreeId,
+        error,
+      });
+    },
+  });
+
+  if (result.providerCleanupFailures > 0) {
+    archiveLogger.warn('Some archived session providers failed to clean up', {
+      worktreeId,
+      failedCount: result.providerCleanupFailures,
+      totalCount: sessionIds.length,
+    });
   }
 
-  return failedSessions;
+  return result.archiveFailures;
 }
 
 /**

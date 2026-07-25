@@ -6,6 +6,7 @@
  */
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ThinkingMode = 'enabled' | 'disabled';
 
 export const EFFORT_LEVELS: { key: EffortLevel; label: string }[] = [
   { key: 'low', label: 'Low' },
@@ -16,8 +17,13 @@ export const EFFORT_LEVELS: { key: EffortLevel; label: string }[] = [
 ];
 
 export const DEFAULT_EFFORT_LEVEL: EffortLevel = 'high';
+// Default to 'enabled' so the app omits the SDK thinking option and preserves
+// the SDK's default adaptive thinking (Claude decides depth) on supported
+// Opus/Sonnet models. Users can opt into 'disabled' (Extended: Off) per session.
+export const DEFAULT_THINKING_MODE: ThinkingMode = 'enabled';
 
 const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
+const VALID_THINKING_MODES = new Set<string>(['enabled', 'disabled']);
 
 /**
  * Validate and return a valid EffortLevel, or the default if invalid.
@@ -49,4 +55,14 @@ export function resolveEffortLevel(
     return parseEffortLevel(sessionEffortLevel);
   }
   return appDefaultEffortLevel;
+}
+
+/**
+ * Validate and return a valid ThinkingMode, or the default if invalid.
+ */
+export function parseThinkingMode(value: unknown): ThinkingMode {
+  if (typeof value === 'string' && VALID_THINKING_MODES.has(value)) {
+    return value as ThinkingMode;
+  }
+  return DEFAULT_THINKING_MODE;
 }

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   initializeServerManagedOrganization,
@@ -9,6 +9,11 @@ import {
 describe('silent forced team encryption migration', () => {
   beforeEach(() => {
     resetSilentMigrationScanState();
+  });
+
+  afterEach(() => {
+    resetSilentMigrationScanState();
+    vi.useRealTimers();
   });
 
   it('migrates only active legacy organizations that the caller can administer', async () => {
@@ -43,7 +48,7 @@ describe('silent forced team encryption migration', () => {
     expect(result).toEqual({ attempted: 2, migrated: 1, failed: ['one'] });
   });
 
-  it('never re-scans an org once attempted, so a persistent 401 cannot loop', async () => {
+  it('cooldowns a failed status check so a persistent 401 cannot loop', async () => {
     // getStatus throwing simulates getOrgScopedJwt() returning HTTP 401. That 401
     // triggers a session refresh, which fires another auth-state-change and
     // re-invokes the scan. The guard must ensure the org is checked only once.
@@ -56,7 +61,7 @@ describe('silent forced team encryption migration', () => {
 
     expect(getStatus).toHaveBeenCalledTimes(1);
     expect(migrate).not.toHaveBeenCalled();
-    expect(first).toEqual({ attempted: 0, migrated: 0, failed: ['flaky'] });
+    expect(first).toEqual({ attempted: 1, migrated: 0, failed: ['flaky'] });
     expect(second).toEqual({ attempted: 0, migrated: 0, failed: [] });
   });
 
@@ -74,7 +79,65 @@ describe('silent forced team encryption migration', () => {
 
     expect(migrate).toHaveBeenCalledTimes(1);
     expect(migrate).toHaveBeenCalledWith('good');
-    expect(result).toEqual({ attempted: 1, migrated: 1, failed: ['bad'] });
+    expect(result).toEqual({ attempted: 2, migrated: 1, failed: ['bad'] });
+  });
+
+  it('finalizes pending documents for an already server-managed organization', async () => {
+    const finalizeDocument = vi.fn(async () => undefined);
+    const finalizeTitles = vi.fn(async () => undefined);
+    const getFinalizationStatus = vi.fn()
+      .mockResolvedValueOnce({
+        mode: 'server-managed',
+        complete: false,
+        pendingDocumentIds: ['doc-1', 'doc-2'],
+        staleTitleDocumentIds: ['doc-1'],
+        failedDocumentIds: [],
+        documentsChecked: 2,
+        finalizedAt: null,
+      })
+      .mockResolvedValueOnce({
+        mode: 'server-managed',
+        complete: true,
+        pendingDocumentIds: [],
+        staleTitleDocumentIds: [],
+        failedDocumentIds: [],
+        documentsChecked: 2,
+        finalizedAt: '2026-07-23T12:00:00.000Z',
+      });
+
+    const result = await runSilentTeamEncryptionMigrations([
+      { orgId: 'already-cut-over', role: 'admin', membershipType: 'active_member' },
+    ], {
+      getStatus: vi.fn().mockResolvedValue('server-managed'),
+      migrate: vi.fn(),
+      getFinalizationStatus,
+      finalizeDocument,
+      finalizeTitles,
+    });
+
+    expect(finalizeTitles).toHaveBeenCalledWith('already-cut-over');
+    expect(finalizeDocument.mock.calls).toEqual([
+      ['already-cut-over', 'doc-1'],
+      ['already-cut-over', 'doc-2'],
+    ]);
+    expect(result).toEqual({ attempted: 1, migrated: 0, failed: [] });
+  });
+
+  it('retries a stuck migration in the same app run', async () => {
+    vi.useFakeTimers();
+    const getStatus = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary outage'))
+      .mockResolvedValue('server-managed');
+    const candidate = { orgId: 'retry-me', role: 'admin', membershipType: 'active_member' };
+
+    const first = await runSilentTeamEncryptionMigrations([candidate], {
+      getStatus,
+      migrate: vi.fn(),
+    });
+    expect(first.failed).toEqual(['retry-me']);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getStatus).toHaveBeenCalledTimes(2);
   });
 
   it('initializes new organizations directly in server-managed mode', async () => {

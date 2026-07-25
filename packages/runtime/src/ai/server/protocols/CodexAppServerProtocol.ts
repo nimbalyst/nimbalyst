@@ -44,6 +44,8 @@ import {
   getCodexVendorPathEntries,
   resolveCodexBinaryPath,
 } from './codexAppServer/codexAppServerBinary';
+import { terminateOwnedProcessTree } from './processTreeTermination';
+import { resolveCodexPermissionProfile } from './codexPermissionProfile';
 import type {
   AnyItem,
   ApprovalResponse,
@@ -64,6 +66,7 @@ import type {
   ThreadStartResponse,
   TokenUsage,
   TurnCompletedNotification,
+  TurnInterruptParams,
   TurnStartParams,
   UserInputElement,
   WarningNotification,
@@ -108,6 +111,8 @@ export interface CodexAppServerProtocolOptions {
   host?: CodexAppServerHostBindings;
   /** Optional client info to send in initialize. */
   clientInfo?: { name: string; version: string };
+  /** Injectable exact-tree terminator for deterministic lifecycle tests. */
+  terminateProcessTreeOverride?: (child: ChildProcessWithoutNullStreams) => void;
 }
 
 interface AppServerSessionRaw {
@@ -122,6 +127,8 @@ interface AppServerSessionRaw {
   activeTurnId: string | null;
   /** stderr buffer for diagnostic surface on failure. */
   stderrTail: string[];
+  /** Prevent duplicate cleanup from re-targeting a PID after it exits. */
+  cleanupStarted: boolean;
 }
 
 function previewForLog(value: string | undefined, max = 300): string | undefined {
@@ -186,12 +193,15 @@ export class CodexAppServerProtocol implements AgentProtocol {
   private readonly resolveCodexPathOverride: () => string | undefined;
   private readonly host: CodexAppServerHostBindings;
   private readonly clientInfo: { name: string; version: string };
+  private readonly terminateProcessTree: (child: ChildProcessWithoutNullStreams) => void;
 
   constructor(options: CodexAppServerProtocolOptions = {}) {
     this.apiKey = options.apiKey ?? '';
     this.resolveCodexPathOverride = options.resolveCodexPathOverride ?? (() => undefined);
     this.host = options.host ?? {};
     this.clientInfo = options.clientInfo ?? { name: 'nimbalyst', version: '0.0.0' };
+    this.terminateProcessTree = options.terminateProcessTreeOverride
+      ?? ((child) => terminateOwnedProcessTree(child));
   }
 
   setApiKey(apiKey: string): void {
@@ -317,8 +327,14 @@ export class CodexAppServerProtocol implements AgentProtocol {
     let interruptRequested = false;
     const requestInterrupt = () => {
       if (interruptRequested) return;
+      // Before turn/start resolves there is no turn to interrupt; the pump
+      // still unwinds on the queued 'abort' entry, so skipping the RPC here is
+      // safe. Sending without turnId is rejected (-32600) and leaves the turn
+      // running (NIM-1607 follow-on).
+      if (!raw.activeTurnId) return;
       interruptRequested = true;
-      Promise.resolve(raw.client.request('turn/interrupt', { threadId: raw.threadId }))
+      const params: TurnInterruptParams = { threadId: raw.threadId, turnId: raw.activeTurnId };
+      Promise.resolve(raw.client.request('turn/interrupt', params))
         .catch((err) => console.warn('[CODEX][APPSERVER] turn/interrupt failed:', err));
     };
     const onAbort = () => {
@@ -396,7 +412,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
   abortSession(session: ProtocolSession): void {
     const raw = this.assertRaw(session);
     if (raw.activeTurnId && raw.threadId) {
-      raw.client.notify('turn/interrupt', { threadId: raw.threadId });
+      const params: TurnInterruptParams = { threadId: raw.threadId, turnId: raw.activeTurnId };
+      raw.client.notify('turn/interrupt', params);
     }
   }
 
@@ -417,11 +434,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
   }
 
   private killChild(raw: AppServerSessionRaw): void {
+    if (raw.cleanupStarted) return;
+    raw.cleanupStarted = true;
     try { raw.client.close('cleanup'); } catch { /* noop */ }
-    if (!raw.child.killed) {
-      try { raw.child.stdin?.end(); } catch { /* noop */ }
-      try { raw.child.kill(); } catch { /* noop */ }
-    }
+    this.terminateProcessTree(raw.child);
   }
 
   private async spawnAndInit(options: SessionOptions): Promise<AppServerSessionRaw> {
@@ -464,7 +480,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       client.notify('initialized', {});
     } catch (err) {
       try { client.close('init failed'); } catch { /* noop */ }
-      try { child.kill(); } catch { /* noop */ }
+      this.terminateProcessTree(child);
       const tail = stderrTail.join('').slice(-2000);
       const rawError = `${err instanceof Error ? err.message : String(err)}${tail ? `\nstderr tail: ${tail}` : ''}`;
       const configHint = describeCodexConfigError(rawError);
@@ -479,6 +495,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       dynamicTools: this.extractDynamicTools(options),
       activeTurnId: null,
       stderrTail,
+      cleanupStarted: false,
     };
   }
 
@@ -519,8 +536,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
    * `buildThreadOptions` so behavior is preserved across transports.
    */
   private buildThreadStartParams(options: SessionOptions): ThreadStartParams {
-    const sandbox: ThreadStartParams['sandbox'] =
-      options.permissionMode === 'bypass-all' ? 'danger-full-access' : 'workspace-write';
+    const permissionProfile = resolveCodexPermissionProfile(
+      options.permissionMode,
+      options.raw?.agentVerified === true,
+    );
 
     const effortLevel = options.raw?.effortLevel as string | undefined;
     const reasoningEffortRaw = effortLevel === 'max' ? 'xhigh' : (effortLevel ?? 'high');
@@ -545,9 +564,12 @@ export class CodexAppServerProtocol implements AgentProtocol {
 
     return {
       model: options.model ?? null,
-      sandbox,
+      sandbox: permissionProfile.sandboxMode,
       cwd: options.workspacePath,
-      approvalPolicy: 'never', // Nimbalyst routes approvals via host bindings; we never want codex to block waiting on stdin
+      approvalPolicy: permissionProfile.approvalPolicy,
+      ...(permissionProfile.approvalsReviewer
+        ? { approvalsReviewer: permissionProfile.approvalsReviewer }
+        : {}),
       ephemeral: false,
       developerInstructions: systemPrompt,
       config,
@@ -573,20 +595,17 @@ export class CodexAppServerProtocol implements AgentProtocol {
   /**
    * Register handlers for codex's server-to-client requests. Each handler
    * delegates to the host bindings (Nimbalyst's permission system, dialog
-   * surface, etc.). Defaults are intentionally permissive to mirror today's
-   * `approvalPolicy: 'never'` behavior in the SDK transport.
+   * surface, etc.). Approval requests that escape Codex's automatic reviewer
+   * fail closed when no host binding is available.
    */
   private wireServerRequestHandlers(client: JsonRpcClient): void {
     const deny: ApprovalResponse = { decision: 'denied' };
-    const allow: ApprovalResponse = { decision: 'approved' };
 
     client.setServerRequestHandler('item/fileChange/requestApproval', async (raw) => {
       const params = raw as ItemFileChangeRequestApprovalParams;
       if (this.host.approveFileChange) return this.host.approveFileChange(params);
-      // No host binding: with approvalPolicy=never codex should not call us here.
-      // Default-allow keeps things flowing if codex changes that contract.
-      console.warn('[CODEX][APPSERVER] approveFileChange called with no host binding; default allow');
-      return allow;
+      console.warn('[CODEX][APPSERVER] approveFileChange called with no host binding; default deny');
+      return deny;
     });
 
     client.setServerRequestHandler('item/commandExecution/requestApproval', async (raw) => {
@@ -607,7 +626,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       if (this.host.approveFileChange) {
         return this.host.approveFileChange(raw as ItemFileChangeRequestApprovalParams);
       }
-      return allow;
+      return deny;
     });
 
     client.setServerRequestHandler('execCommandApproval', async (raw) => {
@@ -619,8 +638,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
 
     client.setServerRequestHandler('mcpServer/elicitation/request', async (raw) => {
       if (this.host.handleMcpElicitation) return this.host.handleMcpElicitation(raw);
-      // No host binding: auto-accept, mirroring this transport's permissive
-      // exec/file defaults (approvalPolicy: 'never'). Returning `null` fails
+      // Nimbalyst MCP tools own their durable prompt flows. Returning `null` fails
       // codex's deserializer ("invalid type: null, expected struct
       // McpServerElicitationRequestResponse") and codex then reports every
       // nimbalyst MCP tool call as "user rejected MCP tool call" (#797).
@@ -848,8 +866,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       return;
     }
 
-    // commandExecution etc. continue to surface only on item/completed by
-    // default unless they need a started-stage widget race fix.
+    // Other items continue to surface only on item/completed by default.
   }
 
   private handleItemCompleted(

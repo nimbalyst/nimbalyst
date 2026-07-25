@@ -83,17 +83,80 @@ function toIsoTimestamp(value: unknown): string | undefined {
  * of `existingData`. Inline because PGLite does not support stored
  * procedures and we want this to be a single SQL statement.
  *
- *   result = (newData - 'linkedSessions') || jsonb_build_object('linkedSessions', existingData->'linkedSessions')
- *
  * When existingData doesn't have linkedSessions, the build_object yields
  * `{"linkedSessions": null}` -- we filter that out via `strip_nulls`.
  */
 function LOCAL_DATA_MERGE_SQL(newDataExpr: string, existingDataExpr: string): string {
-  const stripKeys = LOCAL_ONLY_DATA_KEYS.map(k => `- '${k}'`).join(' ');
-  const buildObjectArgs = LOCAL_ONLY_DATA_KEYS
-    .map(k => `'${k}', ${existingDataExpr}->'${k}'`)
-    .join(', ');
+  const stripKeys = LOCAL_ONLY_DATA_KEYS
+    .map(k => `- '${k}'`)
+    .join(' ');
+  const localOnlyArgs = LOCAL_ONLY_DATA_KEYS
+    .map(k => `'${k}', ${existingDataExpr}->'${k}'`);
+  const buildObjectArgs = localOnlyArgs.join(', ');
   return `(${newDataExpr} ${stripKeys} || jsonb_strip_nulls(jsonb_build_object(${buildObjectArgs})))`;
+}
+
+const LEGACY_SYSTEM_COLLECTION_KEYS = ['linkedPullRequests', 'activity', 'comments'] as const;
+
+function readStoredSystemCollection(data: Record<string, unknown>, key: string): unknown {
+  if (data[key] !== undefined) return data[key];
+  const nested = data.customFields;
+  return nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? (nested as Record<string, unknown>)[key]
+    : undefined;
+}
+
+function mergeComments(
+  prior: TrackerItemPayload['comments'] | undefined,
+  incoming: TrackerItemPayload['comments'],
+): TrackerItemPayload['comments'] {
+  const merged = new Map<string, TrackerItemPayload['comments'][number]>();
+  for (const comment of [...(prior ?? []), ...incoming]) {
+    const existing = merged.get(comment.id);
+    const existingVersion = existing?.updatedAt ?? existing?.createdAt ?? 0;
+    const incomingVersion = comment.updatedAt ?? comment.createdAt ?? 0;
+    if (!existing || incomingVersion >= existingVersion) merged.set(comment.id, comment);
+  }
+  return [...merged.values()].sort((left, right) =>
+    (left.serverOrdinal ?? left.createdAt) - (right.serverOrdinal ?? right.createdAt));
+}
+
+function mergeActivity(
+  prior: TrackerItemPayload['activity'],
+  incoming: TrackerItemPayload['activity'],
+): TrackerItemPayload['activity'] {
+  if (!prior && !incoming) return undefined;
+  const merged = new Map<string, NonNullable<TrackerItemPayload['activity']>[number]>();
+  for (const entry of [...(prior ?? []), ...(incoming ?? [])]) merged.set(entry.id, entry);
+  return [...merged.values()]
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .slice(-100);
+}
+
+/**
+ * `trackerRecordToItem` carries these system collections through the legacy
+ * `customFields` adapter. The database handlers and canonical row converter
+ * expect them at the top level of `data`, so lift them back out before the
+ * sync projection is written.
+ */
+function liftSystemCollections(
+  dataJson: Record<string, unknown>,
+  record: TrackerRecord,
+): void {
+  const nested = dataJson.customFields;
+  const customFields = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : undefined;
+
+  for (const key of LEGACY_SYSTEM_COLLECTION_KEYS) {
+    const value = record.system[key];
+    if (value !== undefined) dataJson[key] = value;
+    if (customFields) delete customFields[key];
+  }
+
+  if (customFields && Object.keys(customFields).length === 0) {
+    delete dataJson.customFields;
+  }
 }
 
 // ============================================================================
@@ -207,24 +270,22 @@ export class TrackerPGLiteStore implements TrackerPersistence {
 
     // Labels CRDT merge: union the incoming add-wins map with the local
     // map BEFORE projecting back into the legacy `labels` string[]. Read
-    // the prior local map from `tracker_items.data->'labelsMap'`. The
+    // the whole prior data column so both database dialects return a shape
+    // we can normalize consistently. The
     // server-confirmed envelope only adds and tombstones; it never deletes
     // entry IDs, so a stale incoming payload with fewer entries does not
     // erase concurrent local additions a peer hasn't ack'd yet.
-    const priorRow = await this.db.query<{ labels_map: LabelsMap | string | null }>(
-      `SELECT (data->'labelsMap') AS labels_map FROM tracker_items WHERE id = $1`,
+    const priorRow = await this.db.query<{ data: Record<string, unknown> | string | null }>(
+      `SELECT data FROM tracker_items WHERE id = $1`,
       [envelope.itemId],
     );
-    // Nimbalyst runs over either PGLite or better-sqlite3. The `data->'key'`
-    // sub-extraction is NOT shape-uniform across the two backends: PGLite
-    // returns a parsed JS object, but SQLite's JSON1 `->` operator returns
-    // the sub-value as TEXT (a JSON string). If we let a string through,
-    // `mergeLabelMaps({...string}, incoming)` spreads the JSON characters
-    // into numeric-keyed entries, then merges in the real UUID-keyed
-    // entries on top -- and `projectLabelsToValues` emits a leading `null`
-    // in the values list because the first character entry has no `.value`.
-    // The typeof check below handles both backends without privileging one.
-    const rawLabelsMap = priorRow.rows[0]?.labels_map ?? undefined;
+    // Whole-column JSON is parsed by PGLite and remains a string on SQLite;
+    // normalize once before reading labels or backward-compatible system data.
+    const rawPriorData = priorRow.rows[0]?.data;
+    const priorData: Record<string, unknown> = typeof rawPriorData === 'string'
+      ? JSON.parse(rawPriorData)
+      : rawPriorData ?? {};
+    const rawLabelsMap = priorData.labelsMap as LabelsMap | string | undefined;
     const priorLabelsMap: LabelsMap | undefined =
       typeof rawLabelsMap === 'string' ? safeParseLabelsMap(rawLabelsMap) : rawLabelsMap;
     const mergedLabelsMap = mergeLabelMaps(priorLabelsMap, payload.labels);
@@ -232,6 +293,20 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     // Mutate the payload in place so `payloadToRecord` -> trackerRecordToItem
     // sees the merged projection. payload is freshly decrypted; no shared refs.
     payload.fields = { ...payload.fields, labels: mergedLabels };
+    payload.comments = mergeComments(
+      readStoredSystemCollection(priorData, 'comments') as TrackerItemPayload['comments'] | undefined,
+      payload.comments,
+    );
+    payload.activity = mergeActivity(
+      readStoredSystemCollection(priorData, 'activity') as TrackerItemPayload['activity'],
+      payload.activity,
+    );
+    if (payload.system.linkedPullRequests === undefined) {
+      payload.system.linkedPullRequests = readStoredSystemCollection(
+        priorData,
+        'linkedPullRequests',
+      ) as TrackerItemPayload['system']['linkedPullRequests'];
+    }
 
     // Convert TrackerItemPayload (wire shape) into the legacy TrackerItem
     // shape that ElectronDocumentService / kanban already render. We build
@@ -252,6 +327,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     delete dataJson.lastIndexed;
     delete dataJson.created;
     delete dataJson.updated;
+    liftSystemCollections(dataJson, record);
 
     // `data` carries device-local keys (e.g. linkedSessions) that the wire
      // payload does not. Preserve those on UPDATE by JSONB-merging the
@@ -390,6 +466,11 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     // optimistic state before the server ack.
     const optimisticLabels = projectLabelsToValues(payload.labels);
     payload.fields = { ...payload.fields, labels: optimisticLabels };
+    payload.comments = mergeComments(snapshot.payload?.comments, payload.comments);
+    payload.activity = mergeActivity(snapshot.payload?.activity, payload.activity);
+    if (payload.system.linkedPullRequests === undefined) {
+      payload.system.linkedPullRequests = snapshot.payload?.system.linkedPullRequests;
+    }
     const record = payloadToRecord(placeholderEnvelope, payload, this.workspacePath);
     const item = trackerRecordToItem(record);
     item.labelsMap = payload.labels;
@@ -412,6 +493,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     delete dataJson.lastIndexed;
     delete dataJson.created;
     delete dataJson.updated;
+    liftSystemCollections(dataJson, record);
 
     // See applyRemoteItem for why the JSONB-merge + COALESCE pattern is
     // needed: device-local fields (linkedSessions, source provenance) must
@@ -742,12 +824,14 @@ export function payloadToRecord(
       createdByAgent: payload.system?.createdByAgent,
       linkedCommitSha: payload.system?.linkedCommitSha,
       linkedCommits: payload.system?.linkedCommits,
+      linkedPullRequests: payload.system?.linkedPullRequests,
       documentId: payload.system?.documentId,
       // Carry external-source provenance back into the record so
       // recordToDbParams persists `data.origin` (and the URN index). Dropping
       // it here is what made imported items lose their origin on first apply.
       origin: payload.system?.origin,
       comments: payload.comments,
+      activity: payload.activity,
     },
     fields: payload.fields,
   };
@@ -765,7 +849,7 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
   // Carve system/non-field keys out of `fields`.
   const systemKeys = new Set([
     'authorIdentity', 'lastModifiedBy', 'createdByAgent',
-    'linkedSessions', 'linkedCommitSha', 'linkedCommits', 'documentId',
+    'linkedSessions', 'linkedCommitSha', 'linkedCommits', 'linkedPullRequests', 'documentId',
     'activity', 'comments', 'created', 'updated', 'origin',
   ]);
   const fields: Record<string, unknown> = {};
@@ -787,12 +871,14 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
     // will mint per-element IDs from the string[] projection.
     labels: (data.labelsMap as TrackerItemPayload['labels']) ?? {},
     comments: (data.comments as TrackerItemPayload['comments']) ?? [],
+    activity: data.activity as TrackerItemPayload['activity'],
     system: {
       authorIdentity: (data.authorIdentity as TrackerItemPayload['system']['authorIdentity']) ?? null,
       lastModifiedBy: (data.lastModifiedBy as TrackerItemPayload['system']['lastModifiedBy']) ?? null,
       createdByAgent: data.createdByAgent as boolean | undefined,
       linkedCommitSha: data.linkedCommitSha as string | undefined,
       linkedCommits: data.linkedCommits as TrackerItemPayload['system']['linkedCommits'],
+      linkedPullRequests: data.linkedPullRequests as TrackerItemPayload['system']['linkedPullRequests'],
       documentId: data.documentId as string | undefined,
       createdAt:
         typeof data.created === 'string'

@@ -18,6 +18,13 @@
 export interface PersistedCollabEntry {
   documentId: string;
   documentType: string;
+  /** Tab-strip presentation state; entry order is the persisted tab order. */
+  isPinned?: boolean;
+  /** Last-known server-backed logical path. Warm fallback until index sync. */
+  displayPath?: string;
+  metadataVersion?: 2;
+  fileExtension?: string;
+  editorId?: string;
 }
 
 interface WorkspaceState {
@@ -75,6 +82,15 @@ export async function getPersistedCollabDocType(
   return entries.find((e) => e.documentId === documentId)?.documentType;
 }
 
+/** Full persisted type identity used when rebuilding a cold opener config. */
+export async function getPersistedCollabDocMetadata(
+  workspacePath: string,
+  documentId: string,
+): Promise<PersistedCollabEntry | undefined> {
+  const entries = await loadOpenCollabDocs(workspacePath);
+  return entries.find((entry) => entry.documentId === documentId);
+}
+
 /** Internal: parse the workspace-state blob into entries. Exported for tests. */
 export function readEntriesFromState(
   state: WorkspaceState | undefined,
@@ -82,12 +98,27 @@ export function readEntriesFromState(
   if (!state) return [];
 
   if (Array.isArray(state.openCollabDocumentEntries)) {
-    return state.openCollabDocumentEntries.filter(
-      (e): e is PersistedCollabEntry =>
+    return state.openCollabDocumentEntries
+      .filter((e): e is PersistedCollabEntry =>
         !!e &&
         typeof e.documentId === 'string' &&
         typeof e.documentType === 'string',
-    );
+      )
+      .map((entry) => ({
+        documentId: entry.documentId,
+        documentType: entry.documentType,
+        ...(typeof entry.isPinned === 'boolean' ? { isPinned: entry.isPinned } : {}),
+        ...(entry.metadataVersion === 2 ? { metadataVersion: 2 as const } : {}),
+        ...(typeof entry.fileExtension === 'string' && entry.fileExtension.trim()
+          ? { fileExtension: entry.fileExtension }
+          : {}),
+        ...(typeof entry.editorId === 'string' && entry.editorId.trim()
+          ? { editorId: entry.editorId }
+          : {}),
+        ...(typeof entry.displayPath === 'string' && entry.displayPath.trim()
+          ? { displayPath: entry.displayPath }
+          : {}),
+      }));
   }
 
   if (Array.isArray(state.openCollabDocumentIds)) {

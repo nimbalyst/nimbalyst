@@ -23,19 +23,22 @@ public final class DatabaseManager: @unchecked Sendable {
     /// The directory is protected with `NSFileProtectionComplete` so the database
     /// (which caches decrypted content) is encrypted at rest when the device is locked.
     public static var defaultPath: String {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        let dbDir = appSupport.appendingPathComponent("NimbalystNative", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
-        // Protect the database directory so all files within it (including WAL and SHM)
-        // are encrypted at rest when the device is locked.
-        try? FileManager.default.setAttributes(
-            [.protectionKey: FileProtectionType.complete],
-            ofItemAtPath: dbDir.path
-        )
+        let dbDir = prepareDatabaseDirectory()
         return dbDir.appendingPathComponent("nimbalyst.sqlite").path
+    }
+
+    /// Database path for a selected account. The migrated first account keeps
+    /// the legacy path so upgrading does not discard its existing local cache.
+    public static func path(for account: MobileAccount) -> String {
+        if account.usesLegacyDatabase {
+            return defaultPath
+        }
+        let encodedId = Data(account.id.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+        let dbDir = prepareDatabaseDirectory()
+        return dbDir.appendingPathComponent("account-\(encodedId).sqlite").path
     }
 
     /// Erase all data from every table. Safe to call while the database is still
@@ -57,12 +60,34 @@ public final class DatabaseManager: @unchecked Sendable {
     /// Removes the directory containing the sqlite file, WAL, and SHM in one operation.
     /// The directory is recreated on the next `defaultPath` access.
     public static func deleteDatabase() {
+        try? FileManager.default.removeItem(at: databaseDirectory)
+    }
+
+    /// Delete one account's SQLite files without disturbing other accounts.
+    public static func deleteDatabase(at path: String) {
+        let fileManager = FileManager.default
+        for suffix in ["", "-wal", "-shm"] {
+            try? fileManager.removeItem(atPath: path + suffix)
+        }
+    }
+
+    private static var databaseDirectory: URL {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first!
-        let dbDir = appSupport.appendingPathComponent("NimbalystNative", isDirectory: true)
-        try? FileManager.default.removeItem(at: dbDir)
+        return appSupport.appendingPathComponent("NimbalystNative", isDirectory: true)
+    }
+
+    private static func prepareDatabaseDirectory() -> URL {
+        let dbDir = databaseDirectory
+        try? FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
+        // Protect every account database plus its WAL/SHM files at rest.
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.complete],
+            ofItemAtPath: dbDir.path
+        )
+        return dbDir
     }
 
     // MARK: - Migrations

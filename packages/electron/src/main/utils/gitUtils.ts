@@ -1,5 +1,6 @@
-import { execFile, execSync } from 'child_process';
+import { execFile, execFileSync, execSync } from 'child_process';
 import { readdirSync } from 'fs';
+import { relative } from 'path';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
@@ -74,6 +75,40 @@ function checkGitAvailable(): boolean {
  */
 export function resetGitAvailableCache(): void {
   gitAvailableCache = null;
+}
+
+/**
+ * List untracked, non-ignored files inside an untracked directory, honoring
+ * `.gitignore`.
+ *
+ * `git status --porcelain` collapses an untracked directory into a single
+ * `?? dir/` entry. Callers that need the individual files (the edited-files UI,
+ * the commit-context prompt) must expand it -- but a raw filesystem walk
+ * descends into gitignored `node_modules`/`dist`/`out` and can explode a single
+ * untracked package dir into tens of thousands of paths (NIM-1782: a worktree
+ * "Commit with AI" enumerated 90k files / ~3.1M tokens). `git ls-files` applies
+ * the repo's ignore rules, so only files the user would actually commit return.
+ *
+ * @param repoRoot Absolute path to the git working-tree root (or worktree root).
+ * @param dirAbsolutePath Absolute path to the untracked directory to expand.
+ * @returns File paths relative to `repoRoot`, forward-slashed (git's native
+ *          output). Empty array on any git error.
+ */
+export function getUntrackedFilesInDirectory(repoRoot: string, dirAbsolutePath: string): string[] {
+  try {
+    const relDir = relative(repoRoot, dirAbsolutePath);
+    // An empty pathspec would match the whole repo; scope to the directory.
+    const pathspec = relDir === '' ? '.' : relDir;
+    const stdout = execFileSync(
+      'git',
+      ['ls-files', '--others', '--exclude-standard', '-z', '--', pathspec],
+      { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+    );
+    // `-z` gives NUL-separated paths so filenames with spaces/newlines survive.
+    return stdout.split('\0').filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /**

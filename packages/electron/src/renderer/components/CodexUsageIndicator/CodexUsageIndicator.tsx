@@ -16,7 +16,6 @@ import {
   formatCodexWindowLabel,
   formatResetTime,
 } from '../../store/atoms/codexUsageAtoms';
-import { useSetting } from '../../hooks/useSetting';
 import { CodexUsagePopover } from './CodexUsagePopover';
 import { refreshCodexUsage } from '../../store/listeners/codexUsageListeners';
 
@@ -30,7 +29,6 @@ interface CodexUsageIndicatorProps {
 export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ className }) => {
   const usage = useAtomValue(codexUsageAtom);
   const isAvailable = useAtomValue(codexUsageAvailableAtom);
-  const isEnabled = useSetting('ai.showCodexUsageIndicator');
   const indicatorColor = useAtomValue(codexUsageIndicatorColorAtom);
   const mostConstrained = useAtomValue(codexUsageMostConstrainedWindowAtom);
 
@@ -45,7 +43,7 @@ export const CodexUsageIndicator: React.FC<CodexUsageIndicatorProps> = ({ classN
     await refreshCodexUsage();
   }, []);
 
-  if (!isEnabled || !isAvailable) {
+  if (!isAvailable) {
     return null;
   }
 

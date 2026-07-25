@@ -87,7 +87,7 @@ Android can now:
 - store and edit pairing, auth, and routing credentials locally
 - import the same pairing payload shape used by iOS QR flows
 - scan the desktop pairing QR directly from onboarding and settings
-- receive `nimbalyst://pair?...` and `nimbalyst://auth/callback?...` links
+- receive `nimbalyst://auth/callback?...` links; pairing payloads are accepted only through the in-app QR scanner
 - open the existing browser login flow from Settings
 - connect to CollabV3 index and session rooms and hydrate the local Room database
 - request new desktop sessions and wait for the returning index broadcast

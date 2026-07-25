@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, RefObject } from 'react';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import {
   claudeUsageAtom,
@@ -14,7 +14,7 @@ import {
   claudeUsageWeeklyColorAtom,
   formatResetTime,
 } from '../../store/atoms/claudeUsageAtoms';
-import { useSetSetting } from '../../hooks/useSetting';
+import { toggleGutterItemHiddenAtom } from '../../store/atoms/appSettings';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 
 interface ClaudeUsagePopoverProps {
@@ -108,7 +108,7 @@ export const ClaudeUsagePopover: React.FC<ClaudeUsagePopoverProps> = ({
   const usage = useAtomValue(claudeUsageAtom);
   const sessionColor = useAtomValue(claudeUsageSessionColorAtom);
   const weeklyColor = useAtomValue(claudeUsageWeeklyColorAtom);
-  const setUsageIndicatorEnabled = useSetSetting('ai.showUsageIndicator');
+  const toggleGutterItemHidden = useSetAtom(toggleGutterItemHiddenAtom);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
 
   const menu = useFloatingMenu({
@@ -223,7 +223,7 @@ export const ClaudeUsagePopover: React.FC<ClaudeUsagePopoverProps> = ({
             )}
             <button
               onClick={() => {
-                setUsageIndicatorEnabled(false);
+                toggleGutterItemHidden({ id: 'claude-usage', hidden: true });
                 onClose();
               }}
               className="text-[11px] text-nim-muted hover:text-nim transition-colors"

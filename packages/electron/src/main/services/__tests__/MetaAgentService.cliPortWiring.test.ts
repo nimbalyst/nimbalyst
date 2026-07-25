@@ -58,6 +58,7 @@ vi.mock('../metaAgentMessageText', () => ({
 }));
 
 import { setMetaAgentToolFns } from '../../mcp/metaAgentServer';
+import { AISessionsRepository } from '@nimbalyst/runtime';
 import { MetaAgentService } from '../MetaAgentService';
 
 describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', () => {
@@ -67,8 +68,18 @@ describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', (
 
   it('injects the meta-agent tool fns into the unified-server dispatch on start', async () => {
     const service = MetaAgentService.getInstance();
+    const showNotificationWithResult = vi.fn().mockResolvedValue({
+      success: true,
+      attempted: true,
+      shown: true,
+      skippedReason: null,
+      title: 'Agent needs attention',
+      bodyPreview: 'Done',
+      sessionId: 'caller-session',
+      workspacePath: '/workspace',
+    });
 
-    await service.start({} as any);
+    await service.start({} as any, showNotificationWithResult);
 
     // The dispatch (dispatchMetaAgentTool) used by the unified `/mcp/host`
     // endpoint reads these injected fns.
@@ -77,6 +88,44 @@ describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', (
     expect(typeof fns.createSession).toBe('function');
     expect(typeof fns.spawnSession).toBe('function');
     expect(typeof fns.listWorktrees).toBe('function');
+    expect(typeof fns.notifyUser).toBe('function');
+
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      id: 'caller-session',
+      workspacePath: '/workspace',
+    } as never);
+
+    const result = JSON.parse(await fns.notifyUser('caller-session', '/workspace', {
+      title: ` ${'T'.repeat(130)} `,
+      body: ` ${'B'.repeat(1_010)} `,
+      bypassFocusCheck: true,
+    }));
+    const notificationOptions = showNotificationWithResult.mock.calls[0][0];
+
+    expect(notificationOptions.title).toHaveLength(120);
+    expect(notificationOptions.title).toBe(`${'T'.repeat(117)}...`);
+    expect(notificationOptions.body).toHaveLength(1_000);
+    expect(notificationOptions.body).toBe(`${'B'.repeat(997)}...`);
+    expect(notificationOptions).toMatchObject({
+      sessionId: 'caller-session',
+      workspacePath: '/workspace',
+      provider: 'agent',
+      bypassFocusCheck: true,
+      silent: false,
+      urgency: 'normal',
+    });
+    expect(result.result.shown).toBe(true);
+
+    vi.mocked(AISessionsRepository.get).mockResolvedValueOnce({
+      id: 'other-session',
+      workspacePath: '/other-workspace',
+    } as never);
+    await expect(fns.notifyUser('caller-session', '/workspace', {
+      title: 'Cross-workspace attempt',
+      body: 'Do not deliver',
+      sessionId: 'other-session',
+    })).rejects.toThrow('Session other-session not found');
+    expect(showNotificationWithResult).toHaveBeenCalledTimes(1);
 
     await service.shutdown();
   });

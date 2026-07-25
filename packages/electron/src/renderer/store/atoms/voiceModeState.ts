@@ -218,7 +218,7 @@ export function registerVoiceSubmitPromptCallback(cb: ((payload: {
 }) => void) | null): void {
   _onSubmitPrompt = cb;
 }
-export function registerVoiceAgentTaskCompleteCallback(cb: ((data: { sessionId: string; isComplete: boolean; content?: string; lastTextSection?: string }) => void) | null): void {
+export function registerVoiceAgentTaskCompleteCallback(cb: ((data: { sessionId: string; isComplete: boolean; content?: string; lastTextSection?: string; error?: string }) => void) | null): void {
   _onAgentTaskComplete = cb;
 }
 export function registerVoiceStoppedCallback(cb: (() => void) | null): void {

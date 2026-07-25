@@ -5,6 +5,7 @@ import {
   $convertToMarkdownString,
 } from '@lexical/markdown';
 import { $getRoot, $isElementNode, $createParagraphNode } from 'lexical';
+import { $isLinkNode, LinkNode } from '@lexical/link';
 
 import {
   DocumentReferenceNode,
@@ -19,6 +20,7 @@ import {
   isCollabReferenceHref,
   parseCollabReferenceDocumentId,
 } from '../documentLinkPaths';
+import { setEmbeddableExtensions } from '../../../editor/plugins/EmbedPlugin/embeddableExtensions';
 
 // Order mirrors registerDocumentLinkPlugin: the main transformer's regex
 // excludes `://` targets, so the collab transformer owns collab-scheme links.
@@ -30,7 +32,7 @@ const TRANSFORMERS = [
 
 function makeEditor() {
   return createHeadlessEditor({
-    nodes: [DocumentReferenceNode],
+    nodes: [DocumentReferenceNode, LinkNode],
     onError: (error) => {
       throw error;
     },
@@ -45,6 +47,28 @@ function findReferenceNode() {
 }
 
 describe('CollabDocumentReferenceTransformer', () => {
+  it('leaves an explicit collab embed as a LinkNode for the block embed transform', () => {
+    setEmbeddableExtensions(['.mockup.html']);
+    const editor = makeEditor();
+    editor.update(
+      () => {
+        $convertFromMarkdownString(
+          '[Mockup](nimbalyst://doc/mockup-1?orgId=team-1 "width=800 embedType=.mockup.html")',
+          TRANSFORMERS,
+        );
+      },
+      { discrete: true },
+    );
+
+    editor.read(() => {
+      const paragraph = $getRoot().getFirstChild();
+      const link = $isElementNode(paragraph) ? paragraph.getFirstChild() : null;
+      expect($isLinkNode(link)).toBe(true);
+      expect(findReferenceNode()).toBeNull();
+    });
+    setEmbeddableExtensions([]);
+  });
+
   it('imports a nimbalyst:// deep-link reference as a document reference node', () => {
     const editor = makeEditor();
     editor.update(

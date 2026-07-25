@@ -16,11 +16,12 @@
  *   the collaborative editor mounted empty.
  *
  * This list adds the node CLASSES that the core + built-in markdown
- * transformers (`getEditorTransformers()`) can emit. The classes are already
- * imported into the main process today via `registerBuiltinExtensions`, so
- * importing them here is main-safe — only their `decorate()` (which we never
- * call headlessly) touches React/DOM. Nodes with no markdown syntax (kanban,
- * collapsible, layout) are intentionally excluded: markdown can't produce them.
+ * transformers (`getEditorTransformers()`) can emit, plus portable nodes that a
+ * renderer can already have persisted into the shared Y.Doc. Each class must
+ * remain main-safe: renderer-only implementations are injected separately and
+ * `decorate()` is never called headlessly. Nodes with no markdown syntax
+ * (kanban, collapsible, layout) are intentionally excluded: markdown can't
+ * produce them.
  *
  * Kept in sync by `headlessBodyNodes.test.ts`, which converts representative
  * markdown and asserts no "not registered" error escapes.
@@ -36,6 +37,7 @@ import { ImageNode } from '../plugins/ImagesPlugin';
 import { PageBreakNode } from '../plugins/PageBreakPlugin';
 import { MermaidNode } from '../plugins/MermaidPlugin';
 import { EmbeddedFileNode } from '../plugins/EmbedPlugin/EmbeddedFileNode';
+import { TrackerReferenceNode } from '../../plugins/TrackerLinkPlugin/TrackerReferenceNode';
 
 const HeadlessBodyNodes: Array<Klass<LexicalNode>> = [
   ...EditorNodes,
@@ -48,6 +50,7 @@ const HeadlessBodyNodes: Array<Klass<LexicalNode>> = [
   ImageNode,
   MermaidNode,
   EmbeddedFileNode,
+  TrackerReferenceNode,
 ];
 
 export default HeadlessBodyNodes;

@@ -23,6 +23,8 @@ import {
 } from '@nimbalyst/extension-sdk';
 import { CsvBinding } from '../collab/csvBinding';
 import { isCsvYDocEmpty, seedCsvYDoc, getYCsv } from '../collab/seed';
+import type { RemotePresence } from '../collab/presence';
+import { CollabPresenceOverlay } from './CollabPresenceOverlay';
 import { useSpreadsheetMetadata } from '../hooks/useSpreadsheetMetadata';
 import { createGridOperations, type GridOperations } from '../utils/gridOperations';
 import { UndoRedoPlugin } from '../plugins/UndoRedoPlugin';
@@ -34,6 +36,7 @@ import { FormulaBar, type FormulaBarHandle } from './FormulaBar';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { ColumnFormatDialog } from './ColumnFormatDialog';
 import { SheetsTextEditor } from '../editors/SheetsTextEditor';
+import { buildSpreadsheetSelectionContextItem } from '../selectionContext';
 
 // Buffer of extra empty rows/columns to show beyond actual data
 const DISPLAY_BUFFER_ROWS = 20;
@@ -204,6 +207,8 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   // Selection state (refs to avoid re-renders)
   const selectedCellRef = useRef<{ row: number; col: number } | null>(null);
   const selectionRangeRef = useRef<NormalizedSelectionRange | null>(null);
+  const selectionContextPublishVersionRef = useRef(0);
+  const lastPublishedSelectionContextRef = useRef<string | null>(null);
   const skipFocusHandlerRef = useRef(false); // Flag to skip focus handler during programmatic selection
 
   // Grid initialization - render grid immediately, load data imperatively after mount
@@ -432,6 +437,14 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   // every existing format/header/metadata invariant is preserved.
   const collabBindingRef = useRef<CsvBinding | null>(null);
   const collabActiveRef = useRef(false);
+  // Remote collaborator presence (selected/editing cells) for the in-grid
+  // overlay. `presenceRepaintTick` forces the overlay to re-measure cell rects
+  // on scroll/resize even when the presence list itself is unchanged.
+  const [remotePresences, setRemotePresences] = useState<RemotePresence[]>([]);
+  const [presenceRepaintTick, setPresenceRepaintTick] = useState(0);
+  const presenceRafRef = useRef<number | null>(null);
+  // Trailing throttle for local selection publishes (rapid arrow-key nav).
+  const awarenessThrottleRef = useRef<{ timer: ReturnType<typeof setTimeout> | null; last: number }>({ timer: null, last: 0 });
   const { isCollaborative: isCollabActive } = useCollaborativeEditor(host, {
     isEmpty: isCsvYDocEmpty,
     initializeFromContent: seedCsvYDoc,
@@ -476,10 +489,18 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
             applyCsvContent(content);
             collabBindingRef.current?.noteAppliedRemote(content);
           },
+          onRemoteAwareness: () => {
+            // A collaborator's selection/edit changed -- refresh the presence
+            // list. The overlay re-measures cell rects off this state change.
+            setRemotePresences(collabBindingRef.current?.getRemotePresences() ?? []);
+          },
         },
         awareness,
       );
       collabBindingRef.current = binding;
+      // Seed presence from whoever is already in the room (onRemoteAwareness
+      // only fires on subsequent changes).
+      setRemotePresences(binding.getRemotePresences());
       // Recipient opens commonly mount with `host.loadContent() === ''` and
       // rely on the already-synced Y.Text as the first real payload. Consume
       // that snapshot immediately; otherwise there may be no subsequent remote
@@ -505,6 +526,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
           binding.destroy();
           collabBindingRef.current = null;
           collabActiveRef.current = false;
+          setRemotePresences([]);
         },
       };
     },
@@ -522,14 +544,56 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     return () => clearInterval(id);
   }, [isCollabActive]);
 
-  // Publish selection/edit cell to awareness.
+  // Coalesced repaint of the presence overlay. Cell rects are read from the
+  // live DOM, so any scroll/resize needs a re-measure even when the presence
+  // list is unchanged. rAF-batched so a scroll burst repaints once per frame.
+  const schedulePresenceRepaint = useCallback(() => {
+    if (presenceRafRef.current !== null) return;
+    presenceRafRef.current = requestAnimationFrame(() => {
+      presenceRafRef.current = null;
+      setPresenceRepaintTick((t) => t + 1);
+    });
+  }, []);
+
+  // Publish the local selected cell to awareness, trailing-throttled so rapid
+  // arrow-key navigation doesn't churn the awareness channel. Selecting a cell
+  // is not editing it, so editingCell is cleared here; it is set on edit start.
+  const AWARENESS_THROTTLE_MS = 100;
+  const publishLocalSelection = useCallback((cell: { row: number; col: number } | null) => {
+    if (!collabActiveRef.current) return;
+    const state = awarenessThrottleRef.current;
+    const flush = () => {
+      state.last = Date.now();
+      state.timer = null;
+      collabBindingRef.current?.setLocalAwareness({ selectedCell: cell, editingCell: null });
+    };
+    const elapsed = Date.now() - state.last;
+    if (state.timer) clearTimeout(state.timer);
+    if (elapsed >= AWARENESS_THROTTLE_MS) {
+      flush();
+    } else {
+      state.timer = setTimeout(flush, AWARENESS_THROTTLE_MS - elapsed);
+    }
+  }, []);
+
+  // Clean up the throttle timer / pending rAF on unmount.
+  useEffect(() => {
+    return () => {
+      if (awarenessThrottleRef.current.timer) clearTimeout(awarenessThrottleRef.current.timer);
+      if (presenceRafRef.current !== null) cancelAnimationFrame(presenceRafRef.current);
+    };
+  }, []);
+
+  // Re-measure presence markers when the grid container resizes (pane resize,
+  // window resize, formula-bar show/hide). No-op when not collaborating.
   useEffect(() => {
     if (!isCollabActive) return;
-    const binding = collabBindingRef.current;
-    if (!binding) return;
-    const sel = selectedCellRef.current ?? null;
-    binding.setLocalAwareness({ selectedCell: sel, editingCell: sel });
-  }, [isCollabActive]);
+    const el = gridContainerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => schedulePresenceRepaint());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isCollabActive, schedulePresenceRepaint]);
 
   // Stable editors object
   const editors = useMemo(() => ({ sheets: SheetsTextEditor }), []);
@@ -693,6 +757,44 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     return gridRowIndex + headerRowCount;
   }, [headerRowCount]);
 
+  const publishSelectionContext = useCallback(async (range: NormalizedSelectionRange | null) => {
+    const publishVersion = ++selectionContextPublishVersionRef.current;
+
+    if (!range) {
+      if (lastPublishedSelectionContextRef.current !== null) {
+        lastPublishedSelectionContextRef.current = null;
+        hostRef.current.setEditorContextItems(null);
+      }
+      return;
+    }
+
+    let rows: Record<string, unknown>[] = [];
+    const gridOps = gridOpsRef.current;
+    if (gridOps) {
+      try {
+        const { pinnedTop, source } = await gridOps.getData();
+        rows = [...pinnedTop, ...source];
+      } catch {
+        // The range label remains useful if RevoGrid is unavailable mid-unmount.
+      }
+    }
+
+    if (publishVersion !== selectionContextPublishVersionRef.current) return;
+
+    const item = buildSpreadsheetSelectionContextItem(range, rows);
+    const signature = JSON.stringify(item);
+    if (signature === lastPublishedSelectionContextRef.current) return;
+
+    lastPublishedSelectionContextRef.current = signature;
+    hostRef.current.setEditorContextItems([item]);
+  }, []);
+
+  useEffect(() => () => {
+    selectionContextPublishVersionRef.current += 1;
+    lastPublishedSelectionContextRef.current = null;
+    host.setEditorContextItems(null);
+  }, [host]);
+
   /**
    * Update selection refs and formula bar
    */
@@ -702,6 +804,8 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   ) => {
     selectedCellRef.current = cell;
     selectionRangeRef.current = range;
+    void publishSelectionContext(range);
+    publishLocalSelection(cell);
 
     if (cell && formulaBarRef.current) {
       // Read value from RevoGrid
@@ -714,7 +818,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     } else if (formulaBarRef.current) {
       formulaBarRef.current.update('', '', false);
     }
-  }, []);
+  }, [publishSelectionContext, publishLocalSelection]);
 
   // Handle after edit - just mark dirty, RevoGrid owns the data
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -722,9 +826,20 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     (event: RevoGridCustomEvent<any>) => {
       if (!event.detail) return;
       host.setDirty(true);
+      void publishSelectionContext(selectionRangeRef.current);
+      // Edit committed/closed: keep the selection box, drop the editing flag.
+      collabBindingRef.current?.setLocalAwareness({ editingCell: null });
     },
-    [host]
+    [host, publishSelectionContext]
   );
+
+  // Handle edit start - flag the currently-selected cell as actively editing so
+  // collaborators see an "editing" indicator (and name label). Reuses the
+  // already-translated selectedCellRef rather than re-parsing event coords.
+  const handleBeforeEditStart = useCallback(() => {
+    if (!collabActiveRef.current) return;
+    collabBindingRef.current?.setLocalAwareness({ editingCell: selectedCellRef.current ?? null });
+  }, []);
 
   // Handle column resize - persist the new width
   const handleColumnResize = useCallback(
@@ -740,8 +855,10 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
           spreadsheetMeta.setColumnWidth(columnIndex, column.size);
         }
       }
+      // Column geometry changed -- presence markers must re-measure.
+      schedulePresenceRepaint();
     },
-    [spreadsheetMeta]
+    [spreadsheetMeta, schedulePresenceRepaint]
   );
 
   // Handle cell focus (selection)
@@ -812,9 +929,10 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       const gridOps = gridOpsRef.current;
       if (cell && gridOps) {
         await gridOps.updateCell(cell.row, cell.col, value);
+        void publishSelectionContext(selectionRangeRef.current);
       }
     },
-    []
+    [publishSelectionContext]
   );
 
   // Select all cells (from 0,0 to last cell with data)
@@ -876,15 +994,8 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         const pinnedRowCount = pinnedRows.length;
         const lastRow = Math.max(0, pinnedRowCount + lastDataRowIndex);
 
-        // Update selection refs
-        selectedCellRef.current = { row: 0, col: 0 };
-        selectionRangeRef.current = normalizeRange(0, 0, lastRow, lastColWithData);
-
-        // Update formula bar
-        if (formulaBarRef.current) {
-          const cellRef = formatSelectionRef(selectionRangeRef.current);
-          formulaBarRef.current.update(cellRef, '', false);
-        }
+        const selection = normalizeRange(0, 0, lastRow, lastColWithData);
+        void updateSelection({ row: 0, col: 0 }, selection);
 
         // Set RevoGrid visual focus
         // Note: RevoGrid can't visually select across pinned/data boundary,
@@ -909,7 +1020,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         }, 100);
       }
     })();
-  }, []);
+  }, [updateSelection]);
 
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback(
@@ -1657,7 +1768,17 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
           onSetrange={handleSetRange}
           onBeforecellfocus={handleCellClick}
           onAftercolumnresize={handleColumnResize}
+          onBeforeeditstart={handleBeforeEditStart}
+          onViewportscroll={schedulePresenceRepaint}
         />
+        {isCollabActive && remotePresences.length > 0 && (
+          <CollabPresenceOverlay
+            presences={remotePresences}
+            containerRef={gridContainerRef}
+            headerRowCount={headerRowCount}
+            repaintKey={presenceRepaintTick}
+          />
+        )}
         {contextMenu && (
           <ContextMenu
             x={contextMenu.x}

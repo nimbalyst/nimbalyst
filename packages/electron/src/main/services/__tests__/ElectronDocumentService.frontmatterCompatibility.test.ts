@@ -153,7 +153,7 @@ trackerStatus:
           ...state.row,
           data: params?.[0],
         };
-        return { rows: [] };
+        return { rows: [state.row] };
       }
 
       throw new Error(`Unexpected query in test: ${normalized}`);

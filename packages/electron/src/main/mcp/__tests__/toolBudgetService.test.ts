@@ -69,7 +69,7 @@ describe('getToolBudgetSnapshot', () => {
     const snapshot = await getToolBudgetSnapshot('/some/workspace');
     const byKey = new Map(snapshot.groups.map((g) => [g.configKey, g]));
 
-    // Core: eager, locked-on, has a positive measured cost.
+    // Core: locked-on with a positive full-surface cost and a smaller eager subset.
     const core = byKey.get(MCP_CORE);
     expect(core).toBeDefined();
     expect(core!.loadPolicy).toBe('eager');
@@ -96,9 +96,8 @@ describe('getToolBudgetSnapshot', () => {
     expect(byKey.get('my-remote')!.estTokens).toBeNull();
     expect(byKey.get('my-disabled')!.enabled).toBe(false);
 
-    // Eager floor is core's ALWAYS-LOAD subset only — display_to_user and
-    // capture_editor_screenshot stay on core but defer, so the floor must be
-    // strictly below the full core cost.
+    // Only interaction-critical core tools contribute to the eager floor;
+    // lower-frequency core schemas remain part of the full surfaced cost.
     expect(core!.alwaysLoadEstTokens).toBeGreaterThan(0);
     expect(core!.alwaysLoadEstTokens!).toBeLessThan(core!.estTokens!);
     expect(snapshot.eagerEstTokens).toBe(core!.alwaysLoadEstTokens);
@@ -107,9 +106,9 @@ describe('getToolBudgetSnapshot', () => {
   it('counts the session-gated core tools (interactive prompts, commit proposal, edited files)', async () => {
     // getInteractiveToolSchemas / getEditorToolSchemas return their session-
     // gated tools only when given a sessionId. The budget service must pass a
-    // measurement sessionId or the core row undercounts by ~4.4K tokens
-    // (AskUserQuestion, PromptForUserInput, developer_git_commit_proposal,
-    // get_session_edited_files) versus what a live session actually loads.
+    // measurement sessionId or the full core row omits AskUserQuestion,
+    // PromptForUserInput, developer_git_commit_proposal, and
+    // get_session_edited_files.
     const snapshot = await getToolBudgetSnapshot('/some/workspace');
     const core = snapshot.groups.find((g) => g.configKey === MCP_CORE);
     // 3 interactive + display_to_user + capture_editor_screenshot +

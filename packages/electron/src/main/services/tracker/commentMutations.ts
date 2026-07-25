@@ -26,7 +26,7 @@ export type CommentMutation =
   | { kind: 'delete' };
 
 export type CommentMutationResult =
-  | { ok: true; comments: MutableComment[] }
+  | { ok: true; comments: MutableComment[]; previous: MutableComment; comment: MutableComment }
   | { ok: false; error: string; code: 'not-found' | 'forbidden' | 'invalid' };
 
 /**
@@ -56,6 +56,8 @@ export function applyCommentMutation(
     };
   }
 
+  const previous = { ...target };
+
   if (mutation.kind === 'edit') {
     const body = mutation.body?.trim();
     if (!body) {
@@ -69,5 +71,5 @@ export function applyCommentMutation(
     target.updatedAt = now;
   }
 
-  return { ok: true, comments: next };
+  return { ok: true, comments: next, previous, comment: target };
 }

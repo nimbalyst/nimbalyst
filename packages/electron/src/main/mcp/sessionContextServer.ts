@@ -14,6 +14,10 @@ import {
   SessionFilesRepository,
 } from "@nimbalyst/runtime";
 import type { SessionMeta } from "@nimbalyst/runtime";
+import {
+  appendPendingPromptSection,
+  collectPendingPromptDescriptionsFromRawRows,
+} from "../services/sessionSummaryPrompt";
 
 // ─── Utilities ──────────────────────────────────────────────────────
 
@@ -135,6 +139,31 @@ async function handleGetSessionSummary(
 
   const lastResponse = await fetchLastAssistantResponse(db, sessionId);
 
+  // Keep actionable interactive prompts at the end of every summary. Raw
+  // prompt rows are filtered in SQL so large sessions do not need to load their
+  // complete transcript just to find an unmatched question.
+  const { rows: promptRows } = await db.query<{ content: string }>(
+    `SELECT content FROM ai_agent_messages
+     WHERE session_id = $1
+       AND (hidden = FALSE OR hidden IS NULL)
+       AND (
+         content LIKE '%AskUserQuestion%'
+         OR content LIKE '%PromptForUserInput%'
+         OR content LIKE '%RequestUserInput%'
+         OR content LIKE '%ToolPermission%'
+         OR content LIKE '%ExitPlanMode%'
+         OR content LIKE '%developer_git_commit_proposal%'
+         OR content LIKE '%ask_user_question_response%'
+         OR content LIKE '%request_user_input_response%'
+         OR content LIKE '%permission_response%'
+         OR content LIKE '%git_commit_proposal%'
+         OR content LIKE '%exit_plan_mode_%'
+       )
+     ORDER BY id ASC`,
+    [sessionId]
+  );
+  const pendingPrompts = collectPendingPromptDescriptionsFromRawRows(promptRows);
+
   let editedFiles: string[] = [];
   try {
     const fileLinks = await SessionFilesRepository.getFilesBySession(
@@ -200,7 +229,7 @@ async function handleGetSessionSummary(
     }
   }
 
-  return lines.join("\n");
+  return appendPendingPromptSection(lines.join("\n"), pendingPrompts);
 }
 
 async function handleGetWorkstreamOverview(
@@ -596,7 +625,7 @@ export const SESSION_CONTEXT_TOOL_SCHEMAS = [
   {
     name: "get_session_summary",
     description:
-      "Get a compact summary of an AI session including its title, user prompts, last agent response, and files edited. Use this to understand what happened in a specific session. If no sessionId is provided, summarizes the current session.",
+      "Get a compact summary of an AI session including its title, user prompts, last agent response, files edited, and any pending user question at the end. Use this to understand what happened in a specific session. If no sessionId is provided, summarizes the current session.",
     inputSchema: {
       type: "object",
       properties: {

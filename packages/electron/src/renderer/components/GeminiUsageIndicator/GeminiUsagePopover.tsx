@@ -7,7 +7,7 @@
  */
 
 import React, { useEffect, RefObject } from 'react';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import {
   geminiUsageAtom,
@@ -15,7 +15,7 @@ import {
   geminiUsageWeeklyColorAtom,
   formatResetTime,
 } from '../../store/atoms/geminiUsageAtoms';
-import { useSetSetting } from '../../hooks/useSetting';
+import { toggleGutterItemHiddenAtom } from '../../store/atoms/appSettings';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 
 interface GeminiUsagePopoverProps {
@@ -102,7 +102,7 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
   const usage = useAtomValue(geminiUsageAtom);
   const sessionColor = useAtomValue(geminiUsageSessionColorAtom);
   const weeklyColor = useAtomValue(geminiUsageWeeklyColorAtom);
-  const setUsageIndicatorEnabled = useSetSetting('ai.showGeminiUsageIndicator');
+  const toggleGutterItemHidden = useSetAtom(toggleGutterItemHiddenAtom);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
 
   const menu = useFloatingMenu({
@@ -220,7 +220,7 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
             )}
             <button
               onClick={() => {
-                setUsageIndicatorEnabled(false);
+                toggleGutterItemHidden({ id: 'gemini-usage', hidden: true });
                 onClose();
               }}
               className="text-[11px] text-nim-muted hover:text-nim transition-colors"

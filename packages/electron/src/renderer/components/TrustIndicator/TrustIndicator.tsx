@@ -15,10 +15,12 @@ import {
 } from '../../store/atoms/appSettings';
 import { permissionsChangedVersionAtom } from '../../store/atoms/permissions';
 import { HelpTooltip } from '../../help';
+import { getProjectTrustPresentation } from '../ProjectTrustToast/projectTrustChoices';
 
 export interface TrustStatus {
   trustedAt?: number;
   permissionMode: 'ask' | 'allow-all' | 'bypass-all' | null;
+  allowAllUsesClassifier: boolean;
 }
 
 interface TrustIndicatorProps {
@@ -50,6 +52,7 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
     ? {
         trustedAt: permissionsState.trustedAt,
         permissionMode: permissionsState.permissionMode,
+        allowAllUsesClassifier: permissionsState.allowAllUsesClassifier,
       }
     : null;
 
@@ -132,15 +135,20 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
   };
 
   const isTrusted = status?.permissionMode !== null && status?.permissionMode !== undefined;
+  const currentPresentation =
+    status && !loading && status.permissionMode !== null
+      ? getProjectTrustPresentation(
+          status.permissionMode,
+          status.allowAllUsesClassifier,
+        )
+      : null;
 
   const getStatusIcon = (): string => {
     if (!status || loading) {
       return 'shield';
     }
-    if (isTrusted) {
-      if (status.permissionMode === 'bypass-all') return 'warning';
-      if (status.permissionMode === 'allow-all') return 'shield';
-      return 'verified_user';
+    if (currentPresentation) {
+      return currentPresentation.icon;
     }
     return 'gpp_maybe';
   };
@@ -149,91 +157,59 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
     if (!status || loading) {
       return 'loading';
     }
-    if (isTrusted) {
-      if (status.permissionMode === 'bypass-all') return 'bypass-all';
-      if (status.permissionMode === 'allow-all') return 'allow-all';
-      return 'trusted';
+    if (currentPresentation) {
+      return currentPresentation.choice;
     }
     return 'untrusted';
   };
 
   const getIndicatorColorClass = (): string => {
-    const statusClass = getStatusClass();
-    switch (statusClass) {
-      case 'bypass-all':
+    switch (currentPresentation?.severity) {
+      case 'primary':
+        return 'text-[var(--nim-primary)]';
+      case 'warning':
         return 'text-[var(--nim-warning)]';
-      case 'loading':
-        return 'text-[var(--nim-text-faint)]';
       default:
-        return 'text-[var(--nim-text-muted)]';
+        return !status || loading
+          ? 'text-[var(--nim-text-faint)]'
+          : 'text-[var(--nim-text-muted)]';
     }
   };
 
   const getDotColorClass = (): string => {
-    const statusClass = getStatusClass();
-    switch (statusClass) {
-      case 'untrusted':
-        return 'bg-[var(--nim-warning)]';
-      case 'trusted':
-        return 'bg-[var(--nim-success)]';
-      case 'allow-all':
+    switch (currentPresentation?.severity) {
+      case 'primary':
         return 'bg-[var(--nim-primary)]';
-      case 'bypass-all':
-        return 'bg-[var(--nim-error)]';
-      case 'loading':
-        return 'bg-[var(--nim-text-faint)]';
+      case 'warning':
+        return 'bg-[var(--nim-warning)]';
       default:
-        return 'bg-[var(--nim-text-faint)]';
-    }
-  };
-
-  const getBadgeClasses = (): string => {
-    const statusClass = getStatusClass();
-    const base = 'px-2 py-0.5 rounded text-[11px] font-medium';
-    switch (statusClass) {
-      case 'untrusted':
-        return `${base} bg-[color-mix(in_srgb,var(--nim-warning)_15%,transparent)] text-[var(--nim-warning)]`;
-      case 'trusted':
-        return `${base} bg-[color-mix(in_srgb,var(--nim-success)_15%,transparent)] text-[var(--nim-success)]`;
-      case 'allow-all':
-        return `${base} bg-[color-mix(in_srgb,var(--nim-primary)_15%,transparent)] text-[var(--nim-primary)]`;
-      case 'bypass-all':
-        return `${base} bg-[color-mix(in_srgb,var(--nim-error)_15%,transparent)] text-[var(--nim-error)]`;
-      default:
-        return base;
+        if (!status || loading) {
+          return 'bg-[var(--nim-text-faint)]';
+        }
+        return isTrusted
+          ? 'bg-[var(--nim-text-muted)]'
+          : 'bg-[var(--nim-warning)]';
     }
   };
 
   const getCurrentModeClasses = (): string => {
-    const statusClass = getStatusClass();
     const base = 'mx-2 mb-2 p-3 rounded-md bg-[var(--nim-bg)] border border-[var(--nim-border)]';
-    switch (statusClass) {
-      case 'trusted':
-        return `${base} border-[var(--nim-success)] bg-[color-mix(in_srgb,var(--nim-success)_10%,transparent)]`;
-      case 'allow-all':
-        return `${base} border-[var(--nim-primary)] bg-[color-mix(in_srgb,var(--nim-primary)_10%,transparent)]`;
-      case 'bypass-all':
-        return `${base} border-[var(--nim-error)] bg-[color-mix(in_srgb,var(--nim-error)_10%,transparent)]`;
-      case 'untrusted':
-        return `${base} border-[var(--nim-warning)] bg-[color-mix(in_srgb,var(--nim-warning)_10%,transparent)]`;
-      default:
-        return base;
+    if (currentPresentation?.severity === 'warning' || !isTrusted) {
+      return `${base} border-[var(--nim-warning)] bg-[color-mix(in_srgb,var(--nim-warning)_10%,transparent)]`;
     }
+    return base;
   };
 
   const getModeValueColorClass = (): string => {
-    const statusClass = getStatusClass();
-    switch (statusClass) {
-      case 'trusted':
-        return 'text-[var(--nim-success)]';
-      case 'allow-all':
+    switch (currentPresentation?.severity) {
+      case 'primary':
         return 'text-[var(--nim-primary)]';
-      case 'bypass-all':
-        return 'text-[var(--nim-error)]';
-      case 'untrusted':
+      case 'warning':
         return 'text-[var(--nim-warning)]';
       default:
-        return 'text-[var(--nim-text)]';
+        return isTrusted
+          ? 'text-[var(--nim-text)]'
+          : 'text-[var(--nim-warning)]';
     }
   };
 
@@ -241,14 +217,8 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
     if (!status || loading) {
       return 'Loading trust status...';
     }
-    if (isTrusted) {
-      if (status.permissionMode === 'bypass-all') {
-        return 'Allow All mode';
-      }
-      if (status.permissionMode === 'allow-all') {
-        return 'Allow Edits mode';
-      }
-      return 'Ask mode enabled';
+    if (currentPresentation) {
+      return `${currentPresentation.label} mode`;
     }
     return 'Workspace not trusted for agent';
   };
@@ -257,14 +227,8 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
     if (!status || loading) {
       return '';
     }
-    if (isTrusted) {
-      if (status.permissionMode === 'bypass-all') {
-        return 'All operations auto-approved without any prompts.';
-      }
-      if (status.permissionMode === 'allow-all') {
-        return 'File operations auto-approved. Bash and web requests follow Claude Code settings.';
-      }
-      return 'Agent asks before running commands. Approvals saved to .claude/settings.local.json.';
+    if (currentPresentation) {
+      return currentPresentation.description;
     }
     return 'Trust this workspace to allow the AI agent to run commands.';
   };
@@ -327,9 +291,7 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
                 size={20}
               />
               <span>
-                {isTrusted
-                  ? (status?.permissionMode === 'bypass-all' ? 'Allow All' : status?.permissionMode === 'allow-all' ? 'Allow Edits' : 'Ask')
-                  : 'Not Trusted'}
+                {currentPresentation?.label ?? 'Not Trusted'}
               </span>
             </div>
             <div className="trust-menu-current-mode-description text-xs text-[var(--nim-text-muted)] leading-[1.4]">

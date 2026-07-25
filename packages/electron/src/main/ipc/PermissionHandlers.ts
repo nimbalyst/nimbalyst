@@ -12,6 +12,7 @@ import { ClaudeSettingsManager } from '../services/ClaudeSettingsManager';
 import { logger } from '../utils/logger';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { resolveProjectPath, isWorktreePath } from '../utils/workspaceDetection';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 
 /**
  * Broadcast permission changes to all renderer processes.
@@ -43,10 +44,14 @@ export function registerPermissionHandlers(): void {
       title: options?.title || 'Select Directory',
       buttonLabel: options?.buttonLabel || 'Select',
       properties: ['openDirectory', 'createDirectory'],
+      defaultPath: getDialogDefaultPath({ window }),
     };
     const result = window
       ? await dialog.showOpenDialog(window, dialogOptions)
       : await dialog.showOpenDialog(dialogOptions);
+    if (!result.canceled) {
+      rememberDialogSelection(result.filePaths[0], 'directory');
+    }
     return result;
   });
 
@@ -274,7 +279,7 @@ export function registerPermissionHandlers(): void {
     }
   });
 
-  // Toggle the "Allow All" auto-mode classifier opt-in (issue #628)
+  // Toggle the "Allow All" automatic-review opt-in (issue #628)
   // NOTE: Resolves worktree paths to parent project
   safeHandle('permissions:setAllowAllUsesClassifier', async (_event, workspacePath: string, enabled: boolean) => {
     if (!workspacePath) {

@@ -1,5 +1,9 @@
 import { BrowserWindow, nativeTheme } from 'electron';
 import { getTheme, getThemeIsDark } from '../utils/store';
+import {
+    getTitleBarOverlayColors,
+    resetTitleBarOverlayColors,
+} from '../window/windowChrome';
 
 /**
  * Determine if the current theme is dark.
@@ -60,19 +64,14 @@ export function updateWindowTitleBars() {
     const titleBarColor = isDarkTheme ? titleBarColors.dark : titleBarColors.light;
     const backgroundColor = isDarkTheme ? '#1a1a1a' : '#ffffff';
 
+    // A main-process theme change invalidates the renderer-resolved color
+    // until the renderer applies the new theme and reports its computed vars.
+    resetTitleBarOverlayColors(titleBarColor);
+
     // Update all windows
     BrowserWindow.getAllWindows().forEach(window => {
         // Update background color
         window.setBackgroundColor(backgroundColor);
-
-        // Update title bar overlay on Windows/Linux
-        if (process.platform !== 'darwin' && window.setTitleBarOverlay) {
-          try {
-            window.setTitleBarOverlay(titleBarColor);
-          } catch (error) {
-            console.error('Error setting title bar overlay:', error);
-          }
-        }
 
         // Send theme-change event to all windows
         // Each window's renderer listens to this and updates its own UI
@@ -89,7 +88,8 @@ export function getTitleBarColors() {
         light: { color: '#ffffff', symbolColor: '#374151' }
     };
 
-    return isDarkTheme ? titleBarColors.dark : titleBarColors.light;
+    const fallback = isDarkTheme ? titleBarColors.dark : titleBarColors.light;
+    return getTitleBarOverlayColors(fallback);
 }
 
 // Get background color for current theme

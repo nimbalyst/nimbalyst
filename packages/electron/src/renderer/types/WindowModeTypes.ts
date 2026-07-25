@@ -13,5 +13,8 @@
  * - collab: Shared documents
  * - pr-review: GitHub pull request review panel (issue #307)
  * - settings: Settings view
+ *
+ * Note: org/team management is a dedicated OS window (?mode=team-management),
+ * not a content mode in the project window (2026-07-17 decision-log correction).
  */
 export type ContentMode = 'files' | 'agent' | 'tracker' | 'collab' | 'pr-review' | 'settings';

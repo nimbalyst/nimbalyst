@@ -100,7 +100,20 @@ interface CodexUsageSnapshot {
   tokenUsage: CodexTokenUsage | null;
 }
 
-const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
+/**
+ * Codex's session log root, honoring `CODEX_HOME` the way the Codex CLI does
+ * (same class of bug as #975 on the Claude side: a relocated config root made
+ * the usage meter read an abandoned directory forever).
+ *
+ * A function rather than a module-level const so the env is read when used, not
+ * at import time. Like CLAUDE_CONFIG_DIR this is a config *location* pointer,
+ * never a credential value.
+ */
+function codexSessionsDir(): string {
+  const configured = process.env.CODEX_HOME?.trim();
+  return join(configured || join(homedir(), '.codex'), 'sessions');
+}
+
 const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes before going to sleep
 const MAX_FILES_TO_CHECK = 5; // Check up to N recent session files for rate_limits
@@ -252,8 +265,9 @@ class CodexUsageServiceImpl {
    * then reads them to extract rate_limits or token usage from token_count events.
    */
   private async findLatestUsageSnapshot(): Promise<CodexUsageSnapshot> {
-    if (!existsSync(CODEX_SESSIONS_DIR)) {
-      logger.main.debug('[CodexUsageService] Sessions directory does not exist:', CODEX_SESSIONS_DIR);
+    const sessionsDir = codexSessionsDir();
+    if (!existsSync(sessionsDir)) {
+      logger.main.debug('[CodexUsageService] Sessions directory does not exist:', sessionsDir);
       return { rateLimits: null, tokenUsage: null };
     }
 
@@ -289,10 +303,10 @@ class CodexUsageServiceImpl {
 
     try {
       // Walk year/month/day directory structure
-      const years = await this.getSortedSubdirs(CODEX_SESSIONS_DIR);
+      const years = await this.getSortedSubdirs(codexSessionsDir());
       // Check most recent years first (reversed)
       for (const year of years.reverse().slice(0, 2)) {
-        const yearPath = join(CODEX_SESSIONS_DIR, year);
+        const yearPath = join(codexSessionsDir(), year);
         const months = await this.getSortedSubdirs(yearPath);
         for (const month of months.reverse().slice(0, 2)) {
           const monthPath = join(yearPath, month);

@@ -24,6 +24,7 @@ import {
   getRecentItems,
   store as appStore,
 } from '../utils/store';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 // Re-export the workspace key generation logic
 function workspaceKey(workspacePath: string): string {
@@ -164,7 +165,7 @@ export class ProjectMigrationService {
       logger.main.info('[ProjectMigration] Project directory copied');
 
       // Step 3: Rename Claude Code session directory
-      const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+      const claudeProjectsDir = path.join(resolveClaudeConfigDir(), 'projects');
       oldClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(oldPath));
       newClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(newPath));
 
@@ -280,7 +281,7 @@ export class ProjectMigrationService {
       logger.main.info('[ProjectMigration] Project directory renamed');
 
       // Step 3: Rename Claude Code session directory
-      const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+      const claudeProjectsDir = path.join(resolveClaudeConfigDir(), 'projects');
       oldClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(oldPath));
       newClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(newPath));
 

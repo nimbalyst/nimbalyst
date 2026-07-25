@@ -1,13 +1,13 @@
 {
   "id": "com.nimbalyst.sqlite-browser",
   "name": "SQLite Browser",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Browse and query SQLite databases with AI assistance",
   "author": "Nimbalyst",
   "main": "dist/index.js",
   "apiVersion": "1.0.0",
   "marketplace": {
-    "changelog": "1.0.1: More reliable AI edits and inline embeds for edited files.",
+    "changelog": "1.0.2: Compatibility with the latest Nimbalyst runtime.\n1.0.1: More reliable AI edits and inline embeds for edited files.",
     "categories": ["data"],
     "tags": ["sqlite", "database", "sql", "query", "browser", "db"],
     "icon": "table_chart",

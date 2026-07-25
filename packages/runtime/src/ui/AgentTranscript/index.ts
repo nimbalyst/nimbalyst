@@ -2,6 +2,8 @@ export * from './components';
 export * from './contributions';
 export * from './types';
 export * from './utils/pathResolver';
+export * from './session/sessionRefAtoms';
+export * from './session/SessionReferenceChip';
 export {
   buildFileDirectoryTree,
   getFileDirectoryPaths,

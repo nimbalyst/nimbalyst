@@ -15,6 +15,7 @@ import { getMcpConfigService } from '../index';
 import { autoMatchTeamForWorkspace } from '../services/TeamService';
 import { initializeTrackerSync } from '../services/TrackerSyncManager';
 import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 
 let workspaceManagerWindow: BrowserWindow | null = null;
 
@@ -291,10 +292,12 @@ export function setupWorkspaceManagerHandlers() {
   // Open folder dialog
   safeHandle('workspace-manager:open-folder-dialog', async () => {
     const result = await dialog.showOpenDialog({
-      properties: ['openDirectory']
+      properties: ['openDirectory'],
+      defaultPath: getDialogDefaultPath(),
     });
 
     if (!result.canceled && result.filePaths.length > 0) {
+      rememberDialogSelection(result.filePaths[0], 'directory');
       return { success: true, path: result.filePaths[0] };
     }
 
@@ -303,7 +306,7 @@ export function setupWorkspaceManagerHandlers() {
 
   // Create workspace dialog
   safeHandle('workspace-manager:create-workspace-dialog', async () => {
-    const defaultPath = join(app.getPath('documents'), 'Untitled Workspace');
+    const defaultPath = getDialogDefaultPath({ suggestedName: 'Untitled Workspace' });
     const result = await dialog.showSaveDialog({
       title: 'Create New Workspace',
       defaultPath,
@@ -312,6 +315,7 @@ export function setupWorkspaceManagerHandlers() {
     });
 
     if (!result.canceled && result.filePath) {
+      rememberDialogSelection(result.filePath, 'file');
       try {
         // Create the directory if it doesn't exist
         if (!existsSync(result.filePath)) {

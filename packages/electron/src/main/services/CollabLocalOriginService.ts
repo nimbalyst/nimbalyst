@@ -7,9 +7,10 @@ import {
   type DocumentSyncConfig,
 } from '@nimbalyst/runtime/sync';
 import {
-  getCollabContentAdapter,
-  type CollabContentAdapter,
-} from '@nimbalyst/collab-adapters';
+  convertFromFileIntoDoc,
+  convertToPlainText,
+  describeCollabCodec,
+} from './CollabConversionClient';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { getCollabSyncHttpUrl, getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { logger } from '../utils/logger';
@@ -421,10 +422,10 @@ async function withSharedDocument<T>(
 async function readSharedDocText(
   workspacePath: string,
   documentId: string,
-  adapter: CollabContentAdapter,
+  documentType: string,
 ): Promise<string | null> {
   return withSharedDocument(workspacePath, documentId, async ({ yDoc }) => {
-    return adapter.toPlainText(yDoc);
+    return convertToPlainText(documentType, yDoc, { workspacePath });
   });
 }
 
@@ -442,10 +443,10 @@ interface SharedDocReadResult {
 async function readSharedDocWithMeta(
   workspacePath: string,
   documentId: string,
-  adapter: CollabContentAdapter,
+  documentType: string,
 ): Promise<SharedDocReadResult | null> {
   return withSharedDocument(workspacePath, documentId, async ({ yDoc, provider }) => ({
-    text: adapter.toPlainText(yDoc),
+    text: await convertToPlainText(documentType, yDoc, { workspacePath }),
     lastWriterUserId: provider.getLastWriterUserId(),
     lastUpdatedAt: provider.getLastUpdatedAt(),
   }));
@@ -454,13 +455,13 @@ async function readSharedDocWithMeta(
 async function overwriteSharedDocFromSource(
   workspacePath: string,
   documentId: string,
-  adapter: CollabContentAdapter,
+  documentType: string,
   source: string | Uint8Array,
 ): Promise<boolean> {
   const result = await withSharedDocument(workspacePath, documentId, async ({ yDoc, provider }) => {
     logger.main.info('[CollabLocalOrigin] applyFromFile starting', {
       documentId,
-      documentType: adapter.documentType,
+      documentType,
       yDocByteLength: 0, // filled after
     });
     let writeCount = 0;
@@ -468,7 +469,10 @@ async function overwriteSharedDocFromSource(
     const onAfter = () => { writeCount += 1; };
     subDoc.on('afterTransaction', onAfter);
     try {
-      adapter.applyFromFile(yDoc, source);
+      // The codec runs on a host (the renderer) and returns a delta; applying
+      // it here is a normal local transaction, so the provider broadcasts it
+      // exactly as an in-process codec write did.
+      await convertFromFileIntoDoc('applyFromFile', documentType, yDoc, source, { workspacePath });
     } finally {
       subDoc.off('afterTransaction', onAfter);
     }
@@ -487,10 +491,26 @@ async function overwriteSharedDocFromSource(
   return result === true;
 }
 
-function resolveAdapterForSharedDocumentType(
+/**
+ * Can a codec host convert this document type right now? Main holds no codecs,
+ * so "supported" is a question only a host can answer -- and the answer also
+ * covers "no host is available", which must not read as "unsupported type"
+ * being the user's fault.
+ */
+async function codecHostSupports(
   documentType: string,
-): CollabContentAdapter | undefined {
-  return getCollabContentAdapter(documentType);
+  workspacePath: string,
+): Promise<boolean> {
+  try {
+    await describeCollabCodec(documentType, { workspacePath });
+    return true;
+  } catch (error) {
+    logger.main.info(
+      `[CollabLocalOrigin] No codec host can handle document type '${documentType}'`,
+      { error: error instanceof Error ? error.message : String(error) },
+    );
+    return false;
+  }
 }
 
 async function migrateMarkdownAssetsForCollab(params: {
@@ -623,10 +643,19 @@ export async function relinkLocalOriginBinding(params: {
   const relativePath = ensureWorkspaceRelativePath(params.workspacePath, params.sourceFilePath);
   const sourceContent = await fs.readFile(params.sourceFilePath, 'utf8');
   const stats = await getSourceFileStats(params.sourceFilePath);
-  const adapter = resolveAdapterForSharedDocumentType(params.documentType);
-  const sharedText = adapter
-    ? await readSharedDocText(params.workspacePath, params.documentId, adapter)
-    : null;
+  // A shared-side read only supplies the collab baseline hash; if no host can
+  // convert this type, relinking still records the local side.
+  const sharedText = await readSharedDocText(
+    params.workspacePath,
+    params.documentId,
+    params.documentType,
+  ).catch((error) => {
+    logger.main.info('[CollabLocalOrigin] Could not read shared text while relinking', {
+      documentId: params.documentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  });
 
   await upsertBinding({
     orgId: team.orgId,
@@ -676,12 +705,11 @@ export async function reuploadFromLocalOrigin(params: {
     };
   }
 
-  const adapter = resolveAdapterForSharedDocumentType(binding.documentType);
-  if (!adapter) {
+  if (!(await codecHostSupports(binding.documentType, params.workspacePath))) {
     return {
       success: false,
       status: 'unsupported',
-      message: `No collab content adapter is registered for document type '${binding.documentType}'.`,
+      message: `No collab codec is available for document type '${binding.documentType}'.`,
       binding,
     };
   }
@@ -698,7 +726,11 @@ export async function reuploadFromLocalOrigin(params: {
   try {
     const sourceBuffer = await fs.readFile(binding.resolvedPath);
     const sourceText = sourceBuffer.toString('utf8');
-    const sharedRead = await readSharedDocWithMeta(params.workspacePath, params.documentId, adapter);
+    const sharedRead = await readSharedDocWithMeta(
+      params.workspacePath,
+      params.documentId,
+      binding.documentType,
+    );
     if (sharedRead === null) {
       return {
         success: false,
@@ -778,7 +810,7 @@ export async function reuploadFromLocalOrigin(params: {
     const applied = await overwriteSharedDocFromSource(
       params.workspacePath,
       params.documentId,
-      adapter,
+      binding.documentType,
       payloadForUpload,
     );
     logger.main.info('[CollabLocalOrigin] reupload adapter write complete', {
@@ -837,15 +869,12 @@ export async function seedSharedDocumentFromContent(params: {
   documentType: string;
   content: string | Uint8Array;
 }): Promise<boolean> {
-  const adapter = resolveAdapterForSharedDocumentType(params.documentType);
-  if (!adapter) {
-    // The main-process adapter is now an OPTIONAL cache, not a requirement.
-    // External, structured editors (mindmap) supply a renderer codec but no
-    // main adapter -- the renderer-side seeding orchestrator handles those.
-    // Returning false (instead of throwing) lets the orchestrator treat a
-    // missing main adapter as "main can't seed this type", not a hard error.
+  // Main-side seeding stays OPTIONAL, not a requirement. Returning false
+  // (instead of throwing) lets the renderer-side seeding orchestrator treat
+  // "main can't seed this type" as a fallback, not a hard error.
+  if (!(await codecHostSupports(params.documentType, params.workspacePath))) {
     logger.main.info(
-      `[CollabLocalOrigin] No main-process adapter for document type '${params.documentType}'; deferring seed to the renderer.`,
+      `[CollabLocalOrigin] Deferring seed of '${params.documentType}' to the renderer.`,
     );
     return false;
   }
@@ -853,7 +882,7 @@ export async function seedSharedDocumentFromContent(params: {
   return overwriteSharedDocFromSource(
     params.workspacePath,
     params.documentId,
-    adapter,
+    params.documentType,
     params.content,
   );
 }

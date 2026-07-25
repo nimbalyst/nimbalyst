@@ -44,6 +44,10 @@ import type {
   TrackerNavigationSyncResponseMessage,
   TrackerNavigationDeltaMessage,
   TrackerNavigationMutationAckMessage,
+  EncryptedTrackerSavedViewEnvelope,
+  TrackerSavedViewSyncResponseMessage,
+  TrackerSavedViewDeltaMessage,
+  TrackerSavedViewMutationAckMessage,
 } from '../trackerProtocol';
 
 // ============================================================================
@@ -187,6 +191,16 @@ interface StoredNavigation {
   orgKeyFingerprint: string | null;
 }
 
+interface StoredSavedView {
+  viewId: string;
+  syncId: SyncId;
+  encryptedPayload: string | null;
+  iv: string | null;
+  updatedAt: number;
+  deletedAt: number | null;
+  orgKeyFingerprint: string | null;
+}
+
 export interface FakeTrackerRoomOptions {
   /** Initial config; defaults to issueKeyPrefix='NIM'. */
   config?: TrackerRoomConfig;
@@ -215,10 +229,12 @@ export class FakeTrackerRoom {
   private readonly items = new Map<string, StoredItem>();
   private readonly schemas = new Map<string, StoredSchema>();
   private readonly navigation = new Map<string, StoredNavigation>();
+  private readonly savedViews = new Map<string, StoredSavedView>();
   private readonly connections = new Set<FakeWebSocket>();
   private syncId: SyncId = 0;
   private schemaSyncId: SyncId = 0;
   private navigationSyncId: SyncId = 0;
+  private savedViewSyncId: SyncId = 0;
   private nextIssueNumber = 1;
   private config: TrackerRoomConfig;
   private currentFingerprint: string | null;
@@ -228,6 +244,7 @@ export class FakeTrackerRoom {
   readonly receivedMutations: Array<{ itemId: string; clientMutationId: string }> = [];
   readonly receivedSchemaMutations: Array<{ schemaType: string; clientMutationId: string }> = [];
   readonly receivedNavigationMutations: Array<{ entryId: string; clientMutationId: string }> = [];
+  readonly receivedSavedViewMutations: Array<{ viewId: string; clientMutationId: string }> = [];
 
   constructor(options: FakeTrackerRoomOptions = {}) {
     this.config = options.config ?? { issueKeyPrefix: 'NIM' };
@@ -314,6 +331,12 @@ export class FakeTrackerRoom {
         break;
       case 'trackerSchemaMutation':
         this.handleSchemaMutation(ws, msg);
+        break;
+      case 'trackerSavedViewSync':
+        this.handleSavedViewSync(ws, msg.sinceSyncId);
+        break;
+      case 'trackerSavedViewMutation':
+        this.handleSavedViewMutation(ws, msg);
         break;
       case 'trackerNavigationSync':
         this.handleNavigationSync(ws, msg.sinceSyncId);
@@ -497,6 +520,64 @@ export class FakeTrackerRoom {
     }
   }
 
+  private handleSavedViewSync(ws: FakeWebSocket, sinceSyncId: SyncId): void {
+    const views = [...this.savedViews.values()]
+      .filter((row) => row.syncId > sinceSyncId)
+      .sort((a, b) => a.syncId - b.syncId)
+      .map(toSavedViewEnvelope);
+    const response: TrackerSavedViewSyncResponseMessage = {
+      type: 'trackerSavedViewSyncResponse',
+      views,
+      cursorSyncId: views.at(-1)?.syncId ?? sinceSyncId,
+      hasMore: false,
+    };
+    this.deliver(ws, response);
+  }
+
+  private handleSavedViewMutation(
+    ws: FakeWebSocket,
+    msg: Extract<TrackerClientMessage, { type: 'trackerSavedViewMutation' }>,
+  ): void {
+    this.receivedSavedViewMutations.push({
+      viewId: msg.viewId,
+      clientMutationId: msg.clientMutationId,
+    });
+    if (this.rejectAll) {
+      const reject: TrackerSavedViewMutationAckMessage = {
+        type: 'trackerSavedViewMutationAck',
+        clientMutationId: msg.clientMutationId,
+        accepted: false,
+        error: { code: 'forbidden', message: 'rejectAll=true' },
+      };
+      this.deliver(ws, reject);
+      return;
+    }
+    const isDelete = msg.encryptedPayload === null;
+    const stored: StoredSavedView = {
+      viewId: msg.viewId,
+      syncId: ++this.savedViewSyncId,
+      encryptedPayload: msg.encryptedPayload,
+      iv: isDelete ? null : (msg.iv ?? null),
+      updatedAt: Date.now(),
+      deletedAt: isDelete ? Date.now() : null,
+      orgKeyFingerprint: isDelete ? null : msg.orgKeyFingerprint,
+    };
+    this.savedViews.set(msg.viewId, stored);
+    const envelope = toSavedViewEnvelope(stored);
+    const ack: TrackerSavedViewMutationAckMessage = {
+      type: 'trackerSavedViewMutationAck',
+      clientMutationId: msg.clientMutationId,
+      accepted: true,
+      syncId: stored.syncId,
+      view: envelope,
+    };
+    this.deliver(ws, ack);
+    const delta: TrackerSavedViewDeltaMessage = { type: 'trackerSavedViewDelta', view: envelope };
+    for (const peer of this.connections) {
+      if (peer !== ws) this.deliver(peer, delta);
+    }
+  }
+
   private handleNavigationSync(ws: FakeWebSocket, sinceSyncId: SyncId): void {
     const entries = [...this.navigation.values()]
       .filter((row) => row.syncId > sinceSyncId)
@@ -608,6 +689,10 @@ export class FakeTrackerRoom {
     return [...this.schemas.values()].map(toSchemaEnvelope);
   }
 
+  getStoredSavedViews(): EncryptedTrackerSavedViewEnvelope[] {
+    return [...this.savedViews.values()].map(toSavedViewEnvelope);
+  }
+
   getStoredNavigation(): EncryptedTrackerNavigationEnvelope[] {
     return [...this.navigation.values()].map(toNavigationEnvelope);
   }
@@ -631,6 +716,19 @@ function toEnvelope(stored: StoredItem): EncryptedTrackerItemEnvelope {
 function toSchemaEnvelope(stored: StoredSchema): EncryptedTrackerSchemaEnvelope {
   const env: EncryptedTrackerSchemaEnvelope = {
     schemaType: stored.schemaType,
+    syncId: stored.syncId,
+    encryptedPayload: stored.encryptedPayload,
+    updatedAt: stored.updatedAt,
+    deletedAt: stored.deletedAt,
+    orgKeyFingerprint: stored.orgKeyFingerprint,
+  };
+  if (stored.iv !== null && stored.encryptedPayload !== null) env.iv = stored.iv;
+  return env;
+}
+
+function toSavedViewEnvelope(stored: StoredSavedView): EncryptedTrackerSavedViewEnvelope {
+  const env: EncryptedTrackerSavedViewEnvelope = {
+    viewId: stored.viewId,
     syncId: stored.syncId,
     encryptedPayload: stored.encryptedPayload,
     updatedAt: stored.updatedAt,

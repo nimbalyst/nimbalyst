@@ -45,9 +45,14 @@ describe('RealtimeAPIClient extension voice tools', () => {
   });
 
   it('lists only built-in tools when no extension voice tools are set', () => {
-    const names = makeClient().buildSessionTools().map((t) => t.name);
+    const tools = makeClient().buildSessionTools();
+    const names = tools.map((t) => t.name);
     expect(names).toContain('ask_coding_agent');
+    expect(names).toContain('get_ui_context');
+    expect(names).toContain('capture_ui_screenshot');
     expect(names).not.toContain('memory_search');
+    expect(tools.find((tool) => tool.name === 'capture_ui_screenshot')?.parameters.required)
+      .toEqual(['userConfirmed', 'reason']);
   });
 
   it('routes an extension function call to the dispatch callback and returns its result', async () => {
@@ -94,5 +99,105 @@ describe('RealtimeAPIClient extension voice tools', () => {
 
     const fnOutput = sent.find((e) => e.item?.type === 'function_call_output');
     expect(JSON.parse(fnOutput.item.output)).toEqual({ success: false, error: 'boom' });
+  });
+
+  it('returns the fresh UI context supplied by the main-process bridge', async () => {
+    const client = makeClient();
+    const getUiContext = vi.fn(async () => ({
+      success: true,
+      context: {
+        activeView: 'agent',
+        selectedFile: { name: 'App.tsx', relativePath: 'src/App.tsx' },
+        activeSession: { id: 'session-1', title: 'UI work', status: 'running' },
+      },
+    }));
+    client.setOnGetUiContext(getUiContext);
+
+    const sent = attachFakeSocket(client);
+    await (client as any).handleFunctionCall('call-ui', 'get_ui_context', '{}');
+
+    expect(getUiContext).toHaveBeenCalledTimes(1);
+    const output = sent.find((event) => event.item?.type === 'function_call_output');
+    expect(JSON.parse(output.item.output)).toEqual({
+      success: true,
+      context: {
+        activeView: 'agent',
+        selectedFile: { name: 'App.tsx', relativePath: 'src/App.tsx' },
+        activeSession: { id: 'session-1', title: 'UI work', status: 'running' },
+      },
+    });
+  });
+
+  it('rejects UI screenshot capture without explicit user confirmation', async () => {
+    const client = makeClient();
+    const capture = vi.fn();
+    client.setOnCaptureUiScreenshot(capture);
+
+    const sent = attachFakeSocket(client);
+    await (client as any).handleFunctionCall(
+      'call-shot-denied',
+      'capture_ui_screenshot',
+      JSON.stringify({ userConfirmed: false, reason: 'inspect settings' }),
+    );
+
+    expect(capture).not.toHaveBeenCalled();
+    const output = sent.find((event) => event.item?.type === 'function_call_output');
+    expect(JSON.parse(output.item.output)).toEqual({
+      success: false,
+      error: 'Explicit user confirmation is required before capturing the UI.',
+    });
+  });
+
+  it('injects a confirmed screenshot as image input and returns metadata without pixels', async () => {
+    const client = makeClient();
+    const imageDataUrl = `data:image/jpeg;base64,${Buffer.from('jpeg-bytes').toString('base64')}`;
+    const capture = vi.fn(async () => ({
+      success: true,
+      imageDataUrl,
+      source: 'active_nimbalyst_window' as const,
+      format: 'jpeg' as const,
+      width: 1200,
+      height: 800,
+      bytes: 10,
+      capturedAt: '2026-07-24T12:00:00.000Z',
+      context: { activeView: 'settings' },
+    }));
+    client.setOnCaptureUiScreenshot(capture);
+
+    const sent = attachFakeSocket(client);
+    await (client as any).handleFunctionCall(
+      'call-shot',
+      'capture_ui_screenshot',
+      JSON.stringify({ userConfirmed: true, reason: 'inspect settings' }),
+    );
+
+    expect(capture).toHaveBeenCalledWith('inspect settings');
+    const imageEvent = sent.find((event) =>
+      event.item?.content?.some((part: any) => part.type === 'input_image')
+    );
+    expect(imageEvent.item.content).toEqual([
+      {
+        type: 'input_text',
+        text: '[INTERNAL: Current Nimbalyst UI screenshot captured for: inspect settings]',
+      },
+      {
+        type: 'input_image',
+        image_url: imageDataUrl,
+        detail: 'high',
+      },
+    ]);
+
+    const output = sent.find((event) => event.item?.type === 'function_call_output');
+    expect(output.item.output).not.toContain('base64');
+    expect(JSON.parse(output.item.output)).toEqual({
+      success: true,
+      source: 'active_nimbalyst_window',
+      format: 'jpeg',
+      width: 1200,
+      height: 800,
+      bytes: 10,
+      capturedAt: '2026-07-24T12:00:00.000Z',
+      context: { activeView: 'settings' },
+    });
   });
 });

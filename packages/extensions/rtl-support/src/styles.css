@@ -58,20 +58,20 @@
    ============================================================ */
 
 /* Lists */
-.nim-rtl-block.nim-rtl-rtl ul,
-.nim-rtl-block.nim-rtl-rtl ol {
+ul.nim-rtl-block.nim-rtl-rtl,
+ol.nim-rtl-block.nim-rtl-rtl {
   padding-right: 1.5em;
-  padding-left: 0;
+  padding-left: 0 !important;
 }
 
 /* Blockquote */
-.nim-rtl-block.nim-rtl-rtl blockquote {
-  border-right: 4px solid var(--nim-border, currentColor);
-  border-left: none;
-  padding-right: 1em;
-  padding-left: 0;
-  margin-right: 0;
-  margin-left: 0;
+blockquote.nim-rtl-block.nim-rtl-rtl {
+  border-right: 4px solid var(--nim-border, currentColor) !important;
+  border-left: none !important;
+  padding-right: 1em !important;
+  padding-left: 0 !important;
+  margin-right: 0 !important;
+  margin-left: 0 !important;
 }
 
 /* ============================================================
@@ -84,7 +84,7 @@
 
 .nim-rtl-table.nim-rtl-rtl th,
 .nim-rtl-table.nim-rtl-rtl td {
-  text-align: right;
+  text-align: right !important;
 }
 
 /* ============================================================
@@ -93,7 +93,7 @@
 
 .nim-rtl-cell.nim-rtl-rtl {
   direction: rtl;
-  text-align: right;
+  text-align: right !important;
 }
 
 .nim-rtl-cell.nim-rtl-ltr {

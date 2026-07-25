@@ -382,7 +382,7 @@ Register non-file-based panels.
 
 ### `settingsPanel`
 
-Add a settings UI for your extension inside the main Settings screen.
+Add a compact settings UI under Settings → Extensions → Installed.
 
 ```json
 "settingsPanel": {
@@ -392,6 +392,26 @@ Add a settings UI for your extension inside the main Settings screen.
   "order": 100
 }
 ```
+
+### `settingsRoutes`
+
+Add one or more first-class rows to the Settings sidebar. Route components are resolved from the module's `settingsPanel` export namespace.
+
+```json
+"settingsRoutes": [
+  {
+    "id": "memory",
+    "scope": "project",
+    "label": "Memory",
+    "group": "Extensions",
+    "icon": "psychology",
+    "order": 50,
+    "component": "MemorySettingsRoute"
+  }
+]
+```
+
+`id`, `scope`, `label`, and `component` are required. `scope` must be `"application"` or `"project"`; account routes are not supported. `group`, `icon`, and `order` default to `"Extensions"`, `"extension"`, and `100`. Project-scoped components receive `workspacePath` and `projectTarget` in addition to the standard settings panel props.
 
 ### `themes`
 

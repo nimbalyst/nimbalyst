@@ -1,7 +1,7 @@
 {
   "id": "com.nimbalyst.memory",
   "name": "Nimbalyst Memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local project-knowledge + facts brain. Indexes your markdown (design docs, plans, CLAUDE.md, trackers, voice-memory) into a rebuildable shadow index and serves fast hybrid retrieval + facts to AI agents over MCP. Voice-agent grounding lands in a later phase.",
   "author": "Nimbalyst",
   "main": "dist/index.js",
@@ -25,11 +25,17 @@
         }
       }
     ],
-    "settingsPanel": {
-      "component": "NimbalystMemorySettings",
-      "title": "Project Memory",
-      "icon": "psychology"
-    }
+    "settingsRoutes": [
+      {
+        "id": "memory",
+        "scope": "project",
+        "label": "Memory",
+        "group": "Project",
+        "icon": "psychology",
+        "order": 80,
+        "component": "NimbalystMemorySettings"
+      }
+    ]
   },
   "marketplace": {
     "categories": ["developer-tools", "ai"],

@@ -51,9 +51,12 @@ export type {
   SessionControlMessage,
   SyncedSettings,
   SyncedAvailableModel,
+  SyncedTrackerPersonalStateChange,
+  EncryptedTrackerPersonalStatePayload,
 } from './types';
 
 export { createCollabV3Sync } from './CollabV3Sync';
+export { deriveTrackerPersonalStateKey } from './trackerPersonalStateKey';
 
 export {
   setSyncClientInfo,
@@ -115,10 +118,6 @@ export {
   isValidCollabDocumentId,
   encodeDocumentRoomId,
 } from './collabDocumentId';
-
-export {
-  CollabLexicalProvider,
-} from './CollabLexicalProvider';
 
 export {
   CollabHistoryClient,
@@ -213,6 +212,9 @@ export {
   encryptTrackerPayload,
   decryptTrackerEnvelope,
   encryptTrackerNavigationPayload,
+  encryptTrackerSavedViewPayload,
+  decryptTrackerSavedViewEnvelope,
+  decodeTrackerSavedViewEnvelopePlaintext,
   decryptTrackerNavigationEnvelope,
   fingerprintTrackerKey,
 } from './TrackerEnvelopeCrypto';
@@ -237,10 +239,10 @@ export type {
   LabelsMap,
 } from './trackerLabels';
 
-export { HeadlessLexicalYDoc } from './HeadlessLexicalYDoc';
-export type { HeadlessLexicalYDocOptions } from './HeadlessLexicalYDoc';
-
-export { MarkdownCollabContentAdapter } from './MarkdownCollabContentAdapter';
+// `CollabLexicalProvider`, `HeadlessLexicalYDoc`, and
+// `MarkdownCollabContentAdapter` are deliberately NOT re-exported here -- they
+// pull the Lexical editor graph, and this barrel is imported by the Electron
+// main process. Import them from `@nimbalyst/runtime/collab-lexical`.
 export {
   createRevisionAdapterFromCollabContent,
   type CollabAdapterRevisionBridgeOptions,

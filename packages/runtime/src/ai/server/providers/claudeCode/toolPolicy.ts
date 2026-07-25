@@ -15,7 +15,7 @@
 // cancelled MCP tool call" (issue #236, the kanban board appearing broken).
 // Tool names follow the consolidated topology (mcp__<server>__<tool>).
 export const INTERNAL_MCP_TOOLS: readonly string[] = [
-  // Eager core (`nimbalyst`).
+  // Core (`nimbalyst`); some schemas defer through ToolSearch.
   'mcp__nimbalyst__update_session_meta',
   'mcp__nimbalyst__capture_editor_screenshot',
   'mcp__nimbalyst__display_to_user',

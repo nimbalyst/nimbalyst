@@ -47,12 +47,28 @@ export interface SessionHistoryLayout {
  */
 export interface AgentModeLayout {
   sessionHistoryLayout: SessionHistoryLayout;
+  /** Shared width for the Agent right panel (Edited Files, Review, or Chat). */
   filesEditedWidth: number;
   todoPanelCollapsed: boolean;
   taskListPanelCollapsed: boolean;
   teammatePanelCollapsed: boolean;
   agentPanelCollapsed: boolean;
   trackerPanelCollapsed: boolean;
+}
+
+export const MIN_AGENT_RIGHT_PANEL_WIDTH = 150;
+export const MIN_AGENT_MAIN_PANEL_WIDTH = 96;
+
+/**
+ * Keep the resizable Agent right panel inside the current workstream width
+ * while allowing it to occupy nearly the full surface for wide reviews/chats.
+ */
+export function clampAgentRightPanelWidth(width: number, availableWidth: number): number {
+  const maxWidth = Math.max(
+    MIN_AGENT_RIGHT_PANEL_WIDTH,
+    availableWidth - MIN_AGENT_MAIN_PANEL_WIDTH,
+  );
+  return Math.max(MIN_AGENT_RIGHT_PANEL_WIDTH, Math.min(maxWidth, width));
 }
 
 // ============================================================
@@ -82,12 +98,16 @@ const DEFAULT_LAYOUT: AgentModeLayout = {
  * Deep merge persisted state with defaults.
  * Handles missing fields from old persisted data.
  */
-function mergeWithDefaults(persisted: Partial<AgentModeLayout> | undefined): AgentModeLayout {
+export function mergeWithDefaults(persisted: Partial<AgentModeLayout> | undefined): AgentModeLayout {
   const sessionHistoryLayout: SessionHistoryLayout = {
     ...DEFAULT_SESSION_HISTORY_LAYOUT,
     ...persisted?.sessionHistoryLayout,
     // The retired 'card' view mode coerces to 'list' on load.
     viewMode: persisted?.sessionHistoryLayout?.viewMode === 'kanban' ? 'kanban' : 'list',
+    // Escape hatch (#924): a persisted sortOrder that crashes the panel would
+    // otherwise brick the workspace on every launch with no in-app recovery.
+    // Coerce any value other than the two known ones back to 'updated'.
+    sortOrder: persisted?.sessionHistoryLayout?.sortOrder === 'created' ? 'created' : 'updated',
   };
   // Only pick known layout fields from persisted data.
   // agenticCodingWindowState stores both layout AND selectedWorkstream at the same level.
@@ -151,7 +171,7 @@ export const sessionHistoryCollapsedAtom = atom(
   (get) => get(agentModeLayoutAtom).sessionHistoryLayout.collapsed
 );
 
-/** Files edited sidebar width */
+/** Agent right panel width (legacy persistence field name). */
 export const filesEditedWidthAtom = atom(
   (get) => get(agentModeLayoutAtom).filesEditedWidth
 );
@@ -349,12 +369,15 @@ export const setSessionHistoryWidthAtom = atom(
 );
 
 /**
- * Set files edited sidebar width.
+ * Set the Agent right panel width.
  */
 export const setFilesEditedWidthAtom = atom(
   null,
   (get, set, width: number) => {
-    const clampedWidth = Math.max(150, Math.min(500, width));
+    // The rendered workstream applies the real, viewport-aware upper bound.
+    // Keep only a generous corruption guard here so wide persisted panels are
+    // not truncated back to the legacy 500px maximum.
+    const clampedWidth = Math.max(MIN_AGENT_RIGHT_PANEL_WIDTH, Math.min(10_000, width));
     set(setAgentModeLayoutAtom, { filesEditedWidth: clampedWidth });
   }
 );
@@ -526,6 +549,19 @@ export const toggleSessionHistoryCollapsedAtom = atom(
       });
     }
   }
+);
+
+/** Expand session history without toggling it closed if the action is repeated. */
+export const ensureSessionHistoryVisibleAtom = atom(
+  null,
+  (get, set) => {
+    const layout = get(agentModeLayoutAtom).sessionHistoryLayout;
+    if (!layout.collapsed) return;
+    set(setSessionHistoryLayoutAtom, {
+      collapsed: false,
+      width: layout.preCollapseWidth ?? DEFAULT_SESSION_HISTORY_LAYOUT.width,
+    });
+  },
 );
 
 // ============================================================

@@ -119,6 +119,9 @@ export function createReadOnlyEditorHost(options: ReadOnlyEditorHostOptions): Ed
     setEditorContext(): void {
       // Read-only - ignore editor context
     },
+    setEditorContextItems(): void {
+      // Read-only - ignore editor context
+    },
 
     // ============ EDITOR API REGISTRATION ============
     registerEditorAPI(): void {

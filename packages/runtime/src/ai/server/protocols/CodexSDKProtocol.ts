@@ -28,6 +28,7 @@
 
 import { buildDocumentAttachmentPromptText } from '../providers/codex/documentAttachmentPrompt';
 import { describeCodexConfigError } from './codexConfigError';
+import { resolveCodexPermissionProfile } from './codexPermissionProfile';
 import {
   AgentProtocol,
   ProtocolSession,
@@ -387,12 +388,10 @@ export class CodexSDKProtocol implements AgentProtocol {
    * Build thread options from session options
    */
   private buildThreadOptions(options: SessionOptions): Record<string, unknown> {
-    // Determine sandboxMode based on permission mode
-    // - 'bypass-all' (Allow All) -> 'danger-full-access' (unrestricted file system access)
-    // - 'allow-all' (Allow Edits) or default -> 'workspace-write' (scoped to workspace)
-    const sandboxMode = options.permissionMode === 'bypass-all'
-      ? 'danger-full-access'
-      : 'workspace-write';
+    const permissionProfile = resolveCodexPermissionProfile(
+      options.permissionMode,
+      options.raw?.agentVerified === true,
+    );
 
     // Map effort level to Codex SDK ModelReasoningEffort.
     // Codex SDK supports: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
@@ -405,8 +404,8 @@ export class CodexSDKProtocol implements AgentProtocol {
       model: options.model || 'gpt-5',
       workingDirectory: options.workspacePath,
       skipGitRepoCheck: true,
-      approvalPolicy: 'never', // Nimbalyst handles approvals
-      sandboxMode,
+      approvalPolicy: permissionProfile.approvalPolicy,
+      sandboxMode: permissionProfile.sandboxMode,
       modelReasoningEffort: reasoningEffort,
     };
 
@@ -417,6 +416,7 @@ export class CodexSDKProtocol implements AgentProtocol {
       codexConfigOverrides: _codexConfigOverrides,
       effortLevel: _effortLevel,
       additionalDirectories: rawAdditionalDirectories,
+      agentVerified: _agentVerified,
       ...otherRawOptions
     } = options.raw || {};
 
@@ -443,10 +443,17 @@ export class CodexSDKProtocol implements AgentProtocol {
 
   private getCodexConfigOverrides(options: SessionOptions): Record<string, unknown> | undefined {
     const rawOverrides = options.raw?.codexConfigOverrides;
-    if (!rawOverrides || typeof rawOverrides !== 'object' || Array.isArray(rawOverrides)) {
-      return undefined;
+    const overrides = rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides)
+      ? { ...rawOverrides as Record<string, unknown> }
+      : {};
+    const permissionProfile = resolveCodexPermissionProfile(
+      options.permissionMode,
+      options.raw?.agentVerified === true,
+    );
+    if (permissionProfile.approvalsReviewer) {
+      overrides.approvals_reviewer = permissionProfile.approvalsReviewer;
     }
-    return rawOverrides as Record<string, unknown>;
+    return Object.keys(overrides).length > 0 ? overrides : undefined;
   }
 
   /**

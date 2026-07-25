@@ -16,6 +16,8 @@ import { SessionFileWatcher } from '../file/SessionFileWatcher';
 import { addGitignoreBypass, removeGitignoreBypass } from '../file/WorkspaceEventBus';
 import { pushFileToIndex } from '../services/DocSyncService';
 import { pushNewDocumentToSync } from '../file/WorkspaceWatcher';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 // Helper function to get file type from extension
 function getFileType(filePath: string): string {
@@ -73,11 +75,15 @@ export function registerFileHandlers() {
             buttonLabel: options?.buttonLabel || 'Open',
             properties: ['openFile'],
             filters: options?.filters,
-            defaultPath: options?.defaultPath,
+            defaultPath: getDialogDefaultPath({ window, explicitPath: options?.defaultPath }),
         };
         const result = window
             ? await dialog.showOpenDialog(window, dialogOptions)
             : await dialog.showOpenDialog(dialogOptions);
+
+        if (!result.canceled) {
+            rememberDialogSelection(result.filePaths[0], 'file');
+        }
 
         return result;
     });
@@ -283,8 +289,16 @@ export function registerFileHandlers() {
                     { name: 'Text Files', extensions: ['txt'] },
                     { name: 'All Files', extensions: ['*'] }
                 ],
-                defaultPath: state?.filePath || 'untitled.md'
+                // An already-saved doc reopens at its own path; a new one lands
+                // in the active workspace as untitled.md.
+                defaultPath: state?.filePath
+                    ? getDialogDefaultPath({ window, explicitPath: state.filePath })
+                    : getDialogDefaultPath({ window, suggestedName: 'untitled.md' })
             });
+
+            if (!result.canceled) {
+                rememberDialogSelection(result.filePath, 'file');
+            }
 
             if (!result.canceled && result.filePath) {
                 const filePath = result.filePath;
@@ -473,10 +487,10 @@ export function registerFileHandlers() {
         }
     });
 
-    // Write to global ~/.claude/ directory
+    // Write to the user-level Claude config directory
     safeHandle('write-global-claude-file', async (event, relativePath: string, content: string) => {
         try {
-            const claudeDir = join(homedir(), '.claude');
+            const claudeDir = resolveClaudeConfigDir();
             const absolutePath = join(claudeDir, relativePath);
             const directory = dirname(absolutePath);
 
@@ -505,10 +519,10 @@ export function registerFileHandlers() {
         }
     });
 
-    // Read from global ~/.claude/ directory
+    // Read from the user-level Claude config directory
     safeHandle('read-global-claude-file', async (event, relativePath: string) => {
         try {
-            const claudeDir = join(homedir(), '.claude');
+            const claudeDir = resolveClaudeConfigDir();
             const absolutePath = join(claudeDir, relativePath);
 
             console.log('[READ_GLOBAL] Reading from global .claude:', absolutePath);
@@ -551,11 +565,11 @@ export function registerFileHandlers() {
             let memoryFilePath: string;
 
             if (target === 'user') {
-                // User memory goes to ~/.claude/CLAUDE.md
-                const claudeDir = join(homedir(), '.claude');
+                // User memory goes to <claude config dir>/CLAUDE.md
+                const claudeDir = resolveClaudeConfigDir();
                 memoryFilePath = join(claudeDir, 'CLAUDE.md');
 
-                // Ensure the ~/.claude directory exists
+                // Ensure the config directory exists
                 if (!existsSync(claudeDir)) {
                     mkdirSync(claudeDir, { recursive: true });
                 }
@@ -602,7 +616,7 @@ export function registerFileHandlers() {
     // Get the resolved path for a memory file
     safeHandle('memory:get-path', async (_event, { target, workspacePath }: { target: 'user' | 'project'; workspacePath?: string }) => {
         if (target === 'user') {
-            return { filePath: join(homedir(), '.claude', 'CLAUDE.md') };
+            return { filePath: join(resolveClaudeConfigDir(), 'CLAUDE.md') };
         } else {
             if (!workspacePath) return { filePath: null };
             return { filePath: join(workspacePath, 'CLAUDE.md') };

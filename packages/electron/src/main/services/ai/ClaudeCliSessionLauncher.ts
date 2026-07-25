@@ -32,6 +32,7 @@ import {
   buildElectronNodeHookCommand,
 } from './claudeCliPermissionHookConfig';
 import { resolveClaudeCliJsonlPath, shouldResumeClaudeCliSession } from './claudeCliJsonlPath';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 import type { TerminalSessionManager } from '../TerminalSessionManager';
 import type { ClaudeTurnState, ParsedClaudePidFile } from './claudeCliPidState';
 
@@ -167,9 +168,13 @@ export class ClaudeCliSessionLauncher {
     // first; otherwise resume iff the deterministic jsonl already exists.
     let resumeSessionId = input.resumeSessionId;
     if (!resumeSessionId) {
-      const homedir = (this.deps.homedir ?? os.homedir)();
+      // An injected homedir (tests) pins the config dir under it for isolation;
+      // otherwise follow the CLI's own CLAUDE_CONFIG_DIR resolution.
+      const configDir = this.deps.homedir
+        ? path.join(this.deps.homedir(), '.claude')
+        : resolveClaudeConfigDir();
       const pathExists = this.deps.pathExists ?? existsSync;
-      const jsonlPath = resolveClaudeCliJsonlPath({ homedir, cwd, sessionId });
+      const jsonlPath = resolveClaudeCliJsonlPath({ configDir, cwd, sessionId });
       if (shouldResumeClaudeCliSession({ jsonlExists: pathExists(jsonlPath) })) {
         resumeSessionId = sessionId;
       }

@@ -13,9 +13,9 @@
  *   A. Attach to a running Antigravity "hub" language server (IDE open).
  *   B. Spawn and manage our own standalone hub server.
  *
- * Auth is the user's existing ~/.gemini OAuth credential; the server refreshes
- * it itself. nimbalyst stores no API key and triggers no browser flow (per the
- * project's no-env-key rule).
+ * Auth is owned by Antigravity; the language server consumes the IDE's current
+ * login state. nimbalyst stores no API key and triggers no browser flow (per
+ * the project's no-env-key rule).
  *
  * Singleton-per-process: use AntigravityServerManager.shared(). The backend
  * module's activate() calls .configure() on the shared instance once at
@@ -133,18 +133,6 @@ export class AntigravityServerManager {
   static isInstalled(): boolean {
     try {
       return fs.existsSync(this.binaryPath());
-    } catch {
-      return false;
-    }
-  }
-
-  /** True if ~/.gemini has an OAuth credential with a refresh token. */
-  static hasGeminiAuth(): boolean {
-    try {
-      const p = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
-      if (!fs.existsSync(p)) return false;
-      const creds = JSON.parse(fs.readFileSync(p, 'utf8'));
-      return Boolean(creds && creds.refresh_token);
     } catch {
       return false;
     }
@@ -404,6 +392,9 @@ export class AntigravityServerManager {
   // ---- mode A: discover a running hub ------------------------------------
 
   private async discoverRunningHub(): Promise<AntigravityEndpoint | null> {
+    if (process.platform === 'darwin') {
+      return this.discoverMacOSHub();
+    }
     if (process.platform !== 'win32') return null;
     const ps =
       `$p = Get-CimInstance Win32_Process -Filter 'Name="language_server.exe"' | ` +
@@ -425,6 +416,46 @@ export class AntigravityServerManager {
     return (await this.isHealthy(ep)) ? ep : null;
   }
 
+  /**
+   * Find an Antigravity hub that is already running on macOS.
+   *
+   * Antigravity starts its HTTPS listener with port 0, so the resolved port is
+   * not present in the process arguments. Read the CSRF token from the command
+   * line and the listener ports from lsof, then let Heartbeat identify the HTTPS
+   * endpoint. Trying each port also avoids relying on the incidental lower-port
+   * ordering used by the current IDE build.
+   */
+  private async discoverMacOSHub(): Promise<AntigravityEndpoint | null> {
+    const processList = await this.runCommand(
+      '/bin/ps',
+      ['-axww', '-o', 'pid=,command='],
+    ).catch(() => '');
+
+    for (const processInfo of parseMacOSHubProcesses(processList)) {
+      const listeners = await this.runCommand(
+        '/usr/sbin/lsof',
+        [
+          '-nP',
+          '-a',
+          '-p', String(processInfo.pid),
+          '-iTCP',
+          '-sTCP:LISTEN',
+          '-F', 'n',
+        ],
+      ).catch(() => '');
+
+      for (const httpsPort of parseLsofListenerPorts(listeners)) {
+        const ep: AntigravityEndpoint = {
+          httpsPort,
+          csrf: processInfo.csrf,
+          owned: false,
+        };
+        if (await this.isHealthy(ep)) return ep;
+      }
+    }
+    return null;
+  }
+
   // ---- mode B: spawn our own --------------------------------------------
 
   private async spawnStandalone(): Promise<AntigravityEndpoint> {
@@ -433,11 +464,6 @@ export class AntigravityServerManager {
       throw new Error(
         `Antigravity language server not found at ${binary}. Install Antigravity or ` +
         `open the Antigravity IDE.`);
-    }
-    if (!AntigravityServerManager.hasGeminiAuth()) {
-      throw new Error(
-        `No Antigravity/Gemini login found in ~/.gemini. Sign in via the Antigravity ` +
-        `IDE first (nimbalyst does not perform the OAuth browser flow).`);
     }
 
     const csrf = `nimbalyst-${randomUUID()}`;
@@ -572,15 +598,56 @@ export class AntigravityServerManager {
   }
 
   private runPowerShell(script: string): Promise<string> {
+    return this.runCommand('powershell', ['-NoProfile', '-Command', script]);
+  }
+
+  private runCommand(executable: string, args: readonly string[]): Promise<string> {
     return new Promise((resolve, reject) => {
       execFile(
-        'powershell',
-        ['-NoProfile', '-Command', script],
+        executable,
+        [...args],
         { timeout: 30_000, windowsHide: true },
         (err, stdout) => (err ? reject(err) : resolve(stdout)),
       );
     });
   }
+}
+
+interface MacOSHubProcess {
+  pid: number;
+  csrf: string;
+}
+
+function parseMacOSHubProcesses(output: string): MacOSHubProcess[] {
+  const hubs: MacOSHubProcess[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^\s*(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const command = match[2];
+    if (
+      !command.includes('language_server') ||
+      !/(?:^|\s)--subclient_type(?:=|\s+)hub(?:\s|$)/.test(command) ||
+      !/(?:^|\s)--app_data_dir(?:=|\s+)antigravity(?:\s|$)/.test(command)
+    ) {
+      continue;
+    }
+    const csrfMatch = command.match(/(?:^|\s)--csrf_token(?:=|\s+)(\S+)/);
+    if (!csrfMatch?.[1]) continue;
+    hubs.push({ pid, csrf: csrfMatch[1] });
+  }
+  return hubs;
+}
+
+function parseLsofListenerPorts(output: string): number[] {
+  const ports = new Set<number>();
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^n.+:(\d+)$/);
+    if (!match) continue;
+    const port = Number(match[1]);
+    if (Number.isInteger(port) && port > 0 && port <= 65_535) ports.add(port);
+  }
+  return [...ports].sort((a, b) => a - b);
 }
 
 function delay(ms: number): Promise<void> {

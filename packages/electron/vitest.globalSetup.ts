@@ -105,9 +105,32 @@ function ensureNodePrebuild(): string {
 }
 
 export default async function globalSetup(): Promise<void> {
-  // Only relevant for tests that load native better-sqlite3. Skip if the
-  // current Node can already load the in-tree binary (e.g. CI may already
-  // ship a Node-version binary).
+  const pointerPath = path.join(
+    ELECTRON_DIR,
+    'node_modules',
+    '.cache',
+    'nimbalyst-better-sqlite3-node',
+    'binary-path.txt',
+  );
+
+  // better-sqlite3 13+ ships N-API prebuilds that can be shared by Node and
+  // Electron. Prefer the package's normal loader whenever it works and remove
+  // any pointer left behind by the legacy ABI-specific cache path.
+  try {
+    const req = createRequire(path.join(ELECTRON_DIR, 'package.json'));
+    const Database = req('better-sqlite3');
+    const db = new Database(':memory:');
+    db.prepare('SELECT 1').get();
+    db.close();
+    delete process.env.NIMBALYST_BETTER_SQLITE3_NATIVE;
+    fs.rmSync(pointerPath, { force: true });
+    return;
+  } catch {
+    // Older Electron-rebuilt releases still need a separate Node ABI binary.
+  }
+
+  // Only relevant for tests that load native better-sqlite3. Skip if there is
+  // no legacy in-tree binary to replace.
   const electronBinary = path.join(
     ELECTRON_DIR,
     'node_modules',
@@ -132,7 +155,7 @@ export default async function globalSetup(): Promise<void> {
   // vitest globalSetup mutations don't propagate to workers, so also stash on
   // an explicit file path that the per-worker setup can re-read.
   fs.writeFileSync(
-    path.join(ELECTRON_DIR, 'node_modules', '.cache', 'nimbalyst-better-sqlite3-node', 'binary-path.txt'),
+    pointerPath,
     nodeBinary,
   );
 }

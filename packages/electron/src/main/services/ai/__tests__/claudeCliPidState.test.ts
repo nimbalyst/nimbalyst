@@ -113,7 +113,7 @@ describe('watchClaudePidState liveness backstop', () => {
     const states: ClaudeTurnState[] = [];
     const stop = watchClaudePidState({
       pid: 999,
-      homeDir: '/fake-home',
+      configDir: '/fake-home/.claude',
       intervalMs: 500,
       readFile: opts.readFile,
       isProcessAlive: opts.isProcessAlive,
@@ -173,7 +173,7 @@ describe('readClaudePidTurnState (one-shot)', () => {
   it('returns the mapped state for a readable file with a live process', async () => {
     const state = await readClaudePidTurnState({
       pid: 999,
-      homeDir: '/fake-home',
+      configDir: '/fake-home/.claude',
       readFile: async () => '{"status":"busy"}',
       isProcessAlive: () => true,
     });
@@ -183,7 +183,7 @@ describe('readClaudePidTurnState (one-shot)', () => {
   it('returns idle for a dead process regardless of file contents', async () => {
     const state = await readClaudePidTurnState({
       pid: 999,
-      homeDir: '/fake-home',
+      configDir: '/fake-home/.claude',
       readFile: async () => '{"status":"busy"}',
       isProcessAlive: () => false,
     });
@@ -193,7 +193,7 @@ describe('readClaudePidTurnState (one-shot)', () => {
   it('returns null when the file is unreadable but the process is alive (unknown)', async () => {
     const state = await readClaudePidTurnState({
       pid: 999,
-      homeDir: '/fake-home',
+      configDir: '/fake-home/.claude',
       readFile: async () => {
         throw new Error('ENOENT');
       },

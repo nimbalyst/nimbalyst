@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.69.1",
+  "version": "0.70.5",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -23,7 +23,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
-    "postinstall": "electron-builder install-app-deps || true",
+    "postinstall": "install-electron && electron-builder install-app-deps",
     "build:unpack": "npm run build && npm run build:extensions && npm run validate:extra-resources && electron-builder --dir",
     "build:dist": "npm run build && npm run build:extensions && npm run validate:extra-resources && electron-builder",
     "build:mac": "npm run build && npm run build:extensions && node -r dotenv/config build/configure-build.js && node build/build-with-env.js --mac",
@@ -32,6 +32,7 @@
     "build:mac:local": "SKIP_NOTARIZE=true npm run build && npm run build:extensions && SKIP_NOTARIZE=true node -r dotenv/config build/configure-build.js && SKIP_NOTARIZE=true node build/build-with-env.js --mac --publish never",
     "build:mac:release": "npm run build && npm run build:extensions && node -r dotenv/config build/configure-build.js && REQUIRE_NOTARIZE=true node build/build-with-env.js --mac --publish always",
     "validate:extra-resources": "node build/normalize-extra-resources.js && node build/validate-extra-resources.js",
+    "verify:native-runtime": "node build/verify-native-runtime.js",
     "validate:win-updater-config": "node build/validate-windows-updater-config.js",
     "build:win": "npm run build && npm run build:extensions && npm run validate:win-updater-config && npm run validate:extra-resources && electron-builder --win --x64",
     "build:win:arm64": "npm run build && npm run build:extensions && npm run validate:win-updater-config && npm run validate:extra-resources && electron-builder --win --arm64",
@@ -50,7 +51,7 @@
     "marketing:screenshots:grep": "playwright test --config=marketing/playwright.marketing.config.ts --grep"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.204",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.217",
     "@anthropic-ai/sdk": "^0.109.0",
     "@electric-sql/pglite": "0.3.14",
     "@electron-toolkit/utils": "^4.0.0",
@@ -60,11 +61,13 @@
     "@monaco-editor/react": "^4.7.0",
     "@nimbalyst/collab-adapters": "*",
     "@nimbalyst/excalidraw-extension": "*",
+    "@nimbalyst/extension-calc-sheets": "*",
     "@nimbalyst/extension-csv-spreadsheet": "*",
     "@nimbalyst/extension-datamodellm": "*",
     "@nimbalyst/mockuplm": "*",
     "@nimbalyst/runtime": "*",
     "@openai/codex-sdk": "^0.144.1",
+    "@revolist/react-datagrid": "^4.20.2",
     "@types/glob": "^8.1.0",
     "@types/js-yaml": "^4.0.9",
     "@types/marked": "^5.0.2",
@@ -75,7 +78,7 @@
     "abort-controller": "^3.0.0",
     "adm-zip": "^0.5.18",
     "agentkeepalive": "^4.6.0",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "13.0.1",
     "chardet": "^2.1.1",
     "chokidar": "^4.0.3",
     "diff": "^5.2.0",
@@ -113,7 +116,7 @@
     "react-diff-view": "^3.3.3",
     "react-dom": "^19.2.7",
     "react-is": "^19.2.4",
-    "react-virtuoso": "^4.18.1",
+    "react-virtuoso": "^4.18.11",
     "recharts": "^3.5.0",
     "refractor": "^3.6.0",
     "simple-git": "^3.36.0",
@@ -141,7 +144,7 @@
     "autoprefixer": "^10.4.20",
     "bufferutil": "^4.1.0",
     "dotenv": "^16.6.1",
-    "electron": "41.8.0",
+    "electron": "43.2.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "^4.0.0",
     "esbuild": "^0.25.12",
@@ -163,7 +166,7 @@
   "build": {
     "appId": "com.nimbalyst.electron",
     "productName": "Nimbalyst",
-    "electronVersion": "41.8.0",
+    "electronVersion": "43.2.0",
     "nodeGypRebuild": false,
     "buildDependenciesFromSource": false,
     "npmRebuild": true,
@@ -280,14 +283,6 @@
           "!*.md",
           "!binding.gyp"
         ]
-      },
-      {
-        "from": "../../node_modules/bindings",
-        "to": "node_modules/bindings"
-      },
-      {
-        "from": "../../node_modules/file-uri-to-path",
-        "to": "node_modules/file-uri-to-path"
       },
       {
         "from": "../../node_modules/@electric-sql/pglite/dist/pglite.data",

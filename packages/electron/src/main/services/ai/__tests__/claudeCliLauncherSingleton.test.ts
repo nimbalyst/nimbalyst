@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('claudeCliLauncherSingleton', () => {
@@ -6,8 +9,13 @@ describe('claudeCliLauncherSingleton', () => {
     vi.clearAllMocks();
   });
 
-  async function loadHarness(opts?: { claudeInstalled?: boolean }) {
+  async function loadHarness(opts?: {
+    claudeInstalled?: boolean;
+    /** When set, the mocked session resolves to this worktree (id + on-disk path). */
+    worktree?: { id: string; path: string } | null;
+  }) {
     const claudeInstalled = opts?.claudeInstalled ?? true;
+    const worktree = opts?.worktree ?? null;
     const manager = {
       isTerminalActive: vi.fn(() => false),
     };
@@ -59,6 +67,22 @@ describe('claudeCliLauncherSingleton', () => {
       },
     }));
 
+    // Worktree resolution deps (#933 / NIM-2001). The session resolves to a
+    // worktreeId iff `worktree` is set; the store maps it to the on-disk path.
+    vi.doMock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
+      AISessionsRepository: {
+        get: vi.fn(async () => ({ worktreeId: worktree?.id ?? null })),
+      },
+    }));
+    vi.doMock('../../WorktreeStore', () => ({
+      createWorktreeStore: () => ({
+        get: vi.fn(async (id: string) => (worktree && worktree.id === id ? { path: worktree.path } : null)),
+      }),
+    }));
+    vi.doMock('../../database/initialize', () => ({
+      getDatabase: () => ({}),
+    }));
+
     const mod = await import('../claudeCliLauncherSingleton');
     return { ...mod, manager, stateManager, launch };
   }
@@ -79,8 +103,13 @@ describe('claudeCliLauncherSingleton', () => {
     const input = { sessionId: 'session-1', workspacePath: '/work' };
     const first = h.ensureClaudeCliSession(input);
     const second = h.ensureClaudeCliSession(input);
-    await Promise.resolve();
+    // Launch now runs after the async worktree-cwd resolution (dynamic imports),
+    // so flush until it's invoked rather than a single microtask.
+    for (let i = 0; i < 20 && h.launch.mock.calls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
 
+    // Coalescing: two concurrent ensure calls → exactly one startSession + launch.
     expect(h.stateManager.startSession).toHaveBeenCalledTimes(1);
     expect(h.launch).toHaveBeenCalledTimes(1);
 
@@ -116,5 +145,30 @@ describe('claudeCliLauncherSingleton', () => {
     });
     expect(h.stateManager.startSession).not.toHaveBeenCalled();
     expect(h.launch).not.toHaveBeenCalled();
+  }, 20000);
+
+  it('spawns a worktree session in its worktree, not the parent workspace (#933)', async () => {
+    // A real dir so the existence guard in resolveClaudeCliWorktreeCwd passes.
+    const worktreePath = mkdtempSync(join(tmpdir(), 'nim-wt-'));
+    const h = await loadHarness({ worktree: { id: 'wt-1', path: worktreePath } });
+
+    // The renderer only knows the parent path and passes it as `cwd`.
+    await h.ensureClaudeCliSession({ sessionId: 'session-1', workspacePath: '/project', cwd: '/project' });
+
+    expect(h.launch).toHaveBeenCalledTimes(1);
+    expect(h.launch.mock.calls[0][0]).toMatchObject({
+      sessionId: 'session-1',
+      workspacePath: '/project',
+      cwd: worktreePath,
+    });
+  }, 20000);
+
+  it('leaves the requested cwd unchanged for a non-worktree session', async () => {
+    const h = await loadHarness({ worktree: null });
+
+    await h.ensureClaudeCliSession({ sessionId: 'session-1', workspacePath: '/project', cwd: '/project' });
+
+    expect(h.launch).toHaveBeenCalledTimes(1);
+    expect(h.launch.mock.calls[0][0]).toMatchObject({ cwd: '/project' });
   }, 20000);
 });

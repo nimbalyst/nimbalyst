@@ -17,7 +17,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SQLiteDatabase } from '../SQLiteDatabase';
-import { PGLiteToSQLiteMigrator, type MigrationProgress } from '../PGLiteToSQLiteMigrator';
+import {
+  PGLiteToSQLiteMigrator,
+  __TEST_HOOKS,
+  type MigrationProgress,
+} from '../PGLiteToSQLiteMigrator';
 
 // Resolve to the shipping schema file.
 const SCHEMA_DIR = path.resolve(__dirname, '..', 'schemas');
@@ -52,6 +56,16 @@ describe('PGLiteToSQLiteMigrator', () => {
     await sqlite.close();
     await pglite.close();
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('includes tool usage counters and backfill state in the cutover whitelist', () => {
+    expect(__TEST_HOOKS.COPY_TABLES).toEqual(
+      expect.arrayContaining([
+        'tool_usage_counters',
+        'tool_usage_backfill_meta',
+        'tool_usage_backfill_sessions',
+      ]),
+    );
   });
 
   async function seedPgliteSchema(): Promise<void> {

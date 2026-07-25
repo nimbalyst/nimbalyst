@@ -23,6 +23,7 @@ import { getTerminalSessionManager } from '../TerminalSessionManager';
 import { getEnhancedPath, getShellEnvironment } from '../CLIManager';
 import { ClaudeCliSessionLauncher } from './ClaudeCliSessionLauncher';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
+import { resolveClaudeCliWorktreeCwd } from './resolveClaudeCliWorktreeCwd';
 import { resolveClaudeExecutablePath, isClaudeExecutableInstalled } from './claudeExecutableResolver';
 import { resolveClaudeCliSupportsPluginDir } from './claudeCliPluginSupport';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
@@ -244,10 +245,36 @@ export async function ensureClaudeCliSession(
       // the CLI still works).
       const additionalDirectories = prepareAttachmentsAllowDir(input.workspacePath);
 
+      // #933 / NIM-2001: a worktree session MUST spawn in its worktree so the
+      // CLI's edits land on the worktree branch, not the parent's checked-out
+      // branch. The interactive strip only knows the parent workspace path (it
+      // passes it as `input.cwd`), so resolve the worktree authoritatively from
+      // the session's `worktreeId` here — mirroring the SDK path
+      // (MessageStreamingHandler `effectiveWorkspacePath`) and the queued CLI
+      // path (AIService.dispatchQueuedPromptToClaudeCliSession). Falls back to
+      // `input.cwd` for non-worktree sessions / stale records / lookup errors.
+      const resolvedCwd = await resolveClaudeCliWorktreeCwd(input.sessionId, input.cwd, {
+        getSessionWorktreeId: async (sessionId) => {
+          const { AISessionsRepository } = await import(
+            '@nimbalyst/runtime/storage/repositories/AISessionsRepository'
+          );
+          const session = await AISessionsRepository.get(sessionId);
+          return session?.worktreeId ?? null;
+        },
+        getWorktreePath: async (worktreeId) => {
+          const { createWorktreeStore } = await import('../WorktreeStore');
+          const { getDatabase } = await import('../../database/initialize');
+          const db = getDatabase();
+          const worktree = db ? await createWorktreeStore(db).get(worktreeId) : null;
+          return worktree?.path ?? null;
+        },
+        logWarn: (message, err) => console.warn(message, err),
+      });
+
       await launcher.launch({
         sessionId: input.sessionId,
         workspacePath: input.workspacePath,
-        cwd: input.cwd,
+        cwd: resolvedCwd,
         model: input.model,
         resumeSessionId: input.resumeSessionId,
         cols: input.cols,
@@ -257,7 +284,7 @@ export async function ensureClaudeCliSession(
           // idle is the terminal turn boundary; running/waiting are mid-turn.
           // Root the file watcher at the spawn cwd (the worktree for worktree
           // sessions), where edits actually land.
-          const watchRoot = input.cwd ?? input.workspacePath;
+          const watchRoot = resolvedCwd ?? input.workspacePath;
           if (state === 'idle') {
             void stateManager.updateActivity({ sessionId: input.sessionId, status: 'idle', isStreaming: false });
             // Delay the watcher stop so post-turn fs events still attribute.

@@ -325,6 +325,74 @@ describe('trackerTypeDefStore materialization lifecycle (SQLite, migration 0012)
       expect(out).toHaveLength(1);
       expect(out[0]).toEqual({ type: 'local', model: null, deleted: true });
     });
+
+    it('respects sync mode: excludes explicit local overrides, includes shared/hybrid', async () => {
+      // A `local`-mode override (e.g. an idea/automation builtin override) must
+      // never leak to the team; shared/hybrid do sync.
+      await materializeTrackerTypeDef(WS, model('sharedType', { sync: { mode: 'shared', scope: 'project' } }), 'cli', db);
+      await materializeTrackerTypeDef(WS, model('hybridType', { sync: { mode: 'hybrid', scope: 'project' } }), 'cli', db);
+      await materializeTrackerTypeDef(WS, model('localType', { sync: { mode: 'local', scope: 'project' } }), 'cli', db);
+
+      const out = await listUnsyncedTrackerSchemaDefs(WS, db);
+      expect(out.map((r) => r.type).sort()).toEqual(['hybridType', 'sharedType']);
+    });
+
+    it('still surfaces sync-undefined types (custom-type back-compat)', async () => {
+      // model() has no sync policy; those keep syncing as before (only explicit
+      // local is filtered), so this feature never silently stops an existing type.
+      await materializeTrackerTypeDef(WS, model('noSync'), 'cli', db);
+      const out = await listUnsyncedTrackerSchemaDefs(WS, db);
+      expect(out.map((r) => r.type)).toContain('noSync');
+    });
+
+    it('excludes a pending tombstone for a local-mode override (nothing to retract)', async () => {
+      // The model column retains the last-known JSON even when tombstoned, so the
+      // local-mode filter applies to deletions too.
+      await materializeTrackerTypeDef(WS, model('localType', { sync: { mode: 'local', scope: 'project' } }), 'cli', db);
+      await removeTrackerTypeDef(WS, 'localType', db);
+      const out = await listUnsyncedTrackerSchemaDefs(WS, db);
+      expect(out.map((r) => r.type)).not.toContain('localType');
+    });
+  });
+
+  describe('old-client tolerance for builtin-type schema defs', () => {
+    // An older peer's apply path (which predates builtin-override intent) keys
+    // purely on (workspace, type) with no builtin concept. A def whose type
+    // happens to be a builtin name must apply/version-gate/tombstone like any
+    // other row — never crash or corrupt the mirror.
+    const def = (type: string, m: TrackerDataModel | null, syncId: number) => ({
+      type,
+      model: m === null ? null : JSON.stringify(m),
+      syncId,
+    });
+
+    it('applies a builtin-named override def without special-casing', async () => {
+      const res = await applyRemoteTrackerSchemaDef(
+        WS,
+        def('feature', model('feature', { displayName: 'Feature', sync: { mode: 'shared', scope: 'project' } }), 1),
+        db,
+      );
+      expect(res).toEqual({ applied: true, deleted: false });
+
+      const all = await rows();
+      expect(all).toHaveLength(1);
+      expect(all[0].type).toBe('feature');
+      expect(all[0].source).toBe('sync');
+      expect(all[0].sync_status).toBe('synced');
+    });
+
+    it('version-gates and tombstones a builtin override without corrupting the mirror', async () => {
+      await applyRemoteTrackerSchemaDef(WS, def('feature', model('feature', { displayName: 'V1' }), 2), db);
+      // Stale delivery ignored.
+      const stale = await applyRemoteTrackerSchemaDef(WS, def('feature', model('feature', { displayName: 'V0' }), 1), db);
+      expect(stale).toEqual({ applied: false, reason: 'stale' });
+      // A reset from the admin arrives as a tombstone → row soft-deleted, no crash.
+      const del = await applyRemoteTrackerSchemaDef(WS, def('feature', null, 3), db);
+      expect(del).toEqual({ applied: true, deleted: true });
+
+      const active = await listMaterializedTrackerTypes(WS, db);
+      expect(active).toHaveLength(0);
+    });
   });
 
   describe('getMaxTrackerSchemaSyncId (Epic B Phase 3 — bootstrap cursor)', () => {

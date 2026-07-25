@@ -6,9 +6,11 @@
  */
 
 import { useState, useEffect, useId, useCallback } from 'react';
-import initSqlJs, { type Database } from 'sql.js';
+import type { Database } from 'sql.js';
 import { registerDatabase, unregisterDatabase, setDisplayCallback, type DisplayQueryResult } from './databaseRegistry';
 import { getQueryHistory, addQueryToHistory, type QueryHistoryEntry } from './queryHistory';
+
+export { getSqlJs } from './sqlJsLoader';
 
 // ============================================================================
 // Types
@@ -72,19 +74,6 @@ export interface SQLiteBrowserCoreProps {
 // ============================================================================
 // Utilities
 // ============================================================================
-
-// Cache the SQL.js instance
-let sqlPromise: Promise<any> | null = null;
-
-export async function getSqlJs() {
-  if (!sqlPromise) {
-    sqlPromise = initSqlJs({
-      // Load sql-wasm.wasm from CDN
-      locateFile: (file: string) => `https://sql.js.org/dist/${file}`,
-    });
-  }
-  return sqlPromise;
-}
 
 // Get file name from path
 export function getFileName(filePath: string): string {

@@ -9,6 +9,7 @@ Extensions can contribute:
 - **File Type Handlers**: Associate file extensions with specific editors
 - **AI Tools via MCP**: Expose functionality to AI agents through the Model Context Protocol
 - **Custom UI Components**: Panels, widgets, and tool call renderers
+- **Scoped Settings Routes**: First-class application or project rows in the Settings sidebar, with project context for per-repository surfaces
 
 ## Current Editor Types
 
@@ -38,6 +39,31 @@ interface EditorHost {
 ```
 
 This contract ensures that extensions integrate seamlessly with tabs, dirty indicators, file watching, and AI edit streaming regardless of the underlying editor technology.
+
+### Reporting the current selection to the chat
+
+An editor can tell the AI chat what the user currently has selected. The chat renders each selection as a removable chip above the input, and includes the non-dismissed items' descriptions in the next prompt.
+
+```typescript
+// Node-like editors (diagrams, CAD, electronics): report one item per selected node.
+host.setEditorContextItems(
+  selectedNodes.map((n) => ({
+    id: n.id,                                   // stable id; lets the user dismiss one item
+    label: `${n.type} ${n.id.slice(0, 4)}`,     // chip text
+    description: `A ${n.type} at (${n.x}, ${n.y}).`, // goes into the prompt
+    icon: 'category',                            // optional Material Symbols icon
+    data: n,                                     // optional structured payload
+    includeData: false,                          // opt in to inline `data` as JSON (default off)
+  }))
+);
+
+// Call with null/[] when nothing is selected. A new push resets any dismissals.
+host.setEditorContextItems(null);
+```
+
+`setEditorContext({ label, description })` remains as a single-item convenience that maps to one `EditorContextItem`. Prefer `setEditorContextItems` for editors where more than one thing can be selected. Both flow to SDK/API providers (`claude`, `claude-code`); the selection is cleared automatically when the tab closes.
+
+Structured `data` is opt-in and must be JSON-serializable. The host strips it unless `includeData` is true, and safely omits cyclic, non-JSON, or payloads larger than 32 KiB. Descriptions should therefore remain sufficient on their own.
 
 ## AI Tool Document Access
 
@@ -689,7 +715,7 @@ For test files that live outside any workspace (e.g. inline scripts created by `
 | Tool | Description |
 | --- | --- |
 | `extension_test_run` | Run inline Playwright scripts or `.spec.ts` files. Inline scripts get a `page` already connected to the correct window. Test files should import from `@nimbalyst/extension-sdk/testing`. |
-| `extension_test_open_file` | Open a file and wait for extension editor to mount |
+| `extension_test_open_file` | Visibly open and focus a file for Playwright UI testing; never use as an AI-tool prerequisite |
 | `extension_test_ai_tool` | Call extension tool handlers directly |
 
 **For agents writing test files**: import from `@nimbalyst/extension-sdk/testing` — `NODE_PATH` is set automatically so imports resolve even for external extension projects.
@@ -733,7 +759,7 @@ See [extension-live-test-infrastructure.md](../design/Extensions/extension-live-
 
 Extension editors can participate in Nimbalyst's E2E-encrypted real-time collaboration ("Share to Team") by opting in via the manifest and wiring an SDK hook. The host owns the `DocumentSyncProvider` lifecycle, encryption, awareness transport, and connection-status UI. Extensions implement a small yJS binding that maps their editor state to/from a shared `Y.Doc`.
 
-**One client-side contract, no host-process code.** An editor adds collaboration with exactly three things, all client-side: (1) the manifest flag below, (2) one pure `CollabCodec` registered once in `activate()`, and (3) `useCollaborativeEditor(host, { codec, bind })`. There is **no main-process adapter to write** — the renderer already has every extension loaded, so the host seeds/reads a shared room headlessly (Share-to-Team without the editor open, re-upload, plain-text projection) by running the extension's own registered codec in the renderer. This is what makes **external, structured** editors (e.g. mindmap) "just work" for Share-to-Team; earlier they failed with "No collab content adapter is registered for document type 'X'" because a headless seed was attempted in the main process, which cannot load extension code.
+**One client-side contract, no host-process code.** An editor adds collaboration with exactly three things, all client-side: (1) the manifest flag below, (2) one pure `CollabCodec` registered once in `activate()`, and (3) `useCollaborativeEditor(host, { codec, bind })`. There is **no main-process adapter to write** — the renderer already has every extension loaded, so the host seeds/reads a shared room headlessly (Share-to-Team without the editor open, re-upload, plain-text projection) by running the extension's own registered codec in the renderer. This is what makes **external, structured** editors (e.g. mindmap) "just work" for Share-to-Team; earlier they failed with "No collab content adapter is registered for document type 'X'" because a headless seed was attempted in the main process, which cannot load extension code. Every headless host feature — seeding, re-upload, export, the pre-migration backup sweep — now routes through a codec host, so a marketplace editor's documents are covered the same as a built-in's.
 
 ### Manifest opt-in
 
@@ -810,7 +836,11 @@ The hook reads `isEmpty` / `seedFromFile` off the codec — an editor can no lon
 
 **Durable seeding.** After a first-open seed the hook awaits `host.collaboration.flushWithAck()`, which resolves only after the server confirms it persisted the update (not merely after the socket write). This closes the seed-then-teardown data-loss race; a failed/unconfirmed flush is surfaced through the host rather than a silent console error.
 
-> **Legacy config still works.** The older `{ createBinding, isEmpty, initializeFromContent }` shape is accepted with a deprecation warning. Prefer `{ codec, bind }` so the pure functions live on the codec and headless seeding uses them directly. No main-process (`packages/electron/.../collabContentAdapterRegistration.ts`) adapter is required for any editor; that registry is now an optional cache for in-repo / text-descriptor editors and its absence degrades to renderer seeding, never a hard error.
+> **Legacy config still works.** The older `{ createBinding, isEmpty, initializeFromContent }` shape is accepted with a deprecation warning. Prefer `{ codec, bind }` so the pure functions live on the codec and headless seeding uses them directly. There is no main-process adapter to register: the main process holds **no codec registry at all** and asks a *codec host* to convert on its behalf.
+
+**Codec hosts.** A codec host is any environment that can load extension bundles and therefore holds a complete registry. The Electron renderer is the first; the web console and mobile WKWebView implement the same contract as collaborative documents and trackers reach those surfaces. Main is a *client* of that contract — it keeps orchestration (enumeration, the authenticated socket to each DocumentRoom, org-key unwrap, JWT handling) and delegates only the `Y.Doc <-> file bytes` step.
+
+Because a `Y.Doc` cannot cross a process boundary, the seam is state-based: the client sends the document's encoded state plus the file content, the host rebuilds a working doc, runs the codec, and returns a minimal delta the client applies. Concurrent peer edits during the round trip still merge. The request/response shape lives in `packages/collab-adapters/src/conversionHost.ts` and is deliberately free of Electron types; `scripts/check-main-bundle-graph.mjs` enforces that no editor/renderer module re-enters the main bundle.
 
 ### yJS as a peer dependency
 

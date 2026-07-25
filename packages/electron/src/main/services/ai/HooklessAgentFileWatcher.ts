@@ -9,6 +9,8 @@
  * Claude Code hooks Edit/Write at the SDK level so most edits don't need this,
  * but its Bash invocations still flow through `trackBashEditsFromCommand`,
  * which is why a watcher is started for it too.
+ * Codex app-server is listener-disabled because its structured fileChange
+ * items are the authoritative source of paths, diffs, and attribution.
  *
  * Lifecycle:
  *   - `ensureForSession` — start (or reuse) a watcher for a session/workspace
@@ -42,6 +44,10 @@ import { FileSnapshotCache } from '../../file/FileSnapshotCache';
 import { SessionFileWatcher } from '../../file/SessionFileWatcher';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { workspaceFileEditAttributionService } from '../WorkspaceFileEditAttributionService';
+import {
+  workspaceFileAttributionPolicy,
+  type WorkspaceFileAttributionMode,
+} from '../WorkspaceFileAttributionPolicy';
 import { sessionEditQuota } from '../SessionEditQuota';
 import { notifySessionFilesUpdated } from '../sessionFilesNotify';
 import { pathContainsExcludedDir } from '../../utils/fileFilters';
@@ -56,11 +62,13 @@ interface WatcherEntry {
   cache: FileSnapshotCache;
   watcher: SessionFileWatcher;
   workspacePath: string;
+  attributionMode: WorkspaceFileAttributionMode;
 }
 
 export class HooklessAgentFileWatcher {
   private readonly watchers = new Map<string, WatcherEntry>();
   private readonly stopTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly policySessionIds = new Set<string>();
 
   /**
    * Start (or reuse) a watcher for a session at the given workspace path.
@@ -70,13 +78,35 @@ export class HooklessAgentFileWatcher {
   async ensureForSession(
     sessionId: string,
     workspacePath: string,
+    options?: { attributionMode?: WorkspaceFileAttributionMode },
   ): Promise<void> {
     // Cancel any pending delayed-stop timer so it doesn't destroy the watcher
     // we're about to reuse (race: new turn starts within the 500ms drain delay).
     this.cancelScheduledStop(sessionId);
 
     const existing = this.watchers.get(sessionId);
+    const attributionMode = options?.attributionMode
+      ?? existing?.attributionMode
+      ?? 'fuzzy';
+
+    this.policySessionIds.add(sessionId);
+    if (attributionMode === 'disabled') {
+      if (existing) {
+        try {
+          await existing.watcher.stop();
+          existing.cache.stopSession();
+        } catch (error) {
+          logger.main.error('[HooklessAgentFileWatcher] Failed to disable existing watcher:', error);
+        }
+        this.watchers.delete(sessionId);
+      }
+      workspaceFileAttributionPolicy.set(sessionId, workspacePath, attributionMode);
+      return;
+    }
+
     if (existing && existing.workspacePath === workspacePath) {
+      existing.attributionMode = attributionMode;
+      workspaceFileAttributionPolicy.set(sessionId, workspacePath, attributionMode);
       return;
     }
 
@@ -88,6 +118,7 @@ export class HooklessAgentFileWatcher {
         logger.main.error('[HooklessAgentFileWatcher] Failed to stop existing watcher:', error);
       }
       this.watchers.delete(sessionId);
+      workspaceFileAttributionPolicy.clear(sessionId);
     }
 
     const cache = new FileSnapshotCache();
@@ -119,26 +150,33 @@ export class HooklessAgentFileWatcher {
       logger.main.warn('[HooklessAgentFileWatcher] Failed to seed cache with historical files:', seedError);
     }
 
-    await watcher.start(
-      workspacePath,
-      sessionId,
-      cache,
-      async (watchEvent) => {
-        workspaceFileEditAttributionService.ingestWatcherEvent({
-          workspacePath: watchEvent.workspacePath,
-          filePath: watchEvent.filePath,
-          timestamp: watchEvent.timestamp,
-          beforeContent: watchEvent.beforeContent,
-        });
-        // NIM-816: notify through the shared helper so the session-files IPC
-        // cache is invalidated alongside the broadcast. Note this ping races
-        // the (async) attribution row write above — the attribution service
-        // sends its own post-write notification, this one just keeps the
-        // sidebar snappy for already-written rows.
-        notifySessionFilesUpdated(sessionId);
-      },
-    );
-    this.watchers.set(sessionId, { cache, watcher, workspacePath });
+    workspaceFileAttributionPolicy.set(sessionId, workspacePath, attributionMode);
+    try {
+      await watcher.start(
+        workspacePath,
+        sessionId,
+        cache,
+        async (watchEvent) => {
+          workspaceFileEditAttributionService.ingestWatcherEvent({
+            workspacePath: watchEvent.workspacePath,
+            filePath: watchEvent.filePath,
+            timestamp: watchEvent.timestamp,
+            beforeContent: watchEvent.beforeContent,
+          });
+          // NIM-816: notify through the shared helper so the session-files IPC
+          // cache is invalidated alongside the broadcast. Note this ping races
+          // the (async) attribution row write above — the attribution service
+          // sends its own post-write notification, this one just keeps the
+          // sidebar snappy for already-written rows.
+          notifySessionFilesUpdated(sessionId);
+        },
+      );
+    } catch (error) {
+      workspaceFileAttributionPolicy.clear(sessionId);
+      cache.stopSession();
+      throw error;
+    }
+    this.watchers.set(sessionId, { cache, watcher, workspacePath, attributionMode });
   }
 
   /**
@@ -167,7 +205,11 @@ export class HooklessAgentFileWatcher {
     this.cancelScheduledStop(sessionId);
 
     const entry = this.watchers.get(sessionId);
-    if (!entry) return;
+    if (!entry) {
+      workspaceFileAttributionPolicy.clear(sessionId);
+      this.policySessionIds.delete(sessionId);
+      return;
+    }
 
     try {
       await entry.watcher?.stop();
@@ -176,6 +218,8 @@ export class HooklessAgentFileWatcher {
       logger.main.error('[HooklessAgentFileWatcher] Error stopping watcher:', error);
     } finally {
       this.watchers.delete(sessionId);
+      workspaceFileAttributionPolicy.clear(sessionId);
+      this.policySessionIds.delete(sessionId);
     }
   }
 
@@ -255,6 +299,9 @@ export class HooklessAgentFileWatcher {
     commandItemId?: string,
   ): Promise<boolean> {
     const effectivePath = session.worktreePath || workspacePath;
+    if (workspaceFileAttributionPolicy.isDisabled(session.id, effectivePath)) {
+      return false;
+    }
     const watcherEntry = this.watchers.get(session.id);
     const filePaths = await this.extractFilePathsFromCommand(command, workspacePath, effectivePath);
     if (filePaths.length === 0) return false;
@@ -411,8 +458,13 @@ export class HooklessAgentFileWatcher {
       } catch (error) {
         console.error(`[HooklessAgentFileWatcher] Error stopping watcher for ${sessionId}:`, error);
       }
+      workspaceFileAttributionPolicy.clear(sessionId);
     }
     this.watchers.clear();
+    for (const sessionId of this.policySessionIds) {
+      workspaceFileAttributionPolicy.clear(sessionId);
+    }
+    this.policySessionIds.clear();
   }
 
   private async extractFilePathsFromCommand(

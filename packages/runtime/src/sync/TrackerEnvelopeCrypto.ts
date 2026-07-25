@@ -32,6 +32,7 @@ import type {
   EncryptedTrackerItemEnvelope,
   EncryptedTrackerSchemaEnvelope,
   EncryptedTrackerNavigationEnvelope,
+  EncryptedTrackerSavedViewEnvelope,
   TrackerItemPayload,
 } from './trackerProtocol';
 import { stripLocalOnlyFields } from './trackerProtocol';
@@ -89,6 +90,10 @@ function buildSchemaTypeAad(schemaType: string): Uint8Array {
 
 function buildNavigationEntryAad(entryId: string): Uint8Array {
   return new TextEncoder().encode(`tracker-navigation:${entryId}`);
+}
+
+function buildSavedViewAad(viewId: string): Uint8Array {
+  return new TextEncoder().encode(`tracker-saved-view:${viewId}`);
 }
 
 // ============================================================================
@@ -207,6 +212,44 @@ export async function decryptTrackerSchemaEnvelope(
   return new TextDecoder().decode(plaintext);
 }
 
+export async function encryptTrackerSavedViewPayload(
+  payloadJson: string,
+  key: CryptoKey,
+  viewId: string,
+): Promise<{ encryptedPayload: string; iv: string }> {
+  const cleartext = new TextEncoder().encode(payloadJson);
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTE_LENGTH));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: buildSavedViewAad(viewId) as BufferSource },
+    key,
+    cleartext as BufferSource,
+  );
+  return {
+    encryptedPayload: uint8ArrayToBase64(new Uint8Array(ciphertext)),
+    iv: uint8ArrayToBase64(iv),
+  };
+}
+
+export async function decryptTrackerSavedViewEnvelope(
+  envelope: EncryptedTrackerSavedViewEnvelope,
+  key: CryptoKey,
+): Promise<string> {
+  if (envelope.encryptedPayload === null) {
+    throw new Error('decryptTrackerSavedViewEnvelope called on a tombstone');
+  }
+  if (!envelope.iv) throw new Error('decryptTrackerSavedViewEnvelope: envelope missing iv');
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: base64ToUint8Array(envelope.iv) as BufferSource,
+      additionalData: buildSavedViewAad(envelope.viewId) as BufferSource,
+    },
+    key,
+    base64ToUint8Array(envelope.encryptedPayload) as BufferSource,
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
 export async function encryptTrackerNavigationPayload(
   payloadJson: string,
   key: CryptoKey,
@@ -287,6 +330,15 @@ export function decodeTrackerSchemaEnvelopePlaintext(
 ): string {
   if (envelope.encryptedPayload === null) {
     throw new Error('decodeTrackerSchemaEnvelopePlaintext called on a tombstone (encryptedPayload=null)');
+  }
+  return envelope.encryptedPayload;
+}
+
+export function decodeTrackerSavedViewEnvelopePlaintext(
+  envelope: EncryptedTrackerSavedViewEnvelope,
+): string {
+  if (envelope.encryptedPayload === null) {
+    throw new Error('decodeTrackerSavedViewEnvelopePlaintext called on a tombstone');
   }
   return envelope.encryptedPayload;
 }

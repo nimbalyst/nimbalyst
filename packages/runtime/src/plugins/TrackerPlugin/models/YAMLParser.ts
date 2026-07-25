@@ -120,6 +120,13 @@ export function parseTrackerYAML(yamlString: string): TrackerDataModel {
     model.inlineTemplate = data.inlineTemplate;
   }
 
+  // Optional plural + top-level behavior flags. These must round-trip so a
+  // bundled builtin YAML reproduces the model exactly (e.g. automation is
+  // `creatable: false`); without them the parsed model silently diverges.
+  if (data.creatable !== undefined) model.creatable = data.creatable;
+  if (data.primaryCapable !== undefined) model.primaryCapable = data.primaryCapable;
+  if (data.supportsTags !== undefined) model.supportsTags = data.supportsTags;
+
   if (data.tableView) {
     model.tableView = {
       defaultColumns: data.tableView.defaultColumns || [],

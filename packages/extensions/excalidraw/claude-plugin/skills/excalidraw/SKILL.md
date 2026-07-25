@@ -78,8 +78,8 @@ The Excalidraw extension provides these MCP tools for diagram manipulation:
 
 ## Workflow
 
-1. **Create file** - Create a new `.excalidraw` file or open existing one
-2. **Use MCP tools** - Use the Excalidraw MCP tools to add/modify elements
+1. **Create file** - Create a new `.excalidraw` file or target an existing one. The file does not need to be open in Nimbalyst.
+2. **Use MCP tools** - Pass the file path directly to the Excalidraw MCP tools. Nimbalyst mounts a hidden editor automatically; do not call `extension_test_open_file` first because it creates and focuses a visible tab.
 3. **Verify visually (once)** - Use `mcp__nimbalyst__capture_editor_screenshot` a single time to confirm the diagram rendered
 4. **Stop** - Report what you made and hand control back. Do not iterate on polish unless the user asks for changes. See "STOP AFTER ONE PASS" above.
 

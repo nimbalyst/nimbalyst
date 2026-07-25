@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { store } from '@nimbalyst/runtime/store';
 import { activeWorkspacePathAtom } from '../../atoms/openProjects';
+import { sharedTrackerSavedViewsAtom } from '../../atoms/trackers';
 import { initTrackerSyncListeners } from '../trackerSyncListeners';
+import {
+  createDefaultViewDefinition,
+  serializeSharedSavedView,
+} from '../../../components/TrackerMode/trackerSavedViews';
 
 /**
  * NIM-668 / GitHub #441: the Trackers panel must refetch when the user switches
@@ -16,11 +21,22 @@ describe('initTrackerSyncListeners project switch (NIM-668)', () => {
   beforeEach(() => {
     store.set(activeWorkspacePathAtom, '/ws/A');
 
-    invoke = vi.fn(async (channel: string) => {
+    invoke = vi.fn(async (channel: string, workspacePath?: string) => {
       if (channel === 'get-initial-state') {
         return { mode: 'workspace', workspacePath: '/ws/A' };
       }
       if (channel === 'document-service:tracker-items-list') return [];
+      if (channel === 'workspace:get-state') return {};
+      if (channel === 'tracker-saved-views:list') {
+        return [{
+          viewId: workspacePath === '/ws/B' ? 'view-b' : 'view-a',
+          payload: serializeSharedSavedView({
+            id: workspacePath === '/ws/B' ? 'view-b' : 'view-a',
+            name: workspacePath === '/ws/B' ? 'Project B view' : 'Project A view',
+            definition: createDefaultViewDefinition(),
+          }),
+        }];
+      }
       return undefined;
     });
 
@@ -39,6 +55,7 @@ describe('initTrackerSyncListeners project switch (NIM-668)', () => {
     cleanup = undefined;
     vi.unstubAllGlobals();
     store.set(activeWorkspacePathAtom, null);
+    store.set(sharedTrackerSavedViewsAtom, []);
   });
 
   it('refetches tracker items when the active workspace changes', async () => {
@@ -61,6 +78,26 @@ describe('initTrackerSyncListeners project switch (NIM-668)', () => {
         ([channel]) => channel === 'document-service:tracker-items-list',
       ).length;
       expect(after).toBeGreaterThan(listCallsBeforeSwitch);
+    });
+  });
+
+  it('clears and reloads shared views for the newly active workspace', async () => {
+    store.set(sharedTrackerSavedViewsAtom, [{
+      id: 'stale-a',
+      name: 'Stale A',
+      shared: true,
+      definition: createDefaultViewDefinition(),
+    }]);
+    cleanup = initTrackerSyncListeners();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list');
+    });
+
+    store.set(activeWorkspacePathAtom, '/ws/B');
+
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('tracker-saved-views:list', '/ws/B');
+      expect(store.get(sharedTrackerSavedViewsAtom).map(view => view.id)).toEqual(['view-b']);
     });
   });
 });

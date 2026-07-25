@@ -25,6 +25,7 @@ import {
   resolveRoleFieldName,
 } from '../trackerRecordAccessors';
 import { globalRegistry } from '../models';
+import { isCollectionType } from '../models/trackerCollections';
 import {
   resolveColumnsForType,
   getDefaultColumnConfig,
@@ -37,10 +38,16 @@ import {
   type TrackerColumnDef,
   type TypeColumnConfig,
 } from './trackerColumns';
+import {
+  withEffectiveUpdated,
+  filterTrackerRecords,
+  sortTrackerRecords,
+} from './trackerRowData';
 import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { useTrackerRows } from './useTrackerRows';
 import { renderCell, ContextSubmenu } from './TrackerTable';
 import type { SortColumn, SortDirection } from './TrackerTable';
+import { TrackerFavoriteStar } from './TrackerFavoriteStar';
 
 interface TrackerTableGridProps {
   filterType?: TrackerItemType | 'all';
@@ -61,6 +68,11 @@ interface TrackerTableGridProps {
   onClearFilters?: () => void;
   columnConfig?: TypeColumnConfig;
   onColumnConfigChange?: (config: TypeColumnConfig) => void;
+  favoriteItemIds?: ReadonlySet<string>;
+  onToggleFavorite?: (itemId: string) => void;
+  preserveItemOrder?: boolean;
+  /** Parent renders the shared tracker-view controls. */
+  hideToolbar?: boolean;
 }
 
 /** Default minimum width for a column without an explicit minWidth. */
@@ -86,6 +98,10 @@ export function TrackerTableGrid({
   onClearFilters,
   columnConfig: externalColumnConfig,
   onColumnConfigChange,
+  favoriteItemIds = new Set<string>(),
+  onToggleFavorite,
+  preserveItemOrder = false,
+  hideToolbar = false,
 }: TrackerTableGridProps): JSX.Element {
   const activeTypeFilter: TrackerItemType | 'all' = filterType;
   const [showDisplayOptions, setShowDisplayOptions] = useState(false);
@@ -113,70 +129,31 @@ export function TrackerTableGrid({
   const dataLoaded = useAtomValue(trackerDataLoadedAtom);
   const sourceItems = overrideItems ?? atomItems;
 
-  const items = useMemo(() => {
-    return sourceItems.map((item: TrackerRecord) => {
-      const actualDate = getEffectiveUpdatedDate(item);
-      const lastIndexed = actualDate ? actualDate.toISOString() : (item.system.lastIndexed || new Date(0).toISOString());
-      return { ...item, system: { ...item.system, lastIndexed } };
-    });
-  }, [sourceItems]);
+  // Collections live outside the active type filter (you add bugs to a
+  // milestone), so the "Add to Collection" menu reads from the all-types atom.
+  const allItems = useAtomValue(trackerItemsByTypeAtom('all'));
+  const collectionTargets = useMemo(
+    () => allItems
+      .filter((item: TrackerRecord) => !item.archived && isCollectionType(item.primaryType))
+      .slice(0, 50),
+    [allItems],
+  );
+
+  const items = useMemo(() => withEffectiveUpdated(sourceItems), [sourceItems]);
 
   const loading = !dataLoaded && items.length === 0;
   const searchTerm = externalSearchQuery ?? '';
   const hasAnyFilters = hasExternalFilters || Boolean(searchTerm.trim());
 
-  // Filter
-  const filteredItems = useMemo(() => {
-    return items.filter(item => {
-      if (searchTerm) {
-        const q = searchTerm.toLowerCase();
-        const matches =
-          item.issueKey?.toLowerCase().includes(q) ||
-          String(item.issueNumber ?? '').includes(q) ||
-          getRecordTitle(item).toLowerCase().includes(q) ||
-          (item.system.documentPath ?? '').toLowerCase().includes(q) ||
-          (String(getFieldByRole(item, 'assignee') ?? '')).toLowerCase().includes(q) ||
-          (Array.isArray(getFieldByRole(item, 'tags')) && (getFieldByRole(item, 'tags') as string[]).some((tag: string) => tag.toLowerCase().includes(q)));
-        if (!matches) return false;
-      }
-      if (activeTypeFilter !== 'all' && item.primaryType !== activeTypeFilter) return false;
-      return true;
-    });
-  }, [items, searchTerm, activeTypeFilter]);
+  const filteredItems = useMemo(
+    () => filterTrackerRecords(items, { searchTerm, typeFilter: activeTypeFilter }),
+    [items, searchTerm, activeTypeFilter],
+  );
 
-  // Sort
   const sortedItems = useMemo(() => {
-    const sorted = [...filteredItems].sort((a, b) => {
-      let compareValue = 0;
-      switch (currentSortBy) {
-        case 'type':
-          compareValue = a.primaryType.localeCompare(b.primaryType);
-          break;
-        case 'module':
-          compareValue = (a.system.documentPath ?? '').localeCompare(b.system.documentPath ?? '');
-          break;
-        case 'lastIndexed': {
-          const aTime = a.system.lastIndexed ? new Date(a.system.lastIndexed).getTime() : 0;
-          const bTime = b.system.lastIndexed ? new Date(b.system.lastIndexed).getTime() : 0;
-          compareValue = aTime - bTime;
-          break;
-        }
-        default: {
-          const aVal = getCellValue(a, currentSortBy);
-          const bVal = getCellValue(b, currentSortBy);
-          if (aVal == null && bVal == null) { compareValue = 0; break; }
-          if (aVal == null) { compareValue = 1; break; }
-          if (bVal == null) { compareValue = -1; break; }
-          if (aVal instanceof Date && bVal instanceof Date) { compareValue = aVal.getTime() - bVal.getTime(); break; }
-          if (typeof aVal === 'number' && typeof bVal === 'number') { compareValue = aVal - bVal; break; }
-          compareValue = String(aVal).localeCompare(String(bVal));
-          break;
-        }
-      }
-      return currentSortDirection === 'asc' ? compareValue : -compareValue;
-    });
-    return sorted;
-  }, [filteredItems, currentSortBy, currentSortDirection]);
+    if (preserveItemOrder) return filteredItems;
+    return sortTrackerRecords(filteredItems, currentSortBy, currentSortDirection);
+  }, [filteredItems, currentSortBy, currentSortDirection, preserveItemOrder]);
 
   // Row interaction (shared with TrackerTable)
   const rows = useTrackerRows({
@@ -209,6 +186,7 @@ export function TrackerTableGrid({
     closeContextMenu,
     handleBulkStatusUpdate,
     handleBulkPriorityUpdate,
+    handleAddSelectionToCollection,
   } = rows;
 
   // Compute grid-template-columns from visible columns + persisted widths.
@@ -321,7 +299,7 @@ export function TrackerTableGrid({
       data-testid="tracker-table-grid"
     >
       {/* Display options panel */}
-      {showDisplayOptions && onColumnConfigChange && (
+      {!hideToolbar && showDisplayOptions && onColumnConfigChange && (
         <div className="relative">
           <DisplayOptionsPanel
             availableColumns={allColumns}
@@ -333,7 +311,7 @@ export function TrackerTableGrid({
       )}
 
       {/* Toolbar -- mirrors the list view's tune button + count */}
-      {items.length > 0 && (
+      {!hideToolbar && items.length > 0 && (
         <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-[var(--nim-border)] bg-[var(--nim-bg)]">
           <div className="flex-1" />
           {onColumnConfigChange && (
@@ -446,6 +424,8 @@ export function TrackerTableGrid({
                 handleRowClick={handleRowClick}
                 handleContextMenu={handleContextMenu}
                 openItemInEditor={openItemInEditor}
+                favoriteItemIds={favoriteItemIds}
+                onToggleFavorite={onToggleFavorite}
               />
             ))}
           </div>
@@ -515,6 +495,26 @@ export function TrackerTableGrid({
                 </button>
               ))}
             </ContextSubmenu>
+
+            {collectionTargets.length > 0 && (
+              <ContextSubmenu label="Add to Collection" icon="inventory_2">
+                {collectionTargets.map(collection => (
+                  <button
+                    key={collection.id}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
+                    onClick={() => handleAddSelectionToCollection(collection)}
+                  >
+                    <span
+                      className="material-symbols-outlined text-sm shrink-0"
+                      style={{ color: getTypeColor(collection.primaryType) }}
+                    >
+                      {getTypeIcon(collection.primaryType)}
+                    </span>
+                    <span className="truncate">{getRecordTitle(collection)}</span>
+                  </button>
+                ))}
+              </ContextSubmenu>
+            )}
 
             <div className="border-b border-[var(--nim-border)] my-1" />
 
@@ -590,6 +590,8 @@ interface GridRowProps {
   handleRowClick: (item: TrackerRecord, index: number, e: React.MouseEvent) => void;
   handleContextMenu: (e: React.MouseEvent, item: TrackerRecord, index: number) => void;
   openItemInEditor: (item: TrackerRecord) => void;
+  favoriteItemIds: ReadonlySet<string>;
+  onToggleFavorite?: (itemId: string) => void;
 }
 
 function GridRow({
@@ -609,6 +611,8 @@ function GridRow({
   handleRowClick,
   handleContextMenu,
   openItemInEditor,
+  favoriteItemIds,
+  onToggleFavorite,
 }: GridRowProps): JSX.Element {
   const isSelected = selectedIds.has(item.id) || (!!selectedItemId && item.id === selectedItemId);
   const isFocused = focusedIndex === rowIndex;
@@ -641,6 +645,13 @@ function GridRow({
               {getTypeIcon(item.primaryType)}
             </span>
           </span>
+        ) : col.id === 'title' ? (
+          <div className="flex items-center gap-1 min-w-0">
+            <TrackerFavoriteStar itemId={item.id} isFavorite={favoriteItemIds.has(item.id)} onToggle={onToggleFavorite} />
+            <div className="min-w-0 flex-1 truncate">
+              {renderCell(col, item, value, editingCell, isItemEditable, setEditingCell, editingTitle, setEditingTitle, titleInputRef, handleFieldUpdate)}
+            </div>
+          </div>
         ) : (
           renderCell(col, item, value, editingCell, isItemEditable, setEditingCell, editingTitle, setEditingTitle, titleInputRef, handleFieldUpdate)
         );

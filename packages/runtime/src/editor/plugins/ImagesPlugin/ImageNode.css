@@ -41,3 +41,30 @@
 .image-control-wrapper--resizing {
   touch-action: none;
 }
+
+.image-context-menu {
+  z-index: 100;
+  min-width: 140px;
+  padding: 4px;
+  border-radius: 8px;
+  background-color: var(--nim-bg);
+  box-shadow: 0 12px 28px 0 rgba(0, 0, 0, 0.2), 0 2px 4px 0 rgba(0, 0, 0, 0.1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+.image-context-menu__item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--nim-text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.image-context-menu__item:hover {
+  background-color: var(--nim-bg-hover);
+}

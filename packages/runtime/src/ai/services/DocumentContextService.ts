@@ -26,6 +26,27 @@ import type {
   PersistDocumentStateCallback,
 } from './types';
 
+const MAX_EDITOR_CONTEXT_DATA_CHARS = 32_768;
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function serializeEditorContextData(data: unknown): string | undefined {
+  try {
+    const serialized = JSON.stringify(data);
+    if (!serialized || serialized.length > MAX_EDITOR_CONTEXT_DATA_CHARS) return undefined;
+    return serialized;
+  } catch {
+    return undefined;
+  }
+}
+
 export class DocumentContextService implements IDocumentContextService {
   /** Per-session document state for transition detection */
   private lastDocumentStateBySession: Map<string, DocumentState> = new Map();
@@ -281,6 +302,11 @@ export class DocumentContextService implements IDocumentContextService {
       baseContext.mockupDrawing = rawContext.mockupDrawing;
     }
 
+    // Add extension-provided selected items (node-like editors) if present
+    if (rawContext?.editorContextItems && rawContext.editorContextItems.length > 0) {
+      baseContext.editorContextItems = rawContext.editorContextItems;
+    }
+
     // For 'none' transition: omit content entirely (nothing changed)
     if (transition === 'none') {
       return baseContext;
@@ -425,6 +451,29 @@ export class DocumentContextService implements IDocumentContextService {
 
       if (context.mockupDrawing) {
         prompt += `\nThe user has drawn annotations on the mockup. Use the capture_editor_screenshot tool to see their annotations.\n`;
+      }
+
+      // Add extension-provided selected items (node-like editors: diagrams, CAD,
+      // electronics). Each item is a node the user selected; the renderer has
+      // already excluded any the user dismissed.
+      if (context.editorContextItems && context.editorContextItems.length > 0) {
+        const items = context.editorContextItems;
+        const noun = items.length === 1 ? 'item' : 'items';
+        prompt += `\nThe user has selected the following ${items.length} ${noun} in the editor:\n`;
+        prompt += `<SELECTED_ITEMS>\n`;
+        for (const item of items) {
+          prompt += `  <ITEM label="${escapeXml(item.label)}">\n`;
+          prompt += `  ${escapeXml(item.description)}\n`;
+          if (item.includeData && item.data !== undefined) {
+            const data = serializeEditorContextData(item.data);
+            if (data !== undefined) {
+              prompt += `  <DATA>${escapeXml(data)}</DATA>\n`;
+            }
+          }
+          prompt += `  </ITEM>\n`;
+        }
+        prompt += `</SELECTED_ITEMS>\n`;
+        prompt += `When the user refers to "this", "these", "the selection", or names one of these by label, they mean these selected items.\n`;
       }
 
       // Add content or diff based on transition.

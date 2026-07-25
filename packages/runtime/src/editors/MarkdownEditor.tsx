@@ -25,7 +25,7 @@ import {
   getEditorTransformers,
 } from '../editor';
 import type { EditorHost } from '../extensions/editorHost';
-import { $getRoot } from 'lexical';
+import { $getRoot, $setSelection } from 'lexical';
 
 export interface MarkdownEditorConfig {
   /**
@@ -316,6 +316,9 @@ export function MarkdownEditor({
           initialEditorState: hasInitial
             ? () => {
                 console.log('[MarkdownEditor] initialEditorState called! Parsing markdown content, length:', collaborationConfig.initialContent!.length);
+                // Clearing a selected node without moving selection first makes
+                // Lexical throw "selection has been lost ..." (NIM-2005).
+                $setSelection(null);
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(collaborationConfig.initialContent!, getEditorTransformers());

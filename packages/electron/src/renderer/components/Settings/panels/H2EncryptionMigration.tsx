@@ -3,9 +3,9 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 
 type KeyCustodyMode = 'legacy-e2e' | 'server-managed';
 type MigrationDiagnostic =
-  | { status: 'migrating'; startedAt: string }
+  | { status: 'migrating'; startedAt: string; documentsCompleted?: number; documentsTotal?: number; phase?: 'custody' | 'titles' | 'documents' | 'verifying' }
   | { status: 'complete'; finishedAt: string }
-  | { status: 'stuck'; failedAt: string; message: string };
+  | { status: 'stuck'; failedAt: string; message: string; retryAt?: string };
 
 interface Props {
   orgId: string;
@@ -15,13 +15,14 @@ interface Props {
 
 /**
  * Organization encryption is server-managed product infrastructure. Legacy
- * organizations migrate silently in main; this surface intentionally exposes
- * status only and never offers a custody choice, confirmation, or retry action.
+ * organizations migrate silently in main. This surface exposes status plus an
+ * admin-only retry for a stuck background finalizer; custody is never optional.
  */
-export function SecurityEncryptionSection({ orgId }: Props) {
+export function SecurityEncryptionSection({ orgId, isAdmin }: Props) {
   const [mode, setMode] = useState<KeyCustodyMode | null>(null);
   const [migration, setMigration] = useState<MigrationDiagnostic | null>(null);
   const [loading, setLoading] = useState(true);
+  const [retrying, setRetrying] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -41,6 +42,22 @@ export function SecurityEncryptionSection({ orgId }: Props) {
   }, [orgId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const retry = useCallback(async () => {
+    if (!window.electronAPI.team.retryEncryptionMigration) return;
+    setRetrying(true);
+    try {
+      const result = await window.electronAPI.team.retryEncryptionMigration(orgId);
+      if (result?.migration) {
+        setMigration(result.migration as MigrationDiagnostic);
+        if (result.success) setMode('server-managed');
+      } else {
+        await refresh();
+      }
+    } finally {
+      setRetrying(false);
+    }
+  }, [orgId, refresh]);
 
   const updating = mode === 'legacy-e2e' || migration?.status === 'migrating';
   const stuck = migration?.status === 'stuck' ? migration : null;
@@ -73,11 +90,23 @@ export function SecurityEncryptionSection({ orgId }: Props) {
               <p className="m-0 mt-1 select-text text-xs text-[var(--nim-text-muted)]">
                 {stuck.message}
               </p>
+              {isAdmin && window.electronAPI.team.retryEncryptionMigration ? (
+                <button
+                  type="button"
+                  className="mt-3 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-1.5 text-xs font-medium text-[var(--nim-text)] hover:bg-[var(--nim-bg-tertiary)] disabled:opacity-50"
+                  disabled={retrying}
+                  onClick={() => { void retry(); }}
+                >
+                  {retrying ? 'Retrying…' : 'Retry now'}
+                </button>
+              ) : null}
             </div>
           ) : updating ? (
             <p className="m-0 mt-3 inline-flex items-center gap-1.5 text-xs text-[var(--nim-text-muted)]">
               <MaterialSymbol icon="progress_activity" size={14} className="animate-spin" />
-              Updating encryption in the background
+              {migration?.status === 'migrating' && migration.phase === 'documents' && migration.documentsTotal
+                ? `Finalizing shared documents (${migration.documentsCompleted ?? 0}/${migration.documentsTotal})`
+                : 'Updating encryption in the background'}
             </p>
           ) : (
             <p className="m-0 mt-3 inline-flex items-center gap-1.5 text-xs text-[var(--nim-success)]">

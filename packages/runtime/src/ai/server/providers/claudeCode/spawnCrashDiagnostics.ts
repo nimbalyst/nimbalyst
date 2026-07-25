@@ -17,7 +17,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { resolveClaudeConfigDir } from './claudeConfigDir';
 
 /** Stderr signature of a Bun-runtime startup failure (not Claude Code app code). */
 const BUN_CRASH_SIGNATURE = 'An unknown error occurred';
@@ -108,8 +108,7 @@ export function armAgentSdkDebugLogging(): boolean {
 
 /** Mirrors the SDK's config-dir resolution for its debug log location. */
 function sdkDebugLogDir(): string {
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  return path.join(configDir, 'debug');
+  return path.join(resolveClaudeConfigDir(), 'debug');
 }
 
 /**

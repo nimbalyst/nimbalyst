@@ -238,6 +238,10 @@ export function trackerRecordToItem(record: TrackerRecord): TrackerItem {
       customFields[key] = value;
     }
   }
+  for (const key of ['linkedPullRequests', 'activity', 'comments'] as const) {
+    const value = record.system[key];
+    if (value !== undefined) customFields[key] = value;
+  }
 
   return {
     id: record.id,
@@ -284,6 +288,21 @@ export function trackerRecordToItem(record: TrackerRecord): TrackerItem {
 // ---------------------------------------------------------------------------
 // DB Row <-> TrackerRecord converters
 // ---------------------------------------------------------------------------
+
+function normalizeRecordTimestamp(value: unknown, fallback: unknown): string {
+  for (const candidate of [value, fallback]) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate;
+    }
+    if (candidate instanceof Date || typeof candidate === 'number') {
+      const date = candidate instanceof Date ? candidate : new Date(candidate);
+      if (!Number.isNaN(date.getTime())) {
+        return date.toISOString();
+      }
+    }
+  }
+  return new Date().toISOString();
+}
 
 /**
  * Convert a PGLite tracker_items row to a TrackerRecord.
@@ -355,8 +374,8 @@ export function dbRowToRecord(row: any): TrackerRecord {
       workspace: row.workspace,
       documentPath: row.document_path || undefined,
       lineNumber: row.line_number ?? undefined,
-      createdAt: data.created || (row.created ? new Date(row.created).toISOString() : new Date().toISOString()),
-      updatedAt: data.updated || (row.updated ? new Date(row.updated).toISOString() : new Date().toISOString()),
+      createdAt: normalizeRecordTimestamp(data.created, row.created),
+      updatedAt: normalizeRecordTimestamp(data.updated, row.updated),
       lastIndexed: row.last_indexed ? new Date(row.last_indexed).toISOString() : undefined,
       authorIdentity: systemValue('authorIdentity') as TrackerIdentity | null | undefined,
       lastModifiedBy: systemValue('lastModifiedBy') as TrackerIdentity | null | undefined,

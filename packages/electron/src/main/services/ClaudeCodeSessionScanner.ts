@@ -10,6 +10,7 @@ import * as path from 'path';
 import { homedir } from 'os';
 import { logger } from '../utils/logger';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 const log = logger.aiSession;
 
@@ -185,14 +186,15 @@ export function normalizeWorkspacePath(escapedPath: string): string {
 /**
  * Get the directory that holds Claude Code project sidecars.
  *
- * Defaults to `~/.claude/projects`. Tests override the location by setting
+ * Defaults to `<claude config dir>/projects`, honoring CLAUDE_CONFIG_DIR.
+ * Tests override the location by setting
  * `NIMBALYST_CLAUDE_PROJECTS_DIR` so they can run against a fixture
  * workspace instead of the user's real Claude Code data.
  */
 function getClaudeProjectsDir(): string {
   const override = process.env.NIMBALYST_CLAUDE_PROJECTS_DIR;
   if (override) return override;
-  return path.join(homedir(), '.claude', 'projects');
+  return path.join(resolveClaudeConfigDir(), 'projects');
 }
 
 /**

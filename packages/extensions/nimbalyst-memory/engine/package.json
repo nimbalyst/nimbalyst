@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "better-sqlite3": "12.11.1",
+    "better-sqlite3": "13.0.1",
     "chokidar": "4.0.3",
     "fast-glob": "3.3.3",
     "js-yaml": "4.2.0",

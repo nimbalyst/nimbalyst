@@ -37,6 +37,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 ## AI Sessions
 
 - Session creation, naming, archiving, deletion
+- Launch a new session from any workspace mode with the reusable composer popup (Cmd+Shift+N), including model/mode controls, mentions, slash commands, and attachments
 - Session search with full-text index (Cmd+L)
 - Session pinning
 - Session branching / forking
@@ -94,6 +95,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Turn summary ("Finished in Xm Ys, N files +N -N")
 - File `@` mention in input
 - Image attachment support
+- Selection chips above the input showing what will be sent as context (selected text, mockup annotations, and extension-provided items from node-like editors such as Excalidraw); each chip has an × to drop it from the prompt, and node-like editors can report multiple selections at once
 - Queued prompts display
 - Slash command typeahead
 - Action prompts dropdown in composer (reusable prompt presets defined in `nimbalyst-local/ai-actions.md`; pick to insert verbatim into the draft, with undo support)
@@ -264,8 +266,14 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Team invite / join / role management
 - Personal org + team org separation
 - Multiple projects per organization — add another workspace to an existing org as its own tracker space (sharing the org's roster and encryption)
-- Four-scope Settings information architecture (Application | Personal | Organizations | Project) with typed deep links, role-aware read-only organization pages, and explicit remote-project access targets
-- Organization administration without an open workspace — invitation inbox, account attribution, members/roles, projects, server-managed encryption status, billing placeholder, and role-gated lifecycle controls
+- Three-scope Settings information architecture (Application | Account | Project) with typed deep links; organization administration lives in a dedicated organization window
+- Dedicated organization-management window (opened from the organization switcher or the account inspector) with read-only roster, teammate invitations, project sharing, workspace → organization → bound-account identity, an interim administration area, and a web-console deep-link
+- Global multi-account inspector in the navigation footer with per-account organization ownership, sync-account selection, add/sign-out/reconnect actions, and visible expired-session recovery
+- Every organization you belong to, listed inline under its login in Account settings — role, membership state, project count, a Manage button that opens the organization window for that org, in-place invite acceptance, a New organization action, and a manual refresh; organizations reachable from more than one login appear once, under the login that authorizes them
+- Organization window reachable on its own — a Window menu entry opens it without picking an org first, an in-window switcher moves between every organization you actively belong to, and it reopens on the organization you used last (falling back to your first one)
+- Account settings split into one screen per topic — Accounts, Mobile App, Devices, and Shared Links are separate left-nav items, each with a single title instead of stacked headers; old links land on the screen that now owns their section
+- Pick mobile projects in bulk — the Mobile App screen lists every project as a checkbox with Select all / Deselect all, so many projects (and their document sync) change in one interaction instead of one control at a time
+- Decision-first project sharing — Project Settings → Sharing asks one question (add to an organization you already administer, or create a new one), then confirms in plain words what will happen and who gets access; a missing git remote is explained rather than silently disabling the flow. Projects are always added from the project itself, not by name from the organization window
 - Per-personal-account mobile-sync profiles — project and document selections are retained when switching the active zero-knowledge sync account, independently of team organization selection
 - Move a project to another organization — relocates its trackers, documents, history, and schemas into the destination, transfers member access by email (auto-invite for members not yet in the destination, with a per-person opt-out and seat-delta preview), and redirects the old location (server-managed orgs only)
 - Merge one organization into another — consolidates every project, unions the rosters (higher role wins), and optionally deletes the drained org
@@ -283,10 +291,15 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 
 ## Tracker System
 
-- Tracker mode (Cmd+T) with list, table, kanban, and tag-board views
+- Tracker mode (Cmd+T) with list, table, grid, kanban, tag-board, and inbox views
 - Kanban columns honor each type's status order from its schema (no hardcoded order)
 - Tag-board view with one column per tag (items appear in every matching column, plus an Untagged column)
-- Saved views: name, save, apply, and delete reusable filter/layout views per workspace
+- Saved views: name, save, apply, and delete reusable filter/layout views per workspace; a view captures the whole table state (columns, widths, per-column filters), and can be shared with the team so a colleague opens the same view
+- Editable spreadsheet grid — virtualized grid where any schema-backed cell edits in place with an editor chosen by the field's type, plus per-column filters, multi-cell paste, and fill-down
+- Collections — `milestone` and `release` items that group other tracker items through a relationship, with member rollups (counts by status, progress) and an "Add to collection" bulk action
+- Triage inbox — a keyboard-driven queue of everything nobody has decided about yet (unassigned, unprioritized, in no collection, still on its initial status), scoped globally or to one type. Assign, prioritize, accept, add to a milestone, snooze, or dismiss without leaving the keyboard; agent-filed items are flagged as proposals. Snoozes are personal
+- Releases as tracker items — create the next release early, associate work with it as it lands, and let the release scripts fill in version, git tag, and date at build time (`nim release finalize`); `nim release notes` renders the release's members as changelog markdown
+- Review lane — `in-review` -> `changes-requested` / `approved` on bugs, tasks, and plans. An AI agent can move work into review but cannot approve it; only a person can
 - Configurable tracker item types (bugs, tasks, architecture docs, decisions, etc.)
 - Tracker sidebar with type counts
 - Item detail panel
@@ -303,7 +316,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Share markdown files as E2E encrypted links
 - Share AI sessions as encrypted links
 - Expiration options: 1/7/30 days
-- Shared links management panel in settings
+- Account-attributed shared links management in Account settings, plus an explicit create-share account picker defaulted from the workspace binding
 
 ## Automations
 
@@ -324,7 +337,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - New file menu contribution
 - Lexical node and transformer contribution
 - Claude slash command contribution
-- Settings panel contribution
+- Nested settings panel contribution plus first-class application/project settings routes with project context
 - Tracker importer contribution (`trackerImporters`) — external-source importers backed by a backend module
 - Extension hot reload
 - Extension developer kit with scaffolding
@@ -353,7 +366,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 
 - Session context (summaries, workstream overview, recent sessions, edited files, scheduled wakeups)
 - Session naming (name, tags, phase)
-- Meta-agent (`create_session`, `spawn_session`, `send_prompt`, `respond_to_prompt`, `get_session_status`, `get_session_result`, `list_spawned_sessions`, `list_worktrees`) — lets a session spawn and orchestrate child, sibling, or isolated sessions
+- Meta-agent (`create_session`, `spawn_session`, `send_prompt`, `notify_user`, `respond_to_prompt`, `get_session_status`, `get_session_result`, `list_spawned_sessions`, `list_worktrees`) — lets a session spawn and orchestrate child, sibling, or isolated sessions and send bounded OS notifications when the user has authorized an attention signal
 - Settings control (`settings_get_overview`, `workspace_create`, `workspace_open`, `sync_set_for_project`, `appearance_set_theme`, `analytics_set_enabled`, `ai_set_default_model`, `features_toggle`, `extension_set_enabled`, `tracker_set_sync_policy`, etc.) — lets the agent change Nimbalyst settings through a curated, allow-listed surface; never exposes API keys or auth credentials; kill-switch via `settingsAgentToolsDisabled`
 - Developer tools (extension lifecycle, database query, log access, renderer eval, environment info)
 - Super Loop progress reporting
@@ -381,12 +394,11 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 ## Settings
 
 - Application: theme, AI providers, MCP servers, notifications, advanced, beta features, and extensions
-- Personal: signed-in accounts, active zero-knowledge mobile-sync profile, paired devices, and shared links
-- Organizations: invitation inbox, members and roles, projects, server-managed encryption status, billing placeholder, and danger-zone actions
+- Account: signed-in accounts, sync-account selection, active zero-knowledge mobile-sync profile, paired devices, and account-attributed shared links
 - Project: sharing/organization attachment, project access, AI provider overrides, agent permissions, tracker config, GitHub, and extensions
 - Tools & Token Cost panel: per-tool-group estimated context-token cost and load policy (eager / on-demand / conditional) across built-in, extension, and user MCP servers; trackers toggle inline; reachable from the AI panel's token meter ("Manage tools")
 - Claude Code: custom executable path, environment variables, effort slider, plan mode, auto-commit, extended context
-- Multi-account support (add/remove accounts, per-project binding)
+- Multi-account support (add/remove/reconnect accounts, per-project binding, explicit share/team account defaults)
 - Release channel selection (stable / beta / alpha)
 - Document history retention
 - Auto-save interval
@@ -408,7 +420,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Session quick open (Cmd+L) — Shift+Tab searches message contents, not just titles
 - Prompt quick open (Cmd+Shift+L)
 - Content search (Cmd+Shift+F)
-- Global semantic search (Cmd+Shift+O) — a Quick Open "Search" tab that finds any tracker or document by meaning (hybrid semantic + keyword), powered by the Nimbalyst Memory extension; appears only when that extension is enabled. Optionally indexes AI sessions too (off by default)
+- Memory search (Cmd+Shift+O) — a Quick Open "Memory" tab with Docs, Trackers, and Sessions scopes for hybrid semantic + keyword lookup, powered by the Nimbalyst Memory extension; appears only when that extension is enabled. Tracker results retain issue keys, status, type filters, and exact-match lookup; AI session indexing is optional and off by default
 - Shared team document quick open (Cmd+Shift+D) — a team-gated Quick Open tab with name filtering, unread/favorite cues, and direct navigation into Shared Documents
 - Mouse back/forward button support
 - Breadcrumb navigation
@@ -432,6 +444,8 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 
 - Unified onboarding wizard
 - Walkthrough guide system (multi-step floating guides)
+- Contextual tips system (targeted tip cards: floating, empty-transcript inline, and Files empty state; All Tips dialog)
+- Files-mode empty state with New file and Ask-the-agent action cards, example prompt chips, and rotating tips
 - Help tooltips (hover, keyed by data-testid)
 - Keyboard shortcuts dialog (Cmd+?)
 - Community channels popup (Discord, YouTube, LinkedIn, X, TikTok, Instagram)
@@ -450,3 +464,4 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - PostHog integration (opt-in, anonymous)
 - AI usage report with historical graph and activity heatmap
 - Per-project usage breakdown
+- Per-tool usage tracking (local counters for built-in and MCP/extension tools) surfaced as a Tools section in the AI usage report (top tools, built-in vs MCP split, over-time, per-provider) and as a targeting signal for contextual tips; backfill from past claude-code and codex sessions

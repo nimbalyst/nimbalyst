@@ -197,7 +197,8 @@ public struct SessionListView: View {
 
     private var voiceFocusedSessionId: String? {
         #if os(iOS)
-        return appState.voiceAgent?.activeSessionId
+        guard let voice = appState.voiceAgent, voice.state != .disconnected else { return nil }
+        return voice.activeSessionId
         #else
         return nil
         #endif
@@ -609,6 +610,21 @@ public struct SessionListView: View {
                     Label("New Meta Agent", systemImage: "point.3.connected.trianglepath.dotted")
                 }
             }
+
+            #if os(iOS)
+            if let voice = appState.voiceAgent,
+               VoiceSessionListActionPolicy.showsStartVoiceAgent(
+                   selectedTabIsSessions: selectedTab == .sessions,
+                   voiceIsDisconnected: voice.state == .disconnected
+               ) {
+                Button {
+                    appState.configureVoiceAgent(forProject: project.id)
+                    voice.start(scope: .project)
+                } label: {
+                    Label("Start Voice Agent", systemImage: "mic.fill")
+                }
+            }
+            #endif
 
             if !appState.availableModels.isEmpty {
                 Divider()

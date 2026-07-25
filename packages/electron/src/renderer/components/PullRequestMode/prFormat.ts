@@ -18,3 +18,8 @@ export function formatRelative(ms: number): string {
   if (mon < 12) return `${mon}mo ago`;
   return `${Math.floor(mon / 12)}y ago`;
 }
+
+/** Draft used when starting an agent session from a pull request. */
+export function buildReviewContributionDraft(remote: string, prNumber: number): string {
+  return `/review-contribution https://github.com/${remote}/pull/${prNumber}`;
+}

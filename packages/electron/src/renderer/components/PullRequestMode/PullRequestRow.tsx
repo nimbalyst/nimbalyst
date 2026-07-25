@@ -31,9 +31,9 @@ function stateBadge(
   }
   switch (pr.state) {
     case 'merged':
-      return { label: 'Merged', className: 'text-white bg-[var(--nim-primary)]', icon: 'merge' };
+      return { label: 'Merged', className: 'text-nim-on-primary bg-[var(--nim-primary)]', icon: 'merge' };
     case 'closed':
-      return { label: 'Closed', className: 'text-white bg-[var(--nim-error)]', icon: 'cancel' };
+      return { label: 'Closed', className: 'text-nim-on-primary bg-[var(--nim-error)]', icon: 'cancel' };
     default:
       return null;
   }
@@ -95,7 +95,7 @@ export function PullRequestRow({ pr, selected, onSelect, trackerItem, hasSession
               <MaterialSymbol
                 icon="smart_toy"
                 size={13}
-                className="text-nim-accent"
+                className="text-nim-primary"
                 title="Has linked review sessions"
               />
             )}

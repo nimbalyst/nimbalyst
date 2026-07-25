@@ -1,4 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
+import {
+  useFloating,
+  offset,
+  flip,
+  shift,
+  useDismiss,
+  useRole,
+  useInteractions,
+  FloatingPortal,
+  type VirtualElement,
+} from '@floating-ui/react';
 
 // Apply the active theme as a base dark/light class on the WorkspaceManager
 // (project picker) window. The picker does not load the extension theme
@@ -76,6 +87,18 @@ export const WorkspaceManager: React.FC = () => {
     workspace: null,
   });
 
+  const { refs: contextMenuRefs, floatingStyles: contextMenuStyles, context: contextMenuContext } = useFloating({
+    open: contextMenu.visible,
+    onOpenChange: (open) => {
+      if (!open) setContextMenu(prev => ({ ...prev, visible: false }));
+    },
+    placement: 'bottom-start',
+    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 })],
+  });
+  const contextMenuDismiss = useDismiss(contextMenuContext);
+  const contextMenuRole = useRole(contextMenuContext, { role: 'menu' });
+  const { getFloatingProps: getContextMenuFloatingProps } = useInteractions([contextMenuDismiss, contextMenuRole]);
+
   // Rename dialog state
   const [renameDialog, setRenameDialog] = useState<{
     visible: boolean;
@@ -132,16 +155,19 @@ export const WorkspaceManager: React.FC = () => {
     }
   }, [searchQuery]);
 
-  // Close context menu when clicking outside
+  // Anchor the menu to a virtual element at the cursor so floating-ui can
+  // flip/shift it back on screen near viewport edges.
   useEffect(() => {
-    const handleClickOutside = () => {
-      if (contextMenu.visible) {
-        setContextMenu(prev => ({ ...prev, visible: false }));
-      }
+    if (!contextMenu.visible) {
+      contextMenuRefs.setPositionReference(null);
+      return;
+    }
+    const virtual: VirtualElement = {
+      getBoundingClientRect: () =>
+        DOMRect.fromRect({ x: contextMenu.x, y: contextMenu.y, width: 0, height: 0 }),
     };
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
-  }, [contextMenu.visible]);
+    contextMenuRefs.setPositionReference(virtual);
+  }, [contextMenu.visible, contextMenu.x, contextMenu.y, contextMenuRefs]);
 
   // Focus rename input when dialog opens
   useEffect(() => {
@@ -735,42 +761,45 @@ export const WorkspaceManager: React.FC = () => {
 
       {/* Context Menu */}
       {contextMenu.visible && (
-        <div
-          className="fixed bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-md shadow-lg py-1 min-w-[160px] z-[2000]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            className="w-full px-3 py-1.5 text-left text-[13px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] flex items-center gap-2"
-            onClick={() => handleContextMenuAction('open')}
+        <FloatingPortal>
+          <div
+            ref={contextMenuRefs.setFloating}
+            className="workspace-manager__context-menu bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-md shadow-lg py-1 min-w-[160px] z-[2000]"
+            style={contextMenuStyles}
+            {...getContextMenuFloatingProps({ onClick: (e) => e.stopPropagation() })}
           >
-            <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>folder_open</span>
-            Open Project
-          </button>
-          <div className="border-t border-[var(--nim-border)] my-1" />
-          <button
-            className="w-full px-3 py-1.5 text-left text-[13px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] flex items-center gap-2"
-            onClick={() => handleContextMenuAction('rename')}
-          >
-            <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>edit</span>
-            Rename...
-          </button>
-          <button
-            className="w-full px-3 py-1.5 text-left text-[13px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] flex items-center gap-2"
-            onClick={() => handleContextMenuAction('move')}
-          >
-            <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>drive_file_move</span>
-            Move to...
-          </button>
-          <div className="border-t border-[var(--nim-border)] my-1" />
-          <button
-            className="w-full px-3 py-1.5 text-left text-[13px] text-[var(--nim-error)] hover:bg-[var(--nim-bg-hover)] flex items-center gap-2"
-            onClick={() => handleContextMenuAction('remove')}
-          >
-            <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>close</span>
-            Remove from Recent
-          </button>
-        </div>
+            <button
+              className="w-full px-3 py-1.5 text-left text-[13px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] flex items-center gap-2"
+              onClick={() => handleContextMenuAction('open')}
+            >
+              <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>folder_open</span>
+              Open Project
+            </button>
+            <div className="border-t border-[var(--nim-border)] my-1" />
+            <button
+              className="w-full px-3 py-1.5 text-left text-[13px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] flex items-center gap-2"
+              onClick={() => handleContextMenuAction('rename')}
+            >
+              <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>edit</span>
+              Rename...
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left text-[13px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] flex items-center gap-2"
+              onClick={() => handleContextMenuAction('move')}
+            >
+              <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>drive_file_move</span>
+              Move to...
+            </button>
+            <div className="border-t border-[var(--nim-border)] my-1" />
+            <button
+              className="w-full px-3 py-1.5 text-left text-[13px] text-[var(--nim-error)] hover:bg-[var(--nim-bg-hover)] flex items-center gap-2"
+              onClick={() => handleContextMenuAction('remove')}
+            >
+              <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>close</span>
+              Remove from Recent
+            </button>
+          </div>
+        </FloatingPortal>
       )}
 
       {/* Rename Dialog */}

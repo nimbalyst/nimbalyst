@@ -21,6 +21,7 @@ import { watch, FSWatcher } from 'fs';
 import { logger } from '../utils/logger';
 import { resolveWorkspacePathForPermissions } from './PermissionService';
 import { resolveProjectPath } from '../utils/workspaceDetection';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 const log = logger.main;
 
@@ -106,9 +107,9 @@ export class ClaudeSettingsManager {
    * Get the path to the user-level settings file
    */
   private getUserLevelPath(): string {
-    // Use os.homedir() instead of process.env for packaged builds on Intel Macs
-    // where HOME may not be set correctly
-    return path.join(os.homedir(), '.claude', 'settings.json');
+    // resolveClaudeConfigDir uses os.homedir() rather than process.env.HOME for
+    // packaged builds on Intel Macs where HOME may not be set correctly.
+    return path.join(resolveClaudeConfigDir(), 'settings.json');
   }
 
   /**

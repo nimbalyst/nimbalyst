@@ -10,7 +10,7 @@
  * Both variants share the same internal structure (header / body / actions).
  */
 
-import React, { useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useRef, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { TipDefinition } from './types';
 
@@ -97,6 +97,8 @@ export function TipCard({
   inlineFooterExtras,
 }: TipCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const bodyId = useId();
   const isFloating = variant === 'floating';
 
   // Handle Escape key for the floating variant only -- inline cards live
@@ -159,8 +161,8 @@ export function TipCard({
       ref={cardRef}
       className={isFloating ? floatingClasses : inlineClasses}
       role={isFloating ? 'alert' : 'note'}
-      aria-labelledby="tip-title"
-      aria-describedby="tip-body"
+      aria-labelledby={titleId}
+      aria-describedby={bodyId}
     >
       {/* Header: icon + title + dismiss */}
       <div className={`flex items-start ${headerPadding}`}>
@@ -170,7 +172,12 @@ export function TipCard({
           </div>
         )}
         <div className="flex-1 min-w-0">
-          <div id="tip-title" className={titleClasses}>
+          {!isFloating && (
+            <div className="tip-card-overline mb-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[var(--nim-text-faint)]">
+              Tip
+            </div>
+          )}
+          <div id={titleId} className={titleClasses}>
             {tip.content.title}
           </div>
         </div>
@@ -189,7 +196,7 @@ export function TipCard({
 
       {/* Body */}
       <div
-        id="tip-body"
+        id={bodyId}
         className={bodyClasses}
         style={{ paddingLeft: bodyIndent }}
       >

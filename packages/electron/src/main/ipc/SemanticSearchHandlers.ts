@@ -8,7 +8,7 @@ import {
  * IPC for Quick Open global semantic search. Workspace-scoped: the renderer
  * passes its `workspacePath` explicitly (no module-level "current workspace").
  * Both handlers return safely when the memory engine isn't running so the
- * renderer can hide the Search tab without special-casing errors.
+ * renderer can hide the Memory tab without special-casing errors.
  */
 export function registerSemanticSearchHandlers() {
   safeHandle(

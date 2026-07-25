@@ -22,12 +22,12 @@ When prompting agents in RTL languages (Persian, Arabic, Hebrew, etc.), response
 |-----------|------|
 | `detection.ts` | Unicode RTL-range detection algorithm (configurable threshold) |
 | `rehypeRtlDetect.ts` | rehype plugin (fallback for standard react-markdown) |
-| `RtlTranscriptHost.tsx` | hostComponent — registers transcript markdown contributions with **component overrides** (the working path) |
+| `RtlTranscriptHost.tsx` | hostComponent — registers the transcript rehype contribution |
 | `inputRtl.ts` | Applies RTL to user input fields (textarea, contenteditable) |
 | `RtlSettingsPanel.tsx` | Settings UI panel inside Nimbalyst Settings |
 | `settings.ts` + `index.ts` | Settings management + activate/deactivate + runtime API |
 
-**Key technical insight:** Nimbalyst's `MarkdownRenderer` uses custom React components that ignore hast `properties.dir`. The component overrides (`p`, `li`, `blockquote`, `h1`-`h6`, `table`, `td`, `th`) are required — they detect direction from children and apply `dir` + styles to the DOM directly.
+**Key technical insight:** Direction is applied in the rehype tree and forwarded through Nimbalyst's styled markdown components. This preserves the host's typography, spacing, and table layout while adding `dir` and RTL classes to the rendered DOM.
 
 ## Installation
 

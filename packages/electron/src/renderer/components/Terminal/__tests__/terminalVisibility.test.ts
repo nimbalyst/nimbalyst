@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isElementMeasurable,
   waitUntilElementMeasurable,
+  waitUntilTerminalPainted,
   type MeasurableElement,
 } from '../terminalVisibility';
 
@@ -69,5 +70,48 @@ describe('waitUntilElementMeasurable', () => {
       { isDisposed: () => true, sleep: async () => {} },
     );
     expect(result).toBe('disposed');
+  });
+});
+
+describe('waitUntilTerminalPainted', () => {
+  it('waits for two animation frames before the terminal is ready to reveal', async () => {
+    const frames: FrameRequestCallback[] = [];
+    let settled = false;
+    const resultPromise = waitUntilTerminalPainted({
+      isDisposed: () => false,
+      scheduleFrame: (callback) => {
+        frames.push(callback);
+        return frames.length;
+      },
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    expect(frames).toHaveLength(1);
+    frames.shift()?.(0);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(frames).toHaveLength(1);
+
+    frames.shift()?.(16);
+    await expect(resultPromise).resolves.toBe('painted');
+  });
+
+  it('does not reveal when the terminal is disposed between paint frames', async () => {
+    const frames: FrameRequestCallback[] = [];
+    let disposed = false;
+    const resultPromise = waitUntilTerminalPainted({
+      isDisposed: () => disposed,
+      scheduleFrame: (callback) => {
+        frames.push(callback);
+        return frames.length;
+      },
+    });
+
+    frames.shift()?.(0);
+    disposed = true;
+    await expect(resultPromise).resolves.toBe('disposed');
+    expect(frames).toHaveLength(0);
   });
 });

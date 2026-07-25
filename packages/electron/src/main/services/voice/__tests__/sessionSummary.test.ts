@@ -121,8 +121,21 @@ describe('getSessionSummaryForVoice', () => {
     expect(out.summary).toContain('Which theme should be the default?');
     expect(out.summary).toContain('options: Dark, Light');
     expect(out.details?.pendingPrompts).toHaveLength(1);
+    expect(out.summary?.trim().endsWith(
+      '- Question: Which theme should be the default? (options: Dark, Light)',
+    )).toBe(true);
     // The resolved permission prompt is excluded.
     expect(out.summary).not.toContain('rm -rf build');
+  });
+
+  it('does not add a waiting-for-input section when no question is pending', async () => {
+    findWindowByWorkspace.mockReturnValue(makeWindow({ 'sess-1': SESSION }));
+
+    const out = await getSessionSummaryForVoice(WS, 'sess-1');
+
+    expect(out.success).toBe(true);
+    expect(out.summary).not.toContain('waiting for your input');
+    expect(out.details?.pendingPrompts).toBeUndefined();
   });
 
   it('falls back to resolving a session TITLE the voice model passed as session_id', async () => {

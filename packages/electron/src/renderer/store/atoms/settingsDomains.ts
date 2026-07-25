@@ -6,7 +6,8 @@ export interface PersonalAccountSummary {
   personalUserId: string | null;
   email: string | null;
   userName?: string;
-  isPrimary: boolean;
+  isSyncAccount: boolean;
+  sessionStatus: 'active' | 'expired';
 }
 
 export interface PersonalSyncProfileSummary {
@@ -21,7 +22,14 @@ export interface OrganizationDirectoryEntry {
   role: string;
   membershipType?: string;
   sourcePersonalOrgId?: string;
+  owningPersonalOrgId?: string | null;
   sourceEmail?: string | null;
+  /** Project registry for the org; absent on snapshots from older workers. */
+  projects?: Array<{ projectId: string; name: string | null; slug: string | null }>;
+  /** Every signed-in account that resolved a membership in this org. */
+  accountBindings?: Array<{ personalOrgId: string; teamMemberId: string }>;
+  /** Account chosen from the explicit local binding — the one whose JWT this org uses. */
+  boundPersonalOrgId?: string | null;
 }
 
 // These domains deliberately do not reference each other. Switching a personal
@@ -34,4 +42,3 @@ export const projectSettingsContextAtom = atom<ProjectSettingsTarget | undefined
 export const usePersonalAccounts = () => useAtom(personalAccountsAtom);
 export const usePersonalSyncProfiles = () => useAtom(personalSyncProfilesAtom);
 export const useOrganizationDirectory = () => useAtom(organizationDirectoryAtom);
-

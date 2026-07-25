@@ -42,6 +42,7 @@ import {
   $isParagraphNode,
   $isRangeSelection,
   $isTextNode,
+  COLLABORATION_TAG,
   COMMAND_PRIORITY_LOW,
   KEY_TAB_COMMAND,
   defineExtension,
@@ -62,12 +63,19 @@ import {
   serializeEmbedAttrs,
 } from '../../plugins/EmbedPlugin/embedAttrs';
 import {
+  getEmbeddableExtensions,
   isEmbeddableUrl,
   subscribeToEmbeddableExtensionsChanges,
 } from '../../plugins/EmbedPlugin/embeddableExtensions';
 import { setExtensionContributions } from '../extensionContributionsStore';
 
 const NAME = '@nimbalyst/editor/embed';
+
+/**
+ * Trailing window for collapsing a burst of remote collaboration
+ * transactions into one tree walk.
+ */
+const COLLAB_RESCAN_DEBOUNCE_MS = 250;
 
 function isEmptyTextNode(node: LexicalNode): boolean {
   return $isTextNode(node) && node.getTextContent() === '';
@@ -92,10 +100,11 @@ function $upgradeParagraphIsolatedLinkToEmbed(linkNode: LinkNode): void {
   if (!$isLinkNode(linkNode)) return;
 
   const url = linkNode.getURL();
-  if (!isEmbeddableUrl(url)) return;
+  const title = linkNode.getTitle() ?? '';
+  const attrs = parseEmbedAttrs(title);
+  if (!isEmbeddableUrl(url, attrs.embedType)) return;
 
   // Respect explicit user opt-out (set by the Tab-downgrade path).
-  const title = linkNode.getTitle() ?? '';
   if (isEmbedOptOut(title)) return;
 
   const parent = linkNode.getParent();
@@ -108,8 +117,6 @@ function $upgradeParagraphIsolatedLinkToEmbed(linkNode: LinkNode): void {
   }
 
   const label = linkNode.getTextContent();
-  const attrs = parseEmbedAttrs(title);
-
   const embedNode = $createEmbeddedFileNode({
     src: url,
     label,
@@ -129,7 +136,9 @@ function $upgradeParagraphIsolatedLinkToEmbed(linkNode: LinkNode): void {
 function $upgradeLinkToEmbed(linkNode: LinkNode): boolean {
   if (!$isLinkNode(linkNode)) return false;
   const url = linkNode.getURL();
-  if (!isEmbeddableUrl(url)) return false;
+  const title = linkNode.getTitle() ?? '';
+  const attrs = parseEmbedAttrs(title);
+  if (!isEmbeddableUrl(url, attrs.embedType)) return false;
 
   const parent = linkNode.getParent();
   if (!parent || !$isParagraphNode(parent)) return false;
@@ -139,8 +148,6 @@ function $upgradeLinkToEmbed(linkNode: LinkNode): boolean {
     return false;
   }
 
-  const title = linkNode.getTitle() ?? '';
-  const attrs = parseEmbedAttrs(title);
   // Clear the opt-out, then upgrade.
   delete attrs.embed;
 
@@ -229,10 +236,45 @@ function $rescanForEmbedUpgrade(): void {
 export const EmbedExtension = defineExtension({
   name: NAME,
   nodes: [EmbeddedFileNode],
-  register: (editor: LexicalEditor) =>
-    mergeRegister(
+  register: (editor: LexicalEditor) => {
+    // A remote transaction arrives for every keystroke a collaborator types.
+    // `$rescanForEmbedUpgrade` walks the whole tree, so microtask coalescing
+    // is not enough -- a typing peer would trigger one full walk per batch.
+    // Collapse bursts onto a trailing timer instead, and skip entirely when
+    // no extension has registered an embeddable type (nothing can upgrade).
+    let collabRescanTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleCollabRescan = () => {
+      if (collabRescanTimer !== null) return;
+      if (getEmbeddableExtensions().length === 0) return;
+      collabRescanTimer = setTimeout(() => {
+        collabRescanTimer = null;
+        editor.update(() => {
+          $rescanForEmbedUpgrade();
+        });
+      }, COLLAB_RESCAN_DEBOUNCE_MS);
+    };
+
+    return mergeRegister(
+      () => {
+        if (collabRescanTimer !== null) clearTimeout(collabRescanTimer);
+        collabRescanTimer = null;
+      },
       editor.registerNodeTransform(LinkNode, (node) => {
         $upgradeParagraphIsolatedLinkToEmbed(node);
+      }),
+      // @lexical/yjs deliberately hydrates remote changes with
+      // `skipTransforms: true`. Reconcile after that transaction so a shared
+      // markdown link can still become a block embed on recipients.
+      //
+      // KNOWN LIMITATION: the upgrade replaces the paragraph, and that
+      // replacement syncs back to the Y.Doc. If two peers reconcile the same
+      // un-upgraded link before either's write arrives, Yjs keeps both
+      // inserts and the paragraph ends up duplicated. The debounce narrows
+      // the window but does not close it; converging on a single writer needs
+      // the embed import to happen at seed time (`MarkdownCollabContentAdapter`
+      // runs headless in main, where `EmbeddedFileNode` is not registered).
+      editor.registerUpdateListener(({ tags }) => {
+        if (tags.has(COLLABORATION_TAG)) scheduleCollabRescan();
       }),
       editor.registerCommand(
         KEY_TAB_COMMAND,
@@ -258,7 +300,8 @@ export const EmbedExtension = defineExtension({
           $rescanForEmbedUpgrade();
         });
       }),
-    ),
+    );
+  },
 });
 
 setExtensionContributions(NAME, {

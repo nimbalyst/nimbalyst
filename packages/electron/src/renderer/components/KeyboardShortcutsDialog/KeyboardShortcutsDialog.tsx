@@ -119,7 +119,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
       title: 'File',
       shortcuts: [
         { label: 'New File / New Session', shortcut: KeyboardShortcuts.file.newFile }, // shared/KeyboardShortcuts.ts:9 - Cmd+N
-        { label: 'New Session (any mode)', shortcut: KeyboardShortcuts.file.newSessionGlobal }, // shared/KeyboardShortcuts.ts:11 - Cmd+Shift+N
+        { label: 'Launch Session Popup', shortcut: KeyboardShortcuts.file.sessionLaunchPopup }, // shared/KeyboardShortcuts.ts:11 - Cmd+Shift+N
         { label: 'New Browser Tab', shortcut: KeyboardShortcuts.file.newBrowserTab }, // shared/KeyboardShortcuts.ts:12 - Cmd+Shift+B
         { label: 'Open File', shortcut: KeyboardShortcuts.file.open }, // shared/KeyboardShortcuts.ts:13 - Cmd+O
         { label: 'Save', shortcut: KeyboardShortcuts.file.save }, // shared/KeyboardShortcuts.ts:14 - Cmd+S
@@ -146,6 +146,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Approve Current Action', shortcut: KeyboardShortcuts.edit.approve }, // shared/KeyboardShortcuts.ts:35 - Cmd+Enter
         { label: 'Reject Current Action', shortcut: KeyboardShortcuts.edit.reject }, // shared/KeyboardShortcuts.ts:36 - Cmd+Shift+Backspace
         { label: 'Toggle Plan Mode (Claude Code)', shortcut: 'Shift+Tab' }, // AIInput.tsx - toggle between Plan/Agent mode
+        { label: 'Choose AI Model (AI input focused)', shortcut: 'Cmd+Shift+M' }, // AIInput.tsx
       ],
     },
     {
@@ -179,11 +180,21 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Session Quick Open', shortcut: KeyboardShortcuts.window.sessionQuickOpen }, // shared/KeyboardShortcuts.ts:77 - Cmd+L
         { label: 'Prompt Quick Open', shortcut: KeyboardShortcuts.window.promptQuickOpen }, // shared/KeyboardShortcuts.ts:78 - Cmd+Shift+L
         { label: 'Content Search', shortcut: KeyboardShortcuts.window.contentSearch }, // shared/KeyboardShortcuts.ts:79 - Cmd+Shift+F
-        { label: 'Global Search (semantic)', shortcut: KeyboardShortcuts.window.globalSearch }, // shared/KeyboardShortcuts.ts - Cmd+Shift+O
+        { label: 'Memory Search', shortcut: KeyboardShortcuts.window.globalSearch }, // shared/KeyboardShortcuts.ts - Cmd+Shift+O
         { label: 'Team Quick Open', shortcut: KeyboardShortcuts.window.teamQuickOpen }, // shared/KeyboardShortcuts.ts - Cmd+Shift+D
         { label: 'New Worktree', shortcut: KeyboardShortcuts.window.newWorktree }, // shared/KeyboardShortcuts.ts:81 - Cmd+Alt+W
         { label: 'Settings', shortcut: KeyboardShortcuts.window.aiModels }, // shared/KeyboardShortcuts.ts:82 - Cmd+,
         { label: 'Minimize', shortcut: KeyboardShortcuts.window.minimize }, // shared/KeyboardShortcuts.ts:83 - Cmd+M
+      ],
+    },
+    {
+      title: 'Tracker Grid',
+      shortcuts: [
+        { label: 'Move between cells', shortcut: 'Arrow keys / Tab' },
+        { label: 'Edit focused cell', shortcut: 'F2 or start typing' },
+        { label: 'Open focused item details', shortcut: 'Enter' },
+        { label: 'Commit edit / next row', shortcut: 'Enter (while editing)' },
+        { label: 'Cancel edit / close details', shortcut: 'Escape' },
       ],
     },
   ];

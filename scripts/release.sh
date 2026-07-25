@@ -107,6 +107,19 @@ git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION
 
 $COMMIT_NOTES"
 
+# Finalize the release tracker item, if there is one. The item is created early
+# as the "next release" bucket and carries no version or tag until now -- this
+# fills them in and flips it to `released`. Best-effort: a workspace with no
+# release item (or no running Nimbalyst for the CLI to talk to) must not fail
+# an otherwise-good release.
+if command -v nim >/dev/null 2>&1; then
+  if nim release finalize --version "$NEW_VERSION" --tag "v$NEW_VERSION" --channel alpha 2>/dev/null; then
+    echo "Updated the release tracker item."
+  else
+    echo "No release tracker item updated (none pending, or Nimbalyst is not running)."
+  fi
+fi
+
 echo ""
 echo "Release v$NEW_VERSION created successfully!"
 echo ""

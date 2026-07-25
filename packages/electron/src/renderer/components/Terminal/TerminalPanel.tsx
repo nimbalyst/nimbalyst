@@ -12,7 +12,11 @@ import { themeIdAtom } from '@nimbalyst/runtime/store';
 import { TerminalContextMenu } from './TerminalContextMenu';
 import { sanitizeScrollback, stripProblematicEscapeSequences, cleanScrollback } from './scrollbackSanitization';
 import { loadTerminalGhostty } from './ghosttyInstance';
-import { isElementMeasurable, waitUntilElementMeasurable } from './terminalVisibility';
+import {
+  isElementMeasurable,
+  waitUntilElementMeasurable,
+  waitUntilTerminalPainted,
+} from './terminalVisibility';
 import { canPersistTerminalRenderState } from './terminalRenderState';
 
 // Type for terminal API is defined in electron.d.ts
@@ -727,6 +731,15 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           terminal.registerLinkProvider(wrapProvider(new OSC8LinkProvider(terminal)));
           terminal.registerLinkProvider(wrapProvider(new UrlRegexProvider(terminal)));
 
+          // Keep the canvas masked until Ghostty has rendered the final restored
+          // viewport. Chunked replay intentionally yields to keep the UI
+          // responsive, but those yields otherwise expose every intermediate
+          // history position as a rapid visible scroll.
+          const paintResult = await waitUntilTerminalPainted({
+            isDisposed: () => disposed,
+          });
+          if (paintResult !== 'painted' || disposed) return;
+
           setIsInitialized(true);
           hasInitializedRef.current = true;
           scheduleRenderStatePersist();
@@ -865,8 +878,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           flex: 1,
           overflow: 'hidden',
           caretColor: 'transparent',
+          visibility: isInitialized ? 'visible' : 'hidden',
         }}
         data-testid="terminal-container"
+        data-ready={isInitialized}
         onContextMenu={handleContextMenu}
       />
 
@@ -929,6 +944,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             justifyContent: 'center',
             color: 'var(--nim-text-faint)',
             fontSize: '14px',
+            backgroundColor: 'var(--terminal-bg)',
+            zIndex: 1,
           }}
         >
           Initializing terminal...

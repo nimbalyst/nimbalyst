@@ -92,6 +92,9 @@ export function useOnboarding({
         if (data.referralSource.startsWith('ai:')) {
           personProperties.referral_source = 'ai';
           personProperties.referral_ai_detail = data.referralSource.substring('ai:'.length);
+        } else if (data.referralSource.startsWith('search:')) {
+          personProperties.referral_source = 'search';
+          personProperties.referral_search_detail = data.referralSource.substring('search:'.length);
         } else if (data.referralSource.startsWith('other:')) {
           personProperties.referral_source = 'other';
           personProperties.referral_other_detail = data.referralSource.substring('other:'.length);
@@ -122,10 +125,13 @@ export function useOnboarding({
         }
         if (data.referralSource) {
           // Split prefixed referrals into raw category + detail field so cohorts can filter
-          // on the bare category value (e.g. "ai", "other", "social").
+          // on the bare category value (e.g. "ai", "search", "other", "social").
           if (data.referralSource.startsWith('ai:')) {
             eventProps['referral_source'] = 'ai';
             eventProps['referral_ai_detail'] = data.referralSource.substring('ai:'.length);
+          } else if (data.referralSource.startsWith('search:')) {
+            eventProps['referral_source'] = 'search';
+            eventProps['referral_search_detail'] = data.referralSource.substring('search:'.length);
           } else if (data.referralSource.startsWith('other:')) {
             eventProps['referral_source'] = 'other';
             eventProps['referral_other_detail'] = data.referralSource.substring('other:'.length);

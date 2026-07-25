@@ -27,6 +27,8 @@ interface NewFileDialogProps {
   extensionFileTypes?: ExtensionFileType[];
   /** Callback when directory changes */
   onDirectoryChange?: (directory: string) => void;
+  /** File type selected when the dialog opens */
+  initialFileType?: NewFileType;
 }
 
 export const NewFileDialog: React.FC<NewFileDialogProps> = ({
@@ -37,6 +39,7 @@ export const NewFileDialog: React.FC<NewFileDialogProps> = ({
   onCreateFile,
   extensionFileTypes = [],
   onDirectoryChange,
+  initialFileType = 'markdown',
 }) => {
   const [fileName, setFileName] = useState('');
   const [error, setError] = useState('');
@@ -108,11 +111,11 @@ export const NewFileDialog: React.FC<NewFileDialogProps> = ({
     if (isOpen) {
       setFileName('');
       setError('');
-      setSelectedFileType('markdown');
+      setSelectedFileType(initialFileType);
       setShowFolderPicker(false);
       setTimeout(() => inputRef.current?.focus(), 100);
     }
-  }, [isOpen]);
+  }, [initialFileType, isOpen]);
 
   // Close folder picker when clicking outside
   useEffect(() => {
@@ -219,23 +222,36 @@ export const NewFileDialog: React.FC<NewFileDialogProps> = ({
 
         {/* File Type Selector */}
         <div className="new-file-field mb-4">
-          <label className="block mb-1.5 text-[13px] font-medium text-nim-muted">
+          <label
+            htmlFor="new-file-type"
+            className="block mb-1.5 text-[13px] font-medium text-nim-muted"
+          >
             Type
           </label>
-          <select
-            value={selectedFileType}
-            onChange={(e) => {
-              setSelectedFileType(e.target.value as NewFileType);
-              setError('');
-            }}
-            className="new-file-select w-full py-2 px-3 pr-8 text-sm rounded cursor-pointer appearance-none focus:outline-none bg-nim-secondary border border-nim text-nim bg-[url('data:image/svg+xml,%3Csvg_xmlns=%27http://www.w3.org/2000/svg%27_width=%2712%27_height=%2712%27_viewBox=%270_0_12_12%27%3E%3Cpath_fill=%27%23969696%27_d=%27M3_4.5L6_7.5L9_4.5%27/%3E%3C/svg%3E')] bg-no-repeat bg-[right_12px_center]"
-          >
-            {fileTypeOptions.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          <div className="new-file-type-select-wrapper relative">
+            <select
+              id="new-file-type"
+              value={selectedFileType}
+              onChange={(e) => {
+                setSelectedFileType(e.target.value as NewFileType);
+                setError('');
+              }}
+              className="new-file-select w-full appearance-none rounded border border-nim bg-nim-secondary py-2 pl-3 pr-10 text-sm text-nim cursor-pointer focus:outline-none focus:border-nim-focus"
+            >
+              {fileTypeOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <span
+              className="new-file-type-chevron pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center text-nim-faint"
+              data-testid="new-file-type-chevron"
+              aria-hidden="true"
+            >
+              <MaterialSymbol icon="expand_more" size={18} />
+            </span>
+          </div>
         </div>
 
         {/* Location Selector */}

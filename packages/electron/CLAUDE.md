@@ -32,7 +32,7 @@ Renderers cannot access Node.js APIs directly — use IPC to request main-proces
 ### Preload API
 - **Location**: `src/preload/index.ts`
 - **Exposed as**: `window.electronAPI` (NOT `window.api`)
-- **Generic methods**: `invoke`, `send`, `on`, `off`
+- **Generic methods**: `invoke`, `send`, `on` (returns an unsubscribe closure — there is no `off`, see [/docs/IPC_LISTENERS.md](/docs/IPC_LISTENERS.md))
 - Renderer services use these to talk to main-process services.
 
 ### Document Service

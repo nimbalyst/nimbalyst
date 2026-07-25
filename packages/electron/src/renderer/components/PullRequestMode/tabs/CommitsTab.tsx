@@ -61,7 +61,7 @@ export function CommitsTab({ workspaceId, remote, pr, refreshToken }: CommitsTab
     <div className="pr-commits-tab flex flex-col flex-1 min-h-0 overflow-y-auto" data-testid="pr-commits-tab">
       {loading && commits.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-6 text-nim-muted text-sm">
-          <div className="spinner w-4 h-4 border-[2px] border-nim-secondary border-t-nim-accent rounded-full animate-spin" />
+          <div className="spinner w-4 h-4 border-[2px] border-nim-secondary border-t-nim-primary rounded-full animate-spin" />
           Loading commits…
         </div>
       ) : error ? (

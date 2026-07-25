@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { getAIProviderOverridesMock } = vi.hoisted(() => ({
+const { getAIProviderOverridesMock, resolveProjectPathMock } = vi.hoisted(() => ({
   getAIProviderOverridesMock: vi.fn(),
+  resolveProjectPathMock: vi.fn((workspacePath: string) => workspacePath),
 }));
 
 vi.mock('../store', async () => {
@@ -11,6 +12,10 @@ vi.mock('../store', async () => {
     getAIProviderOverrides: getAIProviderOverridesMock,
   };
 });
+
+vi.mock('../workspaceDetection', () => ({
+  resolveProjectPath: resolveProjectPathMock,
+}));
 
 import { mergeAISettings, GlobalAISettings } from '../aiSettingsMerge';
 import { normalizeAIProviderOverrides } from '../store';
@@ -28,6 +33,8 @@ const baseGlobal: GlobalAISettings = {
 describe('mergeAISettings -- customClaudeCodePath', () => {
   beforeEach(() => {
     getAIProviderOverridesMock.mockReset();
+    resolveProjectPathMock.mockReset();
+    resolveProjectPathMock.mockImplementation((workspacePath: string) => workspacePath);
   });
 
   it('inherits the global path when no project override is set', () => {
@@ -70,6 +77,7 @@ describe('mergeAISettings -- customClaudeCodePath', () => {
   });
 
   it('inherits the parent project override when the workspace path is a worktree', () => {
+    resolveProjectPathMock.mockReturnValue('/workspace/project');
     getAIProviderOverridesMock.mockImplementation((workspacePath: string) => {
       if (workspacePath === '/workspace/project') {
         return { customClaudeCodePath: '/opt/project/claude' };

@@ -11,9 +11,9 @@ import {
 } from '@nimbalyst/runtime/ai/server/types';
 import type { UpdateSessionMetadataPayload } from '@nimbalyst/runtime/ai/adapters/sessionStore';
 import path from "path";
-import { existsSync } from "fs";
 import { BrowserWindow } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
+import { getCachedUncommittedFiles } from '../utils/gitUncommittedFiles';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
 import type { SessionCreateResult } from '../../shared/ipc/types';
 import { TrayManager } from '../tray/TrayManager';
@@ -26,6 +26,8 @@ import {
 import { enrichTranscriptMessagesWithToolCallDiffs } from '../services/TranscriptToolCallEnricher';
 import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence';
 import { normalizeSessionPhaseMetadataUpdate } from '../services/session/sessionPhaseTransition';
+import { destroyProviderForArchivedSession } from '../services/ai/archiveSessionProviderLifecycle';
+import { resolveSessionModelSelection } from '../services/ai/sessionModelSelection';
 
 // Initialize session manager
 const sessionManager = new SessionManager();
@@ -33,21 +35,6 @@ const analyticsService = AnalyticsService.getInstance();
 
 // Track if handlers are registered to prevent double registration
 let handlersRegistered = false;
-
-// ============================================================
-// Git Status Cache
-// Caches uncommitted file sets to avoid repeated git status calls
-// when multiple components request session lists simultaneously.
-// In-flight dedup so concurrent callers share one git status invocation.
-// ============================================================
-interface GitStatusCache {
-    uncommittedFiles: Set<string>;
-    timestamp: number;
-}
-
-const gitStatusCache = new Map<string, GitStatusCache>();
-const gitStatusInFlight = new Map<string, Promise<Set<string>>>();
-const GIT_STATUS_CACHE_TTL_MS = 5000; // 5 second cache
 
 // ============================================================
 // Session Files Cache
@@ -218,54 +205,6 @@ export function invalidateSessionFilesCache(workspacePath: string): void {
     sessionEditorsCache.delete(workspacePath);
 }
 
-/**
- * Get uncommitted files with caching.
- * Avoids spawning git status multiple times in rapid succession.
- */
-async function getCachedUncommittedFiles(workspacePath: string): Promise<Set<string>> {
-    // Non-git workspaces have no uncommitted files
-    if (!existsSync(path.join(workspacePath, '.git'))) {
-        return new Set();
-    }
-
-    const cached = gitStatusCache.get(workspacePath);
-    if (cached && Date.now() - cached.timestamp < GIT_STATUS_CACHE_TTL_MS) {
-        return cached.uncommittedFiles;
-    }
-
-    const inFlight = gitStatusInFlight.get(workspacePath);
-    if (inFlight) return inFlight;
-
-    const queryPromise = (async () => {
-        const simpleGit = (await import('simple-git')).default;
-        const git = simpleGit(workspacePath);
-        const status = await git.status();
-
-        const uncommittedFiles = new Set([
-            ...status.modified,
-            ...status.created,
-            ...status.not_added,
-            ...status.deleted,
-            ...status.renamed.map(r => r.to),
-            ...status.staged
-        ]);
-
-        gitStatusCache.set(workspacePath, {
-            uncommittedFiles,
-            timestamp: Date.now()
-        });
-
-        return uncommittedFiles;
-    })();
-
-    gitStatusInFlight.set(workspacePath, queryPromise);
-    try {
-        return await queryPromise;
-    } finally {
-        gitStatusInFlight.delete(workspacePath);
-    }
-}
-
 export async function registerSessionHandlers() {
     if (handlersRegistered) {
         console.log('[SessionHandlers] Handlers already registered, skipping');
@@ -286,18 +225,9 @@ export async function registerSessionHandlers() {
         try {
             const { session, workspaceId } = payload;
 
-            // Extract and sync provider from model ID if model follows "provider:model" format
-            let provider = session.provider as AIProviderType;
-            let model = session.model;
-
-            if (model) {
-                const modelId = ModelIdentifier.tryParse(model);
-                if (modelId) {
-                    provider = modelId.provider;
-                }
-            } else {
-                // No model provided - get default for the provider using ModelIdentifier
-                model = ModelIdentifier.getDefaultModelId(provider);
+            const requestedProvider = session.provider as AIProviderType;
+            const { provider, model } = resolveSessionModelSelection(requestedProvider, session.model);
+            if (!session.model) {
                 console.log(`[SessionHandlers] No model provided, using default: ${model}`);
             }
 
@@ -306,6 +236,7 @@ export async function registerSessionHandlers() {
                 provider,
                 model,
                 title: session.title || 'Untitled',
+                mode: session.mode || 'agent',
                 workspaceId: workspaceId,
                 providerConfig: session.providerConfig,
                 providerSessionId: session.providerSessionId,
@@ -350,6 +281,7 @@ export async function registerSessionHandlers() {
 
     // Delete session
     safeHandle('session:delete', async (event, sessionId: string) => {
+        ProviderFactory.destroyProvider(sessionId);
         await sessionManager.deleteSession(sessionId);
     });
 
@@ -422,6 +354,16 @@ export async function registerSessionHandlers() {
             }
 
             await AISessionsRepository.updateMetadata(sessionId, updates);
+
+            if (updates.isArchived === true) {
+                destroyProviderForArchivedSession(
+                    sessionId,
+                    (id) => ProviderFactory.destroyProvider(id),
+                    (id, cleanupError) => {
+                        console.error(`[SessionHandlers] Failed to destroy provider for archived session ${id}:`, cleanupError);
+                    }
+                );
+            }
 
             // Notify renderer windows so session list state stays in sync without waiting for full refresh.
             // This covers model/provider/title updates from SessionTranscript and similar paths.
@@ -715,19 +657,10 @@ export async function registerSessionHandlers() {
             const sessionId = crypto.randomUUID();
             console.log(`[SessionHandlers] Creating child session ${sessionId} for parent ${parentSessionId}`);
 
-            // Extract and sync provider from model ID if model follows "provider:model" format
-            // This prevents mismatches where provider and model come from different sources
-            let provider = rawProvider;
-            let model: string;
-            if (providedModel) {
-                const modelId = ModelIdentifier.tryParse(providedModel);
-                if (modelId) {
-                    provider = modelId.provider;
-                }
-                model = providedModel;
-            } else {
-                model = ModelIdentifier.getDefaultModelId(provider as AIProviderType);
-            }
+            const { provider, model } = resolveSessionModelSelection(
+                rawProvider as AIProviderType,
+                providedModel,
+            );
 
             const createPayload = {
                 id: sessionId,
@@ -1360,7 +1293,7 @@ export async function registerSessionHandlers() {
                                     item: {
                                         id: codexLookupId.itemId,
                                         type: 'mcp_tool_call',
-                                        // git_commit_proposal is served by the eager core `nimbalyst`.
+                                        // git_commit_proposal is served by the core `nimbalyst` endpoint.
                                         server: 'nimbalyst',
                                         tool: 'developer_git_commit_proposal',
                                         result: {

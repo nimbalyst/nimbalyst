@@ -51,6 +51,9 @@ export interface TeamSyncConfig {
   /** WebSocket server URL (e.g., wss://sync.nimbalyst.com) */
   serverUrl: string;
 
+  /** Optional host WebSocket factory (Electron main and other non-DOM hosts). */
+  createWebSocket?: (url: string) => WebSocket;
+
   /** Function to get fresh JWT for WebSocket auth */
   getJwt: () => Promise<string>;
 
@@ -106,6 +109,12 @@ export interface TeamSyncConfig {
    * re-register the recovered title as plaintext via `backfillLegacyTitles()`.
    */
   legacyOrgKeys?: CryptoKey[];
+
+  /**
+   * Disable the provider's fire-and-forget title repair when a host needs to
+   * await and verify the backfill explicitly (for migration finalization).
+   */
+  autoBackfillLegacyTitles?: boolean;
 
   /**
    * Fingerprint of the current org key (`SHA-256(rawKey).slice(0,32)`),
@@ -224,6 +233,12 @@ export interface DocIndexEntry {
   documentId: string;
   title: string;
   documentType: string;
+  /** Optional V2 type metadata; absent on legacy rows. */
+  metadataVersion?: 2;
+  /** Exact normalized suffix, including the leading dot. */
+  fileExtension?: string;
+  /** Stable owning editor id (built-in or extension id). */
+  editorId?: string;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
@@ -238,6 +253,8 @@ export interface DocIndexEntry {
    * root level (also legacy rows, whose path still lives in the title).
    */
   parentFolderId?: string | null;
+  /** Millisecond epoch when moved to Trash; null/undefined means active. */
+  trashedAt?: number | null;
   /**
    * True when the server returned a doc index entry whose encrypted title
    * could not be decrypted with the current org key. Preserved in the list
@@ -245,6 +262,15 @@ export interface DocIndexEntry {
    * silently; the UI should render it as locked / non-interactive.
    */
   decryptFailed?: boolean;
+}
+
+/** Explicit type metadata written by V2 shared-document creators. */
+export interface SharedDocumentTypeMetadataV2 {
+  metadataVersion: 2;
+  /** Exact normalized suffix, including the leading dot. */
+  fileExtension: string;
+  /** Stable owning editor id (built-in or extension id). */
+  editorId: string;
 }
 
 /** Decrypted folder node for UI consumption (first-class folders). */

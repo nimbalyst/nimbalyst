@@ -21,3 +21,14 @@ export {
   defaultRestoreRevisionSnapshot,
 } from './snapshot';
 export { exportCollabRecoveryPlaintext } from './recovery';
+export {
+  COLLAB_CONVERSION_ORIGIN,
+  handleCollabConversionRequest,
+  noCodecError,
+  type CollabCodecMetadata,
+  type CollabConversionOp,
+  type CollabConversionRequest,
+  type CollabConversionRequestBase,
+  type CollabConversionRequestInput,
+  type CollabConversionResponse,
+} from './conversionHost';

@@ -16,6 +16,8 @@ import type { JSX } from 'react';
 import {
   $applyNodeReplacement,
   DecoratorNode,
+  type DOMConversionMap,
+  type DOMConversionOutput,
   type DOMExportOutput,
   type EditorConfig,
   type LexicalEditor,
@@ -28,7 +30,7 @@ import { addClassNamesToElement } from '@lexical/utils';
 import React from 'react';
 
 import { getEmbedPluginCallbacks } from './EmbedPluginCallbacks';
-import { serializeEmbedAttrs } from './embedAttrs';
+import { parseEmbedAttrs, serializeEmbedAttrs } from './embedAttrs';
 
 export type EmbedAttrs = Record<string, string>;
 
@@ -114,11 +116,28 @@ export class EmbeddedFileNode extends DecoratorNode<JSX.Element> {
     const a = document.createElement('a');
     a.href = this.__src;
     a.textContent = this.__label || this.__src;
+    a.setAttribute('data-lexical-embedded-file', 'true');
     const title = serializeEmbedAttrs(this.__attrs);
     if (title) {
       a.title = title;
     }
     return { element: a };
+  }
+
+  static importDOM(): DOMConversionMap | null {
+    return {
+      a: (domNode: HTMLElement) => {
+        if (
+          domNode.getAttribute('data-lexical-embedded-file') !== 'true'
+        ) {
+          return null;
+        }
+        return {
+          conversion: $convertEmbeddedFileElement,
+          priority: 2,
+        };
+      },
+    };
   }
 
   /**
@@ -166,6 +185,24 @@ export class EmbeddedFileNode extends DecoratorNode<JSX.Element> {
       />
     );
   }
+}
+
+function $convertEmbeddedFileElement(
+  domNode: Node,
+): DOMConversionOutput | null {
+  const anchor = domNode as HTMLAnchorElement;
+  if (anchor.getAttribute('data-lexical-embedded-file') !== 'true') {
+    return null;
+  }
+
+  const src = anchor.getAttribute('href') ?? '';
+  return {
+    node: $createEmbeddedFileNode({
+      src,
+      label: anchor.textContent || src,
+      attrs: parseEmbedAttrs(anchor.getAttribute('title')),
+    }),
+  };
 }
 
 /**

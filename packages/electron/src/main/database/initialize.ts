@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import path from 'path';
 import { database, legacyPgliteDatabase } from './PGLiteDatabaseWorker';
+import { CORRUPTED_METADATA_WIPE_SQL } from './corruptedMetadataWipe';
 import { resolveBackend } from './sqlite/BackendSelector';
 import { SQLiteDatabaseProxy } from './sqlite/SQLiteDatabaseProxy';
 import { logger } from '../utils/logger';
@@ -222,11 +223,11 @@ export async function initializeDatabase(): Promise<SessionStore> {
       // up an escaped char (backslash + quote = two bytes) as a single
       // value -- so an actively-corrupted row sat through restart unwiped.
       // SQL `%` is a multi-char wildcard so this catches any value shape.
+      // The query casts `metadata::text` before `LIKE`/`LENGTH` because the
+      // column is JSONB on PGLite (raw `LIKE` -> `jsonb ~~ unknown`); see
+      // corruptedMetadataWipe.ts. GitHub #926 / NIM-1829.
       const wipeResult = await database.query<{ id: string; len: number }>(
-        `UPDATE ai_sessions
-           SET metadata = '{}'
-         WHERE metadata LIKE '{"0":%"1":%"2":%'
-         RETURNING id, LENGTH(metadata) AS len`,
+        CORRUPTED_METADATA_WIPE_SQL,
       );
       if (wipeResult.rows.length > 0) {
         const sizes = wipeResult.rows

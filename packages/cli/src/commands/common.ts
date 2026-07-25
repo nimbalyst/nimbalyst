@@ -110,8 +110,13 @@ export function parseFields(raw: string[]): Record<string, unknown> {
     const eq = entry.indexOf('=');
     if (eq < 0) throw usageError(`--field expects key=value, got "${entry}"`);
     const key = entry.slice(0, eq).trim();
-    const value = entry.slice(eq + 1);
-    out[key] = coerceScalar(value);
+    const value = coerceScalar(entry.slice(eq + 1));
+    if (key in out) {
+      const prev = out[key];
+      out[key] = Array.isArray(prev) ? [...prev, value] : [prev, value];
+    } else {
+      out[key] = value;
+    }
   }
   return out;
 }

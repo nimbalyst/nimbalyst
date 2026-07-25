@@ -144,6 +144,7 @@ export function createEmbeddedFileHost(
     registerMenuItems: (_items: EditorMenuItem[]) => {},
     registerEditorAPI: () => {},
     setEditorContext: (_ctx: EditorContext | null) => {},
+    setEditorContextItems: () => {},
 
     // Storage is a non-persistent stub. Per-embed preferences are out of
     // scope for Phase 1; if/when extensions need them we can route to the

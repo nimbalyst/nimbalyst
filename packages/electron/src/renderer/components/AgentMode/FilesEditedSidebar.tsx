@@ -66,7 +66,7 @@ interface FilesEditedSidebarProps {
   onFileClick: (filePath: string) => void;
   /** Callback to open file in Files mode (switches to Files mode and opens the file) */
   onOpenInFilesMode?: (filePath: string) => void;
-  width?: number;
+  width?: number | string;
   /** The worktree ID if this is a worktree session */
   worktreeId?: string | null;
   /** The worktree path if this is a worktree session */

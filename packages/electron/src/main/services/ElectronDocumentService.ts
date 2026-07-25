@@ -2,7 +2,7 @@ import { BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, app, shell }
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import {
+import type {
   Document,
   DocumentService,
   DocumentOpenOptions,
@@ -15,6 +15,7 @@ import {
 import crypto from 'crypto';
 import { getCurrentIdentity } from './TrackerIdentityService';
 import { applyCommentMutation, type CommentMutation } from './tracker/commentMutations';
+import { appendActivity } from './tracker/trackerActivity';
 import { extractItemCustomFields } from './tracker/trackerRowCustomFields';
 import {
   getBacklinks as getRelationshipBacklinks,
@@ -23,7 +24,7 @@ import {
 } from './tracker/trackerRelationshipIndexStore';
 import { propagateInverseRelationships } from './tracker/inverseRelationshipWrites';
 import { applyRelationshipFieldWrites } from './tracker/relationshipFieldWrite';
-import { nestRelationshipFieldsIntoCustomFields } from './tracker/relationshipFieldStorage';
+import { nestRelationshipFieldsIntoCustomFields, readStoredFieldValue } from './tracker/relationshipFieldStorage';
 import { projectionWouldChange } from './tracker/projectionUpdateGuard';
 import { extractFrontmatter, extractCommonFields } from '../utils/frontmatterReader';
 import { VIRTUAL_DOCS, isVirtualPath } from '@nimbalyst/runtime';
@@ -1848,12 +1849,31 @@ export class ElectronDocumentService implements DocumentService {
 
     // Stamp lastModifiedBy with current identity
     // getCurrentIdentity imported statically at top of file
-    data.lastModifiedBy = getCurrentIdentity(row.workspace);
+    const modifierIdentity = getCurrentIdentity(row.workspace);
+    data.lastModifiedBy = modifierIdentity;
+
+    const changes: Record<string, { from: any; to: any }> = {};
 
     // Merge remaining updates into data (skip typeTags since it's a column)
     for (const [key, value] of Object.entries(updates)) {
-      if (key === 'typeTags') continue;
+      if (key === 'typeTags') {
+        changes[key] = { from: row.type_tags, to: value };
+        continue;
+      }
+      changes[key] = { from: readStoredFieldValue(data, key), to: value };
       data[key] = value;
+    }
+
+    for (const [field, change] of Object.entries(changes)) {
+      const action = field === 'status' ? 'status_changed'
+        : field === 'archived' ? 'archived'
+        : field === 'type' ? 'type_changed'
+        : 'updated';
+      appendActivity(data, modifierIdentity, action, {
+        field,
+        oldValue: change.from != null ? String(change.from) : undefined,
+        newValue: change.to != null ? String(change.to) : undefined,
+      });
     }
 
     const writtenFields = new Set(Object.keys(updates).filter((key) => key !== 'typeTags'));
@@ -1864,15 +1884,13 @@ export class ElectronDocumentService implements DocumentService {
     // survives the sync re-serialization and inverse-write reads find it (NIM-1305).
     nestRelationshipFieldsIntoCustomFields(data, globalRegistry.get(row.type)?.fields ?? [], { writtenFields });
 
-    await database.query(
-      `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
+    const result = await database.query<any>(
+      `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2 RETURNING *`,
       [JSON.stringify(data), row.id]
     );
-
-    const result = await database.query<any>(
-      `SELECT * FROM tracker_items WHERE id = $1`,
-      [row.id]
-    );
+    if (result.rows.length === 0) {
+      throw new Error(`Tracker item not found: ${itemId}`);
+    }
     const updated = this.rowToTrackerItem(result.rows[0]);
 
     const changeEvent: TrackerItemChangeEvent = {
@@ -2140,6 +2158,9 @@ export class ElectronDocumentService implements DocumentService {
       throw new Error(`Tracker item not found: ${itemId}`);
     }
     const contentJson = content != null ? JSON.stringify(content) : null;
+    const data = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+    const modifierIdentity = getCurrentIdentity(row.workspace);
+    appendActivity(data, modifierIdentity, 'updated', { field: 'content' });
     // Phase 4b: every body save bumps `body_version` and writes a row
     // into `tracker_body_cache` keyed by `(item_id, body_version)`. The
     // bumped version travels through the metadata sync envelope so
@@ -2150,14 +2171,15 @@ export class ElectronDocumentService implements DocumentService {
     // tracker_items.body_version bumped but tracker_body_cache without
     // the new row -- on next save the bump re-fires and the cache row
     // gets a fresher version anyway, so we don't end up wedged.
-    const updateResult = await database.query<{ body_version: string | number | null }>(
+    const updateResult = await database.query<any>(
       `UPDATE tracker_items
          SET content = $1,
+             data = $2,
              body_version = COALESCE(body_version, 0) + 1,
              updated = NOW()
-       WHERE id = $2
-       RETURNING body_version`,
-      [contentJson, row.id]
+       WHERE id = $3
+       RETURNING *`,
+      [contentJson, JSON.stringify(data), row.id]
     );
     const newBodyVersion = Number(updateResult.rows[0]?.body_version ?? 0);
 
@@ -2173,12 +2195,8 @@ export class ElectronDocumentService implements DocumentService {
       );
     }
 
-    const result = await database.query<any>(
-      `SELECT * FROM tracker_items WHERE id = $1`,
-      [row.id]
-    );
-    if (result.rows.length > 0) {
-      const item = this.rowToTrackerItem(result.rows[0]);
+    if (updateResult.rows.length > 0) {
+      const item = this.rowToTrackerItem(updateResult.rows[0]);
       const changeEvent: TrackerItemChangeEvent = {
         added: [],
         updated: [item],
@@ -2327,22 +2345,28 @@ export class ElectronDocumentService implements DocumentService {
       }
     }
 
-    if (archive) {
-      await database.query(
-        `UPDATE tracker_items SET archived = TRUE, archived_at = NOW(), updated = NOW() WHERE id = $1`,
-        [row.id]
-      );
-    } else {
-      await database.query(
-        `UPDATE tracker_items SET archived = FALSE, archived_at = NULL, updated = NOW() WHERE id = $1`,
-        [row.id]
-      );
+    const data = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+    const wasArchived = Boolean(row.archived);
+    if (wasArchived !== archive) {
+      appendActivity(data, getCurrentIdentity(row.workspace), 'archived', {
+        field: 'archived',
+        oldValue: String(wasArchived),
+        newValue: String(archive),
+      });
     }
 
-    const result = await database.query<any>(
-      `SELECT * FROM tracker_items WHERE id = $1`,
-      [row.id]
-    );
+    let result;
+    if (archive) {
+      result = await database.query<any>(
+        `UPDATE tracker_items SET data = $1, archived = TRUE, archived_at = NOW(), updated = NOW() WHERE id = $2 RETURNING *`,
+        [JSON.stringify(data), row.id]
+      );
+    } else {
+      result = await database.query<any>(
+        `UPDATE tracker_items SET data = $1, archived = FALSE, archived_at = NULL, updated = NOW() WHERE id = $2 RETURNING *`,
+        [JSON.stringify(data), row.id]
+      );
+    }
     if (result.rows.length === 0) {
       throw new Error(`Tracker item not found: ${itemId}`);
     }
@@ -4033,7 +4057,7 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
       // getCurrentIdentity imported statically at top of file
       const authorIdentity = getCurrentIdentity(row.rows[0].workspace);
 
-      const comments = data.comments || [];
+      const comments = data.comments || data.customFields?.comments || [];
       const commentId = `comment_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       comments.push({
         id: commentId,
@@ -4044,17 +4068,14 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         deleted: false,
       });
       data.comments = comments;
+      if (data.customFields?.comments) {
+        delete data.customFields.comments;
+        if (Object.keys(data.customFields).length === 0) delete data.customFields;
+      }
       data.lastModifiedBy = authorIdentity;
 
       // Record activity for the comment
-      const activity = data.activity || [];
-      activity.push({
-        id: `activity_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        authorIdentity,
-        action: 'commented',
-        timestamp: Date.now(),
-      });
-      data.activity = activity.length > 100 ? activity.slice(-100) : activity;
+      appendActivity(data, authorIdentity, 'commented');
 
       await database.query(
         `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,
@@ -4084,7 +4105,7 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
       if (row.rows.length === 0) return { success: false, error: 'Item not found' };
 
       const data = typeof row.rows[0].data === 'string' ? JSON.parse(row.rows[0].data) : row.rows[0].data || {};
-      const comments = data.comments || [];
+      const comments = data.comments || data.customFields?.comments || [];
 
       // NIM-360: edit/delete are author-only. Build the requested mutation
       // (delete wins over edit if both are set) and let the pure guard enforce
@@ -4104,6 +4125,20 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
       }
       data.comments = result.comments;
       data.lastModifiedBy = actor;
+      if (data.customFields?.comments) {
+        delete data.customFields.comments;
+        if (Object.keys(data.customFields).length === 0) delete data.customFields;
+      }
+      appendActivity(
+        data,
+        actor,
+        mutation.kind === 'edit' ? 'comment_updated' : 'comment_deleted',
+        {
+          field: 'comment',
+          oldValue: result.previous.body,
+          newValue: mutation.kind === 'edit' ? result.comment.body : undefined,
+        },
+      );
 
       await database.query(
         `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,

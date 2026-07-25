@@ -41,6 +41,10 @@ export type {
   // Panel types
   PanelContribution,
   SettingsPanelContribution,
+  SettingsRouteContribution,
+  ExtensionSettingsRouteScope,
+  SettingsRouteProjectTarget,
+  LoadedExtensionSettingsRoute,
   LoadedPanel,
   PanelHostProps,
   PanelGutterButtonProps,
@@ -71,6 +75,7 @@ export {
   ExtensionLoader,
   getExtensionLoader,
   initializeExtensions,
+  shouldDeferExtensionBundle,
   setEnabledStateProvider,
   setConfigurationServiceProvider,
 } from './ExtensionLoader';
@@ -115,6 +120,7 @@ export type {
   EditorHostProps,
   EditorMenuItem,
   EditorContext,
+  EditorContextItem,
   DiffConfig,
   DiffResult,
   CollaborationContext,
@@ -129,6 +135,10 @@ export type {
   ProjectFileActor,
   EditorHostFileSystem,
 } from './editorHost';
+
+// Editor Visibility
+export { createElementVisibilityTracker } from './editorVisibility';
+export type { VisibilityTracker } from './editorVisibility';
 
 // Editor Lifecycle Hook
 export { useEditorLifecycle } from './useEditorLifecycle';

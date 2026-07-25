@@ -26,9 +26,10 @@ import { basename, join } from 'path';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import * as fs from 'fs';
-import { windows, windowStates, createWindow, findWindowByFilePath, getWindowId } from '../window/WindowManager';
+import { windowStates, createWindow, findWindowByFilePath, getWindowId } from '../window/WindowManager';
 import { createAboutWindow } from '../window/AboutWindow';
 import { createWorkspaceManagerWindow } from '../window/WorkspaceManagerWindow.ts';
+import { createTeamManagementWindow } from '../window/TeamManagementWindow';
 import { createAIUsageReportWindow } from '../window/AIUsageReportWindow';
 import { createDatabaseBrowserWindow } from '../window/DatabaseBrowserWindow';
 import { createDeveloperDashboardWindow } from '../window/DeveloperDashboardWindow';
@@ -45,6 +46,7 @@ import { autoUpdaterService } from '../services/autoUpdater';
 import { KeyboardShortcuts } from './KeyboardShortcuts';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { FeatureTrackingService } from '../services/analytics/FeatureTrackingService';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 import {
     showExtensionProjectIntroDialog,
     showNewExtensionProjectDialog,
@@ -266,8 +268,8 @@ export async function createApplicationMenu() {
                 },
                 {
                     id: 'file-new-session',
-                    label: 'New Session...',
-                    accelerator: KeyboardShortcuts.file.newSessionGlobal,
+                    label: 'Launch New Session...',
+                    accelerator: KeyboardShortcuts.file.sessionLaunchPopup,
                     click: async () => {
                         const focusedWindow = getFocusedWindow();
 
@@ -278,9 +280,7 @@ export async function createApplicationMenu() {
                                 const state = windowStates.get(windowId);
 
                                 if (state?.mode === 'workspace' && state.workspacePath) {
-                                    // Switch to agent mode and create new session
-                                    focusedWindow.webContents.send('set-content-mode', 'agent');
-                                    focusedWindow.webContents.send('agent-new-session');
+                                    focusedWindow.webContents.send('session-launch-popup-open');
                                 }
                             }
                         }
@@ -383,17 +383,23 @@ export async function createApplicationMenu() {
                     label: 'Open...',
                     accelerator: KeyboardShortcuts.file.open,
                     click: async () => {
-                        const result = await dialog.showOpenDialog({
+                        const focusedWindow = BrowserWindow.getFocusedWindow();
+                        const dialogOptions: Electron.OpenDialogOptions = {
+                            defaultPath: getDialogDefaultPath({ window: focusedWindow }),
                             properties: ['openFile'],
                             filters: [
                                 { name: 'Markdown Files', extensions: ['md', 'markdown'] },
                                 { name: 'Text Files', extensions: ['txt'] },
                                 { name: 'All Files', extensions: ['*'] }
                             ]
-                        });
+                        };
+                        const result = focusedWindow
+                            ? await dialog.showOpenDialog(focusedWindow, dialogOptions)
+                            : await dialog.showOpenDialog(dialogOptions);
 
                         if (!result.canceled && result.filePaths.length > 0) {
                             const filePath = result.filePaths[0];
+                            rememberDialogSelection(filePath, 'file');
                             // Check if file is already open
                             const existingWindow = findWindowByFilePath(filePath);
                             if (existingWindow) {
@@ -992,6 +998,20 @@ export async function createApplicationMenu() {
                     }
                 },
                 {
+                    // No orgId: the window opens on the last-selected organization
+                    // (or the first one you belong to), same as the switcher's
+                    // untargeted entry points.
+                    label: 'Organization Manager (Alpha)',
+                    click: async () => {
+                        AnalyticsService.getInstance().sendEvent('menu_action_used', {
+                            menu: 'window',
+                            action: 'organization_manager',
+                            hasKeyboardEquivalent: false,
+                        });
+                        createTeamManagementWindow();
+                    }
+                },
+                {
                     label: 'Switch Project',
                     accelerator: KeyboardShortcuts.window.projectQuickOpen,
                     registerAccelerator: false, // Handled by renderer keyboard handler
@@ -1038,7 +1058,7 @@ export async function createApplicationMenu() {
                     }
                 },
                 {
-                    label: 'Global Search',
+                    label: 'Memory Search',
                     accelerator: KeyboardShortcuts.window.globalSearch,
                     registerAccelerator: false, // Handled by renderer keyboard handler
                     click: () => {

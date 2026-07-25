@@ -13,7 +13,6 @@ import {
   claudeUsageSessionColorAtom,
   formatResetTime,
 } from '../../store/atoms/claudeUsageAtoms';
-import { useSetting } from '../../hooks/useSetting';
 import { ClaudeUsagePopover } from './ClaudeUsagePopover';
 import { refreshClaudeUsage } from '../../store/listeners/claudeUsageListeners';
 
@@ -27,7 +26,6 @@ interface ClaudeUsageIndicatorProps {
 export const ClaudeUsageIndicator: React.FC<ClaudeUsageIndicatorProps> = ({ className }) => {
   const usage = useAtomValue(claudeUsageAtom);
   const isAvailable = useAtomValue(claudeUsageAvailableAtom);
-  const isEnabled = useSetting('ai.showUsageIndicator');
   const sessionColor = useAtomValue(claudeUsageSessionColorAtom);
 
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
@@ -41,7 +39,7 @@ export const ClaudeUsageIndicator: React.FC<ClaudeUsageIndicatorProps> = ({ clas
     await refreshClaudeUsage();
   }, []);
 
-  if (!isEnabled || !isAvailable) {
+  if (!isAvailable) {
     return null;
   }
 

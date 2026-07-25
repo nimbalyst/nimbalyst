@@ -10,6 +10,7 @@ import { workspaceAttributionThrottle } from './WorkspaceAttributionThrottle';
 import { toolCallMatcher } from './ToolCallMatcher';
 import { codexEditWindowRegistry } from './CodexEditWindowRegistry';
 import { notifySessionFilesUpdated } from './sessionFilesNotify';
+import { workspaceFileAttributionPolicy } from './WorkspaceFileAttributionPolicy';
 
 export interface WorkspaceFileEditEvent {
   workspacePath: string;
@@ -189,6 +190,7 @@ class WorkspaceFileEditAttributionServiceImpl {
       const window = codexEditWindowRegistry.findWindowForEdit({
         sessionId,
         workspacePath: event.workspacePath,
+        filePath: event.filePath,
         fileTimestamp: event.timestamp,
       });
       if (window) {
@@ -230,6 +232,20 @@ class WorkspaceFileEditAttributionServiceImpl {
         return;
       }
 
+      // App-server fileChange items are the authoritative edit stream. Disable
+      // pooled listener attribution for the entire workspace while any such
+      // session is active: a filesystem event has no reliable origin, so
+      // assigning it to a concurrent listener-backed session would merely move
+      // the same cross-session race to that session.
+      if (workspaceFileAttributionPolicy.hasDisabledSession(event.workspacePath)) {
+        logger.main.debug('[WorkspaceFileEditAttributionService] Listener attribution disabled for workspace:', {
+          workspacePath: event.workspacePath,
+          filePath: event.filePath,
+          timestamp: event.timestamp,
+        });
+        return;
+      }
+
       // Codex edit windows take precedence over the fuzzy time-based matcher.
       // If a write-capable Codex tool call is open (or recently closed within
       // the grace window) for one of the candidate sessions and its window
@@ -239,10 +255,9 @@ class WorkspaceFileEditAttributionServiceImpl {
       // tool_call event.
       let codexWindowMatch = this.findCodexWindowMatch(candidateSessionIds, event);
       if (!codexWindowMatch) {
-        // Codex writes can hit disk a few milliseconds before the parsed
-        // file_change tool_call opens its edit window. Give that exact-match
-        // path a brief chance before we fall back to the fuzzy matcher, which
-        // can otherwise steal the edit for a nearby Bash command.
+        // MCP writes can hit disk a few milliseconds before the parsed tool
+        // call opens its exact edit window. Give that path a brief chance
+        // before consulting the attribution policy below.
         await new Promise((resolve) => setTimeout(resolve, CODEX_WINDOW_SETTLE_MS));
         codexWindowMatch = this.findCodexWindowMatch(candidateSessionIds, event);
       }

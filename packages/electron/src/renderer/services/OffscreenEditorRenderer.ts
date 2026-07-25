@@ -359,6 +359,9 @@ class OffscreenEditorRendererImpl {
       setEditorContext(): void {
         // No editor context for offscreen editors
       },
+      setEditorContextItems(): void {
+        // No editor context for offscreen editors
+      },
 
       registerEditorAPI(): void {
         // Offscreen editors don't use the central registry

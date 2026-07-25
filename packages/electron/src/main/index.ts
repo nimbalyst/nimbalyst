@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, nativeImage, nativeTheme, session } from 'electron';
 import { safeHandle, safeOn } from './utils/ipcRegistry';
+import { installMicrophoneGate } from './mediaPermissionGate';
 import { markBootComplete } from './utils/bootState';
 import { markStart, markEnd, checkpoint, logSummary } from './utils/startupTiming';
 import type { SessionStore } from '@nimbalyst/runtime';
@@ -15,11 +16,13 @@ import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
 import { getRestartSignalPath } from './utils/appPaths';
 import { createWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
+import { setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { showSplashScreen, closeSplashScreen } from './window/SplashScreen';
 import { registerFileHandlers } from './ipc/FileHandlers';
 import { registerWorkspaceHandlers } from './ipc/WorkspaceHandlers.ts';
 import { registerSettingsHandlers } from './ipc/SettingsHandlers';
 import { registerWindowHandlers } from './ipc/WindowHandlers';
+import { registerWindowChromeHandlers } from './ipc/WindowChromeHandlers';
 import { registerEditorStateHandlers } from './ipc/EditorStateHandlers';
 import { registerHistoryHandlers } from './ipc/HistoryHandlers';
 import { registerSessionHandlers } from './ipc/SessionHandlers';
@@ -43,6 +46,7 @@ import { registerUsageAnalyticsHandlers } from './ipc/UsageAnalyticsHandlers';
 import { registerWorktreeHandlers } from './ipc/WorktreeHandlers';
 import { registerPullRequestHandlers, stopPullRequestPollScheduler } from './ipc/PullRequestHandlers';
 import { registerReadReceiptHandlers } from './ipc/ReadReceiptHandlers';
+import { registerTrackerPersonalStateHandlers } from './ipc/TrackerPersonalStateHandlers';
 import { registerWakeupHandlers } from './ipc/WakeupHandlers';
 import { registerBlitzHandlers } from './ipc/BlitzHandlers';
 import { registerProjectMigrationHandlers } from './ipc/ProjectMigrationHandlers';
@@ -126,6 +130,7 @@ import { SessionWakeupScheduler } from './services/SessionWakeupScheduler';
 import { getSessionWakeupsStore } from './services/RepositoryManager';
 import { ExtensionDevService } from './services/ExtensionDevService';
 import { MetaAgentService } from './services/MetaAgentService';
+import { notificationService } from './services/NotificationService';
 // SuperLoopProgressService import removed - server disabled (leaking into non-super-loop sessions)
 import { registerMockupHandlers } from './ipc/MockupHandlers';
 import { registerOffscreenEditorHandlers } from './ipc/OffscreenEditorHandlers';
@@ -175,6 +180,7 @@ import { shutdownStytchAuth, handleAuthCallback, isAuthenticated, getPersonalUse
 import { registerTrackerSyncHandlers, initializeTrackerSync } from './services/TrackerSyncManager';
 import { initTrackerSchemaService, updateTrackerSchemaWorkspace } from './services/TrackerSchemaService';
 import { initTrackerNavigationService } from './services/TrackerNavigationService';
+import { initTrackerSavedViewService } from './services/TrackerSavedViewService';
 import { registerTeamHandlers, autoMatchTeamForWorkspace, getOrgScopedJwt, findTeamForWorkspace } from './services/TeamService';
 import { windowStates, windows, resolveActiveWorkspacePath } from './window/windowState';
 import { getRecentItems } from './utils/store';
@@ -185,14 +191,30 @@ import { getCollabAssetOutboxDrainCoordinator } from './services/CollabAssetOutb
 import { getCollabAssetStore } from './services/CollabAssetStore';
 import { registerCollabBackupHandlers } from './ipc/CollabBackupHandlers';
 import { flushPendingCollabBackups } from './services/CollabBackupService';
-import { registerBuiltinCollabContentAdapters } from './services/collabContentAdapterRegistration';
+import { registerCollabConversionClient } from './services/CollabConversionClient';
 import { registerCollabV3TestHandlers } from './ipc/CollabV3TestHandlers';
+import { registerHeapSnapshotHandlers } from './ipc/HeapSnapshotHandlers';
 import { getPermissionService } from './services/PermissionService';
 import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
 import { TrayManager } from './tray/TrayManager';
 import { pathToFileURL } from 'url';
 import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
 import { installWindowOpenGuard } from './window/windowOpenGuard';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
+
+// Register before any startup path can create a partition session. Browsed web
+// content stays microphone-denied even after Voice Mode receives an OS grant.
+// The default session is skipped here: this event also fires for it, and its
+// timing relative to the explicit allow-when-granted install in whenReady is
+// not guaranteed — without the guard, deny-always could overwrite that gate
+// and block Voice Mode capture even after the OS grant.
+app.on('session-created', (createdSession) => {
+  if (createdSession === session.defaultSession) return;
+  installMicrophoneGate(createdSession, {
+    allowWhenGranted: false,
+    label: createdSession.storagePath ?? 'session-created',
+  });
+});
 
 // CRITICAL: Hide dock icon when running as background Node process
 // This prevents Terminal icon from appearing when Claude Code spawns child processes
@@ -361,8 +383,8 @@ function checkClaudeCodeInstallationOnFirstLaunch(): void {
     }
 
     try {
-        // Check for Claude settings directory (~/.claude/)
-        const claudeSettingsDir = path.join(os.homedir(), '.claude');
+        // Check for the user-level Claude config directory
+        const claudeSettingsDir = resolveClaudeConfigDir();
         const hasClaudeInstalled = existsSync(claudeSettingsDir);
 
         logger.main.info(`First launch Claude Code check: hasClaudeInstalled=${hasClaudeInstalled}`);
@@ -1325,6 +1347,13 @@ BrowserWindow.prototype.focus = function(this: BrowserWindow) {
 app.whenReady().then(async () => {
     checkpoint('app-ready');
 
+    // The default renderer session may use the microphone after Voice Mode has
+    // explicitly obtained the OS grant. Non-default sessions are deny-always.
+    installMicrophoneGate(session.defaultSession, {
+        allowWhenGranted: true,
+        label: 'default',
+    });
+
     // Raise the file descriptor soft limit from the macOS default of 256.
     // Nimbalyst uses recursive fs.watch, chokidar per open tab, terminal PTYs,
     // and database connections — 256 FDs is far too low and causes silent
@@ -1381,41 +1410,6 @@ app.whenReady().then(async () => {
     if (!process.env.PLAYWRIGHT) {
         showSplashScreen();
     }
-
-    // Set up permission request handler to control when system permission dialogs appear
-    // This prevents microphone permission prompt from appearing on app launch
-    // Microphone access is only granted when the user explicitly enables voice mode
-    // The voice mode flow (VoiceModeService) uses systemPreferences.askForMediaAccess()
-    // which bypasses this handler and properly requests OS-level permission
-    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-        // Allow most permissions by default
-        if (permission === 'media') {
-            // For media permissions, check what type is being requested
-            // details.mediaTypes contains 'audio' and/or 'video'
-            const mediaTypes = (details as any).mediaTypes || [];
-
-            // Check if microphone permission has already been granted at the OS level
-            // If so, allow the renderer to access it
-            if (mediaTypes.includes('audio')) {
-                const { systemPreferences } = require('electron');
-                const micStatus = systemPreferences.getMediaAccessStatus('microphone');
-
-                if (micStatus === 'granted') {
-                    // User has already granted microphone permission via voice mode activation
-                    callback(true);
-                    return;
-                }
-
-                // Microphone not yet granted - deny to prevent premature permission prompt
-                // The voice mode activation flow will request permission properly
-                callback(false);
-                return;
-            }
-        }
-
-        // Allow other permissions
-        callback(true);
-    });
 
     // Override console methods to capture all console output in log file
     // This must be called FIRST before any console.log calls
@@ -1557,12 +1551,14 @@ app.whenReady().then(async () => {
     registerWorkspaceWatcherHandlers();
     registerSettingsHandlers();
     registerWindowHandlers();
+    registerWindowChromeHandlers();
     registerEditorStateHandlers();
     await registerHistoryHandlers();
     await registerSessionHandlers();
     await registerSessionStateHandlers();
     await registerThemeHandlers();
     setupWorkspaceManagerHandlers();
+    setupTeamManagementHandlers();
     setupSessionFileHandlers();
     registerSlashCommandHandlers();
     registerActionPromptHandlers();
@@ -1588,6 +1584,7 @@ app.whenReady().then(async () => {
     registerWorktreeHandlers();
     registerPullRequestHandlers();
     registerReadReceiptHandlers();
+    registerTrackerPersonalStateHandlers();
     registerWakeupHandlers();
     registerBlitzHandlers();
     registerProjectMigrationHandlers();
@@ -1617,6 +1614,7 @@ app.whenReady().then(async () => {
     SemanticCatalogService.getInstance().start();
     initTrackerSchemaService(); // Register IPC handlers + load built-in schemas
     initTrackerNavigationService();
+    initTrackerSavedViewService();
 
     // Initialize commit-tracker linking (listens to GitRefWatcher for all commits)
     commitTrackerLinker.initialize({ getDatabase: () => database });
@@ -1624,12 +1622,13 @@ app.whenReady().then(async () => {
 
     registerTeamHandlers();
     registerOrgKeyHandlers();
-    registerBuiltinCollabContentAdapters();
+    registerCollabConversionClient();
     registerDocumentSyncHandlers();
     getCollabOutboxDrainCoordinator().start();
     getCollabAssetOutboxDrainCoordinator().start();
     registerCollabBackupHandlers();
     registerCollabV3TestHandlers();
+    registerHeapSnapshotHandlers();
     markEnd('ipc-handlers');
 
     // Initialize system tray for session status visibility
@@ -2172,10 +2171,10 @@ app.whenReady().then(async () => {
     // re-sent on next launch (NIM-615).
     try {
       const { getQueuedPromptsStore } = await import('./services/RepositoryManager');
-      const { completed, rolledBack } = await getQueuedPromptsStore().sweepExecutingOnBoot();
-      if (completed > 0 || rolledBack > 0) {
+      const { completed, failed, rolledBack } = await getQueuedPromptsStore().sweepExecutingOnBoot();
+      if (completed > 0 || failed > 0 || rolledBack > 0) {
         logger.main.info(
-          `[Main] Boot sweep: ${completed} delivered prompt(s) marked completed, ${rolledBack} undelivered prompt(s) rolled back to pending`
+          `[Main] Boot sweep: ${completed} answered prompt(s) marked completed, ${failed} delivered-but-unanswered prompt(s) marked failed, ${rolledBack} undelivered prompt(s) rolled back to pending`
         );
       }
     } catch (sweepErr) {
@@ -2326,7 +2325,10 @@ app.whenReady().then(async () => {
 
     try {
         const metaAgentService = MetaAgentService.getInstance();
-        await metaAgentService.start(aiService);
+        await metaAgentService.start(
+            aiService,
+            (options) => notificationService.showNotificationWithResult(options),
+        );
     } catch (error) {
         logger.mcp.error('Failed to start meta-agent MCP server:', error);
     }

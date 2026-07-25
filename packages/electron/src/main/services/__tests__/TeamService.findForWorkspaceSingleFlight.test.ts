@@ -203,6 +203,24 @@ describe('listTeams TTL cache + invalidation (RC4)', () => {
     expect(apiTeamsFetchCallCount()).toBe(2);
   });
 
+  it('does not cache a failed account lookup as an authoritative empty team list', async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error('Team API timeout after 15000ms'))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          teams: [{ orgId: 'org-1', name: 'Widgets Team', gitRemoteHash: REMOTE_HASH, createdAt: new Date().toISOString(), role: 'admin' }],
+        }),
+      });
+
+    await expect(findTeamForWorkspace('/workspace/one')).resolves.toBeNull();
+    await expect(findTeamForWorkspace('/workspace/one')).resolves.toEqual(
+      expect.objectContaining({ orgId: 'org-1' }),
+    );
+    expect(apiTeamsFetchCallCount()).toBe(2);
+  });
+
   it('refreshes the account personal JWT rather than retrying discovery with an active team JWT', async () => {
     vi.mocked(refreshPersonalSessionForAccount).mockResolvedValueOnce('fresh-personal-jwt' as never);
     fetchMock

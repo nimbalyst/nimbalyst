@@ -4,6 +4,8 @@ const {
   mockQuery,
   mockGetEngine,
   mockUpsertWorkspaceTrackerSchema,
+  mockUpsertWorkspaceTrackerSchemaPatch,
+  mockResetWorkspaceTrackerSchemaOverride,
   mockDeleteWorkspaceTrackerSchema,
   mockGetAllTrackerSchemas,
   mockIsBuiltinTrackerSchema,
@@ -15,11 +17,14 @@ const {
   mockQuery: vi.fn(),
   mockGetEngine: vi.fn(() => 'pglite'),
   mockUpsertWorkspaceTrackerSchema: vi.fn(),
+  mockUpsertWorkspaceTrackerSchemaPatch: vi.fn(),
+  mockResetWorkspaceTrackerSchemaOverride: vi.fn(),
   mockDeleteWorkspaceTrackerSchema: vi.fn(),
   mockGetAllTrackerSchemas: vi.fn((): any[] => []),
   mockIsBuiltinTrackerSchema: vi.fn(() => false),
   mockGlobalRegistry: {
     get: vi.fn(() => undefined),
+    getAll: vi.fn(() => []),
     validate: vi.fn(() => ({ valid: true, errors: [] as Array<{ field: string; message: string }> })),
   },
   mockApplyHeadlessBodyMarkdown: vi.fn(async () => undefined),
@@ -69,6 +74,8 @@ vi.mock('../../../services/TrackerSchemaService', () => {
     getTrackerRoleField: vi.fn(() => null),
     ensureWorkspaceTrackerSchemasLoaded: vi.fn(),
     upsertWorkspaceTrackerSchema: mockUpsertWorkspaceTrackerSchema,
+    upsertWorkspaceTrackerSchemaPatch: mockUpsertWorkspaceTrackerSchemaPatch,
+    resetWorkspaceTrackerSchemaOverride: mockResetWorkspaceTrackerSchemaOverride,
     deleteWorkspaceTrackerSchema: mockDeleteWorkspaceTrackerSchema,
     getAllTrackerSchemas: mockGetAllTrackerSchemas,
     isBuiltinTrackerSchema: mockIsBuiltinTrackerSchema,
@@ -110,10 +117,12 @@ vi.mock('../../../services/MainBodyDocService', () => ({
 import {
   createBidirectionalLink,
   handleTrackerCreate,
+  handleTrackerAddComment,
   handleTrackerDefineType,
   handleTrackerDeleteType,
   handleTrackerGet,
   handleTrackerLinkSession,
+  handleTrackerList,
   handleTrackerListTypes,
   handleTrackerUnlinkSession,
   handleTrackerUpdate,
@@ -123,6 +132,135 @@ import {
 } from '../trackerToolHandlers';
 import { isTrackerSyncActive } from '../../../services/TrackerSyncManager';
 import { getEffectiveTrackerSyncPolicy, shouldSyncTrackerItem } from '../../../services/TrackerPolicyService';
+
+describe('handleTrackerList structured records', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDocumentServices.clear();
+  });
+
+  it('returns custom fields under `full` and honors the all-items sentinel', async () => {
+    const items = Array.from({ length: 260 }, (_, index) => ({
+      id: `release-${index}`,
+      issueKey: `NIM-${index}`,
+      type: 'release',
+      typeTags: ['release'],
+      title: `Release ${index}`,
+      status: 'planned',
+      priority: '',
+      workspace: '/tmp/ws',
+      customFields: {
+        version: `1.0.${index}`,
+        items: [{ itemId: `member-${index}` }],
+      },
+      updated: `2026-07-23T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+    }));
+    mockDocService.listTrackerItems.mockResolvedValue(items);
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+
+    const result = await handleTrackerList({ type: 'release', limit: -1, full: true }, '/tmp/ws');
+    const payload = JSON.parse(result.content[0].text!);
+
+    expect(result.isError).toBeFalsy();
+    expect(payload.structured.items).toHaveLength(260);
+    expect(payload.structured.items[0].customFields).toMatchObject({
+      version: expect.any(String),
+      items: [expect.objectContaining({ itemId: expect.any(String) })],
+    });
+  });
+
+  it('treats a where `=` with an empty operand as "match empties"', async () => {
+    mockDocService.listTrackerItems.mockResolvedValue([
+      { id: 'a', type: 'bug', typeTags: ['bug'], title: 'No owner', status: 'to-do', workspace: '/tmp/ws', customFields: { owner: '' } },
+      { id: 'b', type: 'bug', typeTags: ['bug'], title: 'Has owner', status: 'to-do', workspace: '/tmp/ws', customFields: { owner: 'greg' } },
+    ]);
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+
+    const result = await handleTrackerList(
+      { where: [{ field: 'owner', op: '=', value: '' }] },
+      '/tmp/ws',
+    );
+    const items = JSON.parse(result.content[0].text!).structured.items;
+
+    // The blank binary clause must select the empty-owner item, not vanish and
+    // return everything (the pre-`is-empty` idiom).
+    expect(items.map((i: any) => i.id)).toEqual(['a']);
+  });
+
+  it('registers workspace schemas before resolving roles', async () => {
+    const { ensureWorkspaceTrackerSchemasLoaded } = await import('../../../services/TrackerSchemaService');
+    vi.mocked(ensureWorkspaceTrackerSchemasLoaded).mockClear();
+    mockDocService.listTrackerItems.mockResolvedValue([]);
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+
+    await handleTrackerList({ inbox: true }, '/tmp/ws');
+
+    expect(ensureWorkspaceTrackerSchemasLoaded).toHaveBeenCalledWith('/tmp/ws');
+  });
+
+  it('omits the heavy fields by default so an ordinary list stays small', async () => {
+    mockDocService.listTrackerItems.mockResolvedValue([
+      {
+        id: 'release-0',
+        issueKey: 'NIM-0',
+        type: 'release',
+        typeTags: ['release'],
+        title: 'Release 0',
+        status: 'planned',
+        priority: '',
+        workspace: '/tmp/ws',
+        customFields: { version: '1.0.0', items: [{ itemId: 'member-0' }] },
+        linkedSessions: ['session-1'],
+        origin: 'agent',
+        updated: '2026-07-23T00:00:00.000Z',
+      },
+    ]);
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+
+    const result = await handleTrackerList({ type: 'release' }, '/tmp/ws');
+    const item = JSON.parse(result.content[0].text!).structured.items[0];
+
+    // Lean identity fields survive; the heavy fields are gone without `full`.
+    expect(item.title).toBe('Release 0');
+    expect(item.status).toBe('planned');
+    expect(item.customFields).toBeUndefined();
+    expect(item.linkedSessions).toBeUndefined();
+    expect(item.origin).toBeUndefined();
+  });
+});
+
+describe('handleTrackerAddComment', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('persists an agent comment and attributed activity through the tracker row', async () => {
+    const row = makeRow({ workspace: '/tmp/ws' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [row] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [row] });
+
+    const result = await handleTrackerAddComment(
+      { trackerId: 'NIM-1', body: '**Agent** comment' },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(false);
+    const updateCall = mockQuery.mock.calls.find((call) =>
+      String(call[0]).includes('UPDATE tracker_items SET data'),
+    );
+    expect(updateCall).toBeTruthy();
+    const data = JSON.parse(updateCall![1]![0] as string);
+    expect(data.comments).toHaveLength(1);
+    expect(data.comments[0].body).toBe('**Agent** comment');
+    expect(data.activity).toHaveLength(1);
+    expect(data.activity[0]).toMatchObject({
+      action: 'commented',
+      authorIdentity: { displayName: 'Test User' },
+    });
+  });
+});
 
 function makeRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -362,6 +500,73 @@ describe('tracker schema tools', () => {
     expect(usageSql).toContain('json_each(type_tags)');
     expect(usageSql).not.toContain('ANY(type_tags)');
     expect(usageSql).not.toContain('::int');
+  });
+
+  it('overrides a built-in via patch instead of refusing', async () => {
+    mockIsBuiltinTrackerSchema.mockReturnValue(true); // 'feature' is a builtin
+    mockUpsertWorkspaceTrackerSchemaPatch.mockResolvedValue({
+      model: { type: 'feature', fields: [] },
+      filePath: '/tmp/ws/.nimbalyst/trackers/feature.patch.yaml',
+    });
+
+    const patch = {
+      type: 'feature',
+      fields: [{ name: 'status', options: { set: [{ value: 'wont-do', label: "Won't Do" }] } }],
+    };
+    const result = await handleTrackerDefineType({ patch }, '/tmp/ws');
+
+    expect(result.isError).toBe(false);
+    expect(mockUpsertWorkspaceTrackerSchemaPatch).toHaveBeenCalledWith(
+      '/tmp/ws',
+      expect.objectContaining({ type: 'feature' }),
+      { overwrite: true },
+    );
+    const payload = JSON.parse(result.content[0].text as string);
+    expect(payload.structured.mode).toBe('patch');
+  });
+
+  it('still refuses a FULL-schema redefine of a built-in and points to patch', async () => {
+    mockIsBuiltinTrackerSchema.mockReturnValue(true);
+
+    const result = await handleTrackerDefineType(
+      { schema: { type: 'bug', displayName: 'Bug', fields: [] } },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('patch');
+    expect(mockUpsertWorkspaceTrackerSchema).not.toHaveBeenCalled();
+  });
+
+  it('resets a built-in override back to default via resetOverride', async () => {
+    mockIsBuiltinTrackerSchema.mockReturnValue(true);
+    mockResetWorkspaceTrackerSchemaOverride.mockResolvedValue({
+      reset: true,
+      filePath: '/tmp/ws/.nimbalyst/trackers/feature.patch.yaml',
+    });
+
+    const result = await handleTrackerDeleteType(
+      { type: 'feature', resetOverride: true },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(false);
+    expect(mockResetWorkspaceTrackerSchemaOverride).toHaveBeenCalledWith('/tmp/ws', 'feature');
+    const payload = JSON.parse(result.content[0].text as string);
+    expect(payload.structured.action).toBe('reset-override');
+  });
+
+  it('refuses to reset a built-in that has no override', async () => {
+    mockIsBuiltinTrackerSchema.mockReturnValue(true);
+    mockResetWorkspaceTrackerSchemaOverride.mockResolvedValue({ reset: false });
+
+    const result = await handleTrackerDeleteType(
+      { type: 'feature', resetOverride: true },
+      '/tmp/ws',
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('no workspace override');
   });
 });
 

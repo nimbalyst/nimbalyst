@@ -18,6 +18,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import type * as Y from 'yjs';
 import { MonacoCodeEditor } from './MonacoCodeEditor';
 import { createMonacoCollabBinding } from './monacoCollabBinding';
+import { waitForMonacoModel } from './monacoModelReady';
 import { useCollaborativeEditor } from '../extensions/useCollaborativeEditor';
 import type { EditorHost } from '../extensions/editorHost';
 import type { ConfigTheme } from '../editor';
@@ -164,13 +165,27 @@ export function MonacoEditor({
       }),
     createBinding: async ({ yDoc, awareness }) => {
       if (!collab) return { destroy: () => {} };
-      const wrapper = await editorReadyRef.current!.promise;
-      const editor = wrapper?.editor as MonacoEditorType.IStandaloneCodeEditor;
+      // Wait until Monaco has mounted at least once, then read the LIVE
+      // wrapper. A remount (StrictMode double-mount, diff-mode
+      // <Editor>/<DiffEditor> swap, tab reactivation) can replace the editor
+      // after the one-shot promise resolved and dispose the original's model;
+      // editorWrapperRef.current always points at the current instance.
+      await editorReadyRef.current!.promise;
+      const editor = editorWrapperRef.current
+        ?.editor as MonacoEditorType.IStandaloneCodeEditor | undefined;
       if (!editor) return { destroy: () => {} };
+      // The model may be transiently absent right after a remount. Wait for it
+      // rather than throwing; if the editor disposes first, skip binding.
+      const model = await waitForMonacoModel(editor);
+      if (!model) return { destroy: () => {} };
       const yText = yDoc.getText(collabField);
       const handle = createMonacoCollabBinding({ yText, editor, awareness });
       try {
-        collab.onBindingReady?.({ editor, monaco: wrapper.monaco, yText });
+        collab.onBindingReady?.({
+          editor,
+          monaco: editorWrapperRef.current!.monaco,
+          yText,
+        });
       } catch (err) {
         console.error('[MonacoEditor] collab onBindingReady failed:', err);
       }

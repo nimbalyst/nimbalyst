@@ -107,3 +107,22 @@ export function buildComment(authorIdentity: TrackerIdentity, body: string): {
 export function newTrackerId(type: string): string {
   return `${type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
+
+/**
+ * Statuses only a person may set. VENDORED copy of `HUMAN_ONLY_STATUSES` in
+ * packages/runtime/src/plugins/TrackerPlugin/models/trackerReview.ts so the
+ * offline CLI enforces the same review-lane boundary the app's MCP tools do.
+ * KEEP IN SYNC.
+ */
+const HUMAN_ONLY_STATUSES = new Set<string>(['approved']);
+
+/** Whether a status is one an agent must not set on a user's behalf. */
+export function isHumanOnlyStatus(status: unknown): boolean {
+  return typeof status === 'string' && HUMAN_ONLY_STATUSES.has(status.trim().toLowerCase());
+}
+
+/** The message shown when a write tries to promote work past review. */
+export function humanOnlyStatusMessage(status: string): string {
+  return `'${status}' can only be set by a person. Move the item to 'in-review' `
+    + 'and let a reviewer promote it.';
+}

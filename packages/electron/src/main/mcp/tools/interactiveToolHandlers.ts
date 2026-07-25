@@ -34,6 +34,12 @@ import { broadcastMessageLogged } from "../../services/ai/claudeCliUserPromptLog
 import { ClaudeSettingsManager } from "../../services/ClaudeSettingsManager";
 import { getPermissionService } from "../../services/PermissionService";
 import { findFreshInteractiveResponse } from "./interactiveResponsePolling";
+import {
+  clearPendingInteractiveWaiter,
+  countPendingInteractiveWaiters,
+  notePendingInteractiveWaiter,
+  shouldSettleFromSessionFallback,
+} from "./interactivePromptFallback";
 
 export function getInteractiveToolSchemas(sessionId: string | undefined) {
   if (!sessionId) return [];
@@ -1392,8 +1398,9 @@ export async function handleRequestUserInput(
   const { waiterPromptIds: promptIdAliases } = resolveRequestUserInputPromptTargets(promptId);
   const promptIdAliasSet = new Set(promptIdAliases);
   const responseNotBefore = Date.now();
-  const responseChannel = getRequestUserInputResponseChannel(sessionId || "unknown", promptId);
-  const fallbackResponseChannel = getRequestUserInputFallbackResponseChannel(sessionId || "unknown");
+  const sessionKey = sessionId || "unknown";
+  const responseChannel = getRequestUserInputResponseChannel(sessionKey, promptId);
+  const fallbackResponseChannel = getRequestUserInputFallbackResponseChannel(sessionKey);
 
   console.log(
     `[MCP Server] RequestUserInput waiting for response: promptId=${promptId}, sessionId=${sessionId}`,
@@ -1460,6 +1467,10 @@ export async function handleRequestUserInput(
     TrayManager.getInstance().onPromptCreated(sessionId);
   }
 
+  // NIM-1981: track this waiter so the session-scoped fallback can be accepted
+  // safely when it is the only pending prompt for the session.
+  notePendingInteractiveWaiter(sessionKey);
+
   return new Promise((resolve) => {
     let settled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -1470,6 +1481,7 @@ export async function handleRequestUserInput(
     ) => {
       if (settled) return;
       settled = true;
+      clearPendingInteractiveWaiter(sessionKey);
 
       console.log(
         `[MCP Server] RequestUserInput settled via ${source}: promptId=${promptId}, cancelled=${result?.cancelled}`,
@@ -1607,11 +1619,17 @@ export async function handleRequestUserInput(
         typeof result.rawPromptId === "string" ? result.rawPromptId : null,
       ].filter((value): value is string => typeof value === "string" && value.length > 0);
 
-      const isSyntheticFallbackPrompt = promptId.startsWith("rui-");
+      // NIM-1981: on the Codex path the waiter id and the widget's response id can
+      // be unrelated, so a strict id match would reject the correct answer and hang
+      // the turn. Accept the session-scoped fallback when it is unambiguous (sole
+      // pending prompt); stay strict when several prompts are pending.
       if (
-        !isSyntheticFallbackPrompt
-        && responsePromptIds.length > 0
-        && !responsePromptIds.some((id) => promptIdAliasSet.has(id))
+        !shouldSettleFromSessionFallback({
+          waiterPromptId: promptId,
+          promptIdAliasSet,
+          responsePromptIds,
+          pendingWaiterCountForSession: countPendingInteractiveWaiters(sessionKey),
+        })
       ) {
         return;
       }
@@ -1633,16 +1651,26 @@ export async function handleRequestUserInput(
             clearInterval(pollTimer);
             pollTimer = null;
           }
+          // NIM-1981: on poll timeout the promise is abandoned without settling,
+          // so drop this waiter from the pending count (settle already clears it).
+          if (!settled) {
+            clearPendingInteractiveWaiter(sessionKey);
+          }
           return;
         }
 
         try {
           const messages = await AgentMessagesRepository.listTail(sessionId, 50);
+          // NIM-1981: when this is the sole pending prompt for the session, the
+          // freshest persisted response is unambiguously ours even if the Codex
+          // tool-call ids don't line up (see shouldSettleFromSessionFallback).
+          const matchAnyId = countPendingInteractiveWaiters(sessionKey) <= 1;
           const content = findFreshInteractiveResponse(messages, {
             expectedType: "request_user_input_response",
             idFields: ["promptId", "rawPromptId"],
             acceptedIds: promptIdAliasSet,
             notBefore: responseNotBefore,
+            matchAnyId,
           });
           if (!content) return;
           if (content.cancelled) {

@@ -3,7 +3,7 @@
  *
  * Loads extension plugins from:
  * - Extension system (via injected loader)
- * - CLI-installed plugins from ~/.claude/plugins/
+ * - CLI-installed plugins from the Claude Code config dir's plugins/
  *
  * Plugins are local TypeScript/JavaScript modules that extend the SDK
  * with custom functionality.
@@ -11,7 +11,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import { resolveClaudeConfigDir } from '../providers/claudeCode/claudeConfigDir';
 
 /**
  * Plugin definition for SDK
@@ -97,7 +97,7 @@ export class PluginLoader {
    */
   private async loadCliPlugins(): Promise<Plugin[]> {
     const plugins: Plugin[] = [];
-    const pluginsDir = path.join(os.homedir(), '.claude', 'plugins');
+    const pluginsDir = path.join(resolveClaudeConfigDir(), 'plugins');
 
     try {
       // Check if plugins directory exists

@@ -20,7 +20,11 @@ import {
   loadBuiltinTrackers,
   parseTrackerYAML,
   serializeTrackerYAML,
+  parseTrackerSchemaPatchYAML,
+  serializeTrackerSchemaPatchYAML,
+  resolveTrackerSchemaPatch,
   type TrackerDataModel,
+  type TrackerSchemaPatch,
   type TrackerSchemaRole,
   getRoleField,
   getFieldByRole,
@@ -33,6 +37,7 @@ import {
   classifyTrackerSchemaDrift,
   hasSchemaDrift,
   applyRemoteTrackerSchemaDef,
+  removeTrackerTypeDef,
   type SchemaDriftEntry,
   type RemoteTrackerSchemaDef,
   type ApplyRemoteSchemaResult,
@@ -46,6 +51,71 @@ import {
 let initialized = false;
 let watcher: ReturnType<typeof chokidar.watch> | null = null;
 let currentWorkspacePath: string | null = null;
+
+// ---------------------------------------------------------------------------
+// Patch overrides (delta files)
+// ---------------------------------------------------------------------------
+
+/**
+ * Workspace overrides come in two on-disk shapes under `.nimbalyst/trackers`:
+ *  - a full schema `<type>.yaml` (custom types, or a wholesale builtin override)
+ *  - a delta `<type>.patch.yaml` (the sanctioned builtin-override representation)
+ * A patch is resolved against the live builtin seed at load, so upstream builtin
+ * improvements flow through and git diffs stay small. See the configurable-
+ * builtin-tracker-types plan.
+ */
+function isTrackerPatchFileName(fileName: string): boolean {
+  return /\.patch\.ya?ml$/i.test(fileName);
+}
+
+/** Deterministic patch file name for a type's builtin override. */
+function patchFileNameForType(type: string): string {
+  return `${type}.patch.yaml`;
+}
+
+/**
+ * Resolve a schema file's content to a fully-resolved model. Patch files are
+ * resolved against the builtin seed (falling back to any already-registered base
+ * for a custom type); full-schema files are parsed directly. Throws on a patch
+ * whose target type has no seed, so a stray patch surfaces instead of silently
+ * registering a broken model.
+ */
+function resolveSchemaModelFromContent(fileName: string, content: string): TrackerDataModel {
+  if (isTrackerPatchFileName(fileName)) {
+    const patch = parseTrackerSchemaPatchYAML(content);
+    const seed = globalRegistry.getBuiltinModel(patch.type) ?? globalRegistry.get(patch.type);
+    if (!seed) {
+      throw new Error(`Tracker schema patch targets unknown type '${patch.type}'`);
+    }
+    return resolveTrackerSchemaPatch(seed, patch);
+  }
+  return parseTrackerYAML(content);
+}
+
+/** Read the `type` a schema file targets without fully resolving a patch. */
+function readSchemaFileType(fileName: string, content: string): string | undefined {
+  try {
+    if (isTrackerPatchFileName(fileName)) {
+      return parseTrackerSchemaPatchYAML(content).type;
+    }
+    return parseTrackerYAML(content).type;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Order schema files so full-schema definitions load before patch files. A patch
+ * targeting a custom base type must resolve after that base is registered; builtin
+ * patches are unaffected (their seed is always present).
+ */
+function orderSchemaFilesForLoad(files: string[]): string[] {
+  return [...files].sort((a, b) => {
+    const pa = isTrackerPatchFileName(a) ? 1 : 0;
+    const pb = isTrackerPatchFileName(b) ? 1 : 0;
+    return pa - pb;
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -100,16 +170,16 @@ function loadWorkspaceSchemas(workspacePath: string): void {
   let shouldReconcileYamlMirror = false;
   try {
     if (fs.existsSync(trackersDir)) {
-      const files = fs.readdirSync(trackersDir).filter(
+      const files = orderSchemaFilesForLoad(fs.readdirSync(trackersDir).filter(
         f => f.endsWith('.yaml') || f.endsWith('.yml')
-      );
+      ));
       shouldReconcileYamlMirror = true;
 
       for (const file of files) {
         try {
           const filePath = path.join(trackersDir, file);
           const content = fs.readFileSync(filePath, 'utf-8');
-          const model = parseTrackerYAML(content);
+          const model = resolveSchemaModelFromContent(file, content);
           globalRegistry.register(model); // workspace schemas are not builtin
           loaded.push(model);
           // console.log(`[TrackerSchemaService] Loaded workspace schema: ${model.type}`);
@@ -218,7 +288,7 @@ export async function registerMaterializedSyncedTypes(
 function reloadWorkspaceSchema(filePath: string): void {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
-    const model = parseTrackerYAML(content);
+    const model = resolveSchemaModelFromContent(path.basename(filePath), content);
     globalRegistry.register(model);
     if (currentWorkspacePath) void materializeTrackerTypeDef(currentWorkspacePath, model);
     // console.log(`[TrackerSchemaService] Reloaded schema: ${model.type}`);
@@ -393,9 +463,9 @@ export function ensureWorkspaceTrackerSchemasLoaded(workspacePath: string | null
   let files: string[];
   try {
     if (!fs.existsSync(trackersDir)) return;
-    files = fs.readdirSync(trackersDir).filter(
+    files = orderSchemaFilesForLoad(fs.readdirSync(trackersDir).filter(
       f => f.endsWith('.yaml') || f.endsWith('.yml'),
-    );
+    ));
   } catch {
     return;
   }
@@ -403,7 +473,7 @@ export function ensureWorkspaceTrackerSchemasLoaded(workspacePath: string | null
   for (const file of files) {
     try {
       const content = fs.readFileSync(path.join(trackersDir, file), 'utf-8');
-      const model = parseTrackerYAML(content);
+      const model = resolveSchemaModelFromContent(file, content);
       globalRegistry.register(model); // workspace schemas are not builtin
     } catch (err) {
       console.error(`[TrackerSchemaService] ensureWorkspaceTrackerSchemasLoaded failed for ${file}:`, err);
@@ -435,8 +505,9 @@ async function findWorkspaceSchemaFileByType(workspacePath: string, type: string
     const filePath = path.join(trackersDir, file);
     try {
       const content = await fsPromises.readFile(filePath, 'utf-8');
-      const model = parseTrackerYAML(content);
-      if (model.type === type) return filePath;
+      // Match on the declared target type for both full-schema and patch files,
+      // so an override located in `<type>.patch.yaml` is found for reset/backup.
+      if (readSchemaFileType(file, content) === type) return filePath;
     } catch {
       // Ignore invalid YAML here; it will be surfaced when that file is loaded.
     }
@@ -526,6 +597,52 @@ export async function upsertWorkspaceTrackerSchema(
   return { model, filePath, backupPath };
 }
 
+/**
+ * Persist a builtin (or custom) override as a delta patch under
+ * `.nimbalyst/trackers/<type>.patch.yaml`. The patch is resolved against the live
+ * seed first (validating it and producing the fully-resolved model the registry
+ * and DB mirror hold). Overwriting an existing patch backs it up first — patches
+ * are meant to be refined, so overwrite is the default, but recovery is preserved.
+ */
+export async function upsertWorkspaceTrackerSchemaPatch(
+  workspacePath: string,
+  patch: TrackerSchemaPatch,
+  options?: { overwrite?: boolean },
+): Promise<{ model: TrackerDataModel; filePath: string; backupPath?: string }> {
+  if (!workspacePath) throw new Error('workspacePath is required');
+  if (!patch?.type) throw new Error('patch.type is required');
+
+  const seed = globalRegistry.getBuiltinModel(patch.type) ?? globalRegistry.get(patch.type);
+  if (!seed) throw new Error(`Cannot patch unknown tracker type '${patch.type}'`);
+
+  // Resolve now to validate the patch and produce the resolved model. Throws on a
+  // malformed patch (e.g. adding a field without a type) before anything is written.
+  const model = resolveTrackerSchemaPatch(seed, patch);
+
+  const trackersDir = path.join(workspacePath, '.nimbalyst', 'trackers');
+  await fsPromises.mkdir(trackersDir, { recursive: true });
+
+  const filePath = path.join(trackersDir, patchFileNameForType(patch.type));
+
+  let backupPath: string | undefined;
+  const exists = await fsPromises
+    .access(filePath)
+    .then(() => true)
+    .catch(() => false);
+  if (exists) {
+    if (options?.overwrite === false) {
+      throw new TrackerTypeExistsError(patch.type, filePath);
+    }
+    backupPath = `${filePath}.${Date.now()}.bak`;
+    await fsPromises.copyFile(filePath, backupPath);
+  }
+
+  await fsPromises.writeFile(filePath, serializeTrackerSchemaPatchYAML(patch), 'utf-8');
+  refreshWorkspaceSchemasIfCurrent(workspacePath);
+
+  return { model, filePath, backupPath };
+}
+
 export async function getWorkspaceTrackerSchemaOverride(
   workspacePath: string,
   type: string,
@@ -565,6 +682,13 @@ export async function resetWorkspaceTrackerSchemaOverride(
   const result = await deleteWorkspaceTrackerSchema(workspacePath, type, {
     allowBuiltinOverride: true,
   });
+  if (result.deleted) {
+    // Tombstone the DB mirror so the reset PROPAGATES: a shared/hybrid override
+    // pushes a tombstone that restores the builtin for the team. Reconcile only
+    // tombstones yaml-sourced rows, so a cli/sync-sourced override row would
+    // otherwise linger active and keep syncing the stale override. Best-effort.
+    await removeTrackerTypeDef(workspacePath, type);
+  }
   return { reset: result.deleted, filePath: result.filePath };
 }
 
@@ -594,9 +718,9 @@ function readWorkspaceSchemaModelsFromDisk(workspacePath: string): WorkspaceSche
   let files: string[];
   try {
     if (!fs.existsSync(trackersDir)) return { models, canReconcile: true };
-    files = fs.readdirSync(trackersDir).filter(
+    files = orderSchemaFilesForLoad(fs.readdirSync(trackersDir).filter(
       f => f.endsWith('.yaml') || f.endsWith('.yml'),
-    );
+    ));
   } catch (err) {
     console.error(`[TrackerSchemaService] readWorkspaceSchemaModelsFromDisk failed for ${trackersDir}:`, err);
     return { models, canReconcile: false };
@@ -605,7 +729,7 @@ function readWorkspaceSchemaModelsFromDisk(workspacePath: string): WorkspaceSche
   for (const file of files) {
     try {
       const content = fs.readFileSync(path.join(trackersDir, file), 'utf-8');
-      models.push(parseTrackerYAML(content));
+      models.push(resolveSchemaModelFromContent(file, content));
     } catch (err) {
       console.error(`[TrackerSchemaService] Failed to parse ${file} for drift check:`, err);
     }

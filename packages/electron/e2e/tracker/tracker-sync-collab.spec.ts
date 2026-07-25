@@ -76,11 +76,16 @@ async function launchIsolatedElectronApp(
   instanceName: string,
 ): Promise<{ app: ElectronApplication; page: Page; dbDir: string }> {
   const dbDir = await fs.mkdtemp(path.join(os.tmpdir(), `nimbalyst-e2e-${instanceName}-`));
+  const cdpPort = instanceName === 'appA' ? '9334' : '9335';
   const app = await launchElectronApp({
     workspace,
     permissionMode: 'allow-all',
     preserveTestDatabase: true,
-    env: { NIMBALYST_USER_DATA_PATH: dbDir },
+    env: {
+      NIMBALYST_USER_DATA_DIR: dbDir,
+      NIMBALYST_USER_DATA_PATH: dbDir,
+      NIMBALYST_CDP_PORT: cdpPort,
+    },
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
@@ -169,7 +174,7 @@ test.describe('Collaborative Tracker Sync', () => {
   let sharedKeyJwk: JsonWebKey;
 
   test.beforeAll(async ({}, testInfo) => {
-    testInfo.setTimeout(90_000);
+    testInfo.setTimeout(120_000);
 
     await startWrangler(WRANGLER_PORT);
 
@@ -272,5 +277,66 @@ test.describe('Collaborative Tracker Sync', () => {
       expect(last?.itemId).toBe(testItemId);
       expect(last?.title).toBe(testTitle);
     }).toPass({ timeout: 10_000 });
+  });
+
+  test('comments and activity survive the shared sync round trip', async () => {
+    const teamProjectId = `e2e-comments-${Date.now()}`;
+    const testItemId = `sync-comments-${Date.now()}`;
+    const connectOpts = {
+      serverUrl: `http://localhost:${WRANGLER_PORT}`,
+      teamProjectId,
+      orgId: TEST_ORG_ID,
+      encryptionKeyJwk: sharedKeyJwk,
+    };
+
+    await Promise.all([
+      connectTrackerSync(pageA, { ...connectOpts, workspacePath: workspaceDirA, userId: 'e2e-user-a' }),
+      connectTrackerSync(pageB, { ...connectOpts, workspacePath: workspaceDirB, userId: 'e2e-user-b' }),
+    ]);
+
+    await upsertTrackerItem(pageA, {
+      id: testItemId,
+      type: 'bug',
+      title: 'Shared comment persistence',
+      description: 'Comments and activity must survive projection writes',
+      status: 'to-do',
+      priority: 'high',
+      workspace: workspaceDirA,
+    });
+
+    await expect(async () => {
+      const item = await pageB.evaluate(async (id) => {
+        const items = await (window as any).electronAPI.invoke('document-service:tracker-items-list');
+        return items.find((candidate: any) => candidate.id === id);
+      }, testItemId);
+      expect(item?.title).toBe('Shared comment persistence');
+    }).toPass({ timeout: 15_000 });
+
+    const commentResult = await pageA.evaluate(async ({ itemId, body }) => {
+      return (window as any).electronAPI.invoke('document-service:tracker-item-add-comment', { itemId, body });
+    }, { itemId: testItemId, body: '**Persistent** shared comment' });
+    expect(commentResult?.success).toBe(true);
+
+    const updateResult = await pageA.evaluate(async (itemId) => {
+      return (window as any).electronAPI.invoke('document-service:update-tracker-item', {
+        itemId,
+        updates: { status: 'in-progress' },
+      });
+    }, testItemId);
+    expect(updateResult?.success).toBe(true);
+
+    await expect(async () => {
+      const item = await pageB.evaluate(async (id) => {
+        const items = await (window as any).electronAPI.invoke('document-service:tracker-items-list');
+        return items.find((candidate: any) => candidate.id === id);
+      }, testItemId);
+      expect(item?.customFields?.comments).toEqual(expect.arrayContaining([
+        expect.objectContaining({ body: '**Persistent** shared comment' }),
+      ]));
+      expect(item?.customFields?.activity).toEqual(expect.arrayContaining([
+        expect.objectContaining({ action: 'commented' }),
+        expect.objectContaining({ action: 'status_changed', oldValue: 'to-do', newValue: 'in-progress' }),
+      ]));
+    }).toPass({ timeout: 15_000 });
   });
 });

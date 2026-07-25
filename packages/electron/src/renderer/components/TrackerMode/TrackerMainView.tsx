@@ -4,8 +4,12 @@ import { FloatingPortal } from '@floating-ui/react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
-import { getRecordTitle, getRecordPriority, getRecordStatus, getRecordFieldStr, getFieldByRole, isMyRecord } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import {
+  filterTrackerRecords,
+  getCellValue,
+  getDefaultColumnConfig,
+  getFieldForColumn,
+  resolveColumnsForType,
   TrackerTable,
   TrackerTableGrid,
   SortColumn as TrackerSortColumn,
@@ -16,10 +20,23 @@ import {
   trackerItemsByTypeAtom,
   archivedTrackerItemsAtom,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin';
-import type { TrackerDataModel } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import {
+  applyFilterSet,
+  hasActiveFilters,
+  type TrackerDataModel,
+  type TrackerFilterSet,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { KanbanBoard } from './KanbanBoard';
 import { TagBoard } from './TagBoard';
+import { TrackerGridView } from './TrackerGridView';
+import { TrackerInboxView } from './TrackerInboxView';
 import { TrackerItemDetail } from './TrackerItemDetail';
+import {
+  TrackerViewHeaderControls,
+  type TrackerFilterField,
+} from './TrackerViewHeaderControls';
+import { TrackerViewTitle } from './TrackerViewTitle';
+import { TrackerActiveFilterPills } from './TrackerActiveFilterPills';
 import { TrackerSyncRejectionBanner } from './TrackerSyncRejectionBanner';
 import { ImportFromSourceDialog } from './ImportFromSourceDialog';
 import {
@@ -31,25 +48,30 @@ import {
 import { activeTeamOrgIdAtom, buildTrackerDeepLink } from '../../store/atoms/collabDocuments';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { useTrackerBodyPrewarm } from '../../hooks/useTrackerBodyPrewarm';
-import { getDefaultColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { setSelectedWorkstreamAtom, sessionRegistryAtom, refreshSessionListAtom, initSessionList } from '../../store/atoms/sessions';
 import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
+import { resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { workstreamStateAtom } from '../../store/atoms/workstreamState';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
-import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
+import { defaultAgentModelAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { store } from '../../store';
 import { useFloatingMenu } from '../../hooks/useFloatingMenu';
-import { buildTrackerTagOptions, filterTrackerItemsByTags } from './trackerTagFilterUtils';
+import { buildTrackerTagOptions } from './trackerTagFilterUtils';
+import { filterTrackerItems, recordSourceKey, type SavedView } from './trackerSavedViews';
 import { useTrackerUnread } from '../../hooks/useTrackerUnread';
+import {
+  createNewWorktreeSessionActionAtom,
+  isGitRepoAtom,
+} from '../../store/actions/sessionHistoryActions';
+import { setTrackerFavoriteAtom } from '../../store/atoms/trackerPersonalState';
+import { WorktreeBaseBranchPicker } from '../AgenticCoding/WorktreeBaseBranchPicker';
+import {
+  buildTrackerLaunchContext,
+  type TrackerLaunchContext,
+} from './trackerSessionLaunch';
 
-export type ViewMode = 'list' | 'table' | 'kanban' | 'tag-board';
-
-/** Provenance key for a record: the importer provider id, or 'native'. */
-function recordSourceKey(record: TrackerRecord): string {
-  const origin = record.system.origin;
-  return origin?.kind === 'external' ? origin.external.providerId : 'native';
-}
+export type ViewMode = 'list' | 'table' | 'grid' | 'kanban' | 'tag-board' | 'inbox';
 
 /** Human label for a source key without probing the importer (avoids backend start). */
 function sourceKeyLabel(key: string): string {
@@ -75,6 +97,20 @@ interface TrackerMainViewProps {
   workspacePath?: string;
   trackerTypes: TrackerDataModel[];
   onClearSidebarFilters: () => void;
+  tagFilter: string[];
+  setTagFilter: React.Dispatch<React.SetStateAction<string[]>>;
+  sourceFilter: string[];
+  setSourceFilter: React.Dispatch<React.SetStateAction<string[]>>;
+  currentIdentity: TrackerIdentity | null;
+  favoriteItemIds: ReadonlySet<string>;
+  viewedAtByItemId: ReadonlyMap<string, number>;
+  personalStateHydrated: boolean;
+  activeSavedView: SavedView | null;
+  savedViewDirty: boolean;
+  showSaveViewAction: boolean;
+  onSaveView: (name: string) => void;
+  onRenameSavedView: (name: string) => void;
+  onUpdateSavedView: () => void;
 }
 
 export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
@@ -86,17 +122,28 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   workspacePath,
   trackerTypes,
   onClearSidebarFilters,
+  tagFilter,
+  setTagFilter,
+  sourceFilter,
+  setSourceFilter,
+  currentIdentity,
+  favoriteItemIds,
+  viewedAtByItemId,
+  personalStateHydrated,
+  activeSavedView,
+  savedViewDirty,
+  showSaveViewAction,
+  onSaveView,
+  onRenameSavedView,
+  onUpdateSavedView,
 }) => {
-  const [sortBy, setSortBy] = useState<TrackerSortColumn>('lastIndexed');
-  const [sortDirection, setSortDirection] = useState<TrackerSortDirection>('desc');
   const [searchQuery, setSearchQuery] = useState('');
-  const [tagFilter, setTagFilter] = useState<string[]>([]);
-  // Source filter: provider ids (e.g. 'github-issues') plus 'native'.
-  const [sourceFilter, setSourceFilter] = useState<string[]>([]);
   const [quickAddType, setQuickAddType] = useState<string | null>(null);
   const [showTagDropdown, setShowTagDropdown] = useState(false);
   const [tagQuery, setTagQuery] = useState('');
   const [highlightedTagIndex, setHighlightedTagIndex] = useState(0);
+  const [pendingWorktreeLaunch, setPendingWorktreeLaunch] = useState<TrackerLaunchContext | null>(null);
+  const [openFiltersToken, setOpenFiltersToken] = useState(0);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   // User's selected default model. Used by handleLaunchSession so the new
@@ -104,19 +151,13 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   // falling back to claude-code (which fails for Codex-only installs).
   // See nimbalyst#176.
   const defaultModel = useAtomValue(defaultAgentModelAtom);
+  const isWorktreesFeatureAvailable = useAtomValue(worktreesFeatureAvailableAtom);
+  const isGitRepo = useAtomValue(isGitRepoAtom(workspacePath || ''));
 
   useEffect(() => {
     if (!workspacePath) return;
     void initSessionList(workspacePath);
   }, [workspacePath]);
-
-  // Current user identity for "mine" filter
-  const [currentIdentity, setCurrentIdentity] = useState<TrackerIdentity | null>(null);
-  useEffect(() => {
-    window.electronAPI.invoke('document-service:get-current-identity').then((result: any) => {
-      if (result?.success) setCurrentIdentity(result.identity);
-    });
-  }, []);
 
   // Drive the per-item "unread" dots from the local read-receipt store.
   useTrackerUnread(workspacePath, currentIdentity?.email ?? null);
@@ -124,8 +165,12 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   // Selected item for detail panel
   const modeLayout = useAtomValue(trackerModeLayoutAtom);
   const setModeLayout = useSetAtom(setTrackerModeLayoutAtom);
+  const setFavorite = useSetAtom(setTrackerFavoriteAtom);
   const selectedItemId = modeLayout.selectedItemId;
+  const inboxScope = modeLayout.inboxScope;
   const detailPanelWidth = modeLayout.detailPanelWidth;
+  const sortBy = modeLayout.sortBy as TrackerSortColumn;
+  const sortDirection = modeLayout.sortDirection as TrackerSortDirection;
 
   // Column config for the current type (persisted per-type)
   const columnConfigKey = filterType === 'all' ? 'all' : filterType;
@@ -158,10 +203,130 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     });
   }, [setModeLayout, modeLayout.typeColumnConfigs, columnConfigKey]);
 
+  // Per-column filters, persisted per-type alongside the column layout.
+  const columnFilters = modeLayout.typeColumnFilters[columnConfigKey] ?? null;
+
+  const handleColumnFiltersChange = useCallback((filters: TrackerFilterSet) => {
+    setModeLayout({
+      typeColumnFilters: {
+        ...modeLayout.typeColumnFilters,
+        [columnConfigKey]: filters,
+      },
+    });
+  }, [setModeLayout, modeLayout.typeColumnFilters, columnConfigKey]);
+
+  const removeFieldFilter = useCallback((clauseIndex: number) => {
+    handleColumnFiltersChange({
+      combinator: columnFilters?.combinator ?? 'and',
+      clauses: (columnFilters?.clauses ?? []).filter((_, index) => index !== clauseIndex),
+    });
+  }, [columnFilters, handleColumnFiltersChange]);
+
+  const schemaType = columnConfigKey === 'all' ? '' : columnConfigKey;
+  const availableColumns = useMemo(
+    () => resolveColumnsForType(schemaType),
+    [schemaType],
+  );
+
+  const filterFields = useMemo<TrackerFilterField[]>(() => {
+    const roleOrder = new Map<string, number>([
+      ['title', 0],
+      ['workflowStatus', 1],
+      ['priority', 2],
+      ['assignee', 3],
+      ['reporter', 4],
+      ['tags', 5],
+      ['progress', 6],
+      ['startDate', 7],
+      ['dueDate', 8],
+    ]);
+    const structuralOrder = new Map<string, number>([
+      ['type', 20],
+      ['key', 21],
+      ['updated', 22],
+      ['created', 23],
+      ['module', 24],
+      ['shared', 25],
+    ]);
+    const orderedColumns = [...availableColumns].sort((left, right) => {
+      const leftOrder = left.role
+        ? (roleOrder.get(left.role) ?? 15)
+        : (structuralOrder.get(left.id) ?? 10);
+      const rightOrder = right.role
+        ? (roleOrder.get(right.role) ?? 15)
+        : (structuralOrder.get(right.id) ?? 10);
+      return leftOrder - rightOrder || left.label.localeCompare(right.label);
+    });
+
+    return orderedColumns.map(column => {
+      const directField = getFieldForColumn(schemaType, column.id);
+      const roleFields = column.role
+        ? trackerTypes
+          .map(model => {
+            const roleFieldName = model.roles?.[column.role!];
+            return roleFieldName
+              ? model.fields.find(field => field.name === roleFieldName)
+              : undefined;
+          })
+          .filter((field): field is NonNullable<typeof field> => field !== undefined)
+        : [];
+      const representativeField = directField ?? roleFields[0];
+      const optionMap = new Map<string, {
+        label: string;
+        color?: string;
+        icon?: string;
+      }>();
+      for (const field of directField ? [directField] : roleFields) {
+        for (const option of field.options ?? []) {
+          optionMap.set(option.value, {
+            label: option.label,
+            color: option.color,
+            icon: option.icon,
+          });
+        }
+      }
+
+      if (column.id === 'type') {
+        return {
+          id: column.id,
+          label: column.label,
+          type: 'select',
+          group: 'system',
+          options: trackerTypes.map(model => ({
+            value: model.type,
+            label: model.displayName,
+          })),
+        };
+      }
+
+      return {
+        id: column.id,
+        label: column.label,
+        group: column.role
+          ? 'common'
+          : structuralOrder.has(column.id) ? 'system' : 'custom',
+        type: representativeField?.type
+          ?? (column.render === 'date' ? 'date'
+            : column.render === 'tags' ? 'array'
+              : optionMap.size > 0 ? 'select' : 'string'),
+        options: optionMap.size > 0
+          ? Array.from(optionMap, ([value, option]) => ({ value, ...option }))
+          : representativeField?.options,
+      };
+    });
+  }, [availableColumns, schemaType, trackerTypes]);
+
+  const getViewFilterValue = useCallback((item: TrackerRecord, field: string): unknown => {
+    const role = availableColumns.find(column => column.id === field)?.role;
+    const resolvedField = role ? resolveRoleFieldName(item.primaryType, role) : field;
+    return getCellValue(item, resolvedField);
+  }, [availableColumns]);
+
   // Navigation atoms for tracker-session linking
   const setSelectedWorkstream = useSetAtom(setSelectedWorkstreamAtom);
   const setWindowMode = useSetAtom(setWindowModeAtom);
   const refreshSessionList = useSetAtom(refreshSessionListAtom);
+  const createNewWorktreeSession = useSetAtom(createNewWorktreeSessionActionAtom);
 
   /** Navigate to Agent mode and activate a linked session */
   const handleSwitchToAgentMode = useCallback((sessionId: string) => {
@@ -198,6 +363,12 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   /** Launch a new AI session linked to a tracker item */
   const handleLaunchSession = useCallback(async (trackerItemId: string) => {
     try {
+      const itemsMap = store.get(trackerItemsMapAtom);
+      const trackerContext = buildTrackerLaunchContext(
+        trackerItemId,
+        itemsMap.get(trackerItemId),
+      );
+
       // Derive provider from the user's default model rather than hardcoding
       // 'claude-code'. Mirrors AgentMode.createNewSession so a Codex-only
       // workspace launches a Codex session, not a failed claude-code one.
@@ -215,60 +386,16 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
         workspaceId: workspacePath,
       });
       if (result?.success && result?.id) {
-        // Look up the tracker item to build a context-aware draft prompt
-        const itemsMap = store.get(trackerItemsMapAtom);
-        const trackerItem = itemsMap.get(trackerItemId);
-
-        if (trackerItem?.system?.documentPath) {
-          // File-backed item: link via file path and pre-fill draft with item context
-          await window.electronAPI.invoke('tracker:link-session', {
-            trackerId: `file:${trackerItem.system.documentPath}`,
-            sessionId: result.id,
-          });
-          // Build a context-rich prompt with the specific item's details
-          const title = getRecordTitle(trackerItem);
-          const status = getRecordStatus(trackerItem);
-          const priority = getRecordPriority(trackerItem);
-          const description = getRecordFieldStr(trackerItem, 'description');
-          const itemId = trackerItem.issueKey || trackerItemId;
-          const lines: string[] = [];
-          lines.push(`implement tracker item ${itemId}: ${title}`);
-          const meta: string[] = [];
-          if (trackerItem.primaryType) meta.push(`type: ${trackerItem.primaryType}`);
-          if (status) meta.push(`status: ${status}`);
-          if (priority) meta.push(`priority: ${priority}`);
-          if (meta.length > 0) lines.push(meta.join(', '));
-          if (description) lines.push(`\n${description}`);
-          lines.push(`\nSource: @${trackerItem.system.documentPath}`);
-          lines.push(`\nUpdate this tracker item's status when done using tracker_update with id "${itemId}".`);
-          await window.electronAPI.invoke('ai:saveDraftInput', result.id,
-            lines.join('\n'), workspacePath);
-        } else {
-          // Native DB item: link by ID
-          await window.electronAPI.invoke('tracker:link-session', {
-            trackerId: trackerItemId,
-            sessionId: result.id,
-          });
-          // Pre-fill draft with item context
-          const title = trackerItem ? getRecordTitle(trackerItem) : trackerItemId;
-          const itemId = trackerItem?.issueKey || trackerItemId;
-          const lines: string[] = [];
-          lines.push(`implement tracker item ${itemId}: ${title}`);
-          if (trackerItem) {
-            const status = getRecordStatus(trackerItem);
-            const priority = getRecordPriority(trackerItem);
-            const description = getRecordFieldStr(trackerItem, 'description');
-            const meta: string[] = [];
-            if (trackerItem.primaryType) meta.push(`type: ${trackerItem.primaryType}`);
-            if (status) meta.push(`status: ${status}`);
-            if (priority) meta.push(`priority: ${priority}`);
-            if (meta.length > 0) lines.push(meta.join(', '));
-            if (description) lines.push(`\n${description}`);
-          }
-          lines.push(`\nUpdate this tracker item's status when done using tracker_update with id "${itemId}".`);
-          await window.electronAPI.invoke('ai:saveDraftInput', result.id,
-            lines.join('\n'), workspacePath);
-        }
+        await window.electronAPI.invoke('tracker:link-session', {
+          trackerId: trackerContext.trackerLinkId,
+          sessionId: result.id,
+        });
+        await window.electronAPI.invoke(
+          'ai:saveDraftInput',
+          result.id,
+          trackerContext.draftInput,
+          workspacePath,
+        );
 
         // Refresh session list to pick up the new session, then navigate
         await refreshSessionList();
@@ -283,52 +410,55 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     }
   }, [workspacePath, refreshSessionList, setSelectedWorkstream, setWindowMode, defaultModel]);
 
+  /** Launch a new isolated worktree session linked to a tracker item. */
+  const handleLaunchWorktree = useCallback((trackerItemId: string) => {
+    const itemsMap = store.get(trackerItemsMapAtom);
+    setPendingWorktreeLaunch(buildTrackerLaunchContext(
+      trackerItemId,
+      itemsMap.get(trackerItemId),
+    ));
+  }, []);
+
+  const handleCreateTrackerWorktree = useCallback(async (
+    options: { baseBranch: string; name?: string },
+  ) => {
+    if (!pendingWorktreeLaunch) return;
+
+    try {
+      const sessionId = await createNewWorktreeSession({
+        ...options,
+        initialDraft: pendingWorktreeLaunch.draftInput,
+      });
+      if (!sessionId) throw new Error('Worktree session was not created');
+
+      await window.electronAPI.invoke('tracker:link-session', {
+        trackerId: pendingWorktreeLaunch.trackerLinkId,
+        sessionId,
+      });
+      await refreshSessionList();
+      handleSwitchToAgentMode(sessionId);
+      setPendingWorktreeLaunch(null);
+    } catch (err) {
+      console.error('[TrackerMainView] Failed to launch worktree:', err);
+      throw err;
+    }
+  }, [createNewWorktreeSession, handleSwitchToAgentMode, pendingWorktreeLaunch, refreshSessionList]);
+
   // Base item sets from atoms
   const activeItems = useAtomValue(trackerItemsByTypeAtom(filterType));
   const archivedItems = useAtomValue(archivedTrackerItemsAtom(filterType));
+  const allActiveItems = useAtomValue(trackerItemsByTypeAtom('all'));
+  const allArchivedItems = useAtomValue(archivedTrackerItemsAtom('all'));
 
   // Apply multi-select filters as intersection
   const baseFilteredItems = useMemo(() => {
     const showArchived = activeFilters.includes('archived');
-    let items = showArchived ? archivedItems : activeItems;
-
-    if (activeFilters.includes('mine') && currentIdentity) {
-      items = items.filter(record => isMyRecord(record, currentIdentity));
-    }
-
-    // "Unassigned" filter: show items with no assignee
-    if (activeFilters.includes('unassigned')) {
-      items = items.filter(record => {
-        const assignee = getFieldByRole(record, 'assignee') as string | undefined;
-        return !assignee;
-      });
-    }
-
-    if (activeFilters.includes('high-priority')) {
-      items = items.filter(record => {
-        const priority = getRecordPriority(record);
-        return priority === 'critical' || priority === 'high';
-      });
-    }
-
-    if (activeFilters.includes('recently-updated')) {
-      // NIM-1559: sort by the item's logical `updatedAt` (real change time),
-      // NOT `lastIndexed` (the re-scan/re-index timestamp). lastIndexed bumps
-      // on every cold-open scan, so sorting by it reshuffled the whole list
-      // on every restart and made "recently updated" meaningless. Mirror the
-      // table's own updatedAt || createdAt || lastIndexed precedence.
-      const recencyTime = (r: TrackerRecord): number => {
-        const src = r.system.updatedAt || r.system.createdAt || r.system.lastIndexed;
-        const t = src ? new Date(src).getTime() : 0;
-        return Number.isNaN(t) ? 0 : t;
-      };
-      items = [...items]
-        .sort((a, b) => recencyTime(b) - recencyTime(a))
-        .slice(0, 50);
-    }
-
-    return items;
-  }, [activeItems, archivedItems, activeFilters, currentIdentity]);
+    return filterTrackerItems(
+      showArchived ? archivedItems : activeItems,
+      { activeFilters, tagFilter: [], recentlyViewedDays: modeLayout.recentlyViewedDays },
+      { identity: currentIdentity, favoriteItemIds, viewedAtByItemId },
+    );
+  }, [activeItems, archivedItems, activeFilters, currentIdentity, favoriteItemIds, viewedAtByItemId, modeLayout.recentlyViewedDays]);
 
   const allTags = useMemo(() => buildTrackerTagOptions(baseFilteredItems), [baseFilteredItems]);
 
@@ -351,25 +481,149 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   const showSourceFilter = sourceOptions.some((k) => k !== 'native');
 
   const filteredItems = useMemo(() => {
-    const byTags = filterTrackerItemsByTags(baseFilteredItems, tagFilter);
-    if (sourceFilter.length === 0) return byTags;
-    const set = new Set(sourceFilter);
-    return byTags.filter((r) => set.has(recordSourceKey(r)));
-  }, [baseFilteredItems, tagFilter, sourceFilter]);
+    const showArchived = activeFilters.includes('archived');
+    return filterTrackerItems(showArchived ? archivedItems : activeItems, {
+      activeFilters,
+      tagFilter,
+      sourceFilter,
+      recentlyViewedDays: modeLayout.recentlyViewedDays,
+    }, { identity: currentIdentity, favoriteItemIds, viewedAtByItemId });
+  }, [activeItems, archivedItems, activeFilters, tagFilter, sourceFilter, modeLayout.recentlyViewedDays, currentIdentity, favoriteItemIds, viewedAtByItemId]);
+
+  const headerFilterFields = useMemo<TrackerFilterField[]>(() => {
+    return filterFields.map(field => {
+      if (!['user', 'select', 'multiselect', 'array', 'relationship', 'reference'].includes(field.type ?? '')) {
+        return field;
+      }
+
+      const options = new Map<string, {
+        label: string;
+        count: number;
+        color?: string;
+        icon?: string;
+      }>();
+      for (const option of field.options ?? []) {
+        options.set(option.value, {
+          label: option.label,
+          count: 0,
+          color: option.color,
+          icon: option.icon,
+        });
+      }
+      const addValue = (value: unknown): void => {
+        if (value === undefined || value === null || value === '') return;
+        if (Array.isArray(value)) {
+          value.forEach(addValue);
+          return;
+        }
+        if (typeof value === 'object') {
+          const record = value as Record<string, unknown>;
+          const optionValue = record.itemId ?? record.issueKey ?? record.url ?? record.email ?? record.title;
+          const label = record.title ?? record.name ?? record.email ?? record.issueKey ?? optionValue;
+          if (optionValue !== undefined) {
+            const key = String(optionValue);
+            const existing = options.get(key);
+            options.set(key, {
+              label: existing?.label ?? String(label),
+              count: (existing?.count ?? 0) + 1,
+              color: existing?.color,
+              icon: existing?.icon,
+            });
+          }
+          return;
+        }
+        const key = String(value);
+        const existing = options.get(key);
+        options.set(key, {
+          label: existing?.label ?? key,
+          count: (existing?.count ?? 0) + 1,
+          color: existing?.color,
+          icon: existing?.icon,
+        });
+      };
+
+      for (const item of filteredItems) addValue(getViewFilterValue(item, field.id));
+      return {
+        ...field,
+        options: (field.options?.length
+          ? Array.from(options, ([value, option]) => ({ value, ...option }))
+          : Array.from(options, ([value, option]) => ({ value, ...option }))
+            .sort((left, right) => left.label.localeCompare(right.label)))
+          .slice(0, 100),
+      };
+    });
+  }, [filterFields, filteredItems, getViewFilterValue]);
+
+  const viewFilteredItems = useMemo(() => {
+    const searchedItems = filterTrackerRecords(filteredItems, {
+      searchTerm: searchQuery,
+      typeFilter: 'all',
+    });
+    return applyFilterSet(
+      searchedItems,
+      columnFilters,
+      getViewFilterValue,
+    );
+  }, [columnFilters, filteredItems, getViewFilterValue, searchQuery]);
+
+  // Global inbox scope must start from the all-types source. Passing the
+  // selected type's already-filtered rows would make "global" silently mean
+  // "the current sidebar type".
+  const inboxFilteredItems = useMemo(() => {
+    if (inboxScope !== 'global') return viewFilteredItems;
+    const showArchived = activeFilters.includes('archived');
+    const globalItems = filterTrackerItems(showArchived ? allArchivedItems : allActiveItems, {
+      activeFilters,
+      tagFilter,
+      sourceFilter,
+      recentlyViewedDays: modeLayout.recentlyViewedDays,
+    }, { identity: currentIdentity, favoriteItemIds, viewedAtByItemId });
+    return applyFilterSet(
+      filterTrackerRecords(globalItems, { searchTerm: searchQuery, typeFilter: 'all' }),
+      columnFilters,
+      getViewFilterValue,
+    );
+  }, [
+    inboxScope,
+    viewFilteredItems,
+    activeFilters,
+    allArchivedItems,
+    allActiveItems,
+    tagFilter,
+    sourceFilter,
+    searchQuery,
+    columnFilters,
+    getViewFilterValue,
+    modeLayout.recentlyViewedDays,
+    currentIdentity,
+    favoriteItemIds,
+    viewedAtByItemId,
+  ]);
+
+  const personalStateRequired = activeFilters.includes('favorites') || activeFilters.includes('recently-viewed');
+  const recencyOrderActive = activeFilters.some((filter) => filter === 'recently-updated'
+    || filter === 'recently-viewed' || filter === 'recently-edited-by-others');
+  const handleToggleFavorite = useCallback((itemId: string) => {
+    void setFavorite({ itemId, isFavorite: !favoriteItemIds.has(itemId) });
+  }, [favoriteItemIds, setFavorite]);
 
   const toggleSource = useCallback((key: string) => {
     setSourceFilter((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
   }, []);
 
-  const hasExternalTableFilters = activeFilters.length > 0 || tagFilter.length > 0 || sourceFilter.length > 0;
+  const hasExternalTableFilters = activeFilters.length > 0
+    || tagFilter.length > 0
+    || sourceFilter.length > 0
+    || hasActiveFilters(columnFilters);
   const clearTableFilters = useCallback(() => {
     setSearchQuery('');
     setTagQuery('');
     setShowTagDropdown(false);
     setTagFilter([]);
     setSourceFilter([]);
+    handleColumnFiltersChange({ combinator: 'and', clauses: [] });
     onClearSidebarFilters();
-  }, [onClearSidebarFilters]);
+  }, [handleColumnFiltersChange, onClearSidebarFilters]);
 
   const tagMenu = useFloatingMenu({
     placement: 'bottom-start',
@@ -658,6 +912,13 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     return `${parts.join(' ')} ${typeName}`;
   }, [filterType, activeFilters, trackerTypes]);
 
+  const displayedItemCount = viewMode === 'inbox'
+    ? inboxFilteredItems.length
+    : viewFilteredItems.length;
+  const showColumnControls = viewMode === 'list'
+    || viewMode === 'table'
+    || viewMode === 'grid';
+
   return (
     <div className="tracker-main-view flex-1 flex flex-col overflow-hidden min-h-0">
       {/* Sync rejection banner -- key rotation / stale-envelope feedback */}
@@ -665,7 +926,15 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       {/* Toolbar */}
       <div className="tracker-toolbar flex items-center gap-2 px-3 py-2 border-b border-nim bg-nim shrink-0">
         {/* Title */}
-        <span className="text-sm font-semibold text-nim shrink-0">{title}</span>
+        <TrackerViewTitle
+          fallbackTitle={title}
+          activeSavedViewName={activeSavedView?.name}
+          savedViewDirty={savedViewDirty}
+          showSaveViewAction={showSaveViewAction}
+          onSaveView={onSaveView}
+          onRenameSavedView={onRenameSavedView}
+          onUpdateSavedView={onUpdateSavedView}
+        />
 
         {/* Search */}
         <div className="relative flex-1 max-w-[360px] min-w-0">
@@ -758,6 +1027,13 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
           )}
         </div>
 
+        <TrackerActiveFilterPills
+          fields={headerFilterFields}
+          filters={columnFilters}
+          onManage={() => setOpenFiltersToken(token => token + 1)}
+          onRemove={removeFieldFilter}
+        />
+
         {showTagDropdown && (
           <FloatingPortal>
             <div
@@ -840,6 +1116,18 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
         )}
 
         <div className="flex-1" />
+
+        <TrackerViewHeaderControls
+          itemCount={displayedItemCount}
+          availableColumns={availableColumns}
+          columnConfig={columnConfig}
+          onColumnConfigChange={handleColumnConfigChange}
+          showColumnControls={showColumnControls}
+          filterFields={headerFilterFields}
+          filters={columnFilters}
+          onFiltersChange={handleColumnFiltersChange}
+          openFiltersToken={openFiltersToken}
+        />
 
         <div className="relative" ref={importMenuRef}>
           <button
@@ -926,21 +1214,27 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       <div className="flex-1 flex flex-row overflow-hidden min-h-0">
         {/* Table/Kanban (flex-1, shrinks when detail is open) */}
         <div className="flex-1 overflow-hidden min-h-0 min-w-0 relative">
-          {viewMode === 'list' ? (
+          {personalStateRequired && !personalStateHydrated ? (
+            <div className="h-full flex items-center justify-center text-sm text-nim-muted" data-testid="tracker-personal-state-loading">
+              Loading personal tracker state...
+            </div>
+          ) : viewMode === 'list' ? (
             <TrackerTable
               filterType={filterType}
               sortBy={sortBy}
               sortDirection={sortDirection}
               hideTypeTabs={true}
               onSortChange={(column, direction) => {
-                setSortBy(column);
-                setSortDirection(direction);
+                setModeLayout({ sortBy: column, sortDirection: direction });
               }}
+              preserveItemOrder={recencyOrderActive}
+              favoriteItemIds={favoriteItemIds}
+              onToggleFavorite={handleToggleFavorite}
               onSwitchToFilesMode={onSwitchToFilesMode}
               onNewItem={handleNewItem}
               onItemSelect={handleItemSelect}
               selectedItemId={selectedItemId}
-              overrideItems={filteredItems}
+              overrideItems={viewFilteredItems}
               onArchiveItems={handleArchiveItems}
               onDeleteItems={handleDeleteItems}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
@@ -949,6 +1243,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onClearFilters={clearTableFilters}
               columnConfig={columnConfig}
               onColumnConfigChange={handleColumnConfigChange}
+              hideToolbar
             />
           ) : viewMode === 'table' ? (
             <TrackerTableGrid
@@ -957,14 +1252,16 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               sortDirection={sortDirection}
               hideTypeTabs={true}
               onSortChange={(column, direction) => {
-                setSortBy(column);
-                setSortDirection(direction);
+                setModeLayout({ sortBy: column, sortDirection: direction });
               }}
+              preserveItemOrder={recencyOrderActive}
+              favoriteItemIds={favoriteItemIds}
+              onToggleFavorite={handleToggleFavorite}
               onSwitchToFilesMode={onSwitchToFilesMode}
               onNewItem={handleNewItem}
               onItemSelect={handleItemSelect}
               selectedItemId={selectedItemId}
-              overrideItems={filteredItems}
+              overrideItems={viewFilteredItems}
               onArchiveItems={handleArchiveItems}
               onDeleteItems={handleDeleteItems}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
@@ -973,6 +1270,48 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onClearFilters={clearTableFilters}
               columnConfig={columnConfig}
               onColumnConfigChange={handleColumnConfigChange}
+              hideToolbar
+            />
+          ) : viewMode === 'grid' ? (
+            <TrackerGridView
+              filterType={filterType}
+              sortBy={sortBy}
+              sortDirection={sortDirection}
+              preserveItemOrder={recencyOrderActive}
+              onSwitchToFilesMode={onSwitchToFilesMode}
+              onItemSelect={handleItemSelect}
+              onDetailClose={handleCloseDetail}
+              selectedItemId={selectedItemId}
+              overrideItems={viewFilteredItems}
+              onArchiveItems={handleArchiveItems}
+              onDeleteItems={handleDeleteItems}
+              searchQuery={searchQuery}
+              hasExternalFilters={hasExternalTableFilters}
+              onClearFilters={clearTableFilters}
+              columnConfig={columnConfig}
+              onColumnConfigChange={handleColumnConfigChange}
+              columnFilters={columnFilters}
+              onColumnFiltersChange={handleColumnFiltersChange}
+              filterFields={headerFilterFields}
+              onSortChange={(column, direction) => {
+                setModeLayout({
+                  sortBy: column as TrackerSortColumn,
+                  sortDirection: direction,
+                });
+              }}
+            />
+          ) : viewMode === 'inbox' ? (
+            <TrackerInboxView
+              filterType={filterType}
+              overrideItems={inboxFilteredItems}
+              onItemSelect={handleItemSelect}
+              selectedItemId={selectedItemId}
+              onArchiveItems={handleArchiveItems}
+              onDeleteItems={handleDeleteItems}
+              onSwitchToFilesMode={onSwitchToFilesMode}
+              scope={inboxScope}
+              onScopeChange={(scope) => setModeLayout({ inboxScope: scope })}
+              currentIdentity={currentIdentity}
             />
           ) : viewMode === 'tag-board' ? (
             <TagBoard
@@ -980,7 +1319,9 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               searchQuery={searchQuery}
               onItemSelect={handleItemSelect}
               selectedItemId={selectedItemId}
-              overrideItems={filteredItems}
+              overrideItems={viewFilteredItems}
+              favoriteItemIds={favoriteItemIds}
+              onToggleFavorite={handleToggleFavorite}
             />
           ) : (
             <KanbanBoard
@@ -989,10 +1330,12 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onSwitchToFilesMode={onSwitchToFilesMode}
               onItemSelect={handleItemSelect}
               selectedItemId={selectedItemId}
-              overrideItems={filteredItems}
+              overrideItems={viewFilteredItems}
               onArchiveItems={handleArchiveItems}
               onDeleteItems={handleDeleteItems}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
+              favoriteItemIds={favoriteItemIds}
+              onToggleFavorite={handleToggleFavorite}
             />
           )}
 
@@ -1020,6 +1363,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onSwitchToFilesMode={onSwitchToFilesMode}
               onSwitchToAgentMode={handleSwitchToAgentMode}
               onLaunchSession={handleLaunchSession}
+              onLaunchWorktree={isWorktreesFeatureAvailable && isGitRepo ? handleLaunchWorktree : undefined}
               onArchive={handleArchiveItem}
               onDelete={handleDeleteItem}
               onOpenItem={handleItemSelect}
@@ -1042,6 +1386,15 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               setTimeout(() => setImportStatus(null), 4000);
             }
           }}
+        />
+      )}
+      {workspacePath && pendingWorktreeLaunch && (
+        <WorktreeBaseBranchPicker
+          isOpen
+          workspacePath={workspacePath}
+          initialName={pendingWorktreeLaunch.worktreeName}
+          onCreate={handleCreateTrackerWorktree}
+          onCancel={() => setPendingWorktreeLaunch(null)}
         />
       )}
     </div>

@@ -17,6 +17,21 @@ export function resolveActiveWorkspacePath(state: WindowState | undefined): stri
 }
 
 /**
+ * Reverse-lookup a window's id from the shared map. Single-sources the scan so
+ * callers that only need "which window is this?" don't each reimplement it
+ * (and don't have to import WindowManager to get it).
+ */
+export function getWindowIdForWindow(browserWindow: BrowserWindow | null | undefined): number | null {
+    if (!browserWindow) return null;
+    for (const [windowId, candidate] of windows) {
+        if (candidate === browserWindow) {
+            return windowId;
+        }
+    }
+    return null;
+}
+
+/**
  * Resolve the visible workspace path for a window id, honoring the project
  * rail's active selection. Returns the active rail project when set, falling
  * back to the window's primary/startup path, or `undefined` when the window

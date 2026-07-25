@@ -212,6 +212,47 @@ export interface EditorContext {
 }
 
 /**
+ * A single selected item an editor pushes to the chat panel.
+ *
+ * Unlike {@link EditorContext} (a single blob), items are a list — ideal for
+ * node-like editors (diagrams, CAD, electronics) where the user can select
+ * several nodes at once. Each item renders as its own removable chip in the
+ * chat, and the user can dismiss individual items so they are not sent to the
+ * model. The editor owns its selection and builds one item per selected node.
+ */
+export interface EditorContextItem {
+  /**
+   * Stable id, unique within this editor's current selection.
+   * Lets the host track items across pushes and lets the user dismiss a
+   * specific item. Use the underlying node/element id when you have one.
+   */
+  id: string;
+
+  /** Short label shown on the chat chip (e.g., "Rectangle 3", "R12 resistor"). */
+  label: string;
+
+  /** Optional Material Symbols icon name for the chip (e.g., 'category'). */
+  icon?: string;
+
+  /** Human-readable context injected into the AI prompt for this item. */
+  description: string;
+
+  /**
+   * Optional JSON-serializable payload describing the node (coordinates, part
+   * number, netlist entry, etc.). By default this is NOT sent to the model to
+   * keep prompts lean; set {@link includeData} to inline it as JSON. Cyclic,
+   * non-JSON, and payloads larger than 32 KiB are omitted safely.
+   */
+  data?: unknown;
+
+  /** When true, bounded JSON {@link data} is serialized alongside the description. */
+  includeData?: boolean;
+
+  /** Optional group label used to cluster a large set of items ("5 shapes"). */
+  groupLabel?: string;
+}
+
+/**
  * Menu item that can be added to the editor's "..." actions menu.
  * Extensions can register these to add custom actions to the header bar.
  */
@@ -294,6 +335,28 @@ export interface EditorHost {
 
   /** Whether this editor's tab is active */
   readonly isActive: boolean;
+
+  /**
+   * Whether the editor is currently rendered on screen.
+   *
+   * False when the editor is kept mounted but hidden — its tab is inactive,
+   * or its whole mode (Files/Agent/Tracker/…) is hidden behind another mode.
+   * Hidden editors should stop doing continuous work: pause render loops
+   * (requestAnimationFrame), defer expensive recomputation, and release
+   * GPU-heavy resources (WebGL contexts) until visible again.
+   *
+   * Optional: hosts that never hide a mounted editor (share viewer, offscreen
+   * AI-tool hosts) omit it; treat undefined as visible.
+   */
+  readonly visible?: boolean;
+
+  /**
+   * Subscribe to visibility changes (see `visible`).
+   *
+   * Fires with `false` when the editor is hidden while staying mounted, and
+   * `true` when it is revealed again. Returns an unsubscribe function.
+   */
+  onVisibilityChanged?(callback: (visible: boolean) => void): () => void;
 
   /**
    * Whether the editor is in read-only mode.
@@ -538,6 +601,34 @@ export interface EditorHost {
    * ```
    */
   setEditorContext(context: EditorContext | null): void;
+
+  /**
+   * Push a list of selected items to the chat panel as removable context chips.
+   *
+   * Use this instead of {@link setEditorContext} for node-like editors where
+   * the user can select multiple things at once (diagrams, CAD, electronics).
+   * Each item becomes its own chip that the user can individually dismiss; only
+   * the non-dismissed items' descriptions are included in the AI prompt.
+   *
+   * Call whenever the editor's selection changes. Pass `null` or `[]` to clear.
+   * Pushing a new set resets any prior per-item dismissals (a fresh selection
+   * is fresh).
+   *
+   * @example
+   * ```tsx
+   * // Report selected shapes in a diagram editor
+   * host.setEditorContextItems(selectedShapes.map((s) => ({
+   *   id: s.id,
+   *   label: s.type === 'text' ? `Text: ${s.text}` : `${s.type} ${s.id.slice(0, 4)}`,
+   *   description: `A ${s.type} at (${s.x}, ${s.y}), ${s.width}x${s.height}.`,
+   *   groupLabel: 'shapes',
+   * })));
+   *
+   * // Clear when nothing is selected
+   * host.setEditorContextItems(null);
+   * ```
+   */
+  setEditorContextItems(items: EditorContextItem[] | null): void;
 
   // ============ EDITOR API REGISTRATION ============
 

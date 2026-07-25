@@ -5,7 +5,7 @@
  */
 
 import React, { useEffect, RefObject } from 'react';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import {
   codexUsageColor,
@@ -15,7 +15,7 @@ import {
   formatResetTime,
   getCodexUsageWindows,
 } from '../../store/atoms/codexUsageAtoms';
-import { useSetSetting } from '../../hooks/useSetting';
+import { toggleGutterItemHiddenAtom } from '../../store/atoms/appSettings';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 
 interface CodexUsagePopoverProps {
@@ -102,7 +102,7 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
   onRefresh,
 }) => {
   const usage = useAtomValue(codexUsageAtom);
-  const setUsageIndicatorEnabled = useSetSetting('ai.showCodexUsageIndicator');
+  const toggleGutterItemHidden = useSetAtom(toggleGutterItemHiddenAtom);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
 
   const menu = useFloatingMenu({
@@ -227,7 +227,7 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
             )}
             <button
               onClick={() => {
-                setUsageIndicatorEnabled(false);
+                toggleGutterItemHidden({ id: 'codex-usage', hidden: true });
                 onClose();
               }}
               className="text-[11px] text-nim-muted hover:text-nim transition-colors"

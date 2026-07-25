@@ -14,6 +14,8 @@ import {
   appendActivity,
   buildComment,
   getCurrentIdentity,
+  humanOnlyStatusMessage,
+  isHumanOnlyStatus,
   newTrackerId,
 } from '../vendor/trackerWrite.js';
 import { resolveSqlitePath, resolveDefaultSqlitePath, resolveAppSettingsPath } from '../config/paths.js';
@@ -476,6 +478,20 @@ export class DirectGateway implements TrackerGateway {
     return typeof mapped === 'string' && mapped ? mapped : fallback;
   }
 
+  /**
+   * Refuse a write that promotes work past review offline, mirroring the app's
+   * MCP guard. Checks the workflow-status role field however the type names it,
+   * plus the conventional `status`, so approval can't slip through `--fields`.
+   */
+  private assertNotHumanOnlyStatus(
+    statusField: string,
+    input: { status?: unknown; fields?: Record<string, unknown> },
+  ): void {
+    const candidates = [input.status, input.fields?.[statusField], input.fields?.status];
+    const blocked = candidates.find(isHumanOnlyStatus);
+    if (blocked) this.refuseWrite(humanOnlyStatusMessage(String(blocked)));
+  }
+
   async createTracker(workspace: string, input: CreateInput): Promise<TrackerRecord> {
     const identity = getCurrentIdentity(workspace);
     const id = newTrackerId(input.type);
@@ -490,6 +506,7 @@ export class DirectGateway implements TrackerGateway {
     const titleField = rf('title', 'title');
     const statusField = rf('workflowStatus', 'status');
     const priorityField = rf('priority', 'priority');
+    this.assertNotHumanOnlyStatus(statusField, input);
 
     const data: Record<string, any> = {
       [titleField]: input.title,
@@ -588,6 +605,7 @@ export class DirectGateway implements TrackerGateway {
 
       const rf = (role: string, fallback: string): string =>
         this.roleField(workspace, row.type, role, fallback);
+      this.assertNotHumanOnlyStatus(rf('workflowStatus', 'status'), input);
 
       const changes: Record<string, { from: any; to: any }> = {};
       const setField = (field: string, value: unknown): void => {

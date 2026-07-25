@@ -11,6 +11,7 @@ import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { GitStatusService } from '../services/GitStatusService';
 import { autoMatchTeamForWorkspace } from '../services/TeamService';
 import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
+import { runWhenAppIsActive } from '../window/AppActivationGuard';
 
 // Save session state
 export async function saveSessionState() {
@@ -60,8 +61,8 @@ export async function saveSessionState() {
 
 // Restore session state
 // Returns true if windows were restored, false otherwise.
-// The last window (highest focus order) uses show() to activate the app once;
-// all other windows use showInactive() to avoid repeated activation.
+// All restored windows use showInactive() so launch never takes focus back
+// after the user switches to another application.
 export async function restoreSessionState(): Promise<boolean> {
     // In test mode (PLAYWRIGHT=1), always clear and skip session restoration
     // Tests that want to test restoration will not set PLAYWRIGHT env var at all
@@ -96,12 +97,9 @@ export async function restoreSessionState(): Promise<boolean> {
 
     // Restore each window in order
     // Use async creation to ensure windows are created sequentially
-    // The last window (highest focus order) uses show() to activate the app once;
-    // all earlier windows use showInactive() so the app doesn't steal focus repeatedly.
-    const totalWindows = sortedWindows.length;
-
-    for (let index = 0; index < totalWindows; index++) {
-        const sessionWindow = sortedWindows[index];
+    // Every window is shown inactive so a late ready-to-show event cannot
+    // foreground Nimbalyst after the user has switched applications.
+    for (const sessionWindow of sortedWindows) {
 
         // Wait for previous window to be ready before creating next
         await new Promise<void>((resolve) => {
@@ -162,9 +160,10 @@ export async function restoreSessionState(): Promise<boolean> {
                             logger.session.error('Error tracking workspace_opened event:', error);
                         }
 
-                        // Last window uses show() to activate app once; others use showInactive()
-                        const isLastWindow = index === totalWindows - 1;
-                        window = createWindow(false, true, sessionWindow.workspacePath, sessionWindow.bounds, isLastWindow ? undefined : { showInactive: true });
+                        window = createWindow(false, true, sessionWindow.workspacePath, sessionWindow.bounds, {
+                            showInactive: true,
+                            deferShowUntilAppActive: true,
+                        });
                         logger.session.info(`Restored workspace window: ${sessionWindow.workspacePath}`);
 
                         const restoredWorkspacePath = sessionWindow.workspacePath;
@@ -183,9 +182,10 @@ export async function restoreSessionState(): Promise<boolean> {
                 } else if (sessionWindow.mode === 'document' && sessionWindow.filePath) {
                     // Check if file still exists
                     if (existsSync(sessionWindow.filePath)) {
-                        // Last window uses show() to activate app once; others use showInactive()
-                        const isLastDocWindow = index === totalWindows - 1;
-                        window = createWindow(true, false, undefined, sessionWindow.bounds, isLastDocWindow ? undefined : { showInactive: true });
+                        window = createWindow(true, false, undefined, sessionWindow.bounds, {
+                            showInactive: true,
+                            deferShowUntilAppActive: true,
+                        });
                         if (window) {
                             window.once('ready-to-show', () => {
                                 loadFileIntoWindow(window!, sessionWindow.filePath!);
@@ -201,7 +201,7 @@ export async function restoreSessionState(): Promise<boolean> {
                 if (window && sessionWindow.devToolsOpen) {
                     // Wait for window to be ready before opening dev tools
                     window.webContents.once('did-finish-load', () => {
-                        window.webContents.openDevTools();
+                        runWhenAppIsActive(window, () => window.webContents.openDevTools());
                     });
                 }
 

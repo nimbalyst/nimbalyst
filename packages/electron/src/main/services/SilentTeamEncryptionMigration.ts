@@ -7,31 +7,61 @@ export interface MigrationCandidate {
 export interface SilentMigrationDependencies {
   getStatus: (orgId: string) => Promise<'legacy-e2e' | 'server-managed'>;
   migrate: (orgId: string) => Promise<unknown>;
+  getFinalizationStatus?: (orgId: string) => Promise<MigrationFinalizationStatus>;
+  finalizeDocument?: (orgId: string, documentId: string) => Promise<void>;
+  finalizeTitles?: (orgId: string) => Promise<void>;
   onStateChange?: (orgId: string, state: SilentMigrationState) => void;
 }
 
+export interface MigrationFinalizationStatus {
+  mode: 'legacy-e2e' | 'server-managed';
+  complete: boolean;
+  pendingDocumentIds: string[];
+  staleTitleDocumentIds: string[];
+  failedDocumentIds: string[];
+  documentsChecked: number;
+  finalizedAt: string | null;
+  purgedLegacyUpdates?: number;
+  purgedLegacySnapshots?: number;
+}
+
 export type SilentMigrationState =
-  | { status: 'migrating'; startedAt: string }
+  | {
+      status: 'migrating';
+      startedAt: string;
+      documentsCompleted?: number;
+      documentsTotal?: number;
+      phase?: 'custody' | 'titles' | 'documents' | 'verifying';
+    }
   | { status: 'complete'; finishedAt: string }
-  | { status: 'stuck'; failedAt: string; message: string };
+  | { status: 'stuck'; failedAt: string; message: string; retryAt?: string };
 
 const migrationStates = new Map<string, SilentMigrationState>();
 const inFlight = new Set<string>();
 
 /**
- * Orgs whose status has already been checked this app run.
- *
- * The scan runs on every auth-state-change. `getStatus` calls `getOrgScopedJwt`,
- * which on a 401 triggers `refreshSession()` -> another auth-state-change ->
- * another scan. Without this guard a persistent 401 spins forever (the exact
- * "teams login loop" this exists to stop). We check each org at most once per
- * run; migration is best-effort and retries on the next launch.
+ * Per-org cooldowns stop auth-refresh re-entry from becoming a login loop.
+ * Failures also get an unref'd timer so finalization retries during the current
+ * app run instead of waiting for another launch or incidental team-list read.
  */
-const attemptedStatus = new Set<string>();
+const nextAttemptAt = new Map<string, number>();
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const FAILURE_RETRY_MS = 60_000;
+const COMPLETE_RECHECK_MS = 6 * 60 * 60_000;
 
 /** Test/sign-out hook: forget which orgs were scanned so the next run re-checks. */
 export function resetSilentMigrationScanState(): void {
-  attemptedStatus.clear();
+  nextAttemptAt.clear();
+  for (const timer of retryTimers.values()) clearTimeout(timer);
+  retryTimers.clear();
+}
+
+/** Manual retry hook: bypass this org's failure/complete cooldown. */
+export function resetSilentMigrationForOrg(orgId: string): void {
+  nextAttemptAt.delete(orgId);
+  const timer = retryTimers.get(orgId);
+  if (timer) clearTimeout(timer);
+  retryTimers.delete(orgId);
 }
 
 export async function initializeServerManagedOrganization(
@@ -62,51 +92,100 @@ export async function runSilentTeamEncryptionMigrations(
   for (const candidate of candidates) {
     if (candidate.membershipType && candidate.membershipType !== 'active_member') continue;
     if (!canAdminister(candidate) || inFlight.has(candidate.orgId)) continue;
-    if (attemptedStatus.has(candidate.orgId)) continue;
+    if ((nextAttemptAt.get(candidate.orgId) ?? 0) > Date.now()) continue;
 
-    // Mark before the network call: a 401 here can re-enter this scan (via
-    // refreshSession -> auth-state-change) before we return, and the re-entrant
-    // pass must already see this org as attempted.
-    attemptedStatus.add(candidate.orgId);
-
-    let status: 'legacy-e2e' | 'server-managed';
-    try {
-      status = await dependencies.getStatus(candidate.orgId);
-    } catch (error) {
-      // A status-check failure (typically a 401 that a session refresh can't
-      // fix) must not abort the whole scan -- other orgs still get their turn.
-      failed.push(candidate.orgId);
-      const stuck: SilentMigrationState = {
-        status: 'stuck',
-        failedAt: new Date().toISOString(),
-        message: error instanceof Error ? error.message : String(error),
-      };
-      migrationStates.set(candidate.orgId, stuck);
-      dependencies.onStateChange?.(candidate.orgId, stuck);
-      continue;
-    }
-    if (status !== 'legacy-e2e') continue;
-
-    attempted += 1;
+    // Claim before any network work: a 401 can refresh auth and synchronously
+    // re-enter the scan. The in-flight guard prevents a login loop while the
+    // cooldown below guarantees failures retry during this app run.
     inFlight.add(candidate.orgId);
-    const migrating: SilentMigrationState = { status: 'migrating', startedAt: new Date().toISOString() };
+    attempted += 1;
+    const startedAt = new Date().toISOString();
+    const migrating: SilentMigrationState = { status: 'migrating', startedAt, phase: 'custody' };
     migrationStates.set(candidate.orgId, migrating);
     dependencies.onStateChange?.(candidate.orgId, migrating);
     try {
-      await dependencies.migrate(candidate.orgId);
-      migrated += 1;
+      const status = await dependencies.getStatus(candidate.orgId);
+      if (status === 'legacy-e2e') {
+        await dependencies.migrate(candidate.orgId);
+        migrated += 1;
+      }
+
+      if (dependencies.getFinalizationStatus) {
+        let finalization = await dependencies.getFinalizationStatus(candidate.orgId);
+        if (finalization.staleTitleDocumentIds.length > 0) {
+          if (!dependencies.finalizeTitles) {
+            throw new Error('Legacy document titles remain but no title finalizer is available');
+          }
+          const titleState: SilentMigrationState = { status: 'migrating', startedAt, phase: 'titles' };
+          migrationStates.set(candidate.orgId, titleState);
+          dependencies.onStateChange?.(candidate.orgId, titleState);
+          await dependencies.finalizeTitles(candidate.orgId);
+        }
+
+        const pending = finalization.pendingDocumentIds;
+        for (let index = 0; index < pending.length; index += 1) {
+          if (!dependencies.finalizeDocument) {
+            throw new Error('Legacy document rows remain but no document finalizer is available');
+          }
+          const documentState: SilentMigrationState = {
+            status: 'migrating',
+            startedAt,
+            phase: 'documents',
+            documentsCompleted: index,
+            documentsTotal: pending.length,
+          };
+          migrationStates.set(candidate.orgId, documentState);
+          dependencies.onStateChange?.(candidate.orgId, documentState);
+          await dependencies.finalizeDocument(candidate.orgId, pending[index]);
+        }
+
+        const verifying: SilentMigrationState = {
+          status: 'migrating',
+          startedAt,
+          phase: 'verifying',
+          documentsCompleted: pending.length,
+          documentsTotal: pending.length,
+        };
+        migrationStates.set(candidate.orgId, verifying);
+        dependencies.onStateChange?.(candidate.orgId, verifying);
+        finalization = await dependencies.getFinalizationStatus(candidate.orgId);
+        if (!finalization.complete) {
+          throw new Error(
+            `Migration is not finalized: ${finalization.pendingDocumentIds.length} document(s), ` +
+            `${finalization.staleTitleDocumentIds.length} title(s), and ` +
+            `${finalization.failedDocumentIds.length} verification failure(s) remain`,
+          );
+        }
+      }
+
       const complete: SilentMigrationState = { status: 'complete', finishedAt: new Date().toISOString() };
       migrationStates.set(candidate.orgId, complete);
       dependencies.onStateChange?.(candidate.orgId, complete);
+      nextAttemptAt.set(candidate.orgId, Date.now() + COMPLETE_RECHECK_MS);
+      const retryTimer = retryTimers.get(candidate.orgId);
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimers.delete(candidate.orgId);
     } catch (error) {
       failed.push(candidate.orgId);
+      const retryAtMs = Date.now() + FAILURE_RETRY_MS;
+      nextAttemptAt.set(candidate.orgId, retryAtMs);
       const stuck: SilentMigrationState = {
         status: 'stuck',
         failedAt: new Date().toISOString(),
         message: error instanceof Error ? error.message : String(error),
+        retryAt: new Date(retryAtMs).toISOString(),
       };
       migrationStates.set(candidate.orgId, stuck);
       dependencies.onStateChange?.(candidate.orgId, stuck);
+      const existingTimer = retryTimers.get(candidate.orgId);
+      if (existingTimer) clearTimeout(existingTimer);
+      const retryTimer = setTimeout(() => {
+        retryTimers.delete(candidate.orgId);
+        nextAttemptAt.delete(candidate.orgId);
+        void runSilentTeamEncryptionMigrations([candidate], dependencies);
+      }, FAILURE_RETRY_MS);
+      retryTimer.unref?.();
+      retryTimers.set(candidate.orgId, retryTimer);
     } finally {
       inFlight.delete(candidate.orgId);
     }

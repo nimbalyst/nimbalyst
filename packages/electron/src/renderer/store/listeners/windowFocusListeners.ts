@@ -30,10 +30,6 @@ export function initWindowFocusListeners(): () => void {
   const unsubscribe = window.electronAPI.on('window:focus-changed', handler);
 
   return () => {
-    if (typeof unsubscribe === 'function') {
-      unsubscribe();
-    } else {
-      window.electronAPI.off?.('window:focus-changed', handler);
-    }
+    unsubscribe();
   };
 }

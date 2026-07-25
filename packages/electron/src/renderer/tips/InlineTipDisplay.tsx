@@ -30,7 +30,14 @@ import { markTipCompleted, recordTipShown } from './TipService';
 import { activeTipIdAtom, emptyTranscriptVisibleCountAtom } from './atoms';
 import { AllTipsDialog } from './AllTipsDialog';
 
-const orderedTips = [...tips].sort(
+const transcriptTips = tips.filter((tip) => {
+  const screen = tip.trigger.screen;
+  if (screen === 'files-empty') return false;
+  if (Array.isArray(screen)) return screen.some((target) => target !== 'files-empty');
+  return true;
+});
+
+const orderedTips = [...transcriptTips].sort(
   (a, b) => (b.trigger.priority ?? 0) - (a.trigger.priority ?? 0)
 );
 
@@ -182,6 +189,7 @@ export function InlineTipDisplay({ onInsertPrompt }: InlineTipDisplayProps = {})
       <AllTipsDialog
         isOpen={showAllTipsDialog}
         onClose={() => setShowAllTipsDialog(false)}
+        tipDefinitions={transcriptTips}
       />
     </>
   );

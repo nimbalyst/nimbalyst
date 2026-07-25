@@ -1,5 +1,38 @@
-#if os(iOS)
 import Foundation
+
+/// The initial coding-session focus for a newly started voice conversation.
+public enum VoiceSessionStartScope: Equatable, Sendable {
+    /// Start at project scope so the voice agent can choose among synced sessions.
+    case project
+    /// Seed the conversation with one coding session as its initial focus.
+    case session(String)
+}
+
+enum VoiceSessionFocusEvent: Equatable {
+    case start(VoiceSessionStartScope)
+    case switchSession(String)
+}
+
+/// Pure focus transition seam shared by startup and the voice `switch_session` tool.
+enum VoiceSessionFocusReducer {
+    static func reduce(current: String?, event: VoiceSessionFocusEvent) -> String? {
+        switch event {
+        case .start(.project):
+            return nil
+        case .start(.session(let sessionId)), .switchSession(let sessionId):
+            return sessionId
+        }
+    }
+}
+
+/// Pure presentation policy for the session-list project-wide voice action.
+enum VoiceSessionListActionPolicy {
+    static func showsStartVoiceAgent(selectedTabIsSessions: Bool, voiceIsDisconnected: Bool) -> Bool {
+        selectedTabIsSessions && voiceIsDisconnected
+    }
+}
+
+#if os(iOS)
 import os
 import UIKit
 
@@ -23,9 +56,24 @@ public final class VoiceAgent: ObservableObject {
         case idle               // Connected but timed out, waiting for reactivation
     }
 
+    public enum ActivationIssue: Identifiable, Equatable {
+        case missingOpenAIKey
+        case microphonePermissionDenied
+        case audioSessionFailed(String)
+
+        public var id: String {
+            switch self {
+            case .missingOpenAIKey: return "missing-openai-key"
+            case .microphonePermissionDenied: return "microphone-permission-denied"
+            case .audioSessionFailed: return "audio-session-failed"
+            }
+        }
+    }
+
     @Published public private(set) var state: State = .disconnected
     @Published public var activeSessionId: String?
     @Published public private(set) var pendingPrompt: PendingPrompt?
+    @Published public private(set) var activationIssue: ActivationIssue?
 
     /// The tool call the voice agent is currently executing, if any. Drives the
     /// floating-mic tool indicator (animated ring + corner badge). Set when a
@@ -105,11 +153,24 @@ public final class VoiceAgent: ObservableObject {
 
     // MARK: - Activate / Deactivate
 
+    /// Start a new voice conversation with an explicit initial coding-session scope.
+    /// Resuming an idle conversation continues to use `activate()` so it preserves focus.
+    public func start(scope: VoiceSessionStartScope) {
+        guard state == .disconnected else { return }
+        activationIssue = nil
+        activeSessionId = VoiceSessionFocusReducer.reduce(
+            current: activeSessionId,
+            event: .start(scope)
+        )
+        activate()
+    }
+
     /// Start or resume voice mode. Establishes the OpenAI Realtime connection
     /// and begins listening for user speech.
     public func activate() {
         guard let apiKey = KeychainManager.getOpenAIApiKey(), !apiKey.isEmpty else {
             logger.error("Cannot activate voice mode: no OpenAI API key")
+            activationIssue = .missingOpenAIKey
             return
         }
 
@@ -135,6 +196,7 @@ public final class VoiceAgent: ObservableObject {
             guard granted else {
                 logger.error("Microphone permission denied")
                 state = .disconnected
+                activationIssue = .microphonePermissionDenied
                 return
             }
 
@@ -143,6 +205,7 @@ public final class VoiceAgent: ObservableObject {
             } catch {
                 logger.error("Failed to configure audio session: \(error.localizedDescription)")
                 state = .disconnected
+                activationIssue = .audioSessionFailed(error.localizedDescription)
                 return
             }
 
@@ -184,6 +247,10 @@ public final class VoiceAgent: ObservableObject {
         currentToolCall = nil
         queuedCompletions.removeAll()
         state = .disconnected
+    }
+
+    public func dismissActivationIssue() {
+        activationIssue = nil
     }
 
     /// User tapped to interrupt the agent mid-turn (while speaking or processing).
@@ -701,7 +768,10 @@ public final class VoiceAgent: ObservableObject {
             return
         }
 
-        activeSessionId = sessionId
+        activeSessionId = VoiceSessionFocusReducer.reduce(
+            current: activeSessionId,
+            event: .switchSession(sessionId)
+        )
         let title = sessionTitle(for: sessionId) ?? "Unknown"
 
         realtimeClient?.sendFunctionCallResult(

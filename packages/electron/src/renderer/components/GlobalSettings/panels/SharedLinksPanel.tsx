@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { MaterialSymbol, copyToClipboard } from '@nimbalyst/runtime';
 import { buildShareUrl } from '../../../store/atoms/sessionShares';
+import { useAtomValue } from 'jotai';
+import { personalAccountsAtom } from '../../../store/atoms/settingsDomains';
 
 interface SharedLink {
   shareId: string;
@@ -10,6 +12,7 @@ interface SharedLink {
   createdAt: string;
   expiresAt: string | null;
   viewCount: number;
+  owningPersonalOrgId: string;
 }
 
 type PanelState = 'loading' | 'loaded' | 'unauthenticated' | 'error';
@@ -20,6 +23,7 @@ type PanelState = 'loading' | 'loaded' | 'unauthenticated' | 'error';
  * Self-contained - fetches data via IPC, no props needed.
  */
 export const SharedLinksPanel: React.FC = () => {
+  const accounts = useAtomValue(personalAccountsAtom);
   const [shares, setShares] = useState<SharedLink[]>([]);
   const [shareKeys, setShareKeys] = useState<Record<string, string>>({});
   const [state, setState] = useState<PanelState>('loading');
@@ -62,6 +66,7 @@ export const SharedLinksPanel: React.FC = () => {
       const result = await (window as any).electronAPI?.deleteShare({
         shareId: share.shareId,
         sessionId: typeof share.sessionId === 'string' ? share.sessionId : undefined,
+        owningPersonalOrgId: share.owningPersonalOrgId,
       });
       if (result?.success) {
         setShares(prev => prev.filter(s => s.shareId !== share.shareId));
@@ -202,6 +207,9 @@ export const SharedLinksPanel: React.FC = () => {
                   </span>
                 </div>
                 <div className="flex items-center gap-2 text-[0.6875rem] text-[var(--nim-text-faint)]">
+                  <span className="select-text">
+                    Created by {accounts.find((account) => account.personalOrgId === share.owningPersonalOrgId)?.email ?? 'unknown account'}
+                  </span>
                   <span className="truncate">share.nimbalyst.com/share/{share.shareId.slice(0, 8)}...</span>
                   <span>{formatDate(share.createdAt)}</span>
                   <span>{formatSize(share.sizeBytes)}</span>

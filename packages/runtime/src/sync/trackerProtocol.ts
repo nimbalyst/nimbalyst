@@ -27,6 +27,7 @@ export type {
   TrackerServerMessage,
   EncryptedTrackerSchemaEnvelope,
   EncryptedTrackerNavigationEnvelope,
+  EncryptedTrackerSavedViewEnvelope,
   TrackerSyncRequestMessage,
   TrackerMutationRequestMessage,
   TrackerSetConfigMessage,
@@ -35,6 +36,8 @@ export type {
   TrackerSchemaMutationRequestMessage,
   TrackerNavigationSyncRequestMessage,
   TrackerNavigationMutationRequestMessage,
+  TrackerSavedViewSyncRequestMessage,
+  TrackerSavedViewMutationRequestMessage,
   TrackerSyncResponseMessage,
   TrackerDeltaMessage,
   TrackerMutationAckMessage,
@@ -45,6 +48,9 @@ export type {
   TrackerNavigationSyncResponseMessage,
   TrackerNavigationDeltaMessage,
   TrackerNavigationMutationAckMessage,
+  TrackerSavedViewSyncResponseMessage,
+  TrackerSavedViewDeltaMessage,
+  TrackerSavedViewMutationAckMessage,
   TrackerPongMessage,
   TrackerRoomMovedMessage,
   TrackerErrorMessage,
@@ -94,8 +100,6 @@ export function buildTrackerRoomId(orgId: string, teamProjectId: TeamProjectId):
  * Notably absent compared to the v1 payload:
  *   - `fieldUpdatedAt`: the per-field LWW timestamp map is gone. Ordering
  *     is now expressed by the server-assigned `syncId` on the envelope.
- *   - `activity`: the activity feed becomes a derivation of the
- *     append-only comment/event log rather than a snapshot per item.
  *   - `content`: the body text is no longer carried in the metadata
  *     payload. Bodies live in DocumentRoom Y.Docs (per D5) and the
  *     payload only carries `bodyVersion` for cache invalidation.
@@ -138,6 +142,13 @@ export interface TrackerItemPayload {
 
   /** Append-only comment log. Comments are never lost. */
   comments: TrackerCommentEntry[];
+
+  /**
+   * Bounded activity snapshot used by current tracker clients. Optional for
+   * compatibility with payloads written before shared history was replicated.
+   * This can be replaced by a derived view once the append-only event log ships.
+   */
+  activity?: TrackerActivity[];
 
   /** System/infrastructure metadata. LWW per `syncId`. */
   system: TrackerPayloadSystem;
@@ -184,6 +195,7 @@ export interface TrackerPayloadSystem {
   createdByAgent?: boolean;
   linkedCommitSha?: string;
   linkedCommits?: Array<{ sha: string; message: string; sessionId?: string; timestamp: string }>;
+  linkedPullRequests?: Array<{ remote: string; number: number; url?: string }>;
   /** Body document ID, if the body is hosted in a DocumentRoom. */
   documentId?: string;
   /**
@@ -204,7 +216,7 @@ export interface TrackerPayloadSystem {
  * the in-memory `TrackerItem`/`TrackerRecord` shapes share one source
  * of truth (snapshotted email + display name + git fallbacks).
  */
-import type { TrackerIdentity, TrackerOrigin } from '../core/DocumentService';
+import type { TrackerActivity, TrackerIdentity, TrackerOrigin } from '../core/DocumentService';
 export type { TrackerIdentity };
 
 /**

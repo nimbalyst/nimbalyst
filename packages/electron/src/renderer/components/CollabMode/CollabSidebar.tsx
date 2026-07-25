@@ -1,15 +1,21 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { usePostHog } from 'posthog-js/react';
 import { useAtom, useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { InputModal } from '../InputModal';
 import { WorkspaceSummaryHeader } from '../WorkspaceSummaryHeader';
+import { CollabCreateItemDialog } from './CollabCreateItemDialog';
+import {
+  buildSharedNewDocumentMenuItems,
+  CollabNewDocumentMenu,
+} from './CollabNewDocumentMenu';
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../../hooks/useFloatingMenu';
 import {
   sharedDocumentsAtom,
+  allSharedDocumentsAtom,
   sharedFoldersAtom,
   teamSyncStatusAtom,
-  removeSharedDocument,
+  trashSharedDocument,
   updateSharedDocumentTitle,
   moveSharedDocument,
   createSharedFolder,
@@ -36,9 +42,9 @@ import {
   getCollabParentPath,
   joinCollabPath,
   normalizeCollabPath,
+  resolveCollabCreateTargetFolderId,
   type CollabTreeNode,
 } from './collabTree';
-import { registerDocumentInIndex } from '../../store/atoms/collabDocuments';
 import { useCollabLocalOrigin } from '../../hooks/useCollabLocalOrigin';
 import { useSetAtom } from 'jotai';
 import { historyDialogFileAtom } from '../../store/atoms/historyDialog';
@@ -54,6 +60,12 @@ import {
   markAllSharedDocsViewed,
   type CollabTreeFilter,
 } from '../../store/atoms/collabDiscovery';
+import {
+  getCollaborativeDocumentTypeCatalog,
+  type CollaborativeDocumentTypeDescriptor,
+} from '../../services/CollaborativeDocumentTypeCatalog';
+import { resolveSharedDocumentTypePresentation } from '../../utils/sharedDocumentTypeMetadata';
+import { createCollaborativeDocument } from '../../services/collaborativeDocumentCreationOrchestrator';
 
 // ---------------------------------------------------------------------------
 // TeamSync status indicator -- shown in the header subtitle slot
@@ -96,8 +108,15 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
   onShowHome,
   homeActive,
 }) => {
+  const documentTypeCatalog = getCollaborativeDocumentTypeCatalog();
+  const catalogRevision = useSyncExternalStore(
+    documentTypeCatalog.subscribe,
+    documentTypeCatalog.getSnapshot,
+    documentTypeCatalog.getSnapshot,
+  );
   const posthog = usePostHog();
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const allSharedDocuments = useAtomValue(allSharedDocumentsAtom);
   const sharedFolders = useAtomValue(sharedFoldersAtom);
   const teamSyncStatus = useAtomValue(teamSyncStatusAtom);
   const teamOrgId = useAtomValue(activeTeamOrgIdAtom);
@@ -129,8 +148,9 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
   // first-class folderId, so the rename rewrites descendant document titles.
   const [legacyFolderToRename, setLegacyFolderToRename] = useState<{ path: string; name: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isCreateDocumentOpen, setIsCreateDocumentOpen] = useState(false);
+  const [createDocumentDescriptor, setCreateDocumentDescriptor] = useState<CollaborativeDocumentTypeDescriptor | null>(null);
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
+  const [createTargetFolderId, setCreateTargetFolderId] = useState<string | null>(null);
   const [documentToRename, setDocumentToRename] = useState<SharedDocument | null>(null);
   const [hasLoadedState, setHasLoadedState] = useState(false);
   const [loadedWorkspacePath, setLoadedWorkspacePath] = useState<string | null>(null);
@@ -260,6 +280,13 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     open: overflowOpen,
     onOpenChange: setOverflowOpen,
   });
+  const newDocumentMenu = useFloatingMenu({
+    placement: 'bottom-start',
+  });
+  const sharedNewDocumentMenuItems = useMemo(
+    () => buildSharedNewDocumentMenuItems(documentTypeCatalog.getDescriptors()),
+    [catalogRevision, documentTypeCatalog],
+  );
 
   const handleMarkAllRead = useCallback(() => {
     setOverflowOpen(false);
@@ -404,11 +431,9 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     if (!contextMenu) return;
 
     if (contextMenu.node.type === 'document') {
-      if (!canMutateMetadata('delete this document')) return;
+      if (!canMutateMetadata('move this document to Trash')) return;
       const { document } = contextMenu.node;
-      if (window.confirm(`Delete shared document "${getCollabNodeName(document.title) || document.title}"?`)) {
-        removeSharedDocument(document.documentId);
-      }
+      trashSharedDocument(document.documentId);
       setContextMenu(null);
       return;
     }
@@ -420,7 +445,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
 
     const subtreeFolderIds = new Set(collectFolderSubtree(sharedFolders, folderId));
     const folderCount = subtreeFolderIds.size - 1; // exclude the folder itself
-    const docCount = sharedDocuments.filter(
+    const docCount = allSharedDocuments.filter(
       d => d.parentFolderId && subtreeFolderIds.has(d.parentFolderId)
     ).length;
 
@@ -437,7 +462,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
       }
     }
     setContextMenu(null);
-  }, [canMutateMetadata, contextMenu, sharedFolders, sharedDocuments, selectedFolderId, posthog]);
+  }, [canMutateMetadata, contextMenu, sharedFolders, allSharedDocuments, selectedFolderId, posthog]);
 
   const handleCopyFolderLink = useCallback(async (folderId: string) => {
     if (!teamOrgId) {
@@ -570,16 +595,38 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
   }, [pendingCollabFolder, folderById, folderPathById, setPendingCollabFolder]);
 
   const getCreationBaseFolderId = useCallback((): string | null => {
-    if (contextMenu?.node.type === 'folder') return contextMenu.node.folderId ?? null;
-    return selectedFolderId;
+    const contextFolderId = contextMenu?.node.type === 'folder'
+      ? (contextMenu.node.folderId ?? null)
+      : undefined;
+    return resolveCollabCreateTargetFolderId(contextFolderId, selectedFolderId);
   }, [contextMenu, selectedFolderId]);
+
+  const openCreateFolderDialog = useCallback(() => {
+    setCreateTargetFolderId(getCreationBaseFolderId());
+    setIsCreateFolderOpen(true);
+    setContextMenu(null);
+  }, [getCreationBaseFolderId]);
+
+  const openCreateDocumentMenu = useCallback((reference: HTMLElement) => {
+    setCreateTargetFolderId(getCreationBaseFolderId());
+    const rect = reference.getBoundingClientRect();
+    newDocumentMenu.refs.setPositionReference(virtualElement(rect.left, rect.bottom));
+    newDocumentMenu.setIsOpen(true);
+    setContextMenu(null);
+  }, [getCreationBaseFolderId, newDocumentMenu.refs, newDocumentMenu.setIsOpen]);
+
+  const selectCreateDocumentType = useCallback((descriptor: CollaborativeDocumentTypeDescriptor) => {
+    if (!descriptor.capabilities.sharedCreate) return;
+    newDocumentMenu.setIsOpen(false);
+    setCreateDocumentDescriptor(descriptor);
+  }, [newDocumentMenu.setIsOpen]);
 
   const handleCreateFolder = useCallback(async (folderName: string) => {
     if (!canMutateMetadata('create folders')) return;
     const name = folderName.trim();
     if (!name) return;
 
-    const parentId = getCreationBaseFolderId();
+    const parentId = createTargetFolderId;
     const parentPath = parentId ? (folderPathById.get(parentId) ?? '') : '';
     const nextPath = joinCollabPath(parentPath, name);
     if (existingPaths.has(nextPath)) {
@@ -599,37 +646,28 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     setSelectedFolderId(folderId);
     setIsCreateFolderOpen(false);
     setContextMenu(null);
-  }, [canMutateMetadata, existingPaths, getCreationBaseFolderId, folderPathById, posthog]);
+  }, [canMutateMetadata, createTargetFolderId, existingPaths, folderPathById, posthog]);
 
   const handleCreateDocument = useCallback(async (documentName: string) => {
     if (!canMutateMetadata('create documents')) return;
-    const name = documentName.trim();
-    if (!name) return;
-
-    const parentId = getCreationBaseFolderId();
+    const descriptor = createDocumentDescriptor;
+    if (!descriptor) return;
+    const parentId = createTargetFolderId;
     const parentPath = parentId ? (folderPathById.get(parentId) ?? '') : '';
-    // Dual-write: the title carries the full path so un-upgraded clients still
-    // render the tree, while parentFolderId is the authoritative placement.
-    const title = joinCollabPath(parentPath, name);
-    if (existingPaths.has(title)) {
-      window.alert(`A document or folder named "${title}" already exists.`);
+    try {
+      await createCollaborativeDocument({
+        descriptor,
+        requestedName: documentName,
+        parentFolderId: parentId,
+        sourceContent: descriptor.creation?.defaultContent ?? '',
+      });
+    } catch (error) {
+      errorNotificationService.showError(
+        'Could not create shared document',
+        error instanceof Error ? error.message : String(error),
+      );
       return;
     }
-
-    const now = Date.now();
-    const documentId = crypto.randomUUID();
-    const document: SharedDocument = {
-      documentId,
-      title,
-      documentType: 'markdown',
-      createdBy: '',
-      createdAt: now,
-      updatedAt: now,
-      parentFolderId: parentId,
-    };
-
-    await registerDocumentInIndex(documentId, title, 'markdown');
-    if (parentId) moveSharedDocument(documentId, parentId);
 
     if (parentPath) {
       setExpandedFolders((currentFolders) => {
@@ -641,10 +679,9 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
 
     setSelectedFolderPath(parentPath || null);
     setSelectedFolderId(parentId);
-    setIsCreateDocumentOpen(false);
+    setCreateDocumentDescriptor(null);
     setContextMenu(null);
-    onDocumentSelect(document);
-  }, [canMutateMetadata, existingPaths, getCreationBaseFolderId, folderPathById, onDocumentSelect]);
+  }, [canMutateMetadata, createDocumentDescriptor, createTargetFolderId, folderPathById]);
 
   const handleRenameDocument = useCallback(async (documentName: string) => {
     if (!documentToRename) return;
@@ -878,6 +915,10 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
       }
 
       const isFavorite = favoriteSet.has(node.document.documentId);
+      const typePresentation = resolveSharedDocumentTypePresentation(
+        node.document,
+        documentTypeCatalog,
+      );
 
       return (
         <button
@@ -907,7 +948,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
         >
           <span className="file-tree-spacer" />
           <span className="file-tree-icon">
-            <MaterialSymbol icon="description" size={16} />
+            <MaterialSymbol icon={typePresentation.icon} size={16} />
           </span>
           <span className="file-tree-name">{node.name}</span>
           <span
@@ -950,6 +991,8 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     toggleFolder,
     favoriteSet,
     showUnreadBubbles,
+    catalogRevision,
+    documentTypeCatalog,
   ]);
 
   const selectedFolderLabel = selectedFolderPath ? getCollabNodeName(selectedFolderPath) : 'Shared Docs';
@@ -989,13 +1032,12 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               </button>
             )}
             <button
+              ref={newDocumentMenu.refs.setReference}
+              {...newDocumentMenu.getReferenceProps()}
               type="button"
               className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
               title="New document"
-              onClick={() => {
-                setIsCreateDocumentOpen(true);
-                setContextMenu(null);
-              }}
+              onClick={event => openCreateDocumentMenu(event.currentTarget)}
             >
               <MaterialSymbol icon="note_add" size={16} />
             </button>
@@ -1003,10 +1045,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               type="button"
               className="workspace-action-button bg-transparent border-none p-1.5 cursor-pointer rounded text-[var(--nim-text-faint)] flex items-center justify-center transition-all duration-200 relative hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
               title="New folder"
-              onClick={() => {
-                setIsCreateFolderOpen(true);
-                setContextMenu(null);
-              }}
+              onClick={openCreateFolderDialog}
             >
               <MaterialSymbol icon="create_new_folder" size={16} />
             </button>
@@ -1238,6 +1277,22 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
         </FloatingPortal>
       )}
 
+      {newDocumentMenu.isOpen && (
+        <FloatingPortal>
+          <div
+            ref={newDocumentMenu.refs.setFloating}
+            style={newDocumentMenu.floatingStyles}
+            {...newDocumentMenu.getFloatingProps()}
+            className="z-[10000]"
+          >
+            <CollabNewDocumentMenu
+              items={sharedNewDocumentMenuItems}
+              onSelect={selectCreateDocumentType}
+            />
+          </div>
+        </FloatingPortal>
+      )}
+
       {/* Context menu */}
       {contextMenu && (
         <FloatingPortal>
@@ -1252,7 +1307,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               <button
                 type="button"
                 className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover"
-                onClick={() => setIsCreateDocumentOpen(true)}
+                onClick={event => openCreateDocumentMenu(event.currentTarget)}
               >
                 <MaterialSymbol icon="note_add" size={18} />
                 <span>New Document</span>
@@ -1260,7 +1315,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
               <button
                 type="button"
                 className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded border-none bg-transparent cursor-pointer transition-colors text-left text-nim hover:bg-nim-hover"
-                onClick={() => setIsCreateFolderOpen(true)}
+                onClick={openCreateFolderDialog}
               >
                 <MaterialSymbol icon="create_new_folder" size={18} />
                 <span>New Folder</span>
@@ -1462,7 +1517,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
                 onClick={handleDelete}
               >
                 <MaterialSymbol icon="delete" size={18} />
-                <span>Delete</span>
+                <span>Move to Trash</span>
               </button>
             </>
           )}
@@ -1470,25 +1525,26 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
         </FloatingPortal>
       )}
 
-      <InputModal
-        isOpen={isCreateDocumentOpen}
-        title="New Shared Document"
-        placeholder="Document name"
-        defaultValue=""
-        confirmLabel="Create"
+      <CollabCreateItemDialog
+        isOpen={createDocumentDescriptor !== null}
+        kind="document"
+        documentDescriptor={createDocumentDescriptor ?? undefined}
+        folders={sharedFolders}
+        targetFolderId={createTargetFolderId}
+        onTargetFolderChange={setCreateTargetFolderId}
         onConfirm={handleCreateDocument}
         onCancel={() => {
-          setIsCreateDocumentOpen(false);
+          setCreateDocumentDescriptor(null);
           setContextMenu(null);
         }}
       />
 
-      <InputModal
+      <CollabCreateItemDialog
         isOpen={isCreateFolderOpen}
-        title="New Shared Folder"
-        placeholder="Folder name"
-        defaultValue=""
-        confirmLabel="Create"
+        kind="folder"
+        folders={sharedFolders}
+        targetFolderId={createTargetFolderId}
+        onTargetFolderChange={setCreateTargetFolderId}
         onConfirm={handleCreateFolder}
         onCancel={() => {
           setIsCreateFolderOpen(false);

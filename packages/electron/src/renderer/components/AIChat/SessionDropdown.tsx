@@ -47,6 +47,8 @@ interface SessionDropdownProps {
   onDeleteSession: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, newName: string) => void;
   onOpenSessionManager?: () => void;
+  /** Extra classes for the root wrapper (e.g. flex sizing from the header). */
+  className?: string;
 }
 
 export function SessionDropdown({
@@ -56,7 +58,8 @@ export function SessionDropdown({
   onNewSession,
   onDeleteSession,
   onRenameSession,
-  onOpenSessionManager
+  onOpenSessionManager,
+  className = ''
 }: SessionDropdownProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -104,17 +107,17 @@ export function SessionDropdown({
   };
 
   return (
-    <div className="session-dropdown relative">
+    <div className={`session-dropdown relative min-w-0 ${className}`}>
       <button
         ref={menu.refs.setReference}
         {...menu.getReferenceProps()}
-        className="session-dropdown-trigger flex items-center gap-1 px-2 py-1.5 bg-transparent border border-[var(--nim-border)] rounded-md text-[var(--nim-text)] text-[13px] cursor-pointer transition-all duration-200 h-8 hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-border-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+        className="session-dropdown-trigger flex items-center gap-1 w-full min-w-0 px-2 py-1.5 bg-transparent border border-[var(--nim-border)] rounded-md text-[var(--nim-text)] text-[13px] cursor-pointer transition-all duration-200 h-8 hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-border-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
         onClick={() => menu.setIsOpen(!menu.isOpen)}
         title="Session History"
       >
         {currentSessionId && <SessionStatusIndicator sessionId={currentSessionId} />}
         <ProviderIcon provider={getCurrentSession()?.provider || 'claude'} size={16} />
-        <span className="session-dropdown-name overflow-hidden text-ellipsis whitespace-nowrap max-w-[200px]">{getCurrentSessionName()}</span>
+        <span className="session-dropdown-name flex-1 min-w-0 text-left overflow-hidden text-ellipsis whitespace-nowrap">{getCurrentSessionName()}</span>
         <MaterialSymbol
           icon="expand_more"
           size={16}
@@ -130,6 +133,17 @@ export function SessionDropdown({
             {...menu.getFloatingProps()}
             className="session-dropdown-menu min-w-[280px] max-w-[400px] bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.1)] z-[10000] overflow-hidden"
           >
+            <button
+              className="session-dropdown-new flex items-center gap-2 w-full px-3 py-2 bg-transparent border-none text-[var(--nim-primary)] text-[13px] font-medium cursor-pointer transition-colors duration-200 text-left hover:bg-[var(--nim-bg-hover)]"
+              onClick={() => {
+                onNewSession();
+                menu.setIsOpen(false);
+              }}
+            >
+              <MaterialSymbol icon="add" size={16} />
+              <span>New session</span>
+            </button>
+            <div className="session-dropdown-divider h-px bg-[var(--nim-border)] my-1" />
             {onOpenSessionManager && (
               <button
                 className="session-dropdown-all-sessions flex items-center gap-2 w-full px-3 py-2 bg-transparent border-none text-[var(--nim-text)] text-[13px] cursor-pointer transition-colors duration-200 text-left hover:bg-[var(--nim-bg-hover)]"

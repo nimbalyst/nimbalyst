@@ -16,8 +16,9 @@
  */
 
 import { promises as fs } from 'fs';
-import os from 'os';
+
 import path from 'path';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 /** Statuses the CLI writes into the PID file. */
 export type ClaudePidStatus = 'busy' | 'idle' | 'waiting';
@@ -134,8 +135,8 @@ export function diffTurnState(
 }
 
 /** Absolute path to the PID file for a given process id. */
-export function claudePidFilePath(pid: number, homeDir: string = os.homedir()): string {
-  return path.join(homeDir, '.claude', 'sessions', `${pid}.json`);
+export function claudePidFilePath(pid: number, configDir: string = resolveClaudeConfigDir()): string {
+  return path.join(configDir, 'sessions', `${pid}.json`);
 }
 
 /**
@@ -156,8 +157,8 @@ export interface PidStateWatcherOptions {
   pid: number;
   /** Poll cadence in ms. Default 500ms — matches a responsive UI without thrashing fs. */
   intervalMs?: number;
-  /** Override the home dir (tests). */
-  homeDir?: string;
+  /** Override the Claude config dir (tests). */
+  configDir?: string;
   /** Override the file reader (tests). */
   readFile?: (filePath: string) => Promise<string>;
   /**
@@ -193,7 +194,7 @@ export interface PidStateWatcherOptions {
  */
 export function watchClaudePidState(options: PidStateWatcherOptions): () => void {
   const intervalMs = options.intervalMs ?? 500;
-  const filePath = claudePidFilePath(options.pid, options.homeDir);
+  const filePath = claudePidFilePath(options.pid, options.configDir);
   const read = options.readFile ?? ((p: string) => fs.readFile(p, 'utf8'));
   const now = options.now ?? (() => Date.now());
   const isAlive = options.isProcessAlive ?? defaultIsProcessAlive;
@@ -244,8 +245,8 @@ export function watchClaudePidState(options: PidStateWatcherOptions): () => void
 
 export interface ReadClaudePidTurnStateOptions {
   pid: number;
-  /** Override the home dir (tests). */
-  homeDir?: string;
+  /** Override the Claude config dir (tests). */
+  configDir?: string;
   /** Override the file reader (tests). */
   readFile?: (filePath: string) => Promise<string>;
   /** Liveness probe override (tests). Defaults to `process.kill(pid, 0)`. */
@@ -265,7 +266,7 @@ export async function readClaudePidTurnState(
   if (!isAlive(options.pid)) return 'idle';
   const read = options.readFile ?? ((p: string) => fs.readFile(p, 'utf8'));
   try {
-    const parsed = parseClaudePidFile(await read(claudePidFilePath(options.pid, options.homeDir)));
+    const parsed = parseClaudePidFile(await read(claudePidFilePath(options.pid, options.configDir)));
     return parsed ? mapPidStatusToTurnState(parsed.status) : null;
   } catch {
     return null;

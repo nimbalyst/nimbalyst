@@ -33,6 +33,12 @@ export const BUILTIN_RELATIONSHIP_TYPES: TrackerRelationshipType[] = [
   { key: 'supersedes', displayName: 'Supersedes', category: 'reference' },
   { key: 'parent-of', displayName: 'Parent of', inverseKey: 'child-of', inverseDisplayName: 'Child of', category: 'hierarchy' },
   { key: 'child-of', displayName: 'Child of', inverseKey: 'parent-of', inverseDisplayName: 'Parent of', category: 'hierarchy' },
+  // Collection membership: a milestone/release `has-item`, and each member is
+  // `in-collection`. Same hierarchy machinery as parent-of/child-of, but a
+  // distinct vocabulary so "belongs to a sprint" reads differently from
+  // "is a subtask of".
+  { key: 'has-item', displayName: 'Includes', inverseKey: 'in-collection', inverseDisplayName: 'In collection', category: 'hierarchy', icon: 'inventory_2' },
+  { key: 'in-collection', displayName: 'In collection', inverseKey: 'has-item', inverseDisplayName: 'Includes', category: 'hierarchy', icon: 'inventory_2' },
 ];
 
 const BUILTIN_BY_KEY = new Map(BUILTIN_RELATIONSHIP_TYPES.map((t) => [t.key, t]));

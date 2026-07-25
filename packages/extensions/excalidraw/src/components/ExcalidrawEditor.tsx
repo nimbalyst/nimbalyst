@@ -39,6 +39,38 @@ function normalizeViewBackground(color: string | undefined | null): string {
   return color;
 }
 
+// Material Symbols icon per Excalidraw element type, for the chat selection chip.
+const ELEMENT_ICONS: Record<string, string> = {
+  rectangle: 'rectangle',
+  ellipse: 'circle',
+  diamond: 'diamond',
+  arrow: 'arrow_right_alt',
+  line: 'horizontal_rule',
+  text: 'title',
+  freedraw: 'gesture',
+  image: 'image',
+  frame: 'crop_free',
+};
+
+/**
+ * Build a label/description/icon for a single selected element so it can be
+ * reported to the chat as an EditorContextItem.
+ */
+function describeElement(el: ExcalidrawElement): { label: string; description: string; icon: string } {
+  const type = el.type;
+  const icon = ELEMENT_ICONS[type] ?? 'category';
+  const text = (el as { text?: string }).text;
+  const shortId = el.id.slice(0, 4);
+  const pos = `at (${Math.round(el.x)}, ${Math.round(el.y)})`;
+  const size = `${Math.round(el.width)}x${Math.round(el.height)}`;
+  if (type === 'text' && text) {
+    const clipped = text.length > 24 ? `${text.slice(0, 24)}…` : text;
+    return { label: `Text: ${clipped}`, description: `A text element "${text}" ${pos}.`, icon };
+  }
+  const label = `${type.charAt(0).toUpperCase()}${type.slice(1)} ${shortId}`;
+  return { label, description: `A ${type} ${pos}, ${size}.`, icon };
+}
+
 // Default empty Excalidraw file
 function createEmptyFile(bgColor: string): ExcalidrawFile {
   return {
@@ -87,6 +119,10 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
 
   // Track when we're programmatically updating the scene (to suppress onChange -> dirty)
   const isUpdatingFromExternalRef = useRef(false);
+
+  // Signature of the last selection reported to the chat, so we only push when
+  // the set of selected elements actually changes.
+  const previousSelectionKeyRef = useRef<string>('');
 
   // Previous state for change detection
   // NOTE: Excalidraw reuses array references (mutates in place), so we track
@@ -274,7 +310,36 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
     if (elementsChanged || filesChanged || appStateChanged) {
       markDirty();
     }
-  }, [markDirty]);
+
+    // Report the current selection to the chat as removable context items.
+    // Only push when the selected set changes to avoid redundant work.
+    const selectedIds = Object.keys(appState.selectedElementIds || {}).filter(
+      (id) => appState.selectedElementIds[id]
+    );
+    const byId = new Map(elements.map((element) => [element.id, element] as const));
+    const selectedElements = selectedIds
+      .map((id) => byId.get(id))
+      .filter((element): element is ExcalidrawElement => !!element && !element.isDeleted);
+    // Include element versions so moving/resizing/editing an already-selected
+    // item refreshes the model-facing description. The host store preserves
+    // dismissals while the selected ids themselves stay the same.
+    const selectionKey = selectedElements
+      .map((element) => `${element.id}:${element.version}`)
+      .sort()
+      .join(',');
+    if (selectionKey !== previousSelectionKeyRef.current) {
+      previousSelectionKeyRef.current = selectionKey;
+      if (selectedElements.length === 0) {
+        host.setEditorContextItems(null);
+      } else {
+        const items = selectedElements.map((el) => {
+          const { label, description, icon } = describeElement(el);
+          return { id: el.id, label, description, icon, groupLabel: 'shapes' };
+        });
+        host.setEditorContextItems(items.length > 0 ? items : null);
+      }
+    }
+  }, [markDirty, host]);
 
   // ---- Collaborative wiring (no-op when host.collaboration is undefined) ---
   // The binding wraps the imperative Excalidraw API and routes local edits

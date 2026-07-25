@@ -89,7 +89,7 @@ const FIRST_PARTY_DISPLAY_NAMES: Record<string, string> = {
 // (AskUserQuestion, PromptForUserInput, developer_git_commit_proposal,
 // get_session_edited_files) behind a truthy sessionId. A live agent session
 // always has one, so measure with a placeholder — passing undefined undercounts
-// the eager core by those tools' entire schema weight.
+// both the full core surface and its eager subset.
 const MEASUREMENT_SESSION_ID = 'tool-budget-measurement';
 
 function collectFirstPartySchemas(sessionMetaSchemas: MeasurableToolSchema[]): MeasurableToolSchema[] {

@@ -103,17 +103,19 @@ When a plan involves UI components, screens, or visual design, use the `/mockup`
 - Minor and well-described UI changes where there are no remaining design choices
 
 If a visual mockup would help communicate the plan, tell the user you'll use `/mockup` to create one, and do so after completing the plan document.
-Make sure the plan document references and links the mockup file using the mockup image syntax, and use your Capture Mockup Screenshot tool to view it once the sub-agent completes and verify that it conforms to the plan.
+Make sure the plan document embeds the mockup file using the custom-editor link syntax below. Use your Capture Mockup Screenshot tool to verify the mockup itself, then inspect the mounted plan surface and confirm the link renders as an embedded component rather than raw Markdown.
 
-**Mockup image syntax:**
+**Embedded custom-editor syntax:**
 ```markdown
-![Description](screenshot.png){mockup:path/to/mockup.mockup.html}
+[Description](path/to/mockup.mockup.html)
 ```
 
 With optional size:
 ```markdown
-![Description](screenshot.png){mockup:path/to/mockup.mockup.html}{800x600}
+[Description](path/to/mockup.mockup.html "width=800 height=600")
 ```
+
+Place the link on its own paragraph so Nimbalyst upgrades it to an embedded component. The same syntax works for other registered custom editors, for example `[Architecture](../architecture/system.excalidraw "width=1000 height=650")`. Never use the legacy `![Description](screenshot.png){mockup:...}` image-attribute syntax.
 
 ## Best Practices
 

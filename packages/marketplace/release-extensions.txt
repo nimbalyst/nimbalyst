@@ -16,8 +16,10 @@
 ../extensions/planning
 ../extensions/playwright
 ../extensions/sqlite-browser
+../../../nimbalyst-electronics|skip-build
 ../../../nimbalyst-extension-astro|skip-build
 ../../../nimbalyst-jupyter|skip-build
 ../../../nimbalyst-mindmap|skip-build
 ../../../nimbalyst-namenym|skip-build
+../../../nimbalyst-replicad|skip-build
 ../../../nimbalyst-slides|skip-build

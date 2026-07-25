@@ -4,7 +4,7 @@
  * Provides Claude with tools to query and analyze SQLite databases.
  */
 
-import { getActiveDatabase, getAllDatabases, hasActiveDatabase, dispatchDisplayQuery } from './databaseRegistry';
+import { getActiveDatabase, getAllDatabases, dispatchDisplayQuery } from './databaseRegistry';
 
 /**
  * AI tool definitions

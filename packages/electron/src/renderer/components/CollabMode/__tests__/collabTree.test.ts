@@ -5,12 +5,17 @@ import {
   buildCollabTreeFromFolders,
   computeLegacyFolderRenameUpdates,
   filterCollabTree,
+  flattenCollabFolderOptions,
   getCollabDocumentPath,
+  getSharedDocumentDisplayPathWithFallback,
+  getSharedDocumentDisplayPath,
   getCollabNodeName,
   getCollabParentPath,
   joinCollabPath,
   normalizeCollabPath,
+  reconcileSharedDocumentDisplayName,
   renameCollabDocumentPath,
+  resolveCollabCreateTargetFolderId,
 } from '../collabTree';
 import type { SharedDocument, SharedFolder } from '../../../store/atoms/collabDocuments';
 
@@ -49,6 +54,49 @@ function makeFolder(
 }
 
 describe('collabTree', () => {
+  describe('create location options', () => {
+    it('lists Root first and flattens folders by depth with alphabetical siblings', () => {
+      const options = flattenCollabFolderOptions([
+        makeFolder('f-zebra', 'Zebra'),
+        makeFolder('f-api', 'API', 'f-specs'),
+        makeFolder('f-specs', 'Specs'),
+        makeFolder('f-archive', 'Archive', 'f-specs'),
+        makeFolder('f-alpha', 'Alpha'),
+      ]);
+
+      expect(options).toEqual([
+        { folderId: null, name: 'Root', depth: 0 },
+        { folderId: 'f-alpha', name: 'Alpha', depth: 0 },
+        { folderId: 'f-specs', name: 'Specs', depth: 0 },
+        { folderId: 'f-api', name: 'API', depth: 1 },
+        { folderId: 'f-archive', name: 'Archive', depth: 1 },
+        { folderId: 'f-zebra', name: 'Zebra', depth: 0 },
+      ]);
+    });
+
+    it('keeps orphaned and cyclic folders selectable without looping', () => {
+      const options = flattenCollabFolderOptions([
+        makeFolder('f-orphan', 'Orphan', 'f-missing'),
+        makeFolder('f-a', 'A', 'f-b'),
+        makeFolder('f-b', 'B', 'f-a'),
+      ]);
+
+      expect(options[0]).toEqual({ folderId: null, name: 'Root', depth: 0 });
+      expect(options.slice(1).map(option => option.folderId).sort()).toEqual([
+        'f-a',
+        'f-b',
+        'f-orphan',
+      ]);
+    });
+
+    it('seeds from the context folder, then selection, then Root', () => {
+      expect(resolveCollabCreateTargetFolderId('f-context', 'f-selected')).toBe('f-context');
+      expect(resolveCollabCreateTargetFolderId(undefined, 'f-selected')).toBe('f-selected');
+      expect(resolveCollabCreateTargetFolderId(undefined, null)).toBeNull();
+      expect(resolveCollabCreateTargetFolderId(null, 'f-selected')).toBeNull();
+    });
+  });
+
   it('normalizes collab paths consistently', () => {
     expect(normalizeCollabPath(' /Specs//API Spec  ')).toBe('Specs/API Spec');
     expect(normalizeCollabPath('Specs\\Deprecated\\Auth')).toBe('Specs/Deprecated/Auth');
@@ -116,6 +164,49 @@ describe('collabTree', () => {
   it('falls back to document id when title is empty', () => {
     const document = makeDocument('doc-123', '');
     expect(getCollabDocumentPath(document)).toBe('doc-123');
+  });
+
+  it('derives a title-safe display path from first-class folders', () => {
+    const document = makeDocument('1af74157-fe92-481b', 'Architecture Plan', 1, 'f-auth');
+    const folders = [
+      makeFolder('f-specs', 'Specs'),
+      makeFolder('f-auth', 'Auth', 'f-specs'),
+    ];
+
+    expect(getSharedDocumentDisplayPath(document, folders)).toBe('Specs/Auth/Architecture Plan');
+  });
+
+  it('uses a neutral placeholder instead of a document id while the title is unresolved', () => {
+    const document = makeDocument('1af74157-fe92-481b', '');
+    expect(getSharedDocumentDisplayPath(document, [])).toBe('Shared document');
+  });
+
+  it('preserves a known tab name while a newer title is unresolved', () => {
+    expect(reconcileSharedDocumentDisplayName(
+      'Architecture Plan',
+      '',
+      '1af74157-fe92-481b',
+    )).toBe('Architecture Plan');
+    expect(reconcileSharedDocumentDisplayName(
+      '1af74157-fe92-481b',
+      '',
+      '1af74157-fe92-481b',
+    )).toBe('Shared document');
+  });
+
+  it('preserves a restored path until its first-class folder metadata resolves', () => {
+    const document = makeDocument('doc-123', 'Architecture Plan', 1, 'f-auth');
+    expect(getSharedDocumentDisplayPathWithFallback(
+      document,
+      [],
+      'Specs/Auth/Architecture Plan',
+    )).toBe('Specs/Auth/Architecture Plan');
+
+    expect(getSharedDocumentDisplayPathWithFallback(
+      document,
+      [makeFolder('f-auth', 'Auth')],
+      'Specs/Auth/Architecture Plan',
+    )).toBe('Auth/Architecture Plan');
   });
 
   it('filters documents by query while preserving matching ancestors', () => {

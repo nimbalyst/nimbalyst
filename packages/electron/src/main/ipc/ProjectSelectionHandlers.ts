@@ -5,6 +5,7 @@ import { getWindowId, windowStates } from '../window/WindowManager';
 import { loadFileIntoWindow } from '../file/FileOperations';
 import { logger } from '../utils/logger';
 import { basename } from 'path';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 
 export function registerProjectSelectionHandlers() {
   // Get recent workspaces for project selection dialog
@@ -14,7 +15,18 @@ export function registerProjectSelectionHandlers() {
 
   // Show native folder selection dialog
   safeHandle('dialog-show-open-dialog', async (event, options) => {
-    const result = await dialog.showOpenDialog(options);
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const dialogOptions: Electron.OpenDialogOptions = {
+      ...(options ?? {}),
+      defaultPath: getDialogDefaultPath({ window, explicitPath: options?.defaultPath }),
+    };
+    const result = window
+      ? await dialog.showOpenDialog(window, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions);
+    if (!result.canceled) {
+      const isDirectory = dialogOptions.properties?.includes('openDirectory') === true;
+      rememberDialogSelection(result.filePaths[0], isDirectory ? 'directory' : 'file');
+    }
     return result;
   });
 

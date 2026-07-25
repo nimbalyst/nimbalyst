@@ -22,6 +22,18 @@ import { getSessionSummaryForVoice } from './sessionSummary';
 import { getDatabase } from '../../database/initialize';
 import { getDefaultAIModel, getPreferredAgentLanguage } from '../../utils/store';
 import { randomUUID } from 'crypto';
+import { resolveSessionModelSelection } from '../ai/sessionModelSelection';
+import { buildVoiceTaskCompletion } from './voiceTaskCompletion';
+import { createVoiceSessionHandoff } from './voiceSessionHandoff';
+import { getAgentWorkflowService } from '../AgentWorkflowService';
+import { loadFreshVoiceCommandContext } from './voiceCommandContext';
+import { ensureVoiceMicrophoneAccess } from './microphoneAccess';
+import {
+  captureActiveVoiceWindow,
+  sanitizeVoiceUiContext,
+  type RawVoiceUiContext,
+  type VoiceUiContext,
+} from './voiceUiContext';
 
 // Store active voice session info
 interface VoiceSession {
@@ -81,6 +93,81 @@ function requestExtensionVoiceContext(
       resolve(typeof data?.context === 'string' ? data.context : '');
     });
     window.webContents.send('voice-mode:collect-extension-context', { input, resultChannel });
+  });
+}
+
+const UI_CONTEXT_TIMEOUT_MS = 2000;
+
+interface RendererUiContextResponse {
+  workspacePath?: string;
+  context?: RawVoiceUiContext;
+  error?: string;
+}
+
+/**
+ * Ask the voice-owning renderer for a fresh Jotai snapshot. The dynamic result
+ * channel is accepted only from the expected webContents and must echo the
+ * workspace path, preventing another workspace window from supplying context.
+ */
+function requestVoiceUiContext(
+  window: BrowserWindow,
+  workspacePath: string,
+): Promise<{ success: true; context: VoiceUiContext } | { success: false; error: string }> {
+  return new Promise((resolve) => {
+    if (!window || window.isDestroyed()) {
+      resolve({ success: false, error: 'The Nimbalyst window is not available.' });
+      return;
+    }
+    if (!workspacePath) {
+      resolve({ success: false, error: 'The active workspace is not available.' });
+      return;
+    }
+
+    const resultChannel = `voice-mode:ui-context-result-${randomUUID()}`;
+    let settled = false;
+    const finish = (
+      result: { success: true; context: VoiceUiContext } | { success: false; error: string },
+    ) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      ipcMain.removeListener(resultChannel, handleResult);
+      resolve(result);
+    };
+    const handleResult = (
+      event: Electron.IpcMainEvent,
+      data: RendererUiContextResponse,
+    ) => {
+      if (event.sender.id !== window.webContents.id) return;
+      if (data?.workspacePath !== workspacePath) {
+        finish({ success: false, error: 'The UI context response was for a different workspace.' });
+        return;
+      }
+      if (data?.error) {
+        finish({ success: false, error: data.error });
+        return;
+      }
+      try {
+        finish({
+          success: true,
+          context: sanitizeVoiceUiContext(data?.context || {}, workspacePath),
+        });
+      } catch (error) {
+        finish({
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    const timeout = setTimeout(() => {
+      finish({ success: false, error: 'Timed out while reading the current UI context.' });
+    }, UI_CONTEXT_TIMEOUT_MS);
+
+    ipcMain.on(resultChannel, handleResult);
+    window.webContents.send('voice-mode:request-ui-context', {
+      workspacePath,
+      resultChannel,
+    });
   });
 }
 
@@ -245,19 +332,7 @@ export function initVoiceModeService() {
         throw new Error('Session ID is required for voice mode');
       }
 
-      // Check microphone permission on macOS
-      if (process.platform === 'darwin') {
-        const micStatus = systemPreferences.getMediaAccessStatus('microphone');
-        console.log('[VoiceModeService] Microphone access status:', micStatus);
-
-        if (micStatus !== 'granted') {
-          // NOTE: We cannot programmatically request microphone permission because
-          // the app intentionally omits the audio-input entitlement to prevent
-          // permission prompts when Claude Agent SDK spawns subprocesses.
-          // Users must manually grant permission in System Settings.
-          throw new Error('Microphone access is required for Voice Mode.\n\nPlease manually grant permission:\n1. Open System Settings\n2. Go to Privacy & Security > Microphone\n3. Enable access for Nimbalyst\n4. Try again');
-        }
-      }
+      await ensureVoiceMicrophoneAccess(process.platform, systemPreferences);
 
       // If there's an active session, disconnect it first
       if (activeVoiceSession) {
@@ -282,6 +357,7 @@ export function initVoiceModeService() {
       // Load session to get context by calling the renderer to fetch it
       let sessionContext = 'New session with no prior messages.';
       let hasExistingSession = false; // For analytics
+      let linkedSessionProvider = 'claude-code';
       try {
         // Request session data from the renderer
         const session = await window.webContents.executeJavaScript(`
@@ -289,6 +365,9 @@ export function initVoiceModeService() {
         `);
 
         if (session) {
+          if (typeof session.provider === 'string' && session.provider.trim()) {
+            linkedSessionProvider = session.provider;
+          }
           // session.messages is TranscriptViewMessage[] from the canonical
           // ai_transcript_events table -- discriminated by `type`, not `role`.
           const allEvents = (session.messages || []) as Array<any>;
@@ -412,6 +491,30 @@ export function initVoiceModeService() {
           }
         } catch (error) {
           // Ignore - summary file is optional
+        }
+      }
+
+      // Enumerate the same provider-aware command catalog used by the composer.
+      // Force a fresh registry snapshot for every voice-session start so command
+      // changes inside the normal catalog TTL are reflected immediately. The
+      // formatter admits command names only; it never forwards command bodies,
+      // descriptions, source paths, or tool metadata into the voice prompt.
+      if (workspacePath) {
+        try {
+          const workflowRequest = JSON.stringify({
+            workspacePath,
+            sessionId,
+            provider: linkedSessionProvider,
+          });
+          const commandContext = await loadFreshVoiceCommandContext(
+            () => getAgentWorkflowService(workspacePath).clearCache(),
+            () => window.webContents.executeJavaScript(`
+              window.electronAPI.invoke('ai:getAgentWorkflows', ${workflowRequest})
+            `),
+          );
+          sessionContext += `\n\n${commandContext}`;
+        } catch (error) {
+          console.error('[VoiceModeService] Failed to load workspace commands for voice context:', error);
         }
       }
 
@@ -547,6 +650,7 @@ export function initVoiceModeService() {
 
       // Helper: get the current linked session ID (may change if user switches sessions)
       const currentSessionId = () => activeVoiceSession?.sessionId ?? sessionId;
+      const sessionHandoff = createVoiceSessionHandoff();
 
       // Set up callbacks to forward audio/text to renderer
       // Use currentSessionId() so events always target the current session
@@ -591,9 +695,10 @@ export function initVoiceModeService() {
 
       poc.setOnSubmitPrompt(async (prompt) => {
         if (window && !window.isDestroyed()) {
+          const targetSessionId = sessionHandoff.takePromptTarget(currentSessionId());
           // Include coding agent prompt settings so they can be passed to the provider
           window.webContents.send('voice-mode:submit-prompt', {
-            sessionId: currentSessionId(),
+            sessionId: targetSessionId,
             workspacePath,
             prompt,
             codingAgentPrompt: codingAgentPromptSettings,
@@ -664,6 +769,32 @@ export function initVoiceModeService() {
         };
       });
 
+      poc.setOnGetUiContext(async () => {
+        const wp = activeVoiceSession?.workspacePath ?? workspacePath;
+        if (!wp) {
+          return { success: false, error: 'The active workspace is not available.' };
+        }
+        return requestVoiceUiContext(window, wp);
+      });
+
+      poc.setOnCaptureUiScreenshot(async () => {
+        const wp = activeVoiceSession?.workspacePath ?? workspacePath;
+        if (!wp) {
+          return { success: false, error: 'The active workspace is not available.' };
+        }
+        const uiContextResult = await requestVoiceUiContext(window, wp);
+        const context = uiContextResult.success ? uiContextResult.context : undefined;
+        try {
+          return await captureActiveVoiceWindow(window, context);
+        } catch (error) {
+          console.error('[VoiceModeService] Failed to capture active UI:', error);
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      });
+
       // Respond to interactive prompts (AskUserQuestion, ExitPlanMode, etc.)
       poc.setOnRespondToPrompt(async (params) => {
         try {
@@ -721,7 +852,7 @@ export function initVoiceModeService() {
       });
 
       // Create a new coding session and switch to it
-      poc.setOnCreateSession(async (title?: string) => {
+      poc.setOnCreateSession((title?: string) => sessionHandoff.createSessionOnce(async () => {
         try {
           const wp = activeVoiceSession?.workspacePath ?? workspacePath;
           if (!wp) {
@@ -729,8 +860,10 @@ export function initVoiceModeService() {
           }
 
           const newSessionId = randomUUID();
-          const provider = 'claude-code';
-          const model = getDefaultAIModel() || 'claude-code:opus-1m';
+          const { provider, model } = resolveSessionModelSelection(
+            'claude-code',
+            getDefaultAIModel() || 'claude-code:opus-1m',
+          );
           const newTitle = title?.trim() || 'New Session';
 
           await AISessionsRepository.create({
@@ -741,10 +874,8 @@ export function initVoiceModeService() {
             workspaceId: wp,
           });
 
-          // Refresh the renderer's session registry so the new session appears
-          // in the sidebar, then navigate to it. The active-session change will
-          // be picked up by voiceModeListeners.syncLinkedSession, which updates
-          // the linked session ID for subsequent voice commands automatically.
+          // Navigation is only visual; sessionHandoff pins the next coding
+          // prompt to this ID even if renderer selection lags or changes.
           if (window && !window.isDestroyed()) {
             window.show();
             window.focus();
@@ -763,7 +894,7 @@ export function initVoiceModeService() {
           console.error('[VoiceModeService] Failed to create session:', error);
           return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
-      });
+      }));
 
       // Propose a commit via the "Commit with AI" path. The voice agent
       // calls this when the user says "propose a commit". We forward to
@@ -832,7 +963,7 @@ export function initVoiceModeService() {
         // The [VOICE] prefix signals this is from the voice assistant
         // The system prompt (via isVoiceMode in documentContext) provides full context
         const questionPrompt = `[VOICE] ${question}`;
-        const targetSessionId = currentSessionId();
+        const targetSessionId = sessionHandoff.takePromptTarget(currentSessionId());
 
         console.log('[VoiceModeService] ask_coding_agent called with question:', question, 'target:', targetSessionId);
         askCodingAgentInFlight = true;
@@ -845,7 +976,7 @@ export function initVoiceModeService() {
 
               // Set up a one-time listener for the response via ipcMain
               // This listens for the same event that submit_agent_prompt uses
-              const responseHandler = (_event: any, data: { sessionId: string; summary: string }) => {
+              const responseHandler = (_event: any, data: { sessionId: string; summary?: string; error?: string }) => {
                 if (data.sessionId === targetSessionId) {
                   // Clean up
                   ipcMain.removeListener('voice-mode:agent-task-complete', responseHandler);
@@ -857,6 +988,11 @@ export function initVoiceModeService() {
                     summaryLength: data.summary?.length,
                     summaryPreview: data.summary?.substring(0, 500),
                   });
+
+                  if (data.error) {
+                    resolve({ success: false, error: data.error });
+                    return;
+                  }
 
                   // Truncate the answer for the voice context window.
                   // gpt-realtime struggles with very long function results.
@@ -924,11 +1060,12 @@ export function initVoiceModeService() {
       // and can notify the voice assistant.
       // IMPORTANT: Skip this when ask_coding_agent is in-flight because
       // that path returns the response via the function call result instead.
-      const completionListener = (_event: any, data: { sessionId: string; summary?: string }) => {
+      const completionListener = (_event: any, data: { sessionId: string; summary?: string; error?: string }) => {
         console.log('[VoiceModeService] agent-task-complete received:', {
           sessionId: data.sessionId,
           summaryLength: data.summary?.length ?? 0,
           summaryPreview: data.summary?.substring(0, 200) ?? '(empty)',
+          error: data.error,
           askCodingAgentInFlight,
         });
 
@@ -939,34 +1076,23 @@ export function initVoiceModeService() {
             return;
           }
 
-          // Truncate the summary to stay within the realtime context limits.
-          const trimmed = (data.summary ?? '').trim();
-          const truncatedSummary = trimmed.length > 1500
-            ? trimmed.substring(0, 1500) + '... (truncated)'
-            : trimmed;
+          const completion = buildVoiceTaskCompletion(data);
 
           // Async (deferred) path (gpt-realtime-2): if a submit_agent_prompt call
           // is still open, resolve it with the real summary -- the agent receives
           // the result as the tool's return value and relays it. No injected wake.
           if (poc.hasDeferredCall()) {
-            const resolved = poc.resolveDeferredCall({
-              success: true,
-              summary: truncatedSummary || 'The coding agent finished but did not produce a text summary.',
-            });
+            const resolved = poc.resolveDeferredCall(completion.deferredResult);
             if (resolved) {
-              console.log('[VoiceModeService] Resolved deferred submit_agent_prompt with summary');
+              console.log('[VoiceModeService] Resolved deferred submit_agent_prompt');
               return;
             }
           }
 
           // Fallback path (gpt-realtime, or no open deferred call): inject an
-          // [INTERNAL: Task complete] wake message for the voice agent to relay.
-          const completionMessage = truncatedSummary.length > 0
-            ? `[INTERNAL: Task complete. Result: ${truncatedSummary}]`
-            : '[INTERNAL: Task complete. The coding agent finished but did not produce a text summary.]';
-
-          console.log('[VoiceModeService] Sending completion to voice agent:', completionMessage.substring(0, 300));
-          poc.sendUserMessage(completionMessage);
+          // internal wake message for the voice agent to relay.
+          console.log('[VoiceModeService] Sending completion to voice agent:', completion.fallbackMessage.substring(0, 300));
+          poc.sendUserMessage(completion.fallbackMessage);
         }
       };
       ipcMain.on('voice-mode:agent-task-complete', completionListener);

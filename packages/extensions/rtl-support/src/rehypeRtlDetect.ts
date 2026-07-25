@@ -12,20 +12,24 @@
  *  - Sets the dir attribute on the node
  *  - Protects code blocks (pre/code) — always LTR
  *
- * Note: In Nimbalyst's MarkdownRenderer, hast properties.dir is ignored
- * because custom React components are used. This plugin is kept as a
- * fallback for standard react-markdown renderers; the component overrides
- * in RtlTranscriptHost.tsx are what actually apply dir to the DOM.
+ * Nimbalyst's MarkdownRenderer forwards these hAST properties to its styled
+ * DOM elements, so direction can be added without replacing host renderers.
  */
 
 import { visit } from 'unist-util-visit';
 import type { Element, ElementContent, Root, Text } from 'hast';
-import { detectDirection } from './detection';
+import { detectDirection, detectInlineRuns } from './detection';
 
 /** Text block tags that should receive a direction */
 const TEXT_BLOCK_TAGS = new Set([
+  'p', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'blockquote', 'table', 'td', 'th', 'dd', 'dt', 'figcaption',
+]);
+
+/** Leaf-oriented blocks whose inline text can safely be isolated once. */
+const INLINE_TEXT_TAGS = new Set([
   'p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'blockquote', 'td', 'th', 'dd', 'dt', 'figcaption',
+  'td', 'th', 'dd', 'dt', 'figcaption',
 ]);
 
 /** Tags whose content should always stay LTR */
@@ -52,17 +56,73 @@ export interface RehypeRtlDetectOptions {
   perBlock?: boolean;
   /** Mode: auto = detect, rtl/ltr = force */
   mode?: 'auto' | 'rtl' | 'ltr';
+  /** Whether mixed-direction text runs should be wrapped in isolated spans */
+  inlineDetect?: boolean;
 }
 
 type Dir = 'rtl' | 'ltr';
 
+function directionClasses(tagName: string, dir: Dir): string[] {
+  if (tagName === 'table') return ['nim-rtl-table', `nim-rtl-${dir}`];
+  if (tagName === 'td' || tagName === 'th') return ['nim-rtl-cell', `nim-rtl-${dir}`];
+  if (TEXT_BLOCK_TAGS.has(tagName)) return ['nim-rtl-block', `nim-rtl-${dir}`];
+  return [];
+}
+
+function setDirection(node: Element, dir: Dir): void {
+  const properties: Element['properties'] = { ...(node.properties || {}), dir };
+  const existing = properties.className;
+  const classNames = Array.isArray(existing)
+    ? existing.map(String)
+    : typeof existing === 'string'
+      ? existing.split(/\s+/).filter(Boolean)
+      : [];
+
+  for (const className of directionClasses(node.tagName, dir)) {
+    if (!classNames.includes(className)) classNames.push(className);
+  }
+  if (classNames.length > 0) properties.className = classNames;
+  node.properties = properties;
+}
+
+function wrapInlineText(node: Element): void {
+  for (let index = 0; index < node.children.length; index += 1) {
+    const child = node.children[index];
+    if (child.type === 'element') {
+      if (!PROTECTED_TAGS.has(child.tagName)) wrapInlineText(child);
+      continue;
+    }
+    if (child.type !== 'text') continue;
+
+    const runs = detectInlineRuns(child.value);
+    if (runs.length === 0 || !child.value.trim()) continue;
+
+    const spans: Element[] = runs.map((run) => ({
+      type: 'element',
+      tagName: 'span',
+      properties: {
+        dir: run.direction,
+        style: 'unicode-bidi: isolate',
+      },
+      children: [{ type: 'text', value: run.text }],
+    }));
+    node.children.splice(index, 1, ...spans);
+    index += spans.length - 1;
+  }
+}
+
+function isolateInlineText(node: Element): void {
+  if (detectInlineRuns(extractText(node.children)).length <= 1) return;
+  wrapInlineText(node);
+}
+
 function setDirOnTree(tree: Root, dir: Dir): void {
   visit(tree, 'element', (node: Element) => {
     if (PROTECTED_TAGS.has(node.tagName)) {
-      node.properties = { ...(node.properties || {}), dir: 'ltr' };
+      setDirection(node, 'ltr');
       return;
     }
-    node.properties = { ...(node.properties || {}), dir };
+    setDirection(node, dir);
   });
 }
 
@@ -83,12 +143,18 @@ export function rehypeRtlDetect(options: RehypeRtlDetectOptions = {}) {
     threshold = 0.3,
     perBlock = true,
     mode = 'auto',
+    inlineDetect = false,
   } = options;
 
   return (tree: Root): void => {
     // Forced mode — set direction on the whole tree
     if (mode === 'rtl' || mode === 'ltr') {
       setDirOnTree(tree, mode);
+      if (inlineDetect) {
+        visit(tree, 'element', (node: Element) => {
+          if (INLINE_TEXT_TAGS.has(node.tagName)) isolateInlineText(node);
+        });
+      }
       return;
     }
 
@@ -98,6 +164,11 @@ export function rehypeRtlDetect(options: RehypeRtlDetectOptions = {}) {
       const fullText = extractText(tree.children as ElementContent[]);
       const dir = detectDirection(fullText, threshold);
       setDirOnTree(tree, dir);
+      if (inlineDetect) {
+        visit(tree, 'element', (node: Element) => {
+          if (INLINE_TEXT_TAGS.has(node.tagName)) isolateInlineText(node);
+        });
+      }
       return;
     }
 
@@ -105,7 +176,7 @@ export function rehypeRtlDetect(options: RehypeRtlDetectOptions = {}) {
     visit(tree, 'element', (node: Element) => {
       if (PROTECTED_TAGS.has(node.tagName)) {
         // Code block — LTR and isolated
-        node.properties = { ...(node.properties || {}), dir: 'ltr' };
+        setDirection(node, 'ltr');
         return;
       }
       if (!TEXT_BLOCK_TAGS.has(node.tagName)) return;
@@ -114,7 +185,8 @@ export function rehypeRtlDetect(options: RehypeRtlDetectOptions = {}) {
       if (!text.trim()) return;
 
       const dir = detectDirection(text, threshold);
-      node.properties = { ...(node.properties || {}), dir };
+      setDirection(node, dir);
+      if (inlineDetect && INLINE_TEXT_TAGS.has(node.tagName)) isolateInlineText(node);
     });
   };
 }

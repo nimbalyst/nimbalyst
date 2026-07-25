@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { OpenCodeSDKProtocol, OpenCodeClientLike, OpenCodeSSEEvent } from '../OpenCodeSDKProtocol';
+import { OpenCodeSDKProtocol, OpenCodeServerManager, OpenCodeClientLike, OpenCodeSSEEvent } from '../OpenCodeSDKProtocol';
 import { EventEmitter } from 'events';
 import type { ChatAttachment } from '../../types';
 
@@ -450,6 +450,74 @@ describe('OpenCodeSDKProtocol', () => {
     } finally {
       await fs.unlink(tmpFile).catch(() => {});
     }
+  });
+
+  describe('server startup recovery', () => {
+    beforeEach(() => {
+      OpenCodeServerManager.resetForTests();
+      // Keep the health-check deadline tiny so the timeout path is fast in tests.
+      OpenCodeServerManager.startupTimeoutOverrideMs = 250;
+    });
+
+    afterEach(() => {
+      OpenCodeServerManager.resetForTests();
+      OpenCodeServerManager.startupTimeoutOverrideMs = null;
+      mockFetch.mockResolvedValue({ ok: true });
+    });
+
+    it('retries after a startup timeout instead of caching the rejection for the whole session', async () => {
+      // First attempt: server never passes its health check -> startup throws.
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'));
+      const { loadSdkModule } = createMockSdkModule([]);
+      const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+
+      await expect(protocol.createSession({ workspacePath: '/tmp/test' })).rejects.toThrow();
+
+      // Server is healthy now; a new message must re-spawn and succeed rather than
+      // instantly re-failing on the cached rejected readyPromise.
+      mockFetch.mockResolvedValue({ ok: true });
+      const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+      expect(session.id).toBe('oc-session-1');
+    });
+
+    it('adopts a server that only becomes healthy at the deadline instead of orphaning it', async () => {
+      // Force an immediate timeout so the health poll never succeeds, then let
+      // the last-chance probe find the server healthy.
+      OpenCodeServerManager.startupTimeoutOverrideMs = 0;
+      mockFetch.mockResolvedValue({ ok: true });
+
+      const { loadSdkModule } = createMockSdkModule([]);
+      const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+
+      const session = await protocol.createSession({ workspacePath: '/tmp/test' });
+      expect(session.id).toBe('oc-session-1');
+      // Adopted, not killed-and-respawned: the original process is still running.
+      expect(OpenCodeServerManager.getInstance().isRunning).toBe(true);
+    });
+
+    it('surfaces a missing-CLI spawn error instead of a generic timeout', async () => {
+      const childProcess = await import('child_process');
+      (childProcess.spawn as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+        const proc = new EventEmitter() as any;
+        proc.kill = vi.fn();
+        proc.stdin = null;
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        proc.pid = undefined;
+        queueMicrotask(() => {
+          const err: NodeJS.ErrnoException = new Error('spawn opencode ENOENT');
+          err.code = 'ENOENT';
+          proc.emit('error', err);
+        });
+        return proc;
+      });
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'));
+
+      const { loadSdkModule } = createMockSdkModule([]);
+      const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+
+      await expect(protocol.createSession({ workspacePath: '/tmp/test' })).rejects.toThrow(/not found|ENOENT/i);
+    });
   });
 
   it('falls back to an inline error note when an attachment cannot be read', async () => {

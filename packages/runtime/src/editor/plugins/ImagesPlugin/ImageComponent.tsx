@@ -16,6 +16,17 @@ import type {JSX} from 'react';
 
 import './ImageNode.css';
 
+import type {VirtualElement} from '@floating-ui/react';
+import {
+  FloatingPortal,
+  offset,
+  shift,
+  flip,
+  useDismiss,
+  useFloating,
+  useInteractions,
+  useRole,
+} from '@floating-ui/react';
 import {AutoFocusPlugin} from '@lexical/react/LexicalAutoFocusPlugin';
 import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
 import {LexicalErrorBoundary} from '@lexical/react/LexicalErrorBoundary';
@@ -52,6 +63,7 @@ import ImageResizer from '../../ui/ImageResizer';
 import {$isImageNode} from './ImageNode';
 import {getImagePluginCallbacks} from './index';
 import {localAssetUrl} from '../../../utils/localAssetUrl';
+import {copyImageToClipboard} from '../../../utils/clipboard';
 
 const imageCache = new Map<string, Promise<boolean> | boolean>();
 
@@ -236,6 +248,57 @@ function getDocumentPathFromDOM(element: HTMLElement | null): string | null {
   return null;
 }
 
+export function ImageContextMenu({
+  pos,
+  onCopy,
+  onClose,
+}: {
+  pos: {x: number; y: number};
+  onCopy: () => void;
+  onClose: () => void;
+}): JSX.Element {
+  const {refs, floatingStyles, context} = useFloating({
+    open: true,
+    onOpenChange: (open) => {
+      if (!open) onClose();
+    },
+    placement: 'right-start',
+    middleware: [offset(4), flip({padding: 8}), shift({padding: 8})],
+  });
+  // Virtual anchor at the cursor position (react's `elements.reference` only
+  // accepts a real Element, so point references go through setPositionReference).
+  useEffect(() => {
+    const reference: VirtualElement = {
+      getBoundingClientRect: () =>
+        DOMRect.fromRect({x: pos.x, y: pos.y, width: 0, height: 0}),
+    };
+    refs.setPositionReference(reference);
+  }, [pos.x, pos.y, refs]);
+  const dismiss = useDismiss(context);
+  const role = useRole(context, {role: 'menu'});
+  const {getFloatingProps} = useInteractions([dismiss, role]);
+
+  return (
+    <FloatingPortal>
+      <div
+        ref={refs.setFloating}
+        style={floatingStyles}
+        className="image-context-menu"
+        {...getFloatingProps()}
+      >
+        <button
+          type="button"
+          role="menuitem"
+          className="image-context-menu__item"
+          onClick={onCopy}
+        >
+          Copy image
+        </button>
+      </div>
+    </FloatingPortal>
+  );
+}
+
 export default function ImageComponent({
   src,
   altText,
@@ -273,6 +336,10 @@ export default function ImageComponent({
   const isEditable = useLexicalEditable();
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
   const [containerMounted, setContainerMounted] = useState(false);
+  const [contextMenuPos, setContextMenuPos] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
 
   // Callback ref to detect when container is mounted
   const setContainerRef = useCallback((node: HTMLDivElement | null) => {
@@ -482,6 +549,12 @@ export default function ImageComponent({
 
   const onRightClick = useCallback(
     (event: MouseEvent): void => {
+      // Only act on a right-click landing on THIS image element. Right-clicks
+      // elsewhere (text, other images) fall through to the native menu.
+      if (event.target !== imageRef.current) {
+        return;
+      }
+      // Select the image node so the copy path resolves this node.
       editor.getEditorState().read(() => {
         const latestSelection = $getSelection();
         const domElement = event.target as HTMLElement;
@@ -496,9 +569,21 @@ export default function ImageComponent({
           );
         }
       });
+      // Replace the native context menu with our image actions menu.
+      event.preventDefault();
+      setContextMenuPos({x: event.clientX, y: event.clientY});
     },
     [editor],
   );
+
+  const handleCopyImage = useCallback(() => {
+    setContextMenuPos(null);
+    const target = resolvedSrc ?? src;
+    if (!target) return;
+    void copyImageToClipboard({src: target}).catch((error) => {
+      console.error('Failed to copy image to clipboard', error);
+    });
+  }, [resolvedSrc, src]);
 
   useEffect(() => {
     const rootElement = editor.getRootElement();
@@ -697,6 +782,13 @@ export default function ImageComponent({
           </>
         )}
       </div>
+      {contextMenuPos && (
+        <ImageContextMenu
+          pos={contextMenuPos}
+          onCopy={handleCopyImage}
+          onClose={() => setContextMenuPos(null)}
+        />
+      )}
     </Suspense>
   );
 }

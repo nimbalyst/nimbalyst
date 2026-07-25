@@ -76,9 +76,24 @@ export function setTextSelection(text: string, filePath: string): void {
 }
 
 /**
- * Clear text selection from window globals
+ * Clear text selection from window globals.
+ *
+ * `ownerFilePath` scopes the clear: an editor should only clear a selection it
+ * owns. Because every editor across every mounted mode (Files / Collab / Agent
+ * are all mounted via CSS `display`) shares this single global selection, an
+ * unscoped clear from a background editor's activation/cleanup effect would
+ * instantly wipe a selection the focused editor just published. When
+ * `ownerFilePath` is provided and the stored selection belongs to a DIFFERENT
+ * file, we leave it alone. Omit `ownerFilePath` (e.g. the user removing the
+ * chip, or a prompt send) to force an unconditional clear.
  */
-export function clearTextSelection(): void {
+export function clearTextSelection(ownerFilePath?: string): void {
+  if (ownerFilePath) {
+    const currentFilePath = (window as any).__textSelectionFilePath as string | undefined;
+    if (currentFilePath && currentFilePath !== ownerFilePath) {
+      return;
+    }
+  }
   (window as any).__textSelectionText = undefined;
   (window as any).__textSelectionFilePath = undefined;
   (window as any).__textSelectionTimestamp = undefined;

@@ -5,6 +5,10 @@ import { MonacoEditor, type MonacoEditorCollabConfig } from '@nimbalyst/runtime'
 import { applyCalcSheetMonaco } from './calcSheetMonaco';
 import { evaluateCalcSheet } from './evaluator';
 import { parseCalcSheetDocument } from './parser';
+import {
+  buildCalcSheetSelectionContextItems,
+  type CalcSheetSelectionRange,
+} from './selectionContext';
 
 function lineTitle(
   line: ReturnType<typeof parseCalcSheetDocument>['lines'][number],
@@ -54,9 +58,11 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
   const scrollListenerRef = useRef<IDisposable | null>(null);
   const contentSizeListenerRef = useRef<IDisposable | null>(null);
   const layoutListenerRef = useRef<IDisposable | null>(null);
+  const selectionListenerRef = useRef<IDisposable | null>(null);
   const frontmatterBlockRef = useRef('');
   const [lineTops, setLineTops] = useState<number[]>([]);
   const [contentHeight, setContentHeight] = useState(0);
+  const [editorSelection, setEditorSelection] = useState<CalcSheetSelectionRange | null>(null);
   const editorLineHeight = 30;
 
   // Collaborative when the host stood up a sync channel. In that mode the whole
@@ -118,6 +124,7 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
       scrollListenerRef.current?.dispose();
       contentSizeListenerRef.current?.dispose();
       layoutListenerRef.current?.dispose();
+      selectionListenerRef.current?.dispose();
     };
   }, []);
 
@@ -133,6 +140,22 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
     () => evaluateCalcSheet(parsed.lines, parsed.frontmatter, parsed.lines.length),
     [parsed],
   );
+
+  const editorContextItems = useMemo(
+    () => buildCalcSheetSelectionContextItems({
+      parsed,
+      evaluation,
+      selection: editorSelection,
+      modelLineOffset: collaborative ? parsed.bodyStartLine : 0,
+    }),
+    [collaborative, editorSelection, evaluation, parsed],
+  );
+
+  useEffect(() => {
+    host.setEditorContextItems(editorContextItems.length > 0 ? editorContextItems : null);
+  }, [editorContextItems, host]);
+
+  useEffect(() => () => host.setEditorContextItems(null), [host]);
 
   const refreshLayout = useCallback((editor: any) => {
     const model = editor?.getModel?.();
@@ -200,6 +223,7 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
     scrollListenerRef.current?.dispose();
     contentSizeListenerRef.current?.dispose();
     layoutListenerRef.current?.dispose();
+    selectionListenerRef.current?.dispose();
 
     applyCalcSheetMonaco(editor, monaco, host.theme);
     refreshLayout(editor);
@@ -228,6 +252,28 @@ export function CalcSheetEditor({ host }: EditorHostProps) {
 
     layoutListenerRef.current = editor.onDidLayoutChange(() => {
       refreshLayout(editor);
+    });
+
+    const updateSelection = (selection: CalcSheetSelectionRange | null) => {
+      const nextSelection = selection
+        ? {
+            startLineNumber: selection.startLineNumber,
+            endLineNumber: selection.endLineNumber,
+          }
+        : null;
+      setEditorSelection((currentSelection) => {
+        if (
+          currentSelection?.startLineNumber === nextSelection?.startLineNumber
+          && currentSelection?.endLineNumber === nextSelection?.endLineNumber
+        ) {
+          return currentSelection;
+        }
+        return nextSelection;
+      });
+    };
+    updateSelection(editor.getSelection());
+    selectionListenerRef.current = editor.onDidChangeCursorSelection((event: { selection: CalcSheetSelectionRange }) => {
+      updateSelection(event.selection);
     });
   }, [refreshLayout, composeRawContent, host.theme, collaborative, applyFrontmatterHide]);
 

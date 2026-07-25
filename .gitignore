@@ -169,8 +169,10 @@ nimbalyst-local/
 # workspace root; they're personal working files, not source).
 plans/
 
-# Stray patch files (working snapshots, never source)
+# Stray patch files (working snapshots, never source). patches/ is the
+# exception: patch-package reads it from postinstall, so those ARE source.
 *.patch
+!patches/*.patch
 
 # MCP config (may contain personal API tokens)
 .mcp.json

@@ -33,6 +33,8 @@ export const BUILTIN_VOICE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'navigate_to_session',
   'create_session',
   'propose_commit',
+  'get_ui_context',
+  'capture_ui_screenshot',
 ]);
 
 /**
@@ -42,6 +44,36 @@ export interface ExtensionVoiceToolResult {
   success: boolean;
   message?: string;
   data?: unknown;
+  error?: string;
+}
+
+export interface VoiceUiContextToolResult {
+  success: boolean;
+  context?: {
+    activeView: string;
+    selectedFile?: {
+      name: string;
+      relativePath?: string;
+    };
+    activeSession?: {
+      id: string;
+      title: string;
+      status: string;
+    };
+  };
+  error?: string;
+}
+
+export interface VoiceUiScreenshotToolResult {
+  success: boolean;
+  imageDataUrl?: string;
+  source?: 'active_nimbalyst_window';
+  format?: 'jpeg';
+  width?: number;
+  height?: number;
+  bytes?: number;
+  capturedAt?: string;
+  context?: VoiceUiContextToolResult['context'];
   error?: string;
 }
 
@@ -76,6 +108,8 @@ const BUILTIN_VOICE_TOOL_DISPLAY_NAMES: Record<string, string> = {
   navigate_to_session: 'Switch session',
   create_session: 'Create session',
   propose_commit: 'Propose commit',
+  get_ui_context: 'Get UI context',
+  capture_ui_screenshot: 'Capture UI screenshot',
   respond_to_interactive_prompt: 'Answer prompt',
   pause_listening: 'Pause listening',
   stop_voice_session: 'Stop voice session',
@@ -196,6 +230,10 @@ export class RealtimeAPIClient {
   private onNavigateToSessionCallback: ((sessionId: string) => Promise<{ success: boolean; title?: string; error?: string }>) | null = null;
   private onCreateSessionCallback: ((title?: string) => Promise<{ success: boolean; sessionId?: string; title?: string; error?: string }>) | null = null;
   private onProposeCommitCallback: (() => Promise<{ success: boolean; error?: string }>) | null = null;
+  private onGetUiContextCallback: (() => Promise<VoiceUiContextToolResult>) | null = null;
+  private onCaptureUiScreenshotCallback:
+    | ((reason: string) => Promise<VoiceUiScreenshotToolResult>)
+    | null = null;
   private claudeCodeSessionId: string;
   private workspacePath: string | null;
   private window: Electron.BrowserWindow;
@@ -484,6 +522,18 @@ export class RealtimeAPIClient {
    */
   setOnProposeCommit(callback: () => Promise<{ success: boolean; error?: string }>): void {
     this.onProposeCommitCallback = callback;
+  }
+
+  /** Set callback for retrieving a bounded snapshot of renderer-owned UI state. */
+  setOnGetUiContext(callback: () => Promise<VoiceUiContextToolResult>): void {
+    this.onGetUiContextCallback = callback;
+  }
+
+  /** Set callback for capturing the active Nimbalyst window after user consent. */
+  setOnCaptureUiScreenshot(
+    callback: (reason: string) => Promise<VoiceUiScreenshotToolResult>,
+  ): void {
+    this.onCaptureUiScreenshotCallback = callback;
   }
 
   /**
@@ -962,6 +1012,8 @@ Tools:
 - pause_listening: Put the microphone to sleep.
 - stop_voice_session: End the voice session entirely.
 - get_session_summary: Get a summary of what's been discussed.
+- get_ui_context: Read the active Nimbalyst view, selected file, and active coding session.
+- capture_ui_screenshot: Capture the visible Nimbalyst window only after explicit user consent.
 
 Guidelines:
 - Be terse (see RESPONSE STYLE above). One short sentence per response by default; no filler, no acknowledgments, no explanations unless the user asks.
@@ -973,7 +1025,10 @@ Guidelines:
 - Brainstorming and planning: you can be a design partner, not just a relay. Talk an idea through, push back, and when it is fleshed out kick off a written plan with submit_agent_prompt phrased as "/design <the idea>". To start implementation against an approved plan, use submit_agent_prompt phrased as "/implement <plan>". If extra grounding or plan-reading tools are listed in your context above, prefer them for pulling design docs and reading plans back; otherwise fall back to ask_coding_agent.
 - For "[INTERNAL: Task complete. Result: ...]" messages: briefly relay the result to the user. Do NOT say "I finished that task" -- just state the result.
 - For "[INTERNAL: User is now viewing ...]" messages: do NOT announce this. Silently note it for context.
-- For "[INTERACTIVE PROMPT: ...]" messages: the coding agent needs user input. Read the question and option labels aloud BRIEFLY -- just the question and option labels, not descriptions. Then WAIT for the user to clearly state their choice. Do NOT call respond_to_interactive_prompt until you hear a clear, deliberate answer from the user. If you hear garbled audio, silence, or unclear speech, ask "Which option?" -- do NOT guess or pick the first option. The user's microphone may pick up echo from your own speech -- ignore any "response" that arrives while you are still speaking or immediately after.
+- UI context is read-only and intentionally bounded. Use get_ui_context when the user asks what is open, selected, or active; do not claim it exposes hidden renderer state.
+- capture_ui_screenshot sends pixels from the visible Nimbalyst window to the OpenAI Realtime session. Call it ONLY when the user explicitly asks you to inspect/capture the current UI, or after you explain the capture and the user explicitly confirms. Never infer consent from an unrelated request, never set userConfirmed=true without that consent, and never describe the capture as the whole desktop or another application.
+- For "[INTERACTIVE PROMPT: ... promptType=\"git_commit_proposal_request\"]" messages, say exactly: "Commit proposal: <commit title>. Say approve to commit or reject to cancel." Replace <commit title> with only the first line of the commit message. Never read file paths, the file list, code, the commit body, or descriptions aloud. Do not shorten this to "Approve, or reject?" Then WAIT for the user to clearly say approve or reject.
+- For all other "[INTERACTIVE PROMPT: ...]" messages: the coding agent needs user input. Read the question and option labels aloud BRIEFLY -- just the question and option labels, not descriptions. Then WAIT for the user to clearly state their choice. Do NOT call respond_to_interactive_prompt until you hear a clear, deliberate answer from the user. If you hear garbled audio, silence, or unclear speech, ask "Which option?" -- do NOT guess or pick the first option. The user's microphone may pick up echo from your own speech -- ignore any "response" that arrives while you are still speaking or immediately after.
 - When summarizing coding agent responses: be concise, paraphrase for speech. Never read code or file paths verbatim.
 - NEVER say the coding agent "didn't respond", "timed out", or "isn't responding". Tasks take as long as they take.
 
@@ -1093,7 +1148,7 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
         {
           type: 'function',
           name: 'get_session_summary',
-          description: 'Get a summary of the current AI session. Returns information about the session name, message counts, duration, and recent topics discussed. Use this when the user asks about what has been discussed or wants a recap.',
+          description: 'Get a summary of the current AI session. Returns the session name, message counts, duration, recent topics, and any pending user question as the final section. Use this when the user asks what has been discussed or wants a recap.',
           parameters: {
             type: 'object',
             properties: {},
@@ -1196,11 +1251,41 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
         {
           type: 'function',
           name: 'propose_commit',
-          description: 'Trigger the "Commit with AI" feature. Use this when the user says "propose a commit", "commit with AI", "smart commit", or asks you to summarize and commit their changes. The coding agent will draft a commit message and file list. The proposal arrives shortly as an [INTERACTIVE PROMPT: ... promptType="git_commit_proposal_request"] message -- read its commit message aloud briefly, then wait for the user to say "approve" or "reject" and call respond_to_interactive_prompt with their answer.',
+          description: 'Trigger the "Commit with AI" feature. Use this when the user says "propose a commit", "commit with AI", "smart commit", or asks you to summarize and commit their changes. The coding agent will draft a commit message and file list. The proposal arrives shortly as an [INTERACTIVE PROMPT: ... promptType="git_commit_proposal_request"] message -- read only its commit title using the required system-instruction phrasing, then wait for the user to say "approve" or "reject" and call respond_to_interactive_prompt with their answer.',
           parameters: {
             type: 'object',
             properties: {},
             required: [],
+          },
+        },
+        {
+          type: 'function',
+          name: 'get_ui_context',
+          description: 'Read a concise snapshot of the current Nimbalyst UI: active view, selected workspace file, and active coding session. This is read-only and omits absolute paths and hidden renderer state. Use it when the user asks what is currently open, selected, or active.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
+        {
+          type: 'function',
+          name: 'capture_ui_screenshot',
+          description: 'Capture and inspect the visible Nimbalyst application window. The screenshot pixels are sent to this OpenAI Realtime session and are not written to disk. Call ONLY after the user explicitly asks for a UI screenshot/inspection or explicitly confirms after you explain the capture.',
+          parameters: {
+            type: 'object',
+            properties: {
+              userConfirmed: {
+                type: 'boolean',
+                description: 'Must be true only when the user explicitly requested or confirmed this screenshot capture.',
+              },
+              reason: {
+                type: 'string',
+                description: 'A short reason for the capture, for example "inspect the active settings panel". Do not include secrets or file contents.',
+                maxLength: 160,
+              },
+            },
+            required: ['userConfirmed', 'reason'],
           },
         },
     ];
@@ -1274,6 +1359,45 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       return true;
     } catch (error) {
       console.error('[RealtimeAPIClient] Failed to inject context:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Inject an in-memory screenshot into the Realtime conversation without
+   * triggering a response. The subsequent function-call output triggers the
+   * response, so the model sees the image before it interprets the tool result.
+   */
+  injectImage(imageDataUrl: string, description: string): boolean {
+    if (!this.ws || !this.connected) {
+      return false;
+    }
+    if (!/^data:image\/(?:jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(imageDataUrl)) {
+      return false;
+    }
+
+    try {
+      this.ws.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: `[INTERNAL: Current Nimbalyst UI screenshot captured for: ${description}]`,
+            },
+            {
+              type: 'input_image',
+              image_url: imageDataUrl,
+              detail: 'high',
+            },
+          ],
+        },
+      }));
+      return true;
+    } catch (error) {
+      console.error('[RealtimeAPIClient] Failed to inject UI screenshot:', error);
       return false;
     }
   }
@@ -1640,6 +1764,78 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
           }
         } catch (error) {
           console.error('[RealtimeAPIClient] Failed to propose commit:', error);
+          this.sendFunctionCallResult(callId, {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case 'get_ui_context': {
+        try {
+          if (!this.onGetUiContextCallback) {
+            this.sendFunctionCallResult(callId, {
+              success: false,
+              error: 'UI context callback not registered',
+            });
+            break;
+          }
+          this.sendFunctionCallResult(callId, await this.onGetUiContextCallback());
+        } catch (error) {
+          console.error('[RealtimeAPIClient] Failed to get UI context:', error);
+          this.sendFunctionCallResult(callId, {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case 'capture_ui_screenshot': {
+        try {
+          const args = argsJson ? JSON.parse(argsJson) : {};
+          const reason = typeof args.reason === 'string'
+            ? args.reason.replace(/\s+/g, ' ').trim().slice(0, 160)
+            : '';
+          if (args.userConfirmed !== true) {
+            this.sendFunctionCallResult(callId, {
+              success: false,
+              error: 'Explicit user confirmation is required before capturing the UI.',
+            });
+            break;
+          }
+          if (!reason) {
+            this.sendFunctionCallResult(callId, {
+              success: false,
+              error: 'A short capture reason is required.',
+            });
+            break;
+          }
+          if (!this.onCaptureUiScreenshotCallback) {
+            this.sendFunctionCallResult(callId, {
+              success: false,
+              error: 'UI screenshot callback not registered',
+            });
+            break;
+          }
+
+          const result = await this.onCaptureUiScreenshotCallback(reason);
+          const { imageDataUrl, ...metadata } = result;
+          if (!result.success || !imageDataUrl) {
+            this.sendFunctionCallResult(callId, metadata);
+            break;
+          }
+          if (!this.injectImage(imageDataUrl, reason)) {
+            this.sendFunctionCallResult(callId, {
+              success: false,
+              error: 'The screenshot was captured but could not be sent to the voice model.',
+            });
+            break;
+          }
+          this.sendFunctionCallResult(callId, metadata);
+        } catch (error) {
+          console.error('[RealtimeAPIClient] Failed to capture UI screenshot:', error);
           this.sendFunctionCallResult(callId, {
             success: false,
             error: error instanceof Error ? error.message : String(error),

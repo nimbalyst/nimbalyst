@@ -26,10 +26,15 @@ export interface ClaudeUsageData {
  */
 export const claudeUsageAtom = atom<ClaudeUsageData | null>(null);
 
-// The usage-indicator enabled toggle now lives in the flat-key SettingsService
-// under `ai.showUsageIndicator`. Read it with `useSetting('ai.showUsageIndicator')`
-// and write it with `useSetSetting('ai.showUsageIndicator')` -- it hydrates
-// before React mounts and stays in lockstep across windows via the broadcast.
+// Rail visibility of the usage indicator is governed by the NavigationGutter
+// customization set (the single source of truth). Read it with
+// `useAtomValue(hiddenGutterItemsAtom)` and toggle it with
+// `useSetAtom(toggleGutterItemHiddenAtom)({ id: 'claude-usage', hidden })` from
+// `store/atoms/appSettings`. The gutter's right-click "Show Claude Usage" /
+// "Customize Gutter…" / "Show All" affordances read the same set, so hiding the
+// indicator always has a matching rail-side restore. (The legacy
+// `ai.showUsageIndicator` setting is inert -- kept only for the one-shot
+// `usageIndicatorsMigratedToGutter` migration in main/utils/store.ts.)
 
 /**
  * Derived atom: whether usage data is available to display.

@@ -34,4 +34,21 @@ describe('getCollabContentAdapter', () => {
 
     expect(getCollabContentAdapter('.mockup.html')).toBe(mockupAdapter);
   });
+
+  it('restores the previous adapter when an override is unregistered', () => {
+    const builtinRegistration = registerCollabContentAdapter(mockupAdapter);
+    const extensionAdapter: CollabContentAdapter = {
+      ...mockupAdapter,
+      mimeType: 'application/x-extension-override',
+    };
+    const extensionRegistration = registerCollabContentAdapter(extensionAdapter);
+
+    expect(getCollabContentAdapter('mockup.html')).toBe(extensionAdapter);
+
+    extensionRegistration.unregister();
+
+    expect(getCollabContentAdapter('mockup.html')).toBe(mockupAdapter);
+    builtinRegistration.unregister();
+    expect(getCollabContentAdapter('mockup.html')).toBeUndefined();
+  });
 });

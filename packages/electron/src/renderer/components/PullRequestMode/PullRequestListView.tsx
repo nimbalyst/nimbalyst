@@ -211,7 +211,7 @@ export function PullRequestListView({
             <MaterialSymbol icon="error" size={28} className="opacity-70" />
             <span className="text-center">{error}</span>
             <button
-              className="mt-1 text-xs text-nim-accent hover:underline"
+              className="mt-1 text-xs text-nim-link hover:text-nim-link-hover hover:underline"
               onClick={() => void runFetch()}
             >
               Retry
@@ -219,7 +219,7 @@ export function PullRequestListView({
           </div>
         ) : loading && prList.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-10 text-nim-muted text-sm">
-            <div className="spinner w-5 h-5 border-[3px] border-nim-secondary border-t-nim-accent rounded-full animate-spin" />
+            <div className="spinner w-5 h-5 border-[3px] border-nim-secondary border-t-nim-primary rounded-full animate-spin" />
             Loading pull requests…
           </div>
         ) : visibleRows.length === 0 ? (
@@ -230,7 +230,7 @@ export function PullRequestListView({
             </span>
             {hasActiveNarrowing && (
               <button
-                className="text-xs text-nim-accent hover:underline"
+                className="text-xs text-nim-link hover:text-nim-link-hover hover:underline"
                 onClick={() => {
                   setSearch('');
                   setLayout({ activeFilters: ['open'] });

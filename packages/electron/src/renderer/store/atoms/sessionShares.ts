@@ -20,6 +20,7 @@ export interface ShareInfo {
   createdAt: string;
   expiresAt: string | null;
   viewCount: number;
+  owningPersonalOrgId: string;
 }
 
 /**

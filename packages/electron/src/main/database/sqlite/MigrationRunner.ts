@@ -156,6 +156,36 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'collab_asset_retry_schedule',
       sqlFile: path.join(schemaDir, '0023_collab_asset_retry_schedule.sql'),
     },
+    {
+      version: 24,
+      name: 'tracker_personal_state',
+      sqlFile: path.join(schemaDir, '0024_tracker_personal_state.sql'),
+    },
+    {
+      version: 25,
+      name: 'account_org_bindings',
+      sqlFile: path.join(schemaDir, '0025_account_org_bindings.sql'),
+    },
+    {
+      version: 26,
+      name: 'tool_usage_counters',
+      sqlFile: path.join(schemaDir, '0026_tool_usage_counters.sql'),
+    },
+    {
+      version: 27,
+      name: 'tool_usage_backfill_state',
+      sqlFile: path.join(schemaDir, '0027_tool_usage_backfill_state.sql'),
+    },
+    {
+      version: 28,
+      name: 'tracker_shared_saved_views',
+      sqlFile: path.join(schemaDir, '0028_tracker_shared_saved_views.sql'),
+    },
+    {
+      version: 29,
+      name: 'tracker_personal_snooze',
+      sqlFile: path.join(schemaDir, '0029_tracker_personal_snooze.sql'),
+    },
   ];
 }
 

@@ -21,6 +21,18 @@ export const PLAYWRIGHT_TEST_SELECTORS = {
   agentModeButton: '[data-mode="agent"]',
   filesModeButton: '[data-mode="files"]',
 
+  // Main project window chrome
+  windowTopBar: '[data-testid="window-top-bar"]',
+  windowTopBarModeLabel: '[data-testid="window-top-bar-mode-label"]',
+  windowTopBarWorkspaceName: '[data-testid="window-top-bar-workspace-name"]',
+  windowTopBarGitStatus: '[data-testid="window-top-bar-git-status"]',
+  windowTopBarLeftPane: '[data-testid="window-top-bar-left-pane"]',
+  windowTopBarRightPane: '[data-testid="window-top-bar-right-pane"]',
+  workspaceRow: '[data-layout="workspace-row"]',
+  navigationGutter: '.navigation-gutter',
+  projectRail: '[data-testid="project-rail"]',
+  projectRailItem: '[data-testid="project-rail-item"]',
+
   // Workspace and file tree
   workspaceSidebar: '.workspace-sidebar',
   fileTreeContainer: '.workspace-file-tree',
@@ -295,6 +307,12 @@ export async function switchToFilesMode(page: Page): Promise<void> {
 
   // Wait for workspace sidebar to be visible
   await page.waitForSelector(PLAYWRIGHT_TEST_SELECTORS.workspaceSidebar, { timeout: 5000 });
+}
+
+export function getProjectRailItemByPath(page: Page, workspacePath: string) {
+  return page.locator(
+    `${PLAYWRIGHT_TEST_SELECTORS.projectRailItem}[data-project-path=${JSON.stringify(workspacePath)}]`,
+  );
 }
 
 /**

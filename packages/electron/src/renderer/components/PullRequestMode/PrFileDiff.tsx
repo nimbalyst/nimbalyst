@@ -7,7 +7,7 @@
  * virtualizes cleanly in the collapsed-diff stream.
  *
  * Syntax highlighting is produced by refractor (Prism) and colored by the
- * GitHub-style token palette in `prFileDiff.css`.
+ * active Nimbalyst theme in `prFileDiff.css`.
  */
 
 import type { JSX } from 'react';
@@ -20,9 +20,25 @@ import './prFileDiff.css';
 
 interface PrFileDiffProps {
   file: PullRequestFileRow;
-  isDark: boolean;
   /** 'unified' (stacked, GitHub default) or 'split' (side-by-side). */
   viewType?: 'unified' | 'split';
+}
+
+export interface InlineFileDiffProps {
+  filePath: string;
+  previousPath?: string | null;
+  status?: 'added' | 'removed' | 'modified' | 'renamed';
+  /** Full unified diff, including file headers when available. */
+  unifiedDiff: string | null;
+  /** 'unified' (stacked, GitHub default) or 'split' (side-by-side). */
+  viewType?: 'unified' | 'split';
+}
+
+interface InlineDiffFile {
+  path: string;
+  previousPath?: string | null;
+  status: 'added' | 'removed' | 'modified' | 'renamed';
+  patch: string | null;
 }
 
 /** File extension → refractor/Prism language name. */
@@ -101,7 +117,7 @@ function refractorLanguage(filePath: string): string | undefined {
  * GitHub's per-file `patch` is hunk text only (`@@ ... @@`). react-diff-view's
  * parser needs a full git diff, so synthesize the file headers around it.
  */
-function buildUnifiedDiff(file: PullRequestFileRow): string | null {
+function buildUnifiedDiff(file: InlineDiffFile): string | null {
   if (file.patch == null) return null;
 
   const newPath = file.path;
@@ -132,9 +148,43 @@ function buildUnifiedDiff(file: PullRequestFileRow): string | null {
   return `${header.join('\n')}\n${patch}`;
 }
 
-export function PrFileDiff({ file, isDark, viewType = 'unified' }: PrFileDiffProps): JSX.Element {
+export function PrFileDiff({ file, viewType = 'unified' }: PrFileDiffProps): JSX.Element {
+  return (
+    <InlineFileDiff
+      filePath={file.path}
+      previousPath={file.previousPath}
+      status={file.status}
+      unifiedDiff={file.patch}
+      viewType={viewType}
+    />
+  );
+}
+
+/**
+ * Shared lightweight inline diff used by PR review and Agent Review panels.
+ * Accepts either a complete unified diff or GitHub-style hunk text.
+ */
+export function InlineFileDiff({
+  filePath,
+  previousPath,
+  status = 'modified',
+  unifiedDiff,
+  viewType = 'unified',
+}: InlineFileDiffProps): JSX.Element {
+  const file = useMemo<InlineDiffFile>(
+    () => ({
+      path: filePath,
+      previousPath,
+      status,
+      patch: unifiedDiff,
+    }),
+    [filePath, previousPath, status, unifiedDiff]
+  );
   const parsed = useMemo(() => {
-    const unified = buildUnifiedDiff(file);
+    const unified = file.patch
+      && (file.patch.startsWith('diff --git ') || file.patch.startsWith('--- '))
+      ? file.patch
+      : buildUnifiedDiff(file);
     if (!unified) return { hunks: null as HunkData[] | null, diffType: 'modify' as const, error: null as string | null };
     try {
       const files = parseDiff(unified, { nearbySequences: 'zip' });
@@ -177,7 +227,7 @@ export function PrFileDiff({ file, isDark, viewType = 'unified' }: PrFileDiffPro
   }
 
   return (
-    <div className={`pr-diff-view ${isDark ? 'pr-diff-view--dark' : ''}`}>
+    <div className="pr-diff-view">
       <Diff viewType={viewType} diffType={parsed.diffType} hunks={parsed.hunks} tokens={tokens}>
         {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
       </Diff>

@@ -64,6 +64,16 @@ export interface CodexUsageWindowEntry {
 
 export const codexUsageAtom = atom<CodexUsageData | null>(null);
 
+// Rail visibility of the usage indicator is governed by the NavigationGutter
+// customization set (the single source of truth). Read it with
+// `useAtomValue(hiddenGutterItemsAtom)` and toggle it with
+// `useSetAtom(toggleGutterItemHiddenAtom)({ id: 'codex-usage', hidden })` from
+// `store/atoms/appSettings`. The gutter's right-click "Show Codex Usage" /
+// "Customize Gutter…" / "Show All" affordances read the same set, so hiding the
+// indicator always has a matching rail-side restore. (The legacy
+// `ai.showCodexUsageIndicator` setting is inert -- kept only for the one-shot
+// `usageIndicatorsMigratedToGutter` migration in main/utils/store.ts.)
+
 export function getCodexUsageWindows(usage: CodexUsageData | null): CodexUsageWindowEntry[] {
   // Defensive ??s: the payload may come from a main process older than this
   // renderer (dev HMR mid-migration) or from a cached pre-`limits` snapshot.

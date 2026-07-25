@@ -9,6 +9,7 @@ import {
   MCP_EXTENSION_DEV,
   MCP_EAGER_CONFIG_KEYS,
   MCP_RETIRED_SERVER_CONFIG_KEYS,
+  CORE_ALWAYS_LOAD_TOOLS,
   FIRST_PARTY_TOOL_TO_SERVER,
   extensionServerConfigKey,
   extensionServerEndpointPath,
@@ -33,6 +34,19 @@ describe('Topology descriptor', () => {
     expect(isEagerServer(MCP_SITUATIONAL)).toBe(false);
   });
 
+  it('keeps interaction-critical tools eager and defers low-frequency core tools', () => {
+    expect(CORE_ALWAYS_LOAD_TOOLS).toEqual([
+      'AskUserQuestion',
+      'PromptForUserInput',
+      'display_to_user',
+      'update_session_meta',
+    ]);
+
+    expect(CORE_ALWAYS_LOAD_TOOLS).not.toContain('developer_git_commit_proposal');
+    expect(CORE_ALWAYS_LOAD_TOOLS).not.toContain('capture_editor_screenshot');
+    expect(CORE_ALWAYS_LOAD_TOOLS).not.toContain('get_session_edited_files');
+  });
+
   it('gives every first-party server a unique config-key and endpoint path', () => {
     const keys = MCP_FIRST_PARTY_TOPOLOGY.map((e) => e.configKey);
     const paths = MCP_FIRST_PARTY_TOPOLOGY.map((e) => e.endpointPath);
@@ -54,6 +68,7 @@ describe('Topology descriptor', () => {
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('settings_get_overview')).toBe(MCP_HOST);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('spawn_session')).toBe(MCP_HOST);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('list_queued_prompts')).toBe(MCP_HOST);
+    expect(FIRST_PARTY_TOOL_TO_SERVER.get('notify_user')).toBe(MCP_HOST);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('tracker_create')).toBe(MCP_TRACKERS);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('voice_agent_speak')).toBe(MCP_SITUATIONAL);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('renderer_eval')).toBe(MCP_EXTENSION_DEV);
@@ -119,9 +134,8 @@ describe('getMcpServersConfig consolidated topology', () => {
     expect(MCP_CORE).toBe('nimbalyst');
     expect(config[MCP_CORE]).toBeDefined();
     // Eagerness is per-tool (`_meta['anthropic/alwaysLoad']` on the core
-    // ListTools subset — applyCoreAlwaysLoadMeta), not server-level. A
-    // server-level flag would force display_to_user/capture_editor_screenshot
-    // eager too.
+    // ListTools subset — applyCoreAlwaysLoadMeta), not server-level, so the
+    // CORE_ALWAYS_LOAD_TOOLS subset (not every core tool) is charged eagerly.
     expect(config[MCP_CORE].alwaysLoad).toBeUndefined();
     expect(config[MCP_CORE].url).toContain('/mcp/core');
     // Carries the long timeout (git_commit_proposal / AskUserQuestion block on input).

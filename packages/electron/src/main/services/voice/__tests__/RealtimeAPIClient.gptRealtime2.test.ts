@@ -42,6 +42,7 @@ vi.mock('../../analytics/AnalyticsService', () => ({
 vi.mock('ws', () => ({ default: FakeWS }));
 
 import { RealtimeAPIClient, type RealtimeModel } from '../RealtimeAPIClient';
+import { formatVoiceCommandContext } from '../voiceCommandContext';
 
 function makeClient(model?: RealtimeModel): RealtimeAPIClient {
   return new RealtimeAPIClient(
@@ -89,6 +90,50 @@ describe('session config (gpt-realtime-2)', () => {
     expect(update.session.audio.output.voice).toBe('cedar');
     expect(client.getModel()).toBe('gpt-realtime-2');
     expect(client.supportsAsyncFunctionCalls()).toBe(true);
+  });
+
+  it('includes the current workspace command list in the voice system instructions', () => {
+    const commandContext = formatVoiceCommandContext([
+      { name: 'design' },
+      { name: 'review-contribution' },
+    ]);
+    const client = new RealtimeAPIClient(
+      'test-key',
+      'coding-session',
+      '/workspace',
+      {} as any,
+      `Session context\n\n${commandContext}`,
+      undefined,
+      undefined,
+      'cedar',
+      'gpt-realtime-2',
+    );
+    const sent = attachFakeSocket(client);
+
+    (client as any).updateSession();
+
+    const update = sent.find((e) => e.type === 'session.update');
+    expect(update.session.instructions).toContain('Available workspace slash commands');
+    expect(update.session.instructions).toContain('/design');
+    expect(update.session.instructions).toContain('/review-contribution');
+  });
+
+  it('requires explicit consent before the voice agent captures UI pixels', () => {
+    const client = makeClient('gpt-realtime-2');
+    const sent = attachFakeSocket(client);
+
+    (client as any).updateSession();
+
+    const update = sent.find((e) => e.type === 'session.update');
+    expect(update.session.instructions).toContain(
+      'capture_ui_screenshot sends pixels from the visible Nimbalyst window',
+    );
+    expect(update.session.instructions).toContain(
+      'Never infer consent from an unrelated request',
+    );
+    expect(update.session.instructions).toContain(
+      'never set userConfirmed=true without that consent',
+    );
   });
 
   it('does NOT re-assert voice on response.create (drift fix)', () => {
@@ -398,6 +443,20 @@ describe('queued-action approval messaging (countdown accuracy)', () => {
     expect(instructions).toContain('"if you approve"');
     // Genuine approval is reserved for real interactive prompts only.
     expect(instructions).toContain('[INTERACTIVE PROMPT: ...]');
+  });
+
+  it('instructs commit proposal prompts to read only the title and use the full approval phrasing', () => {
+    const client = makeClient('gpt-realtime-2');
+    const sent = attachFakeSocket(client);
+
+    (client as any).updateSession();
+
+    const update = sent.find((e) => e.type === 'session.update');
+    const instructions: string = update.session.instructions;
+    expect(instructions).toContain('Commit proposal: <commit title>. Say approve to commit or reject to cancel.');
+    expect(instructions).toContain('only the first line of the commit message');
+    expect(instructions).toContain('Never read file paths, the file list, code');
+    expect(instructions).toContain('Do not shorten this to "Approve, or reject?"');
   });
 
   it('the queued submit_agent_prompt result reflects the countdown, not an approval gate', async () => {

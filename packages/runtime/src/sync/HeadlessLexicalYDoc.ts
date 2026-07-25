@@ -119,6 +119,34 @@ export class HeadlessLexicalYDoc {
   }
 
   /**
+   * Materialize the binding's collab tree into the Lexical editor state.
+   *
+   * Needed because `createBinding` does not backfill. Two things are required
+   * to read an existing document headlessly, and BOTH are load-bearing:
+   *
+   *   1. The doc's state must arrive as a Yjs update while this binding's
+   *      observer is attached, so the collab tree gets built. Binding directly
+   *      to an already-populated doc skips this and leaves the tree empty --
+   *      see `MarkdownCollabContentAdapter.withHeadless`, which binds to a
+   *      fresh doc and applies the source state into it.
+   *   2. This call, which walks that collab tree into real Lexical nodes.
+   *      Step 1 alone leaves the editor state empty: the deep observer builds
+   *      collab nodes but does not replay them into Lexical.
+   *
+   * This is the headless twin of the renderer bug in `CollabLexicalProvider`
+   * (FAILURE HISTORY note 1, NIM-1764): bind to a warm doc, read blank.
+   */
+  hydrateFromYDoc(): void {
+    if (this.destroyed) return;
+    this.editor.update(
+      () => {
+        this.binding.root.syncChildrenFromYjs(this.binding);
+      },
+      { discrete: true }
+    );
+  }
+
+  /**
    * Apply an editor update inside a Lexical transaction. The binding
    * propagates the resulting node changes to the bound Y.Doc, which the
    * underlying provider then broadcasts to connected peers.

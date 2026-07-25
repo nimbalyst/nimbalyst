@@ -12,6 +12,18 @@ import com.nimbalyst.app.auth.AuthCallbackParseResult
 import com.nimbalyst.app.ui.NimbalystAndroidApp
 import com.nimbalyst.app.ui.theme.NimbalystAndroidTheme
 
+internal enum class DeepLinkRoute {
+    AUTH_CALLBACK,
+    SESSION,
+    UNSUPPORTED,
+}
+
+internal fun routeDeepLink(host: String?, path: String?): DeepLinkRoute = when {
+    host == "auth" && path == "/callback" -> DeepLinkRoute.AUTH_CALLBACK
+    host == "session" -> DeepLinkRoute.SESSION
+    else -> DeepLinkRoute.UNSUPPORTED
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -35,34 +47,8 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         val deepLink = intent?.data ?: return
         val app = applicationContext as NimbalystApplication
-        val message = when (deepLink.host) {
-            "pair" -> {
-                val pairingData = com.nimbalyst.app.pairing.QRPairingData.parse(deepLink.toString())
-                if (pairingData == null) {
-                    "Invalid pairing link."
-                } else {
-                    AnalyticsManager.setDistinctIdFromPairing(pairingData.analyticsId)
-                    val existing = app.pairingStore.state.value.credentials
-                    app.pairingStore.savePairing(
-                        com.nimbalyst.app.pairing.PairingCredentials(
-                            serverUrl = pairingData.serverUrl,
-                            encryptionSeed = pairingData.seed,
-                            pairedUserId = pairingData.userId,
-                            authJwt = existing?.authJwt,
-                            authUserId = existing?.authUserId,
-                            orgId = existing?.orgId,
-                            personalUserId = pairingData.personalUserId,
-                            personalOrgId = pairingData.personalOrgId,
-                            sessionToken = existing?.sessionToken,
-                            authEmail = existing?.authEmail,
-                            authExpiresAt = existing?.authExpiresAt
-                        )
-                    )
-                    "Pairing payload imported."
-                }
-            }
-
-            "session" -> {
+        val message = when (routeDeepLink(deepLink.host, deepLink.path)) {
+            DeepLinkRoute.SESSION -> {
                 // nimbalyst://session/<sessionId> -- opened from a push notification tap.
                 val sessionId = deepLink.pathSegments.firstOrNull()?.takeIf { it.isNotBlank() }
                 if (sessionId == null) {
@@ -73,7 +59,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            "auth" -> when (
+            DeepLinkRoute.AUTH_CALLBACK -> when (
                 val result = com.nimbalyst.app.auth.AuthCallbackParser.parse(
                     deepLink = deepLink.toString(),
                     pairedUserId = app.pairingStore.state.value.credentials?.pairedUserId
@@ -90,7 +76,7 @@ class MainActivity : ComponentActivity() {
                 is AuthCallbackParseResult.Failure -> result.reason
             }
 
-            else -> null
+            DeepLinkRoute.UNSUPPORTED -> null
         }
 
         message?.let {

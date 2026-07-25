@@ -93,7 +93,7 @@ export function ChecksTab({ workspaceId, remote, pr, refreshToken }: ChecksTabPr
     <div className="pr-checks-tab flex flex-col flex-1 min-h-0 overflow-y-auto" data-testid="pr-checks-tab">
       {loading && checks.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-6 text-nim-muted text-sm">
-          <div className="spinner w-4 h-4 border-[2px] border-nim-secondary border-t-nim-accent rounded-full animate-spin" />
+          <div className="spinner w-4 h-4 border-[2px] border-nim-secondary border-t-nim-primary rounded-full animate-spin" />
           Loading checks…
         </div>
       ) : error ? (
@@ -118,7 +118,7 @@ export function ChecksTab({ workspaceId, remote, pr, refreshToken }: ChecksTabPr
                   <span className="flex-1 min-w-0 truncate text-sm text-nim">{check.checkName}</span>
                   {check.detailsUrl && (
                     <button
-                      className="text-xs text-nim-accent hover:underline shrink-0"
+                      className="text-xs text-nim-link hover:text-nim-link-hover hover:underline shrink-0"
                       onClick={() => openExternal(check.detailsUrl)}
                     >
                       Details

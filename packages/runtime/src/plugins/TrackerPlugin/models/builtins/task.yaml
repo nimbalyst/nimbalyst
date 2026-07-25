@@ -2,13 +2,18 @@ type: task
 displayName: Task
 displayNamePlural: Tasks
 icon: task_alt
-color: "#10b981"
+color: "#2563eb"
 
 modes:
   inline: true
   fullDocument: false
 
+sync:
+  mode: shared
+  scope: project
+
 idPrefix: tsk
+idFormat: ulid
 
 fields:
   - name: title
@@ -25,6 +30,18 @@ fields:
       - value: in-progress
         label: In Progress
         icon: motion_photos_on
+      - value: in-review
+        label: In Review
+        icon: rate_review
+        color: "#3b82f6"
+      - value: changes-requested
+        label: Changes Requested
+        icon: edit_note
+        color: "#f97316"
+      - value: approved
+        label: Approved
+        icon: verified
+        color: "#22c55e"
       - value: done
         label: Done
         icon: check_circle
@@ -42,9 +59,33 @@ fields:
         label: Critical
 
   - name: owner
-    type: string
+    type: user
 
   - name: description
     type: text
 
-inlineTemplate: "{icon} {title} {status} {priority}"
+  # Collection membership. Written directly, or by inverse propagation when an
+  # item is added to a milestone/release from the collection side.
+  - name: collection
+    type: relationship
+    relationshipTypeKey: in-collection
+    inverseRelationshipTypeKey: has-item
+    inverseFieldId: items
+    targetTrackerTypes:
+      - milestone
+      - release
+    multiValue: true
+
+  - name: tags
+    type: array
+    itemType: string
+    displayInline: false
+
+inlineTemplate: "{icon} {title} {status} {owner}"
+
+roles:
+  title: title
+  workflowStatus: status
+  priority: priority
+  assignee: owner
+  tags: tags

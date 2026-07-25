@@ -98,7 +98,6 @@ import {
 } from 'lexical';
 import {Dispatch, useCallback, useEffect, useMemo, useState} from 'react';
 
-import {useTheme} from '../../context/ThemeContext';
 import {
   blockTypeToBlockName,
   useToolbarState,
@@ -128,7 +127,6 @@ import {
   formatParagraph,
   formatQuote,
 } from './utils';
-import { getCodeTheme } from "../CodeHighlightPlugin";
 
 const rootTypeToRootName = {
   root: 'Root',
@@ -539,7 +537,6 @@ export default function ToolbarPlugin({
   const [isEditable, setIsEditable] = useState(() => editor.isEditable());
   const {toolbarState, updateToolbarState} = useToolbarState();
 
-  const {theme, isDark} = useTheme();
   const { toggleSetting } = useRuntimeSettings();
 
 
@@ -840,7 +837,6 @@ export default function ToolbarPlugin({
       } else {
         const markdown = $convertToEnhancedMarkdownString(transformers);
         const codeNode = $createCodeNode('markdown');
-        codeNode.setTheme(getCodeTheme(theme, isDark));
         codeNode.append($createTextNode(markdown));
         root.clear().append(codeNode);
         if (markdown.length === 0) {
@@ -850,7 +846,7 @@ export default function ToolbarPlugin({
       $getRoot().selectStart();
     }, {discrete: true});
 
-  }, [activeEditor, shouldPreserveNewLinesInMarkdown, theme, transformers]);
+  }, [activeEditor, shouldPreserveNewLinesInMarkdown, transformers]);
 
   const canViewerSeeInsertDropdown = !toolbarState.isImageCaption;
   const canViewerSeeInsertCodeButton = !toolbarState.isImageCaption;

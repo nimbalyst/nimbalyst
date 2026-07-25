@@ -17,7 +17,7 @@ export const quickOpenTip: TipDefinition = {
   name: 'Quick Open Shortcut',
   version: 1,
   trigger: {
-    screen: '*',
+    screen: ['*', 'files-empty'],
     condition: (context) =>
       context.hasReachedCount(FEATURE_USAGE_KEYS.APP_LAUNCH, 7) &&
       !context.hasBeenUsed(FEATURE_USAGE_KEYS.KEYBOARD_SHORTCUT_USED),

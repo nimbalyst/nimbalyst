@@ -24,6 +24,21 @@ data class PairingCredentials(
 
     val hasAuthToken: Boolean
         get() = !authJwt.isNullOrBlank()
+
+    internal fun sanitizedForServerChange(existing: PairingCredentials?): PairingCredentials {
+        if (existing == null || existing.serverUrl == serverUrl) {
+            return this
+        }
+
+        return copy(
+            authJwt = null,
+            authUserId = null,
+            orgId = null,
+            sessionToken = null,
+            authEmail = null,
+            authExpiresAt = null,
+        )
+    }
 }
 
 data class PairingState(

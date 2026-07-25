@@ -3,6 +3,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import type { ConfigTheme } from '@nimbalyst/runtime';
 import { themeIdAtom, setThemeAtom, store, type ThemeId } from '@nimbalyst/runtime/store';
 import { getBaseThemeColors, getTheme as getRuntimeTheme, onThemesChanged, type ExtendedThemeColors } from '@nimbalyst/runtime';
+import { reportResolvedTitleBarColors } from '../utils/windowChrome';
 
 /**
  * Map of ExtendedThemeColors keys to CSS variable names.
@@ -356,6 +357,7 @@ export async function applyThemeToDOM(theme: ThemeId): Promise<void> {
         }
       }
       console.info(`[useTheme] Applied extension theme: ${registryTheme.name} (${resolvedTheme})`);
+      reportResolvedTitleBarColors(root);
       return;
     }
 
@@ -401,6 +403,8 @@ export async function applyThemeToDOM(theme: ThemeId): Promise<void> {
       }
     }
   }
+
+  reportResolvedTitleBarColors(root);
 }
 
 /**
@@ -544,4 +548,3 @@ export async function getAllAvailableThemesAsync(): Promise<Array<{
     ];
   }
 }
-

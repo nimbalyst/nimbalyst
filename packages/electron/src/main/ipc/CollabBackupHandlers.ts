@@ -1,6 +1,5 @@
-import { getCollabContentAdapter } from '@nimbalyst/collab-adapters';
-
 import { safeHandle } from '../utils/ipcRegistry';
+import { describeCollabCodec } from '../services/CollabConversionClient';
 import { getLocalOriginBinding } from '../services/CollabLocalOriginService';
 import { getCollabBackupService } from '../services/CollabBackupService';
 import { backupCollabProject, restoreCollabBackup } from '../services/CollabBackupCoordinator';
@@ -34,8 +33,15 @@ export function registerCollabBackupHandlers(): void {
     const documentType = kind === 'body'
       ? 'markdown'
       : (binding?.documentType ?? payload.documentType ?? 'markdown');
-    const adapter = getCollabContentAdapter(documentType);
-    if (!adapter) return { success: false, error: `No adapter for ${documentType}` };
+    // The plaintext already arrived from the renderer, so this only needs the
+    // codec's METADATA to name the backup file. Ask the codec host rather than
+    // a main-process registry that can never know every document type.
+    let codec;
+    try {
+      codec = await describeCollabCodec(documentType, { workspacePath: payload.workspacePath });
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
     getCollabBackupService().onContentChanged({
       documentId: payload.documentId,
       orgId: team.orgId,
@@ -44,7 +50,7 @@ export function registerCollabBackupHandlers(): void {
       title: payload.title || binding?.sourceBasename || payload.documentId,
       relativePath: binding?.relativePath ?? null,
       kind,
-      extension: adapter.fileExtensions[0] ?? '.txt',
+      extension: codec.fileExtensions[0] ?? '.txt',
       getPlaintext: () => payload.plaintext,
     });
     return { success: true, scheduled: true };

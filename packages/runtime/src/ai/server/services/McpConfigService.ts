@@ -126,10 +126,8 @@ export class McpConfigService {
 
       // nimbalyst (core) — universal agent↔host glue. Eagerness is per-TOOL,
       // not server-level: /mcp/core ListTools marks CORE_ALWAYS_LOAD_TOOLS with
-      // `_meta['anthropic/alwaysLoad']` (applyCoreAlwaysLoadMeta), keeping the
-      // interactive/session tools in the prompt while display_to_user and
-      // capture_editor_screenshot defer. Server-level `alwaysLoad: true` here
-      // would override that and force ALL core tools eager. Carries the long
+      // `_meta['anthropic/alwaysLoad']` (applyCoreAlwaysLoadMeta). Other core
+      // tools stay registered but defer through ToolSearch. Carries the long
       // tool timeout because developer_git_commit_proposal / AskUserQuestion /
       // PromptForUserInput block indefinitely on user input.
       config[MCP_CORE] = {

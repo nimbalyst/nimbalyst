@@ -34,16 +34,9 @@
                     android:pathPrefix="/callback"
                     android:scheme="nimbalyst" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-
-                <data
-                    android:host="pair"
-                    android:scheme="nimbalyst" />
-            </intent-filter>
+            <!-- Pairing payloads are accepted only by the in-app QR scanner.
+                 MainActivity must not expose them as external deep links because
+                 they select the sync server and encryption context. -->
             <!-- Note: nimbalyst://session/[id] is delivered only via the push
                  notification's explicit Intent(MainActivity) (see
                  NimbalystFirebaseMessagingService). No BROWSABLE intent-filter is

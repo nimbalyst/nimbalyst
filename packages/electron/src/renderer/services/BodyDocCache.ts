@@ -58,7 +58,8 @@
  * destroy it on release.
  */
 
-import { DocumentSyncProvider, CollabLexicalProvider } from '@nimbalyst/runtime/sync';
+import { DocumentSyncProvider } from '@nimbalyst/runtime/sync';
+import { CollabLexicalProvider } from '@nimbalyst/runtime/collab-lexical';
 import type {
   DocumentSyncConfig,
   DocumentSyncStatus,

@@ -329,6 +329,12 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
         monaco,
         setContent: setEditorContent,
         getContent,
+        openFind: () => {
+          editor.focus();
+          void editor.getAction('actions.find')?.run().catch((error: unknown) => {
+            console.error('[MonacoCodeEditor] Failed to open find widget:', error);
+          });
+        },
         showDiff,
         exitDiffMode,
         acceptDiff,
@@ -388,9 +394,6 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
         );
       }
     });
-
-    // Focus editor on mount
-    editor.focus();
   }, [getContent, setEditorContent, onGetContent, onEditorReady, onDirtyChange, showDiff, exitDiffMode, acceptDiff, rejectDiff, goToNextDiff, goToPreviousDiff, getDiffChangeCount]);
 
   /**

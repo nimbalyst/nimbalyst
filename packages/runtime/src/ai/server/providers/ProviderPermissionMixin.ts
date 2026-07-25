@@ -41,8 +41,8 @@ export type TrustChecker = (
   mode: PermissionMode;
   /**
    * Opt-in flag (issue #628): when true, "Allow All" (bypass-all) workspaces
-   * route agent-mode Claude Code sessions through the SDK auto-mode classifier.
-   * Defaults to off so "Allow All" stays literal allow-all.
+   * route supported agent providers through their native automatic approval
+   * reviewer. Defaults to off so "Allow All" stays literal allow-all.
    */
   allowAllUsesClassifier?: boolean;
 };

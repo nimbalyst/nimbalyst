@@ -9,6 +9,8 @@ import { logger } from '../utils/logger';
 import { isOSNotificationsEnabled, isNotifyWhenFocusedEnabled, isSessionBlockedNotificationsEnabled } from '../utils/store';
 import { findWindowByWorkspace } from '../window/WindowManager';
 
+const NOTIFICATION_OUTCOME_TIMEOUT_MS = 2_000;
+
 export interface NotificationOptions {
   title: string;
   body: string;
@@ -16,6 +18,34 @@ export interface NotificationOptions {
   sessionId?: string;
   workspacePath: string;  // REQUIRED: stable identifier for routing
   provider?: string;
+  /**
+   * Agent/user-attention notifications can opt out of focus suppression while
+   * still respecting the user's OS notification setting.
+   */
+  bypassFocusCheck?: boolean;
+  silent?: boolean;
+  urgency?: 'normal' | 'critical' | 'low';
+  timeoutType?: 'default' | 'never';
+}
+
+export type NotificationSkippedReason =
+  | 'os_notifications_disabled'
+  | 'unsupported'
+  | 'app_focused'
+  | 'session_visible'
+  | 'confirmation_timeout'
+  | 'error';
+
+export interface NotificationResult {
+  success: boolean;
+  attempted: boolean;
+  shown: boolean;
+  skippedReason: NotificationSkippedReason | null;
+  error?: string;
+  title: string;
+  bodyPreview: string;
+  sessionId?: string;
+  workspacePath: string;
 }
 
 /**
@@ -64,6 +94,21 @@ class NotificationService {
    * 3. System allows notifications (respects Do Not Disturb)
    */
   async showNotification(options: NotificationOptions): Promise<void> {
+    await this.showNotificationWithResult(options);
+  }
+
+  async showNotificationWithResult(options: NotificationOptions): Promise<NotificationResult> {
+    const baseResult = (): NotificationResult => ({
+      success: true,
+      attempted: false,
+      shown: false,
+      skippedReason: null,
+      title: options.title,
+      bodyPreview: NotificationService.truncateBody(options.body, 120),
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+      workspacePath: options.workspacePath,
+    });
+
     // logger.main.info('[NotificationService] showNotification called:', {
     //   title: options.title,
     //   sessionId: options.sessionId,
@@ -74,13 +119,19 @@ class NotificationService {
     // logger.main.info('[NotificationService] OS notifications enabled:', osNotificationsEnabled);
     if (!osNotificationsEnabled) {
       // logger.main.info('[NotificationService] SKIPPED: OS notifications disabled in settings');
-      return;
+      return {
+        ...baseResult(),
+        skippedReason: 'os_notifications_disabled',
+      };
     }
 
     // Check if app has permission to show notifications
     if (!Notification.isSupported()) {
       logger.main.warn('[NotificationService] SKIPPED: Notifications not supported on this platform');
-      return;
+      return {
+        ...baseResult(),
+        skippedReason: 'unsupported',
+      };
     }
 
     // Check if any window is visible and focused
@@ -88,14 +139,17 @@ class NotificationService {
     const focusedWindow = allWindows.find(win => win.isVisible() && win.isFocused());
     // logger.main.info('[NotificationService] Has visible focused window:', !!focusedWindow);
 
-    if (focusedWindow) {
+    if (focusedWindow && !options.bypassFocusCheck) {
       // Window is focused - check if we should still notify
       const notifyWhenFocused = isNotifyWhenFocusedEnabled();
 
       if (!notifyWhenFocused) {
         // Traditional behavior: skip all notifications when app is focused
         // logger.main.info('[NotificationService] SKIPPED: App window is focused (notifications only show when app is in background)');
-        return;
+        return {
+          ...baseResult(),
+          skippedReason: 'app_focused',
+        };
       }
 
       // notifyWhenFocused is enabled - check if viewing this specific session
@@ -103,7 +157,10 @@ class NotificationService {
         const isViewingSession = await this.isWindowViewingSession(focusedWindow, options.sessionId);
         if (isViewingSession) {
           // logger.main.info('[NotificationService] SKIPPED: User is already viewing this session');
-          return;
+          return {
+            ...baseResult(),
+            skippedReason: 'session_visible',
+          };
         }
         // logger.main.info('[NotificationService] User not viewing this session, showing notification');
       }
@@ -115,9 +172,9 @@ class NotificationService {
         title: options.title,
         body: options.body,
         icon: options.icon || this.getAppIcon(),
-        silent: false, // Use system notification sound
-        urgency: 'normal', // macOS notification urgency
-        timeoutType: 'default', // Use system default timeout
+        silent: options.silent === true ? true : false,
+        urgency: options.urgency || 'normal', // macOS notification urgency
+        timeoutType: options.timeoutType || 'default', // Use system default timeout
       });
 
       // Handle notification click - focus window and switch to session
@@ -125,32 +182,88 @@ class NotificationService {
         this.handleNotificationClick(options);
       });
 
-      // Handle notification errors
-      notification.on('failed', (event, error) => {
-        logger.main.error('[NotificationService] Notification failed:', error);
-      });
-
       // Track notification
       if (options.sessionId) {
         this.activeNotifications.set(options.sessionId, notification);
       }
 
-      // Show the notification
-      notification.show();
+      return await new Promise<NotificationResult>((resolve) => {
+        let settled = false;
+        let outcomeTimeout: NodeJS.Timeout | null = null;
 
-      // logger.main.info('[NotificationService] Notification shown:', {
-      //   title: options.title,
-      //   sessionId: options.sessionId,
-      // });
+        const settle = (result: NotificationResult) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (outcomeTimeout) {
+            clearTimeout(outcomeTimeout);
+          }
+          notification.removeListener('show', handleShown);
+          notification.removeListener('failed', handleFailed);
+          if (
+            !result.shown &&
+            options.sessionId &&
+            this.activeNotifications.get(options.sessionId) === notification
+          ) {
+            this.activeNotifications.delete(options.sessionId);
+          }
+          resolve(result);
+        };
 
-      // Log additional debug info
-      // logger.main.info('[NotificationService] Notification object created:', {
-      //   hasIcon: !!notification,
-      //   title: options.title,
-      //   bodyLength: options.body.length,
-      // });
+        const handleShown = () => {
+          settle({
+            ...baseResult(),
+            attempted: true,
+            shown: true,
+          });
+        };
+
+        const handleFailed = (_event: unknown, error: string) => {
+          logger.main.error('[NotificationService] Notification failed:', error);
+          settle({
+            ...baseResult(),
+            success: false,
+            attempted: true,
+            skippedReason: 'error',
+            error,
+          });
+        };
+
+        notification.on('show', handleShown);
+        notification.on('failed', handleFailed);
+        outcomeTimeout = setTimeout(() => {
+          settle({
+            ...baseResult(),
+            success: false,
+            attempted: true,
+            skippedReason: 'confirmation_timeout',
+            error: 'Timed out waiting for the OS notification outcome',
+          });
+        }, NOTIFICATION_OUTCOME_TIMEOUT_MS);
+
+        try {
+          notification.show();
+        } catch (error) {
+          logger.main.error('[NotificationService] Error showing notification:', error);
+          settle({
+            ...baseResult(),
+            success: false,
+            attempted: true,
+            skippedReason: 'error',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
     } catch (error) {
       logger.main.error('[NotificationService] Error showing notification:', error);
+      return {
+        ...baseResult(),
+        success: false,
+        attempted: true,
+        skippedReason: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 

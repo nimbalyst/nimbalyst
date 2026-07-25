@@ -13,6 +13,7 @@ import type { AgentMessagesStore } from '@nimbalyst/runtime/storage/repositories
 import { DEFAULT_MODELS } from '@nimbalyst/runtime/ai/modelConstants';
 import { logger } from '../utils/logger';
 import { encodeWorkspaceDir, extractSessionMetadata, type ClaudeCodeEntry, type SessionMetadata } from './ClaudeCodeSessionScanner';
+import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
 const log = logger.aiSession;
 
@@ -32,7 +33,7 @@ export interface SyncResult {
 
 /** See ClaudeCodeSessionScanner.getClaudeProjectsDir for override semantics. */
 function projectsDir(): string {
-  return process.env.NIMBALYST_CLAUDE_PROJECTS_DIR || path.join(homedir(), '.claude', 'projects');
+  return process.env.NIMBALYST_CLAUDE_PROJECTS_DIR || path.join(resolveClaudeConfigDir(), 'projects');
 }
 
 /**

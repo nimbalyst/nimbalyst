@@ -1,6 +1,7 @@
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'module';
 
 // Load environment variables from .env file
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -17,8 +18,26 @@ if (!process.env.NIMBALYST_BETTER_SQLITE3_NATIVE) {
     'binary-path.txt',
   );
   if (fs.existsSync(cached)) {
+    // Only adopt the pointer when it names a binary matching the currently
+    // installed better-sqlite3 version AND this Node's ABI -- a stale pointer
+    // from a previous version would otherwise load a mismatched .node and
+    // crash the worker. Resolution is best-effort: better-sqlite3 may be
+    // hoisted to the repo root rather than sitting in packages/electron, and a
+    // throw here would take down every test file with an opaque ENOENT.
+    let expectedBinaryName: string | null = null;
+    try {
+      const req = createRequire(path.join(__dirname, 'package.json'));
+      const version = JSON.parse(
+        fs.readFileSync(req.resolve('better-sqlite3/package.json'), 'utf-8'),
+      ).version;
+      expectedBinaryName = `better_sqlite3-v${version}-modules${process.versions.modules}-${process.platform}-${process.arch}.node`;
+    } catch {
+      // better-sqlite3 not resolvable -- leave the env var unset and let the
+      // package's own loader deal with it.
+    }
+
     const p = fs.readFileSync(cached, 'utf-8').trim();
-    if (p && fs.existsSync(p)) {
+    if (expectedBinaryName && p && path.basename(p) === expectedBinaryName && fs.existsSync(p)) {
       process.env.NIMBALYST_BETTER_SQLITE3_NATIVE = p;
     }
   }

@@ -35,6 +35,8 @@ interface MessageSegmentProps {
   onCompact?: () => void;
   /** Optional: Provider name for provider-specific rendering (e.g., 'openai-codex') */
   provider?: string;
+  /** Optional: Session's project/worktree folder, used to open the login terminal there. */
+  workspacePath?: string;
 }
 
 export const MessageSegment: React.FC<MessageSegmentProps> = ({
@@ -52,7 +54,8 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
   onOpenFile,
   onOpenSession,
   onCompact,
-  provider
+  provider,
+  workspacePath
 }) => {
   const [isDiffExpanded, setDiffExpanded] = useState(false);
   const [enlargedImage, setEnlargedImage] = useState<ChatAttachment | null>(null);
@@ -204,7 +207,7 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
 
     // If it's a login-required message, render the special widget (only if allowed)
     if (isLoginRequired && !isUser && shouldShowLoginWidget) {
-      return <LoginRequiredWidget />;
+      return <LoginRequiredWidget workspacePath={workspacePath} />;
     }
 
     // If it's a login-required message but we shouldn't show the widget, render nothing
@@ -365,7 +368,7 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
 
     // If it's a login-required error, render the special widget (only if allowed)
     if (isLoginRequired && shouldShowLoginWidget) {
-      return <LoginRequiredWidget />;
+      return <LoginRequiredWidget workspacePath={workspacePath} />;
     }
 
     // If it's a login-required error but we shouldn't show widget, render nothing
