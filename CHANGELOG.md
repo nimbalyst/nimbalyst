@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Claude Code sessions can select a 1M-context model again, and the context meter no longer reports 1M for a session the CLI actually runs at 200k.
 
 ### Removed
 <!-- Removed features go here -->

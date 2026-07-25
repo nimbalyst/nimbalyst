@@ -96,14 +96,18 @@ describe('claudeCodeFamilyKeyword', () => {
 });
 
 describe('baseContextWindowForVariant', () => {
-  it('reports 1M for all 1M variants (current-gen + legacy pinned) and 200k for haiku', () => {
-    expect(baseContextWindowForVariant('opus')).toBe(1_000_000);
-    expect(baseContextWindowForVariant('fable')).toBe(1_000_000);
-    expect(baseContextWindowForVariant('sonnet')).toBe(1_000_000);
-    // Legacy pinned variants are 1M too — single row, no redundant -1m duplicate.
-    expect(baseContextWindowForVariant('opus-4-6')).toBe(1_000_000);
-    expect(baseContextWindowForVariant('opus-4-7')).toBe(1_000_000);
-    expect(baseContextWindowForVariant('sonnet-4-6')).toBe(1_000_000);
+  /**
+   * Bare aliases are 200k; the 1M window comes from the CLI's `[1m]` suffix,
+   * which the picker offers as its own row. Measured on CLI 2.1.220 —
+   * `opus` reports contextWindow 200000, `opus[1m]` reports 1000000.
+   */
+  it('reports 200k for every bare variant — 1M needs the [1m] suffix', () => {
+    expect(baseContextWindowForVariant('opus')).toBe(200_000);
+    expect(baseContextWindowForVariant('fable')).toBe(200_000);
+    expect(baseContextWindowForVariant('sonnet')).toBe(200_000);
+    expect(baseContextWindowForVariant('opus-4-6')).toBe(200_000);
+    expect(baseContextWindowForVariant('opus-4-7')).toBe(200_000);
+    expect(baseContextWindowForVariant('sonnet-4-6')).toBe(200_000);
     expect(baseContextWindowForVariant('haiku')).toBe(200_000);
   });
 });

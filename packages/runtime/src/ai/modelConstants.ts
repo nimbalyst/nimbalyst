@@ -334,45 +334,40 @@ export const CLAUDE_CODE_PINNED_SDK_MODELS: Partial<Record<ClaudeCodeVariant, st
 };
 
 /**
- * Current-generation variants that run a 1M context window natively — the
- * window is the SAME whether or not the `[1m]` suffix is sent, and 1M is GA at
- * a single flat price (no `[1m]` premium tier, no >200k long-context surcharge).
- * Verified against CLI 2.1.204 (GitHub #825 / NIM-1660): plain `opus`/`fable`/
- * `sonnet` sessions report `modelUsage[...].contextWindow === 1_000_000`.
+ * Variants whose BARE alias already runs a 1M window, needing no `[1m]` suffix.
  *
- * Because plain and `[1m]` are identical for these, they get NO separate `-1m`
- * picker row (see `CLAUDE_CODE_VARIANTS_WITH_1M`) and their base context-window
- * is 1M. The earlier "plain models window at 200k client-side" behavior was real
- * on CLI 2.1.175 but is now stale.
+ * Currently none. Measured against CLI 2.1.220 by reading
+ * `modelUsage[...].contextWindow` from `claude -p --output-format json`:
  *
- * The pinned legacy variants (`opus-4-7`/`opus-4-6`/`sonnet-4-6`) are included
- * too: the model catalog lists all three at a 1M window, and we don't want a
- * redundant second `-1m` picker row for them either. The SDK-path meter reads
- * the REAL reported window per turn (see `resolveClaudeCodeParentContextWindow`),
- * so even if a legacy variant's live window differed it would self-correct — the
- * 1M value here is only the pre-first-result seed / CLI-proxy fallback.
+ *   opus  -> 200000     opus[1m]  -> 1000000
+ *   fable -> 200000     fable[1m] -> 1000000
+ *                       sonnet[1m]-> 1000000
+ *
+ * Even the full Anthropic id (`claude-opus-5`) reports 200000, so the extended
+ * window is selected by the CLI's `[1m]` suffix alone, not by the model.
+ *
+ * This list was populated after CLI 2.1.204 reported 1M for the bare aliases
+ * (GitHub #825 / NIM-1660). That is no longer true, and the same assumption has
+ * now been wrong in both directions — it was also wrong on 2.1.175 in the
+ * opposite way. Treat any hardcoded value here as a guess about another tool's
+ * behaviour, and prefer what the CLI reports at runtime
+ * (`resolveClaudeCodeParentContextWindow`), which this only seeds.
  */
-export const CLAUDE_CODE_NATIVE_1M_VARIANTS: readonly ClaudeCodeVariant[] = [
+export const CLAUDE_CODE_NATIVE_1M_VARIANTS: readonly ClaudeCodeVariant[] = [];
+
+/**
+ * Variants that get a SEPARATE 1M-context (`-1m`) picker row.
+ *
+ * Only the canonical aliases. `resolveClaudeCliModelArg` collapses every pinned
+ * opus variant to the bare `opus` alias, so an `opus-4-7-1m` row would actually
+ * run Opus 5 at 1M rather than Opus 4.7 — offering it would mislabel the model.
+ * `haiku` has no extended form at all.
+ */
+export const CLAUDE_CODE_VARIANTS_WITH_1M: readonly ClaudeCodeVariant[] = [
   'fable',
   'opus',
   'sonnet',
-  'opus-4-8',
-  'opus-4-7',
-  'opus-4-6',
-  'sonnet-4-6',
 ];
-
-/**
- * Variants that still get a SEPARATE 1M-context (`-1m`) picker row.
- *
- * Intentionally empty: every Claude Agent variant now runs 1M on its single base
- * row (see `CLAUDE_CODE_NATIVE_1M_VARIANTS`), so a `-1m` row would be a redundant
- * duplicate. Existing sessions pinned to `…-1m` still resolve fine
- * (`resolveClaudeCodeModelVariant` strips the suffix); we just stop offering the
- * row for new selections. The mechanism is retained (not deleted) so a future
- * model that genuinely gates 1M behind a beta suffix can opt back in here.
- */
-export const CLAUDE_CODE_VARIANTS_WITH_1M: readonly ClaudeCodeVariant[] = [];
 
 /**
  * The base (non-`-1m`) context window for a Claude Agent variant, used to seed
