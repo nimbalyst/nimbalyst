@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Bug fixes go here -->
 - Queued chat messages now continue through a replacement project window after the original window reloads or closes.
 - Windows and Linux get the File/Edit/View menus back, now drawn in the project window's title bar.
+- Structured agent prompts now retain their actionable state until exactly one answer settles.
 - Delegated agent sessions now report their resolved launch model and reasoning settings, accept auditable priority prompts without stale-turn interrupts, and automatically resume ordinary queued prompts after turns, restarts, and interactive replies without overlapping an interrupted priority turn.
 - Expanded workstream rows now show external session renames immediately without reloading the session view.
 - Empty workstreams now remain explicit containers instead of exposing another session's transcript or becoming draggable sessions.

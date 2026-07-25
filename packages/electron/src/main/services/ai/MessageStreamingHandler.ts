@@ -116,6 +116,38 @@ import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import type { WorkspaceFileAttributionMode } from '../WorkspaceFileAttributionPolicy';
 
+/**
+ * The terminal streaming paths must project the durable prompt bit, rather
+ * than infer it from the turn having stopped. Kept here so normal and error
+ * completion share the exact same production predicate.
+ */
+export function hasPersistedPendingPrompt(metadata: unknown): boolean {
+  return Boolean(
+    metadata
+    && typeof metadata === 'object'
+    && (metadata as Record<string, unknown>).hasPendingPrompt === true,
+  );
+}
+
+export async function runTerminalPromptTransition(params: {
+  metadata: unknown;
+  hasActiveLease: boolean;
+  hasOtherDeferral?: boolean;
+  tryDispatch: () => Promise<boolean>;
+  endSession: () => Promise<void>;
+  sync?: (hasPendingPrompt: boolean) => void;
+}): Promise<{ deferred: boolean; hasPendingPrompt: boolean }> {
+  const hasPendingPrompt = hasPersistedPendingPrompt(params.metadata);
+  let dispatched = false;
+  if (!hasPendingPrompt && !params.hasActiveLease && !params.hasOtherDeferral) {
+    dispatched = await params.tryDispatch();
+  }
+  const deferred = hasPendingPrompt || params.hasActiveLease || Boolean(params.hasOtherDeferral) || dispatched;
+  if (!deferred) await params.endSession();
+  if (!params.hasActiveLease) params.sync?.(hasPendingPrompt);
+  return { deferred, hasPendingPrompt };
+}
+
 function resolveWorkspaceFileAttributionMode(
   providerName: string,
   provider: AIProvider | null | undefined,
@@ -2610,18 +2642,21 @@ export class MessageStreamingHandler {
             const willResume = session.provider === 'claude-code'
               && typeof (provider as any).willResumeAfterCompletion === 'function'
               && (provider as any).willResumeAfterCompletion();
+            const persistedSession = await AISessionsRepository.get(session.id);
+            const hasPendingStructuredPrompt = hasPersistedPendingPrompt(persistedSession?.metadata);
             const queuedChainAlreadyActive = this.hasActiveQueueLease(session.id);
-            let queuedContinuationScheduled = false;
-            if (!hasTeammates && !willResume && !queuedChainAlreadyActive) {
-              queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
-                session.id,
-                workspacePath,
-                BrowserWindow.fromWebContents(event.sender),
-                'completion-handler queue',
-              );
-            }
-            if (hasTeammates || willResume || queuedChainAlreadyActive || queuedContinuationScheduled) {
-              const reason = hasTeammates
+            const terminalTransition = await runTerminalPromptTransition({
+              metadata: persistedSession?.metadata,
+              hasActiveLease: queuedChainAlreadyActive,
+              hasOtherDeferral: hasTeammates || willResume,
+              tryDispatch: () => this.svc.tryDispatchNextQueuedPrompt(session.id, workspacePath, BrowserWindow.fromWebContents(event.sender), 'completion-handler queue'),
+              endSession: () => stateManager.endSession(session.id),
+            });
+            const queuedContinuationScheduled = terminalTransition.deferred && !hasPendingStructuredPrompt && !hasTeammates && !willResume && !queuedChainAlreadyActive;
+            if (terminalTransition.deferred) {
+              const reason = hasPendingStructuredPrompt
+                ? 'structured prompt pending'
+                : hasTeammates
                 ? 'teammates still active'
                 : willResume
                 ? 'lead resuming'
@@ -2630,7 +2665,6 @@ export class MessageStreamingHandler {
                 : 'queued continuation scheduled';
               // logger.main.info(`[AIService] Deferring endSession for ${session.id} - ${reason}`);
             } else {
-              await stateManager.endSession(session.id);
               // Stop file watcher after a brief delay to let pending
               // watcher events drain through WorkspaceFileEditAttributionService.
               // The manager cancels the scheduled stop if a new turn starts
@@ -2792,9 +2826,11 @@ export class MessageStreamingHandler {
 
       // Clear executing and pending prompt flags for mobile sync
       if (syncProvider && !this.hasActiveQueueLease(session.id)) {
+        const terminalSession = await AISessionsRepository.get(session.id);
+        const retainsPendingPrompt = hasPersistedPendingPrompt(terminalSession?.metadata);
         syncProvider.pushChange(session.id, {
           type: 'metadata_updated',
-          metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+          metadata: { isExecuting: false, hasPendingPrompt: retainsPendingPrompt, updatedAt: Date.now() },
         });
       }
 
@@ -2858,18 +2894,25 @@ export class MessageStreamingHandler {
         const willResumeOnError = session.provider === 'claude-code'
           && typeof (provider as any).willResumeAfterCompletion === 'function'
           && (provider as any).willResumeAfterCompletion();
+        const persistedErrorSession = await AISessionsRepository.get(session.id);
+        const hasPendingStructuredPromptOnError = hasPersistedPendingPrompt(persistedErrorSession?.metadata);
         const queuedChainAlreadyActiveOnError = this.hasActiveQueueLease(session.id);
-        let queuedContinuationScheduledOnError = false;
-        if (!hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
-          queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
-            session.id,
-            workspacePath,
-            BrowserWindow.fromWebContents(event.sender),
-            'error-handler queue',
-          );
-        }
-        if (hasTeammatesOnError || willResumeOnError || queuedChainAlreadyActiveOnError || queuedContinuationScheduledOnError) {
-          const reason = hasTeammatesOnError
+        const errorTransition = await runTerminalPromptTransition({
+          metadata: persistedErrorSession?.metadata,
+          hasActiveLease: queuedChainAlreadyActiveOnError,
+          hasOtherDeferral: hasTeammatesOnError || willResumeOnError,
+          tryDispatch: () => this.svc.tryDispatchNextQueuedPrompt(session.id, workspacePath, BrowserWindow.fromWebContents(event.sender), 'error-handler queue'),
+          endSession: async () => {
+            await stateManager.endSession(session.id);
+            await this.svc.hooklessWatcher.stopForSession(session.id);
+            codexEditWindowRegistry.clearSession(session.id);
+          },
+        });
+        const queuedContinuationScheduledOnError = errorTransition.deferred && !hasPendingStructuredPromptOnError && !hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError;
+        if (errorTransition.deferred) {
+          const reason = hasPendingStructuredPromptOnError
+            ? 'structured prompt pending'
+            : hasTeammatesOnError
             ? 'teammates still active'
             : willResumeOnError
             ? 'lead resuming'
@@ -2877,18 +2920,13 @@ export class MessageStreamingHandler {
             ? 'queued continuation already active'
             : 'queued continuation scheduled';
           logger.main.info(`[AIService] Deferring endSession for ${session.id} on error - ${reason}`);
-        } else {
-          await stateManager.endSession(session.id);
-          // Stop file watcher - session ended on error
-          await this.svc.hooklessWatcher.stopForSession(session.id);
-          codexEditWindowRegistry.clearSession(session.id);
         }
 
         // Clear executing and pending prompt flags for mobile sync on error
         if (syncProvider && !this.hasActiveQueueLease(session.id)) {
           syncProvider.pushChange(session.id, {
             type: 'metadata_updated',
-            metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+            metadata: { isExecuting: false, hasPendingPrompt: hasPendingStructuredPromptOnError, updatedAt: Date.now() },
           });
 
           // Request mobile push notification for agent error (only when truly away)

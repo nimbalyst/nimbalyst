@@ -273,8 +273,21 @@ export async function handleAskUserQuestion(
     });
   }
 
-  // NIM-806: we deliberately do NOT persist a synthetic nimbalyst_tool_use row
-  // here. The proxy observation bridge already persists the CLI's whole assistant
+  // Persist this before waiting. The proxy observation bridge normally persists
+  // the provider turn too, but its terminal notification can race that projection.
+  // This row is the durable prompt identity used by get_session_result; transcript
+  // parsing deduplicates the later provider observation by tool-use id.
+  if (sessionId) {
+    await persistInteractivePromptToolUse({
+      sessionId,
+      toolUseId: questionId,
+      toolName: "AskUserQuestion",
+      input: { questions: normalizedQuestions },
+    });
+    await setSessionPendingPrompt(sessionId, true);
+  }
+
+  // NIM-806: the proxy observation bridge also persists the CLI's whole assistant
   // turn (source 'claude-code') INCLUDING this AskUserQuestion tool_use block, so
   // ClaudeCodeRawParser renders the answerable widget from it (keyed by the same
   // claudecode/toolUseId == questionId, so the answer still reaches our response
@@ -297,7 +310,6 @@ export async function handleAskUserQuestion(
   // windows (the renderer handler keys by sessionId); handleAskUserQuestion only
   // runs for the MCP-routed CLI path, so SDK sessions are unaffected.
   if (isCliSession && sessionId) {
-    void setSessionPendingPrompt(sessionId, true);
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) {
         w.webContents.send("ai:askUserQuestion", {
