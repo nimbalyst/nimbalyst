@@ -65,6 +65,9 @@ const STRUCTURAL_COLUMNS: TrackerColumnDef[] = [
   { id: 'type', label: 'Type', width: 64, minWidth: 64, sortable: true, render: 'type-icon', defaultVisible: true, builtin: true, editable: false, edit: 'readonly' },
   { id: 'key', label: 'Key', width: 90, sortable: true, render: 'text', defaultVisible: true, sortKey: 'issueKey', builtin: true, editable: false, edit: 'readonly' },
   { id: 'updated', label: 'Updated', width: 100, sortable: true, render: 'date', defaultVisible: true, sortKey: 'lastIndexed', builtin: true, editable: false, edit: 'readonly' },
+  { id: 'viewed', label: 'Viewed', width: 100, sortable: true, render: 'date', defaultVisible: false, builtin: true, editable: false, edit: 'readonly' },
+  { id: 'createdBy', label: 'Created by', width: 140, minWidth: 100, sortable: true, render: 'avatar', defaultVisible: false, builtin: true, editable: false, edit: 'readonly' },
+  { id: 'updatedBy', label: 'Updated by', width: 140, minWidth: 100, sortable: true, render: 'avatar', defaultVisible: false, builtin: true, editable: false, edit: 'readonly' },
   { id: 'module', label: 'Source', width: 150, minWidth: 100, sortable: true, render: 'module', defaultVisible: false, builtin: true, editable: false, edit: 'readonly' },
   { id: 'shared', label: 'Shared', width: 90, minWidth: 70, sortable: true, render: 'badge', defaultVisible: false, builtin: true, editable: false, edit: 'readonly' },
 ];
@@ -309,6 +312,16 @@ export function getCellValue(record: TrackerRecord, columnId: string): any {
     case 'type': return record.primaryType;
     case 'key': return record.issueKey ?? '';
     case 'updated': return getEffectiveUpdatedDate(record);
+    case 'viewed': return record.fields.viewed;
+    case 'created': return record.system.createdAt;
+    case 'createdBy': return record.system.authorIdentity;
+    case 'updatedBy': {
+      if (record.system.lastModifiedBy) return record.system.lastModifiedBy;
+      return [...(record.system.activity ?? [])]
+        .filter(entry => entry.authorIdentity)
+        .sort((left, right) => right.timestamp - left.timestamp)[0]?.authorIdentity;
+    }
+    case 'archived': return record.archived;
     case 'module': return record.system.documentPath;
     case 'shared': return getItemShareState(record);
     default: return record.fields[columnId];

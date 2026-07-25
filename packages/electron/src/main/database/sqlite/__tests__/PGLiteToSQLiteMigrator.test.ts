@@ -68,6 +68,37 @@ describe('PGLiteToSQLiteMigrator', () => {
     );
   });
 
+  it('replaces the SQLite bootstrap backfill cutoff with the PGLite source cutoff', async () => {
+    await pglite.exec(`
+      CREATE TABLE tool_usage_backfill_meta (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        cutoff_at TIMESTAMPTZ NOT NULL
+      );
+    `);
+    const sourceCutoff = new Date('2026-06-15T12:34:56.789Z');
+    await pglite.query(
+      `INSERT INTO tool_usage_backfill_meta (singleton, cutoff_at) VALUES ($1, $2)`,
+      [1, sourceCutoff],
+    );
+
+    const targetBefore = sqlite.getRawHandle()!
+      .prepare('SELECT cutoff_at FROM tool_usage_backfill_meta WHERE singleton = 1')
+      .get() as { cutoff_at: string };
+    expect(targetBefore.cutoff_at).not.toBe(sourceCutoff.toISOString());
+
+    const migrator = new PGLiteToSQLiteMigrator();
+    await migrator.migrate({
+      pglite: pglite as unknown as Parameters<PGLiteToSQLiteMigrator['migrate']>[0]['pglite'],
+      sqlite,
+      spotCheckPerTable: 1,
+    });
+
+    const targetAfter = sqlite.getRawHandle()!
+      .prepare('SELECT cutoff_at FROM tool_usage_backfill_meta WHERE singleton = 1')
+      .get() as { cutoff_at: string };
+    expect(new Date(targetAfter.cutoff_at).toISOString()).toBe(sourceCutoff.toISOString());
+  });
+
   async function seedPgliteSchema(): Promise<void> {
     // Reproduce a minimal subset of the PGLite end-state schema. We don't run
     // the worker.js migrations because (a) they're tied to PGLite-specific

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { createStore, Provider as JotaiProvider } from 'jotai';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import {
@@ -24,6 +24,12 @@ vi.mock('@nimbalyst/runtime', async (importOriginal) => {
 
 vi.mock('../../AgenticCoding/SessionListItem', () => ({
   SessionStatusIndicator: ({ sessionId }: { sessionId: string }) => <span data-testid={`status-${sessionId}`} />,
+}));
+
+vi.mock('../../AgenticCoding/SessionTranscriptPeek', () => ({
+  SessionTranscriptPeek: ({ sessionId }: { sessionId: string }) => (
+    <div data-testid="mock-session-transcript-peek" data-session-id={sessionId} />
+  ),
 }));
 
 vi.mock('../../../help', () => ({
@@ -70,10 +76,14 @@ function session(id: string): SessionMeta {
   };
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe('AgentSessionsPopover', () => {
   it('uses a separate bubble click target and opens the grouped attention list', () => {
+    vi.useFakeTimers();
     const store = createStore();
     const awaiting = session('awaiting');
     const running = session('running');
@@ -111,6 +121,20 @@ describe('AgentSessionsPopover', () => {
     expect(screen.getByTestId('agent-sessions-row-awaiting')).toBeTruthy();
     expect(screen.getByTestId('agent-sessions-row-running')).toBeTruthy();
     expect(screen.getByTestId('agent-sessions-row-unread')).toBeTruthy();
+
+    const awaitingPeek = screen.getByTestId('agent-sessions-peek-awaiting');
+    fireEvent.click(awaitingPeek);
+    expect(onOpenAgentMode).not.toHaveBeenCalled();
+    expect(screen.getByTestId('mock-session-transcript-peek').getAttribute('data-session-id')).toBe('awaiting');
+
+    fireEvent.click(awaitingPeek);
+    expect(screen.queryByTestId('mock-session-transcript-peek')).toBeNull();
+
+    fireEvent.mouseEnter(awaitingPeek);
+    act(() => vi.advanceTimersByTime(299));
+    expect(screen.queryByTestId('mock-session-transcript-peek')).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByTestId('mock-session-transcript-peek').getAttribute('data-session-id')).toBe('awaiting');
 
     fireEvent.click(screen.getByTestId('agent-sessions-mark-all-read'));
     expect(store.get(sessionUnreadAtom(unread.id))).toBe(false);

@@ -568,10 +568,14 @@ export class ElectronDocumentService implements DocumentService {
 
             // Capture full-document tracker status transitions from a DIRECT
             // in-session frontmatter edit (the normal way a plan/decision moves
-            // through the system). Gated on `oldDoc` so it never runs during the
-            // cold-open bulk scan -- avoiding the NIM-875 per-file upsert storm.
-            // Non-tracker frontmatter short-circuits before any DB query.
-            if (oldDoc && data) {
+            // through the system). During a cold-open scan, also reconcile files
+            // that explicitly request team sharing. Unshared files still skip the
+            // DB entirely, preserving the NIM-875 protection against a per-file
+            // upsert storm while ensuring shared plans cannot remain local until
+            // somebody toggles sharing off and back on (NIM-2092).
+            const coldDiscoveredSharedTracker = !oldDoc && !!data &&
+              isTrackerItemShared(resolveFullDocumentFrontmatter(data)?.trackerData);
+            if ((oldDoc || coldDiscoveredSharedTracker) && data) {
               await this.captureFrontmatterTrackerTransition(newDoc.path, data);
             }
           } else {

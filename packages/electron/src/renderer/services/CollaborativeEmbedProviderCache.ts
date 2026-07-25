@@ -37,6 +37,7 @@ export interface CollaborativeEmbedProviderRequest
 
 export interface CollaborativeEmbedProviderResource {
   config: CollabDocumentConfig;
+  replica: LocalDocumentReplica;
   syncProvider: DocumentSyncProvider;
   collaboration: CollaborationContext;
   destroy(): void;
@@ -201,6 +202,7 @@ export async function createDefaultResource(
 
     return {
       config,
+      replica: connectedReplica,
       syncProvider: connectedProvider,
       collaboration,
       destroy() {

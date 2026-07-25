@@ -84,6 +84,8 @@
   /* Special */
   --nim-highlight-bg: rgba(255, 212, 0, 0.14);
   --nim-highlight-border: rgba(255, 212, 0, 0.3);
+  /* Solid base color for comment-thread marks; states derive from it via color-mix. */
+  --nim-comment-mark: #ffd400;
   --nim-quote-text: rgb(101, 103, 107);
   --nim-quote-border: rgb(206, 208, 212);
 

@@ -4,7 +4,9 @@ import type { TrackerIdentity } from '@nimbalyst/runtime';
 import {
   countFilteredTrackerItemsByTypes,
   filterTrackerItems,
+  getTrackerFilterValue,
   groupTrackerItems,
+  legacyFilterChipsToClauses,
   normalizeViewDefinition,
   createDefaultViewDefinition,
   mergeSavedViews,
@@ -45,6 +47,81 @@ const other: TrackerIdentity = {
 };
 
 describe('filterTrackerItems', () => {
+  it('evaluates saved relative-person, date, viewed, and favorite clauses with personal context', () => {
+    const nowMs = Date.UTC(2026, 6, 24);
+    const day = 24 * 60 * 60 * 1000;
+    const mine = {
+      ...makeItem('mine', { owner: 'me@example.com' }),
+      system: {
+        ...makeItem('mine-system', {}).system,
+        updatedAt: new Date(nowMs - day).toISOString(),
+        lastModifiedBy: other,
+      },
+    };
+    const stale = {
+      ...makeItem('stale', { owner: 'other@example.com' }),
+      system: {
+        ...makeItem('stale-system', {}).system,
+        updatedAt: new Date(nowMs - 40 * day).toISOString(),
+        lastModifiedBy: me,
+      },
+    };
+    const context = {
+      identity: me,
+      nowMs,
+      favoriteItemIds: new Set(['mine']),
+      viewedAtByItemId: new Map([['mine', nowMs - 2 * day]]),
+    };
+
+    const out = filterTrackerItems(
+      [mine, stale],
+      {
+        activeFilters: [],
+        tagFilter: [],
+        columnFilters: {
+          combinator: 'and',
+          clauses: [
+            { field: 'owner', op: 'is-current-user' },
+            { field: 'updated', op: 'in-last', value: 7 },
+            { field: 'viewed', op: 'in-last', value: 7 },
+            { field: 'favorite', op: '=', value: true },
+            { field: 'updatedBy', op: 'is-not-current-user' },
+          ],
+        },
+      },
+      context,
+    );
+
+    expect(out.map(item => item.id)).toEqual(['mine']);
+    expect(getTrackerFilterValue(mine, 'viewed', context)).toBe(nowMs - 2 * day);
+    expect(getTrackerFilterValue(stale, 'viewed', context)).toBeUndefined();
+  });
+
+  it('converts legacy left-sidebar presets into inspectable field clauses', () => {
+    expect(legacyFilterChipsToClauses(
+      [
+        'mine',
+        'unassigned',
+        'high-priority',
+        'favorites',
+        'recently-viewed',
+        'recently-edited-by-others',
+        'recently-updated',
+        'archived',
+      ],
+      7,
+    )).toEqual([
+      { field: 'owner', op: 'is-current-user' },
+      { field: 'owner', op: 'is-empty' },
+      { field: 'priority', op: 'in', value: ['critical', 'high'] },
+      { field: 'favorite', op: '=', value: true },
+      { field: 'viewed', op: 'in-last', value: 7 },
+      { field: 'updatedBy', op: 'is-not-current-user' },
+      { field: 'updated', op: 'in-last', value: 30 },
+      { field: 'archived', op: '=', value: true },
+    ]);
+  });
+
   it('counts archived items in a type after applying the active row filters', () => {
     const identity: TrackerIdentity = {
       email: 'me@example.com',
@@ -90,6 +167,43 @@ describe('filterTrackerItems', () => {
         sourceFilter: ['github-issues'],
       },
       { identity },
+    )).toBe(1);
+  });
+
+  it('keeps sidebar counts aligned with archived relative field filters', () => {
+    const nowMs = Date.UTC(2026, 6, 24);
+    const recentArchived = {
+      ...makeItem('recent-archived', {}),
+      archived: true,
+      system: {
+        ...makeItem('recent-archived-system', {}).system,
+        updatedAt: new Date(nowMs - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    };
+    const oldArchived = {
+      ...makeItem('old-archived', {}),
+      archived: true,
+      system: {
+        ...makeItem('old-archived-system', {}).system,
+        updatedAt: new Date(nowMs - 20 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    };
+
+    expect(countFilteredTrackerItemsByTypes(
+      [makeItem('active', {}), recentArchived, oldArchived],
+      ['task'],
+      {
+        activeFilters: [],
+        tagFilter: [],
+        columnFilters: {
+          combinator: 'and',
+          clauses: [
+            { field: 'archived', op: '=', value: true },
+            { field: 'updated', op: 'in-last', value: 7 },
+          ],
+        },
+      },
+      { nowMs },
     )).toBe(1);
   });
 

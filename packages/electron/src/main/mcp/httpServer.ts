@@ -35,7 +35,10 @@ import { handleDisplayToUser, displayToolSchemas } from "./tools/displayToolHand
 import {
   handleApplyDiff,
   handleApplyCollabDocEdit,
+  handleCreateCollabDocComment,
   handleReadCollabDoc,
+  handleReadCollabDocComments,
+  handleReplyToCollabDocComment,
   handleStreamContent,
   handleCaptureEditorScreenshot,
   handleGetSessionEditedFiles,
@@ -495,6 +498,23 @@ function createSharedMcpServer(
 
         case "readCollabDoc":
           return handleReadCollabDoc(args);
+
+        case "readCollabDocComments":
+          return handleReadCollabDocComments(args, workspacePath);
+
+        case "replyToCollabDocComment":
+          return handleReplyToCollabDocComment(
+            args,
+            sessionId,
+            workspacePath,
+          );
+
+        case "createCollabDocComment":
+          return handleCreateCollabDocComment(
+            args,
+            sessionId,
+            workspacePath,
+          );
 
         case "createSharedDoc":
           return handleCreateSharedDoc(args, workspacePath);

@@ -231,7 +231,7 @@ export function shouldBlockStartedSessionProviderSwitch(
  * real on CLI 2.1.175 but is now stale. Note it requires usage credits on
  * subscription plans (the CLI surfaces that itself when unavailable).
  */
-export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-4-6', 'haiku'] as const;
+export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-8', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-4-6', 'haiku'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.

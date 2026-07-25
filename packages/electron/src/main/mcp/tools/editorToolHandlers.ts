@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import { isAbsolute } from "path";
 import { existsSync } from "fs";
 import {
+  AISessionsRepository,
   SessionFilesRepository,
 } from "@nimbalyst/runtime";
 import { findWindowForFilePath, findWindowIdForWorkspacePath, workspaceToWindowMap, documentStateBySession } from "../mcpWorkspaceResolver";
@@ -95,6 +96,121 @@ export function getEditorToolSchemas(sessionId: string | undefined) {
           },
         },
         required: ["filePath", "replacements"],
+      },
+    },
+    {
+      name: "readCollabDocComments",
+      description:
+        "Read inline comment threads from a collaborative document. Returns structured user/agent authorship, reply targets, resolved state, and anchor attachment state. This does not read the document body.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          filePath: {
+            type: "string",
+            description: "The collab:// URI of the shared document.",
+          },
+          cursor: {
+            type: "string",
+            description: "Opaque pagination cursor returned by a previous call.",
+          },
+          limit: {
+            type: "number",
+            minimum: 1,
+            maximum: 100,
+            description: "Maximum number of threads to return (default 100).",
+          },
+          includeResolved: {
+            type: "boolean",
+            description: "Include resolved threads (default true).",
+          },
+        },
+        required: ["filePath"],
+      },
+    },
+    {
+      name: "replyToCollabDocComment",
+      description:
+        "Reply to an existing inline comment thread under this agent session's identity. The app derives the session identity and human authorizer; callers cannot supply either. Use replyToCommentId to preserve which comment is being answered.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          filePath: {
+            type: "string",
+            description: "The collab:// URI of the shared document.",
+          },
+          threadId: {
+            type: "string",
+            description: "Stable thread id from readCollabDocComments.",
+          },
+          replyToCommentId: {
+            type: "string",
+            description: "Optional comment id in the same thread being answered.",
+          },
+          body: {
+            type: "string",
+            description: "Reply body, up to 32 KiB encoded.",
+          },
+          clientMutationId: {
+            type: "string",
+            description:
+              "Stable caller-generated idempotency key. Reuse it when retrying the same mutation.",
+          },
+          mentionedUserIds: {
+            type: "array",
+            maxItems: 50,
+            items: { type: "string" },
+            description: "Explicit organization user ids mentioned in the reply.",
+          },
+        },
+        required: ["filePath", "threadId", "body", "clientMutationId"],
+      },
+    },
+    {
+      name: "createCollabDocComment",
+      description:
+        "Create an inline comment under this agent session's identity, anchored by exact visible text plus optional prefix/suffix context. Ambiguous or stale anchors fail instead of guessing.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          filePath: {
+            type: "string",
+            description: "The collab:// URI of the shared document.",
+          },
+          anchor: {
+            type: "object",
+            properties: {
+              exact: {
+                type: "string",
+                description: "Exact selected text, up to 4 KiB encoded.",
+              },
+              prefix: {
+                type: "string",
+                description: "Optional immediately preceding context, up to 512 bytes.",
+              },
+              suffix: {
+                type: "string",
+                description: "Optional immediately following context, up to 512 bytes.",
+              },
+            },
+            required: ["exact"],
+          },
+          body: {
+            type: "string",
+            description: "Comment body, up to 32 KiB encoded.",
+          },
+          clientMutationId: {
+            type: "string",
+            description:
+              "Stable caller-generated idempotency key. Reuse it when retrying the same mutation.",
+          },
+          mentionedUserIds: {
+            type: "array",
+            maxItems: 50,
+            items: { type: "string" },
+            description: "Explicit organization user ids mentioned in the comment.",
+          },
+        },
+        required: ["filePath", "anchor", "body", "clientMutationId"],
       },
     },
   ];
@@ -272,6 +388,209 @@ export async function handleApplyCollabDocEdit(args: any): Promise<McpToolResult
     };
   }
   return handleApplyDiff(args);
+}
+
+type CollabCommentOperation = "list" | "reply" | "createAnchored";
+
+async function resolveAgentIdentity(
+  sessionId: string | undefined,
+  workspacePath: string | undefined,
+): Promise<{ sessionId: string; sessionName: string }> {
+  if (!sessionId) {
+    throw new Error("SESSION_REQUIRED: Comment mutations require an active agent session.");
+  }
+  const session = await AISessionsRepository.get(sessionId);
+  if (!session) {
+    throw new Error("SESSION_NOT_FOUND: The active agent session no longer exists.");
+  }
+  if (workspacePath) {
+    const sessionWorkspaces = new Set(
+      [session.workspacePath, session.worktreePath, session.worktreeProjectPath].filter(
+        (value): value is string => Boolean(value),
+      ),
+    );
+    const workspaceMatches = [...sessionWorkspaces].some(
+      (candidate) =>
+        candidate === workspacePath ||
+        isFileInWorkspaceOrWorktree(candidate, workspacePath) ||
+        isFileInWorkspaceOrWorktree(workspacePath, candidate),
+    );
+    if (sessionWorkspaces.size > 0 && !workspaceMatches) {
+      throw new Error(
+        "WORKSPACE_MISMATCH: The agent session is not authorized by this workspace.",
+      );
+    }
+  }
+  return {
+    sessionId: session.id,
+    sessionName: session.title?.trim() || `Agent ${session.id.slice(0, 8)}`,
+  };
+}
+
+async function handleCollabCommentOperation(
+  operation: CollabCommentOperation,
+  args: any,
+  sessionId?: string,
+  workspacePath?: string,
+): Promise<McpToolResult> {
+  const targetFilePath = args?.filePath;
+  if (!isCollabUri(targetFilePath)) {
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          error: {
+            code: "INVALID_COLLAB_URI",
+            message: `A collab:// URI is required. Got: ${targetFilePath ?? "(missing)"}.`,
+          },
+        }),
+      }],
+      isError: true,
+    };
+  }
+
+  let targetWindow: BrowserWindow | null = null;
+  try {
+    targetWindow = await findWindowForFilePath(targetFilePath);
+  } catch {
+    // A closed collab:// document has no mounted document-state entry. Fall
+    // through to the workspace window so renderer can use the headless path.
+  }
+  if (!targetWindow && workspacePath) {
+    const workspaceWindowId =
+      await findWindowIdForWorkspacePath(workspacePath);
+    targetWindow = workspaceWindowId === null
+      ? null
+      : BrowserWindow.fromId(workspaceWindowId);
+  }
+  if (!targetWindow) {
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          error: {
+            code: "DOCUMENT_NOT_MOUNTED",
+            message: `No mounted collaborative editor is available for ${targetFilePath}. Open the document and retry.`,
+          },
+        }),
+      }],
+      isError: true,
+    };
+  }
+
+  let agent: { sessionId: string; sessionName: string } | undefined;
+  if (operation !== "list") {
+    try {
+      agent = await resolveAgentIdentity(sessionId, workspacePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const separator = message.indexOf(":");
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: {
+              code: separator > 0 ? message.slice(0, separator) : "SESSION_REQUIRED",
+              message: separator > 0 ? message.slice(separator + 1).trim() : message,
+            },
+          }),
+        }],
+        isError: true,
+      };
+    }
+  }
+
+  const resultChannel = `mcp-result-${Date.now()}-${Math.random()}`;
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      ipcMain.removeAllListeners(resultChannel);
+      resolve({
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: {
+              code: "SYNC_TIMEOUT",
+              message: "Timed out while waiting for the collaborative comment operation.",
+            },
+          }),
+        }],
+        isError: true,
+      });
+    }, 20000);
+
+    ipcMain.once(resultChannel, (_event, result: {
+      success: boolean;
+      result?: unknown;
+      code?: string;
+      error?: string;
+    }) => {
+      clearTimeout(timeout);
+      resolve({
+        content: [{
+          type: "text",
+          text: JSON.stringify(
+            result?.success
+              ? result.result
+              : {
+                  error: {
+                    code: result?.code || "COMMENT_OPERATION_FAILED",
+                    message: result?.error || "Unknown collaborative comment error.",
+                  },
+                },
+            null,
+            2,
+          ),
+        }],
+        isError: !result?.success,
+      });
+    });
+
+    const channel = operation === "list"
+      ? "mcp:readCollabDocComments"
+      : operation === "reply"
+        ? "mcp:replyToCollabDocComment"
+        : "mcp:createCollabDocComment";
+    targetWindow.webContents.send(channel, {
+      targetFilePath,
+      input: args,
+      agent,
+      workspacePath,
+      resultChannel,
+    });
+  });
+}
+
+export function handleReadCollabDocComments(
+  args: any,
+  workspacePath?: string,
+): Promise<McpToolResult> {
+  return handleCollabCommentOperation("list", args, undefined, workspacePath);
+}
+
+export function handleReplyToCollabDocComment(
+  args: any,
+  sessionId?: string,
+  workspacePath?: string,
+): Promise<McpToolResult> {
+  return handleCollabCommentOperation(
+    "reply",
+    args,
+    sessionId,
+    workspacePath,
+  );
+}
+
+export function handleCreateCollabDocComment(
+  args: any,
+  sessionId?: string,
+  workspacePath?: string,
+): Promise<McpToolResult> {
+  return handleCollabCommentOperation(
+    "createAnchored",
+    args,
+    sessionId,
+    workspacePath,
+  );
 }
 
 export async function handleStreamContent(args: any): Promise<McpToolResult> {

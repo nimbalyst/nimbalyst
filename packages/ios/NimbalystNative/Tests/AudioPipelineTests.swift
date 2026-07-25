@@ -55,7 +55,7 @@ final class AudioPipelineTests: XCTestCase {
     /// audio past the fade tail doesn't keep playing).
     func testFadeOutRampsToSilenceAndTruncates() {
         let rb = PlaybackRingBuffer(capacity: 4800)
-        var samples = [Int16](repeating: 10000, count: 1000)
+        let samples = [Int16](repeating: 10000, count: 1000)
         let written = samples.withUnsafeBufferPointer { rb.write($0.baseAddress!, count: 1000) }
         XCTAssertEqual(written, 1000)
         XCTAssertEqual(rb.availableFrames, 1000)

@@ -12,7 +12,8 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { runMigrations, type Migration } from '../MigrationRunner';
+import { Worker } from 'node:worker_threads';
+import { getMigrations, runMigrations, type Migration } from '../MigrationRunner';
 import { SQLiteDatabase } from '../SQLiteDatabase';
 
 /** Bare-minimum mock that supports the bits MigrationRunner touches. */
@@ -32,6 +33,7 @@ class FakeDb {
     if (/SELECT version FROM _migrations/i.test(sql)) {
       return {
         all: () => this.migrations.map((m) => ({ version: m.version })),
+        get: (version: number) => this.migrations.find((m) => m.version === version),
       };
     }
     if (/INSERT INTO _migrations/i.test(sql)) {
@@ -44,8 +46,10 @@ class FakeDb {
     throw new Error(`unexpected prepare: ${sql}`);
   }
 
-  transaction<T extends (...args: any[]) => any>(fn: T): T {
-    return ((...args: any[]) => fn(...args)) as T;
+  transaction<T extends (...args: any[]) => any>(fn: T): T & { immediate: T } {
+    const wrapped = ((...args: any[]) => fn(...args)) as T & { immediate: T };
+    wrapped.immediate = wrapped;
+    return wrapped;
   }
 }
 
@@ -233,6 +237,85 @@ describe('runMigrations', () => {
     runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(db.execs.some((s) => s.includes('CREATE TABLE foo'))).toBe(true);
     expect(db.execs.some((s) => s.includes('CREATE INDEX bar'))).toBe(true);
+  });
+
+  it('is idempotent when two SQLite connections initialize the same database concurrently', async () => {
+    for (const migration of getMigrations(tmp)) {
+      if (migration.sqlFile) {
+        fs.writeFileSync(migration.sqlFile, '-- noop\n');
+      }
+    }
+
+    const dbPath = path.join(tmp, 'concurrent.sqlite');
+    const runnerPath = path.resolve(__dirname, '..', 'MigrationRunner.ts');
+    const betterSqlitePath = require.resolve('better-sqlite3');
+    const snapshotBarrier = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+
+    const workerSource = `
+      const { parentPort, workerData } = require('node:worker_threads');
+      const BetterSqlite = require(workerData.betterSqlitePath);
+      const { runMigrations } = require(workerData.runnerPath);
+      const raw = new BetterSqlite(workerData.dbPath, { timeout: 10_000 });
+      const barrier = new Int32Array(workerData.snapshotBarrier);
+      const db = {
+        exec: raw.exec.bind(raw),
+        transaction: raw.transaction.bind(raw),
+        prepare(sql) {
+          const statement = raw.prepare(sql);
+          if (!/SELECT version FROM _migrations ORDER BY version ASC/i.test(sql)) {
+            return statement;
+          }
+          return {
+            all() {
+              const rows = statement.all();
+              const arrivals = Atomics.add(barrier, 0, 1) + 1;
+              if (arrivals < 2) {
+                Atomics.wait(barrier, 0, arrivals, 10_000);
+              } else {
+                Atomics.notify(barrier, 0);
+              }
+              return rows;
+            },
+          };
+        },
+      };
+      try {
+        const result = runMigrations(db, workerData.schemaDir);
+        parentPort.postMessage({ ok: true, result });
+      } catch (error) {
+        parentPort.postMessage({
+          ok: false,
+          error: {
+            name: error?.name,
+            message: error?.message,
+            code: error?.code,
+          },
+        });
+      } finally {
+        raw.close();
+      }
+    `;
+
+    const runWorker = () => new Promise<{
+      ok: boolean;
+      error?: { name?: string; message?: string; code?: string };
+    }>((resolve, reject) => {
+      const worker = new Worker(workerSource, {
+        eval: true,
+        workerData: {
+          betterSqlitePath,
+          runnerPath,
+          dbPath,
+          schemaDir: tmp,
+          snapshotBarrier,
+        },
+      });
+      worker.once('message', resolve);
+      worker.once('error', reject);
+    });
+
+    const outcomes = await Promise.all([runWorker(), runWorker()]);
+    expect(outcomes.filter((outcome) => !outcome.ok)).toEqual([]);
   });
 });
 

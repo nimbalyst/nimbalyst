@@ -86,6 +86,7 @@ const lightThemeColors: ExtendedThemeColors = {
   // Special
   'highlight-bg': 'rgba(255, 212, 0, 0.14)',
   'highlight-border': 'rgba(255, 212, 0, 0.3)',
+  'comment-mark': '#ffd400',
   'quote-text': 'rgb(101, 103, 107)',
   'quote-border': 'rgb(206, 208, 212)',
 
@@ -197,6 +198,9 @@ const darkThemeColors: ExtendedThemeColors = {
   // Special
   'highlight-bg': 'rgba(255, 212, 0, 0.2)',
   'highlight-border': 'rgba(255, 212, 0, 0.4)',
+  // Warmer, lighter gold reads as an intentional highlight on dark backgrounds
+  // instead of the muddy olive that saturated yellow blends into.
+  'comment-mark': '#ffd27a',
   'quote-text': '#b3b3b3',
   'quote-border': '#4a4a4a',
 

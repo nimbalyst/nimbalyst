@@ -4,7 +4,10 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { fireEvent, render, screen, cleanup } from '@testing-library/react';
 import { ContextUsageDisplay } from '../ContextUsageDisplay';
 
-vi.mock('@nimbalyst/runtime', () => ({ MaterialSymbol: () => null }));
+vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@nimbalyst/runtime')>(),
+  MaterialSymbol: () => null,
+}));
 vi.mock('../../../help', () => ({ getHelpContent: () => undefined }));
 
 // inputTokens > 0 makes the breakdown panel eligible (enableTooltip).

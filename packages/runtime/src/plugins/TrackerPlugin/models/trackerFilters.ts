@@ -31,6 +31,10 @@ export type TrackerFilterOp =
   | '<'
   | '<='
   | 'between'
+  | 'in-last'
+  | 'not-in-last'
+  | 'is-current-user'
+  | 'is-not-current-user'
   | 'is-empty'
   | 'is-not-empty';
 
@@ -49,7 +53,19 @@ export interface TrackerFilterSet {
 }
 
 /** Operators that carry no operand. */
-export const UNARY_OPS: ReadonlySet<TrackerFilterOp> = new Set(['is-empty', 'is-not-empty']);
+export const UNARY_OPS: ReadonlySet<TrackerFilterOp> = new Set([
+  'is-current-user',
+  'is-not-current-user',
+  'is-empty',
+  'is-not-empty',
+]);
+
+export interface TrackerFilterEvaluationContext {
+  /** Identity-like value for relative person predicates. */
+  currentUser?: unknown;
+  /** Injectable clock for deterministic relative-date evaluation. */
+  nowMs?: number;
+}
 
 /** Human labels for the column-filter menu. */
 export const OP_LABELS: Record<TrackerFilterOp, string> = {
@@ -64,13 +80,40 @@ export const OP_LABELS: Record<TrackerFilterOp, string> = {
   '<': 'is before / less than',
   '<=': 'is at or before',
   'between': 'is between',
+  'in-last': 'is in the last',
+  'not-in-last': 'is not in the last',
+  'is-current-user': 'is current user',
+  'is-not-current-user': 'is not current user',
   'is-empty': 'is empty',
   'is-not-empty': 'is not empty',
 };
 
 const TEXT_OPS: TrackerFilterOp[] = ['=', '!=', 'contains', 'not-contains', 'is-empty', 'is-not-empty'];
 const CHOICE_OPS: TrackerFilterOp[] = ['=', '!=', 'in', 'not-in', 'is-empty', 'is-not-empty'];
+const USER_OPS: TrackerFilterOp[] = [
+  'is-current-user',
+  'is-not-current-user',
+  '=',
+  '!=',
+  'in',
+  'not-in',
+  'is-empty',
+  'is-not-empty',
+];
 const NUMERIC_OPS: TrackerFilterOp[] = ['=', '!=', '>', '>=', '<', '<=', 'between', 'is-empty', 'is-not-empty'];
+const DATE_OPS: TrackerFilterOp[] = [
+  'in-last',
+  'not-in-last',
+  '=',
+  '!=',
+  '>',
+  '>=',
+  '<',
+  '<=',
+  'between',
+  'is-empty',
+  'is-not-empty',
+];
 const BOOLEAN_OPS: TrackerFilterOp[] = ['=', 'is-empty', 'is-not-empty'];
 const COLLECTION_OPS: TrackerFilterOp[] = ['contains', 'not-contains', 'in', 'is-empty', 'is-not-empty'];
 
@@ -78,16 +121,18 @@ const COLLECTION_OPS: TrackerFilterOp[] = ['contains', 'not-contains', 'in', 'is
 export function opsForFieldType(type: FieldType | undefined): TrackerFilterOp[] {
   switch (type) {
     case 'select':
-    case 'user':
       return CHOICE_OPS;
+    case 'user':
+      return USER_OPS;
     case 'multiselect':
     case 'array':
     case 'relationship':
     case 'reference':
       return COLLECTION_OPS;
-    case 'number':
     case 'date':
     case 'datetime':
+      return DATE_OPS;
+    case 'number':
       return NUMERIC_OPS;
     case 'boolean':
       return BOOLEAN_OPS;
@@ -112,8 +157,11 @@ function toComparableStrings(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(toComparableStrings);
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>;
-    // Relationship values and url values carry their identity on a known key.
-    const identity = obj.itemId ?? obj.issueKey ?? obj.url ?? obj.title;
+    // Relationship, URL, and tracker-identity values carry their stable
+    // identity on a known key. Email precedes display fallbacks so creator
+    // filters continue to match when a teammate changes their display name.
+    const identity = obj.itemId ?? obj.issueKey ?? obj.url
+      ?? obj.email ?? obj.gitEmail ?? obj.gitName ?? obj.displayName ?? obj.title;
     return identity === undefined ? [] : [String(identity)];
   }
   return [String(value)];
@@ -139,6 +187,21 @@ function equalsIgnoringCase(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
+function toIdentityStrings(value: unknown): string[] {
+  if (isEmptyValue(value)) return [];
+  if (Array.isArray(value)) return value.flatMap(toIdentityStrings);
+  if (typeof value !== 'object') return [String(value).trim().toLowerCase()].filter(Boolean);
+  const identity = value as Record<string, unknown>;
+  return [
+    identity.email,
+    identity.gitEmail,
+    identity.gitName,
+    identity.displayName,
+  ]
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map(item => item.trim().toLowerCase());
+}
+
 /**
  * Evaluate one clause against an already-resolved field value.
  *
@@ -147,11 +210,23 @@ function equalsIgnoringCase(a: string, b: string): boolean {
  * non-numeric text, say) returns `false` rather than silently matching -- a
  * filter the user set must never widen the result set.
  */
-export function matchesClause(value: unknown, clause: TrackerFieldFilter): boolean {
+export function matchesClause(
+  value: unknown,
+  clause: TrackerFieldFilter,
+  context: TrackerFilterEvaluationContext = {},
+): boolean {
   const { op } = clause;
 
   if (op === 'is-empty') return isEmptyValue(value);
   if (op === 'is-not-empty') return !isEmptyValue(value);
+  if (op === 'is-current-user' || op === 'is-not-current-user') {
+    const currentUserValues = new Set(toIdentityStrings(context.currentUser));
+    if (currentUserValues.size === 0) return false;
+    const actualUserValues = toIdentityStrings(value);
+    if (actualUserValues.length === 0) return false;
+    const matchesCurrentUser = actualUserValues.some(item => currentUserValues.has(item));
+    return op === 'is-current-user' ? matchesCurrentUser : !matchesCurrentUser;
+  }
 
   const actuals = toComparableStrings(value);
 
@@ -205,6 +280,17 @@ export function matchesClause(value: unknown, clause: TrackerFieldFilter): boole
       return actual >= Math.min(low, high) && actual <= Math.max(low, high);
     }
 
+    case 'in-last':
+    case 'not-in-last': {
+      const actual = toComparableNumber(value);
+      const days = toComparableNumber(clause.value);
+      if (days === undefined || days < 0) return false;
+      if (actual === undefined) return op === 'not-in-last';
+      const cutoff = (context.nowMs ?? Date.now()) - days * 24 * 60 * 60 * 1000;
+      const inWindow = actual >= cutoff;
+      return op === 'in-last' ? inWindow : !inWindow;
+    }
+
     default:
       return false;
   }
@@ -231,14 +317,15 @@ export function isClauseComplete(clause: TrackerFieldFilter): boolean {
 export function matchesFilterSet(
   set: TrackerFilterSet | null | undefined,
   getValue: (field: string) => unknown,
+  context: TrackerFilterEvaluationContext = {},
 ): boolean {
   const clauses = (set?.clauses ?? []).filter(isClauseComplete);
   if (clauses.length === 0) return true;
 
   const combinator = set?.combinator ?? 'and';
   return combinator === 'or'
-    ? clauses.some(clause => matchesClause(getValue(clause.field), clause))
-    : clauses.every(clause => matchesClause(getValue(clause.field), clause));
+    ? clauses.some(clause => matchesClause(getValue(clause.field), clause, context))
+    : clauses.every(clause => matchesClause(getValue(clause.field), clause, context));
 }
 
 /** Filter a list with a filter set, given an accessor for each item's fields. */
@@ -246,10 +333,11 @@ export function applyFilterSet<T>(
   items: T[],
   set: TrackerFilterSet | null | undefined,
   getValue: (item: T, field: string) => unknown,
+  context: TrackerFilterEvaluationContext = {},
 ): T[] {
   const clauses = (set?.clauses ?? []).filter(isClauseComplete);
   if (clauses.length === 0) return items;
-  return items.filter(item => matchesFilterSet(set, field => getValue(item, field)));
+  return items.filter(item => matchesFilterSet(set, field => getValue(item, field), context));
 }
 
 /** Drop clauses for a column, used when a column filter is cleared. */

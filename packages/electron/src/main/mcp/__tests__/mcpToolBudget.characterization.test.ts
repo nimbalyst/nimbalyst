@@ -94,6 +94,29 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
     expect(MCP_EAGER_CONFIG_KEYS).toEqual([MCP_CORE]);
   });
 
+  it('registers explicit collaborative comment tools without caller-supplied identity', () => {
+    const editorTools = getEditorToolSchemas('characterization-session');
+    const byName = new Map(editorTools.map((tool) => [tool.name, tool]));
+
+    expect([
+      'readCollabDocComments',
+      'replyToCollabDocComment',
+      'createCollabDocComment',
+    ].every((name) => byName.has(name))).toBe(true);
+    for (const name of [
+      'replyToCollabDocComment',
+      'createCollabDocComment',
+    ]) {
+      const properties = byName.get(name)?.inputSchema?.properties ?? {};
+      expect(properties).not.toHaveProperty('actor');
+      expect(properties).not.toHaveProperty('sessionId');
+      expect(properties).not.toHaveProperty('onBehalfOfUserId');
+      expect(byName.get(name)?.inputSchema?.required).toContain(
+        'clientMutationId',
+      );
+    }
+  });
+
   // Reverse of the mapping test above: guards against topology declaring a tool
   // that no `ListTools` schema actually provides (phantom entries). This is the
   // check that was missing when `developer_git_log` (core) and

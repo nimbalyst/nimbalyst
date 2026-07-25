@@ -7,6 +7,7 @@ import {
   type TypeColumnConfig,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import {
+  clausesForField,
   isClauseComplete,
   opsForFieldType,
   OP_LABELS,
@@ -22,6 +23,7 @@ export interface TrackerFilterField {
   id: string;
   label: string;
   type?: FieldType;
+  multiValue?: boolean;
   options?: Array<{
     value: string;
     label: string;
@@ -55,7 +57,11 @@ function valueAsText(value: unknown): string {
   return Array.isArray(value) ? value.join(', ') : String(value);
 }
 
-function inputType(field: TrackerFilterField | undefined): 'date' | 'number' | 'text' {
+function inputType(
+  field: TrackerFilterField | undefined,
+  op?: TrackerFilterOp,
+): 'date' | 'number' | 'text' {
+  if (op === 'in-last' || op === 'not-in-last') return 'number';
   if (field?.type === 'date' || field?.type === 'datetime') return 'date';
   if (field?.type === 'number') return 'number';
   return 'text';
@@ -77,10 +83,10 @@ function iconForField(field: TrackerFilterField): string {
   return 'text_fields';
 }
 
-function filterValueLabel(value: unknown): string {
+function filterValueLabel(value: unknown, op?: TrackerFilterOp): string {
   if (value === undefined) return '';
-  if (Array.isArray(value)) return value.join(', ');
-  return String(value);
+  const text = Array.isArray(value) ? value.join(', ') : String(value);
+  return op === 'in-last' || op === 'not-in-last' ? `${text} days` : text;
 }
 
 type FilterMenuMode = 'fields' | 'field' | 'advanced';
@@ -127,8 +133,8 @@ export function TrackerViewHeaderControls({
       field.label.toLowerCase().includes(normalizedQuery)
       || field.id.toLowerCase().includes(normalizedQuery));
   }, [filterFields, query]);
-  useEffect(() => {
-    if (!showFilters) return;
+
+  const resetFilterMenu = (): void => {
     setMenuMode('fields');
     setQuery('');
     setHighlightedIndex(0);
@@ -136,12 +142,16 @@ export function TrackerViewHeaderControls({
     setSelectedFieldRect(null);
     setCombinator(filters?.combinator ?? 'and');
     setDraftClauses(filters?.clauses.length ? filters.clauses : [firstClause(filterFields)]);
-  }, [filterFields, filters, showFilters]);
+  };
 
   useEffect(() => {
     if (openFiltersToken <= 0) return;
+    resetFilterMenu();
     setShowDisplayOptions(false);
     setShowFilters(true);
+    // The token is the explicit open signal. Filter option-count refreshes must
+    // not reset a submenu that is already being used.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openFiltersToken]);
 
   useEffect(() => {
@@ -181,34 +191,50 @@ export function TrackerViewHeaderControls({
     setMenuMode('field');
   };
 
-  const applyQuickFilter = (value = quickValue): void => {
+  const applyQuickFilter = (
+    value: unknown = quickValue,
+    opOverride?: TrackerFilterOp,
+  ): void => {
     if (!selectedField) return;
+    const effectiveOp = opOverride ?? quickOp;
     let clause: TrackerFieldFilter;
-    if (UNARY_OPS.has(quickOp)) {
-      clause = { field: selectedField.id, op: quickOp };
-    } else if (quickOp === 'in' || quickOp === 'not-in') {
+    if (UNARY_OPS.has(effectiveOp)) {
+      clause = { field: selectedField.id, op: effectiveOp };
+    } else if (effectiveOp === 'in' || effectiveOp === 'not-in') {
       const values = Array.isArray(value)
         ? value
         : String(value).split(',').map(item => item.trim()).filter(Boolean);
-      clause = { field: selectedField.id, op: quickOp, value: values };
-    } else if (quickOp === 'between') {
+      clause = { field: selectedField.id, op: effectiveOp, value: values };
+    } else if (effectiveOp === 'between') {
       clause = {
         field: selectedField.id,
-        op: quickOp,
+        op: effectiveOp,
         value: Array.isArray(value) ? value : ['', ''],
       };
     } else {
-      clause = { field: selectedField.id, op: quickOp, value };
+      clause = { field: selectedField.id, op: effectiveOp, value };
     }
     if (!isClauseComplete(clause)) return;
+    const existingClauses = (filters?.clauses ?? []).filter(isClauseComplete);
+    const shouldReplaceField = Array.isArray(value)
+      && (
+        selectedField.type === 'array'
+        || selectedField.type === 'multiselect'
+        || selectedField.multiValue === true
+      );
     onFiltersChange({
       combinator: filters?.combinator ?? 'and',
-      clauses: [...(filters?.clauses ?? []).filter(isClauseComplete), clause],
+      clauses: [
+        ...existingClauses.filter(existing =>
+          !shouldReplaceField || existing.field !== selectedField.id),
+        clause,
+      ],
     });
     setMenuMode('fields');
     setSelectedFieldId(null);
     setSelectedFieldRect(null);
     setQuickValue('');
+    setShowFilters(false);
   };
 
   const removeActiveFilter = (index: number): void => {
@@ -240,7 +266,12 @@ export function TrackerViewHeaderControls({
           }`}
           onClick={() => {
             setShowDisplayOptions(false);
-            setShowFilters(open => !open);
+            if (showFilters) {
+              setShowFilters(false);
+            } else {
+              resetFilterMenu();
+              setShowFilters(true);
+            }
           }}
           aria-expanded={showFilters}
           data-testid="tracker-view-filter-button"
@@ -329,7 +360,7 @@ export function TrackerViewHeaderControls({
                           <span className="min-w-0 flex-1 truncate">
                             {field?.label ?? clause.field}{' '}
                             <span className="text-nim-muted">{OP_LABELS[clause.op]}</span>{' '}
-                            {filterValueLabel(clause.value)}
+                            {filterValueLabel(clause.value, clause.op)}
                           </span>
                           <button
                             type="button"
@@ -489,7 +520,7 @@ export function TrackerViewHeaderControls({
                           ) : isRange ? (
                             <div className="flex items-center gap-1">
                               <input
-                                type={inputType(field)}
+                                type={inputType(field, clause.op)}
                                 className="min-w-0 flex-1 rounded border border-nim bg-nim-secondary px-2 py-1.5 text-xs text-nim outline-none focus:border-nim-focus"
                                 value={valueAsText(range[0])}
                                 placeholder="From"
@@ -499,7 +530,7 @@ export function TrackerViewHeaderControls({
                               />
                               <span className="text-[10px] text-nim-faint">to</span>
                               <input
-                                type={inputType(field)}
+                                type={inputType(field, clause.op)}
                                 className="min-w-0 flex-1 rounded border border-nim bg-nim-secondary px-2 py-1.5 text-xs text-nim outline-none focus:border-nim-focus"
                                 value={valueAsText(range[1])}
                                 placeholder="To"
@@ -522,7 +553,7 @@ export function TrackerViewHeaderControls({
                             </select>
                           ) : (
                             <input
-                              type={inputType(field)}
+                              type={inputType(field, clause.op)}
                               className="w-full rounded border border-nim bg-nim-secondary px-2 py-1.5 text-xs text-nim outline-none focus:border-nim-focus"
                               value={valueAsText(clause.value)}
                               placeholder={isList ? 'Comma-separated values' : 'Value'}
@@ -588,10 +619,32 @@ export function TrackerViewHeaderControls({
 
         {showFilters && menuMode === 'field' && selectedField && (
           <TrackerFilterValueMenu
+            key={`${selectedField.id}:${JSON.stringify(
+              clausesForField(filters, selectedField.id).map(clause => clause.value),
+            )}`}
             field={selectedField}
             anchorRect={selectedFieldRect}
             placement="left"
+            selectedValues={new Set(
+              clausesForField(filters, selectedField.id).flatMap(clause =>
+                Array.isArray(clause.value)
+                  ? clause.value.map(String)
+                  : clause.value === undefined ? [] : [String(clause.value)]),
+            )}
             onSelect={applyQuickFilter}
+            onClear={clausesForField(filters, selectedField.id).length > 0
+              ? () => {
+                onFiltersChange({
+                  combinator: filters?.combinator ?? 'and',
+                  clauses: (filters?.clauses ?? []).filter(
+                    clause => clause.field !== selectedField.id,
+                  ),
+                });
+                setMenuMode('fields');
+                setSelectedFieldId(null);
+                setSelectedFieldRect(null);
+              }
+              : undefined}
             onClose={() => {
               setMenuMode('fields');
               setSelectedFieldId(null);
@@ -607,7 +660,7 @@ export function TrackerViewHeaderControls({
         <div className="relative">
           <button
             type="button"
-            className={`inline-flex h-7 w-7 items-center justify-center rounded border transition-colors ${
+            className={`inline-flex h-7 items-center gap-1 rounded border px-2 text-[11px] font-medium transition-colors ${
               showDisplayOptions
                 ? 'border-nim-focus bg-nim-tertiary text-nim'
                 : 'border-nim bg-nim-secondary text-nim-muted hover:bg-nim-tertiary hover:text-nim'
@@ -616,12 +669,13 @@ export function TrackerViewHeaderControls({
               setShowFilters(false);
               setShowDisplayOptions(open => !open);
             }}
-            title="Display options"
+            title="Display options — columns & grouping"
             aria-label="Display options"
             aria-expanded={showDisplayOptions}
             data-testid="tracker-view-display-options"
           >
-            <MaterialSymbol icon="tune" size={15} />
+            <MaterialSymbol icon="view_column" size={14} />
+            Columns
           </button>
           {showDisplayOptions && (
             <DisplayOptionsPanel

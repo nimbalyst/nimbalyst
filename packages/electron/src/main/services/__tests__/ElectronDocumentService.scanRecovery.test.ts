@@ -48,6 +48,37 @@ afterEach(async () => {
 });
 
 describe('scan recovery (NIM-879)', () => {
+  it('reconciles an explicitly team-shared plan discovered during a cold scan', async () => {
+    const relativePath = 'nimbalyst-local/plans/shared-plan.md';
+    const fullPath = path.join(tempDir, relativePath);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.writeFile(
+      fullPath,
+      '---\nplanStatus:\n  title: Shared Plan\n  status: in-development\nshare:\n  status: team\n  body: team\n---\n# body\n',
+      'utf8',
+    );
+
+    service = new ElectronDocumentService(tempDir);
+    const captureSpy = vi
+      .spyOn(service as any, 'captureFrontmatterTrackerTransition')
+      .mockResolvedValue(undefined);
+
+    await (service as any).updateMetadataCache([], [{
+      id: 'shared-plan-doc',
+      path: relativePath,
+      workspace: tempDir,
+      type: 'file',
+      lastModified: new Date(),
+    }]);
+
+    expect(captureSpy).toHaveBeenCalledWith(
+      relativePath,
+      expect.objectContaining({
+        share: { status: 'team', body: 'team' },
+      }),
+    );
+  });
+
   it('projects a nested plan file into the tracker metadata list', async () => {
     const planDir = path.join(tempDir, 'nimbalyst-local', 'plans', 'teams');
     await fs.mkdir(planDir, { recursive: true });

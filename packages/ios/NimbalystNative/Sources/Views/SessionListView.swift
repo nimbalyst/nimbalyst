@@ -449,10 +449,10 @@ public struct SessionListView: View {
             appState.configureVoiceAgent(forProject: project.id)
             resolveDefaultModel()
         }
-        .onChange(of: appState.availableModels) { _ in
+        .onChange(of: appState.availableModels) { _, _ in
             resolveDefaultModel()
         }
-        .onChange(of: project.id) { _ in
+        .onChange(of: project.id) { _, _ in
             cancellable?.cancel()
             startObserving()
             loadExpandedState()

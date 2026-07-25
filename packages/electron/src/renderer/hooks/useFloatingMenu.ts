@@ -36,6 +36,7 @@ import {
   type ReferenceElement,
   type UseFloatingReturn,
   type Strategy,
+  type UseDismissProps,
 } from '@floating-ui/react';
 
 export { FloatingPortal } from '@floating-ui/react';
@@ -57,6 +58,8 @@ export interface UseFloatingMenuOptions {
   open?: boolean;
   /** External open state setter. Required when `open` is provided. */
   onOpenChange?: (open: boolean) => void;
+  /** Optional dismissal behavior, including guards for related portaled surfaces. */
+  dismiss?: UseDismissProps;
 }
 
 export interface UseFloatingMenuReturn {
@@ -105,6 +108,7 @@ export function useFloatingMenu(options: UseFloatingMenuOptions = {}): UseFloati
     reference = null,
     open: controlledOpen,
     onOpenChange: controlledOnOpenChange,
+    dismiss: dismissOptions,
   } = options;
 
   const [internalOpen, setInternalOpen] = useState(false);
@@ -146,7 +150,7 @@ export function useFloatingMenu(options: UseFloatingMenuOptions = {}): UseFloati
     }
   }, [reference, floating.refs]);
 
-  const dismiss = useDismiss(floating.context);
+  const dismiss = useDismiss(floating.context, dismissOptions);
   const role = useRole(floating.context, { role: 'menu' });
 
   const { getReferenceProps, getFloatingProps } = useInteractions([dismiss, role]);

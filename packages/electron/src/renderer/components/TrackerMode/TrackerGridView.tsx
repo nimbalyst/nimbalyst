@@ -49,6 +49,7 @@ import {
   withFieldClauses,
   clausesForField,
   hasActiveFilters,
+  type TrackerFilterEvaluationContext,
   type TrackerFieldFilter,
   type TrackerFilterSet,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
@@ -80,6 +81,7 @@ interface TrackerGridViewProps {
   columnFilters?: TrackerFilterSet | null;
   onColumnFiltersChange?: (filters: TrackerFilterSet) => void;
   filterFields?: TrackerFilterField[];
+  filterEvaluationContext?: TrackerFilterEvaluationContext;
   onSortChange?: (column: string, direction: 'asc' | 'desc') => void;
   preserveItemOrder?: boolean;
 }
@@ -108,6 +110,7 @@ export function TrackerGridView({
   columnFilters,
   onColumnFiltersChange,
   filterFields = [],
+  filterEvaluationContext,
   onSortChange,
   preserveItemOrder = false,
 }: TrackerGridViewProps): JSX.Element {
@@ -141,12 +144,15 @@ export function TrackerGridView({
   // Column filters apply on top of the coarse chips/search, in the shared
   // `{field, op, value}` language that saved views and agent queries also use.
   const filteredItems = useMemo(
-    () => applyFilterSet(
-      chipFilteredItems,
-      columnFilters,
-      getGridFilterValue,
-    ),
-    [chipFilteredItems, columnFilters, getGridFilterValue],
+    () => overrideItems
+      ? chipFilteredItems
+      : applyFilterSet(
+        chipFilteredItems,
+        columnFilters,
+        getGridFilterValue,
+        filterEvaluationContext,
+      ),
+    [chipFilteredItems, columnFilters, filterEvaluationContext, getGridFilterValue, overrideItems],
   );
 
   const filteredColumnIds = useMemo(
@@ -536,7 +542,6 @@ export function TrackerGridView({
             theme="compact"
             resize
             range
-            rowHeaders
             canMoveColumns
             readonly={false}
           />
@@ -560,11 +565,15 @@ export function TrackerGridView({
 
       {filterTarget && (
         <TrackerFilterValueMenu
+          key={`${filterTarget.columnId}:${JSON.stringify(
+            clausesForField(columnFilters, filterTarget.columnId).map(clause => clause.value),
+          )}`}
           field={filterFields.find(field => field.id === filterTarget.columnId) ?? {
             id: filterTarget.columnId,
             label: visibleColumnDefs.find(c => c.id === filterTarget.columnId)?.label
               ?? filterTarget.columnId,
             type: getFieldForColumn(schemaType, filterTarget.columnId)?.type,
+            multiValue: getFieldForColumn(schemaType, filterTarget.columnId)?.multiValue,
             options: getFieldForColumn(schemaType, filterTarget.columnId)?.options,
           }}
           anchorRect={filterTarget.rect}
@@ -575,10 +584,12 @@ export function TrackerGridView({
                 ? clause.value.map(String)
                 : clause.value === undefined ? [] : [String(clause.value)]),
           )}
-          onSelect={(value) => {
+          onSelect={(value, op = '=') => {
             handleApplyColumnFilter(
               filterTarget.columnId,
-              [{ field: filterTarget.columnId, op: '=', value }],
+              op === 'is-current-user' || op === 'is-not-current-user'
+                ? [{ field: filterTarget.columnId, op }]
+                : [{ field: filterTarget.columnId, op, value }],
               columnFilters?.combinator ?? 'and',
             );
             setFilterTarget(null);

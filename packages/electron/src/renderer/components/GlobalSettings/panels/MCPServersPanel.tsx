@@ -6,6 +6,10 @@ import { ErrorBoundary } from '../../ErrorBoundary';
 import { useTheme } from '../../../hooks/useTheme';
 import { enabledProvidersAtom } from '../../../store/atoms/appSettings';
 import { mcpTestProgressAtom } from '../../../store/atoms/mcpStatus';
+import {
+  buildMCPOAuthAnalyticsProperties,
+  MCPOAuthTriggerResult,
+} from './mcpOAuthAnalytics';
 
 interface MCPServerConfig {
   command?: string;
@@ -676,7 +680,7 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
   const [testHelpUrl, setTestHelpUrl] = useState<string | null>(null);
-  const [isStalePortError, setIsStalePortError] = useState(false);
+  const [canRetryAfterCacheClear, setCanRetryAfterCacheClear] = useState(false);
 
   // Stream MCP test progress messages from the central listener
   // (store/listeners/mcpListeners.ts) into local state. Only apply while a
@@ -1070,6 +1074,16 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
     }
   };
 
+  const captureOAuthResult = (
+    result: MCPOAuthTriggerResult,
+    retryAfterCacheClear = false
+  ) => {
+    posthog?.capture('mcp_oauth_authorize', buildMCPOAuthAnalyticsProperties(result, {
+      templateId: selectedTemplate?.id || null,
+      retryAfterCacheClear,
+    }));
+  };
+
   /**
    * Trigger OAuth authorization flow
    */
@@ -1087,43 +1101,37 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
     if (!serverUrl) return;
 
     setOauthAction('authorizing');
-    setIsStalePortError(false);
+    setCanRetryAfterCacheClear(false);
     try {
-      const result = await window.electronAPI.invoke('mcp-config:trigger-oauth', config);
+      const result = await window.electronAPI.invoke(
+        'mcp-config:trigger-oauth',
+        config
+      ) as MCPOAuthTriggerResult;
       if (result.success) {
         setOauthStatus('authorized');
         setTestStatus('idle');
         setTestMessage('');
-        // Track successful OAuth
-        posthog?.capture('mcp_oauth_authorize', {
-          templateId: selectedTemplate?.id || null,
-          success: true
-        });
       } else {
         const errorMsg = result.error || 'Authorization failed';
         console.error('OAuth authorization failed:', errorMsg);
         setTestStatus('error');
         setTestMessage(`Authorization failed: ${errorMsg}`);
-        setIsStalePortError(result.isStalePortError === true);
+        setCanRetryAfterCacheClear(
+          result.canRetryAfterCacheClear === true || result.isStalePortError === true
+        );
         await checkOAuthStatus(config);
-        // Track failed OAuth
-        posthog?.capture('mcp_oauth_authorize', {
-          templateId: selectedTemplate?.id || null,
-          success: false,
-          errorType: result.isStalePortError ? 'stale_port' : 'auth_rejected'
-        });
       }
+      captureOAuthResult(result);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error occurred';
       console.error('Failed to trigger OAuth:', errorMsg);
       setTestStatus('error');
       setTestMessage(`Authorization error: ${errorMsg}`);
       setOauthStatus('not-authorized');
-      // Track OAuth exception
-      posthog?.capture('mcp_oauth_authorize', {
-        templateId: selectedTemplate?.id || null,
+      captureOAuthResult({
         success: false,
-        errorType: 'exception'
+        outcome: 'failed',
+        errorType: 'ipc_error',
       });
     } finally {
       setOauthAction('idle');
@@ -1190,7 +1198,7 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
     if (!serverUrl) return;
 
     setOauthAction('clearing-cache');
-    setIsStalePortError(false);
+    setCanRetryAfterCacheClear(false);
     try {
       // First, revoke/clear any existing auth files (including lock files)
       await window.electronAPI.invoke('mcp-config:revoke-oauth', config);
@@ -1201,29 +1209,35 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
       await new Promise(resolve => setTimeout(resolve, 500));
 
       // Then trigger OAuth again
-      const result = await window.electronAPI.invoke('mcp-config:trigger-oauth', config);
+      const result = await window.electronAPI.invoke(
+        'mcp-config:trigger-oauth',
+        config
+      ) as MCPOAuthTriggerResult;
       if (result.success) {
         setOauthStatus('authorized');
         setTestStatus('idle');
         setTestMessage('');
-        posthog?.capture('mcp_oauth_authorize', {
-          templateId: selectedTemplate?.id || null,
-          success: true,
-          retryAfterCacheClear: true
-        });
       } else {
         const errorMsg = result.error || 'Authorization failed';
         console.error('OAuth authorization failed after cache clear:', errorMsg);
         setTestStatus('error');
         setTestMessage(`Authorization failed: ${errorMsg}`);
-        setIsStalePortError(result.isStalePortError === true);
+        setCanRetryAfterCacheClear(
+          result.canRetryAfterCacheClear === true || result.isStalePortError === true
+        );
         await checkOAuthStatus(config);
       }
+      captureOAuthResult(result, true);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error occurred';
       console.error('Failed to clear cache and retry OAuth:', errorMsg);
       setTestStatus('error');
       setTestMessage(`Error: ${errorMsg}`);
+      captureOAuthResult({
+        success: false,
+        outcome: 'failed',
+        errorType: 'ipc_error',
+      }, true);
     } finally {
       setOauthAction('idle');
     }
@@ -1917,7 +1931,7 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
             {!isNativeOAuthConfig && testStatus === 'error' && testMessage && (
               <div className="mcp-oauth-error mt-3 p-3 bg-[color-mix(in_srgb,var(--nim-error)_10%,transparent)] border border-[color-mix(in_srgb,var(--nim-error)_30%,transparent)] rounded-md text-[var(--nim-error)] text-[0.8125rem] leading-snug" role="alert" aria-live="assertive">
                 {testMessage}
-                {isStalePortError && (
+                {canRetryAfterCacheClear && (
                   <button
                     type="button"
                     className="mcp-clear-cache-button block mt-3 px-3 py-1.5 text-[0.8125rem] font-medium text-white bg-[var(--nim-warning)] border-none rounded cursor-pointer transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed hover:enabled:brightness-90"

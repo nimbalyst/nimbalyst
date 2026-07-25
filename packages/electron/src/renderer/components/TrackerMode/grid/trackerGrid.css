@@ -22,8 +22,6 @@
   --revo-grid-cell-border: var(--nim-border);
   --revo-grid-focused-bg: color-mix(in srgb, var(--nim-primary) 10%, var(--nim-bg));
   --revo-grid-row-hover: var(--nim-bg-hover);
-  --revo-grid-row-headers-bg: var(--nim-bg-secondary);
-  --revo-grid-row-headers-color: var(--nim-text-faint);
   --revo-grid-cell-disabled-bg: color-mix(in srgb, var(--nim-bg-secondary) 55%, transparent);
 }
 
@@ -71,13 +69,6 @@
 
 .tracker-grid-view .rgRow:hover .rgCell {
   background: var(--nim-bg-hover);
-}
-
-/* Row header gutter (row numbers) */
-.tracker-grid-view .rowHeaders .rgCell {
-  background: var(--nim-bg-secondary);
-  color: var(--nim-text-faint);
-  justify-content: flex-end;
 }
 
 /* Focus + range selection */
@@ -166,29 +157,37 @@
   align-items: center;
   gap: 1px;
   margin-left: auto;
+  flex-shrink: 0;
 }
 
+/*
+ * Header affordances collapse to zero width at rest so the label gets the full
+ * column, then expand on hover (or when active). Otherwise the icon boxes
+ * reserve layout width on every column and truncate short headers to "K…".
+ */
 .tracker-grid-header-filter,
 .tracker-grid-header-sort {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 0;
+  height: 15px;
   border-radius: 3px;
   cursor: pointer;
   line-height: 1;
-  color: var(--nim-text-muted);
-  transition: color 120ms ease, opacity 120ms ease, background-color 120ms ease;
-}
-
-.tracker-grid-header-filter {
   opacity: 0;
+  overflow: hidden;
+  color: var(--nim-text-faint);
+  transition: color 120ms ease, opacity 120ms ease, width 120ms ease, background-color 120ms ease;
 }
 
 .tracker-grid-header:hover .tracker-grid-header-filter,
+.tracker-grid-header:hover .tracker-grid-header-sort,
 .tracker-grid-header-filter:focus-visible,
-.tracker-grid-header-filter.is-filtered {
+.tracker-grid-header-sort:focus-visible,
+.tracker-grid-header-filter.is-filtered,
+.tracker-grid-header-sort.is-sorted {
+  width: 15px;
   opacity: 1;
 }
 
@@ -203,19 +202,12 @@
   background: color-mix(in srgb, var(--nim-primary) 12%, transparent);
 }
 
-.tracker-grid-header-filter-icon {
-  font-size: 12px;
-}
-
-.tracker-grid-header-sort {
-  opacity: 0.6;
-}
-
 .tracker-grid-header-sort.is-sorted {
   color: var(--nim-primary);
-  opacity: 1;
 }
 
+.tracker-grid-header-filter-icon,
 .tracker-grid-header-sort-icon {
-  font-size: 13px;
+  font-size: 11px;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
 }

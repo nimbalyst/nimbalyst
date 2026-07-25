@@ -215,6 +215,10 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
     seen.add(m.version);
   }
 
+  const findAppliedVersion = db.prepare(
+    'SELECT version FROM _migrations WHERE version = ?',
+  );
+
   for (const m of migrations) {
     if (applied.has(m.version)) {
       result.skipped.push(m.version);
@@ -227,7 +231,13 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
       );
     }
 
-    const tx = db.transaction(() => {
+    const tx = db.transaction((): boolean => {
+      // Another app process or worker may have initialized the same database
+      // after our applied-version snapshot. Re-check while holding the
+      // immediate write lock so only one connection can apply this version.
+      if (findAppliedVersion.get(m.version)) {
+        return false;
+      }
       if (m.sqlFile) {
         const sql = fs.readFileSync(m.sqlFile, 'utf-8');
         db.exec(sql);
@@ -240,9 +250,13 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
         m.version,
         m.name,
       );
+      return true;
     });
-    tx();
-    result.applied.push(m.version);
+    if (tx.immediate()) {
+      result.applied.push(m.version);
+    } else {
+      result.skipped.push(m.version);
+    }
   }
 
   return result;

@@ -415,6 +415,8 @@ export class DocumentContextService implements IDocumentContextService {
         prompt += `This is a shared collaborative document synced in realtime over Yjs. Other users may be editing it concurrently — prefer small, scoped edits over sweeping rewrites.\n`;
         prompt += `To READ this document, call the readCollabDoc tool with this collab:// URI. The filesystem Read tool will not work for collab:// URIs.\n`;
         prompt += `To MODIFY this document, call applyCollabDocEdit (or applyDiff) with this collab:// URI. Filesystem tools like Edit/Write will not propagate via Yjs and will not reach other collaborators.\n`;
+        prompt += `To READ inline comment threads, call readCollabDocComments. To answer one, call replyToCollabDocComment with the thread id and, when known, the specific replyToCommentId. To create a new anchored inline comment, call createCollabDocComment with exact text plus enough prefix/suffix context to identify one location.\n`;
+        prompt += `Agent comment writes are attributed to the active agent session by the app. Never claim a human authored an agent comment, and reuse the same clientMutationId when retrying a write.\n`;
         prompt += `Filesystem tools remain available for OTHER files in the workspace; the constraints above apply only to this active shared document.\n`;
         prompt += `</COLLAB_DOCUMENT_NOTE>\n`;
       }
@@ -518,14 +520,17 @@ This document lives in a Yjs CRDT synced over Cloudflare Workers. Filesystem Rea
 
 1. Use readCollabDoc(filePath) to view the document — do NOT use the Read tool on the collab:// URI
 2. Use applyCollabDocEdit(filePath, replacements) to modify it (or applyDiff against the collab:// URI). Replacements are { oldText, newText } pairs that must match exactly.
-3. Other users may be editing concurrently — prefer small, scoped replacements over sweeping rewrites
-4. Keep responses brief (2-4 words like "Editing document..." or "Adding section...")
-5. DO NOT explain what you're doing — the user sees the changes propagate live
+3. Use readCollabDocComments to inspect inline comment threads, replyToCollabDocComment to answer an existing comment, and createCollabDocComment to add a new exact-text-anchored comment
+4. Reuse clientMutationId on retries; the app derives your agent session identity and human authorizer
+5. Other users may be editing concurrently — prefer small, scoped replacements over sweeping rewrites
+6. Keep responses brief (2-4 words like "Editing document..." or "Adding section...")
+7. DO NOT explain what you're doing — the user sees the changes propagate live
 
 WORKFLOW:
 1. Call readCollabDoc to see the current content (REQUIRED before editing)
-2. Make your edits with applyCollabDocEdit
-3. Done — the change is live for all collaborators
+2. Call readCollabDocComments when the task involves review comments or replies
+3. Make edits or comment mutations with the matching collaborative tool
+4. Done — the change is live for all collaborators
 </COLLAB_DOC_INSTRUCTIONS>`;
   }
 

@@ -99,6 +99,7 @@ export interface ExtendedThemeColors extends ThemeColors {
   // Special
   'highlight-bg'?: string;
   'highlight-border'?: string;
+  'comment-mark'?: string;
   'quote-text'?: string;
   'quote-border'?: string;
 

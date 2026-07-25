@@ -60,6 +60,17 @@ public struct PairingView: View {
             .sheet(isPresented: $isScanning) {
                 scannerSheet
             }
+            .onAppear {
+                if appState.pairingScannerRequested {
+                    appState.pairingScannerRequested = false
+                    requestCameraAndScan()
+                }
+            }
+            .onChange(of: appState.pairingScannerRequested) { _, requested in
+                guard requested else { return }
+                appState.pairingScannerRequested = false
+                requestCameraAndScan()
+            }
         }
     }
 

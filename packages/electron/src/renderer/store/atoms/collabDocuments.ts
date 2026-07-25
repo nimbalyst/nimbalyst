@@ -188,6 +188,15 @@ const sharedDocumentsAtomFamily = atomFamily((_workspacePath: string) =>
   atom<SharedDocument[]>([])
 );
 
+/** Read the active (non-trashed) shared-document index for one workspace. */
+export function getSharedDocumentsForWorkspace(
+  workspacePath: string,
+): SharedDocument[] {
+  return store
+    .get(sharedDocumentsAtomFamily(workspacePath))
+    .filter((document) => document.trashedAt == null);
+}
+
 const sharedFoldersAtomFamily = atomFamily((_workspacePath: string) =>
   atom<SharedFolder[]>([])
 );

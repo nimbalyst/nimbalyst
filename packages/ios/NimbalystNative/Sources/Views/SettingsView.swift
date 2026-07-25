@@ -216,7 +216,7 @@ public struct SettingsView: View {
                     Text(voice.capitalized).tag(voice)
                 }
             }
-            .onChange(of: voiceSettings.voice) { _ in saveVoiceSettings() }
+            .onChange(of: voiceSettings.voice) { _, _ in saveVoiceSettings() }
 
             // Idle timeout
             Stepper(
@@ -225,11 +225,11 @@ public struct SettingsView: View {
                 in: 10...120,
                 step: 10
             )
-            .onChange(of: voiceSettings.idleTimeout) { _ in saveVoiceSettings() }
+            .onChange(of: voiceSettings.idleTimeout) { _, _ in saveVoiceSettings() }
 
             // Auto-announce completions
             Toggle("Auto-Announce Completions", isOn: $voiceSettings.autoAnnounceCompletions)
-                .onChange(of: voiceSettings.autoAnnounceCompletions) { _ in saveVoiceSettings() }
+                .onChange(of: voiceSettings.autoAnnounceCompletions) { _, _ in saveVoiceSettings() }
 
             // Prompt confirmation delay
             Stepper(
@@ -238,7 +238,7 @@ public struct SettingsView: View {
                 in: 1...10,
                 step: 1
             )
-            .onChange(of: voiceSettings.promptConfirmationDelay) { _ in saveVoiceSettings() }
+            .onChange(of: voiceSettings.promptConfirmationDelay) { _, _ in saveVoiceSettings() }
         } header: {
             Text("Voice Mode")
         } footer: {
@@ -258,7 +258,7 @@ public struct SettingsView: View {
     private var analyticsSection: some View {
         Section {
             Toggle("Usage Analytics", isOn: $analyticsEnabled)
-                .onChange(of: analyticsEnabled) { newValue in
+                .onChange(of: analyticsEnabled) { _, newValue in
                     if newValue {
                         AnalyticsManager.shared.optIn()
                     } else {

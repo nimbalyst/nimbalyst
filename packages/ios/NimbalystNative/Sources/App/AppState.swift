@@ -21,6 +21,11 @@ import WebKit
 public final class AppState: ObservableObject {
     private let logger = Logger(subsystem: "com.nimbalyst.app", category: "AppState")
     @Published public var isPaired: Bool = false
+    /// Set when a `nimbalyst://pair` deep link is opened externally (e.g. the
+    /// Camera app scanned the pairing QR). `PairingView` observes this and opens
+    /// the in-app scanner so the user can re-scan through the app's own camera.
+    /// No payload from the deep link is applied — only the scanner is surfaced.
+    @Published public var pairingScannerRequested: Bool = false
     @Published public private(set) var accounts: [MobileAccount] = []
     @Published public private(set) var activeAccountId: String?
     /// True when the account-array blob exists but cannot be decoded or recovered.

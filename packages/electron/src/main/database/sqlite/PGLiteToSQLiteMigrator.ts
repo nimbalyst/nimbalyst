@@ -166,6 +166,15 @@ const COPY_TABLES: readonly string[] = [
 ];
 
 /**
+ * Tables whose SQLite schema migration necessarily creates a bootstrap row
+ * before the PGLite data copy starts. The PGLite row is authoritative: its
+ * cutoff predates migration and must replace the freshly seeded SQLite value.
+ */
+const SOURCE_AUTHORITATIVE_CONFLICT_KEYS: Readonly<Record<string, readonly string[]>> = {
+  tool_usage_backfill_meta: ['singleton'],
+};
+
+/**
  * Single-column primary keys we can use for cursor pagination.
  *
  * IMPORTANT: only monotonically increasing INTEGER keys belong here. Text
@@ -759,9 +768,22 @@ export class PGLiteToSQLiteMigrator {
     if (insertableCols.length === 0) {
       throw new Error(`No insertable columns for ${opts.sourceTable}`);
     }
+    const conflictKeys = SOURCE_AUTHORITATIVE_CONFLICT_KEYS[opts.sourceTable];
+    const conflictClause = conflictKeys
+      ? (() => {
+          const keySet = new Set(conflictKeys);
+          const updateCols = insertableCols.filter((column) => !keySet.has(column.name));
+          const action = updateCols.length > 0
+            ? `DO UPDATE SET ${updateCols
+                .map((column) => `${quoteIdent(column.name)} = excluded.${quoteIdent(column.name)}`)
+                .join(',')}`
+            : 'DO NOTHING';
+          return ` ON CONFLICT (${conflictKeys.map(quoteIdent).join(',')}) ${action}`;
+        })()
+      : '';
     const insertSql = `INSERT INTO ${quoteIdent(opts.sourceTable)}(${insertableCols
       .map((c) => quoteIdent(c.name))
-      .join(',')}) VALUES (${insertableCols.map(() => '?').join(',')})`;
+      .join(',')}) VALUES (${insertableCols.map(() => '?').join(',')})${conflictClause}`;
 
     const stmt = opts.sqliteHandle.prepare(insertSql);
     const insertMany = opts.sqliteHandle.transaction((rows: unknown[][]) => {

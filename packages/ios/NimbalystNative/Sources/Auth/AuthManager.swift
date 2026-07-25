@@ -21,7 +21,9 @@ public final class AuthManager: ObservableObject {
     @Published public var magicLinkSent: Bool = false
 
     /// Retained to prevent deallocation during the browser flow.
+    #if os(iOS)
     private var authSession: ASWebAuthenticationSession?
+    #endif
     private var authenticationAccountId: String?
 
     /// The JWT for sync server authentication.

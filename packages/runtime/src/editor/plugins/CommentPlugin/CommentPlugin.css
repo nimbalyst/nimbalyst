@@ -283,6 +283,41 @@
   font-weight: 600;
   color: var(--nim-text);
 }
+.nim-comment-agent-author {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: var(--nim-text);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+.nim-comment-agent-author:hover {
+  color: var(--nim-primary);
+}
+.nim-comment-agent-author .material-symbols-outlined {
+  font-size: 14px;
+}
+.nim-comment-agent-badge {
+  padding: 1px 5px;
+  color: var(--nim-primary);
+  background: color-mix(in srgb, var(--nim-primary) 14%, transparent);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.nim-comment-agent-owner {
+  color: var(--nim-text-faint);
+  font-size: 10px;
+  font-weight: 400;
+}
 .nim-comment-time {
   flex: 1;
   font-size: 11px;
@@ -307,6 +342,11 @@
 }
 .nim-comment-delete .material-symbols-outlined {
   font-size: 15px;
+}
+.nim-comment-reply-target {
+  margin-bottom: 2px;
+  color: var(--nim-text-faint);
+  font-size: 10px;
 }
 .nim-comment-content {
   font-size: 13px;

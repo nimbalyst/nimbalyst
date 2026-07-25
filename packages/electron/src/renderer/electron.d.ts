@@ -451,9 +451,33 @@ interface ElectronAPI {
   onMcpStreamContent: (callback: (data: { streamId: string, content: string, position: string, insertAfter?: string, mode?: string, targetFilePath?: string, resultChannel: string }) => void) => () => void;
   onMcpNavigateTo: (callback: (data: { line: number, column: number }) => void) => () => void;
   onMcpReadCollabDoc: (callback: (data: { targetFilePath: string, resultChannel: string }) => void) => () => void;
+  onMcpReadCollabDocComments: (callback: (data: {
+    targetFilePath: string;
+    input: any;
+    workspacePath?: string;
+    resultChannel: string;
+  }) => void) => () => void;
+  onMcpReplyToCollabDocComment: (callback: (data: {
+    targetFilePath: string;
+    input: any;
+    agent: { sessionId: string; sessionName: string };
+    workspacePath?: string;
+    resultChannel: string;
+  }) => void) => () => void;
+  onMcpCreateCollabDocComment: (callback: (data: {
+    targetFilePath: string;
+    input: any;
+    agent: { sessionId: string; sessionName: string };
+    workspacePath?: string;
+    resultChannel: string;
+  }) => void) => () => void;
   sendMcpApplyDiffResult: (resultChannel: string, result: any) => void;
   sendMcpStreamContentResult: (resultChannel: string, result: any) => void;
   sendMcpReadCollabDocResult: (resultChannel: string, result: { success: boolean; content?: string; error?: string }) => void;
+  sendMcpCollabDocCommentResult: (
+    resultChannel: string,
+    result: { success: boolean; result?: unknown; code?: string; error?: string },
+  ) => void;
   onMcpCreateSharedDoc: (callback: (data: { title: string, documentType?: string, parentFolderId?: string | null, folderPath?: string, initialContent?: string, resultChannel: string }) => void) => () => void;
   onMcpCreateSharedFolder: (callback: (data: { name: string, parentFolderId?: string | null, folderPath?: string, resultChannel: string }) => void) => () => void;
   onMcpMoveSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', newParentFolderId?: string | null, folderPath?: string, resultChannel: string }) => void) => () => void;

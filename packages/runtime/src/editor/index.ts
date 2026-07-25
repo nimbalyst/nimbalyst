@@ -28,10 +28,43 @@ export {
 
 // Document comments configuration types
 export type {
+  CommentCapabilities,
   CommentsConfig,
   CommentMember,
   CommentMentionPayload,
+  CommentReplyPayload,
 } from './commenting/types';
+export type {
+  AgentCommentActor,
+  Comment,
+  CommentActor,
+  Thread,
+  UserCommentActor,
+} from './commenting';
+export {
+  CommentStore,
+  createComment,
+  createThread,
+  normalizeCommentActor,
+} from './commenting';
+export { CommentCollabProvider } from './commenting/CommentCollabProvider';
+export {
+  collabCommentControllerRegistry,
+  CollabCommentControllerError,
+  createCollabCommentController,
+} from './commenting/CollabCommentControllerRegistry';
+export type {
+  CollabCommentController,
+  CommentAnchorSelector,
+  CommentControllerErrorCode,
+  CommentControllerListResult,
+  CreateAnchoredCommentInput,
+  CreateAnchoredCommentResult,
+  NormalizedComment,
+  NormalizedCommentThread,
+  ReplyToCommentInput,
+  ReplyToCommentResult,
+} from './commenting/CollabCommentControllerRegistry';
 
 // Hooks
 export { useFlashMessage } from './hooks/useFlashMessage';

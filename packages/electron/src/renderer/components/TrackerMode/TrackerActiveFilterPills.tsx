@@ -44,7 +44,11 @@ export function TrackerActiveFilterPills({
     >
       {activeClauses.map(({ clause, clauseIndex }) => {
         const field = fields.find(candidate => candidate.id === clause.field);
-        const value = UNARY_OPS.has(clause.op) ? '' : optionLabel(field, clause.value);
+        const value = UNARY_OPS.has(clause.op)
+          ? ''
+          : clause.op === 'in-last' || clause.op === 'not-in-last'
+            ? `${optionLabel(field, clause.value)} days`
+            : optionLabel(field, clause.value);
         return (
           <div
             key={`${clause.field}-${clauseIndex}`}

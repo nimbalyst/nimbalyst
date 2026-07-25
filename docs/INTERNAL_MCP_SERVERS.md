@@ -17,7 +17,7 @@ Three orthogonal axes (see `mcpTopology.ts`): **server boundary** = the unit of 
 | `nimbalyst` (core) | `/mcp/core` | per-tool eager/deferred | AskUserQuestion, PromptForUserInput, display_to_user, and update_session_meta are always loaded. capture_editor_screenshot, get_session_edited_files, and developer_git_commit_proposal defer through ToolSearch. The endpoint carries the long `tool_timeout_sec` because commit-proposal and user-input calls block on user input. |
 | `nimbalyst-host` | `/mcp/host` | deferred | App config (settings_get_overview, appearance_\*, ai_\*, analytics_set_enabled, features_toggle, extension_set_enabled, sync_set_for_project, workspace_create/open/set_trust); session-context (get_session_summary, get_workstream_\*, list_recent_sessions, schedule_wakeup, update_session_board); child-session orchestration (create_session, spawn_session, send_prompt, notify_user, respond_to_prompt, get_session_status/result, list_spawned_sessions, list_worktrees). The settings tools are dropped for the meta-agent profile and the settings kill-switch (`hostExcludeSettings` flag); session-context + meta-agent stay. |
 | `nimbalyst-trackers` | `/mcp/trackers` | deferred + per-project opt-out | tracker CRUD + config (`tracker_*`). The whole server is omitted when the per-project **Trackers → AI Agent Access** toggle (`trackersEnabled`) is off. |
-| `nimbalyst-situational` | `/mcp/situational` | deferred | voice_agent_speak/stop, readCollabDoc/applyCollabDocEdit, feedback_anonymize_text/get_environment/open_github_issue. |
+| `nimbalyst-situational` | `/mcp/situational` | deferred | voice_agent_speak/stop; collaborative document body and inline-comment tools (`readCollabDoc`, `applyCollabDocEdit`, `readCollabDocComments`, `replyToCollabDocComment`, `createCollabDocComment`); feedback_anonymize_text/get_environment/open_github_issue. |
 | `nimbalyst-<ext>` (one per extension) | `/mcp/ext/<id>` | deferred | Each active extension contributes its own server (`nimbalyst-excalidraw`, `nimbalyst-slides`, …) so the extension long-tail leaves the eager path. Surfaced by ToolSearch on intent — creation flows work with no file open. |
 | `nimbalyst-extension-dev` | `/mcp/extension-dev` | profile-gated, **own port** | Developer-mode tooling (database_query, extension_build/install/reload/uninstall, restart_nimbalyst, get_main_process_logs, get_renderer_debug_logs, renderer_eval, …). Still a standalone HTTP server (`extensionDevServer.ts`). |
 
@@ -78,6 +78,16 @@ Settings writes route through `SettingsControlService` (allow-list, deny-list fo
 3. **Workspace Context**: Workspace paths are passed via query parameters
 4. **IPC Bridge**: Services coordinate with renderer via IPC handlers
 5. **SSE Transport**: MCP protocol uses Server-Sent Events over HTTP
+
+### Collaborative document comments
+
+The situational server exposes three explicit inline-comment tools for collaborative markdown documents:
+
+- `readCollabDocComments` returns normalized Y.Doc-backed threads, stable IDs, actors, reply targets, resolved state, and pagination.
+- `replyToCollabDocComment` appends a reply to an existing thread.
+- `createCollabDocComment` creates a new thread anchored by exact text plus optional prefix/suffix context; ambiguous or stale selectors fail without mutation.
+
+Comment writes require `clientMutationId` for idempotency. Main derives the agent session identity from the authenticated MCP connection, while renderer code adds the signed-in owner identity and rechecks document capabilities. Read and reply can acquire a closed document through the existing collaborative replica/provider cache; anchored creation requires a mounted Lexical editor.
 
 ## How to Add a New Internal MCP Server
 

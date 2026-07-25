@@ -30,9 +30,7 @@ import { createPortal } from 'react-dom';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
-import { RichTranscriptView } from '@nimbalyst/runtime/ui/AgentTranscript/components/RichTranscriptView';
 import type { SessionMeta } from '@nimbalyst/runtime';
-import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import {
   sessionsByPhaseAtom,
   sessionKanbanFilterAtom,
@@ -56,8 +54,8 @@ import {
   sessionRegistryAtom,
   sessionListWorkspaceAtom,
 } from '../../store/atoms/sessions';
-import { transcriptEventSignalAtom } from '../../store/atoms/sessionTranscript';
 import { SessionContextMenu } from '../AgenticCoding/SessionContextMenu';
+import { SessionTranscriptPeek } from '../AgenticCoding/SessionTranscriptPeek';
 import { ArchiveWorktreeDialog } from '../AgentMode/ArchiveWorktreeDialog';
 import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../../hooks/useFloatingMenu';
@@ -252,171 +250,6 @@ function CardStatusBadge({ info }: { info: CardStateInfo }) {
 }
 
 // ============================================================
-// TranscriptPeek - Hover preview using real RichTranscriptView
-// ============================================================
-
-/** Global cache for fetched tail messages to avoid refetching on re-hover.
- * Entries are invalidated by the open peek when transcriptEventSignalAtom
- * bumps for the active session; if no peek is open, the next mount-time fetch
- * overwrites whatever is cached, so a stale entry can't be observed. */
-const tailMessageCache = new Map<string, TranscriptViewMessage[]>();
-
-const PEEK_SETTINGS = {
-  showToolCalls: true,
-  compactMode: true,
-  collapseTools: true,
-  showThinking: false,
-  showSessionInit: false,
-};
-
-interface TranscriptPeekProps {
-  sessionId: string;
-  anchorRef: React.RefObject<HTMLElement | null>;
-  onClose: () => void;
-}
-
-function TranscriptPeek({ sessionId, anchorRef, onClose }: TranscriptPeekProps) {
-  // Workstream/worktree cards have no transcript of their own. Show the most
-  // recently updated child session's transcript so the peek isn't blank.
-  const registry = useAtomValue(sessionRegistryAtom);
-  const resolvedSessionId = useMemo(() => {
-    const meta = registry.get(sessionId);
-    if (!meta) return sessionId;
-    if (getCardType(meta) === 'session') return sessionId;
-
-    let bestId = sessionId;
-    let bestUpdatedAt = -Infinity;
-    for (const child of registry.values()) {
-      if (child.parentSessionId !== sessionId) continue;
-      const ts = child.updatedAt ?? 0;
-      if (ts > bestUpdatedAt) {
-        bestUpdatedAt = ts;
-        bestId = child.id;
-      }
-    }
-    return bestId;
-  }, [registry, sessionId]);
-
-  const [messages, setMessages] = useState<TranscriptViewMessage[] | null>(tailMessageCache.get(resolvedSessionId) || null);
-  const [loading, setLoading] = useState(!tailMessageCache.has(resolvedSessionId));
-  const peekRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
-
-  // Always refetch on mount so the peek reflects the latest turn. The cache
-  // still seeds initial state for an instant render; the fresh fetch
-  // overwrites it. Fetch a generous tail because the projector coalesces
-  // adjacent assistant_message events, and legacy codex-acp sessions stored
-  // one canonical event per streaming token before the writer started
-  // coalescing -- a small tail would only show the last few tokens of those
-  // sessions.
-  const fetchMessages = useCallback((id: string) => {
-    let cancelled = false;
-    window.electronAPI.ai
-      .getTailMessages(id, 100)
-      .then((msgs: TranscriptViewMessage[]) => {
-        if (!cancelled) {
-          tailMessageCache.set(id, msgs);
-          setMessages(msgs);
-          setLoading(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setMessages((prev) => prev ?? []);
-          setLoading(false);
-        }
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    const cached = tailMessageCache.get(resolvedSessionId);
-    if (cached) {
-      setMessages(cached);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
-    return fetchMessages(resolvedSessionId);
-  }, [resolvedSessionId, fetchMessages]);
-
-  // While the peek is open, re-fetch when new transcript events arrive for
-  // this session. Debounced to 1.5 s so rapid streaming chunks don't hammer
-  // the IPC channel. Drives off transcriptEventSignalAtom (bumped by
-  // sessionTranscriptListeners on every transcript:event) instead of
-  // subscribing to IPC directly -- per docs/IPC_LISTENERS.md, components must
-  // not call window.electronAPI.on inside React lifecycles.
-  const transcriptSignal = useAtomValue(transcriptEventSignalAtom(resolvedSessionId));
-  const initialTranscriptSignalRef = useRef(transcriptSignal);
-  useEffect(() => {
-    // Skip the initial mount: we already kicked off a fetch above. Only react
-    // to *new* transcript events that arrive while the peek is open.
-    if (transcriptSignal === initialTranscriptSignalRef.current) return;
-    const debounceTimer = setTimeout(() => {
-      tailMessageCache.delete(resolvedSessionId);
-      fetchMessages(resolvedSessionId);
-    }, 1500);
-    return () => clearTimeout(debounceTimer);
-  }, [transcriptSignal, resolvedSessionId, fetchMessages]);
-
-  // Position relative to anchor element
-  useEffect(() => {
-    const anchor = anchorRef.current;
-    if (!anchor) return;
-
-    const rect = anchor.getBoundingClientRect();
-    const peekHeight = 350;
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const above = spaceBelow < peekHeight + 10 && rect.top > peekHeight + 10;
-
-    setPosition({
-      top: above ? rect.top - peekHeight - 4 : rect.bottom + 4,
-      left: Math.min(rect.left, window.innerWidth - 610),
-    });
-  }, [anchorRef, messages]);
-
-  // Close on outside click
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (peekRef.current && !peekRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [onClose]);
-
-  return createPortal(
-    <div
-      ref={peekRef}
-      className="fixed z-[100] w-[600px] h-[350px] bg-nim-secondary border border-nim rounded-lg shadow-2xl overflow-hidden flex flex-col"
-      style={{ top: position?.top ?? 0, left: position?.left ?? 0, visibility: position ? 'visible' : 'hidden' }}
-      onMouseLeave={onClose}
-    >
-      {loading ? (
-        <div className="flex-1 flex items-center justify-center text-nim-faint">
-          <span className="material-symbols-outlined text-sm animate-spin" style={{ fontSize: '16px' }}>progress_activity</span>
-        </div>
-      ) : messages && messages.length > 0 ? (
-        <div className="flex-1 overflow-hidden">
-          <RichTranscriptView
-            sessionId={resolvedSessionId}
-            messages={messages}
-            settings={PEEK_SETTINGS}
-            persistScrollState={false}
-          />
-        </div>
-      ) : (
-        <div className="flex-1 flex items-center justify-center text-[11px] text-nim-disabled italic">
-          No messages yet
-        </div>
-      )}
-    </div>,
-    document.body,
-  );
-}
-
-// ============================================================
 // SessionKanbanCard
 // ============================================================
 
@@ -442,7 +275,6 @@ function SessionKanbanCard({ session, onSelect, onArchive, onRename, phaseColor,
   const [showPeekLocal, setShowPeekLocal] = useState(false);
   const showPeek = showPeekOverride ?? showPeekLocal;
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const peekIconRef = useRef<HTMLSpanElement>(null);
 
   // Context menu state
   const [showContextMenu, setShowContextMenu] = useState(false);
@@ -623,7 +455,6 @@ function SessionKanbanCard({ session, onSelect, onArchive, onRename, phaseColor,
           </div>
           <div className="flex items-center gap-1.5">
             <span
-              ref={peekIconRef}
               className="w-4 h-4 rounded flex items-center justify-center text-nim-disabled hover:text-nim-muted transition-colors"
               title="Preview transcript"
               data-testid="session-kanban-peek"
@@ -647,9 +478,10 @@ function SessionKanbanCard({ session, onSelect, onArchive, onRename, phaseColor,
 
       {/* Transcript peek popup */}
       {showPeek && (
-        <TranscriptPeek
+        <SessionTranscriptPeek
           sessionId={session.id}
-          anchorRef={cardRef}
+          reference={cardRef.current}
+          placement="bottom-start"
           onClose={() => {
             if (onPeekToggle) {
               onPeekToggle();

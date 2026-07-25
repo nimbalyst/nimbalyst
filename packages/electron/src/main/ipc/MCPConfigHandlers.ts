@@ -144,9 +144,13 @@ export function registerMCPConfigHandlers() {
     try {
       return await triggerMcpRemoteOAuth(serverConfigOrUrl);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
       logger.main.error('[MCP] Failed to trigger OAuth:', error);
-      return { success: false, error: message };
+      return {
+        success: false,
+        outcome: 'failed',
+        errorType: 'ipc_error',
+        error: 'OAuth authorization could not be started.',
+      };
     }
   });
 

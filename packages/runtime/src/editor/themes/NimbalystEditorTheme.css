@@ -663,27 +663,37 @@
   display: none;
 }
 
-/* ===== MARKS ===== */
+/* ===== MARKS (comment thread highlights) ===== */
 
+/* All comment-mark states derive from a single theme-aware token
+   (--nim-comment-mark, a solid gold) so they adapt to light/dark instead of
+   using hardcoded yellow. color-mix with transparent controls fill/underline
+   strength per state. */
 .nim-mark {
-  background: var(--nim-highlight-bg);
-  border-bottom: 2px solid var(--nim-highlight-border);
+  /* <mark> UA default is color: black — force document text color so comment
+     text stays readable on dark backgrounds. */
+  color: inherit;
+  background: color-mix(in srgb, var(--nim-comment-mark) 15%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--nim-comment-mark) 42%, transparent);
   padding-bottom: 2px;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
 }
 
 .nim-mark-overlap {
-  background: rgba(255, 212, 0, 0.3);
-  border-bottom: 2px solid rgba(255, 212, 0, 0.7);
+  background: color-mix(in srgb, var(--nim-comment-mark) 28%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--nim-comment-mark) 65%, transparent);
 }
 
 .nim-mark.selected {
-  background: rgba(255, 212, 0, 0.5);
-  border-bottom: 2px solid rgba(255, 212, 0, 1);
+  background: color-mix(in srgb, var(--nim-comment-mark) 34%, transparent);
+  border-bottom: 2px solid var(--nim-comment-mark);
 }
 
 .nim-mark-overlap.selected {
-  background: rgba(255, 212, 0, 0.7);
-  border-bottom: 2px solid rgba(255, 212, 0, 0.7);
+  background: color-mix(in srgb, var(--nim-comment-mark) 46%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--nim-comment-mark) 85%, transparent);
 }
 
 /* Resolved comment threads keep their mark but render muted (dotted, faint). */
@@ -692,8 +702,8 @@
   border-bottom: 1px dotted var(--nim-text-faint);
 }
 .nim-mark.resolved.selected {
-  background: var(--nim-highlight-bg);
-  border-bottom: 1px dotted var(--nim-highlight-border);
+  background: color-mix(in srgb, var(--nim-comment-mark) 15%, transparent);
+  border-bottom: 1px dotted color-mix(in srgb, var(--nim-comment-mark) 42%, transparent);
 }
 
 /* ===== EMBED BLOCKS ===== */

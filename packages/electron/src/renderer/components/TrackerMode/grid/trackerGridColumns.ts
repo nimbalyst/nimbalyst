@@ -91,6 +91,24 @@ function formatValue(col: TrackerColumnDef, value: unknown, trackerType: string)
         .filter(Boolean)
         .join(', ');
     }
+    case 'avatar': {
+      if (typeof value === 'object' && value !== null) {
+        const identity = value as {
+          displayName?: unknown;
+          email?: unknown;
+          gitEmail?: unknown;
+          gitName?: unknown;
+        };
+        return String(
+          identity.displayName
+          ?? identity.email
+          ?? identity.gitEmail
+          ?? identity.gitName
+          ?? '',
+        );
+      }
+      return String(value);
+    }
     case 'badge': {
       // Prefer the schema option's label over the raw stored value.
       const field = getFieldForColumn(trackerType, fieldNameForColumn(trackerType, col));

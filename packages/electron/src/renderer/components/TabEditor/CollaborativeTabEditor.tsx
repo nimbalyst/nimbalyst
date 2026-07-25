@@ -438,6 +438,10 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   // NIM-949: flips false->true the first time the room hydrates (status reaches
   // 'connected'/'replaying'). Drives the hydration-gate overlay. One-time flip.
   const [hasHydrated, setHasHydrated] = useState(false);
+  const hasHydratedRef = useRef(false);
+  useEffect(() => {
+    hasHydratedRef.current = hasHydrated;
+  }, [hasHydrated]);
 
   // Create the DocumentSyncProvider and CollabLexicalProvider on mount.
   // IMPORTANT: We do NOT call connect() here. CollaborationPlugin calls
@@ -855,6 +859,11 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   // inbox events through the TeamSyncProvider.
   const commentsMemoConfig = useMemo<CommentsConfig>(() => ({
     getYDoc: () => collabProviderRef.current?.getYDoc() ?? null,
+    // Reaching this mounted editor means the document sync lifecycle already
+    // authorized the current user. Team roster ids are not a document
+    // capability source and can differ from the auth subject id.
+    getCapabilities: () => ({ read: true, comment: true }),
+    isHydrated: () => hasHydratedRef.current,
     currentUser: {
       id: activeConfig.userId,
       name: activeConfig.userName || activeConfig.userEmail || activeConfig.userId,
@@ -889,6 +898,24 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         })
         .catch((err) => {
           console.warn('[CollaborativeTabEditor] fanoutInboxEvent failed', err);
+        });
+    },
+    onReply: (recipientUserIds, payload) => {
+      const teamProvider = getTeamSyncProvider(activeConfig.workspacePath);
+      if (!teamProvider) {
+        console.warn('[CollaborativeTabEditor] No TeamSyncProvider for reply fanout');
+        return;
+      }
+      void teamProvider
+        .fanoutInboxEvent({
+          recipients: recipientUserIds,
+          kind: 'reply',
+          sourceKind: 'lexical_document',
+          sourceId: activeConfig.documentId,
+          payload,
+        })
+        .catch((err) => {
+          console.warn('[CollaborativeTabEditor] reply fanout failed', err);
         });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps

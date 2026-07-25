@@ -51,4 +51,21 @@ describe('TrackerActiveFilterPills', () => {
     fireEvent.click(screen.getByLabelText('Remove Status filter'));
     expect(onRemove).toHaveBeenCalledWith(0);
   });
+
+  it('labels relative dates in days without persisting a concrete timestamp', () => {
+    render(
+      <TrackerActiveFilterPills
+        fields={[{ id: 'updated', label: 'Updated', type: 'date' }]}
+        filters={{
+          combinator: 'and',
+          clauses: [{ field: 'updated', op: 'not-in-last', value: 14 }],
+        }}
+        onManage={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('tracker-active-filter-pills').textContent)
+      .toContain('Updatedis not in the last14 days');
+  });
 });

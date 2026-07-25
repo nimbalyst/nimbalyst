@@ -53,9 +53,14 @@ describe('resolveClaudeCodeModelVariant', () => {
       expect(result).toBe('haiku[1m]');
     });
 
-    it('opus-4-8-1m alias resolves to opus[1m]', () => {
-      const result = resolveClaudeCodeModelVariant('claude-code:opus-4-8-1m', DEFAULT_MODEL);
+    it('opus-5-1m alias resolves to opus[1m]', () => {
+      const result = resolveClaudeCodeModelVariant('claude-code:opus-5-1m', DEFAULT_MODEL);
       expect(result).toBe('opus[1m]');
+    });
+
+    it('opus-4-8-1m pinned variant resolves to claude-opus-4-8[1m]', () => {
+      const result = resolveClaudeCodeModelVariant('claude-code:opus-4-8-1m', DEFAULT_MODEL);
+      expect(result).toBe('claude-opus-4-8[1m]');
     });
   });
 
@@ -88,13 +93,15 @@ describe('resolveClaudeCodeModelVariant', () => {
   });
 
   describe('pinned-version variants', () => {
-    it('opus-4-8 resolves to the canonical opus SDK alias', () => {
+    it('opus-4-8 resolves to the full claude-opus-4-8 SDK model ID', () => {
+      // Pinned after the canonical `opus` alias was bumped to Opus 5, so users
+      // can keep selecting 4.8 explicitly.
       const result = resolveClaudeCodeModelVariant('claude-code:opus-4-8', DEFAULT_MODEL);
-      expect(result).toBe('opus');
+      expect(result).toBe('claude-opus-4-8');
     });
 
     it('opus-4-7 resolves to the full claude-opus-4-7 SDK model ID', () => {
-      // Pinned after the canonical `opus` alias was bumped to 4.8, so users
+      // Pinned after the canonical `opus` alias was bumped forward, so users
       // can keep selecting 4.7 explicitly.
       const result = resolveClaudeCodeModelVariant('claude-code:opus-4-7', DEFAULT_MODEL);
       expect(result).toBe('claude-opus-4-7');
@@ -142,8 +149,12 @@ describe('resolveClaudeCodeModelVariant', () => {
       expect(resolveClaudeCodeModelVariant('opus-1m', DEFAULT_MODEL)).toBe('opus[1m]');
     });
 
-    it('accepts raw opus-4-8 alias without provider prefix', () => {
-      expect(resolveClaudeCodeModelVariant('opus-4-8', DEFAULT_MODEL)).toBe('opus');
+    it('accepts raw opus-5 alias without provider prefix', () => {
+      expect(resolveClaudeCodeModelVariant('opus-5', DEFAULT_MODEL)).toBe('opus');
+    });
+
+    it('accepts raw pinned opus-4-8 variant without provider prefix', () => {
+      expect(resolveClaudeCodeModelVariant('opus-4-8', DEFAULT_MODEL)).toBe('claude-opus-4-8');
     });
   });
 });

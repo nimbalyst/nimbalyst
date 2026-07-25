@@ -31,7 +31,56 @@ export interface MCPRemoteConfigOptions {
 }
 
 const OAUTH_DISCOVERY_TIMEOUT_MS = 2500;
+// mcp-remote imposes no hard auth deadline (its callback server waits on the
+// auth code indefinitely; its 30s value only paces a long-poll cycle), so this
+// outer timer is the true user-facing deadline. Keep it generous enough to
+// cover a real consent + account-picker + MFA flow, otherwise legitimate auths
+// get killed and reported as `timed_out`.
+const DEFAULT_OAUTH_FLOW_TIMEOUT_MS = 180_000;
+const CONFIGURED_TIMEOUT_GRACE_MS = 5_000;
+const MAX_DIAGNOSTIC_OUTPUT_CHARS = 32_000;
 const oauthRequirementCache = new Map<string, Promise<boolean>>();
+
+export type MCPRemoteOAuthOutcome = 'authorized' | 'rejected' | 'timed_out' | 'failed';
+
+// Failure categories this service can produce. The renderer analytics allowlist
+// (mcpOAuthAnalytics.ts, MCP_OAUTH_ERROR_TYPES) is the superset: it also carries
+// `ipc_error`, which is a transport-layer category the renderer/IPC boundary adds
+// and this service never emits. Keep the two lists in sync when adding categories.
+export type MCPRemoteOAuthErrorType =
+  | 'invalid_config'
+  | 'timeout'
+  | 'browser_launch'
+  | 'stale_pending_auth'
+  | 'port_conflict'
+  | 'command_unavailable'
+  | 'provider_rejected'
+  | 'callback_validation'
+  | 'token_exchange'
+  | 'network'
+  | 'process_error'
+  | 'process_exit'
+  | 'unknown';
+
+export interface MCPRemoteOAuthResult {
+  success: boolean;
+  outcome: MCPRemoteOAuthOutcome;
+  errorType?: MCPRemoteOAuthErrorType;
+  error?: string;
+  isStalePortError?: boolean;
+  canRetryAfterCacheClear?: boolean;
+}
+
+interface MCPRemoteOAuthFailureClassification {
+  outcome: Exclude<MCPRemoteOAuthOutcome, 'authorized'>;
+  errorType: MCPRemoteOAuthErrorType;
+}
+
+interface MCPRemoteOAuthFailureContext {
+  timedOut?: boolean;
+  processErrorCode?: string;
+  exited?: boolean;
+}
 
 export function getMcpAuthDir(): string {
   return process.env.MCP_REMOTE_CONFIG_DIR || path.join(os.homedir(), '.mcp-auth');
@@ -179,12 +228,14 @@ export function buildMcpRemoteArgs(descriptor: MCPRemoteConfigDescriptor, packag
 }
 
 export async function checkMcpRemoteAuthStatus(
-  configOrUrl: MCPServerConfig | string,
+  configOrUrl: MCPServerConfig | MCPRemoteConfigDescriptor | string,
   options: MCPRemoteConfigOptions = {}
 ): Promise<{ authorized: boolean; tokenPath?: string }> {
   const descriptor = typeof configOrUrl === 'string'
     ? { serverUrl: configOrUrl, headers: {}, requiresOAuth: true }
-    : extractMcpRemoteConfig(configOrUrl, options);
+    : isMcpRemoteConfigDescriptor(configOrUrl)
+      ? configOrUrl
+      : extractMcpRemoteConfig(configOrUrl, options);
 
   if (!descriptor) {
     return { authorized: false };
@@ -224,6 +275,12 @@ export async function checkMcpRemoteAuthStatus(
   return { authorized: false };
 }
 
+function isMcpRemoteConfigDescriptor(
+  value: MCPServerConfig | MCPRemoteConfigDescriptor
+): value is MCPRemoteConfigDescriptor {
+  return typeof (value as MCPRemoteConfigDescriptor).serverUrl === 'string';
+}
+
 export async function discoverMcpRemoteOAuthRequirement(
   descriptor: MCPRemoteConfigDescriptor
 ): Promise<boolean> {
@@ -256,17 +313,19 @@ export async function discoverMcpRemoteOAuthRequirement(
 
 export async function triggerMcpRemoteOAuth(
   configOrUrl: MCPServerConfig | string
-): Promise<{ success: boolean; error?: string; isStalePortError?: boolean }> {
+): Promise<MCPRemoteOAuthResult> {
   const descriptor = typeof configOrUrl === 'string'
     ? { serverUrl: configOrUrl, headers: {}, requiresOAuth: true }
     : extractMcpRemoteConfig(configOrUrl);
 
   if (!descriptor) {
-    return { success: false, error: 'Invalid OAuth configuration' };
+    return createMcpRemoteOAuthFailure(
+      { outcome: 'failed', errorType: 'invalid_config' }
+    );
   }
 
   return new Promise((resolve) => {
-    safeLog('info', '[MCP] Triggering OAuth for:', descriptor.serverUrl);
+    safeLog('info', '[MCP OAuth] Starting authorization');
 
     const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
     const child = spawn(npxCommand, ['-y', ...buildMcpRemoteArgs(descriptor)], {
@@ -275,103 +334,238 @@ export async function triggerMcpRemoteOAuth(
       shell: process.platform === 'win32'
     });
 
-    let stdout = '';
     let stderr = '';
     let resolved = false;
 
-    const cleanup = () => {
-      if (!resolved) {
-        resolved = true;
-        child.kill();
-      }
-    };
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      resolve({ success: false, error: 'OAuth flow timed out. Please try again.' });
-    }, 60000);
-
-    child.stdout?.on('data', (data) => {
-      stdout += data.toString();
-      safeLog('debug', '[MCP OAuth] stdout:', data.toString());
-
-      if (stdout.includes('authorized') || stdout.includes('success') || stdout.includes('token')) {
-        clearTimeout(timeout);
-        cleanup();
-        resolve({ success: true });
-      }
-    });
-
-    child.stderr?.on('data', (data) => {
-      stderr += data.toString();
-      safeLog('debug', '[MCP OAuth] stderr:', data.toString());
-    });
-
-    child.on('error', (error) => {
-      clearTimeout(timeout);
-      cleanup();
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        const help = getCommandNotFoundHelp(npxCommand);
-        resolve({ success: false, error: help.message });
-      } else {
-        resolve({ success: false, error: error.message });
-      }
-    });
-
-    child.on('close', (code) => {
-      clearTimeout(timeout);
+    const finish = (result: MCPRemoteOAuthResult, killChild = true) => {
       if (resolved) {
         return;
       }
       resolved = true;
-      checkMcpRemoteAuthStatus(descriptor).then((status) => {
-        if (status.authorized || code === 0) {
-          resolve({ success: true });
-          return;
-        }
-
-        if (stderr.includes('EADDRINUSE') || stderr.includes('address already in use')) {
-          safeLog('warn', '[MCP OAuth] EADDRINUSE detected - likely stale lock file');
-          resolve({
-            success: false,
-            error: 'Port conflict: Another process is using the OAuth callback port. This usually happens when a previous session did not clean up properly.',
-            isStalePortError: true
-          });
-          return;
-        }
-
-        const notFoundMatch = stderr.match(/'([^']+)' is not recognized|(\S+): (?:command )?not found/i);
-        if (notFoundMatch) {
-          const cmdName = notFoundMatch[1] || notFoundMatch[2];
-          const help = getCommandNotFoundHelp(cmdName);
-          resolve({ success: false, error: help.message });
-          return;
-        }
-
-        resolve({ success: false, error: stderr || `Process exited with code ${code}` });
+      clearTimeout(timeout);
+      if (checkInterval) {
+        clearInterval(checkInterval);
+      }
+      if (killChild && !child.killed) {
+        child.kill();
+      }
+      safeLog('info', '[MCP OAuth] Authorization finished', {
+        outcome: result.outcome,
+        errorType: result.errorType,
       });
+      resolve(result);
+    };
+
+    const timeout = setTimeout(() => {
+      finish(createMcpRemoteOAuthFailure(
+        classifyMcpRemoteOAuthFailure(stderr, { timedOut: true })
+      ));
+    }, getMcpRemoteOAuthTimeoutMs(descriptor));
+
+    child.stdout?.resume();
+
+    child.stderr?.on('data', (data) => {
+      stderr = appendBoundedDiagnosticOutput(stderr, data.toString());
     });
 
-    try {
-      child.stdin?.write('{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}\n');
-    } catch (error) {
-      safeLog('warn', '[MCP OAuth] Failed to write initialize probe:', error);
-    }
+    child.on('error', (error) => {
+      const processErrorCode = (error as NodeJS.ErrnoException).code;
+      finish(createMcpRemoteOAuthFailure(
+        classifyMcpRemoteOAuthFailure(stderr, { processErrorCode }),
+        processErrorCode === 'ENOENT' ? getCommandNotFoundHelp(npxCommand).message : undefined
+      ));
+    });
+
+    child.on('close', (code) => {
+      if (resolved) {
+        return;
+      }
+      void checkMcpRemoteAuthStatus(descriptor)
+        .then((status) => {
+          if (status.authorized) {
+            finish({ success: true, outcome: 'authorized' }, false);
+            return;
+          }
+
+          finish(createMcpRemoteOAuthFailure(
+            classifyMcpRemoteOAuthFailure(stderr, { exited: true }),
+            undefined,
+            code
+          ), false);
+        })
+        .catch(() => {
+          finish(createMcpRemoteOAuthFailure(
+            { outcome: 'failed', errorType: 'unknown' }
+          ), false);
+        });
+    });
 
     const checkInterval = setInterval(async () => {
       if (resolved) {
-        clearInterval(checkInterval);
         return;
       }
-      const status = await checkMcpRemoteAuthStatus(descriptor);
-      if (status.authorized) {
-        clearInterval(checkInterval);
-        clearTimeout(timeout);
-        cleanup();
-        resolve({ success: true });
+      try {
+        const status = await checkMcpRemoteAuthStatus(descriptor);
+        if (status.authorized) {
+          finish({ success: true, outcome: 'authorized' });
+        }
+      } catch {
+        // Keep waiting for the helper's terminal result.
       }
     }, 2000);
   });
+}
+
+export function classifyMcpRemoteOAuthFailure(
+  diagnosticOutput: string,
+  context: MCPRemoteOAuthFailureContext = {}
+): MCPRemoteOAuthFailureClassification {
+  const diagnostic = diagnosticOutput.toLowerCase();
+
+  if (context.processErrorCode === 'ENOENT') {
+    return { outcome: 'failed', errorType: 'command_unavailable' };
+  }
+
+  if (diagnostic.includes('eaddrinuse') || diagnostic.includes('address already in use')) {
+    return { outcome: 'failed', errorType: 'port_conflict' };
+  }
+
+  if (
+    diagnostic.includes('access_denied')
+    || diagnostic.includes('authorization denied')
+    || diagnostic.includes('authorization rejected')
+    || diagnostic.includes('user denied')
+  ) {
+    return { outcome: 'rejected', errorType: 'provider_rejected' };
+  }
+
+  if (
+    diagnostic.includes('state mismatch')
+    || diagnostic.includes('invalid state')
+    || diagnostic.includes('no authorization code received')
+  ) {
+    return { outcome: 'failed', errorType: 'callback_validation' };
+  }
+
+  if (
+    diagnostic.includes('token exchange failed')
+    || diagnostic.includes('invalid_grant')
+    || diagnostic.includes('code verifier')
+    || diagnostic.includes('pkce')
+  ) {
+    return { outcome: 'failed', errorType: 'token_exchange' };
+  }
+
+  if (
+    diagnostic.includes('another instance is handling authentication')
+    || diagnostic.includes('waiting for authentication from the server')
+  ) {
+    return {
+      outcome: context.timedOut ? 'timed_out' : 'failed',
+      errorType: 'stale_pending_auth',
+    };
+  }
+
+  if (context.timedOut && diagnostic.includes('could not open browser automatically')) {
+    return { outcome: 'timed_out', errorType: 'browser_launch' };
+  }
+
+  if (
+    diagnostic.includes('enotfound')
+    || diagnostic.includes('econnrefused')
+    || diagnostic.includes('etimedout')
+    || diagnostic.includes('fetch failed')
+    || diagnostic.includes('network error')
+  ) {
+    return { outcome: 'failed', errorType: 'network' };
+  }
+
+  if (context.timedOut) {
+    return { outcome: 'timed_out', errorType: 'timeout' };
+  }
+
+  if (context.processErrorCode) {
+    return { outcome: 'failed', errorType: 'process_error' };
+  }
+
+  if (context.exited) {
+    return { outcome: 'failed', errorType: 'process_exit' };
+  }
+
+  return { outcome: 'failed', errorType: 'unknown' };
+}
+
+export function getMcpRemoteOAuthTimeoutMs(
+  descriptor: Pick<MCPRemoteConfigDescriptor, 'authTimeoutSeconds'>
+): number {
+  if (!descriptor.authTimeoutSeconds) {
+    return DEFAULT_OAUTH_FLOW_TIMEOUT_MS;
+  }
+  return Math.max(
+    DEFAULT_OAUTH_FLOW_TIMEOUT_MS,
+    descriptor.authTimeoutSeconds * 1000 + CONFIGURED_TIMEOUT_GRACE_MS
+  );
+}
+
+function createMcpRemoteOAuthFailure(
+  classification: MCPRemoteOAuthFailureClassification,
+  errorOverride?: string,
+  exitCode?: number | null
+): MCPRemoteOAuthResult {
+  const canRetryAfterCacheClear = classification.errorType === 'port_conflict'
+    || classification.errorType === 'stale_pending_auth';
+
+  return {
+    success: false,
+    outcome: classification.outcome,
+    errorType: classification.errorType,
+    error: errorOverride ?? getMcpRemoteOAuthErrorMessage(classification.errorType, exitCode),
+    ...(classification.errorType === 'port_conflict' ? { isStalePortError: true } : {}),
+    ...(canRetryAfterCacheClear ? { canRetryAfterCacheClear: true } : {}),
+  };
+}
+
+function getMcpRemoteOAuthErrorMessage(
+  errorType: MCPRemoteOAuthErrorType,
+  exitCode?: number | null
+): string {
+  switch (errorType) {
+    case 'invalid_config':
+      return 'Invalid OAuth configuration.';
+    case 'timeout':
+      return 'OAuth authorization timed out. Please try again.';
+    case 'browser_launch':
+      return 'The authorization page could not be opened. Check your default browser and try again.';
+    case 'stale_pending_auth':
+      return 'Another OAuth authorization is still pending. Clear the auth cache and try again.';
+    case 'port_conflict':
+      return 'Another process is using the OAuth callback port. Clear the auth cache and try again.';
+    case 'command_unavailable':
+      return 'The OAuth helper could not be started because a required command is unavailable.';
+    case 'provider_rejected':
+      return 'The provider did not approve authorization.';
+    case 'callback_validation':
+      return 'The OAuth callback could not be validated. Please try again.';
+    case 'token_exchange':
+      return 'The provider did not accept the authorization response. Please try again.';
+    case 'network':
+      return 'The OAuth provider could not be reached. Check your connection and try again.';
+    case 'process_error':
+      return 'The OAuth helper could not be started.';
+    case 'process_exit':
+      return exitCode === null || exitCode === undefined
+        ? 'The OAuth helper exited before authorization completed.'
+        : `The OAuth helper exited before authorization completed (exit code ${exitCode}).`;
+    case 'unknown':
+      return 'OAuth authorization failed for an unknown reason.';
+  }
+}
+
+function appendBoundedDiagnosticOutput(current: string, next: string): string {
+  const combined = current + next;
+  return combined.length <= MAX_DIAGNOSTIC_OUTPUT_CHARS
+    ? combined
+    : combined.slice(-MAX_DIAGNOSTIC_OUTPUT_CHARS);
 }
 
 export async function revokeMcpRemoteOAuth(

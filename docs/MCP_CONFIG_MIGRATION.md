@@ -133,6 +133,7 @@ The `claude` CLI also supports a project-specific local scope in `~/.claude.json
 
 ## References
 
+- [MCP OAuth flow and result contract](./MCP_OAUTH.md)
 - GitHub Issue: [Documentation incorrect about MCP configuration file location #4976](https://github.com/anthropics/claude-code/issues/4976)
 - GitHub Issue: [MCP Configuration Inconsistency: CLI-managed vs File-based configs #3098](https://github.com/anthropics/claude-code/issues/3098)
 - Claude Code CLI version: 2.1.12

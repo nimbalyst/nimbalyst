@@ -276,7 +276,7 @@ public struct SessionDetailView: View {
             appState.syncManager?.markSessionRead(sessionId: session.id)
             AnalyticsManager.shared.capture("mobile_session_viewed")
         }
-        .onChange(of: liveSession?.draftInput) { _ in
+        .onChange(of: liveSession?.draftInput) { _, _ in
             // While the user is actively typing, never overwrite composeText from
             // sync. Externally mutating the TextField binding while it is focused
             // reorders characters via IME/autocorrect/dictation candidate buffers
@@ -285,14 +285,14 @@ public struct SessionDetailView: View {
             guard !composeFocused else { return }
             applyRemoteDraftIfNewer()
         }
-        .onChange(of: composeFocused) { focused in
+        .onChange(of: composeFocused) { _, focused in
             // When the keyboard is dismissed, reconcile with any draft that
             // arrived from another device while we were typing.
             if !focused {
                 applyRemoteDraftIfNewer()
             }
         }
-        .onChange(of: session.id) { _ in
+        .onChange(of: session.id) { _, _ in
             // Without `.id(session.id)` on the iPad split-view detail, SwiftUI
             // reuses this view across sidebar selection changes — so we need
             // to do the teardown/reinit that a fresh mount would otherwise
@@ -305,7 +305,7 @@ public struct SessionDetailView: View {
             swapSession(fromOldId: oldId)
             previousSessionId = session.id
         }
-        .onChange(of: composeText) { newText in
+        .onChange(of: composeText) { _, newText in
             // Push draft changes back to sync (debounced).
             // `lastLocalEditAt` is stamped synchronously by the TextField's
             // binding setter above, not here, to avoid a render-order race
@@ -389,7 +389,7 @@ public struct SessionDetailView: View {
         } message: {
             Text(deliveryWarning ?? "")
         }
-        .onChange(of: liveSession?.isExecuting) { isExec in
+        .onChange(of: liveSession?.isExecuting) { _, isExec in
             // Desktop picked up the prompt - cancel the delivery timeout
             if isExec == true {
                 deliveryTimeoutItem?.cancel()
@@ -397,7 +397,7 @@ public struct SessionDetailView: View {
                 deliveryWarning = nil
             }
         }
-        .onChange(of: messages.count) { _ in
+        .onChange(of: messages.count) { _, _ in
             // Re-check reveal: messages may have arrived after onReady fired
             tryRevealTranscript()
             // Debounce prompt list refresh to avoid IPC spam when many messages arrive at once
@@ -406,10 +406,10 @@ public struct SessionDetailView: View {
             promptRefreshWorkItem = item
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
         }
-        .onChange(of: hasCompletedInitialSessionSync) { _ in
+        .onChange(of: hasCompletedInitialSessionSync) { _, _ in
             tryRevealTranscript()
         }
-        .onChange(of: serverConfirmedNoMessages) { _ in
+        .onChange(of: serverConfirmedNoMessages) { _, _ in
             tryRevealTranscript()
         }
     }
@@ -583,7 +583,7 @@ public struct SessionDetailView: View {
                 }
                 .padding(.vertical, 8)
             }
-            .onChange(of: messages.count) { _ in
+            .onChange(of: messages.count) { _, _ in
                 if let lastId = messages.last?.id {
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo(lastId, anchor: .bottom)

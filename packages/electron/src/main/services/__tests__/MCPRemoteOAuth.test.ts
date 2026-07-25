@@ -6,8 +6,10 @@ import * as path from 'path';
 import {
   buildMcpRemoteArgs,
   checkMcpRemoteAuthStatus,
+  classifyMcpRemoteOAuthFailure,
   discoverMcpRemoteOAuthRequirement,
   extractMcpRemoteConfig,
+  getMcpRemoteOAuthTimeoutMs,
 } from '../MCPRemoteOAuth';
 
 describe('MCPRemoteOAuth', () => {
@@ -208,6 +210,69 @@ describe('MCPRemoteOAuth', () => {
       '--static-oauth-client-info',
       JSON.stringify({ client_id: 'client-123' }),
     ]);
+  });
+
+  it.each([
+    ['Error: access_denied', {}, { outcome: 'rejected', errorType: 'provider_rejected' }],
+    ['OAuth state mismatch', {}, { outcome: 'failed', errorType: 'callback_validation' }],
+    ['Token exchange failed: invalid_grant', {}, { outcome: 'failed', errorType: 'token_exchange' }],
+    ['connect ENOTFOUND provider.example', {}, { outcome: 'failed', errorType: 'network' }],
+    ['listen EADDRINUSE', {}, { outcome: 'failed', errorType: 'port_conflict' }],
+    ['', { processErrorCode: 'ENOENT' }, { outcome: 'failed', errorType: 'command_unavailable' }],
+    ['', { processErrorCode: 'EACCES' }, { outcome: 'failed', errorType: 'process_error' }],
+    ['', { exited: true }, { outcome: 'failed', errorType: 'process_exit' }],
+  ])('classifies observable OAuth failures without exposing diagnostics: %s', (
+    diagnostic,
+    context,
+    expected
+  ) => {
+    expect(classifyMcpRemoteOAuthFailure(diagnostic, context)).toEqual(expected);
+  });
+
+  it('distinguishes an abandoned shared auth process from a generic timeout', () => {
+    expect(classifyMcpRemoteOAuthFailure(
+      'Another instance is handling authentication. Waiting for authentication from the server.',
+      { timedOut: true }
+    )).toEqual({
+      outcome: 'timed_out',
+      errorType: 'stale_pending_auth',
+    });
+  });
+
+  it('distinguishes browser launch failure from a generic timeout', () => {
+    expect(classifyMcpRemoteOAuthFailure(
+      'Could not open browser automatically. Please copy and paste the URL.',
+      { timedOut: true }
+    )).toEqual({
+      outcome: 'timed_out',
+      errorType: 'browser_launch',
+    });
+  });
+
+  it('classifies a timeout without an observable cause as timeout, not rejection', () => {
+    expect(classifyMcpRemoteOAuthFailure(
+      'Authentication required. Waiting for authorization...',
+      { timedOut: true }
+    )).toEqual({
+      outcome: 'timed_out',
+      errorType: 'timeout',
+    });
+  });
+
+  it('keeps an observable network failure distinct when the outer wait expires', () => {
+    expect(classifyMcpRemoteOAuthFailure(
+      'connect ENOTFOUND provider.example',
+      { timedOut: true }
+    )).toEqual({
+      outcome: 'failed',
+      errorType: 'network',
+    });
+  });
+
+  it('does not cut off a configured mcp-remote callback timeout', () => {
+    expect(getMcpRemoteOAuthTimeoutMs({ authTimeoutSeconds: undefined })).toBe(180_000);
+    expect(getMcpRemoteOAuthTimeoutMs({ authTimeoutSeconds: 120 })).toBe(180_000);
+    expect(getMcpRemoteOAuthTimeoutMs({ authTimeoutSeconds: 240 })).toBe(245_000);
   });
 
   it('matches mcp-remote token hashes using URL, resource, and headers', async () => {

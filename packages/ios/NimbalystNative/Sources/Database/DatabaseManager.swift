@@ -521,7 +521,7 @@ public final class DatabaseManager: @unchecked Sendable {
 
     /// Delete all synced queued prompts for a session (queue was cleared).
     public func deleteRemoteQueuedPrompts(forSession sessionId: String) throws {
-        try writer.write { db in
+        _ = try writer.write { db in
             try QueuedPrompt
                 .filter(QueuedPrompt.Columns.sessionId == sessionId)
                 .filter(QueuedPrompt.Columns.source != nil)
@@ -586,7 +586,7 @@ public final class DatabaseManager: @unchecked Sendable {
     }
 
     public func deleteDocuments(syncIds: [String]) throws {
-        try writer.write { db in
+        _ = try writer.write { db in
             try SyncedDocument
                 .filter(syncIds.contains(SyncedDocument.Columns.id))
                 .deleteAll(db)

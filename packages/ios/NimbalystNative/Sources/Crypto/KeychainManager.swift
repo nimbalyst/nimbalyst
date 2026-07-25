@@ -333,7 +333,7 @@ enum KeychainManager {
 
     static func storeServerUrl(_ url: String) throws {
         if getActiveAccount() != nil {
-            try updateActiveAccount { $0.serverUrl = url }
+            try updateActiveAccount { $0.updateServerUrl(url) }
         } else {
             try store(key: .serverUrl, value: url)
         }

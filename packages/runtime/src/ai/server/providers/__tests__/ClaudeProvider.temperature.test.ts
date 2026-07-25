@@ -18,6 +18,11 @@ describe('ClaudeProvider.supportsTemperature', () => {
       expect(ClaudeProvider.supportsTemperature('claude-opus-4-8')).toBe(false);
     });
 
+    it('returns false for claude-opus-5', () => {
+      // Opus 5 (dateless, new default) inherits the Opus 4.7+ deprecation.
+      expect(ClaudeProvider.supportsTemperature('claude-opus-5')).toBe(false);
+    });
+
     it('returns false for hypothetical future opus-4-9+', () => {
       // Document the forward-compatibility intent: future Opus minors are
       // expected to keep the deprecation pattern.

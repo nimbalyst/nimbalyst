@@ -100,9 +100,13 @@ struct PendingPromptCard: View {
 
     private func startTimer() {
         timer?.invalidate()
+        let submittedAt = prompt.submittedAt
+        let delay = prompt.delay
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            let elapsed = Date().timeIntervalSince(prompt.submittedAt)
-            timeRemaining = max(0, prompt.delay - elapsed)
+            Task { @MainActor in
+                let elapsed = Date().timeIntervalSince(submittedAt)
+                timeRemaining = max(0, delay - elapsed)
+            }
         }
     }
 }

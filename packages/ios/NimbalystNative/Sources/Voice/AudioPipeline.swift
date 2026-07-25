@@ -20,23 +20,23 @@ final class AudioPipeline: @unchecked Sendable {
     // MARK: - Constants
 
     /// Match the iPhone hardware sample rate (48kHz) to avoid internal resampling
-    nonisolated(unsafe) private static let kHardwareSampleRate: Double = 48000
+    nonisolated private static let kHardwareSampleRate: Double = 48000
 
     /// OpenAI Realtime API expects 24kHz
-    nonisolated(unsafe) private static let kApiSampleRate: Double = 24000
+    nonisolated private static let kApiSampleRate: Double = 24000
 
     /// Accumulate 2400 frames at 24kHz (100ms) before sending
-    nonisolated(unsafe) private static let kAccumulatorTarget: AVAudioFrameCount = 2400
+    nonisolated private static let kAccumulatorTarget: AVAudioFrameCount = 2400
 
     // MARK: - Audio formats
 
     /// 48kHz PCM16 mono — matches hardware, used for VPIO capture and playback buses
-    nonisolated(unsafe) private static let hardwareFormat = AVAudioFormat(
+    nonisolated private static let hardwareFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: kHardwareSampleRate, channels: 1, interleaved: true
     )!
 
     /// 24kHz PCM16 mono — OpenAI Realtime API wire format
-    nonisolated(unsafe) private static let apiFormat = AVAudioFormat(
+    nonisolated private static let apiFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16, sampleRate: kApiSampleRate, channels: 1, interleaved: true
     )!
 

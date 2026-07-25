@@ -14,7 +14,7 @@ public struct MobileAccount: Codable, Equatable, Identifiable, Sendable {
     public var stytchUserId: String?
     public var authUserId: String?
     public var e2eSeed: String
-    public var serverUrl: String
+    public private(set) var serverUrl: String
     public var expiresAt: String?
     public var analyticsId: String?
     public var usesLegacyDatabase: Bool
@@ -66,6 +66,46 @@ public struct MobileAccount: Codable, Equatable, Identifiable, Sendable {
         expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt)
         analyticsId = try container.decodeIfPresent(String.self, forKey: .analyticsId)
         usesLegacyDatabase = try container.decodeIfPresent(Bool.self, forKey: .usesLegacyDatabase) ?? false
+    }
+
+    mutating func updatePairing(
+        email: String,
+        personalOrgId: String,
+        stytchUserId: String?,
+        e2eSeed: String,
+        serverUrl: String,
+        analyticsId: String?
+    ) {
+        let sameEmail = Self.normalizedEmail(self.email) == Self.normalizedEmail(email)
+        let serverChanged = self.serverUrl != serverUrl
+
+        self.email = email
+        self.personalOrgId = personalOrgId
+        self.stytchUserId = stytchUserId ?? self.stytchUserId
+        self.e2eSeed = e2eSeed
+        self.serverUrl = serverUrl
+        self.analyticsId = analyticsId ?? self.analyticsId
+
+        if !sameEmail || serverChanged {
+            clearAuthentication()
+        }
+    }
+
+    mutating func updateServerUrl(_ serverUrl: String) {
+        guard self.serverUrl != serverUrl else { return }
+        self.serverUrl = serverUrl
+        clearAuthentication()
+    }
+
+    private mutating func clearAuthentication() {
+        sessionToken = nil
+        sessionJwt = nil
+        authUserId = nil
+        expiresAt = nil
+    }
+
+    private static func normalizedEmail(_ email: String) -> String {
+        email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
 
@@ -236,19 +276,14 @@ public struct MobileAccountState: Equatable, Sendable {
 
         if let matchIndex {
             var account = accounts[matchIndex]
-            let sameEmail = Self.normalizedEmail(account.email) == normalizedEmail
-            account.email = email
-            account.personalOrgId = personalOrgId
-            account.stytchUserId = stytchUserId ?? account.stytchUserId
-            account.e2eSeed = e2eSeed
-            account.serverUrl = serverUrl
-            account.analyticsId = analyticsId ?? account.analyticsId
-            if !sameEmail {
-                account.sessionToken = nil
-                account.sessionJwt = nil
-                account.authUserId = nil
-                account.expiresAt = nil
-            }
+            account.updatePairing(
+                email: email,
+                personalOrgId: personalOrgId,
+                stytchUserId: stytchUserId,
+                e2eSeed: e2eSeed,
+                serverUrl: serverUrl,
+                analyticsId: analyticsId
+            )
             accounts[matchIndex] = account
             activeAccountId = account.id
             return account

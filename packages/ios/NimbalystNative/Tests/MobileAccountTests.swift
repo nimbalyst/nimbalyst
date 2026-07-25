@@ -81,6 +81,72 @@ final class MobileAccountTests: XCTestCase {
         XCTAssertEqual(state.accounts.first?.e2eSeed, "seed-first")
     }
 
+    func testPairingServerChangeClearsAuthenticationBeforeReconnect() throws {
+        let authenticated = MobileAccount(
+            id: "org-first",
+            email: "first@example.com",
+            personalOrgId: "org-first",
+            sessionToken: "token-first",
+            sessionJwt: "jwt-first",
+            stytchUserId: "member-first",
+            authUserId: "auth-user-first",
+            e2eSeed: "seed-first",
+            serverUrl: "wss://sync.example.com",
+            expiresAt: "2099-01-01T00:00:00Z"
+        )
+        var state = MobileAccountState(accounts: [authenticated], activeAccountId: authenticated.id)
+
+        let updated = try state.addOrUpdatePairing(
+            email: "first@example.com",
+            personalOrgId: "org-first",
+            stytchUserId: "member-first",
+            e2eSeed: "seed-second",
+            serverUrl: "wss://attacker.example"
+        )
+
+        XCTAssertEqual(updated.serverUrl, "wss://attacker.example")
+        XCTAssertEqual(updated.e2eSeed, "seed-second")
+        XCTAssertNil(updated.sessionToken)
+        XCTAssertNil(updated.sessionJwt)
+        XCTAssertNil(updated.authUserId)
+        XCTAssertNil(updated.expiresAt)
+        XCTAssertNil(state.runtimeScope?.sessionJwt)
+    }
+
+    func testSameServerPairingPreservesAuthenticationAndRefreshesPairingData() throws {
+        let authenticated = MobileAccount(
+            id: "org-first",
+            email: "first@example.com",
+            personalOrgId: "org-first",
+            sessionToken: "token-first",
+            sessionJwt: "jwt-first",
+            stytchUserId: "member-first",
+            authUserId: "auth-user-first",
+            e2eSeed: "seed-first",
+            serverUrl: "wss://sync.example.com",
+            expiresAt: "2099-01-01T00:00:00Z",
+            analyticsId: "analytics-first"
+        )
+        var state = MobileAccountState(accounts: [authenticated], activeAccountId: authenticated.id)
+
+        let updated = try state.addOrUpdatePairing(
+            email: "first@example.com",
+            personalOrgId: "org-first",
+            stytchUserId: "member-second",
+            e2eSeed: "seed-second",
+            serverUrl: "wss://sync.example.com",
+            analyticsId: "analytics-second"
+        )
+
+        XCTAssertEqual(updated.sessionToken, "token-first")
+        XCTAssertEqual(updated.sessionJwt, "jwt-first")
+        XCTAssertEqual(updated.authUserId, "auth-user-first")
+        XCTAssertEqual(updated.expiresAt, "2099-01-01T00:00:00Z")
+        XCTAssertEqual(updated.stytchUserId, "member-second")
+        XCTAssertEqual(updated.e2eSeed, "seed-second")
+        XCTAssertEqual(updated.analyticsId, "analytics-second")
+    }
+
     func testSelectedAccountDefinesDatabaseSyncAndKeyDerivationScope() throws {
         let first = MobileAccount(
             id: "org-first",

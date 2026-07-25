@@ -20,11 +20,30 @@ import {
   YMapEvent,
 } from 'yjs';
 
+export type UserCommentActor = {
+  kind: 'user';
+  userId?: string;
+  displayName: string;
+};
+
+export type AgentCommentActor = {
+  kind: 'agent';
+  sessionId: string;
+  sessionName: string;
+  onBehalfOfUserId: string;
+  onBehalfOfDisplayName?: string;
+};
+
+export type CommentActor = UserCommentActor | AgentCommentActor;
+
 export type Comment = {
+  actor?: CommentActor;
   author: string;
+  clientMutationId?: string;
   content: string;
   deleted: boolean;
   id: string;
+  replyToCommentId?: string;
   timeStamp: number;
   type: 'comment';
 };
@@ -40,28 +59,111 @@ export type Thread = {
 export type Comments = Array<Thread | Comment>;
 
 function createUID(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
   return Math.random()
     .toString(36)
     .replace(/[^a-z]+/g, '')
-    .substring(0, 5);
+    .substring(0, 12);
 }
 
+export type CreateCommentOptions = {
+  actor?: CommentActor;
+  clientMutationId?: string;
+  deleted?: boolean;
+  id?: string;
+  replyToCommentId?: string;
+  timeStamp?: number;
+};
+
+function isCreateCommentOptions(
+  value: string | CreateCommentOptions | undefined,
+): value is CreateCommentOptions {
+  return typeof value === 'object' && value !== null;
+}
+
+export function normalizeCommentActor(
+  actor: unknown,
+  fallbackAuthor: string,
+): CommentActor {
+  if (actor && typeof actor === 'object') {
+    const value = actor as Record<string, unknown>;
+    if (
+      value.kind === 'agent' &&
+      typeof value.sessionId === 'string' &&
+      typeof value.sessionName === 'string' &&
+      typeof value.onBehalfOfUserId === 'string'
+    ) {
+      return {
+        kind: 'agent',
+        sessionId: value.sessionId,
+        sessionName: value.sessionName,
+        onBehalfOfUserId: value.onBehalfOfUserId,
+        ...(typeof value.onBehalfOfDisplayName === 'string'
+          ? { onBehalfOfDisplayName: value.onBehalfOfDisplayName }
+          : {}),
+      };
+    }
+    if (value.kind === 'user' && typeof value.displayName === 'string') {
+      return {
+        kind: 'user',
+        displayName: value.displayName,
+        ...(typeof value.userId === 'string' ? { userId: value.userId } : {}),
+      };
+    }
+  }
+  return { kind: 'user', displayName: fallbackAuthor };
+}
+
+export function createComment(
+  content: string,
+  author: string,
+  options?: CreateCommentOptions,
+): Comment;
 export function createComment(
   content: string,
   author: string,
   id?: string,
   timeStamp?: number,
   deleted?: boolean,
+  options?: Omit<CreateCommentOptions, 'id' | 'timeStamp' | 'deleted'>,
+): Comment;
+export function createComment(
+  content: string,
+  author: string,
+  idOrOptions?: string | CreateCommentOptions,
+  timeStamp?: number,
+  deleted?: boolean,
+  options?: Omit<CreateCommentOptions, 'id' | 'timeStamp' | 'deleted'>,
 ): Comment {
+  const normalizedOptions = isCreateCommentOptions(idOrOptions)
+    ? idOrOptions
+    : {
+        ...options,
+        id: idOrOptions,
+        timeStamp,
+        deleted,
+      };
   return {
+    ...(normalizedOptions.actor ? { actor: normalizedOptions.actor } : {}),
     author,
+    ...(normalizedOptions.clientMutationId
+      ? { clientMutationId: normalizedOptions.clientMutationId }
+      : {}),
     content,
-    deleted: deleted === undefined ? false : deleted,
-    id: id === undefined ? createUID() : id,
+    deleted:
+      normalizedOptions.deleted === undefined
+        ? false
+        : normalizedOptions.deleted,
+    id: normalizedOptions.id === undefined ? createUID() : normalizedOptions.id,
+    ...(normalizedOptions.replyToCommentId
+      ? { replyToCommentId: normalizedOptions.replyToCommentId }
+      : {}),
     timeStamp:
-      timeStamp === undefined
+      normalizedOptions.timeStamp === undefined
         ? performance.timeOrigin + performance.now()
-        : timeStamp,
+        : normalizedOptions.timeStamp,
     type: 'comment',
   };
 }
@@ -95,10 +197,17 @@ function cloneThread(thread: Thread): Thread {
 
 function markDeleted(comment: Comment): Comment {
   return {
+    ...(comment.actor ? { actor: comment.actor } : {}),
     author: comment.author,
+    ...(comment.clientMutationId
+      ? { clientMutationId: comment.clientMutationId }
+      : {}),
     content: '[Deleted Comment]',
     deleted: true,
     id: comment.id,
+    ...(comment.replyToCommentId
+      ? { replyToCommentId: comment.replyToCommentId }
+      : {}),
     timeStamp: comment.timeStamp,
     type: 'comment',
   };
@@ -310,9 +419,18 @@ export class CommentStore {
     sharedMap.set('type', type);
     sharedMap.set('id', id);
     if (type === 'comment') {
+      if (commentOrThread.actor) {
+        sharedMap.set('actor', commentOrThread.actor);
+      }
       sharedMap.set('author', commentOrThread.author);
+      if (commentOrThread.clientMutationId) {
+        sharedMap.set('clientMutationId', commentOrThread.clientMutationId);
+      }
       sharedMap.set('content', commentOrThread.content);
       sharedMap.set('deleted', commentOrThread.deleted);
+      if (commentOrThread.replyToCommentId) {
+        sharedMap.set('replyToCommentId', commentOrThread.replyToCommentId);
+      }
       sharedMap.set('timeStamp', commentOrThread.timeStamp);
     } else {
       sharedMap.set('quote', commentOrThread.quote);
@@ -365,6 +483,56 @@ export class CommentStore {
       COMMAND_PRIORITY_LOW,
     );
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const materializeSharedComment = (map: YMap<any>): Comment | Thread => {
+      const id = map.get('id');
+      const type = map.get('type');
+      if (type === 'thread') {
+        return createThread(
+          map.get('quote'),
+          map
+            .get('comments')
+            .toArray()
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .map((innerComment: YMap<any>) =>
+              createComment(
+                innerComment.get('content') as string,
+                innerComment.get('author') as string,
+                innerComment.get('id') as string,
+                innerComment.get('timeStamp') as number,
+                innerComment.get('deleted') as boolean,
+                {
+                  actor: normalizeCommentActor(
+                    innerComment.get('actor'),
+                    innerComment.get('author') as string,
+                  ),
+                  clientMutationId: innerComment.get('clientMutationId') as
+                    | string
+                    | undefined,
+                  replyToCommentId: innerComment.get('replyToCommentId') as
+                    | string
+                    | undefined,
+                },
+              ),
+            ),
+          id,
+          map.get('resolved') as boolean | undefined,
+        );
+      }
+      return createComment(
+        map.get('content'),
+        map.get('author'),
+        id,
+        map.get('timeStamp'),
+        map.get('deleted'),
+        {
+          actor: normalizeCommentActor(map.get('actor'), map.get('author')),
+          clientMutationId: map.get('clientMutationId'),
+          replyToCommentId: map.get('replyToCommentId'),
+        },
+      );
+    };
+
     const onSharedCommentChanges = (
       // The YJS types explicitly use `any` as well.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -400,41 +568,7 @@ export class CommentStore {
                   .reverse()
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   .forEach((map: YMap<any>) => {
-                    const id = map.get('id');
-                    const type = map.get('type');
-
-                    const commentOrThread =
-                      type === 'thread'
-                        ? createThread(
-                            map.get('quote'),
-                            map
-                              .get('comments')
-                              .toArray()
-                              .map(
-                                (
-                                  innerComment: Map<
-                                    string,
-                                    string | number | boolean
-                                  >,
-                                ) =>
-                                  createComment(
-                                    innerComment.get('content') as string,
-                                    innerComment.get('author') as string,
-                                    innerComment.get('id') as string,
-                                    innerComment.get('timeStamp') as number,
-                                    innerComment.get('deleted') as boolean,
-                                  ),
-                              ),
-                            id,
-                            map.get('resolved') as boolean | undefined,
-                          )
-                        : createComment(
-                            map.get('content'),
-                            map.get('author'),
-                            id,
-                            map.get('timeStamp'),
-                            map.get('deleted'),
-                          );
+                    const commentOrThread = materializeSharedComment(map);
                     this._withLocalTransaction(() => {
                       this.addComment(
                         commentOrThread,
@@ -492,6 +626,18 @@ export class CommentStore {
     }
 
     sharedCommentsArray.observeDeep(onSharedCommentChanges);
+
+    // Headless consumers may attach after the Y.Doc is already hydrated.
+    // Materialize that canonical snapshot immediately; the mounted plugin
+    // normally attaches before sync and continues to populate through the
+    // observer above.
+    if (this._comments.length === 0 && sharedCommentsArray.length > 0) {
+      this._withLocalTransaction(() => {
+        sharedCommentsArray.toArray().forEach((map, index) => {
+          this.addComment(materializeSharedComment(map), undefined, index);
+        });
+      });
+    }
 
     connect();
 

@@ -7,7 +7,8 @@ import { createStore, Provider } from 'jotai';
 vi.mock('posthog-js/react', () => ({
   usePostHog: () => undefined,
 }));
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@nimbalyst/runtime')>(),
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
 vi.mock('../../../../contexts/DialogContext', () => ({

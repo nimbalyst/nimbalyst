@@ -264,19 +264,19 @@ public struct SyncedAvailableModel: Codable, Identifiable, Equatable {
 
 // MARK: - Client -> Server Messages
 
-struct IndexSyncRequest: Codable {
+struct IndexSyncRequest: Encodable {
     let type = "indexSyncRequest"
     let projectId: String?
     /// When set, server returns only entries updated after this timestamp (Unix ms).
     let since: Int?
 }
 
-struct DeviceAnnounceMessage: Codable {
+struct DeviceAnnounceMessage: Encodable {
     let type = "deviceAnnounce"
     let device: DeviceInfo
 }
 
-public struct RegisterPushTokenMessage: Codable {
+public struct RegisterPushTokenMessage: Encodable {
     let type = "registerPushToken"
     public let token: String
     public let platform: String
@@ -284,12 +284,12 @@ public struct RegisterPushTokenMessage: Codable {
     public let environment: String
 }
 
-public struct UnregisterPushTokenMessage: Codable {
+public struct UnregisterPushTokenMessage: Encodable {
     let type = "unregisterPushToken"
     public let deviceId: String
 }
 
-struct CreateSessionRequestMessage: Codable {
+struct CreateSessionRequestMessage: Encodable {
     let type = "createSessionRequest"
     let request: EncryptedCreateSessionRequest
 }
@@ -310,7 +310,7 @@ struct EncryptedCreateSessionRequest: Codable {
 
 // MARK: - Worktree Creation Request
 
-struct CreateWorktreeRequestMessage: Codable {
+struct CreateWorktreeRequestMessage: Encodable {
     let type = "createWorktreeRequest"
     let request: CreateWorktreeRequest
 }
@@ -324,7 +324,7 @@ struct CreateWorktreeRequest: Codable {
 
 // MARK: - Voice Tool Request (mobile -> desktop)
 
-struct VoiceToolRequestMessage: Codable {
+struct VoiceToolRequestMessage: Encodable {
     let type = "voiceToolRequest"
     let request: EncryptedVoiceToolRequest
 }
@@ -342,7 +342,7 @@ struct EncryptedVoiceToolRequest: Codable {
 }
 
 /// Send an indexUpdate to notify desktop of queued prompts or metadata changes.
-struct IndexUpdateMessage: Codable {
+struct IndexUpdateMessage: Encodable {
     let type = "indexUpdate"
     let session: IndexUpdateEntry
 }
@@ -371,7 +371,7 @@ struct IndexUpdateEntry: Codable {
     var clientMetadataIv: String?
 }
 
-struct SessionControlMessage: Codable {
+struct SessionControlMessage: Encodable {
     let type = "sessionControl"
     let message: SessionControlPayload
 }
@@ -387,13 +387,13 @@ struct SessionControlPayload: Codable {
 // MARK: - Session Room Messages (Client -> Server)
 
 /// Request messages for a session room.
-struct SessionSyncRequest: Codable {
+struct SessionSyncRequest: Encodable {
     let type = "syncRequest"
     let sinceSeq: Int?
 }
 
 /// Append a message to the session.
-struct AppendMessageRequest: Codable {
+struct AppendMessageRequest: Encodable {
     let type = "appendMessage"
     let message: ServerMessageEntry
 }
@@ -460,7 +460,7 @@ struct MetadataBroadcast: Codable {
 // MARK: - ProjectSync Room Messages (Client -> Server)
 
 /// Initial sync: client sends manifest of what it has.
-struct ProjectSyncRequestMessage: Codable {
+struct ProjectSyncRequestMessage: Encodable {
     let type = "projectSyncRequest"
     let files: [ProjectSyncManifestEntry]
 }
@@ -475,7 +475,7 @@ struct ProjectSyncManifestEntry: Codable {
 }
 
 /// Push file content (markdown phase).
-struct FileContentPushMessage: Codable {
+struct FileContentPushMessage: Encodable {
     let type = "fileContentPush"
     let syncId: String
     let encryptedContent: String
@@ -489,7 +489,7 @@ struct FileContentPushMessage: Codable {
 }
 
 /// Batch push for startup sync sweep.
-struct FileContentBatchPushMessage: Codable {
+struct FileContentBatchPushMessage: Encodable {
     let type = "fileContentBatchPush"
     let files: [FileContentPushEntry]
 }
@@ -508,13 +508,13 @@ struct FileContentPushEntry: Codable {
 }
 
 /// Delete a file.
-struct FileDeleteMessage: Codable {
+struct FileDeleteMessage: Encodable {
     let type = "fileDelete"
     let syncId: String
 }
 
 /// Yjs update (phase 2 - file being actively edited).
-struct FileYjsUpdateMessage: Codable {
+struct FileYjsUpdateMessage: Encodable {
     let type = "fileYjsUpdate"
     let syncId: String
     let encryptedUpdate: String
@@ -522,7 +522,7 @@ struct FileYjsUpdateMessage: Codable {
 }
 
 /// Upgrade file from markdown to Yjs phase.
-struct FileYjsInitMessage: Codable {
+struct FileYjsInitMessage: Encodable {
     let type = "fileYjsInit"
     let syncId: String
     let encryptedSnapshot: String
@@ -530,7 +530,7 @@ struct FileYjsInitMessage: Codable {
 }
 
 /// Yjs snapshot compaction.
-struct FileYjsCompactMessage: Codable {
+struct FileYjsCompactMessage: Encodable {
     let type = "fileYjsCompact"
     let syncId: String
     let encryptedSnapshot: String

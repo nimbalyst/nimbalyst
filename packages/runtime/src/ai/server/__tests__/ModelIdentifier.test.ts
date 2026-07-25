@@ -26,8 +26,19 @@ describe('ModelIdentifier', () => {
       expect(id.isExtendedContext).toBe(true);
     });
 
-    it('normalizes claude-code opus-4-8 alias to canonical opus', () => {
+    it('preserves the pinned opus-4-8 variant (no longer normalized to opus)', () => {
+      // Once the canonical `opus` alias rolled forward to Opus 5, opus-4-8
+      // became a pinned previous-generation variant with its own row.
       const id = ModelIdentifier.parse('claude-code:opus-4-8-1m');
+      expect(id.provider).toBe('claude-code');
+      expect(id.model).toBe('opus-4-8-1m');
+      expect(id.combined).toBe('claude-code:opus-4-8-1m');
+      expect(id.baseVariant).toBe('opus-4-8');
+      expect(id.isExtendedContext).toBe(true);
+    });
+
+    it('normalizes claude-code opus-5 alias to canonical opus', () => {
+      const id = ModelIdentifier.parse('claude-code:opus-5-1m');
       expect(id.provider).toBe('claude-code');
       expect(id.model).toBe('opus-1m');
       expect(id.combined).toBe('claude-code:opus-1m');
@@ -108,11 +119,18 @@ describe('ModelIdentifier', () => {
       expect(id.isExtendedContext).toBe(true);
     });
 
-    it('accepts explicit opus-4-8 alias and normalizes to canonical opus', () => {
-      const id = ModelIdentifier.create('claude-code', 'Opus-4-8');
+    it('accepts explicit opus-5 alias and normalizes to canonical opus', () => {
+      const id = ModelIdentifier.create('claude-code', 'Opus-5');
       expect(id.provider).toBe('claude-code');
       expect(id.model).toBe('opus');
       expect(id.combined).toBe('claude-code:opus');
+    });
+
+    it('preserves the explicit pinned opus-4-8 variant', () => {
+      const id = ModelIdentifier.create('claude-code', 'Opus-4-8');
+      expect(id.provider).toBe('claude-code');
+      expect(id.model).toBe('opus-4-8');
+      expect(id.combined).toBe('claude-code:opus-4-8');
     });
 
     it('throws on invalid claude-code variant', () => {
@@ -248,7 +266,7 @@ describe('ModelIdentifier', () => {
     it('returns default ModelIdentifier for claude', () => {
       const id = ModelIdentifier.getDefaultForProvider('claude');
       expect(id.provider).toBe('claude');
-      expect(id.combined).toBe('claude:claude-opus-4-8');
+      expect(id.combined).toBe('claude:claude-opus-5');
     });
 
     it('returns default ModelIdentifier for claude-code', () => {
@@ -286,7 +304,7 @@ describe('ModelIdentifier', () => {
 
   describe('getDefaultModelId', () => {
     it('returns default model ID string for all providers', () => {
-      expect(ModelIdentifier.getDefaultModelId('claude')).toBe('claude:claude-opus-4-8');
+      expect(ModelIdentifier.getDefaultModelId('claude')).toBe('claude:claude-opus-5');
       expect(ModelIdentifier.getDefaultModelId('claude-code')).toBe('claude-code:opus');
       expect(ModelIdentifier.getDefaultModelId('openai')).toBe('openai:gpt-5.6-sol');
       expect(ModelIdentifier.getDefaultModelId('openai-codex')).toBe('openai-codex:gpt-5.6-sol');

@@ -10,6 +10,10 @@ import {
   type FrontmatterData,
 } from '@nimbalyst/runtime';
 import { editorRegistry } from '@nimbalyst/runtime/ai/EditorRegistry';
+import {
+  collabCommentControllerRegistry,
+  CollabCommentControllerError,
+} from '@nimbalyst/runtime/editor';
 import { store } from '@nimbalyst/runtime/store';
 import { DocumentModelRegistry } from '../services/document-model/DocumentModelRegistry';
 import { aiApi } from '../services/aiApi';
@@ -37,6 +41,7 @@ import {
   menuFindPreviousCommandAtom,
 } from '../store/atoms/menuCommands';
 import { openEditorFind } from '../components/TabEditor/editorFindCommand';
+import { acquireHeadlessCollabCommentController } from '../services/HeadlessCollabCommentController';
 
 // Tracker field updates now go through the generic trackerStatus frontmatter format.
 // No hardcoded plan-specific field list needed.
@@ -653,6 +658,138 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
           });
         }
       }));
+    }
+
+    const handleCollabDocComment = async ({
+      operation,
+      targetFilePath,
+      input,
+      agent,
+      workspacePath: routedWorkspacePath,
+      resultChannel,
+    }: {
+      operation: 'list' | 'reply' | 'createAnchored';
+      targetFilePath: string;
+      input: any;
+      agent?: { sessionId: string; sessionName: string };
+      workspacePath?: string;
+      resultChannel: string;
+    }) => {
+        let headlessAcquisition:
+          | Awaited<ReturnType<typeof acquireHeadlessCollabCommentController>>
+          | undefined;
+        try {
+          if (!targetFilePath || !isCollabUri(targetFilePath)) {
+            throw new CollabCommentControllerError(
+              'DOCUMENT_NOT_MOUNTED',
+              `A collab:// URI is required. Got: ${targetFilePath ?? '(missing)'}`,
+            );
+          }
+          let controller =
+            collabCommentControllerRegistry.get(targetFilePath);
+          if (!controller) {
+            if (operation === 'createAnchored') {
+              throw new CollabCommentControllerError(
+                'DOCUMENT_NOT_MOUNTED',
+                `Creating an anchored comment requires ${targetFilePath} to be open in a collaborative editor.`,
+              );
+            }
+            const currentWorkspacePath =
+              routedWorkspacePath ?? propsRef.current.workspacePath;
+            if (!currentWorkspacePath) {
+              throw new CollabCommentControllerError(
+                'DOCUMENT_NOT_MOUNTED',
+                'No workspace is available to acquire the collaborative document.',
+              );
+            }
+            headlessAcquisition =
+              await acquireHeadlessCollabCommentController(
+                targetFilePath,
+                currentWorkspacePath,
+              );
+            controller = headlessAcquisition.controller;
+          }
+
+          let result: unknown;
+          if (operation === 'list') {
+            result = controller.list({
+              cursor: input?.cursor,
+              includeResolved: input?.includeResolved,
+              limit: input?.limit,
+            });
+          } else {
+            if (!agent?.sessionId || !agent?.sessionName) {
+              throw new Error(
+                'The main process did not provide a verified agent session identity.',
+              );
+            }
+            const actor = controller.createAgentActor(agent);
+            if (operation === 'reply') {
+              result = await controller.reply({
+                threadId: input?.threadId,
+                replyToCommentId: input?.replyToCommentId,
+                body: input?.body,
+                clientMutationId: input?.clientMutationId,
+                mentionedUserIds: input?.mentionedUserIds,
+              }, actor);
+            } else if (operation === 'createAnchored') {
+              result = await controller.createAnchored({
+                anchor: input?.anchor,
+                body: input?.body,
+                clientMutationId: input?.clientMutationId,
+                mentionedUserIds: input?.mentionedUserIds,
+              }, actor);
+            } else {
+              throw new Error(`Unknown collaborative comment operation: ${operation}`);
+            }
+          }
+
+          if (operation !== 'list') {
+            await headlessAcquisition?.flush();
+          }
+          window.electronAPI.sendMcpCollabDocCommentResult(resultChannel, {
+            success: true,
+            result,
+          });
+        } catch (error) {
+          window.electronAPI.sendMcpCollabDocCommentResult(resultChannel, {
+            success: false,
+            code:
+              error instanceof CollabCommentControllerError
+                ? error.code
+                : 'COMMENT_OPERATION_FAILED',
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Unknown collaborative comment error',
+          });
+        } finally {
+          headlessAcquisition?.release();
+        }
+    };
+    if (window.electronAPI.onMcpReadCollabDocComments) {
+      cleanupFns.push(
+        window.electronAPI.onMcpReadCollabDocComments((data) => {
+          void handleCollabDocComment({ ...data, operation: 'list' });
+        }),
+      );
+    }
+    if (window.electronAPI.onMcpReplyToCollabDocComment) {
+      cleanupFns.push(
+        window.electronAPI.onMcpReplyToCollabDocComment((data) => {
+          void handleCollabDocComment({ ...data, operation: 'reply' });
+        }),
+      );
+    }
+    if (window.electronAPI.onMcpCreateCollabDocComment) {
+      cleanupFns.push(
+        window.electronAPI.onMcpCreateCollabDocComment((data) => {
+          void handleCollabDocComment({
+            ...data,
+            operation: 'createAnchored',
+          });
+        }),
+      );
     }
 
     // Shared-index (first-class shared folders + documents) MCP tools. Each

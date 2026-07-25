@@ -163,8 +163,8 @@ struct VoiceOverlay: View {
             }
         }
         .onAppear { startAnimations() }
-        .onChange(of: voiceAgent.state) { _ in startAnimations() }
-        .onChange(of: voiceAgent.currentToolCall) { _ in startAnimations() }
+        .onChange(of: voiceAgent.state) { _, _ in startAnimations() }
+        .onChange(of: voiceAgent.currentToolCall) { _, _ in startAnimations() }
     }
 
     // MARK: - Button Content

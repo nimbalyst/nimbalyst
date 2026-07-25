@@ -27,7 +27,8 @@ vi.mock('../../dialogs', () => ({
 // recent-workspaces IPC (not the heavy workspaceManager handler) is the source
 // of project data.
 
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@nimbalyst/runtime')>(),
   MaterialSymbol: () => null,
   ProviderIcon: () => null,
 }));

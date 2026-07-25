@@ -47,6 +47,21 @@ function record(id: string, fields: Record<string, unknown>): TrackerRecord {
   } as TrackerRecord;
 }
 
+function recordWithCreator(id: string, fields: Record<string, unknown>): TrackerRecord {
+  return {
+    ...record(id, fields),
+    system: {
+      ...record(id, fields).system,
+      authorIdentity: {
+        email: 'alice@example.com',
+        displayName: 'Alice Example',
+        gitName: null,
+        gitEmail: null,
+      },
+    },
+  };
+}
+
 function columnsFor(ids: string[]) {
   const all = resolveColumnsForType(gridType);
   return ids.map(id => all.find(c => c.id === id)!).filter(Boolean);
@@ -67,6 +82,19 @@ describe('buildGridSource', () => {
     // Numbers stay numbers -- editors and comparisons depend on the real type.
     expect(source[0].points).toBe(8);
     expect(source[0].key).toBe('GCS-1');
+  });
+
+  it('emits the creator identity for the structural Created by column', () => {
+    registerType();
+    const cols = columnsFor(['createdBy']);
+    const source = buildGridSource([recordWithCreator('1', { title: 'Alpha' })], cols);
+
+    expect(source[0].createdBy).toEqual({
+      email: 'alice@example.com',
+      displayName: 'Alice Example',
+      gitName: null,
+      gitEmail: null,
+    });
   });
 });
 

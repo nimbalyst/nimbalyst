@@ -43,6 +43,17 @@ export interface CommentMentionPayload {
   url?: string;
 }
 
+export interface CommentCapabilities {
+  read: boolean;
+  comment: boolean;
+}
+
+export interface CommentReplyPayload extends CommentMentionPayload {
+  commentId: string;
+  clientMutationId: string;
+  replyToCommentId?: string;
+}
+
 /** Host-supplied configuration enabling document comments in the editor. */
 export interface CommentsConfig {
   /**
@@ -53,6 +64,13 @@ export interface CommentsConfig {
   getYDoc: () => Doc | null;
   /** The signed-in user, used as the comment author and mention actor. */
   currentUser: { id: string; name: string };
+  /**
+   * Current effective source capabilities. Read at operation time so an access
+   * change takes effect without remounting the editor.
+   */
+  getCapabilities?: () => CommentCapabilities;
+  /** True once the collaborative document has hydrated enough for mutations. */
+  isHydrated?: () => boolean;
   /** Team members available to @-mention. Read lazily so the roster stays fresh. */
   getMembers: () => CommentMember[];
   /** Title of the document (used in inbox payloads). */
@@ -67,4 +85,9 @@ export interface CommentsConfig {
    * excludes the author. No-op safe when undefined.
    */
   onMention?: (recipientUserIds: string[], payload: CommentMentionPayload) => void;
+  /**
+   * Called after a canonical reply is appended. The host owns inbox routing;
+   * failures do not roll back the Y.Doc mutation.
+   */
+  onReply?: (recipientUserIds: string[], payload: CommentReplyPayload) => void;
 }

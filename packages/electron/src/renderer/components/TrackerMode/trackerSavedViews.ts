@@ -12,14 +12,24 @@
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import {
+  applyFilterSet,
+  type TrackerFilterEvaluationContext,
+  type TrackerFilterSet,
+  type TrackerFieldFilter,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import {
+  getCellValue,
+  type SortColumn,
+  type SortDirection,
+  type TypeColumnConfig,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import {
   getRecordPriority,
   getRecordStatus,
   getFieldByRole,
   isMyRecord,
   isSameIdentity,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
-import type { SortColumn, SortDirection, TypeColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin';
-import type { TrackerFilterSet, TrackerFieldFilter } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import type { TrackerFilterChip } from '../../store/atoms/trackers';
 import type { ViewMode } from './TrackerMainView';
 import { getTrackerItemTags, filterTrackerItemsByTags } from './trackerTagFilterUtils';
@@ -210,12 +220,62 @@ export type TrackerItemFilterDefinition = Pick<SavedViewDefinition, 'activeFilte
   sourceFilter?: string[];
   /** Genuine-open lookback in days; null means any time. */
   recentlyViewedDays?: SavedViewDefinition['recentlyViewedDays'];
+  /** Inspectable field clauses used by the right-side filter builder. */
+  columnFilters?: TrackerFilterSet | null;
 };
 
 /** Provenance key for a record: the importer provider id, or `native`. */
 export function recordSourceKey(record: TrackerRecord): string {
   const origin = record.system.origin;
   return origin?.kind === 'external' ? origin.external.providerId : 'native';
+}
+
+/** Resolve ordinary, role-backed, and per-user structural fields uniformly. */
+export function getTrackerFilterValue(
+  record: TrackerRecord,
+  field: string,
+  context: FilterContext = {},
+): unknown {
+  switch (field) {
+    case 'owner':
+    case 'assignee':
+      return getFieldByRole(record, 'assignee');
+    case 'favorite':
+      return context.favoriteItemIds?.has(record.id) ?? false;
+    case 'viewed':
+      return context.viewedAtByItemId?.get(record.id);
+    default:
+      return getCellValue(record, field);
+  }
+}
+
+/** Convert removed left-sidebar presets into equivalent inspectable clauses. */
+export function legacyFilterChipsToClauses(
+  filters: readonly TrackerFilterChip[],
+  recentlyViewedDays: SavedViewDefinition['recentlyViewedDays'] = 30,
+): TrackerFieldFilter[] {
+  return filters.flatMap((filter): TrackerFieldFilter[] => {
+    switch (filter) {
+      case 'mine':
+        return [{ field: 'owner', op: 'is-current-user' }];
+      case 'unassigned':
+        return [{ field: 'owner', op: 'is-empty' }];
+      case 'high-priority':
+        return [{ field: 'priority', op: 'in', value: ['critical', 'high'] }];
+      case 'favorites':
+        return [{ field: 'favorite', op: '=', value: true }];
+      case 'recently-viewed':
+        return recentlyViewedDays === null
+          ? [{ field: 'viewed', op: 'is-not-empty' }]
+          : [{ field: 'viewed', op: 'in-last', value: recentlyViewedDays }];
+      case 'recently-edited-by-others':
+        return [{ field: 'updatedBy', op: 'is-not-current-user' }];
+      case 'recently-updated':
+        return [{ field: 'updated', op: 'in-last', value: 30 }];
+      case 'archived':
+        return [{ field: 'archived', op: '=', value: true }];
+    }
+  });
 }
 
 /**
@@ -260,6 +320,17 @@ export function filterTrackerItems(
     const sources = new Set(def.sourceFilter);
     out = out.filter((record) => sources.has(recordSourceKey(record)));
   }
+
+  const filterEvaluationContext: TrackerFilterEvaluationContext = {
+    currentUser: ctx.identity,
+    nowMs: ctx.nowMs,
+  };
+  out = applyFilterSet(
+    out,
+    def.columnFilters,
+    (record, field) => getTrackerFilterValue(record, field, ctx),
+    filterEvaluationContext,
+  );
 
   const recordRecencyTime = (record: TrackerRecord): number => {
     const source = record.system.updatedAt || record.system.createdAt || record.system.lastIndexed;
@@ -332,8 +403,9 @@ export function countFilteredTrackerItemsByTypes(
 ): number {
   const wantedTypes = new Set(types);
   const showArchived = def.activeFilters.includes('archived');
+  const filtersArchived = (def.columnFilters?.clauses ?? []).some(clause => clause.field === 'archived');
   const scopedItems = items.filter((record) => (
-    record.archived === showArchived
+    (filtersArchived || record.archived === showArchived)
     && (wantedTypes.has(record.primaryType) || record.typeTags.some((type) => wantedTypes.has(type)))
   ));
 

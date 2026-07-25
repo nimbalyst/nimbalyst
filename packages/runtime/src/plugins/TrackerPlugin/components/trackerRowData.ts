@@ -75,6 +75,13 @@ export function compareRecords(a: TrackerRecord, b: TrackerRecord, sortBy: strin
       const bTime = b.system.lastIndexed ? new Date(b.system.lastIndexed).getTime() : 0;
       return aTime - bTime;
     }
+    case 'createdBy': {
+      const identityValue = (record: TrackerRecord): string => {
+        const identity = record.system.authorIdentity;
+        return identity?.displayName || identity?.email || identity?.gitEmail || identity?.gitName || '';
+      };
+      return identityValue(a).localeCompare(identityValue(b));
+    }
     default: {
       const aVal = getCellValue(a, sortBy);
       const bVal = getCellValue(b, sortBy);

@@ -60,10 +60,16 @@ import {
   CommentStore,
   createComment,
   createThread,
+  normalizeCommentActor,
   useCommentStore,
   type Comment,
+  type CommentActor,
   type Thread,
 } from '../../commenting';
+import {
+  collabCommentControllerRegistry,
+  createCollabCommentController,
+} from '../../commenting/CollabCommentControllerRegistry';
 import { CommentCollabProvider } from '../../commenting/CommentCollabProvider';
 import type {
   CommentMember,
@@ -95,6 +101,55 @@ function formatTimestamp(ts: number): string {
   } catch {
     return '';
   }
+}
+
+function createClientMutationId(): string {
+  return typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `comment-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getActorName(comment: Comment): string {
+  const actor = normalizeCommentActor(comment.actor, comment.author);
+  return actor.kind === 'agent' ? actor.sessionName : actor.displayName;
+}
+
+function getReplyTargetName(thread: Thread, comment: Comment): string {
+  const target = thread.comments.find(
+    (candidate) => candidate.id === comment.replyToCommentId,
+  );
+  return target ? getActorName(target) : 'an earlier comment';
+}
+
+function CommentActorLabel({ comment }: { comment: Comment }): JSX.Element {
+  const actor = normalizeCommentActor(comment.actor, comment.author);
+  if (actor.kind === 'user') {
+    return <span className="nim-comment-author">{actor.displayName}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className="nim-comment-agent-author"
+      title={`Open agent session ${actor.sessionName}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        window.dispatchEvent(
+          new CustomEvent('open-ai-session', {
+            detail: { sessionId: actor.sessionId },
+          }),
+        );
+      }}
+    >
+      <span className="material-symbols-outlined">smart_toy</span>
+      <span>{actor.sessionName}</span>
+      <span className="nim-comment-agent-badge">Agent</span>
+      {actor.onBehalfOfDisplayName && (
+        <span className="nim-comment-agent-owner">
+          for {actor.onBehalfOfDisplayName}
+        </span>
+      )}
+    </button>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -417,9 +472,7 @@ function CommentsPanel({
                     {thread.comments.map((comment) => (
                       <div key={comment.id} className="nim-comment">
                         <div className="nim-comment-meta">
-                          <span className="nim-comment-author">
-                            {comment.author}
-                          </span>
+                          <CommentActorLabel comment={comment} />
                           <span className="nim-comment-time">
                             {formatTimestamp(comment.timeStamp)}
                           </span>
@@ -438,6 +491,11 @@ function CommentsPanel({
                             </span>
                           </button>
                         </div>
+                        {comment.replyToCommentId && (
+                          <div className="nim-comment-reply-target">
+                            Replying to {getReplyTargetName(thread, comment)}
+                          </div>
+                        )}
                         <div className="nim-comment-content">
                           {comment.content}
                         </div>
@@ -509,6 +567,9 @@ export default function CommentsPlugin({
   const commentStore = useMemo(() => new CommentStore(editor), [editor]);
   const comments = useCommentStore(commentStore);
   const markNodeMapRef = useRef<MarkNodeMap>(new Map());
+  const controllerInstanceIdRef = useRef(
+    `comments-${Math.random().toString(36).slice(2, 12)}`,
+  );
   const [markVersion, setMarkVersion] = useState(0);
 
   const [composer, setComposer] = useState<{ thread: Thread; rect: DOMRect } | null>(
@@ -532,6 +593,66 @@ export default function CommentsPlugin({
       unregister();
     };
   }, [commentStore, config]);
+
+  // -- Expose the mounted collaborative comment surface to renderer IPC -----
+  useEffect(() => {
+    const controller = createCollabCommentController({
+      commentStore,
+      currentUser: config.currentUser,
+      documentTitle: config.documentTitle,
+      documentUri: config.documentUri,
+      editor,
+      getCapabilities: () =>
+        config.getCapabilities?.() ?? { read: true, comment: true },
+      getMembers: config.getMembers,
+      isHydrated: () => config.isHydrated?.() ?? config.getYDoc() !== null,
+      isVisible: () => {
+        const root = editor.getRootElement();
+        return Boolean(root?.isConnected && root.getClientRects().length > 0);
+      },
+      onCommitted: ({
+        actor,
+        comment,
+        mentionedUserIds,
+        replyRecipientUserIds,
+        thread,
+      }) => {
+        const actorName =
+          actor.kind === 'agent' ? actor.sessionName : actor.displayName;
+        const mentionRecipients = mentionedUserIds.filter(
+          (id) => id !== config.currentUser.id,
+        );
+        const payload: CommentMentionPayload = {
+          actorName,
+          sourceTitle: config.documentTitle,
+          snippet: comment.content.slice(0, 200),
+          threadId: thread.id,
+          markId: thread.id,
+          url: config.documentUri,
+        };
+        if (mentionRecipients.length > 0) {
+          config.onMention?.(mentionRecipients, payload);
+        }
+        const replyRecipients = replyRecipientUserIds.filter(
+          (id) =>
+            id !== config.currentUser.id && !mentionRecipients.includes(id),
+        );
+        if (replyRecipients.length > 0 && comment.clientMutationId) {
+          config.onReply?.(replyRecipients, {
+            ...payload,
+            commentId: comment.id,
+            clientMutationId: comment.clientMutationId,
+            replyToCommentId: comment.replyToCommentId,
+          });
+        }
+      },
+    });
+    return collabCommentControllerRegistry.register(
+      config.documentUri,
+      controllerInstanceIdRef.current,
+      controller,
+    );
+  }, [commentStore, config, editor]);
 
   // -- Track MarkNode keys per comment id ------------------------------------
   useEffect(() => {
@@ -653,14 +774,20 @@ export default function CommentsPlugin({
   );
 
   const fanoutMention = useCallback(
-    (mentionedUserIds: string[], snippet: string, threadId: string) => {
+    (
+      mentionedUserIds: string[],
+      snippet: string,
+      threadId: string,
+      actor: CommentActor,
+    ) => {
       if (!config.onMention || mentionedUserIds.length === 0) return;
       const recipients = mentionedUserIds.filter(
         (id) => id !== config.currentUser.id,
       );
       if (recipients.length === 0) return;
       const payload: CommentMentionPayload = {
-        actorName: config.currentUser.name,
+        actorName:
+          actor.kind === 'agent' ? actor.sessionName : actor.displayName,
         sourceTitle: config.documentTitle,
         snippet: snippet.slice(0, 200),
         threadId,
@@ -719,14 +846,22 @@ export default function CommentsPlugin({
     (text: string, mentionedUserIds: string[]) => {
       const current = composer;
       if (!current) return;
-      const comment = createComment(text, config.currentUser.name);
+      const actor: CommentActor = {
+        kind: 'user',
+        userId: config.currentUser.id,
+        displayName: config.currentUser.name,
+      };
+      const comment = createComment(text, config.currentUser.name, {
+        actor,
+        clientMutationId: createClientMutationId(),
+      });
       commentStore.addComment(comment, current.thread);
-      fanoutMention(mentionedUserIds, text, current.thread.id);
+      fanoutMention(mentionedUserIds, text, current.thread.id, actor);
       setComposer(null);
       setPanelOpen(true);
       setActiveThreadId(current.thread.id);
     },
-    [composer, commentStore, config.currentUser.name, fanoutMention],
+    [composer, commentStore, config.currentUser, fanoutMention],
   );
 
   const handleComposerCancel = useCallback(() => {
@@ -743,12 +878,42 @@ export default function CommentsPlugin({
 
   const handleReply = useCallback(
     (thread: Thread, text: string, mentionedUserIds: string[]) => {
-      const comment = createComment(text, config.currentUser.name);
+      const actor: CommentActor = {
+        kind: 'user',
+        userId: config.currentUser.id,
+        displayName: config.currentUser.name,
+      };
+      const replyTarget = thread.comments.at(-1);
+      const clientMutationId = createClientMutationId();
+      const comment = createComment(text, config.currentUser.name, {
+        actor,
+        clientMutationId,
+        replyToCommentId: replyTarget?.id,
+      });
       commentStore.addComment(comment, thread);
-      fanoutMention(mentionedUserIds, text, thread.id);
+      fanoutMention(mentionedUserIds, text, thread.id, actor);
+      const replyRecipient =
+        replyTarget?.actor?.kind === 'user' ? replyTarget.actor.userId : undefined;
+      if (
+        replyRecipient &&
+        replyRecipient !== config.currentUser.id &&
+        !mentionedUserIds.includes(replyRecipient)
+      ) {
+        config.onReply?.([replyRecipient], {
+          actorName: config.currentUser.name,
+          sourceTitle: config.documentTitle,
+          snippet: text.slice(0, 200),
+          threadId: thread.id,
+          markId: thread.id,
+          url: config.documentUri,
+          commentId: comment.id,
+          clientMutationId,
+          replyToCommentId: replyTarget?.id,
+        });
+      }
       setActiveThreadId(thread.id);
     },
-    [commentStore, config.currentUser.name, fanoutMention],
+    [commentStore, config, fanoutMention],
   );
 
   const handleSetThreadResolved = useCallback(

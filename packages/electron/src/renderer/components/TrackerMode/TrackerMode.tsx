@@ -13,9 +13,12 @@ import {
   removeTrackerViewAtom,
   shareTrackerViewAtom,
   unshareTrackerViewAtom,
-  type TrackerFilterChip,
 } from '../../store/atoms/trackers';
-import type { SavedView, SavedViewDefinition } from './trackerSavedViews';
+import {
+  legacyFilterChipsToClauses,
+  type SavedView,
+  type SavedViewDefinition,
+} from './trackerSavedViews';
 import type { TrackerNavigationEntry } from '@nimbalyst/runtime/sync';
 import {
   deleteTrackerFolderAtom,
@@ -136,28 +139,40 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
     });
   }, [workspacePath, currentIdentity?.email, hydratePersonalState]);
 
+  // NIM-2094: the left-side preset chips were removed. Translate persisted
+  // layout state and older saved views into ordinary right-side clauses so no
+  // active filter becomes invisible during the transition.
+  useEffect(() => {
+    if (modeLayout.activeFilters.length === 0) return;
+    const key = modeLayout.selectedType;
+    const current = modeLayout.typeColumnFilters[key] ?? { combinator: 'and' as const, clauses: [] };
+    const converted = legacyFilterChipsToClauses(
+      modeLayout.activeFilters,
+      modeLayout.recentlyViewedDays,
+    );
+    const clauseKeys = new Set(current.clauses.map(clause => JSON.stringify(clause)));
+    const clauses = [
+      ...current.clauses,
+      ...converted.filter(clause => !clauseKeys.has(JSON.stringify(clause))),
+    ];
+    setModeLayout({
+      activeFilters: [],
+      typeColumnFilters: {
+        ...modeLayout.typeColumnFilters,
+        [key]: { combinator: 'and', clauses },
+      },
+    });
+  }, [
+    modeLayout.activeFilters,
+    modeLayout.recentlyViewedDays,
+    modeLayout.selectedType,
+    modeLayout.typeColumnFilters,
+    setModeLayout,
+  ]);
+
   const handleSelectType = useCallback((type: string | 'all') => {
     setModeLayout({ selectedType: type, selectedItemId: null });
   }, [setModeLayout]);
-
-  const handleToggleFilter = useCallback((filter: TrackerFilterChip) => {
-    let current = modeLayout.activeFilters;
-    const wasActive = current.includes(filter);
-
-    // "Mine" and "Unassigned" are mutually exclusive
-    if (filter === 'mine') current = current.filter(f => f !== 'unassigned');
-    if (filter === 'unassigned') current = current.filter(f => f !== 'mine');
-    if (filter === 'recently-updated' || filter === 'recently-viewed' || filter === 'recently-edited-by-others') {
-      current = current.filter((candidate) => ![
-        'recently-updated', 'recently-viewed', 'recently-edited-by-others',
-      ].includes(candidate));
-    }
-
-    const next = wasActive
-      ? current.filter(f => f !== filter)
-      : [...current, filter];
-    setModeLayout({ activeFilters: next });
-  }, [modeLayout.activeFilters, setModeLayout]);
 
   const handleClearFilters = useCallback(() => {
     setModeLayout({ activeFilters: [] });
@@ -298,10 +313,9 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
       viewedAtByItemId={viewedAtByItemId}
       personalStateHydrated={personalStateHydrated}
       recentlyViewedDays={modeLayout.recentlyViewedDays}
-      onRecentlyViewedDaysChange={(days) => setModeLayout({ recentlyViewedDays: days })}
+      columnFilters={modeLayout.typeColumnFilters[modeLayout.selectedType] ?? null}
       viewMode={viewMode}
       onSelectType={handleSelectType}
-      onToggleFilter={handleToggleFilter}
       onViewModeChange={handleViewModeChange}
       savedViews={savedViews}
       activeSavedViewId={activeSavedViewId}

@@ -7,7 +7,8 @@ import { ModelSelector } from '../ModelSelector';
 import { isOpenModelPickerShortcut } from '../AIInput';
 import { advancedSettingsAtom } from '../../../store/atoms/appSettings';
 
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@nimbalyst/runtime')>(),
   MaterialSymbol: () => null,
   getProviderIcon: () => null,
 }));

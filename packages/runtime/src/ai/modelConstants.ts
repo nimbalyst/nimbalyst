@@ -20,6 +20,16 @@ export const CLAUDE_MODELS: ModelDefinition[] = [
     contextWindow: 1000000,
   },
   {
+    id: 'claude-opus-5',
+    displayName: 'Claude Opus 5 (1M)',
+    shortName: 'Opus 5',
+    maxTokens: 8192,
+    // Opus 5 ships with a 1M context window natively (no beta header), at the
+    // same $5/$25 pricing tier as Opus 4.8. The API alias is dateless — see
+    // anthropic.com/news/claude-opus-5.
+    contextWindow: 1000000,
+  },
+  {
     id: 'claude-opus-4-8',
     displayName: 'Claude Opus 4.8 (1M)',
     shortName: 'Opus 4.8',
@@ -238,22 +248,24 @@ export const OPENAI_MODELS: ModelDefinition[] = [
  *   the previous-generation Opus selectable after bumping the canonical
  *   `opus` to the next version.
  */
-export type ClaudeCodeVariant = 'fable' | 'opus' | 'sonnet' | 'haiku' | 'opus-4-7' | 'opus-4-6' | 'sonnet-4-6';
-export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-4-8' | 'fable-5';
+export type ClaudeCodeVariant = 'fable' | 'opus' | 'sonnet' | 'haiku' | 'opus-4-8' | 'opus-4-7' | 'opus-4-6' | 'sonnet-4-6';
+export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5' | 'fable-5';
 
 /**
  * Accepted input aliases for Claude Agent model identifiers.
  *
- * `opus-4-8` is intentionally accepted as an alias for the canonical `opus`
+ * `opus-5` is intentionally accepted as an alias for the canonical `opus`
  * variant so legacy code paths (meta-agent, Agent tool, imported session IDs)
  * can request the current Opus generation explicitly without requiring a
  * duplicate visible picker entry. `fable-5` is accepted as an alias for
- * `fable` for the same reason.
+ * `fable` for the same reason. `opus-4-8` is now a pinned previous-generation
+ * variant (its own row), not an alias — it resolves to that specific model.
  */
 export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInput[] = [
   'fable',
   'fable-5',
   'opus',
+  'opus-5',
   'opus-4-8',
   'opus-4-7',
   'opus-4-6',
@@ -266,7 +278,8 @@ const CLAUDE_CODE_VARIANT_INPUT_MAP: Readonly<Record<ClaudeCodeVariantInput, Cla
   fable: 'fable',
   'fable-5': 'fable',
   opus: 'opus',
-  'opus-4-8': 'opus',
+  'opus-5': 'opus',
+  'opus-4-8': 'opus-4-8',
   'opus-4-7': 'opus-4-7',
   'opus-4-6': 'opus-4-6',
   sonnet: 'sonnet',
@@ -280,9 +293,10 @@ export function normalizeClaudeCodeVariant(variant: string): ClaudeCodeVariant |
 
 export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
   fable: '5',
-  opus: '4.8',
+  opus: '5',
   sonnet: '5',
   haiku: '4.5',
+  'opus-4-8': '4.8',
   'opus-4-7': '4.7',
   'opus-4-6': '4.6',
   'sonnet-4-6': '4.6',
@@ -293,6 +307,7 @@ export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
   opus: 'Opus',
   sonnet: 'Sonnet',
   haiku: 'Haiku',
+  'opus-4-8': 'Opus',
   'opus-4-7': 'Opus',
   'opus-4-6': 'Opus',
   'sonnet-4-6': 'Sonnet',
@@ -310,6 +325,7 @@ export const CLAUDE_CODE_PINNED_SDK_MODELS: Partial<Record<ClaudeCodeVariant, st
   // the interactive-CLI path (`resolveClaudeCliModelArg`) does not read this
   // map and keeps sending the working `fable` alias to the PTY.
   fable: 'claude-fable-5',
+  'opus-4-8': 'claude-opus-4-8',
   'opus-4-7': 'claude-opus-4-7',
   'opus-4-6': 'claude-opus-4-6',
   // Pinned so the previous-generation Sonnet stays selectable after the
@@ -340,6 +356,7 @@ export const CLAUDE_CODE_NATIVE_1M_VARIANTS: readonly ClaudeCodeVariant[] = [
   'fable',
   'opus',
   'sonnet',
+  'opus-4-8',
   'opus-4-7',
   'opus-4-6',
   'sonnet-4-6',
@@ -443,7 +460,7 @@ export function resolveClaudeCodeParentContextWindow(
 export const CLAUDE_CODE_SAFE_FALLBACK_MODEL = 'claude-code:opus' as const;
 
 export const DEFAULT_MODELS = {
-  claude: 'claude:claude-opus-4-8',
+  claude: 'claude:claude-opus-5',
   openai: 'openai:gpt-5.6-sol',
   // Plain `opus` (not `opus-1m`): the current CLI runs plain Opus at 1M natively
   // at a flat price, so the `[1m]` suffix is a redundant no-op (GitHub #825).
