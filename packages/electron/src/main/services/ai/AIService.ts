@@ -588,7 +588,11 @@ export class AIService {
     const effectiveWorkspacePath = session.workspacePath || workspacePath;
     const apiKey = this.getApiKeyForProvider('claude-code', effectiveWorkspacePath);
 
-    const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+    const effortLevel = resolveEffortLevel(
+      (session.metadata as any)?.effortLevel,
+      getDefaultEffortLevel(),
+      session.model || session.providerConfig?.model,
+    );
     const config: ProviderConfig = {
       maxTokens: (session.providerConfig as any)?.maxTokens,
       temperature: (session.providerConfig as any)?.temperature,
@@ -1969,7 +1973,11 @@ export class AIService {
         }
         // Effort level: explicit session value, else the app-wide default the
         // selector displays (Opus 4.6 adaptive reasoning).
-        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+        const effortLevel = resolveEffortLevel(
+          (session.metadata as any)?.effortLevel,
+          getDefaultEffortLevel(),
+          session.model || session.providerConfig?.model,
+        );
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }
@@ -1978,7 +1986,11 @@ export class AIService {
 
       // Pass effort level for OpenAI Codex
       if (provider === 'openai-codex') {
-        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+        const effortLevel = resolveEffortLevel(
+          (session.metadata as any)?.effortLevel,
+          getDefaultEffortLevel(),
+          session.model || session.providerConfig?.model,
+        );
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }

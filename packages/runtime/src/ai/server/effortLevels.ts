@@ -17,13 +17,64 @@ export const EFFORT_LEVELS: { key: EffortLevel; label: string }[] = [
 ];
 
 export const DEFAULT_EFFORT_LEVEL: EffortLevel = 'high';
-// Default to 'enabled' so the app omits the SDK thinking option and preserves
-// the SDK's default adaptive thinking (Claude decides depth) on supported
-// Opus/Sonnet models. Users can opt into 'disabled' (Extended: Off) per session.
+// "enabled" is the persisted compatibility value for adaptive thinking. The
+// provider translates it to `thinking: { type: 'adaptive' }`; it must not be
+// presented as manual "extended thinking", which is a different API mode.
 export const DEFAULT_THINKING_MODE: ThinkingMode = 'enabled';
 
 const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
 const VALID_THINKING_MODES = new Set<string>(['enabled', 'disabled']);
+
+const CLAUDE_EFFORT_LEVELS = {
+  current: EFFORT_LEVELS,
+  legacyAdaptive: EFFORT_LEVELS.filter(level => level.key !== 'xhigh'),
+} as const;
+
+function normalizedModelId(modelId: string | undefined | null): string {
+  return (modelId ?? '').toLowerCase().replace(/-1m$/, '').replace(/\[1m\]$/, '');
+}
+
+/**
+ * Return only the effort values the selected model accepts.
+ *
+ * Claude Sonnet 5, Fable 5, Opus 4.8, and Opus 4.7 support the complete
+ * low/medium/high/xhigh/max ladder. Opus 4.6 and Sonnet 4.6 support the same
+ * ladder except xhigh. Haiku has no adaptive-effort control in this surface.
+ * Other providers keep their existing transport-owned ladder.
+ */
+export function supportedEffortLevelsForModel(
+  modelId: string | undefined | null
+): { key: EffortLevel; label: string }[] {
+  const id = normalizedModelId(modelId);
+  if (id.startsWith('claude-code-cli:') || id.startsWith('openai-codex-acp:')) return [];
+  if (id.startsWith('claude-code:')) {
+    if (id.includes('haiku')) return [];
+    if (id.includes('opus-4-6') || id.includes('sonnet-4-6')) {
+      return [...CLAUDE_EFFORT_LEVELS.legacyAdaptive];
+    }
+  }
+  return [...CLAUDE_EFFORT_LEVELS.current];
+}
+
+/**
+ * Normalize a stored/global effort to a value the selected model accepts.
+ * Unsupported intermediate levels step down rather than silently upgrading
+ * capability or cost (for example xhigh -> high on Sonnet 4.6).
+ */
+export function normalizeEffortForModel(
+  modelId: string | undefined | null,
+  effort: EffortLevel
+): EffortLevel {
+  const supported = supportedEffortLevelsForModel(modelId);
+  if (supported.length === 0 || supported.some(level => level.key === effort)) return effort;
+
+  const requestedIndex = EFFORT_LEVELS.findIndex(level => level.key === effort);
+  for (let index = requestedIndex - 1; index >= 0; index -= 1) {
+    const candidate = EFFORT_LEVELS[index].key;
+    if (supported.some(level => level.key === candidate)) return candidate;
+  }
+  return supported[0].key;
+}
 
 /**
  * Validate and return a valid EffortLevel, or the default if invalid.
@@ -49,12 +100,19 @@ export function parseEffortLevel(value: unknown): EffortLevel {
  */
 export function resolveEffortLevel(
   sessionEffortLevel: unknown,
-  appDefaultEffortLevel: EffortLevel | undefined
+  appDefaultEffortLevel: EffortLevel | undefined,
+  modelId?: string | null,
 ): EffortLevel | undefined {
+  let resolved: EffortLevel | undefined;
   if (sessionEffortLevel != null && sessionEffortLevel !== '') {
-    return parseEffortLevel(sessionEffortLevel);
+    resolved = parseEffortLevel(sessionEffortLevel);
+  } else {
+    resolved = appDefaultEffortLevel;
   }
-  return appDefaultEffortLevel;
+  if (resolved === undefined) return undefined;
+  const supported = supportedEffortLevelsForModel(modelId);
+  if (supported.length === 0) return undefined;
+  return normalizeEffortForModel(modelId, resolved);
 }
 
 /**

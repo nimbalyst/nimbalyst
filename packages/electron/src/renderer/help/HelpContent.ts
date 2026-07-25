@@ -244,6 +244,14 @@ export const HelpContent: Record<string, HelpEntry> = {
     title: 'Select AI Model',
     body: 'Choose which AI model to use. Different models have different capabilities and speeds.',
   },
+  'effort-level-selector': {
+    title: 'Reasoning Effort',
+    body: 'Sets how much reasoning depth and response work the selected model applies. Available levels depend on the model.',
+  },
+  'thinking-mode-selector': {
+    title: 'Adaptive Thinking',
+    body: 'Adaptive lets the model decide when and how deeply to reason; Off disables adaptive thinking. This does not change context size or assign a fixed reasoning budget.',
+  },
   'model-picker-provider-claude-code': {
     title: 'Claude Agent (Claude Code Based)',
     body: 'The in-app agent built on Claude Code with full Nimbalyst integration: it sees your active document and selection, renders the rich inline transcript, and tracks every file it edits. Uses your configured Anthropic API key.',

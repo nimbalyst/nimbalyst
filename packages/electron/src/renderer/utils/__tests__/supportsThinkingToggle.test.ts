@@ -24,5 +24,7 @@ describe('supportsThinkingToggle', () => {
   it('disables the toggle for non-claude-code and missing models', () => {
     expect(supportsThinkingToggle(undefined)).toBe(false);
     expect(supportsThinkingToggle('gpt-5.5')).toBe(false);
+    expect(supportsThinkingToggle('claude-code-cli:opus')).toBe(false);
+    expect(supportsThinkingToggle('claude-code-cli:sonnet')).toBe(false);
   });
 });

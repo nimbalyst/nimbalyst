@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Model controls now expose only supported reasoning options and distinguish adaptive thinking from context size.
 
 ### Removed
 <!-- Removed features go here -->

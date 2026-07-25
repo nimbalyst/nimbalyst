@@ -11,7 +11,7 @@ import path from 'path';
 import { app } from 'electron';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
-import { type ThinkingMode } from '../../effortLevels';
+import { resolveEffortLevel, type ThinkingMode } from '../../effortLevels';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
 
@@ -89,12 +89,15 @@ export interface BuildSdkOptionsResult {
   helperMethod: 'native' | 'custom';
 }
 
+function supportsAdaptiveThinkingForModel(model: string | undefined): boolean {
+  const normalized = model?.toLowerCase() ?? '';
+  if (!normalized || normalized.includes('haiku')) return false;
+  return normalized.includes('fable') || normalized.includes('opus') || normalized.includes('sonnet');
+}
+
 function canDisableThinkingForModel(model: string | undefined): boolean {
   const normalized = model?.toLowerCase() ?? '';
-  if (!normalized || normalized.includes('fable') || normalized.includes('haiku')) {
-    return false;
-  }
-  return normalized.includes('opus') || normalized.includes('sonnet');
+  return supportsAdaptiveThinkingForModel(model) && !normalized.includes('fable');
 }
 
 export function createPersistentPromptStream(
@@ -228,6 +231,11 @@ export async function buildSdkOptions(
   const effectivePath = customPath || resolvedBinaryPath;
   // console.log(`[CLAUDE-CODE] Binary path: custom=${customPath || '(none)'} resolved=${resolvedBinaryPath ?? '(none)'} effective=${effectivePath ?? '(none)'}`);
   const resolvedModel = resolveModelVariant();
+  const resolvedEffortLevel = resolveEffortLevel(
+    config.effortLevel,
+    undefined,
+    `claude-code:${resolvedModel}`,
+  );
 
   const options: any = {
     pathToClaudeCodeExecutable: effectivePath,
@@ -298,11 +306,15 @@ export async function buildSdkOptions(
     },
   };
 
-  if (config.thinkingMode === 'disabled') {
+  if (config.thinkingMode === 'enabled' && supportsAdaptiveThinkingForModel(resolvedModel)) {
+    // Omitting this field is not portable across models: Sonnet 5 defaults to
+    // adaptive, while Opus 4.7/4.8 and Sonnet 4.6 default to thinking off.
+    options.thinking = { type: 'adaptive' as const };
+  } else if (config.thinkingMode === 'disabled') {
     if (canDisableThinkingForModel(resolvedModel)) {
       options.thinking = { type: 'disabled' as const };
     } else {
-      console.warn(`[CLAUDE-CODE] Extended thinking cannot be disabled for model "${resolvedModel}"; omitting SDK thinking option.`);
+      console.warn(`[CLAUDE-CODE] Adaptive thinking cannot be disabled for model "${resolvedModel}"; omitting SDK thinking option.`);
     }
   }
 
@@ -390,8 +402,8 @@ export async function buildSdkOptions(
     // The Claude CLI currently defaults to xhigh when this variable is absent.
     // Always forward a resolved Nimbalyst selection, including "high", so the
     // effort shown in the selector matches the request sent to the CLI.
-    ...(config.effortLevel && {
-      CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
+    ...(resolvedEffortLevel && {
+      CLAUDE_CODE_EFFORT_LEVEL: resolvedEffortLevel
     }),
     // The bundled claude binary runs a per-tool idle-timeout watchdog (default
     // 300s) over MCP servers whose transport is http/sse/ws. ALL Nimbalyst

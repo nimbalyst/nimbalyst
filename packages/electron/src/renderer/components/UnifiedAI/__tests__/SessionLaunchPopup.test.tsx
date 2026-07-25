@@ -136,7 +136,7 @@ describe('SessionLaunchPopup', () => {
         provider: 'claude-code',
         model: 'claude-code:sonnet',
         mode: 'agent',
-        metadata: { effortLevel: 'high', thinkingMode: 'enabled' },
+        metadata: { effortLevel: 'high' },
       },
     });
     const createdId = createCall?.[1].session.id;
@@ -165,6 +165,36 @@ describe('SessionLaunchPopup', () => {
     await act(async () => {
       resolveBackgroundLaunch({ success: true });
       await backgroundLaunchPending;
+    });
+  });
+
+  it('does not persist reasoning metadata hidden by the selected transport', async () => {
+    const testStore = createStore();
+    testStore.set(activeWorkspacePathAtom, '/workspace');
+    initWorkstreamState('/workspace');
+    testStore.set(agentModeSettingsAtom, {
+      defaultModel: 'openai-codex-acp:gpt-5.4',
+      defaultEffortLevel: 'max',
+    });
+    render(
+      <Provider store={testStore}>
+        <SessionLaunchPopup workspacePath="/workspace" />
+      </Provider>,
+    );
+
+    act(() => testStore.set(sessionLaunchPopupRequestAtom, 1));
+    fireEvent.change(await screen.findByTestId('session-launch-popup-input'), {
+      target: { value: 'Inspect this session' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Start Session' }));
+
+    await waitFor(() => {
+      const createCall = invoke.mock.calls.find(([channel]) => channel === 'sessions:create');
+      expect(createCall?.[1]?.session).toMatchObject({
+        provider: 'openai-codex-acp',
+        model: 'openai-codex-acp:gpt-5.4',
+        metadata: {},
+      });
     });
   });
 

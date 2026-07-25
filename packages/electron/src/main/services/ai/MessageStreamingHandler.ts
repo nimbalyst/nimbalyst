@@ -569,7 +569,11 @@ export class MessageStreamingHandler {
       if (isProviderClaudeCode) {
       }
 
-      const reinitEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+      const reinitEffortLevel = resolveEffortLevel(
+        (session.metadata as any)?.effortLevel,
+        getDefaultEffortLevel(),
+        session.model || session.providerConfig?.model,
+      );
       const reinitConfig: any = {
         apiKey,
         maxTokens: (session.providerConfig as any)?.maxTokens,
@@ -1235,7 +1239,11 @@ export class MessageStreamingHandler {
       } else {
         // Refresh credentials every turn for all providers so key changes in settings apply immediately.
         const freshApiKey = this.svc.getApiKeyForProvider(session.provider, effectiveWorkspacePath);
-        const turnEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+        const turnEffortLevel = resolveEffortLevel(
+          (session.metadata as any)?.effortLevel,
+          getDefaultEffortLevel(),
+          session.model || session.providerConfig?.model,
+        );
         const turnConfig: any = {
           apiKey: freshApiKey,
           maxTokens: (session.providerConfig as any)?.maxTokens,

@@ -2,10 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { ThinkingMode } from '../../utils/modelUtils';
 import { DEFAULT_THINKING_MODE } from '../../utils/modelUtils';
+import { HelpTooltip } from '../../help';
 
 const THINKING_MODE_OPTIONS: Array<{ key: ThinkingMode; label: string }> = [
-  { key: 'enabled', label: 'Extended: On' },
-  { key: 'disabled', label: 'Extended: Off' },
+  { key: 'enabled', label: 'Thinking: Adaptive' },
+  { key: 'disabled', label: 'Thinking: Off' },
 ];
 
 interface ThinkingModeSelectorProps {
@@ -56,20 +57,22 @@ export function ThinkingModeSelector({
 
   return (
     <div className="relative inline-block" ref={dropdownRef}>
-      <button
-        data-testid="thinking-mode-selector"
-        className={`thinking-mode-selector flex items-center gap-1 px-2 py-[3px] rounded-xl text-[11px] font-medium transition-all duration-200 outline-none whitespace-nowrap bg-[var(--nim-bg-secondary)] text-[var(--nim-text-muted)] border border-[var(--nim-border)] ${disabled ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)]'}`}
-        onClick={() => {
-          if (!disabled) setIsOpen(!isOpen);
-        }}
-        aria-label={`Extended thinking: ${currentMode.label}`}
-        disabled={disabled}
-        title={disabled ? disabledTitle : undefined}
-      >
-        <MaterialSymbol icon="psychology_alt" size={12} />
-        <span>{currentMode.label}</span>
-        <MaterialSymbol icon="expand_more" size={14} className={`transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
-      </button>
+      <HelpTooltip testId="thinking-mode-selector">
+        <button
+          data-testid="thinking-mode-selector"
+          className={`thinking-mode-selector flex items-center gap-1 px-2 py-[3px] rounded-xl text-[11px] font-medium transition-all duration-200 outline-none whitespace-nowrap bg-[var(--nim-bg-secondary)] text-[var(--nim-text-muted)] border border-[var(--nim-border)] ${disabled ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)]'}`}
+          onClick={() => {
+            if (!disabled) setIsOpen(!isOpen);
+          }}
+          aria-label={currentMode.label}
+          disabled={disabled}
+          title={disabled ? disabledTitle : undefined}
+        >
+          <MaterialSymbol icon="psychology_alt" size={12} />
+          <span>{currentMode.label}</span>
+          <MaterialSymbol icon="expand_more" size={14} className={`transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
+      </HelpTooltip>
 
       {isOpen && (
         <div className="absolute bottom-full left-0 mb-1 min-w-[140px] rounded-lg p-1 z-[1000] bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_4px_12px_rgba(0,0,0,0.15)]">

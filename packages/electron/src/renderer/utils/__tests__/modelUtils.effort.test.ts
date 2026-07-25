@@ -7,27 +7,25 @@ describe('supportsEffortLevel', () => {
     'claude-code:opus-4-6',
     'claude-code:sonnet',
     'claude-code:fable',
-    'claude-code-cli:fable-1m',
     'claude-code:opus-4-7',
-    'claude-code-cli:opus-4-7-1m',
     'claude-code:sonnet-4-6',
-    'claude-code-cli:sonnet-4-6-1m',
   ])('supports current Claude Code effort-capable variants: %s', (modelId) => {
     expect(supportsEffortLevel(modelId)).toBe(true);
   });
 
-  it.each([
-    'openai-codex:gpt-5.4',
-    'openai-codex-acp:gpt-5.4',
-  ])('supports effort for both Codex providers: %s', (modelId) => {
+  it('supports effort for the Codex SDK transport', () => {
+    const modelId = 'openai-codex:gpt-5.4';
     expect(supportsEffortLevel(modelId)).toBe(true);
   });
 
   it.each([
     undefined,
     'claude-code:haiku',
+    'claude-code-cli:fable',
+    'claude-code-cli:opus-4-7',
     'claude-code:unknown',
     'claude:claude-fable-5',
+    'openai-codex-acp:gpt-5.4',
   ])('does not expose effort for unsupported models: %s', (modelId) => {
     expect(supportsEffortLevel(modelId)).toBe(false);
   });
