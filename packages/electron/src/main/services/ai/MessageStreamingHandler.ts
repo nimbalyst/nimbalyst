@@ -114,6 +114,19 @@ import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import type { WorkspaceFileAttributionMode } from '../WorkspaceFileAttributionPolicy';
 
+/**
+ * The terminal streaming paths must project the durable prompt bit, rather
+ * than infer it from the turn having stopped. Kept here so normal and error
+ * completion share the exact same production predicate.
+ */
+export function hasPersistedPendingPrompt(metadata: unknown): boolean {
+  return Boolean(
+    metadata
+    && typeof metadata === 'object'
+    && (metadata as Record<string, unknown>).hasPendingPrompt === true,
+  );
+}
+
 function resolveWorkspaceFileAttributionMode(
   providerName: string,
   provider: AIProvider | null | undefined,
@@ -2596,11 +2609,7 @@ export class MessageStreamingHandler {
               && typeof (provider as any).willResumeAfterCompletion === 'function'
               && (provider as any).willResumeAfterCompletion();
             const persistedSession = await AISessionsRepository.get(session.id);
-            const hasPendingStructuredPrompt = Boolean(
-              persistedSession?.metadata
-              && typeof persistedSession.metadata === 'object'
-              && (persistedSession.metadata as Record<string, unknown>).hasPendingPrompt === true,
-            );
+            const hasPendingStructuredPrompt = hasPersistedPendingPrompt(persistedSession?.metadata);
             const queuedChainAlreadyActive = this.hasActiveQueueLease(session.id);
             let queuedContinuationScheduled = false;
             if (!hasPendingStructuredPrompt && !hasTeammates && !willResume && !queuedChainAlreadyActive) {
@@ -2785,9 +2794,11 @@ export class MessageStreamingHandler {
 
       // Clear executing and pending prompt flags for mobile sync
       if (syncProvider && !this.hasActiveQueueLease(session.id)) {
+        const terminalSession = await AISessionsRepository.get(session.id);
+        const retainsPendingPrompt = hasPersistedPendingPrompt(terminalSession?.metadata);
         syncProvider.pushChange(session.id, {
           type: 'metadata_updated',
-          metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+          metadata: { isExecuting: false, hasPendingPrompt: retainsPendingPrompt, updatedAt: Date.now() },
         });
       }
 
@@ -2852,11 +2863,7 @@ export class MessageStreamingHandler {
           && typeof (provider as any).willResumeAfterCompletion === 'function'
           && (provider as any).willResumeAfterCompletion();
         const persistedErrorSession = await AISessionsRepository.get(session.id);
-        const hasPendingStructuredPromptOnError = Boolean(
-          persistedErrorSession?.metadata
-          && typeof persistedErrorSession.metadata === 'object'
-          && (persistedErrorSession.metadata as Record<string, unknown>).hasPendingPrompt === true,
-        );
+        const hasPendingStructuredPromptOnError = hasPersistedPendingPrompt(persistedErrorSession?.metadata);
         const queuedChainAlreadyActiveOnError = this.hasActiveQueueLease(session.id);
         let queuedContinuationScheduledOnError = false;
         if (!hasPendingStructuredPromptOnError && !hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {

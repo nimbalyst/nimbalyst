@@ -187,6 +187,7 @@ export class AIService {
   // the prior lease before priority delivery; a stale dispatch may settle
   // afterward, but cannot release a newer dispatch's lease or drain FIFO.
   private queueProcessingLeases = new Map<string, symbol>();
+  private interactivePromptSettlements = new Map<string, Promise<{ success: boolean; error?: string }>>();
 
   /**
    * Exposes the dispatch-owned lease guard to the streaming lifecycle without
@@ -473,6 +474,23 @@ export class AIService {
     response: any;
     respondedBy?: 'desktop' | 'mobile';
   }): Promise<{ success: boolean; error?: string }> {
+    const key = `${params.sessionId}:${params.promptType}:${params.promptId}`;
+    const existing = this.interactivePromptSettlements.get(key);
+    if (existing) return existing;
+    const settlement = this.respondToInteractivePromptOnce(params).finally(() => {
+      this.interactivePromptSettlements.delete(key);
+    });
+    this.interactivePromptSettlements.set(key, settlement);
+    return settlement;
+  }
+
+  private async respondToInteractivePromptOnce(params: {
+    sessionId: string;
+    promptId: string;
+    promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
+    response: any;
+    respondedBy?: 'desktop' | 'mobile';
+  }): Promise<{ success: boolean; error?: string }> {
     const { sessionId, promptId, promptType, response, respondedBy = 'desktop' } = params;
     const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
     const { database } = await import('../../database/PGLiteDatabaseWorker');
@@ -514,9 +532,10 @@ export class AIService {
 
     // A response is a one-shot consumption. Reject duplicates before writing a
     // second durable row or waking the same blocked waiter twice.
+    let replayedResponse = false;
     if (promptType === 'ask_user_question_request') {
-      const { rows: existingResponses } = await database.query<{ id: string }>(
-        `SELECT id FROM ai_agent_messages
+      const { rows: existingResponses } = await database.query<{ content: unknown }>(
+        `SELECT content FROM ai_agent_messages
          WHERE session_id = $1
            AND content LIKE '%"type":"ask_user_question_response"%'
            AND content LIKE $2
@@ -524,15 +543,29 @@ export class AIService {
         [sessionId, `%"questionId":"${promptId}"%`]
       );
       if (existingResponses.length > 0) {
-        return { success: true };
+        // The durable answer is the claim. A replay must finish its lifecycle
+        // work, not merely acknowledge the existing row and strand its waiter.
+        replayedResponse = true;
+        const stored = existingResponses[0]?.content;
+        if (typeof stored === 'string') {
+          try {
+            responseContent = JSON.parse(stored) as Record<string, unknown>;
+          } catch {
+            // Legacy malformed rows still get deterministic cleanup below.
+          }
+        } else if (stored && typeof stored === 'object') {
+          responseContent = stored as Record<string, unknown>;
+        }
       }
     }
 
-    await database.query(
-      `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false]
-    );
+    if (!replayedResponse) {
+      await database.query(
+        `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false]
+      );
+    }
 
     if (promptType === 'permission_request') {
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
@@ -547,9 +580,13 @@ export class AIService {
     }
 
     if (promptType === 'ask_user_question_request') {
+      const settledResponse = {
+        answers: responseContent.answers || response.answers || response,
+        cancelled: responseContent.cancelled === true || response.cancelled === true,
+      };
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
       const resolved = provider && isAskUserQuestionProvider(provider)
-        ? provider.resolveAskUserQuestion(promptId, response.answers || response, sessionId, respondedBy)
+        ? provider.resolveAskUserQuestion(promptId, settledResponse.answers, sessionId, respondedBy)
         : false;
 
       const { rows: askRequestRows } = await database.query<{ id: string }>(
@@ -568,8 +605,8 @@ export class AIService {
       if (hasAskUserQuestionWaiter) {
         ipcMain.emit(askUserQuestionChannel, {} as any, {
           questionId: promptId,
-          answers: response.answers || response,
-          cancelled: response.cancelled || false,
+          answers: settledResponse.answers,
+          cancelled: settledResponse.cancelled,
           respondedBy,
           sessionId,
         });
@@ -580,14 +617,14 @@ export class AIService {
       if (hasSessionFallbackWaiter) {
         ipcMain.emit(sessionFallbackChannel, {} as any, {
           questionId: promptId,
-          answers: response.answers || response,
-          cancelled: response.cancelled || false,
+          answers: settledResponse.answers,
+          cancelled: settledResponse.cancelled,
           respondedBy,
           sessionId,
         });
       }
 
-      const accepted = resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter || hasPersistedQuestionRequest;
+      const accepted = resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter || hasPersistedQuestionRequest || replayedResponse;
       if (accepted) {
         await setSessionPendingPrompt(sessionId, false);
         return { success: true };
