@@ -2875,6 +2875,39 @@ export class AIService {
     // delivered prompts are marked completed, not rolled back, so the
     // follow-up ai:triggerQueueProcessing doesn't re-send the same input
     // -- NIM-615).
+    /**
+     * `/btw` — ask a question answered outside the session's main conversation.
+     *
+     * Only the Claude Agent (SDK) provider is handled here. `claude-code-cli`
+     * sessions get `/btw` for free: the prompt is forwarded to the real CLI,
+     * which owns the command, and `INTERACTIVE_CLI_SLASH_COMMANDS` reveals the
+     * drawer so the inline answer is visible.
+     */
+    safeHandle('ai:askSideQuestion', async (_event, sessionId: string, question: string) => {
+      if (!sessionId) {
+        throw new Error('Session ID is required to ask a side question');
+      }
+
+      const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+      const session = await AISessionsRepository.get(sessionId);
+      if (!session) {
+        return { ok: false, reason: 'error', message: 'Session not found' };
+      }
+
+      if (session.provider !== 'claude-code') {
+        return { ok: false, reason: 'unsupported' };
+      }
+
+      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+      const askSideQuestion = (provider as { askSideQuestion?: (q: string) => Promise<unknown> })
+        .askSideQuestion;
+      if (typeof askSideQuestion !== 'function') {
+        return { ok: false, reason: 'unsupported' };
+      }
+
+      return await askSideQuestion.call(provider, question);
+    });
+
     safeHandle('ai:interruptCurrentTurn', async (_event, sessionId: string) => {
       if (!sessionId) {
         throw new Error('Session ID is required to interrupt');

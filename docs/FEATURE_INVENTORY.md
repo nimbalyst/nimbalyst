@@ -98,6 +98,7 @@ A concise reference of all features in the product. Keep this up to date as feat
 - Selection chips above the input showing what will be sent as context (selected text, mockup annotations, and extension-provided items from node-like editors such as Excalidraw); each chip has an × to drop it from the prompt, and node-like editors can report multiple selections at once
 - Queued prompts display
 - Slash command typeahead
+- `/btw <question>` asks a quick side question whose answer stays out of the session's context (Claude Agent sessions answer inline in the transcript; Claude Code CLI sessions reveal the raw drawer where the CLI renders its own answer)
 - Action prompts dropdown in composer (reusable prompt presets defined in `nimbalyst-local/ai-actions.md`; pick to insert verbatim into the draft, with undo support)
 
 ## Multi-Agent / Teams

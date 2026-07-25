@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Ask a quick side question with `/btw` — the answer is shown without entering the conversation, so it leaves the agent's context untouched.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

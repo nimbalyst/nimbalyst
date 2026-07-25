@@ -160,6 +160,35 @@ function makeOptimisticError(text: string, extra?: Partial<TranscriptViewMessage
   };
 }
 
+/**
+ * Result of an `ai:askSideQuestion` IPC call. Structurally mirrors
+ * `SideQuestionResult` in ClaudeCodeProvider; declared locally so the renderer
+ * doesn't import main-process provider code just for a type.
+ */
+type SideQuestionResult =
+  | { ok: true; response: string; synthetic: boolean }
+  | { ok: false; reason: 'idle' | 'unsupported' | 'empty' | 'no-answer' | 'error'; message?: string };
+
+/**
+ * Turn a `/btw` failure into something actionable. `idle` is the one users hit
+ * routinely — a side question rides the live control channel of a running turn,
+ * so there is nothing to ask alongside when the agent isn't working.
+ */
+function describeSideQuestionFailure(result: Extract<SideQuestionResult, { ok: false }>): string {
+  switch (result.reason) {
+    case 'idle':
+      return 'only available while the agent is working — send a normal message instead.';
+    case 'unsupported':
+      return 'not supported by this session’s provider or Claude Code version.';
+    case 'no-answer':
+      return 'no answer came back.';
+    case 'empty':
+      return 'ask a question after the command, e.g. /btw why is this test flaky?';
+    default:
+      return result.message ? `failed: ${result.message}` : 'failed.';
+  }
+}
+
 function summarizeTeammates(
   teammates: Array<{ agentId: string; status: 'running' | 'completed' | 'errored' | 'idle' }> | undefined
 ): string {
@@ -1181,6 +1210,62 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
     let message = currentDraftInput.trim();
     const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+
+    // Intercept /btw — ask a question answered outside this conversation.
+    //
+    // The answer is deliberately NOT persisted and NOT sent through
+    // ai:sendMessage: the whole point is that neither the question nor the
+    // reply enters the session's context, so the running turn and every turn
+    // after it are unchanged. It renders as an optimistic system row, the same
+    // client-only surface used for transient errors.
+    const btwCommandMatch = message.match(/^\/btw(?:\s|$)/);
+    if (btwCommandMatch) {
+      const question = message.slice(btwCommandMatch[0].length).trim();
+      setDraftInput('');
+      clearAIInputHistory(sessionId);
+
+      const note = (text: string, isError: boolean): TranscriptViewMessage =>
+        makeOptimisticError(text, {
+          isError,
+          systemMessage: { systemType: isError ? 'error' : 'slash_command' },
+        });
+
+      if (!question) {
+        updateSessionStore({
+          sessionId,
+          updates: { messages: [...messages, note('Usage: /btw <question>', true)] },
+        });
+        return;
+      }
+
+      let result: SideQuestionResult;
+      try {
+        result = (await window.electronAPI.invoke(
+          'ai:askSideQuestion',
+          sessionId,
+          question,
+        )) as SideQuestionResult;
+      } catch (error) {
+        result = {
+          ok: false,
+          reason: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+
+      updateSessionStore({
+        sessionId,
+        updates: {
+          messages: [
+            ...messages,
+            result.ok
+              ? note(`/btw ${question}\n\n${result.response}`, false)
+              : note(`/btw — ${describeSideQuestionFailure(result)}`, true),
+          ],
+        },
+      });
+      return;
+    }
 
     // Intercept /plan command - strip it and switch to planning mode
     // Match "/plan" only when followed by whitespace or end of string (not "/planning" or "/planify")
