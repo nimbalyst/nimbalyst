@@ -205,6 +205,15 @@ export interface TrackerPayloadSystem {
    * any other item; only the importer owner can re-snapshot (auth is local).
    */
   origin?: TrackerOrigin;
+  /**
+   * When a person retired this item from the triage inbox without changing it.
+   * Shared rather than personal (unlike the snooze in `tracker_personal_state`)
+   * so one teammate's triage pass clears the item for everyone. LWW per
+   * `syncId`. Optional — older clients omit it and newer clients tolerate its
+   * absence.
+   */
+  triagedAt?: string;
+  triagedBy?: TrackerIdentity | null;
   /** Client-asserted creation timestamp (ms). */
   createdAt?: string;
   /** Client-asserted last-update timestamp (ms). Server clock is `syncId`. */

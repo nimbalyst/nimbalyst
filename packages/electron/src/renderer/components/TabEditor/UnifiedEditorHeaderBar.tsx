@@ -232,6 +232,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
     setPendingCollabDoc({
       documentId,
       documentType: sharedDocument?.documentType ?? sharedDocLink.binding?.documentType,
+      analyticsSource: 'home',
     });
     sharedDocMenu.setIsOpen(false);
   }, [

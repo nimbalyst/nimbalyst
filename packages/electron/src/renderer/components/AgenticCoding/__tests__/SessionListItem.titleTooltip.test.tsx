@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 
 // Keep the component isolated: jotai atom reads return defaults, and the store
 // atom families are callable stubs so importing them has no side effects.
@@ -37,25 +37,57 @@ const baseProps = {
   onClick: () => {},
 };
 
+const setElementWidth = (element: Element, { clientWidth, scrollWidth }: { clientWidth: number; scrollWidth: number }) => {
+  Object.defineProperties(element, {
+    clientWidth: { configurable: true, value: clientWidth },
+    scrollWidth: { configurable: true, value: scrollWidth },
+    getBoundingClientRect: {
+      configurable: true,
+      value: () => ({
+        x: 40,
+        y: 80,
+        top: 80,
+        right: 200,
+        bottom: 100,
+        left: 40,
+        width: 160,
+        height: 20,
+        toJSON: () => {},
+      }),
+    },
+  });
+};
+
 afterEach(() => cleanup());
 
 describe('SessionListItem - full name on hover (#577, #429)', () => {
-  // The row title carries the full name unconditionally, matching the session
-  // tab (WorkstreamSessionTabs sets title={title}). This covers both JS
-  // truncation past 40 chars and CSS ellipsis clipping a shorter name in a
-  // narrow pane, the gap a >40-char gate would miss.
-  it('exposes the full name in title for a long, JS-truncated name', () => {
+  it('expands the clipped title from the rendered title position', async () => {
     const long = 'A very long session name that runs well past the forty character cutoff';
     const { container } = render(<SessionListItem {...baseProps} title={long} />);
-    const titleEl = container.querySelector('.session-list-item-title');
-    expect(titleEl?.getAttribute('title')).toBe(long);
+    const titleEl = container.querySelector('.session-list-item-title')!;
+    setElementWidth(titleEl, { clientWidth: 160, scrollWidth: 320 });
+    fireEvent.mouseEnter(titleEl);
+
+    const tooltip = screen.getByRole('tooltip');
+    expect(titleEl.getAttribute('title')).toBeNull();
+    expect(tooltip.textContent).toBe(long);
+    expect(tooltip.className).toContain('whitespace-pre-wrap');
+    expect(tooltip.className).toContain('break-all');
+    expect(tooltip.className).toContain('px-1.5');
+    expect(tooltip.className).toContain('py-0.5');
+    expect(tooltip.className).not.toContain('var(--nim-border)');
+    await waitFor(() => {
+      expect(tooltip.style.transform).toBe('translate(34px, 78px)');
+    });
   });
 
-  it('exposes the full name in title for a short name (could still be CSS-clipped in a narrow pane)', () => {
+  it('does not show a tooltip when the full title fits', () => {
     const short = 'Short name';
     const { container } = render(<SessionListItem {...baseProps} title={short} />);
-    const titleEl = container.querySelector('.session-list-item-title');
-    expect(titleEl?.getAttribute('title')).toBe(short);
+    const titleEl = container.querySelector('.session-list-item-title')!;
+    setElementWidth(titleEl, { clientWidth: 160, scrollWidth: 80 });
+    fireEvent.mouseEnter(titleEl);
+    expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
   // The native title is not a keyboard/touch affordance, so the row's

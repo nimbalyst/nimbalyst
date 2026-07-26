@@ -60,6 +60,7 @@ describe('PullRequestDetail review session action', () => {
         pr={pr}
         onClose={() => undefined}
         onStartReviewSession={onStartReviewSession}
+        trackerContext={{ items: [], primary: null, sessions: [] }}
       />,
     );
 

@@ -62,7 +62,7 @@ your phone so you are never blocked waiting at your desk.
 
 - [ ] App icon: 512x512 PNG (32-bit, with alpha). Reuse the branded launcher icon art.
 - [ ] Feature graphic: 1024x500 PNG/JPG (no alpha). Required.
-- [ ] Phone screenshots (min 2, up to 8; 16:9 or 9:16, min 320px side): capture from the polished app, not mockups:
+- [ ] Phone screenshots (min 2, up to 8; 16:9 or 9:16, min 320px side): capture from the polished app, not mockups. Run `npm run android:screenshots` -- see [ANDROID_MARKETING_SCREENSHOTS.md](../../docs/ANDROID_MARKETING_SCREENSHOTS.md):
   - [ ] QR pairing / onboarding
   - [ ] Project list (with synced projects)
   - [ ] Session list with unread badges
@@ -94,6 +94,11 @@ notification) so reviewers see full functionality without a desktop. Note in the
 review comments that content requires a paired desktop and analytics/notifications
 are optional. (If Google pushes back and wants hands-on access, fall back to a
 reviewer test account + staging desktop.)
+
+Record it with `npm run android:walkthrough -- --manual --device=<serial>` on a
+real handset paired to a desktop; the review-notes field takes a link, so host
+the mp4 (unlisted YouTube works) rather than trying to attach a file. See
+[ANDROID_MARKETING_SCREENSHOTS.md](../../docs/ANDROID_MARKETING_SCREENSHOTS.md).
 
 ## Content rating
 

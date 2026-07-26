@@ -1,9 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   contextWindowForCliModel,
   computeContextFillTokens,
   buildClaudeCliTokenUsage,
   logClaudeCliContextUsage,
+  noteClaudeCliObserved1mSupport,
+  clearClaudeCliObserved1mSupport,
 } from '../claudeCliContextUsage';
 
 /**
@@ -34,6 +36,21 @@ describe('contextWindowForCliModel', () => {
     expect(contextWindowForCliModel('claude-code-cli:sonnet-4-6')).toBe(1_000_000);
     expect(contextWindowForCliModel('claude-code-cli:haiku')).toBe(200_000);
     expect(contextWindowForCliModel(undefined)).toBe(200_000);
+  });
+
+  /**
+   * NIM-2170: the per-variant table is a SEED, not the truth. 1M is plan-gated
+   * (Max/Team/Enterprise auto-upgrade; Pro needs credits) and our own
+   * ANTHROPIC_BASE_URL observation proxy makes the CLI treat the connection as a
+   * gateway, which skips the auto-upgrade. The outbound `anthropic-beta` header
+   * is the live signal, so when we've observed it the observation wins.
+   */
+  it('lets an observed 1M signal override the static per-variant seed', () => {
+    expect(contextWindowForCliModel('claude-code-cli:opus', false)).toBe(200_000);
+    expect(contextWindowForCliModel('claude-code-cli:opus-1m', false)).toBe(200_000);
+    expect(contextWindowForCliModel('claude-code-cli:haiku', true)).toBe(1_000_000);
+    // No observation yet -> unchanged seed behavior.
+    expect(contextWindowForCliModel('claude-code-cli:opus', undefined)).toBe(1_000_000);
   });
 });
 
@@ -126,5 +143,51 @@ describe('logClaudeCliContextUsage', () => {
     h.updateTokenUsage.mockRejectedValueOnce(new Error('db down'));
     await expect(logClaudeCliContextUsage({ sessionId: 's1', usage }, h.deps)).resolves.toBeUndefined();
     expect(h.notifyTokenUsage).not.toHaveBeenCalled();
+  });
+
+  /**
+   * NIM-2170 — the CLI path has no runtime `modelUsage`, so `AssembledUsage`
+   * carries no window and this denominator is PERMANENT. The proxy's observed
+   * `anthropic-beta` flag is the only correction available; without it a
+   * gateway-downgraded 200k session shows a meter that can never exceed 20%.
+   */
+  describe('observed 1M signal from the proxy', () => {
+    beforeEach(() => {
+      clearClaudeCliObserved1mSupport('s1');
+    });
+
+    async function windowAfterLog(sessionModel: string): Promise<number> {
+      const h = harness({ model: sessionModel });
+      await logClaudeCliContextUsage({ sessionId: 's1', usage }, h.deps);
+      return h.updateTokenUsage.mock.calls[0][1].currentContext.contextWindow;
+    }
+
+    it('downgrades to 200k when the observed request omitted the 1M beta flag', async () => {
+      noteClaudeCliObserved1mSupport('s1', { model: 'claude-opus-5-20260514', supports1m: false });
+      expect(await windowAfterLog('claude-code-cli:opus')).toBe(200_000);
+    });
+
+    it('uses 1M when the observed request carried the 1M beta flag', async () => {
+      noteClaudeCliObserved1mSupport('s1', { model: 'claude-opus-5-20260514', supports1m: true });
+      expect(await windowAfterLog('claude-code-cli:opus')).toBe(1_000_000);
+    });
+
+    it('does not let a Haiku sub-agent request downgrade the parent Opus session', async () => {
+      // Task sub-agents run through the SAME proxy on a smaller model; their
+      // requests never carry the 1M flag and must not move the parent denominator.
+      noteClaudeCliObserved1mSupport('s1', { model: 'claude-opus-5-20260514', supports1m: true });
+      noteClaudeCliObserved1mSupport('s1', { model: 'claude-haiku-4-5-20251001', supports1m: false });
+      expect(await windowAfterLog('claude-code-cli:opus')).toBe(1_000_000);
+    });
+
+    it('is scoped per session and cleared when observation stops', async () => {
+      noteClaudeCliObserved1mSupport('s2', { model: 'claude-opus-5-20260514', supports1m: false });
+      // s1 never observed anything -> keeps the seed.
+      expect(await windowAfterLog('claude-code-cli:opus')).toBe(1_000_000);
+      clearClaudeCliObserved1mSupport('s2');
+      const h = harness({ model: 'claude-code-cli:opus' });
+      await logClaudeCliContextUsage({ sessionId: 's2', usage }, h.deps);
+      expect(h.updateTokenUsage.mock.calls[0][1].currentContext.contextWindow).toBe(1_000_000);
+    });
   });
 });

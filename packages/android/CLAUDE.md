@@ -89,6 +89,10 @@ JAVA_HOME=/path/to/temurin-17 ./gradlew :app:assembleDebug
 JAVA_HOME=/path/to/temurin-17 ./gradlew :app:testDebugUnitTest
 ```
 
+### Play Store screenshots and video
+
+`npm run android:screenshots` and `npm run android:walkthrough` drive an emulator against the debug-only screenshot mode in `app/src/debug/java/com/nimbalyst/app/screenshots/` (inert stub in `app/src/release/`). Never move that code into `src/main` — it seeds demo data and a fake paired state. See [ANDROID_MARKETING_SCREENSHOTS.md](../../docs/ANDROID_MARKETING_SCREENSHOTS.md).
+
 ### Builds, signing, and CI
 
 - The `google-services` plugin is applied only when `app/google-services.json` is present, so a build without it succeeds and push stays inert until the file is added.

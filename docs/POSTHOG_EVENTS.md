@@ -95,7 +95,7 @@ All events include `$session_id` property automatically. Dev users are marked wi
 
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
 | --- | --- | --- | --- | --- | --- |
-| `content_mode_switched` | `NavigationGutter.tsx:111` | User switches between Files and Agent modes via navigation gutter | `fromMode` (files/agent/settings)<br/>`toMode` (files/agent/settings) | v0.48.13 (2025-12-17) |  |
+| `content_mode_switched` | `NavigationGutter.tsx` | User switches between primary content modes via the navigation gutter | `fromMode` / `toMode` (`files`, `agent`, `tracker`, `collab`, `pr-review`, `settings`) | v0.48.13 (2025-12-17) | (pending release): Documented Tracker, Shared Docs, and PR Review values |
 | `editor_type_opened` | `TabEditor.tsx:277` | User opens a file in an editor tab | `editorCategory` (markdown/monaco/image or extension name like "Spreadsheet Editor", "PDF Viewer", "Excalidraw Editor", "Data Model Editor")<br/>`fileExtension` (e.g., .md, .csv, .prisma, .mockup.html)<br/>`hasMermaid` (boolean, for markdown)<br/>`hasDataModel` (boolean, for markdown) | v0.48.13 (2025-12-17) | (pending release): Renamed editorType to editorCategory; editorCategory now uses extension displayName for custom editors; fileExtension contains actual extension<br/>(pending release): Defer emit until the editor type settles and re-arm on registry changes, so late-registering extension editors (e.g. .mockup.html, .calc.md) report their compound key/displayName instead of the fallback (.html/.md/monaco) |
 | `markdown_view_mode_switched` | `TabEditor.tsx:1556, 1606` | User switches between rich text (lexical) and raw markdown (monaco) view modes | `fromMode` (lexical/monaco)<br/>`toMode` (lexical/monaco) | v0.48.13 (2025-12-17) |  |
 | `session_view_mode_switched` | `SessionHistory.tsx` | User switches between list and kanban views for session history | `fromMode` (list/card/kanban)<br/>`toMode` (list/card/kanban) | (pending release) |  |
@@ -178,15 +178,37 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | `content_shared` | `ShareHandlers.ts` | User shares a session or file as an encrypted link | `content_type` (session/file)<br/>`is_update` (boolean) | (pending release as of c28302ea) |  |
 | `share_deleted` | `ShareHandlers.ts` | User deletes (unshares) a shared session or file | None | (pending release as of c28302ea) |  |
 
-### Shared Folders (Collab)
+### Nimbalyst Teams and Collaboration
 
-| Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
-| --- | --- | --- | --- | --- | --- |
-| `collab_folder_created` | `CollabSidebar.tsx` | User creates a first-class shared folder | `nested` (boolean) | (pending release) |  |
-| `collab_folder_renamed` | `CollabSidebar.tsx` | User renames a shared folder | None | (pending release) |  |
-| `collab_folder_moved` | `CollabSidebar.tsx` | User moves a shared folder (drag reparent) | `toRoot` (boolean) | (pending release) |  |
-| `collab_folder_deleted` | `CollabSidebar.tsx` | User deletes a shared folder (recursive) | `documentCount`<br/>`subfolderCount` | (pending release) |  |
-| `collab_folder_link_copied` | `CollabSidebar.tsx` | User copies a shared-folder deep link | None | (pending release) |  |
+The canonical property allowlists live in `packages/electron/src/shared/analytics/teamAnalytics.ts`. Renderer and main-process emitters use the shared adapters, which validate every event at runtime and reject unknown properties, identifying value shapes, raw paths, URLs, and emails. Counts, durations, retry counts, and query lengths use bounded category helpers.
+
+| Event family | Events | Authoritative success seam |
+| --- | --- | --- |
+| Organization and membership | `team_surface_opened`, `team_organization_created`, `team_organization_switched`, `team_invitation_sent`, `team_invitation_accepted`, `team_member_role_changed`, `team_member_removed`, `team_organization_merged`, `team_organization_deleted`, `team_operation_failed` | Organization service response or explicit surface transition |
+| Project sharing and access | `team_project_added`, `team_project_identity_changed`, `team_project_moved`, `team_project_access_changed` | Project-sharing service response |
+| Shared-document discovery | `collab_home_opened`, `collab_home_searched` | Visible Shared Docs home and debounced committed search |
+| Shared-document lifecycle | `collab_document_created`, `collab_document_opened`, `collab_document_first_edited`, `collab_document_action`, `collab_operation_failed` | Creation orchestrator, successful tab open/reuse, first local Yjs mutation, or accepted document action |
+| Shared-folder lifecycle | `collab_folder_created`, `collab_folder_renamed`, `collab_folder_moved`, `collab_folder_deleted`, `collab_folder_link_copied` | Accepted folder mutation or successful link copy |
+| Shared trackers | `tracker_item_clicked`, `tracker_table_sort`, `tracker_item_mutated`, `tracker_item_scope_changed`, `tracker_mutation_rejected` | Tracker service mutation, explicit view interaction, or sync-rejection seam |
+| Collaboration health | `collab_sync_attempt_completed`, `collab_outbox_replay_completed`, `collab_share_asset_migration_completed`, `collab_server_mutation_rejected` | Coalesced client-observed terminal attempt or replay/migration/rejection outcome |
+
+Common Teams properties are low-cardinality subsets of `surface`, `entryPoint`, `source`, `outcome`, `errorCategory`, `actorType`, `callerRole`, `documentType`, `editorCategory`, `collaborationScope`, `resourceType`, `connectionPath`, `encryptionMode`, `durationCategory`, and the defined count/retry buckets. Event-specific enums and permitted fields are enforced by the shared contract.
+
+Never add organization, project, document, folder, member, account, room, or session IDs to these events. Also forbidden are names, email addresses, titles, filenames, paths, git remotes, raw errors, URLs, tokens, content, payloads, and exact values where a bucket exists.
+
+#### Volume rules
+
+Several of these seams are reached by debounced autosave or by a retrying transport rather than by a discrete user action. Emitting one event per occurrence would both distort the metrics and cost real money, so the following caps are part of the contract — do not remove them when adding a call site:
+
+| Seam | Cap | Why |
+| --- | --- | --- |
+| `tracker_item_mutated` with `action=field_changed` | One per item per 10 minutes, shared across the IPC and MCP paths (`trackerMutationAnalytics.ts`) | Field saves arrive on a 500ms typing debounce. Discrete actions (`created`, `status_changed`, `assigned`, `commented`, `deleted`) are never throttled. |
+| Tracker body content saves | Not instrumented at all | The body editor autosaves every 800ms. First-edit intent is already covered by `collab_document_first_edited`. |
+| `collab_sync_attempt_completed` | One per resource per 60 seconds (`collaborationHealth.ts`) | A flapping socket can restart an attempt in a tight loop. |
+| `collab_outbox_replay_completed` | One per document per 5 minutes (`CollaborativeTabEditor.tsx`) | Every local edit enqueues an outbox entry, so cycles complete continuously while typing. |
+| `collab_document_first_edited` | Once per open lifecycle | Fired from the Yjs local-update callback, which fires per keystroke. |
+
+Health-event caps apply to **every outcome equally**. Suppressing only successes (or only failures) would bias the failure-rate alerts these events feed.
 
 ### Session Export
 
@@ -405,32 +427,9 @@ The `known_error` event uses an `errorId` property to identify specific error co
 Events from the iOS companion app. These events share the same PostHog project and analytics ID (via QR pairing) as the desktop app.
 
 
-## Event Summary Statistics
+## Catalog Verification
 
-- **Total Events**: 118 unique event names
-- **Main Process Events**: 57 (via AnalyticsService)
-- **Renderer Process Events**: 54 (via usePostHog hook)
-- **Mobile Events**: 7 (via Capacitor AnalyticsService)
-- **File Operations**: 7 events
-- **Workspace Operations**: 4 events
-- **Navigation & Editor Mode**: 4 events
-- **Session Kanban Board**: 6 events
-- **File History**: 2 events
-- **AI-Related**: 24 events
-- **Blitz Mode**: 1 event
-- **Session/File Sharing**: 2 events
-- **Session Export**: 1 event
-- **Feature Toggles**: 3 events
-- **MCP Configuration**: 3 events
-- **Terminal**: 1 event
-- **Extensions**: 1 event
-- **Account & Sync**: 7 events
-- **Onboarding**: 8 events
-- **Surveys & Feedback**: 3 events
-- **Permissions**: 4 events
-- **Auto-Update**: 6 events
-- **Voice Mode**: 3 events
-- **System/Infrastructure**: 13 events
+The event catalog is verified by focused tests instead of a manually maintained total, which previously drifted from the implementation. The Teams contract test requires every contract event name to appear in this document.
 
 ## Super Properties (on every event)
 
@@ -460,6 +459,11 @@ Person properties are attached to user profiles in PostHog via `posthog.people.s
 | `is_dev_install` | `boolean` | `AnalyticsService.ts` | Set via `$set_once` - true if installed from dev build |
 | `cpu_arch` | `string` | `AnalyticsService.ts` | `process.arch` value (`arm64`, `x64`, `ia32`, etc.) - set on each session start via `$set` |
 | `nimbalyst_mobile_version` | `string` | Mobile `main.tsx` | Mobile app version (iOS/Android) |
+| `has_used_teams` | `boolean` | Teams analytics adapter | Set once after a meaningful shared-document or shared-tracker action |
+| `has_created_team_organization` | `boolean` | Teams analytics adapter | Set once after successful organization creation |
+| `has_opened_shared_document` | `boolean` | Teams analytics adapter | Set once after an explicit shared-document open; restart restoration is excluded |
+| `has_edited_shared_document` | `boolean` | Teams analytics adapter | Set once after the first local edit in a shared-document open lifecycle |
+| `has_used_shared_tracker` | `boolean` | Teams analytics adapter | Set once after a successful shared tracker mutation |
 
 ## Surveys
 

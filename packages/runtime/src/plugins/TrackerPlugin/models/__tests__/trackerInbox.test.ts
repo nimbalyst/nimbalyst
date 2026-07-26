@@ -7,12 +7,14 @@ import { COLLECTION_INVERSE_KEY } from '../trackerCollections';
 import {
   acceptStatusFor,
   countInboxItems,
+  getDefaultPriority,
   getInitialStatus,
   isAgentProposal,
   isUntriaged,
   priorityOptionsFor,
   selectInboxItems,
   triageSignals,
+  STAMPED_DEFAULT_PRIORITY,
   type InboxSignals,
 } from '../trackerInbox';
 
@@ -69,7 +71,80 @@ describe('trackerInbox', () => {
       prioritized: true,
       inCollection: false,
       statusMoved: true,
+      markedTriaged: false,
     });
+  });
+
+  // NIM-2172: every write path stamps `priority || 'medium'` at create, so
+  // reading any priority as a decision emptied the inbox permanently.
+  it('does not treat the stamped default priority as a triage act', () => {
+    const stamped = record('stamped', 'bug', { priority: STAMPED_DEFAULT_PRIORITY });
+    expect(triageSignals(stamped, signals).prioritized).toBe(false);
+    expect(isUntriaged(stamped, signals)).toBe(true);
+
+    // Any other value is a human choosing, including one below the default.
+    expect(isUntriaged(record('chosen-low', 'bug', { priority: 'low' }), signals)).toBe(false);
+    expect(isUntriaged(record('chosen-high', 'bug', { priority: 'high' }), signals)).toBe(false);
+  });
+
+  it('falls back to the stamped default for a type that declares none', () => {
+    // A type with no declared priority default is still receiving the stamp on
+    // create, so the stamp is its de-facto default.
+    expect(getDefaultPriority('bug')).toBe('medium');
+    expect(getDefaultPriority('not-a-registered-type')).toBe(STAMPED_DEFAULT_PRIORITY);
+    const custom = record('custom-stamped', 'not-a-registered-type', { priority: 'medium' });
+    expect(triageSignals(custom, signals).prioritized).toBe(false);
+  });
+
+  it('honors a type whose declared priority default is not medium', () => {
+    const type = 'p0-first';
+    const model: TrackerDataModel = {
+      type,
+      displayName: 'Ticket',
+      displayNamePlural: 'Tickets',
+      icon: 'route',
+      color: '#000000',
+      modes: { inline: true, fullDocument: false },
+      idPrefix: 'P0F',
+      idFormat: 'ulid',
+      fields: [
+        { name: 'title', type: 'string', required: true },
+        {
+          name: 'severity',
+          type: 'select',
+          default: 'p3',
+          options: [
+            { value: 'p1', label: 'P1' },
+            { value: 'p2', label: 'P2' },
+            { value: 'p3', label: 'P3' },
+          ],
+        },
+      ],
+      roles: { title: 'title', priority: 'severity' },
+    };
+    globalRegistry.register(model);
+    try {
+      expect(getDefaultPriority(type)).toBe('p3');
+      expect(isUntriaged(record('at-default', type, { severity: 'p3' }), signals)).toBe(true);
+      expect(isUntriaged(record('escalated', type, { severity: 'p1' }), signals)).toBe(false);
+    } finally {
+      globalRegistry.unregister(type);
+    }
+  });
+
+  it('retires an item that a person explicitly left alone', () => {
+    const left = record('left-alone', 'bug', {}, {
+      system: {
+        workspace: '/w',
+        createdAt: '2026-07-20T00:00:00.000Z',
+        updatedAt: '2026-07-20T00:00:00.000Z',
+        triagedAt: '2026-07-25T00:00:00.000Z',
+      },
+    });
+    expect(triageSignals(left, signals).markedTriaged).toBe(true);
+    expect(isUntriaged(left, signals)).toBe(false);
+    // Clearing the mark returns it to the queue.
+    expect(isUntriaged(record('not-left', 'bug'), signals)).toBe(true);
   });
 
   it('keeps archived items and collections themselves out of the inbox', () => {

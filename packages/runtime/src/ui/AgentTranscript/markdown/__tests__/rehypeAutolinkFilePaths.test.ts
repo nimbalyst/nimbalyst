@@ -34,6 +34,35 @@ describe('rehypeAutolinkFilePaths path detection', () => {
     });
   });
 
+  /**
+   * The extension was capped at 8 characters, so anything longer was linked
+   * only up to the cap and the remainder fell outside the anchor — the href
+   * pointed at a path that does not exist. `.excalidraw` is Nimbalyst's own
+   * extension, so its diagrams were unopenable from the transcript:
+   *
+   *   docs/diagrams/01-one-box.excalidraw  ->  docs/diagrams/01-one-box.excalidr
+   */
+  describe('extensions longer than 8 characters', () => {
+    const cases: Array<[string, string[]]> = [
+      ['docs/diagrams/01-one-box.excalidraw', ['docs/diagrams/01-one-box.excalidraw']],
+      ['src/app.properties', ['src/app.properties']],
+      ['a/b/Main.storyboard', ['a/b/Main.storyboard']],
+      ['docs/diagrams/flow.excalidraw:12', ['docs/diagrams/flow.excalidraw:12']],
+      // This repo ships an iOS package, so these appear in real transcripts.
+      ['packages/ios/App.xcworkspace', ['packages/ios/App.xcworkspace']],
+      ['packages/ios/App/App.entitlements', ['packages/ios/App/App.entitlements']],
+    ];
+    it.each(cases)('links the whole extension in %j', (input, expected) => {
+      expect(linkedPaths(input)).toEqual(expected);
+    });
+
+    it('still links short extensions unchanged', () => {
+      expect(linkedPaths('packages/electron/src/foo.ts')).toEqual([
+        'packages/electron/src/foo.ts',
+      ]);
+    });
+  });
+
   describe('should NOT link', () => {
     const cases: string[] = [
       'and/or',

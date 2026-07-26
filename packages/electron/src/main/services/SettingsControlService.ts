@@ -1,3 +1,4 @@
+import { applyAnalyticsEnabled } from './analytics/applyAnalyticsEnabled';
 /**
  * SettingsControlService
  *
@@ -32,7 +33,6 @@ import {
   getWorkspaceState,
   isAnalyticsEnabled as storeIsAnalyticsEnabled,
   isSettingsAgentToolsDisabled,
-  setAnalyticsEnabled as storeSetAnalyticsEnabled,
   setAppSetting,
   setDefaultAIModel as storeSetDefaultAIModel,
   setPreferredAgentLanguage,
@@ -417,7 +417,10 @@ export class SettingsControlService {
   ): Promise<SettingsToolResult<boolean, boolean>> {
     rateLimit(sessionId);
     const before = storeIsAnalyticsEnabled();
-    storeSetAnalyticsEnabled(args.enabled);
+    // Shared applier: persists the setting, opts the posthog-node client
+    // in/out, and tells every renderer window so their posthog-js clients
+    // follow. Writing the store directly would leave the renderer capturing.
+    await applyAnalyticsEnabled(args.enabled);
     this.audit('analytics_set_enabled', sessionId, { before, after: args.enabled });
     return { ok: true, before, after: args.enabled };
   }

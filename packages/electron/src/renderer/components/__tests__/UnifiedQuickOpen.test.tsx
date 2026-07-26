@@ -226,6 +226,7 @@ describe('UnifiedQuickOpen — Projects tab', () => {
     expect(store.get(pendingCollabDocumentAtom)).toEqual({
       documentId: 'doc-roadmap',
       documentType: 'markdown',
+      analyticsSource: 'quick_open',
     });
     expect(store.get(windowModeAtom)).toBe('collab');
     expect(onClose).toHaveBeenCalledOnce();
@@ -673,6 +674,7 @@ describe('UnifiedQuickOpen — Team tab', () => {
     expect(store.get(pendingCollabDocumentAtom)).toEqual({
       documentId: 'doc-canvas',
       documentType: 'excalidraw',
+      analyticsSource: 'quick_open',
     });
     expect(store.get(windowModeAtom)).toBe('collab');
     expect(onClose).toHaveBeenCalledOnce();

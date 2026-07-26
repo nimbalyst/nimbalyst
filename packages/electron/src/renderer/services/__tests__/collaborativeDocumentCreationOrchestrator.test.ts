@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { trackTeamAnalyticsEvent } = vi.hoisted(() => ({
+  trackTeamAnalyticsEvent: vi.fn(),
+}));
 
 vi.mock('@nimbalyst/runtime/store', () => ({
   store: { get: vi.fn(), set: vi.fn() },
@@ -32,6 +36,7 @@ vi.mock('../CollaborativeDocumentTypeCatalog', () => ({
 vi.mock('../../utils/logger', () => ({
   logger: { ui: { warn: vi.fn() } },
 }));
+vi.mock('../../utils/teamAnalytics', () => ({ trackTeamAnalyticsEvent }));
 
 import type {
   CollaborativeDocumentTypeCatalog,
@@ -153,6 +158,8 @@ function makeHarness(options: {
 }
 
 describe('CollaborativeDocumentCreationOrchestrator', () => {
+  beforeEach(() => trackTeamAnalyticsEvent.mockClear());
+
   it('can create a cascade child without publishing it as the pending open document', async () => {
     const harness = makeHarness({ descriptor: mockupDescriptor });
 
@@ -196,6 +203,12 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       null,
       { metadataVersion: 2, fileExtension: '.md', editorId: 'builtin.lexical' },
     );
+    expect(trackTeamAnalyticsEvent).toHaveBeenCalledWith('collab_document_created', expect.objectContaining({
+      source: 'new_document',
+      actorType: 'user',
+      documentType: 'markdown',
+      editorCategory: 'lexical',
+    }));
   });
 
   it('registers an intentional empty markdown document without a content update', async () => {
@@ -222,6 +235,11 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
     });
     expect(harness.events).toEqual(['resolve-config', 'seed', 'cleanup']);
     expect(harness.documents).toEqual([]);
+    expect(trackTeamAnalyticsEvent).toHaveBeenCalledWith('collab_operation_failed', expect.objectContaining({
+      operation: 'create_document',
+      source: 'new_document',
+      errorCategory: expect.any(String),
+    }));
   });
 
   it('retries idempotently with the same operation and document id', async () => {

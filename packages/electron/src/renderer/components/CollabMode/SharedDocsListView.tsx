@@ -57,6 +57,8 @@ import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { getCollaborativeDocumentTypeCatalog } from '../../services/CollaborativeDocumentTypeCatalog';
 import { resolveSharedDocumentTypePresentation } from '../../utils/sharedDocumentTypeMetadata';
 import { sharedDocTypeColor, resolveMyMemberIds } from './sharedHomeTab';
+import { bucketItemCount, bucketQueryLength, toStableAnalyticsCategory } from '../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 
 interface SharedDocsListViewProps {
   workspacePath: string;
@@ -164,6 +166,20 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ workspac
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
   const [selectedPeople, setSelectedPeople] = useState<Set<string>>(new Set());
   const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
+  const homeOpenedRef = React.useRef(false);
+  const lastTrackedQueryRef = React.useRef('');
+
+  useEffect(() => {
+    if (homeOpenedRef.current) return;
+    homeOpenedRef.current = true;
+    trackTeamAnalyticsEvent('collab_home_opened', {
+      surface: 'desktop',
+      entryPoint: 'navigation',
+      hasDocuments: allDocs.some((document) => !document.decryptFailed),
+      unreadCountBucket: bucketItemCount(unreadIds.size),
+      favoriteCountBucket: bucketItemCount(favorites.length),
+    });
+  }, [allDocs, favorites.length, unreadIds.size]);
 
   // --- Team member directory (createdBy / last-edited resolution) ---
   const [members, setMembers] = useState<Map<string, MemberInfo>>(new Map());
@@ -307,6 +323,23 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ workspac
     });
   }, [segmentDocs, trimmedQuery, selectedTypes, selectedPeople, selectedFolders, typePresentation]);
 
+  useEffect(() => {
+    if (!trimmedQuery) {
+      lastTrackedQueryRef.current = '';
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (lastTrackedQueryRef.current === trimmedQuery) return;
+      lastTrackedQueryRef.current = trimmedQuery;
+      trackTeamAnalyticsEvent('collab_home_searched', {
+        surface: 'desktop',
+        queryLengthBucket: bucketQueryLength(trimmedQuery.length),
+        resultCountBucket: bucketItemCount(filteredDocs.length),
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [filteredDocs.length, trimmedQuery]);
+
   const toggleFacet = useCallback(
     (setter: React.Dispatch<React.SetStateAction<Set<string>>>, value: string) => {
       setter((prev) => {
@@ -372,6 +405,7 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ workspac
     setPendingDoc({
       documentId: doc.documentId,
       documentType: doc.documentType,
+      analyticsSource: 'home',
       ...(doc.metadataVersion === 2
         ? { metadataVersion: 2 as const, fileExtension: doc.fileExtension, editorId: doc.editorId }
         : {}),
@@ -381,6 +415,13 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ workspac
   const copyLink = useCallback((doc: SharedDocument) => {
     if (!orgId) return;
     void navigator.clipboard?.writeText(buildSharedDocumentDeepLink(doc.documentId, orgId));
+    trackTeamAnalyticsEvent('collab_document_action', {
+      surface: 'desktop',
+      action: 'link_copied',
+      actorType: 'user',
+      documentType: toStableAnalyticsCategory(doc.documentType),
+      entryPoint: 'home',
+    });
   }, [orgId]);
 
   const totalOpenable = allDocs.filter((d) => !d.decryptFailed).length;

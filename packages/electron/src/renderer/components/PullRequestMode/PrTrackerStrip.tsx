@@ -3,7 +3,7 @@
  *
  * Shows, for the selected PR: each referencing tracker item (issue-key chip →
  * tracker mode, editable status pill using the item's own schema options),
- * the linked review sessions (button/popover → agent mode), the primary
+ * the linked review sessions (session chips → the PR chat pane), the primary
  * item's notes one-liner, and a "Link tracker item" picker for connecting any
  * existing item (of any type) to this PR via system.linkedPullRequests.
  */
@@ -11,7 +11,7 @@
 import type { JSX } from 'react';
 import { useMemo, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol, ProviderIcon, SessionReferenceChip } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { globalRegistry, getRoleField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import {
@@ -32,15 +32,24 @@ import { dispatchOpenSessionInTab } from '../../store/actions/sessionHistoryActi
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
 import { statusOptionFor, trackerColorStyle } from './PrTrackerBadge';
 import { compareTrackerUpdatedAtDesc } from './prTrackerSort';
-import { usePrTrackerContext } from './usePrTrackerContext';
+import type { PrTrackerContext } from './usePrTrackerContext';
 import type { SessionMeta } from '../../store/atoms/sessions';
 
 interface PrTrackerStripProps {
-  workspacePath: string;
   remote: string;
   prNumber: number;
+  /**
+   * Tracker items + linked sessions for this PR. Owned by PullRequestMode so
+   * the strip and the chat pane resolve the same sessions exactly once.
+   */
+  context: PrTrackerContext;
   /** PR state, for surfacing externally merged/closed PRs with active items. */
   prState?: 'open' | 'merged' | 'closed';
+  /**
+   * Opens a linked session — the PR pane loads it into its own chat sidebar so
+   * the review stays next to the diff. Without it, sessions open in Agent mode.
+   */
+  onOpenSession?: (sessionId: string) => void;
 }
 
 function navigateToTrackerItem(itemId: string): void {
@@ -130,8 +139,14 @@ function StatusPill({ record }: { record: TrackerRecord }): JSX.Element | null {
   );
 }
 
-/** Session jump button; a popover list when more than one session is linked. */
-function SessionsButton({
+/** Linked sessions beyond this many collapse into a "+N" popover. */
+const MAX_INLINE_SESSION_CHIPS = 2;
+
+/**
+ * Linked sessions as the standard session chips (live title, phase dot,
+ * provider glyph), with a popover for the overflow when several are linked.
+ */
+function LinkedSessions({
   sessions,
   onOpen,
 }: {
@@ -141,60 +156,60 @@ function SessionsButton({
   const menu = useFloatingMenu({ placement: 'bottom-start' });
   if (sessions.length === 0) return null;
 
-  if (sessions.length === 1) {
-    return (
-      <button
-        type="button"
-        data-testid="pr-open-session"
-        className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-nim-muted hover:text-nim border border-nim rounded transition-colors"
-        onClick={() => onOpen(sessions[0].id)}
-        title={sessions[0].title}
-      >
-        <MaterialSymbol icon="smart_toy" size={13} />
-        Session
-      </button>
-    );
-  }
+  const inline = sessions.slice(0, MAX_INLINE_SESSION_CHIPS);
+  const overflow = sessions.slice(MAX_INLINE_SESSION_CHIPS);
 
   return (
-    <>
-      <button
-        ref={menu.refs.setReference}
-        {...menu.getReferenceProps()}
-        type="button"
-        data-testid="pr-open-session"
-        className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-nim-muted hover:text-nim border border-nim rounded transition-colors"
-        onClick={() => menu.setIsOpen(!menu.isOpen)}
-      >
-        <MaterialSymbol icon="smart_toy" size={13} />
-        {sessions.length} sessions
-        <MaterialSymbol icon="arrow_drop_down" size={14} />
-      </button>
-      {menu.isOpen && (
-        <FloatingPortal>
-          <div
-            ref={menu.refs.setFloating}
-            style={menu.floatingStyles}
-            {...menu.getFloatingProps()}
-            className="z-50 min-w-[260px] max-w-[380px] bg-nim-secondary border border-nim rounded-md shadow-lg py-1"
+    <span className="pr-linked-sessions inline-flex items-center gap-1" data-testid="pr-linked-sessions">
+      {inline.map((session) => (
+        <SessionReferenceChip
+          key={session.id}
+          sessionId={session.id}
+          variant="compact"
+          onOpen={onOpen}
+        />
+      ))}
+      {overflow.length > 0 && (
+        <>
+          <button
+            ref={menu.refs.setReference}
+            {...menu.getReferenceProps()}
+            type="button"
+            data-testid="pr-open-session"
+            className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-nim-muted hover:text-nim border border-nim rounded transition-colors"
+            onClick={() => menu.setIsOpen(!menu.isOpen)}
+            title={`${overflow.length} more linked ${overflow.length === 1 ? 'session' : 'sessions'}`}
           >
-            {sessions.map((session) => (
-              <button
-                key={session.id}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-nim-muted hover:bg-nim-tertiary hover:text-nim transition-colors"
-                onClick={() => {
-                  menu.setIsOpen(false);
-                  onOpen(session.id);
-                }}
+            +{overflow.length}
+            <MaterialSymbol icon="arrow_drop_down" size={14} />
+          </button>
+          {menu.isOpen && (
+            <FloatingPortal>
+              <div
+                ref={menu.refs.setFloating}
+                style={menu.floatingStyles}
+                {...menu.getFloatingProps()}
+                className="z-50 min-w-[260px] max-w-[380px] bg-nim-secondary border border-nim rounded-md shadow-lg py-1"
               >
-                <MaterialSymbol icon="smart_toy" size={13} className="shrink-0" />
-                <span className="truncate">{session.title}</span>
-              </button>
-            ))}
-          </div>
-        </FloatingPortal>
+                {overflow.map((session) => (
+                  <button
+                    key={session.id}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-nim-muted hover:bg-nim-tertiary hover:text-nim transition-colors"
+                    onClick={() => {
+                      menu.setIsOpen(false);
+                      onOpen(session.id);
+                    }}
+                  >
+                    <ProviderIcon provider={session.provider || 'claude'} size={13} className="shrink-0" />
+                    <span className="truncate">{session.title}</span>
+                  </button>
+                ))}
+              </div>
+            </FloatingPortal>
+          )}
+        </>
       )}
-    </>
+    </span>
   );
 }
 
@@ -345,16 +360,21 @@ function StaleItemHint({ record }: { record: TrackerRecord }): JSX.Element | nul
 }
 
 export function PrTrackerStrip({
-  workspacePath,
   remote,
   prNumber,
+  context,
   prState,
+  onOpenSession,
 }: PrTrackerStripProps): JSX.Element {
-  const { items, primary, sessions } = usePrTrackerContext(workspacePath, remote, prNumber);
+  const { items, primary, sessions } = context;
   const alreadyLinkedIds = useMemo(() => new Set(items.map((i) => i.id)), [items]);
   const setWindowMode = useSetAtom(setWindowModeAtom);
 
   const openSession = (sessionId: string) => {
+    if (onOpenSession) {
+      onOpenSession(sessionId);
+      return;
+    }
     void dispatchOpenSessionInTab(sessionId).then(() => setWindowMode('agent'));
   };
 
@@ -380,7 +400,7 @@ export function PrTrackerStrip({
             {prState === 'merged' && <StaleItemHint record={item} />}
           </span>
         ))}
-        <SessionsButton sessions={sessions} onOpen={openSession} />
+        <LinkedSessions sessions={sessions} onOpen={openSession} />
         <LinkTrackerItemButton remote={remote} prNumber={prNumber} alreadyLinkedIds={alreadyLinkedIds} />
       </div>
       {notes && (

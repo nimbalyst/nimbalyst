@@ -48,6 +48,7 @@ fields:
 
   - name: priority
     type: select
+    default: medium
     options:
       - value: low
         label: Low

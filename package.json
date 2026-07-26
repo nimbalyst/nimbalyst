@@ -43,6 +43,8 @@
     "android:assemble:release": "npm run android:assemble:release --prefix packages/android",
     "android:bundle:release": "npm run android:bundle:release --prefix packages/android",
     "android:bundle:signed": "./scripts/android-bundle-signed.sh",
+    "android:screenshots": "bash packages/android/scripts/take-screenshots.sh",
+    "android:walkthrough": "bash packages/android/scripts/record-walkthrough.sh",
     "test:extensions": "bash scripts/run-extension-tests.sh",
     "postinstall": "patch-package"
   },

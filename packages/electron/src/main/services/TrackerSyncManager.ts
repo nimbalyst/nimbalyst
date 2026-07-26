@@ -84,6 +84,10 @@ import {
   verifyOrMarkCollabBackups,
 } from './CollabBackupCoordinator';
 import { getCollabBackupService } from './CollabBackupService';
+import { AnalyticsService } from './analytics/AnalyticsService';
+import { sendTeamAnalyticsEvent } from './analytics/TeamAnalytics';
+import { CollaborationHealthAttemptTracker } from '../../shared/analytics/collaborationHealth';
+import { categorizeTeamAnalyticsError, toStableAnalyticsCategory } from '../../shared/analytics/teamAnalytics';
 
 // ============================================================================
 // Engine registry (per workspace)
@@ -109,6 +113,26 @@ interface EngineEntry {
 // projection's row stream per consumer. Phase 4's per-window broadcast
 // could later collapse to a single engine per team.
 const engines = new Map<string, EngineEntry>();
+const trackerSyncAnalytics = AnalyticsService.getInstance();
+const initializedTrackerSyncWorkspaces = new Set<string>();
+
+/**
+ * Local lookup of a rejected item's tracker type. Only the type name is
+ * reported; the item id never leaves the process.
+ */
+async function resolveTrackerTypeForItem(itemId: string): Promise<string> {
+  try {
+    const db = getDatabase();
+    if (!db) return 'unknown';
+    const row = await db.query<{ type: string }>(
+      `SELECT type FROM tracker_items WHERE id = $1 LIMIT 1`,
+      [itemId],
+    );
+    return toStableAnalyticsCategory(row.rows[0]?.type);
+  } catch {
+    return 'unknown';
+  }
+}
 
 registerTrackerNavigationFlushHandler((workspacePath) =>
   engines.get(workspacePath)?.engine.flushNavigation(),
@@ -294,6 +318,12 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     logger.main.warn('[TrackerSyncManager] key-status resolve failed; using last-known mode', keyStatusMode, ':', err);
   }
   const serverManaged = keyStatusMode === 'server-managed';
+  const healthAttempt = new CollaborationHealthAttemptTracker(
+    'tracker',
+    serverManaged ? 'server_managed' : 'legacy_e2e',
+  );
+  healthAttempt.start(initializedTrackerSyncWorkspaces.has(workspacePath) ? 'reconnect' : 'initial');
+  initializedTrackerSyncWorkspaces.add(workspacePath);
 
   // Resolve org encryption key (legacy mode only). If the envelope hasn't been
   // shared with us yet, surface a status update but don't crash; the user can
@@ -313,6 +343,10 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
           '[TrackerSyncManager] no encryption key for', team.orgId,
           '-- engine not started until admin shares envelope.',
         );
+        const healthProperties = healthAttempt.observe('error', new Error('Encryption key unavailable'));
+        if (healthProperties) {
+          sendTeamAnalyticsEvent(trackerSyncAnalytics, 'collab_sync_attempt_completed', healthProperties);
+        }
         return;
       }
     }
@@ -325,6 +359,10 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
   const db = getDatabase();
   if (!db) {
     logger.main.error('[TrackerSyncManager] database not available; cannot start engine');
+    const healthProperties = healthAttempt.observe('error', new Error('Local sync database unavailable'));
+    if (healthProperties) {
+      sendTeamAnalyticsEvent(trackerSyncAnalytics, 'collab_sync_attempt_completed', healthProperties);
+    }
     return;
   }
 
@@ -367,6 +405,10 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     // the cast is intentional and matches DocumentSyncHandlers' approach.
     createWebSocket: ((url: string) => new WebSocket(url)) as unknown as TrackerSyncEngineConfig['createWebSocket'],
     onStatusChange: (status) => {
+      const healthProperties = healthAttempt.observe(status);
+      if (healthProperties) {
+        sendTeamAnalyticsEvent(trackerSyncAnalytics, 'collab_sync_attempt_completed', healthProperties);
+      }
       // logger.main.info('[TrackerSyncManager] onStatusChange for', workspacePath, '->', status);
       const entry = engines.get(workspacePath);
       if (entry) {
@@ -401,9 +443,37 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     },
     onRejection: (rejection) => {
       logger.main.warn('[TrackerSyncManager] onRejection for', workspacePath, 'itemId:', rejection.itemId, 'code:', rejection.rejection.code, 'message:', rejection.rejection.message);
+      // Resolve the tracker type so the rejection dashboards can break down by
+      // type; the lookup is local-only and only the type name is reported.
+      void resolveTrackerTypeForItem(rejection.itemId).then((trackerType) => {
+        const errorCategory = categorizeTeamAnalyticsError(
+          'sync',
+          `${rejection.rejection.code} ${rejection.rejection.message}`,
+        );
+        sendTeamAnalyticsEvent(trackerSyncAnalytics, 'tracker_mutation_rejected', {
+          surface: 'desktop',
+          // A rejection names the item, not which mutation produced it.
+          action: 'unknown',
+          trackerType,
+          errorCategory,
+        });
+        sendTeamAnalyticsEvent(trackerSyncAnalytics, 'collab_server_mutation_rejected', {
+          surface: 'desktop',
+          resourceType: 'tracker',
+          operation: 'mutation',
+          errorCategory,
+          // `connectionPath` is intentionally omitted: a rejection arrives on
+          // whatever connection is open and we cannot attribute it to an
+          // initial connect versus a reconnect without guessing.
+        });
+      });
       emitRejection(workspacePath, rejection);
     },
     onBootstrapError: (err) => {
+      const healthProperties = healthAttempt.observe('error', err);
+      if (healthProperties) {
+        sendTeamAnalyticsEvent(trackerSyncAnalytics, 'collab_sync_attempt_completed', healthProperties);
+      }
       // Surface engine bootstrap failures explicitly. Without this the
       // engine sits at `syncing` indefinitely (the catch in runBootstrap
       // used to swallow the error). Now we get a single error line that
@@ -437,6 +507,10 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     await engine.connect();
     logger.main.info('[TrackerSyncManager] engine.connect() resolved for', workspacePath);
   } catch (err) {
+    const healthProperties = healthAttempt.observe('error', err);
+    if (healthProperties) {
+      sendTeamAnalyticsEvent(trackerSyncAnalytics, 'collab_sync_attempt_completed', healthProperties);
+    }
     logger.main.error('[TrackerSyncManager] engine.connect failed for', workspacePath, ':', err);
   }
 }
@@ -1191,6 +1265,10 @@ export function trackerItemToPayload(item: TrackerItem): TrackerItemPayload {
       // first upsert rewrites `data` from the payload and drops `data.origin`,
       // emptying the URN index.
       origin: record.system.origin,
+      // Triage is a team decision, so it travels: a colleague clearing an item
+      // from their inbox clears it from yours.
+      triagedAt: record.system.triagedAt,
+      triagedBy: record.system.triagedBy,
     },
   };
 }

@@ -99,6 +99,10 @@ export interface PrModeLayout {
   sidebarWidth: number;
   /** Detail panel width in pixels. */
   detailPanelWidth: number;
+  /** AI chat panel width in pixels. */
+  chatWidth: number;
+  /** Whether the AI chat panel is collapsed. */
+  chatCollapsed: boolean;
   /** Files Changed display mode. */
   filesViewMode: PrFilesViewMode;
   /** Diff orientation within the collapsed-diff stream. */
@@ -113,6 +117,8 @@ const DEFAULT_PR_MODE_LAYOUT: PrModeLayout = {
   activeDetailTab: 'conversation',
   sidebarWidth: 220,
   detailPanelWidth: 460,
+  chatWidth: 350,
+  chatCollapsed: false,
   filesViewMode: 'full',
   patchDiffLayout: 'unified',
 };
@@ -145,24 +151,27 @@ export async function initPrModeLayout(workspacePath: string): Promise<void> {
   currentWorkspacePath = workspacePath;
   try {
     const workspaceState = await window.electronAPI.invoke('workspace:get-state', workspacePath);
-    const saved = workspaceState?.prModeLayout;
-    if (saved && typeof saved === 'object') {
-      store.set(prModeLayoutAtom, {
-        activeFilters: Array.isArray(saved.activeFilters)
-          ? saved.activeFilters
-          : DEFAULT_PR_MODE_LAYOUT.activeFilters,
-        trackerStatusFilters: Array.isArray(saved.trackerStatusFilters)
-          ? saved.trackerStatusFilters
-          : DEFAULT_PR_MODE_LAYOUT.trackerStatusFilters,
-        sortKey: saved.sortKey ?? DEFAULT_PR_MODE_LAYOUT.sortKey,
-        selectedItemId: saved.selectedItemId ?? DEFAULT_PR_MODE_LAYOUT.selectedItemId,
-        activeDetailTab: saved.activeDetailTab ?? DEFAULT_PR_MODE_LAYOUT.activeDetailTab,
-        sidebarWidth: saved.sidebarWidth ?? DEFAULT_PR_MODE_LAYOUT.sidebarWidth,
-        detailPanelWidth: saved.detailPanelWidth ?? DEFAULT_PR_MODE_LAYOUT.detailPanelWidth,
-        filesViewMode: saved.filesViewMode ?? DEFAULT_PR_MODE_LAYOUT.filesViewMode,
-        patchDiffLayout: saved.patchDiffLayout ?? DEFAULT_PR_MODE_LAYOUT.patchDiffLayout,
-      });
-    }
+    const saved =
+      workspaceState?.prModeLayout && typeof workspaceState.prModeLayout === 'object'
+        ? workspaceState.prModeLayout
+        : {};
+    store.set(prModeLayoutAtom, {
+      activeFilters: Array.isArray(saved.activeFilters)
+        ? saved.activeFilters
+        : DEFAULT_PR_MODE_LAYOUT.activeFilters,
+      trackerStatusFilters: Array.isArray(saved.trackerStatusFilters)
+        ? saved.trackerStatusFilters
+        : DEFAULT_PR_MODE_LAYOUT.trackerStatusFilters,
+      sortKey: saved.sortKey ?? DEFAULT_PR_MODE_LAYOUT.sortKey,
+      selectedItemId: saved.selectedItemId ?? DEFAULT_PR_MODE_LAYOUT.selectedItemId,
+      activeDetailTab: saved.activeDetailTab ?? DEFAULT_PR_MODE_LAYOUT.activeDetailTab,
+      sidebarWidth: saved.sidebarWidth ?? DEFAULT_PR_MODE_LAYOUT.sidebarWidth,
+      detailPanelWidth: saved.detailPanelWidth ?? DEFAULT_PR_MODE_LAYOUT.detailPanelWidth,
+      chatWidth: saved.chatWidth ?? DEFAULT_PR_MODE_LAYOUT.chatWidth,
+      chatCollapsed: saved.chatCollapsed ?? DEFAULT_PR_MODE_LAYOUT.chatCollapsed,
+      filesViewMode: saved.filesViewMode ?? DEFAULT_PR_MODE_LAYOUT.filesViewMode,
+      patchDiffLayout: saved.patchDiffLayout ?? DEFAULT_PR_MODE_LAYOUT.patchDiffLayout,
+    });
   } catch (err) {
     console.error('[pullRequests] Failed to load mode layout:', err);
   }

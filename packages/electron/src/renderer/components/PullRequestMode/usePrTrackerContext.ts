@@ -44,7 +44,9 @@ export function usePrTrackerContext(
   useEffect(() => {
     let cancelled = false;
     setWorktreeId(null);
-    if (!remote) return;
+    // prNumber 0 = no PR selected; the mode still calls this hook so the hook
+    // order stays stable.
+    if (!remote || !prNumber) return;
     window.electronAPI
       .invoke('worktree:list', workspacePath)
       .then((worktrees: Array<{ id: string; prNumber?: number; prRemote?: string }>) => {

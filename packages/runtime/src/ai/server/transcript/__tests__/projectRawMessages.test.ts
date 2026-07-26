@@ -12,6 +12,7 @@ import {
   rawMessagesToCanonicalEvents,
 } from '../projectRawMessages';
 import type { RawMessage } from '../TranscriptTransformer';
+import { truncateContentForSync } from '../../../../sync/syncContentTruncator';
 
 const SESSION_ID = 'test-session';
 
@@ -511,5 +512,62 @@ describe('projectRawMessagesToViewMessages', () => {
     expect(events[0].id).toBe(1);
     expect(events[1].id).toBe(2);
     expect(events[0].sequence).toBeLessThan(events[1].sequence);
+  });
+
+  it('carries a desktop screenshot through sync truncation into the mobile projection', async () => {
+    // End-to-end for the desktop-screenshot-on-mobile feature: the raw message
+    // goes through the same truncation the sync path applies before encryption,
+    // then through the projection the iOS/Android transcript bundle runs. The
+    // projected result must still contain the base64 image, because that string
+    // is exactly what EditorScreenshotWidget parses to build its <img> src.
+    const imageData = 'A'.repeat(190 * 1024);
+    const toolResult = JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            tool_use_id: 'toolu_shot',
+            type: 'tool_result',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageData } },
+            ],
+          },
+        ],
+      },
+      tool_use_result: { type: 'image' },
+      session_id: SESSION_ID,
+    });
+
+    const messages: RawMessage[] = [
+      raw({
+        id: 1,
+        content: JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_shot',
+                name: 'mcp__nimbalyst__capture_editor_screenshot',
+                input: { filePath: '/tmp/a.mockup.html' },
+              },
+            ],
+          },
+        }),
+      }),
+      // What actually crosses the wire to the phone.
+      raw({ id: 2, content: truncateContentForSync(toolResult, 'claude-code').content }),
+    ];
+
+    const vms = await projectRawMessagesToViewMessages(messages, 'claude-code');
+
+    const toolCall = vms.find((m) => m.type === 'tool_call');
+    expect(toolCall?.toolCall?.toolName).toBe('mcp__nimbalyst__capture_editor_screenshot');
+    expect(toolCall?.toolCall?.status).toBe('completed');
+    const blocks = JSON.parse(toolCall?.toolCall?.result as string);
+    expect(blocks[0].type).toBe('image');
+    expect(blocks[0].source.data).toBe(imageData);
   });
 });

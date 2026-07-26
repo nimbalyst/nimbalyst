@@ -913,6 +913,7 @@ const SharedDocsPane: React.FC<SharedDocsPaneProps> = memo(({
       setPendingCollabDocument({
         documentId: doc.documentId,
         documentType: doc.documentType,
+        analyticsSource: 'quick_open',
       });
       setWindowMode('collab');
       onClose();
@@ -1224,6 +1225,7 @@ const FilesPane: React.FC<FilesPaneProps> = memo(({
         setPendingCollabDocument({
           documentId: file.sharedDocument.documentId,
           documentType: file.sharedDocument.documentType,
+          analyticsSource: 'quick_open',
         });
         setWindowMode('collab');
         onClose();

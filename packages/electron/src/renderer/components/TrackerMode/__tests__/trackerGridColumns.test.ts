@@ -166,17 +166,14 @@ describe('buildGridColumns', () => {
     expect((status.readonly as (params: any) => boolean)({ model: source })).toBe(false);
   });
 
-  it('renders explicit sort and compact filter actions in the header', () => {
+  it('enables native header sorting while keeping the filter action isolated', () => {
     registerType();
-    const onSort = vi.fn();
     const onOpenFilter = vi.fn();
     const [title] = buildGridColumns(columnsFor(['title']), {
       trackerType: gridType,
       isRowEditable: () => true,
       filteredColumnIds: new Set(['title']),
-      sortBy: 'title',
-      sortDirection: 'desc',
-      onSort,
+      sortingEnabled: true,
       onOpenFilter,
     });
     const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({
@@ -186,19 +183,13 @@ describe('buildGridColumns', () => {
     });
     const header = (title.columnTemplate as any)(h);
     const actions = header.children[1];
-    const [sortButton, filterButton] = actions.children;
+    const [filterButton] = actions.children;
     const target = document.createElement('span');
 
-    expect(sortButton.props.class).toContain('is-sorted');
-    expect(sortButton.children.children).toBe('arrow_downward');
+    expect(title.sortable).toBe(true);
+    expect(header.props.onClick).toBeUndefined();
     expect(filterButton.props.class).toContain('is-filtered');
     expect(filterButton.children.children).toBe('filter_alt');
-
-    sortButton.props.onClick({
-      preventDefault: vi.fn(),
-      stopPropagation: vi.fn(),
-    });
-    expect(onSort).toHaveBeenCalledWith('title', 'asc');
 
     filterButton.props.onClick({
       preventDefault: vi.fn(),

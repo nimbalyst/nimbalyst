@@ -52,10 +52,11 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "build": "tsc",
+    "build:clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('.tsbuildinfo',{force:true})\" && tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build:clean"
   },
   "dependencies": {},
   "peerDependencies": {

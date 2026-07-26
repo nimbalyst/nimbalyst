@@ -28,6 +28,13 @@ import {
   type CollaborativeDocumentTypeDescriptor,
 } from './CollaborativeDocumentTypeCatalog';
 import { logger } from '../utils/logger';
+import {
+  bucketItemCount,
+  categorizeTeamAnalyticsError,
+  toStableAnalyticsCategory,
+} from '../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../utils/teamAnalytics';
+import type { CollabDocumentOpenSource } from '../utils/collabDocumentOpener';
 
 export interface CollaborativeDocumentLocalOrigin {
   sourceFilePath: string;
@@ -47,6 +54,11 @@ export interface CreateCollaborativeDocumentInput {
   documentId?: string;
   /** Whether creation should navigate to/open this document. Defaults to true. */
   openAfterCreate?: boolean;
+  /** Required at production call sites; defaults preserve older tests and retries. */
+  analyticsSource?: 'new_document' | 'share_to_team' | 'agent_tool' | 'embedded_document';
+  analyticsActorType?: 'user' | 'agent';
+  analyticsLinkedDocumentCount?: number;
+  analyticsAssetMigrationOutcome?: 'not_needed' | 'success' | 'partial' | 'failed';
 }
 
 export type CollaborativeDocumentCreationErrorCode =
@@ -126,7 +138,11 @@ export interface CollaborativeDocumentCreationDependencies {
     lastLocalContentHash: string | null;
     lastCollabContentHash: string | null;
   }): Promise<{ success: boolean; error?: string }>;
-  publishPending(document: SharedDocument, initialContent?: string): void;
+  publishPending(
+    document: SharedDocument,
+    initialContent?: string,
+    source?: CollabDocumentOpenSource,
+  ): void;
   cleanup(workspacePath: string, documentId: string): Promise<void>;
   generateId(): string;
   now(): number;
@@ -257,7 +273,7 @@ function defaultDependencies(): CollaborativeDocumentCreationDependencies {
       if (!save) return { success: false, error: 'Local-origin persistence is unavailable.' };
       return save(payload);
     },
-    publishPending: (document, initialContent) => {
+    publishPending: (document, initialContent, source) => {
       store.set(pendingCollabDocumentAtom, {
         documentId: document.documentId,
         documentType: document.documentType,
@@ -265,6 +281,7 @@ function defaultDependencies(): CollaborativeDocumentCreationDependencies {
         fileExtension: document.fileExtension,
         editorId: document.editorId,
         initialContent,
+        analyticsSource: source,
       });
       store.set(setWindowModeAtom, 'collab');
     },
@@ -552,11 +569,32 @@ export class CollaborativeDocumentCreationOrchestrator {
       }
 
       if (input.openAfterCreate !== false) {
+        // Each creation source maps to its own open source. Folding
+        // share_to_team and embedded_document into `home` would credit the
+        // Shared Docs home with opens it never served.
+        const openSource = input.analyticsSource === 'agent_tool'
+          ? 'agent_tool'
+          : input.analyticsSource === 'share_to_team'
+            ? 'share_to_team'
+            : input.analyticsSource === 'embedded_document'
+              ? 'embedded_document'
+              : 'sidebar';
         this.dependencies.publishPending(
           document,
           typeof content === 'string' ? content : undefined,
+          openSource,
         );
       }
+      trackTeamAnalyticsEvent('collab_document_created', {
+        surface: 'desktop',
+        source: input.analyticsSource ?? 'new_document',
+        actorType: input.analyticsActorType ?? 'user',
+        documentType: toStableAnalyticsCategory(descriptor.documentType),
+        editorCategory: descriptor.editor.kind,
+        nested: input.parentFolderId !== null,
+        linkedDocumentCountBucket: bucketItemCount(input.analyticsLinkedDocumentCount ?? 0),
+        assetMigrationOutcome: input.analyticsAssetMigrationOutcome ?? 'not_needed',
+      });
       return document;
     } catch (cause) {
       if (workspacePath && configResolved) {
@@ -566,8 +604,9 @@ export class CollaborativeDocumentCreationOrchestrator {
           logger.ui.warn('[collaborativeDocumentCreationOrchestrator] Cleanup failed', cleanupError);
         }
       }
-      if (cause instanceof CollaborativeDocumentCreationError) throw cause;
-      throw new CollaborativeDocumentCreationError(
+      const normalized = cause instanceof CollaborativeDocumentCreationError
+        ? cause
+        : new CollaborativeDocumentCreationError(
         announced ? 'local-origin-failed' : 'seed-failed',
         cause instanceof Error ? cause.message : String(cause),
         operationId,
@@ -575,6 +614,15 @@ export class CollaborativeDocumentCreationOrchestrator {
         announced,
         { cause },
       );
+      trackTeamAnalyticsEvent('collab_operation_failed', {
+        surface: 'desktop',
+        operation: input.analyticsSource === 'share_to_team' ? 'share_to_team' : 'create_document',
+        source: input.analyticsSource ?? 'new_document',
+        actorType: input.analyticsActorType ?? 'user',
+        documentType: toStableAnalyticsCategory(input.descriptor.documentType),
+        errorCategory: categorizeTeamAnalyticsError('document', normalized),
+      });
+      throw normalized;
     }
   }
 }

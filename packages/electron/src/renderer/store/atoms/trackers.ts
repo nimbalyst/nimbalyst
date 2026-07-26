@@ -53,13 +53,17 @@ let currentWorkspacePath: string | null = null;
 // ============================================================
 
 /**
- * One-shot migration for the `'table'` viewMode literal.
+ * Migrations for persisted `viewMode` literals.
  *
- * Before this change, `'table'` meant the row-list view (now called `'list'`).
- * After this change, `'table'` means the new grid. Workspaces persisted by
- * older builds carry `viewMode: 'table'` with the old meaning. Rewrite those
- * once to `'list'` and set `viewModeMigrated: true` so the next load passes
- * `'table'` through untouched -- enabling users to pick the new grid.
+ * Two rewrites, in the order they shipped:
+ *
+ * 1. `'table'` once meant the row-list view (now called `'list'`). Workspaces
+ *    persisted by builds from before that rename carry `viewMode: 'table'` with
+ *    the old meaning; rewrite those once to `'list'` and set
+ *    `viewModeMigrated: true` so later loads pass `'table'` through untouched.
+ * 2. `'grid'` was the RevoGrid table's own view mode while it sat beside the
+ *    hand-rolled table. RevoGrid *is* the table now, so `'grid'` folds into
+ *    `'table'` unconditionally.
  *
  * Why a per-load idempotent flag instead of a save-time rewrite: workspace
  * state lives on multiple machines and installs. A flag is robust against
@@ -69,12 +73,8 @@ function migrateViewMode(
   raw: unknown,
   alreadyMigrated: boolean,
 ): TrackerModeLayout['viewMode'] {
-  if (raw === 'list' || raw === 'kanban' || raw === 'tag-board' || raw === 'grid' || raw === 'inbox') return raw;
-  if (raw === 'table') {
-    if (!alreadyMigrated) return 'list';
-    return 'table';
-  }
-  return DEFAULT_MODE_LAYOUT.viewMode;
+  if (raw === 'table' && !alreadyMigrated) return 'list';
+  return normalizeViewMode(raw, DEFAULT_MODE_LAYOUT.viewMode);
 }
 
 /**
@@ -169,6 +169,7 @@ import type { InboxScope, TrackerFilterSet } from '@nimbalyst/runtime/plugins/Tr
 import {
   mergeSavedViews,
   normalizeViewDefinition,
+  normalizeViewMode,
   parseSharedSavedView,
   serializeSharedSavedView,
   type SavedView,
@@ -183,20 +184,17 @@ export interface TrackerModeLayout {
   /**
    * Display mode for the tracker main view.
    * - `list`   -- title-left / badges-right row list (`TrackerTable`).
-   * - `table`  -- true grid with aligned header and resizable columns
-   *               (`TrackerTableGrid`).
-   * - `grid`   -- virtualized, in-place-editable spreadsheet grid
+   * - `table`  -- virtualized, in-place-editable RevoGrid table
    *               (`TrackerGridView`).
    * - `kanban` -- column-per-status board (`KanbanBoard`).
    * - `tag-board` -- column-per-tag board (`TagBoard`).
    * - `inbox`  -- keyboard-driven triage queue of untriaged items
    *               (`TrackerInboxView`).
    *
-   * Legacy persisted state used `'table'` for the list view; loads through
-   * `initTrackerPanelLayout` rewrite that to `'list'` once, gated by
-   * `viewModeMigrated`.
+   * Legacy persisted state used `'table'` for the list view and `'grid'` for
+   * the RevoGrid table; `migrateViewMode` rewrites both on load.
    */
-  viewMode: 'list' | 'table' | 'grid' | 'kanban' | 'tag-board' | 'inbox';
+  viewMode: 'list' | 'table' | 'kanban' | 'tag-board' | 'inbox';
   /** Currently selected tracker item ID (opens detail panel when non-null) */
   selectedItemId: string | null;
   /** Sidebar width in pixels */

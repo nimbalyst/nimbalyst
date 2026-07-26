@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
+import { bucketMemberCount, bucketProjectCount, categorizeTeamAnalyticsError } from '../../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
 
 /**
  * Epic H3 P4 — "Merge into another org" wizard.
@@ -54,14 +56,34 @@ export function MergeOrgWizard({ drainedOrg, survivorCandidates, projectCount, m
       const res = await (window as any).electronAPI.team.mergeOrg(drainedOrg.orgId, survivorOrgId, deleteDrained);
       if (res?.success && res.result) {
         const r = res.result as MergeResultSummary;
+        trackTeamAnalyticsEvent('team_organization_merged', {
+          surface: 'desktop',
+          callerRole: 'admin',
+          movedProjectCountBucket: bucketProjectCount(r.movedProjects.length),
+          mergedMemberCountBucket: bucketMemberCount(memberCount),
+        });
         setResult(r);
         setStep('done');
         onMerged(r);
       } else {
+        trackTeamAnalyticsEvent('team_operation_failed', {
+          surface: 'desktop',
+          operation: 'merge_organization',
+          entryPoint: 'organization_manager',
+          callerRole: 'admin',
+          errorCategory: categorizeTeamAnalyticsError('organization', res?.error),
+        });
         setError(res?.error || 'Merge failed');
         setStep('configure');
       }
     } catch (err) {
+      trackTeamAnalyticsEvent('team_operation_failed', {
+        surface: 'desktop',
+        operation: 'merge_organization',
+        entryPoint: 'organization_manager',
+        callerRole: 'admin',
+        errorCategory: categorizeTeamAnalyticsError('organization', err),
+      });
       setError(err instanceof Error ? err.message : String(err));
       setStep('configure');
     }

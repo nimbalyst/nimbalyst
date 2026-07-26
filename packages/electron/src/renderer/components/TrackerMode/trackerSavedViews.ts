@@ -29,6 +29,7 @@ import {
   getFieldByRole,
   isMyRecord,
   isSameIdentity,
+  resolveRoleFieldName,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import type { TrackerFilterChip } from '../../store/atoms/trackers';
 import type { ViewMode } from './TrackerMainView';
@@ -36,6 +37,23 @@ import { getTrackerItemTags, filterTrackerItemsByTags } from './trackerTagFilter
 
 /** How items are grouped in a grouped view. `none` = a single flat group. */
 export type TrackerGroupBy = 'none' | 'status' | 'priority' | 'assignee' | 'type' | 'tag';
+
+export const STATUS_CHANGED_TO_FILTER_FIELD = 'statusChangedTo';
+export const STATUS_CHANGED_FROM_FILTER_FIELD = 'statusChangedFrom';
+
+export function normalizeTrackerGroupBy(value: unknown): TrackerGroupBy {
+  if (value === 'owner') return 'assignee';
+  if (
+    value === 'status'
+    || value === 'priority'
+    || value === 'assignee'
+    || value === 'type'
+    || value === 'tag'
+  ) {
+    return value;
+  }
+  return 'none';
+}
 
 export interface SavedViewDefinition {
   /** Selected type filter: `'all'` or a specific tracker type. */
@@ -96,6 +114,44 @@ export function createDefaultViewDefinition(): SavedViewDefinition {
   };
 }
 
+/** Whether the current unsaved state contains anything worth naming as a view. */
+export function hasSavableViewState(definition: SavedViewDefinition): boolean {
+  const defaults = createDefaultViewDefinition();
+  return definition.selectedType !== defaults.selectedType
+    || definition.activeFilters.length > 0
+    || definition.tagFilter.length > 0
+    || definition.viewMode !== defaults.viewMode
+    || definition.groupBy !== defaults.groupBy
+    || definition.sortBy !== defaults.sortBy
+    || definition.sortDirection !== defaults.sortDirection
+    || definition.recentlyViewedDays !== defaults.recentlyViewedDays
+    || definition.columnConfig !== null
+    || (definition.columnFilters?.clauses.length ?? 0) > 0
+    || definition.inboxScope === 'type';
+}
+
+/**
+ * Coerce a persisted `viewMode` to one this build still renders.
+ *
+ * `'grid'` was the RevoGrid table's own mode while it sat beside the
+ * hand-rolled table; RevoGrid is the table now, so it folds into `'table'`.
+ * Saved views also travel between users on different builds, so an unknown
+ * literal falls back rather than leaving the main view with no branch to take.
+ */
+export function normalizeViewMode(raw: unknown, fallback: ViewMode): ViewMode {
+  if (raw === 'grid') return 'table';
+  if (
+    raw === 'list'
+    || raw === 'table'
+    || raw === 'kanban'
+    || raw === 'tag-board'
+    || raw === 'inbox'
+  ) {
+    return raw;
+  }
+  return fallback;
+}
+
 /**
  * Merge a possibly-partial persisted definition with defaults so older saved
  * views (missing fields added later) load safely.
@@ -106,9 +162,9 @@ export function normalizeViewDefinition(raw: Partial<SavedViewDefinition> | unde
   return {
     selectedType: typeof raw.selectedType === 'string' ? raw.selectedType : base.selectedType,
     activeFilters: Array.isArray(raw.activeFilters) ? raw.activeFilters : base.activeFilters,
-    viewMode: (raw.viewMode as ViewMode) ?? base.viewMode,
+    viewMode: normalizeViewMode(raw.viewMode, base.viewMode),
     tagFilter: Array.isArray(raw.tagFilter) ? raw.tagFilter.filter((t): t is string => typeof t === 'string') : base.tagFilter,
-    groupBy: (raw.groupBy as TrackerGroupBy) ?? base.groupBy,
+    groupBy: normalizeTrackerGroupBy(raw.groupBy),
     sortBy: typeof raw.sortBy === 'string' ? raw.sortBy : base.sortBy,
     sortDirection: raw.sortDirection === 'asc' || raw.sortDirection === 'desc'
       ? raw.sortDirection
@@ -244,9 +300,29 @@ export function getTrackerFilterValue(
       return context.favoriteItemIds?.has(record.id) ?? false;
     case 'viewed':
       return context.viewedAtByItemId?.get(record.id);
+    case STATUS_CHANGED_TO_FILTER_FIELD:
+      return getStatusTransitionValues(record, 'to');
+    case STATUS_CHANGED_FROM_FILTER_FIELD:
+      return getStatusTransitionValues(record, 'from');
     default:
       return getCellValue(record, field);
   }
+}
+
+/** Status values captured in the record's durable transition history. */
+export function getStatusTransitionValues(
+  record: TrackerRecord,
+  direction: 'to' | 'from',
+): string[] {
+  const statusField = resolveRoleFieldName(record.primaryType, 'workflowStatus');
+  const valueKey = direction === 'to' ? 'newValue' : 'oldValue';
+  return (record.system.activity ?? [])
+    .filter(entry => (
+      entry.action === 'status_changed'
+      || (entry.action === 'updated' && entry.field === statusField)
+    ))
+    .map(entry => entry[valueKey])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
 }
 
 /** Convert removed left-sidebar presets into equivalent inspectable clauses. */

@@ -9,6 +9,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.auth.AuthCallbackParseResult
+import com.nimbalyst.app.screenshots.ScreenshotHost
+import com.nimbalyst.app.screenshots.ScreenshotMode
 import com.nimbalyst.app.ui.NimbalystAndroidApp
 import com.nimbalyst.app.ui.theme.NimbalystAndroidTheme
 
@@ -31,9 +33,26 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         handleIntent(intent)
 
+        // Marketing capture path: debug builds only, opt-in per launch intent.
+        val screenshotScreen = if (ScreenshotMode.isEnabled(intent)) {
+            ScreenshotMode.screen(intent).also {
+                ScreenshotMode.apply(
+                    app = applicationContext as NimbalystApplication,
+                    screen = it,
+                    now = System.currentTimeMillis()
+                )
+            }
+        } else {
+            null
+        }
+
         setContent {
             NimbalystAndroidTheme {
-                NimbalystAndroidApp()
+                if (screenshotScreen != null) {
+                    ScreenshotHost(screenshotScreen)
+                } else {
+                    NimbalystAndroidApp()
+                }
             }
         }
     }

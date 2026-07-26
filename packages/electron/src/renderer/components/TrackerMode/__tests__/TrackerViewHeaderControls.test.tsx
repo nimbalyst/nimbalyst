@@ -114,6 +114,20 @@ describe('TrackerViewHeaderControls', () => {
     expect(displayOptions.textContent).toContain('Columns');
   });
 
+  it('persists the grouping selected in Display Options', () => {
+    const { onColumnConfigChange } = renderControls();
+    fireEvent.click(screen.getByTestId('tracker-view-display-options'));
+
+    fireEvent.change(screen.getByLabelText('Group tracker items'), {
+      target: { value: 'status' },
+    });
+
+    expect(onColumnConfigChange).toHaveBeenCalledWith({
+      ...columnConfig,
+      groupBy: 'status',
+    });
+  });
+
   it('builds multiple field-aware clauses with AND/OR semantics', () => {
     const { onFiltersChange } = renderControls();
     fireEvent.click(screen.getByTestId('tracker-view-filter-button'));

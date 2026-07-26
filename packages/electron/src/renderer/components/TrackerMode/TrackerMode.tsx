@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useCallback } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { globalRegistry, loadBuiltinTrackers } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { getDefaultColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { TrackerSidebar } from './TrackerSidebar';
 import { TrackerMainView, type ViewMode } from './TrackerMainView';
 import { ResizablePanel } from '../AgenticCoding/ResizablePanel';
@@ -16,6 +17,8 @@ import {
 } from '../../store/atoms/trackers';
 import {
   legacyFilterChipsToClauses,
+  hasSavableViewState,
+  normalizeTrackerGroupBy,
   type SavedView,
   type SavedViewDefinition,
 } from './trackerSavedViews';
@@ -110,6 +113,7 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
   // Persisted layout state from atoms
   const modeLayout = useAtomValue(trackerModeLayoutAtom);
   const setModeLayout = useSetAtom(setTrackerModeLayoutAtom);
+  const [activeSavedViewId, setActiveSavedViewId] = React.useState<string | null>(null);
 
   const selectedType = modeLayout.selectedType;
   const activeFilters = modeLayout.activeFilters;
@@ -171,8 +175,13 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
   ]);
 
   const handleSelectType = useCallback((type: string | 'all') => {
-    setModeLayout({ selectedType: type, selectedItemId: null });
-  }, [setModeLayout]);
+    setActiveSavedViewId(null);
+    setModeLayout({
+      selectedType: type,
+      selectedItemId: null,
+      groupBy: normalizeTrackerGroupBy(modeLayout.typeColumnConfigs[type]?.groupBy),
+    });
+  }, [modeLayout.typeColumnConfigs, setModeLayout]);
 
   const handleClearFilters = useCallback(() => {
     setModeLayout({ activeFilters: [] });
@@ -188,8 +197,6 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
   const removeView = useSetAtom(removeTrackerViewAtom);
   const shareView = useSetAtom(shareTrackerViewAtom);
   const unshareView = useSetAtom(unshareTrackerViewAtom);
-  const [activeSavedViewId, setActiveSavedViewId] = React.useState<string | null>(null);
-
   React.useEffect(() => {
     setActiveSavedViewId(null);
   }, [workspacePath]);
@@ -199,7 +206,9 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
     activeFilters: modeLayout.activeFilters,
     viewMode: modeLayout.viewMode,
     tagFilter,
-    groupBy: modeLayout.groupBy,
+    groupBy: normalizeTrackerGroupBy(
+      modeLayout.typeColumnConfigs[modeLayout.selectedType]?.groupBy ?? modeLayout.groupBy,
+    ),
     sortBy: modeLayout.sortBy,
     sortDirection: modeLayout.sortDirection,
     recentlyViewedDays: modeLayout.recentlyViewedDays,
@@ -217,9 +226,7 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
     activeSavedView
     && !savedViewMatchesCurrent(activeSavedView.definition, currentViewDefinition),
   );
-  const hasUnsavedFilterChanges = modeLayout.activeFilters.length > 0
-    || tagFilter.length > 0
-    || (modeLayout.typeColumnFilters[modeLayout.selectedType]?.clauses.length ?? 0) > 0;
+  const hasSavableCurrentView = hasSavableViewState(currentViewDefinition);
 
   const handleSaveView = useCallback((name: string) => {
     const view: SavedView = {
@@ -241,6 +248,10 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
     }
   }, [activeSavedView, currentViewDefinition, saveView, shareView]);
 
+  const handleExitSavedView = useCallback(() => {
+    setActiveSavedViewId(null);
+  }, []);
+
   const handleRenameView = useCallback((name: string) => {
     if (!activeSavedView) return;
     const renamedView = { ...activeSavedView, name };
@@ -253,6 +264,16 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
 
   const handleApplyView = useCallback((view: SavedView) => {
     const def = view.definition;
+    const currentConfig = modeLayout.typeColumnConfigs[def.selectedType]
+      ?? getDefaultColumnConfig(def.selectedType === 'all' ? '' : def.selectedType);
+    const capturedConfig = def.columnConfig
+      ? {
+          ...def.columnConfig,
+          groupBy: def.groupBy === 'none' ? def.columnConfig.groupBy : def.groupBy,
+        }
+      : def.groupBy === 'none'
+        ? null
+        : { ...currentConfig, groupBy: def.groupBy };
     setModeLayout({
       selectedType: def.selectedType,
       activeFilters: def.activeFilters,
@@ -265,8 +286,8 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
       selectedItemId: null,
       // Only overwrite the column layout/filters when the view actually
       // captured them; older views leave the current table state alone.
-      ...(def.columnConfig
-        ? { typeColumnConfigs: { ...modeLayout.typeColumnConfigs, [def.selectedType]: def.columnConfig } }
+      ...(capturedConfig
+        ? { typeColumnConfigs: { ...modeLayout.typeColumnConfigs, [def.selectedType]: capturedConfig } }
         : {}),
       ...(def.columnFilters
         ? { typeColumnFilters: { ...modeLayout.typeColumnFilters, [def.selectedType]: def.columnFilters } }
@@ -347,10 +368,11 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
       personalStateHydrated={personalStateHydrated}
       activeSavedView={activeSavedView}
       savedViewDirty={savedViewDirty}
-      showSaveViewAction={!activeSavedView && hasUnsavedFilterChanges}
+      showSaveViewAction={!activeSavedView && hasSavableCurrentView}
       onSaveView={handleSaveView}
       onRenameSavedView={handleRenameView}
       onUpdateSavedView={handleUpdateView}
+      onExitSavedView={handleExitSavedView}
     />
   );
 

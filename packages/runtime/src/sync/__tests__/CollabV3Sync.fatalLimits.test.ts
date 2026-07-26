@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createCollabV3Sync,
   isFatalMessageSyncErrorCodeForTest,
+  isSkippableMessageSyncErrorCodeForTest,
 } from '../CollabV3Sync';
 
 class FakeWebSocket {
@@ -52,11 +53,21 @@ describe('CollabV3 fatal session limits', () => {
     vi.unstubAllGlobals();
   });
 
-  it('recognizes every non-retryable server limit code', () => {
+  it('treats only the terminal row-count ceiling as fatal', () => {
     expect(isFatalMessageSyncErrorCodeForTest('message_limit_exceeded')).toBe(true);
-    expect(isFatalMessageSyncErrorCodeForTest('message_too_large')).toBe(true);
-    expect(isFatalMessageSyncErrorCodeForTest('storage_limit_exceeded')).toBe(true);
     expect(isFatalMessageSyncErrorCodeForTest('temporary_failure')).toBe(false);
+  });
+
+  it('skips per-message rejections instead of disabling the whole session', () => {
+    // A screenshot too big to shrink must not take the rest of the session's
+    // transcript off mobile with it, and a room that just refused a large
+    // message may still have space for small ones.
+    expect(isFatalMessageSyncErrorCodeForTest('message_too_large')).toBe(false);
+    expect(isFatalMessageSyncErrorCodeForTest('storage_limit_exceeded')).toBe(false);
+    expect(isSkippableMessageSyncErrorCodeForTest('message_too_large')).toBe(true);
+    expect(isSkippableMessageSyncErrorCodeForTest('storage_limit_exceeded')).toBe(true);
+    expect(isSkippableMessageSyncErrorCodeForTest('message_limit_exceeded')).toBe(false);
+    expect(isSkippableMessageSyncErrorCodeForTest('temporary_failure')).toBe(false);
   });
 
   it('closes the session, clears active status, and refuses reconnects', async () => {
@@ -87,20 +98,51 @@ describe('CollabV3 fatal session limits', () => {
 
     sessionSocket.receive({
       type: 'error',
-      code: 'storage_limit_exceeded',
-      message: 'Session storage limit reached',
+      code: 'message_limit_exceeded',
+      message: 'Session reached the message limit',
     });
 
     expect(statuses.at(-1)).toEqual({
       connected: false,
       syncing: false,
-      error: 'Session storage limit reached',
+      error: 'Session reached the message limit',
     });
     expect(sessionSocket.close).toHaveBeenCalledOnce();
     expect(provider.isConnected('session-1')).toBe(false);
 
     await provider.connect('session-1');
     expect(FakeWebSocket.instances).toHaveLength(2);
+
+    provider.disconnectAll();
+  });
+
+  it('stays connected when the server refuses one oversized message', async () => {
+    // A screenshot the compressor could not get under the server's row cap must
+    // cost us that one message, not the session's entire mobile transcript.
+    const provider = createCollabV3Sync({
+      serverUrl: 'wss://sync.example.test',
+      orgId: 'org-1',
+      userId: 'user-1',
+      getJwt: async () => jwtFor('user-1'),
+    });
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    FakeWebSocket.instances[0].open();
+
+    const connect = provider.connect('session-2');
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    const sessionSocket = FakeWebSocket.instances[1];
+    sessionSocket.open();
+    await connect;
+
+    sessionSocket.receive({
+      type: 'error',
+      code: 'message_too_large',
+      message: 'Encrypted message exceeds byte sync row cap',
+    });
+
+    expect(sessionSocket.close).not.toHaveBeenCalled();
+    expect(provider.isConnected('session-2')).toBe(true);
 
     provider.disconnectAll();
   });

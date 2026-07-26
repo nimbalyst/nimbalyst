@@ -50,6 +50,7 @@ fields:
   - name: priority
     type: select
     required: false
+    default: medium
     options:
       - value: low
         label: Low

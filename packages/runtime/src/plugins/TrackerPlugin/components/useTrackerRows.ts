@@ -1,6 +1,6 @@
 /**
  * useTrackerRows -- shared row interaction model for the tracker list view
- * (`TrackerTable`) and the tracker grid view (`TrackerTableGrid`).
+ * (`TrackerTable`) and the RevoGrid table view (`TrackerGridView`).
  *
  * Owns selection, keyboard navigation, inline editing, context menu state,
  * and bulk updates so both view surfaces share identical behavior.
@@ -77,6 +77,13 @@ export interface UseTrackerRowsResult {
   contextRefs: ReturnType<typeof useFloating>['refs'];
   contextFloatingStyles: ReturnType<typeof useFloating>['floatingStyles'];
   handleContextMenu: (e: React.MouseEvent, item: TrackerRecord, index: number) => void;
+  /**
+   * Open the context menu over an explicit set of items. Surfaces that own
+   * their own selection model (the RevoGrid table's cell ranges) hand the row
+   * ids in directly instead of going through `handleContextMenu`'s
+   * click-target heuristics.
+   */
+  openContextMenuForIds: (itemIds: string[], point: { x: number; y: number }) => void;
   closeContextMenu: () => void;
   handleBulkStatusUpdate: (status: string) => Promise<void>;
   handleBulkPriorityUpdate: (priority: string) => Promise<void>;
@@ -241,6 +248,16 @@ export function useTrackerRows({
     setFocusedIndex(index);
     setContextAnchor(DOMRect.fromRect({ x: e.clientX, y: e.clientY, width: 0, height: 0 }));
   }, [selectedIds]);
+
+  /** Open the context menu over a caller-supplied selection. */
+  const openContextMenuForIds = useCallback((
+    itemIds: string[],
+    point: { x: number; y: number },
+  ) => {
+    if (itemIds.length === 0) return;
+    setSelectedIds(new Set(itemIds));
+    setContextAnchor(DOMRect.fromRect({ x: point.x, y: point.y, width: 0, height: 0 }));
+  }, []);
 
   /** Close context menu */
   const closeContextMenu = useCallback(() => setContextAnchor(null), []);
@@ -419,12 +436,12 @@ export function useTrackerRows({
     return () => node.removeEventListener('keydown', handleKeyDown);
   }, [focusedIndex, selectedIds, onItemSelect, onDeleteItems, handleSelectAll, closeContextMenu]);
 
-  // Scroll focused row into view (looks for data-testid="tracker-table-row"
-  // or "tracker-table-grid-row" so the same logic works for both surfaces)
+  // Scroll focused row into view. The RevoGrid table does its own
+  // virtualized scrolling, so this only matches the list view's rows.
   useEffect(() => {
     if (focusedIndex < 0) return;
     const rows = containerRef.current?.querySelectorAll(
-      '[data-testid="tracker-table-row"], [data-testid="tracker-table-grid-row"]'
+      '[data-testid="tracker-table-row"]'
     );
     const row = rows?.[focusedIndex];
     if (row) row.scrollIntoView({ block: 'nearest' });
@@ -531,6 +548,7 @@ export function useTrackerRows({
     contextRefs,
     contextFloatingStyles,
     handleContextMenu,
+    openContextMenuForIds,
     closeContextMenu,
     handleBulkStatusUpdate,
     handleBulkPriorityUpdate,

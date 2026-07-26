@@ -224,12 +224,12 @@ export function shouldBlockStartedSessionProviderSwitch(
  * modelConstants.ts.
  *
  * `fable` is the Fable 5 tier above Opus — the CLI accepts it as a first-class
- * alias (`--model fable`, `/model fable`). On the current CLI plain `fable`
- * already runs a 1M window at a flat price (the `[1m]` suffix is a no-op —
- * GitHub #825), so it's a single row with no `-1m` duplicate (see
- * `CLAUDE_CODE_NATIVE_1M_VARIANTS`). The earlier 200k client-side windowing was
- * real on CLI 2.1.175 but is now stale. Note it requires usage credits on
- * subscription plans (the CLI surfaces that itself when unavailable).
+ * alias (`--model fable`, `/model fable`). Its plain row runs a 1M window when
+ * the plan auto-upgrades it, and it also gets an explicit `-1m` row for the
+ * cases where that upgrade doesn't apply (Pro without credits, or any
+ * `ANTHROPIC_BASE_URL` gateway) — see `CLAUDE_CODE_VARIANTS_WITH_1M`. Note it
+ * requires usage credits on subscription plans (the CLI surfaces that itself
+ * when unavailable).
  */
 export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-8', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-4-6', 'haiku'] as const;
 

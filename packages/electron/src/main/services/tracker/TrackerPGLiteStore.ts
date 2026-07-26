@@ -830,6 +830,8 @@ export function payloadToRecord(
       // recordToDbParams persists `data.origin` (and the URN index). Dropping
       // it here is what made imported items lose their origin on first apply.
       origin: payload.system?.origin,
+      triagedAt: payload.system?.triagedAt,
+      triagedBy: payload.system?.triagedBy,
       comments: payload.comments,
       activity: payload.activity,
     },
@@ -850,7 +852,7 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
   const systemKeys = new Set([
     'authorIdentity', 'lastModifiedBy', 'createdByAgent',
     'linkedSessions', 'linkedCommitSha', 'linkedCommits', 'linkedPullRequests', 'documentId',
-    'activity', 'comments', 'created', 'updated', 'origin',
+    'activity', 'comments', 'created', 'updated', 'origin', 'triagedAt', 'triagedBy',
   ]);
   const fields: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(data)) {
@@ -889,6 +891,8 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
           ? data.updated
           : toIsoTimestamp(row.updated),
       origin: data.origin as TrackerItemPayload['system']['origin'],
+      triagedAt: data.triagedAt as string | undefined,
+      triagedBy: data.triagedBy as TrackerItemPayload['system']['triagedBy'],
     },
   };
 }

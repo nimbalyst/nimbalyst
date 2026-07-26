@@ -33,6 +33,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ClaudeCliProxyObservation } from '../claudeCliProxyObservation';
 import type { AssembledAssistantMessage } from '../claudeApiMessageAssembler';
 import { buildAssistantRawContent } from '../claudeCliTranscriptBridge';
+import {
+  clearClaudeCliObserved1mSupport,
+  logClaudeCliContextUsage,
+  noteClaudeCliObserved1mSupport,
+} from '../../claudeCliContextUsage';
 import { buildInteractivePromptToolResultContent } from '../../../../mcp/tools/interactivePromptTranscript';
 import { projectRawMessagesToViewMessages } from '@nimbalyst/runtime/ai/server/transcript';
 import type { RawMessage } from '@nimbalyst/runtime/ai/server/transcript';
@@ -123,10 +128,10 @@ function startFakeAnthropic(opts: { turns?: string[]; status?: number }): Promis
 }
 
 /** POST a normal (observed) /v1/messages turn to the proxy and resolve on completion. */
-function postTurn(port: number): Promise<{ status: number }> {
+function postTurn(port: number, extraHeaders: Record<string, string> = {}): Promise<{ status: number }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { hostname: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers: { 'content-type': 'application/json' } },
+      { hostname: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers: { 'content-type': 'application/json', ...extraHeaders } },
       (res) => {
         res.on('data', () => {});
         res.on('end', () => resolve({ status: res.statusCode || 0 }));
@@ -322,5 +327,52 @@ describe('claude-code-cli observation pipeline (fake upstream, real units)', () 
     await postTurn(port);
 
     expect(upstream.connectionCount()).toBe(1);
+  });
+
+  // -- Scenario 6 ----------------------------------------------------------
+  /**
+   * NIM-2170 / GitHub #989 — the CLI meter's denominator, end-to-end through the
+   * real proxy. Pointing the CLI at this proxy via ANTHROPIC_BASE_URL makes it
+   * treat the connection as an unverifiable gateway and skip the plan-based 1M
+   * auto-upgrade, so a Max user's `opus` session really runs at 200k. The only
+   * evidence is the outbound `anthropic-beta` flag; without reading it the meter
+   * would divide by a hardcoded 1M and could never exceed 20%.
+   */
+  it('derives the context-fill denominator from the outbound 1M beta flag', async () => {
+    upstream = await startFakeAnthropic({
+      turns: [turnWithToolUse({ msgId: 'msg_w1', text: 'hi', toolId: 'tw', toolName: 'Bash', input: {} })],
+    });
+
+    async function denominatorFor(sessionId: string, betaHeader: string | undefined): Promise<number> {
+      clearClaudeCliObserved1mSupport(sessionId);
+      obs = new ClaudeCliProxyObservation({
+        sessionId,
+        onAssistantMessage: () => {},
+        // Exactly how claudeCliObservationSingleton wires it in production.
+        onRequestBody: (body, info) =>
+          noteClaudeCliObserved1mSupport(sessionId, { model: body.model, supports1m: info.context1m }),
+        upstreamUrl: upstream!.url,
+      });
+      const { baseUrl } = await obs.start();
+      await postTurn(Number(new URL(baseUrl).port), betaHeader ? { 'anthropic-beta': betaHeader } : {});
+      obs.stop();
+      obs = null;
+
+      const updates: any[] = [];
+      await logClaudeCliContextUsage(
+        { sessionId, usage: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 250_000, cacheCreationInputTokens: 0 } },
+        {
+          loadSession: async () => ({ model: 'claude-code-cli:opus' }),
+          updateTokenUsage: async (_id, tokenUsage) => void updates.push(tokenUsage),
+          notifyTokenUsage: () => {},
+        },
+      );
+      return updates[0].currentContext.contextWindow;
+    }
+
+    // Gateway-downgraded session: the CLI never asked for 1M -> real window is 200k.
+    expect(await denominatorFor('sess-window-200k', 'oauth-2025-04-20')).toBe(200_000);
+    // Explicit `opus[1m]` (or an entitled direct upgrade): the flag rides along.
+    expect(await denominatorFor('sess-window-1m', 'oauth-2025-04-20,context-1m-2025-08-07')).toBe(1_000_000);
   });
 });

@@ -22,6 +22,7 @@ import {
   getCollabConfig,
   openCollabDocumentViaIPC,
   updateCollabConfigDisplayMetadata,
+  type CollabDocumentOpenSource,
 } from '../../utils/collabDocumentOpener';
 import {
   loadOpenCollabDocs,
@@ -35,7 +36,7 @@ import {
   sharedFoldersAtom,
   type SharedDocument,
 } from '../../store/atoms/collabDocuments';
-import { hydrateCollabDiscovery } from '../../store/atoms/collabDiscovery';
+import { changedDocIdsAtom, hydrateCollabDiscovery } from '../../store/atoms/collabDiscovery';
 import { SHARED_HOME_TAB_URI, SHARED_HOME_TAB_TITLE, isSharedHomeTab } from './sharedHomeTab';
 import { isCollabUri, parseCollabUri } from '../../utils/collabUri';
 import {
@@ -49,6 +50,8 @@ import { errorNotificationService } from '../../services/ErrorNotificationServic
 import type { SerializableDocumentContext } from '../../hooks/useDocumentContext';
 import { getTextSelection } from '../UnifiedAI/TextSelectionIndicator';
 import { getActiveEditorContextItems } from '../../stores/editorContextStore';
+import { categorizeTeamAnalyticsError, toStableAnalyticsCategory } from '../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 
 interface CollabModeProps {
   workspacePath: string;
@@ -173,6 +176,7 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(functi
   const pendingDoc = useAtomValue(pendingCollabDocumentAtom);
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
   const sharedFolders = useAtomValue(sharedFoldersAtom);
+  const unreadDocumentIds = useAtomValue(changedDocIdsAtom);
   const [restored, setRestored] = useState(false);
 
   // --- Resizable / collapsible panel state ---
@@ -388,7 +392,11 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(functi
     }
   }, [isEditorMaximized, sidebarCollapsed, chatCollapsed, clearEditorMaximized]);
 
-  const handleDocumentSelect = useCallback(async (doc: SharedDocument, initialContent?: string) => {
+  const handleDocumentSelect = useCallback(async (
+    doc: SharedDocument,
+    initialContent?: string,
+    analyticsSource: CollabDocumentOpenSource = 'sidebar',
+  ) => {
     // Check if already open as a tab
     const existingTab = tabs.find((tab) => {
       if (!isCollabUri(tab.filePath)) return false;
@@ -408,6 +416,19 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(functi
       if (existingTab.fileName !== nextName) {
         tabsActions.updateTab(existingTab.id, { fileName: nextName });
       }
+      trackTeamAnalyticsEvent('collab_document_opened', {
+        surface: 'desktop',
+        source: analyticsSource,
+        actorType: analyticsSource === 'agent_tool' ? 'agent' : 'user',
+        documentType: toStableAnalyticsCategory(doc.documentType),
+        editorCategory: doc.editorId?.startsWith('builtin.monaco')
+          ? 'monaco'
+          : doc.editorId?.startsWith('builtin.lexical') || doc.documentType === 'markdown'
+            ? 'lexical'
+            : 'extension',
+        wasUnread: unreadDocumentIds.has(doc.documentId),
+        connectionPath: 'resume',
+      });
       return;
     }
 
@@ -422,6 +443,9 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(functi
         metadataVersion: doc.metadataVersion,
         fileExtension: doc.fileExtension,
         editorId: doc.editorId,
+        analyticsSource,
+        analyticsActorType: analyticsSource === 'agent_tool' ? 'agent' : 'user',
+        analyticsWasUnread: unreadDocumentIds.has(doc.documentId),
         initialContent,
         addTab: tabsActions.addTab,
       });
@@ -430,6 +454,14 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(functi
         tabsActions.updateTab(tabId, { fileName: nextName });
       }
     } catch (error) {
+      trackTeamAnalyticsEvent('collab_operation_failed', {
+        surface: 'desktop',
+        operation: 'open_document',
+        source: analyticsSource,
+        actorType: analyticsSource === 'agent_tool' ? 'agent' : 'user',
+        documentType: toStableAnalyticsCategory(doc.documentType),
+        errorCategory: categorizeTeamAnalyticsError('document', error),
+      });
       const message = error instanceof Error ? error.message : String(error);
       console.error('[CollabMode] Failed to open shared document:', {
         documentId: doc.documentId,
@@ -442,7 +474,7 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(functi
         { details: doc.title || doc.documentId }
       );
     }
-  }, [workspacePath, tabs, tabsActions, sharedFolders]);
+  }, [workspacePath, tabs, tabsActions, sharedFolders, unreadDocumentIds]);
 
   const activeCollabDocumentId = useMemo(() => {
     if (!activeTabId) return null;
@@ -556,6 +588,7 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(functi
             metadataVersion: entry.metadataVersion,
             fileExtension: entry.fileExtension,
             editorId: entry.editorId,
+            analyticsSource: 'restart_restore',
             isPinned: entry.isPinned,
             addTab: tabsActions.addTab,
           });
@@ -604,7 +637,7 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(functi
         };
 
     store.set(pendingCollabDocumentAtom, null);
-    handleDocumentSelect(docToOpen, pendingDoc.initialContent);
+    handleDocumentSelect(docToOpen, pendingDoc.initialContent, pendingDoc.analyticsSource ?? 'deep_link');
   }, [pendingDoc, isActive, handleDocumentSelect]);
 
   // Ensure the singleton Shared Docs Home tab exists once restore settles, so

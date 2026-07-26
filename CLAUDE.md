@@ -187,6 +187,7 @@ Two-tier architecture — `ai_agent_messages` (raw append-only log, sole source 
 | [THEMING.md](./packages/electron/THEMING.md) | Working on themes or color schemes. |
 | [RELEASING.md](./RELEASING.md) | Preparing a release or debugging release scripts. |
 | [MARKETING_SCREENSHOTS.md](./docs/MARKETING_SCREENSHOTS.md) | Adding marketing screenshots/videos or modifying capture choreography. |
+| [ANDROID_MARKETING_SCREENSHOTS.md](./docs/ANDROID_MARKETING_SCREENSHOTS.md) | Capturing Play Store screenshots or the reviewer screencast for the Android app. |
 | [FILE_WATCHING_AND_CHANGE_TRACKING.md](./docs/FILE_WATCHING_AND_CHANGE_TRACKING.md) | Working on file watchers, AI change detection, diff display, or the FilesEditedSidebar. |
 | [WEEKLY_DASHBOARD.md](./docs/WEEKLY_DASHBOARD.md) | Adding/modifying insights on the Weeklys PostHog dashboard. |
 | [VOICE_MODE.md](./docs/VOICE_MODE.md) | Working on voice mode, voice-agent prompts, audio pipeline, or session lifecycle. |

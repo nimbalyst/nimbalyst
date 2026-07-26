@@ -141,6 +141,17 @@ export class DirectGateway implements TrackerGateway {
   }
 
   async listTrackers(filters: ListFilters): Promise<TrackerRecord[]> {
+    if (filters.inbox) {
+      // "Untriaged" is defined against each type's initial status and default
+      // priority, and the CLI deliberately does not load tracker schemas (see
+      // src/vendor/trackerReleases.ts). Answering from SQL alone would give a
+      // queue that disagrees with the one the app shows, which is worse than
+      // not answering.
+      throw connectionError(
+        '--inbox needs the running Nimbalyst app: the triage predicate reads each type\'s schema. ' +
+          'Start Nimbalyst, or drop --inbox to list without it.',
+      );
+    }
     const where: string[] = ['workspace = @workspace', 'deleted_at IS NULL'];
     const params: Record<string, unknown> = { workspace: filters.workspace };
 

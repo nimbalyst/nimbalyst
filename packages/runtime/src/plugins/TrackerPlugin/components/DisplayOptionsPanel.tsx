@@ -129,6 +129,7 @@ export const DisplayOptionsPanel: React.FC<DisplayOptionsPanelProps> = ({
           <select
             value={config.groupBy || ''}
             onChange={(e) => onConfigChange({ ...config, groupBy: e.target.value || null })}
+            aria-label="Group tracker items"
             className="text-xs bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded px-1.5 py-0.5 text-[var(--nim-text)] outline-none"
           >
             {groupByOptions.map(opt => (

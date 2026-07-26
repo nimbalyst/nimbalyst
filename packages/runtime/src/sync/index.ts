@@ -57,6 +57,8 @@ export type {
 
 export { createCollabV3Sync } from './CollabV3Sync';
 export { deriveTrackerPersonalStateKey } from './trackerPersonalStateKey';
+export { setSyncImageCompressor } from './syncContentTruncator';
+export type { SyncImageCompressor } from './syncContentTruncator';
 
 export {
   setSyncClientInfo,

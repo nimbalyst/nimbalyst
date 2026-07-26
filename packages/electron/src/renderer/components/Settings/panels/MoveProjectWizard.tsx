@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
+import { bucketMemberCount, categorizeTeamAnalyticsError } from '../../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
 
 /**
  * Epic H3 P3 — "Move project to another org" wizard.
@@ -111,14 +113,34 @@ export function MoveProjectWizard({ srcOrgId, project, destCandidates, onClose, 
         srcOrgId, project.projectId, destOrgId, dropMemberEmails.length ? dropMemberEmails : undefined,
       );
       if (res?.success && res.result) {
+        trackTeamAnalyticsEvent('team_project_moved', {
+          surface: 'desktop',
+          callerRole: 'admin',
+          transferMemberCountBucket: bucketMemberCount(preview?.members.length ?? 0),
+          autoInviteCountBucket: bucketMemberCount(seatDelta),
+        });
         setResult(res.result as MoveResultSummary);
         setStep('done');
         onMoved(res.result as MoveResultSummary);
       } else {
+        trackTeamAnalyticsEvent('team_operation_failed', {
+          surface: 'desktop',
+          operation: 'move_project',
+          entryPoint: 'project_sharing',
+          callerRole: 'admin',
+          errorCategory: categorizeTeamAnalyticsError('project', res?.error),
+        });
         setError(res?.error || 'Move failed');
         setStep('review');
       }
     } catch (err) {
+      trackTeamAnalyticsEvent('team_operation_failed', {
+        surface: 'desktop',
+        operation: 'move_project',
+        entryPoint: 'project_sharing',
+        callerRole: 'admin',
+        errorCategory: categorizeTeamAnalyticsError('project', err),
+      });
       setError(err instanceof Error ? err.message : String(err));
       setStep('review');
     }

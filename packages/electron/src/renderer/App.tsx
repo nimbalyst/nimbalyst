@@ -138,7 +138,7 @@ import { initUpdateListeners } from './store/listeners/updateListeners';
 import { initWalkthroughListeners } from './store/listeners/walkthroughListeners';
 import { initWakeupListeners } from './store/listeners/wakeupListener';
 import { TrackerMode } from './components/TrackerMode';
-import { PullRequestMode } from './components/PullRequestMode';
+import { PullRequestMode, type PullRequestModeRef } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
 import { TeamManagementApp } from './components/TeamMode';
 import { TerminalBottomPanel } from './components/TerminalBottomPanel';
@@ -591,6 +591,9 @@ export default function App() {
     sidebarCollapsed: false,
     chatCollapsed: false,
   });
+  const [prPanelState, setPrPanelState] = useState({
+    chatCollapsed: false,
+  });
   const updateDeveloperSettings = useSetAtom(setDeveloperFeatureSettingsAtom);
   // Keep a ref for use in callbacks that might have stale closures
   const activeModeStateRef = useRef<ContentMode>(activeMode);
@@ -600,6 +603,7 @@ export default function App() {
 
   useEffect(() => {
     setCollabPanelState({ sidebarCollapsed: false, chatCollapsed: false });
+    setPrPanelState({ chatCollapsed: false });
     setAgentPanelState({ available: false, visible: false, mode: 'edited-files' });
     setGitActionState({ busyAction: null, feedback: null });
   }, [workspacePath]);
@@ -954,6 +958,7 @@ export default function App() {
   const agentModeRef = useRef<AgentModeRef>(null);
   const editorModeRef = useRef<EditorModeRef>(null);
   const collabModeRef = useRef<CollabModeRef | null>(null);
+  const pullRequestModeRef = useRef<PullRequestModeRef | null>(null);
 
   const toggleActiveLeftPane = useCallback(() => {
     if (isFullscreenPanelActive) return;
@@ -974,6 +979,8 @@ export default function App() {
       agentModeRef.current?.toggleRightPanel();
     } else if (activeMode === 'collab') {
       collabModeRef.current?.toggleChatCollapsed();
+    } else if (activeMode === 'pr-review') {
+      pullRequestModeRef.current?.toggleChatCollapsed();
     }
   }, [activeMode, isFullscreenPanelActive]);
 
@@ -1071,6 +1078,17 @@ export default function App() {
         },
       };
     }
+    if (activeMode === 'pr-review') {
+      // The PR list remains visible; this mode currently exposes only its
+      // persisted right-side AI pane through the title-bar controls.
+      return {
+        right: {
+          label: 'Pull request chat',
+          collapsed: prPanelState.chatCollapsed,
+          onToggle: toggleActiveRightPane,
+        },
+      };
+    }
     return undefined;
   }, [
     activeMode,
@@ -1080,6 +1098,7 @@ export default function App() {
     filesAIChatCollapsed,
     filesSidebarCollapsed,
     isFullscreenPanelActive,
+    prPanelState,
     toggleActiveLeftPane,
     toggleActiveRightPane,
   ]);
@@ -1106,6 +1125,14 @@ export default function App() {
         label: 'New AI session',
         onCreate: () => {
           void collabModeRef.current?.createNewChatSession();
+        },
+      };
+    }
+    if (activeMode === 'pr-review') {
+      return {
+        label: 'New AI session',
+        onCreate: () => {
+          void pullRequestModeRef.current?.createNewChatSession();
         },
       };
     }
@@ -2654,10 +2681,12 @@ export default function App() {
               >
                 {workspacePath && developerMode && (
                   <PullRequestMode
+                    ref={pullRequestModeRef}
                     workspacePath={workspacePath}
                     workspaceName={workspaceName || ''}
                     isActive={activeMode === 'pr-review'}
-                    onSwitchToFilesMode={() => setActiveMode('files')}
+                    onFileOpen={handleWorkspaceFileSelect}
+                    onPanelStateChange={setPrPanelState}
                   />
                 )}
               </Activity>

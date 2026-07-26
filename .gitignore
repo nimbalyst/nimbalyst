@@ -16,6 +16,9 @@ out/
 out2/
 release/
 packages/electron/release/
+# Not a build output: the Android release source set holds the inert
+# screenshot-mode stubs, and assembleRelease fails without them.
+!packages/android/app/src/release/
 
 # Development
 .vite/
@@ -200,6 +203,7 @@ packages/electron/e2e/permissions/screenshots/
 packages/electron/e2e/smoke/screenshots/
 packages/electron/e2e/walkthroughs/screenshots/
 packages/ios/screenshots/
+packages/android/screenshots/
 
 # Auto-generated platform artifacts
 packages/android/app/schemas/

@@ -25,14 +25,19 @@ import { ConversationTab } from './tabs/ConversationTab';
 import { FilesChangedTab } from './tabs/FilesChangedTab';
 import { CommitsTab } from './tabs/CommitsTab';
 import { ChecksTab } from './tabs/ChecksTab';
+import type { PrTrackerContext } from './usePrTrackerContext';
 
 interface PullRequestDetailProps {
   workspaceId: string;
   remote: string;
   pr: PullRequestRow;
+  /** Tracker items + linked sessions for this PR, resolved by the mode. */
+  trackerContext: PrTrackerContext;
   onClose: () => void;
-  /** Starts a standalone agent session with this PR's review command prefilled. */
+  /** Starts an AI session in the PR review pane with the review command prefilled. */
   onStartReviewSession: () => void;
+  /** Loads an existing linked session into the PR review pane's chat sidebar. */
+  onOpenSession?: (sessionId: string) => void;
   /** Wires the "Open in Worktree" action; omitted hides the button. */
   onOpenInWorktree?: () => void;
 }
@@ -55,8 +60,10 @@ export function PullRequestDetail({
   workspaceId,
   remote,
   pr,
+  trackerContext,
   onClose,
   onStartReviewSession,
+  onOpenSession,
   onOpenInWorktree,
 }: PullRequestDetailProps): JSX.Element {
   const layout = useAtomValue(prModeLayoutAtom);
@@ -102,10 +109,10 @@ export function PullRequestDetail({
               className="flex items-center gap-1 px-2 py-1 text-xs text-nim-muted hover:text-nim border border-nim rounded transition-colors"
               onClick={onStartReviewSession}
               data-testid="pr-start-review-session"
-              title={`Start a new session to review #${pr.number}`}
+              title={`Review #${pr.number} with AI`}
             >
               <MaterialSymbol icon="chat" size={14} />
-              Review in Session
+              Review with AI
             </button>
             {htmlUrl && (
               <button
@@ -134,10 +141,11 @@ export function PullRequestDetail({
         {/* Tracker / session context for this PR */}
         <div className="mt-1.5">
           <PrTrackerStrip
-            workspacePath={workspaceId}
             remote={remote}
             prNumber={pr.number}
+            context={trackerContext}
             prState={pr.state}
+            onOpenSession={onOpenSession}
           />
         </div>
 

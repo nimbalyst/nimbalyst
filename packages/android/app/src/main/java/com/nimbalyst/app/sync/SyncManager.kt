@@ -15,6 +15,7 @@ import com.nimbalyst.app.notifications.NotificationManager
 import com.nimbalyst.app.pairing.PairingCredentials
 import com.nimbalyst.app.pairing.PairingStore
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import java.io.File
@@ -118,6 +119,11 @@ class SyncManager(
 
     private var activeCredentials: PairingCredentials? = null
     private var crypto: CryptoManager? = null
+
+    // Marketing screenshot capture (debug builds only). When on, every network
+    // entry point is inert and the connection state is frozen at "desktop
+    // connected" so captures show a live-looking device with no server.
+    private var screenshotMode = false
     private var jwtRefreshJob: Job? = null
     private var pendingSessionJoin: String? = null
     private var lastJwtRefreshAttempt: Long = 0
@@ -221,6 +227,24 @@ class SyncManager(
         }
     }
 
+    /**
+     * Freeze a fake "connected to desktop" state and disable all networking.
+     * No-ops outside debug builds. Used by scripts/take-screenshots.sh.
+     */
+    fun enterScreenshotMode(devices: List<DeviceInfo>, syncedAt: Long) {
+        val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!debuggable) return
+        screenshotMode = true
+        _connectedDevices.value = devices
+        _state.value = SyncConnectionState(
+            indexConnected = true,
+            sessionConnected = true,
+            isConnecting = false,
+            lastIndexSyncAt = syncedAt,
+            lastSessionSyncAt = syncedAt
+        )
+    }
+
     fun connectIfConfigured() {
         if (pairingStore.state.value.isSyncConfigured) {
             connect()
@@ -228,6 +252,7 @@ class SyncManager(
     }
 
     fun connect() {
+        if (screenshotMode) return
         val credentials = pairingStore.state.value.credentials
         if (credentials == null || !credentials.hasAuthToken) {
             _state.update {
@@ -278,6 +303,7 @@ class SyncManager(
     }
 
     fun disconnect() {
+        if (screenshotMode) return
         stopJwtRefreshTimer()
         leaveSessionRoom()
         indexClient.disconnect()
@@ -293,6 +319,7 @@ class SyncManager(
     }
 
     fun requestFullSync() {
+        if (screenshotMode) return
         if (!indexClient.isConnected) {
             connectIfConfigured()
             return
@@ -302,6 +329,7 @@ class SyncManager(
 
     fun joinSessionRoom(sessionId: String) {
         _state.update { it.copy(activeSessionId = sessionId) }
+        if (screenshotMode) return
 
         // If the index client isn't connected, we need to reconnect first
         // (likely expired JWT). Queue the session join for after reconnection.
@@ -670,6 +698,7 @@ class SyncManager(
     }
 
     fun leaveSessionRoom() {
+        if (screenshotMode) return
         sessionClient.disconnect()
         _state.update { it.copy(sessionConnected = false, activeSessionId = null) }
     }

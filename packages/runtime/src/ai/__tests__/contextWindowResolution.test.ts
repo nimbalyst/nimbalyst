@@ -3,6 +3,8 @@ import {
   resolveClaudeCodeParentContextWindow,
   claudeCodeFamilyKeyword,
   baseContextWindowForVariant,
+  CLAUDE_CODE_NATIVE_1M_VARIANTS,
+  CLAUDE_CODE_VARIANTS_WITH_1M,
 } from '../modelConstants';
 
 /**
@@ -92,6 +94,36 @@ describe('claudeCodeFamilyKeyword', () => {
   it('returns undefined for unclassifiable ids', () => {
     expect(claudeCodeFamilyKeyword(undefined)).toBeUndefined();
     expect(claudeCodeFamilyKeyword('openai:gpt-5.6-sol')).toBeUndefined();
+  });
+});
+
+/**
+ * GitHub #989 / PR #990 (@Derazien) — 1M is plan-gated (Max/Team/Enterprise
+ * auto-upgrade, Pro pays credits) and any `ANTHROPIC_BASE_URL` gateway, including
+ * Nimbalyst's own CLI observation proxy, suppresses the auto-upgrade. So the
+ * plain rows stay seeded at 1M (the SDK path really reports it, #825) AND an
+ * explicit `-1m` row exists again for users who must force it.
+ */
+describe('1M variant lists', () => {
+  it('keeps the plain rows seeded at 1M so the SDK-path meter cannot exceed 100% (#825)', () => {
+    expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).toContain('opus');
+    expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).toContain('fable');
+    expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).toContain('sonnet');
+    expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).not.toContain('haiku');
+  });
+
+  it('offers -1m rows for the dateless opus/fable aliases only', () => {
+    // sonnet: Sonnet 5 has no 200K variant and no `[1m]` suffix — a dead row.
+    // haiku: no 1M window.
+    // pinned legacy: `resolveClaudeCliModelArg` collapses every `opus*` variant to
+    // bare `opus`, so an `opus-4-7-1m` row would run Opus 5 while claiming 4.7.
+    expect([...CLAUDE_CODE_VARIANTS_WITH_1M].sort()).toEqual(['fable', 'opus']);
+  });
+
+  it('never offers a -1m row for a variant that is not seeded at 1M', () => {
+    for (const variant of CLAUDE_CODE_VARIANTS_WITH_1M) {
+      expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).toContain(variant);
+    }
   });
 });
 

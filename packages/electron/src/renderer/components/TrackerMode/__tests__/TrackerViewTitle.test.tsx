@@ -7,16 +7,18 @@ function renderTitle(overrides: Partial<Parameters<typeof TrackerViewTitle>[0]> 
   const onSaveView = vi.fn();
   const onRenameSavedView = vi.fn();
   const onUpdateSavedView = vi.fn();
+  const onExitSavedView = vi.fn();
   render(
     <TrackerViewTitle
       fallbackTitle="All Items"
       onSaveView={onSaveView}
       onRenameSavedView={onRenameSavedView}
       onUpdateSavedView={onUpdateSavedView}
+      onExitSavedView={onExitSavedView}
       {...overrides}
     />,
   );
-  return { onSaveView, onRenameSavedView, onUpdateSavedView };
+  return { onSaveView, onRenameSavedView, onUpdateSavedView, onExitSavedView };
 }
 
 describe('TrackerViewTitle', () => {
@@ -65,5 +67,14 @@ describe('TrackerViewTitle', () => {
 
     fireEvent.click(screen.getByTestId('tracker-saved-view-update'));
     expect(onUpdateSavedView).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers an explicit exit from the active saved-view context', () => {
+    const { onExitSavedView } = renderTitle({
+      activeSavedViewName: 'Review queue',
+    });
+
+    fireEvent.click(screen.getByTestId('tracker-saved-view-exit'));
+    expect(onExitSavedView).toHaveBeenCalledTimes(1);
   });
 });

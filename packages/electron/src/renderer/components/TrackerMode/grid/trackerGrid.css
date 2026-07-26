@@ -114,6 +114,40 @@
   overflow: hidden;
 }
 
+/* Title cell: favorite star + text, matching the list view's affordance. */
+.tracker-grid-cell-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.tracker-grid-cell-favorite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  cursor: pointer;
+  color: var(--nim-text-faint);
+  opacity: 0.35;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.tracker-grid-cell-favorite.is-favorite,
+.tracker-grid-cell-favorite:hover {
+  opacity: 1;
+}
+
+.tracker-grid-cell-favorite.is-favorite {
+  color: var(--nim-warning, #f59e0b);
+}
+
+.tracker-grid-cell-favorite-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
 /* Editors */
 .tracker-grid-editor-input,
 .tracker-grid-editor-select {
@@ -165,8 +199,7 @@
  * column, then expand on hover (or when active). Otherwise the icon boxes
  * reserve layout width on every column and truncate short headers to "K…".
  */
-.tracker-grid-header-filter,
-.tracker-grid-header-sort {
+.tracker-grid-header-filter {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -182,17 +215,13 @@
 }
 
 .tracker-grid-header:hover .tracker-grid-header-filter,
-.tracker-grid-header:hover .tracker-grid-header-sort,
 .tracker-grid-header-filter:focus-visible,
-.tracker-grid-header-sort:focus-visible,
-.tracker-grid-header-filter.is-filtered,
-.tracker-grid-header-sort.is-sorted {
+.tracker-grid-header-filter.is-filtered {
   width: 15px;
   opacity: 1;
 }
 
-.tracker-grid-header-filter:hover,
-.tracker-grid-header-sort:hover {
+.tracker-grid-header-filter:hover {
   color: var(--nim-text);
   background: var(--nim-bg-hover);
 }
@@ -202,12 +231,7 @@
   background: color-mix(in srgb, var(--nim-primary) 12%, transparent);
 }
 
-.tracker-grid-header-sort.is-sorted {
-  color: var(--nim-primary);
-}
-
-.tracker-grid-header-filter-icon,
-.tracker-grid-header-sort-icon {
+.tracker-grid-header-filter-icon {
   font-size: 11px;
   font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
 }

@@ -105,4 +105,20 @@ describe('LiveGateway tracker list adaptation', () => {
       items: [{ itemId: 'bug-1' }],
     });
   });
+
+  // `--inbox` delegates to the MCP tool rather than reimplementing the
+  // predicate, so an agent's queue and the app's inbox can't drift apart.
+  it('forwards --inbox to the tracker_list tool', async () => {
+    const callTool = vi.fn(async () => ({
+      isError: false,
+      summary: 'listed',
+      structured: { items: [] },
+      raw: {},
+    }));
+    const gateway = makeGateway(callTool);
+
+    await gateway.listTrackers({ workspace: '/ws', inbox: true });
+
+    expect(callTool).toHaveBeenCalledWith('/ws', 'tracker_list', { inbox: true, full: true });
+  });
 });

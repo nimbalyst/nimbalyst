@@ -19,6 +19,12 @@ import { initMonacoEditor } from './utils/monacoConfig';
 import { store } from '@nimbalyst/runtime/store';
 import { registerLocalAssetUrlConverter } from '@nimbalyst/runtime';
 import { nimAssetUrl } from './utils/assetUrl';
+import {
+  isAnalyticsConsentGranted,
+  onAnalyticsConsentChange,
+  setAnalyticsConsent,
+} from './utils/analyticsConsent';
+import { initAnalyticsListeners } from './store/listeners/analyticsListeners';
 import { initializeTheme } from './hooks/useTheme';
 import { offscreenEditorRenderer } from './services/OffscreenEditorRenderer';
 import {
@@ -230,10 +236,42 @@ const posthogClient = posthog.init(
         posthog.people.set_once({ is_dev_user: true });
       }
     },
-    before_send: (event) => process.env.PLAYWRIGHT_TEST ? null : event,
+    // Single choke point for every renderer capture. Consulting the consent
+    // gate here (rather than relying only on opt_out_capturing) means no
+    // existing or future `posthog.capture(...)` call site can leak an event
+    // while the user has analytics turned off.
+    before_send: (event) => {
+      if (process.env.PLAYWRIGHT_TEST) return null;
+      if (!isAnalyticsConsentGranted()) return null;
+      return event;
+    },
     debug: isDevInstallation
   }
 )
+
+// Resolve the user's setting before anything can capture, then keep posthog-js
+// itself in sync so it also stops its own background requests -- not just the
+// events we hand it.
+setAnalyticsConsent(analyticsAllowed);
+if (analyticsAllowed) {
+  // `captureEventName: false` matters: opt_in_capturing() captures an `$opt_in`
+  // event by default, and this runs on every launch in every window. Applying
+  // an already-granted setting is not a user action and must not emit.
+  posthog.opt_in_capturing({ captureEventName: false });
+} else {
+  posthog.opt_out_capturing();
+}
+
+onAnalyticsConsentChange((enabled) => {
+  // This path is an explicit toggle, so the default `$opt_in` event is wanted
+  // here -- it mirrors the `analytics_opt_out` the main service records, and
+  // fires once per user action rather than once per launch.
+  if (enabled) posthog.opt_in_capturing(); else posthog.opt_out_capturing();
+});
+
+// Settings live in one window but the renderer client is per-window, so main
+// broadcasts the change to every window rather than only the one that toggled.
+initAnalyticsListeners();
 
 // syncs the session ID from posthog-js to the electron-side analytics service
 posthog.onSessionId(async (sessionId: string, windowId, changeReason) => {

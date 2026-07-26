@@ -33,6 +33,26 @@ import { setSleepPreventionMode, setSyncConnected, shutdownSleepPrevention, type
 import { reconnectAllTrackerSyncs } from './TrackerSyncManager';
 import { BrowserWindow } from 'electron';
 import { timeStartupPhase } from '../utils/startupTiming';
+import { compressImageIfNeeded } from '../mcp/mcpImageCompression';
+
+// Screenshots taken by a desktop session are only viewable on mobile if their
+// bytes ride along in the synced message -- there is no desktop -> mobile
+// attachment channel. Give the truncator a way to downscale the big ones
+// instead of dropping them (nativeImage lives in main, the truncator does not).
+//
+// The budget is much tighter than the MCP one: every screenshot permanently
+// occupies part of a SessionRoom's storage cap on the sync server. 150 KB at
+// 1600px still gives real zoom headroom on a phone.
+const MOBILE_SYNC_IMAGE_MAX_BYTES = 150 * 1024;
+const MOBILE_SYNC_IMAGE_MAX_DIMENSION = 1600;
+
+syncModule.setSyncImageCompressor((data, mimeType) => {
+  const { data: out, mimeType: outMime } = compressImageIfNeeded(data, mimeType, {
+    maxBytes: MOBILE_SYNC_IMAGE_MAX_BYTES,
+    maxDimension: MOBILE_SYNC_IMAGE_MAX_DIMENSION,
+  });
+  return { data: out, mimeType: outMime };
+});
 
 function loadSyncModule() {
   return syncModule;

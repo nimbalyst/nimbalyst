@@ -9,7 +9,7 @@
 import { McpHttpClient } from './mcpClient.js';
 import type { EndpointDescriptor } from './endpoint.js';
 import type { TrackerRecord } from '../vendor/trackerRecord.js';
-import { connectionError } from '../cli/exitCodes.js';
+import { connectionError, writeNotPermittedError } from '../cli/exitCodes.js';
 import type {
   CreateInput,
   GatewayStatus,
@@ -56,6 +56,7 @@ export class LiveGateway implements TrackerGateway {
     if (filters.priority) args.priority = filters.priority;
     if (filters.owner) args.owner = filters.owner;
     if (filters.search) args.search = filters.search;
+    if (filters.inbox) args.inbox = true;
     if (filters.includeArchived) args.archived = true;
     if (filters.limit !== undefined) args.limit = filters.limit;
     // The CLI maps custom fields (release version, members) into the record, so
@@ -129,8 +130,15 @@ export class LiveGateway implements TrackerGateway {
     if (input.linkSession) args.linkSession = true;
 
     const result = await this.client.callTool(workspace, 'tracker_create', args);
+    // Surface a backend rejection (e.g. schema validation) loudly instead of
+    // fabricating a fake "(created)" success — that masked silent data loss for
+    // full-document types (plan/idea/decision).
+    throwIfToolError(result, `create ${input.type} "${input.title}"`);
     const item = result.structured?.item;
-    return item ? mcpItemToRecord(item) : emptyRecordFromInput(workspace, input);
+    if (!item) {
+      throw connectionError(`Create of ${input.type} returned no item (nothing persisted).`);
+    }
+    return mcpItemToRecord(item);
   }
 
   async updateTracker(workspace: string, reference: string, input: UpdateInput): Promise<TrackerRecord> {
@@ -152,6 +160,10 @@ export class LiveGateway implements TrackerGateway {
     if (input.unsetFields?.length) args.unsetFields = input.unsetFields;
 
     const result = await this.client.callTool(workspace, 'tracker_update', args);
+    // A backend rejection (e.g. schema validation) must fail loudly. Previously
+    // an error returned no item, and the re-fetch below reported the *unchanged*
+    // record as "Updated" — so ignored --field/--body-file/--tag looked applied.
+    throwIfToolError(result, `update '${reference}'`);
     const item = result.structured?.item;
     if (!item) {
       const fetched = await this.getTracker(workspace, reference);
@@ -242,18 +254,20 @@ export class LiveGateway implements TrackerGateway {
   }
 }
 
-/** Fallback record if the create tool omitted the item (still report success). */
-function emptyRecordFromInput(workspace: string, input: CreateInput): TrackerRecord {
-  return {
-    id: '(created)',
-    primaryType: input.type,
-    typeTags: [input.type, ...(input.typeTags ?? [])],
-    source: 'native',
-    archived: false,
-    syncStatus: 'local',
-    system: { workspace, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    fields: { title: input.title, status: input.status, priority: input.priority },
-  };
+/** Surface a backend tool error loudly instead of masking it as success. */
+function throwIfToolError(
+  result: { isError?: boolean; summary?: string; structured?: any },
+  action: string,
+): void {
+  if (!result?.isError) return;
+  const errs = result.structured?.errors;
+  const detail =
+    result.summary ??
+    (Array.isArray(errs)
+      ? errs.map((e: any) => (typeof e === 'string' ? e : e?.message ?? JSON.stringify(e))).join('; ')
+      : undefined) ??
+    'the tracker rejected the write';
+  throw writeNotPermittedError(`Could not ${action}: ${detail}`);
 }
 
 function applyClientSideFilters(records: TrackerRecord[], filters: ListFilters): TrackerRecord[] {

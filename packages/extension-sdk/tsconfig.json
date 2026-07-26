@@ -6,6 +6,10 @@
     "declaration": true,
     "declarationMap": true,
     "outDir": "dist",
+    // Incremental emit keeps unchanged sources from being rewritten, so the pre-push
+    // SDK build doesn't churn dist/ and full-reload every open Electron window.
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

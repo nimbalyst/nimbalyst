@@ -174,6 +174,13 @@ export function TrackerInboxView({
     await handleItemUpdate(item, { [resolveRoleFieldName(item.primaryType, 'workflowStatus')]: status });
   }, [handleItemUpdate]);
 
+  // The "nothing is wrong with it" verb. Every other action mutates the item or
+  // defers it, which leaves no way to clear a backlog entry that is already
+  // where it belongs. Shared, not personal: one pass clears it for the team.
+  const leaveIt = useCallback(async (item: TrackerRecord) => {
+    await handleItemUpdate(item, { triagedAt: new Date().toISOString() });
+  }, [handleItemUpdate]);
+
   const snooze = useCallback((item: TrackerRecord, ms: number) => {
     void setSnooze({ itemId: item.id, snoozedUntil: Date.now() + ms });
   }, [setSnooze]);
@@ -214,6 +221,10 @@ export function TrackerInboxView({
         event.preventDefault();
         void accept(item);
         break;
+      case 'l':
+        event.preventDefault();
+        void leaveIt(item);
+        break;
       case 'm':
         event.preventDefault();
         setCollectionMenuOpen((open) => !open);
@@ -227,7 +238,7 @@ export function TrackerInboxView({
         dismiss(item);
         break;
     }
-  }, [queue, focusedIndex, setFocusedIndex, assignToMe, accept, setPriority, snooze, dismiss]);
+  }, [queue, focusedIndex, setFocusedIndex, assignToMe, accept, setPriority, leaveIt, snooze, dismiss]);
 
   // Gate on the *source* set, not the queue: an empty queue over loaded items is
   // inbox zero, and showing "Loading..." for it would hide the win.
@@ -255,7 +266,7 @@ export function TrackerInboxView({
           ))}
         </div>
         <span className="ml-auto text-[10px] text-nim-faint select-none">
-          j/k move &middot; a assign &middot; 1-4 priority &middot; e accept &middot; m milestone &middot; s snooze &middot; x dismiss
+          j/k move &middot; a assign &middot; 1-4 priority &middot; e accept &middot; m milestone &middot; l leave it &middot; s snooze &middot; x dismiss
         </span>
       </div>
 
@@ -350,6 +361,14 @@ export function TrackerInboxView({
             data-testid="tracker-inbox-collection"
           >
             Add to...
+          </button>
+          <button
+            className="px-2 py-1 text-[11px] text-nim-muted hover:text-nim rounded hover:bg-nim-tertiary"
+            onClick={() => void leaveIt(focused)}
+            title="Leave it -- it's fine where it is, clear it from the team's inbox (l)"
+            data-testid="tracker-inbox-leave"
+          >
+            Leave it
           </button>
           <button
             className="px-2 py-1 text-[11px] text-nim-muted hover:text-nim rounded hover:bg-nim-tertiary disabled:opacity-40"

@@ -25,6 +25,12 @@ export interface ListFilters {
   until?: string; // ISO bound
   dateField?: 'updated' | 'created';
   where?: WhereClause[];
+  /**
+   * Only items that still need a triage decision. Evaluated by the same
+   * predicate the app's triage inbox renders, which needs the schema registry
+   * (a type's initial status and default priority), so this is live-mode only.
+   */
+  inbox?: boolean;
   includeArchived?: boolean;
   limit?: number; // undefined = use default; Infinity-ish via --all handled by caller
 }

@@ -58,13 +58,20 @@ const SKIP_TAGS = new Set(['a', 'pre']);
  * optional `:line` / `:line:col` suffix.
  *
  * A match always requires at least one path separator and a final
- * `.<ext>` (1-8 alphanumerics), which keeps bare filenames, prose, and
+ * `.<ext>` (1-16 alphanumerics), which keeps bare filenames, prose, and
  * version numbers out. Segment characters are restricted to a path-safe
  * set so trailing sentence punctuation (`.`, `,`, `)`, `:`) is excluded.
+ *
+ * The extension bound was 8, which silently truncated longer ones: the anchor
+ * covered only the first 8 characters and its href pointed at a path that does
+ * not exist (`foo.excalidraw` linked as `foo.excalidr`). That hit `.excalidraw`,
+ * `.properties`, `.storyboard`, and the iOS `.xcworkspace` / `.entitlements`.
+ * The bound is kept — the separator requirement is the main guard, this is
+ * belt-and-braces against prose — but widened to cover real extensions.
  */
 const FILE_PATH_RE =
   // eslint-disable-next-line no-useless-escape
-  /(?<![\w@:./\\-])((?:[A-Za-z]:[\\/]|\\\\|~\/|\.\.?\/|\/)?(?:[\w.@-]+[\\/])+[\w.@-]+\.[A-Za-z0-9]{1,8})(:\d+(?::\d+)?)?/g;
+  /(?<![\w@:./\\-])((?:[A-Za-z]:[\\/]|\\\\|~\/|\.\.?\/|\/)?(?:[\w.@-]+[\\/])+[\w.@-]+\.[A-Za-z0-9]{1,16})(:\d+(?::\d+)?)?/g;
 
 function makeAnchor(fullMatch: string): HastElement {
   return {

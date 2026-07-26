@@ -11,7 +11,6 @@ import {
   getFieldForColumn,
   resolveColumnsForType,
   TrackerTable,
-  TrackerTableGrid,
   SortColumn as TrackerSortColumn,
   SortDirection as TrackerSortDirection,
   type TrackerItemType,
@@ -62,7 +61,10 @@ import { buildTrackerTagOptions } from './trackerTagFilterUtils';
 import {
   filterTrackerItems,
   getTrackerFilterValue,
+  normalizeTrackerGroupBy,
   recordSourceKey,
+  STATUS_CHANGED_FROM_FILTER_FIELD,
+  STATUS_CHANGED_TO_FILTER_FIELD,
   type SavedView,
 } from './trackerSavedViews';
 import { useTrackerUnread } from '../../hooks/useTrackerUnread';
@@ -76,8 +78,9 @@ import {
   buildTrackerLaunchContext,
   type TrackerLaunchContext,
 } from './trackerSessionLaunch';
+import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 
-export type ViewMode = 'list' | 'table' | 'grid' | 'kanban' | 'tag-board' | 'inbox';
+export type ViewMode = 'list' | 'table' | 'kanban' | 'tag-board' | 'inbox';
 
 /** Human label for a source key without probing the importer (avoids backend start). */
 function sourceKeyLabel(key: string): string {
@@ -117,6 +120,7 @@ interface TrackerMainViewProps {
   onSaveView: (name: string) => void;
   onRenameSavedView: (name: string) => void;
   onUpdateSavedView: () => void;
+  onExitSavedView: () => void;
 }
 
 export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
@@ -142,6 +146,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   onSaveView,
   onRenameSavedView,
   onUpdateSavedView,
+  onExitSavedView,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [quickAddType, setQuickAddType] = useState<string | null>(null);
@@ -184,7 +189,10 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     const persisted = modeLayout.typeColumnConfigs[columnConfigKey];
     // If persisted config is missing or has too few columns (stale), use fresh defaults
     if (!persisted || persisted.visibleColumns.length < 3) {
-      return getDefaultColumnConfig(columnConfigKey === 'all' ? '' : columnConfigKey);
+      const defaults = getDefaultColumnConfig(columnConfigKey === 'all' ? '' : columnConfigKey);
+      return modeLayout.groupBy === 'none'
+        ? defaults
+        : { ...defaults, groupBy: modeLayout.groupBy };
     }
     // Silent migration: inject the structural 'key' column (issue key)
     // right after 'type' for users who saved configs before this column
@@ -198,10 +206,11 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       return { ...persisted, visibleColumns };
     }
     return persisted;
-  }, [modeLayout.typeColumnConfigs, columnConfigKey]);
+  }, [modeLayout.groupBy, modeLayout.typeColumnConfigs, columnConfigKey]);
 
   const handleColumnConfigChange = useCallback((config: TypeColumnConfig) => {
     setModeLayout({
+      groupBy: normalizeTrackerGroupBy(config.groupBy),
       typeColumnConfigs: {
         ...modeLayout.typeColumnConfigs,
         [columnConfigKey]: config,
@@ -362,6 +371,46 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     if (!fields.some(field => field.id === 'archived')) {
       fields.push({ id: 'archived', label: 'Archived', type: 'boolean', group: 'system' });
     }
+    const statusOptions = new Map<string, {
+      value: string;
+      label: string;
+      color?: string;
+      icon?: string;
+    }>();
+    for (const model of trackerTypes) {
+      const statusFieldName = model.roles?.workflowStatus;
+      const statusField = statusFieldName
+        ? model.fields.find(field => field.name === statusFieldName)
+        : undefined;
+      for (const option of statusField?.options ?? []) {
+        statusOptions.set(option.value, {
+          value: option.value,
+          label: option.label,
+          color: option.color,
+          icon: option.icon,
+        });
+      }
+    }
+    const transitionFields: TrackerFilterField[] = [
+      {
+        id: STATUS_CHANGED_TO_FILTER_FIELD,
+        label: 'Status changed to',
+        type: 'select',
+        group: 'common',
+        options: Array.from(statusOptions.values()),
+      },
+      {
+        id: STATUS_CHANGED_FROM_FILTER_FIELD,
+        label: 'Status changed from',
+        type: 'select',
+        group: 'common',
+        options: Array.from(statusOptions.values()),
+      },
+    ];
+    const statusIndex = fields.findIndex(field => availableColumns.some(
+      column => column.id === field.id && column.role === 'workflowStatus',
+    ));
+    fields.splice(statusIndex >= 0 ? statusIndex + 1 : Math.min(1, fields.length), 0, ...transitionFields);
     return fields;
   }, [availableColumns, schemaType, trackerTypes]);
 
@@ -775,6 +824,18 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     return out;
   }, [trackerTypes]);
 
+  const visibleCollaborationScope = useMemo<'personal' | 'shared' | 'mixed' | 'unknown'>(() => {
+    if (filteredItems.length === 0) return 'unknown';
+    let hasShared = false;
+    let hasPersonal = false;
+    for (const item of filteredItems) {
+      if (hasTeam && teamSyncedTypes.has(item.primaryType)) hasShared = true;
+      else hasPersonal = true;
+      if (hasShared && hasPersonal) return 'mixed';
+    }
+    return hasShared ? 'shared' : 'personal';
+  }, [filteredItems, hasTeam, teamSyncedTypes]);
+
   const prewarmItemIds = useMemo(() => {
     if (!hasTeam || teamSyncedTypes.size === 0) return [];
     return filteredItems
@@ -789,8 +850,22 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   });
 
   const handleItemSelect = useCallback((itemId: string) => {
+    const item = filteredItems.find(candidate => candidate.id === itemId);
+    trackTeamAnalyticsEvent('tracker_item_clicked', {
+      surface: 'desktop',
+      collaborationScope: item
+        ? (hasTeam && teamSyncedTypes.has(item.primaryType) ? 'shared' : 'personal')
+        : 'unknown',
+    });
     setModeLayout({ selectedItemId: itemId });
-  }, [setModeLayout]);
+  }, [filteredItems, hasTeam, setModeLayout, teamSyncedTypes]);
+
+  const trackTableSort = useCallback(() => {
+    trackTeamAnalyticsEvent('tracker_table_sort', {
+      surface: 'desktop',
+      collaborationScope: visibleCollaborationScope,
+    });
+  }, [visibleCollaborationScope]);
 
   const handleCloseDetail = useCallback(() => {
     setModeLayout({ selectedItemId: null });
@@ -1005,8 +1080,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     ? inboxFilteredItems.length
     : viewFilteredItems.length;
   const showColumnControls = viewMode === 'list'
-    || viewMode === 'table'
-    || viewMode === 'grid';
+    || viewMode === 'table';
 
   return (
     <div className="tracker-main-view flex-1 flex flex-col overflow-hidden min-h-0">
@@ -1023,6 +1097,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
           onSaveView={onSaveView}
           onRenameSavedView={onRenameSavedView}
           onUpdateSavedView={onUpdateSavedView}
+          onExitSavedView={onExitSavedView}
         />
 
         {/* Search */}
@@ -1338,6 +1413,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               sortDirection={sortDirection}
               hideTypeTabs={true}
               onSortChange={(column, direction) => {
+                trackTableSort();
                 setModeLayout({ sortBy: column, sortDirection: direction });
               }}
               preserveItemOrder={recencyOrderActive}
@@ -1359,45 +1435,22 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               hideToolbar
             />
           ) : viewMode === 'table' ? (
-            <TrackerTableGrid
-              filterType={filterType}
-              sortBy={sortBy}
-              sortDirection={sortDirection}
-              hideTypeTabs={true}
-              onSortChange={(column, direction) => {
-                setModeLayout({ sortBy: column, sortDirection: direction });
-              }}
-              preserveItemOrder={recencyOrderActive}
-              favoriteItemIds={favoriteItemIds}
-              onToggleFavorite={handleToggleFavorite}
-              onSwitchToFilesMode={onSwitchToFilesMode}
-              onNewItem={handleNewItem}
-              onItemSelect={handleItemSelect}
-              selectedItemId={selectedItemId}
-              overrideItems={viewItemsWithPersonalFields}
-              onArchiveItems={handleArchiveItems}
-              onDeleteItems={handleDeleteItems}
-              onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
-              searchQuery={searchQuery}
-              hasExternalFilters={hasExternalTableFilters}
-              onClearFilters={clearTableFilters}
-              columnConfig={columnConfig}
-              onColumnConfigChange={handleColumnConfigChange}
-              hideToolbar
-            />
-          ) : viewMode === 'grid' ? (
             <TrackerGridView
               filterType={filterType}
               sortBy={sortBy}
               sortDirection={sortDirection}
               preserveItemOrder={recencyOrderActive}
               onSwitchToFilesMode={onSwitchToFilesMode}
+              onNewItem={handleNewItem}
               onItemSelect={handleItemSelect}
               onDetailClose={handleCloseDetail}
               selectedItemId={selectedItemId}
               overrideItems={viewItemsWithPersonalFields}
               onArchiveItems={handleArchiveItems}
               onDeleteItems={handleDeleteItems}
+              onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
+              favoriteItemIds={favoriteItemIds}
+              onToggleFavorite={handleToggleFavorite}
               searchQuery={searchQuery}
               hasExternalFilters={hasExternalTableFilters}
               onClearFilters={clearTableFilters}
@@ -1408,6 +1461,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               filterFields={headerFilterFields}
               filterEvaluationContext={filterEvaluationContext}
               onSortChange={(column, direction) => {
+                trackTableSort();
                 setModeLayout({
                   sortBy: column as TrackerSortColumn,
                   sortDirection: direction,

@@ -32,11 +32,19 @@ import * as https from "node:https";
 import { URL } from "node:url";
 import { extractSSEEvents, type SSEEvent } from "./sseExtractor";
 import { shouldObserveMessagesRequest } from "./messageRequestFilter";
+import { hasContext1mBeta } from "./claudeApiRequestParser";
 
 export interface ProxyRequestInfo {
   requestId: string;
   /** False when the request was classified as non-conversational (e.g. title gen). */
   observe: boolean;
+  /**
+   * The outbound request asked for the 1M context window (`anthropic-beta:
+   * context-1m-2025-08-07`). The CLI sends that flag only when the account +
+   * model are actually entitled, so this is the CLI path's only live
+   * context-window signal (NIM-2170) — the SSE response carries none.
+   */
+  context1m: boolean;
 }
 
 export interface ClaudeApiProxyCallbacks {
@@ -123,7 +131,11 @@ export function createClaudeApiProxy(
       const body = Buffer.concat(bodyChunks);
       const isMessages = reqPath.startsWith("/v1/messages");
       let observe = isMessages;
-      const info: ProxyRequestInfo = { requestId, observe };
+      const info: ProxyRequestInfo = {
+        requestId,
+        observe,
+        context1m: hasContext1mBeta(clientReq.headers),
+      };
 
       if (isMessages && body.length > 0) {
         try {

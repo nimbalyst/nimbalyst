@@ -208,6 +208,28 @@ describe('trackerRecordToItem round-trip', () => {
     expect(restored.customFields?.severity).toBe('high');
     expect(restored.customFields?.component).toBe('renderer');
   });
+
+  /**
+   * `triagedAt` retires an item from the triage inbox. The legacy TrackerItem
+   * has no first-class property for it, so it rides in `customFields` -- and a
+   * system key that isn't lifted back out on the return trip lands in `fields`,
+   * where it both stops retiring the item and shows up as a grid column.
+   */
+  it('round-trips triagedAt through the legacy customFields bag', () => {
+    const triagedBy = { displayName: 'Greg', email: 'greg@example.com' };
+    const original = makeTrackerItem({
+      customFields: { triagedAt: '2026-07-25T12:00:00.000Z', triagedBy },
+    });
+
+    const record = trackerItemToRecord(original);
+    expect(record.system.triagedAt).toBe('2026-07-25T12:00:00.000Z');
+    expect(record.system.triagedBy).toEqual(triagedBy);
+    expect(record.fields.triagedAt).toBeUndefined();
+
+    const restored = trackerRecordToItem(record);
+    expect(restored.customFields?.triagedAt).toBe('2026-07-25T12:00:00.000Z');
+    expect(trackerItemToRecord(restored).system.triagedAt).toBe('2026-07-25T12:00:00.000Z');
+  });
 });
 
 describe('dbRowToRecord', () => {

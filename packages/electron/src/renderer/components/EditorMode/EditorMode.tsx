@@ -431,6 +431,10 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         title,
         initialContent,
         documentType,
+        // Dev/Playwright console helper: opening a document by id with no UI
+        // involved is shaped like a deep link. Dev traffic is separated in
+        // PostHog by `is_dev_user`.
+        analyticsSource: 'deep_link',
         addTab: tabsActions.addTab,
       });
       console.log('[openCollabDoc] Opened tab:', tabId);

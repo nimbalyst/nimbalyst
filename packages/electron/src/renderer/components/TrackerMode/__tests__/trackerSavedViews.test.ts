@@ -5,13 +5,17 @@ import {
   countFilteredTrackerItemsByTypes,
   filterTrackerItems,
   getTrackerFilterValue,
+  getStatusTransitionValues,
   groupTrackerItems,
+  hasSavableViewState,
   legacyFilterChipsToClauses,
   normalizeViewDefinition,
   createDefaultViewDefinition,
   mergeSavedViews,
   parseSharedSavedView,
   serializeSharedSavedView,
+  STATUS_CHANGED_FROM_FILTER_FIELD,
+  STATUS_CHANGED_TO_FILTER_FIELD,
   type SavedView,
 } from '../trackerSavedViews';
 
@@ -47,6 +51,40 @@ const other: TrackerIdentity = {
 };
 
 describe('filterTrackerItems', () => {
+  it('filters on status transition direction from durable activity history', () => {
+    const transitioned = {
+      ...makeItem('transitioned', { status: 'done' }, 'task'),
+      system: {
+        ...makeItem('transitioned-system', {}).system,
+        activity: [{
+          id: 'activity-1',
+          action: 'status_changed' as const,
+          field: 'status',
+          oldValue: 'in-progress',
+          newValue: 'done',
+          timestamp: 1,
+          authorIdentity: other,
+        }],
+      },
+    };
+    const untouched = makeItem('untouched', { status: 'done' }, 'task');
+
+    expect(getStatusTransitionValues(transitioned, 'from')).toEqual(['in-progress']);
+    expect(getStatusTransitionValues(transitioned, 'to')).toEqual(['done']);
+    expect(getTrackerFilterValue(transitioned, STATUS_CHANGED_FROM_FILTER_FIELD)).toEqual(['in-progress']);
+    expect(filterTrackerItems(
+      [transitioned, untouched],
+      {
+        activeFilters: [],
+        tagFilter: [],
+        columnFilters: {
+          combinator: 'and',
+          clauses: [{ field: STATUS_CHANGED_TO_FILTER_FIELD, op: '=', value: 'done' }],
+        },
+      },
+    ).map(item => item.id)).toEqual(['transitioned']);
+  });
+
   it('evaluates saved relative-person, date, viewed, and favorite clauses with personal context', () => {
     const nowMs = Date.UTC(2026, 6, 24);
     const day = 24 * 60 * 60 * 1000;
@@ -431,6 +469,19 @@ describe('filterTrackerItems', () => {
   });
 });
 
+describe('hasSavableViewState', () => {
+  it('treats a selected tracker type as savable without requiring a filter', () => {
+    expect(hasSavableViewState({
+      ...createDefaultViewDefinition(),
+      selectedType: 'bug',
+    })).toBe(true);
+  });
+
+  it('keeps the untouched default view out of the save flow', () => {
+    expect(hasSavableViewState(createDefaultViewDefinition())).toBe(false);
+  });
+});
+
 describe('groupTrackerItems', () => {
   it('returns a single "All" group for none', () => {
     const items = [makeItem('1', {}), makeItem('2', {})];
@@ -492,6 +543,17 @@ describe('normalizeViewDefinition', () => {
       ...createDefaultViewDefinition(),
       selectedType: 'bug',
     });
+  });
+
+  it("folds a saved view's retired 'grid' mode into the RevoGrid table", () => {
+    // Saved views travel between users on different builds, so a view saved
+    // while the RevoGrid table had its own mode must still open on this one.
+    expect(normalizeViewDefinition({ viewMode: 'grid' as never }).viewMode).toBe('table');
+  });
+
+  it('falls back to the default for a viewMode this build cannot render', () => {
+    expect(normalizeViewDefinition({ viewMode: 'spreadsheet' as never }).viewMode)
+      .toBe(createDefaultViewDefinition().viewMode);
   });
 
   it('drops non-string tags', () => {

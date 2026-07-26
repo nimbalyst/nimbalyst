@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { ActionGuard } from './ActionGuard';
 import { MergeOrgWizard } from './MergeOrgWizard';
+import { bucketMemberCount, bucketProjectCount, categorizeTeamAnalyticsError } from '../../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
 
 export function OrganizationDangerZone({ orgId }: { orgId?: string }) {
   const [role, setRole] = useState('member');
@@ -64,13 +66,35 @@ export function OrganizationDangerZone({ orgId }: { orgId?: string }) {
         <ActionGuard allowed={Boolean(orgId) && canDelete} reason="An organization owner or admin is required.">
           <div className="flex gap-2"><input className="min-w-0 flex-1 rounded border border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-2 text-sm" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /><button type="button" disabled={!orgId || confirmation !== orgId} className="rounded bg-[var(--nim-error)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-40" onClick={() => orgId && void window.electronAPI.organization.deleteOrganization(orgId).then((result) => {
             if (result?.success) {
+              trackTeamAnalyticsEvent('team_organization_deleted', {
+                surface: 'desktop',
+                callerRole: role === 'owner' || role === 'admin' || role === 'member' ? role : 'unknown',
+                memberCountBucket: bucketMemberCount(memberCount),
+                projectCountBucket: bucketProjectCount(projectCount),
+              });
               setMessage('Organization deleted.');
               // Refresh every org-directory surface so the deleted org stops
               // lingering in the switcher/roster (settings review finding).
               window.dispatchEvent(new CustomEvent('nimbalyst:organizations-changed'));
             } else {
+              trackTeamAnalyticsEvent('team_operation_failed', {
+                surface: 'desktop',
+                operation: 'delete_organization',
+                entryPoint: 'organization_manager',
+                callerRole: role === 'owner' || role === 'admin' || role === 'member' ? role : 'unknown',
+                errorCategory: categorizeTeamAnalyticsError('organization', result?.error),
+              });
               setMessage(result?.error ?? 'Delete failed');
             }
+          }).catch((error) => {
+            trackTeamAnalyticsEvent('team_operation_failed', {
+              surface: 'desktop',
+              operation: 'delete_organization',
+              entryPoint: 'organization_manager',
+              callerRole: role === 'owner' || role === 'admin' || role === 'member' ? role : 'unknown',
+              errorCategory: categorizeTeamAnalyticsError('organization', error),
+            });
+            setMessage(error instanceof Error ? error.message : 'Delete failed');
           })}>Delete</button></div>
         </ActionGuard>
       </div>

@@ -25,6 +25,16 @@ class TranscriptBridgeTest {
     }
 
     @Test
+    fun `parses the ready handshake the transcript posts once window nimbalyst exists`() {
+        val message = TranscriptBridge.parse("""{"type":"ready"}""")
+
+        assertNotNull(message)
+        // TranscriptWebView re-pushes the session payload on this message; a cold
+        // start can install the bridge after the timed retries have all fired.
+        assertEquals("ready", message?.type)
+    }
+
+    @Test
     fun `parses interactive response payload`() {
         val message = TranscriptBridge.parse(
             """

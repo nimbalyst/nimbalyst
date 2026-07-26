@@ -32,6 +32,7 @@ Tracker (read):
   nim tracker list   [--type T] [--status open|closed|<s>] [--priority P]
                      [--owner me|<o>] [--since 1d] [--until 2026-06-01]
                      [--where field=value] [--limit N | --all] [--json|--csv|-q]
+                     [--inbox]                (still needs a triage decision; live mode)
   nim tracker get    <id|KEY|urn>
   nim tracker show   <id|KEY>            (pretty body render)
   nim tracker types  [show <type>]

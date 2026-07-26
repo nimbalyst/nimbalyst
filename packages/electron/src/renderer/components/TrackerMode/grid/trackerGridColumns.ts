@@ -123,12 +123,66 @@ function formatValue(col: TrackerColumnDef, value: unknown, trackerType: string)
   }
 }
 
+/** Favorite affordance for the title cell, matching the list view's star. */
+function favoriteNode(
+  createElement: HyperFunc<VNode>,
+  itemId: string,
+  isFavorite: boolean,
+  onToggleFavorite: (itemId: string) => void,
+): VNode {
+  return createElement(
+    'span',
+    {
+      class: isFavorite
+        ? 'tracker-grid-cell-favorite is-favorite'
+        : 'tracker-grid-cell-favorite',
+      title: isFavorite ? 'Remove from favorites' : 'Add to favorites',
+      // The grid focuses a cell on pointerdown, which would open the detail
+      // panel behind the star. Swallow both events so the star is a pure toggle.
+      onPointerDown: (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+      },
+      onClick: (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onToggleFavorite(itemId);
+      },
+    },
+    createElement(
+      'span',
+      { class: 'material-symbols-outlined tracker-grid-cell-favorite-icon' },
+      isFavorite ? 'star' : 'star_outline',
+    ),
+  );
+}
+
 /** Colored-badge columns get a pill; everything else renders as plain text. */
-function buildCellTemplate(col: TrackerColumnDef, trackerType: string) {
+function buildCellTemplate(
+  col: TrackerColumnDef,
+  trackerType: string,
+  favorites?: FavoritesOptions,
+) {
   return (createElement: HyperFunc<VNode>, props: CellTemplateProp): VNode => {
     const value = props.model?.[col.id];
     const rowType = trackerType || String(props.model?.[ROW_ITEM_TYPE] ?? '');
     const text = formatValue(col, value, rowType);
+
+    // The title column carries the favorite star, so it renders even when the
+    // title itself is empty.
+    if (favorites && col.role === 'title') {
+      const itemId = String(props.model?.[ROW_ITEM_ID] ?? '');
+      return createElement('span', { class: 'tracker-grid-cell-title' }, [
+        favoriteNode(
+          createElement,
+          itemId,
+          favorites.favoriteItemIds.has(itemId),
+          favorites.onToggleFavorite,
+        ),
+        textNode(createElement, text),
+      ]);
+    }
+
     if (!text) return textNode(createElement, '');
 
     if (col.render === 'badge' || col.render === 'type-icon') {
@@ -153,6 +207,11 @@ function buildCellTemplate(col: TrackerColumnDef, trackerType: string) {
   };
 }
 
+export interface FavoritesOptions {
+  favoriteItemIds: ReadonlySet<string>;
+  onToggleFavorite: (itemId: string) => void;
+}
+
 export interface BuildGridColumnsOptions {
   /** Active tracker type; `'all'` means a mixed-type view. */
   trackerType: string;
@@ -166,10 +225,10 @@ export interface BuildGridColumnsOptions {
   filteredColumnIds?: ReadonlySet<string>;
   /** Open the column filter popover, anchored to the clicked header cell. */
   onOpenFilter?: (columnId: string, anchorRect: DOMRect) => void;
-  /** Current view-owned sort, rendered as a compact explicit header control. */
-  sortBy?: string;
-  sortDirection?: 'asc' | 'desc';
-  onSort?: (columnId: string, direction: 'asc' | 'desc') => void;
+  /** Let RevoGrid own sortable header clicks and its built-in sort indicator. */
+  sortingEnabled?: boolean;
+  /** Renders the favorite star in the title cell; omit to hide it. */
+  favorites?: FavoritesOptions;
 }
 
 /**
@@ -180,43 +239,14 @@ export interface BuildGridColumnsOptions {
 function buildColumnTemplate(
   col: TrackerColumnDef,
   isFiltered: boolean,
-  sortBy: string | undefined,
-  sortDirection: 'asc' | 'desc' | undefined,
   onOpenFilter?: (columnId: string, anchorRect: DOMRect) => void,
-  onSort?: (columnId: string, direction: 'asc' | 'desc') => void,
 ) {
-  const isSorted = sortBy === col.id;
   return (createElement: HyperFunc<VNode>): VNode => createElement(
     'span',
     { class: 'tracker-grid-header' },
     [
       createElement('span', { class: 'tracker-grid-header-label' }, col.label),
       createElement('span', { class: 'tracker-grid-header-actions' }, [
-        ...(onSort && col.sortable
-          ? [createElement(
-            'span',
-            {
-              class: isSorted
-                ? 'tracker-grid-header-sort is-sorted'
-                : 'tracker-grid-header-sort',
-              title: isSorted
-                ? `Sorted ${sortDirection === 'asc' ? 'ascending' : 'descending'}`
-                : `Sort by ${col.label}`,
-              onClick: (e: MouseEvent) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onSort(col.id, isSorted && sortDirection === 'desc' ? 'asc' : 'desc');
-              },
-            },
-            createElement(
-              'span',
-              { class: 'material-symbols-outlined tracker-grid-header-sort-icon' },
-              isSorted
-                ? sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'
-                : 'unfold_more',
-            ),
-          )]
-          : []),
         ...(onOpenFilter
           ? [createElement(
             'span',
@@ -259,9 +289,8 @@ export function buildGridColumns(
     editorContext = {},
     filteredColumnIds,
     onOpenFilter,
-    sortBy,
-    sortDirection,
-    onSort,
+    sortingEnabled = false,
+    favorites,
   }: BuildGridColumnsOptions,
 ): ColumnRegular[] {
   return columns.map((col): ColumnRegular => {
@@ -282,7 +311,7 @@ export function buildGridColumns(
       name: col.label,
       size: columnWidths[col.id] ?? (typeof col.width === 'number' ? col.width : 280),
       minSize: col.minWidth ?? 60,
-      sortable: false, // Sorting is owned by the view so it matches the other surfaces.
+      sortable: sortingEnabled && col.sortable,
       editor,
       readonly: ({ model }) => {
         if (!editor) return true;
@@ -294,16 +323,13 @@ export function buildGridColumns(
         }
         return typeof itemId === 'string' ? !isRowEditable(itemId) : true;
       },
-      cellTemplate: buildCellTemplate(col, trackerType),
-      ...(onOpenFilter || onSort
+      cellTemplate: buildCellTemplate(col, trackerType, favorites),
+      ...(onOpenFilter
         ? {
           columnTemplate: buildColumnTemplate(
             col,
             filteredColumnIds?.has(col.id) ?? false,
-            sortBy,
-            sortDirection,
             onOpenFilter,
-            onSort,
           ),
         }
         : {}),

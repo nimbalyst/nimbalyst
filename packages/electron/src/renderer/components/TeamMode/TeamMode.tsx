@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { useAtom } from 'jotai';
 
@@ -12,6 +12,7 @@ import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../common/TeamAlphaNotice';
 import { selectedOrgIdAtom } from '../../store/atoms/orgScope';
 import { OrgWindowSwitcher } from './OrgWindowSwitcher';
 import { isActiveMembership, persistLastSelectedOrgId, resolveDefaultOrgId } from './defaultOrg';
+import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 
 // Workstream F will replace this interim destination with the shipped console route.
 export const TEAM_CONSOLE_URL = 'https://console.nimbalyst.com';
@@ -32,6 +33,7 @@ interface TeamSummary {
   sourceEmail?: string | null;
   owningPersonalOrgId?: string | null;
   membershipType?: string;
+  role?: string;
 }
 
 export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: string; isActive?: boolean }) {
@@ -43,6 +45,22 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
   // Which org project's access editor is open inside the Projects tab, if any.
   const [accessProjectId, setAccessProjectId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const surfaceOpenRecordedRef = useRef(false);
+
+  const selectOrganization = useCallback((orgId: string) => {
+    const selectedOrganization = organizations.find((organization) => organization.orgId === orgId);
+    trackTeamAnalyticsEvent('team_organization_switched', {
+      surface: 'desktop',
+      entryPoint: 'org_switcher',
+      callerRole: selectedOrganization?.role === 'owner'
+        || selectedOrganization?.role === 'admin'
+        || selectedOrganization?.role === 'member'
+        ? selectedOrganization.role
+        : 'unknown',
+    });
+    setSelectedOrgId(orgId);
+    void persistLastSelectedOrgId(orgId);
+  }, [organizations, setSelectedOrgId]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -85,6 +103,17 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
 
       const found = selectedOrgId ? selectedTeam : workspaceTeam;
       setTeam(found?.orgId ? found : null);
+      if (!surfaceOpenRecordedRef.current) {
+        surfaceOpenRecordedRef.current = true;
+        trackTeamAnalyticsEvent('team_surface_opened', {
+          surface: 'desktop',
+          entryPoint: 'account_org_list',
+          hasActiveOrganization: !!found?.orgId,
+          callerRole: found?.role === 'owner' || found?.role === 'admin' || found?.role === 'member'
+            ? found.role
+            : 'unknown',
+        });
+      }
       const personalOrgId = found?.boundPersonalOrgId ?? found?.owningPersonalOrgId;
       setBoundEmail(accounts.find((account) => account.personalOrgId === personalOrgId)?.email ?? found?.sourceEmail ?? null);
       setLoading(false);
@@ -120,10 +149,7 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
             <OrgWindowSwitcher
               organizations={organizations}
               selectedOrgId={null}
-              onSelect={(orgId) => {
-                setSelectedOrgId(orgId);
-                void persistLastSelectedOrgId(orgId);
-              }}
+              onSelect={selectOrganization}
             />
             <OrganizationMembersRolesPanel orgId="" />
           </div>
@@ -160,10 +186,7 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
           <OrgWindowSwitcher
             organizations={organizations}
             selectedOrgId={team.orgId}
-            onSelect={(orgId) => {
-              setSelectedOrgId(orgId);
-              void persistLastSelectedOrgId(orgId);
-            }}
+            onSelect={selectOrganization}
           />
           {ADMIN_TABS.map((item) => (
             <button

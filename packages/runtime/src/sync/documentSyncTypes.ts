@@ -113,6 +113,14 @@ export interface DocumentSyncConfig {
    */
   onContentChanged?: (yDoc: Doc) => void;
 
+  /**
+   * Called once for each locally-originated Yjs update after runtime has
+   * excluded remote, snapshot, persisted-pending, and replica-internal origins.
+   * Hosts can use this boundary for lifecycle-level product telemetry without
+   * importing analytics into the runtime package.
+   */
+  onLocalUpdate?: () => void;
+
   /** Called when awareness state changes from remote users */
   onAwarenessUpdate?: (states: Map<string, AwarenessState>) => void;
 

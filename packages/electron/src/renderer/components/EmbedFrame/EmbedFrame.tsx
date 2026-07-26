@@ -171,7 +171,7 @@ function openFileInTab(absolutePath: string): void {
 
 function openSharedDocumentInTab(documentId: string): void {
   store.set(setWindowModeAtom, 'collab');
-  store.set(pendingCollabDocumentAtom, { documentId });
+  store.set(pendingCollabDocumentAtom, { documentId, analyticsSource: 'embedded_document' });
 }
 
 type ReadFileResult =

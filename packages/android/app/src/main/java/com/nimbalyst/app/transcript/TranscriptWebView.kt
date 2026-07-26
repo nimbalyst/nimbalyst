@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -45,6 +46,13 @@ fun TranscriptWebView(
     val retryHandler = remember { Handler(Looper.getMainLooper()) }
     val pendingRetry = remember { mutableListOf<Runnable>() }
 
+    // The relay handler is wired once in `factory`, so it must read the payload
+    // through a State to avoid answering a late "ready" with the first frame's
+    // (usually empty) message list.
+    val currentPayload = rememberUpdatedState(
+        TranscriptPayloadArgs(sessionId, sessionTitle, provider, model, mode, messages)
+    )
+
     DisposableEffect(Unit) {
         onDispose {
             pendingRetry.forEach { retryHandler.removeCallbacks(it) }
@@ -73,6 +81,20 @@ fun TranscriptWebView(
                     when (message.type) {
                         "prompt" -> message.text?.let(onPromptSubmitted)
                         "interactive_response" -> onInteractiveResponse(message)
+                        // React installs window.nimbalyst and then posts "ready".
+                        // On a cold start that can land after the timed retries
+                        // have run, which used to leave the transcript stuck on
+                        // "Waiting for session...".
+                        "ready" -> currentPayload.value.let { args ->
+                            webView.pushSessionPayload(
+                                sessionId = args.sessionId,
+                                sessionTitle = args.sessionTitle,
+                                provider = args.provider,
+                                model = args.model,
+                                mode = args.mode,
+                                messages = args.messages
+                            )
+                        }
                     }
                 }
                 // Try to push payload immediately. If window.nimbalyst doesn't
@@ -110,6 +132,16 @@ fun TranscriptWebView(
         }
     )
 }
+
+/** The payload inputs, snapshotted so a late "ready" can be answered with fresh data. */
+private data class TranscriptPayloadArgs(
+    val sessionId: String,
+    val sessionTitle: String,
+    val provider: String,
+    val model: String,
+    val mode: String,
+    val messages: List<MessageEntity>,
+)
 
 private fun scheduleRetry(
     handler: Handler,

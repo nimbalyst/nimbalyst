@@ -30,9 +30,11 @@ const {
       items: [] as number[],
     },
   },
-  gridListeners: new Map<string, Set<(event: { detail: unknown }) => void>>(),
+  gridListeners: new Map<string, Set<(event: { detail: unknown; preventDefault: () => void }) => void>>(),
   dispatchGridEvent: (type: string, detail: unknown) => {
-    for (const listener of gridListeners.get(type) ?? []) listener({ detail });
+    const event = { detail, preventDefault: vi.fn() };
+    for (const listener of gridListeners.get(type) ?? []) listener(event);
+    return event;
   },
   gridElement: {} as Record<string, any>,
 }));
@@ -47,12 +49,18 @@ vi.mock('@revolist/react-datagrid', async () => {
         setCellEdit,
         getColumnStore,
         componentOnReady: vi.fn(async () => gridElement),
-        addEventListener: (type: string, listener: (event: { detail: unknown }) => void) => {
+        addEventListener: (
+          type: string,
+          listener: (event: { detail: unknown; preventDefault: () => void }) => void,
+        ) => {
           const listeners = gridListeners.get(type) ?? new Set();
           listeners.add(listener);
           gridListeners.set(type, listeners);
         },
-        removeEventListener: (type: string, listener: (event: { detail: unknown }) => void) => {
+        removeEventListener: (
+          type: string,
+          listener: (event: { detail: unknown; preventDefault: () => void }) => void,
+        ) => {
           gridListeners.get(type)?.delete(listener);
         },
       });
@@ -66,10 +74,23 @@ vi.mock('@nimbalyst/runtime/plugins/TrackerPlugin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@nimbalyst/runtime/plugins/TrackerPlugin')>();
   return {
     ...actual,
+    // Only the edit path is under test here; the rest of the hook's surface is
+    // stubbed so the grid's context menu renders closed.
     useTrackerRows: () => ({
-      handleItemUpdate,
+      handleItemUpdate: handleItemUpdate,
       isItemEditable: () => true,
       containerRef: { current: null },
+      selectedIds: new Set<string>(),
+      setSelectedIds: vi.fn(),
+      contextAnchor: null,
+      contextRefs: { setFloating: vi.fn(), setReference: vi.fn() },
+      contextFloatingStyles: {},
+      openContextMenuForIds: vi.fn(),
+      closeContextMenu: vi.fn(),
+      handleBulkStatusUpdate: vi.fn(),
+      handleBulkPriorityUpdate: vi.fn(),
+      handleAddSelectionToCollection: vi.fn(),
+      statusOptionsForBulk: [],
     }),
   };
 });
@@ -155,7 +176,7 @@ describe('TrackerGridView column layout', () => {
     }));
   });
 
-  it('enables header reordering without rendering a view-local toolbar', () => {
+  it('configures the grid without row numbers or a view-local toolbar', () => {
     const onColumnConfigChange = vi.fn();
     render(
       <TrackerGridView
@@ -171,6 +192,7 @@ describe('TrackerGridView column layout', () => {
     );
 
     expect(gridProps.current?.canMoveColumns).toBe(true);
+    expect(gridProps.current?.rowHeaders).toBeUndefined();
     expect(screen.queryByTestId('tracker-grid-toolbar')).toBeNull();
     expect(screen.queryByTestId('tracker-grid-columns-button')).toBeNull();
   });
@@ -314,7 +336,7 @@ describe('TrackerGridView column layout', () => {
     });
   });
 
-  it('routes the header sort button through the shared view sort callback', async () => {
+  it('routes RevoGrid header sorting through the shared view sort callback', async () => {
     const onSortChange = vi.fn();
     render(
       <TrackerGridView
@@ -334,16 +356,14 @@ describe('TrackerGridView column layout', () => {
     await waitFor(() => expect(gridElement.columns).toHaveLength(2));
     const status = (gridElement.columns as Array<Record<string, any>>)
       .find(column => column.prop === 'status')!;
-    const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({
-      tag,
-      props,
-      children,
-    });
-    const header = status.columnTemplate(h);
-    const sortButton = header.children[1].children[0];
-    sortButton.props.onClick({
-      preventDefault: vi.fn(),
-      stopPropagation: vi.fn(),
+
+    expect(status.sortable).toBe(true);
+    act(() => {
+      dispatchGridEvent('beforesorting', {
+        column: status,
+        order: 'asc',
+        additive: false,
+      });
     });
 
     expect(onSortChange).toHaveBeenCalledWith('status', 'asc');

@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { usePostHog } from 'posthog-js/react';
 import { useAtom, useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { InputModal } from '../InputModal';
@@ -66,6 +65,14 @@ import {
 } from '../../services/CollaborativeDocumentTypeCatalog';
 import { resolveSharedDocumentTypePresentation } from '../../utils/sharedDocumentTypeMetadata';
 import { createCollaborativeDocument } from '../../services/collaborativeDocumentCreationOrchestrator';
+import {
+  trackDocumentAction,
+  trackFolderCreated,
+  trackFolderDeleted,
+  trackFolderLinkCopied,
+  trackFolderMoved,
+  trackFolderRenamed,
+} from '../../utils/collabIndexAnalytics';
 
 // ---------------------------------------------------------------------------
 // TeamSync status indicator -- shown in the header subtitle slot
@@ -114,7 +121,6 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     documentTypeCatalog.getSnapshot,
     documentTypeCatalog.getSnapshot,
   );
-  const posthog = usePostHog();
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
   const allSharedDocuments = useAtomValue(allSharedDocumentsAtom);
   const sharedFolders = useAtomValue(sharedFoldersAtom);
@@ -296,12 +302,25 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
   }, [teamOrgId]);
 
   const handleToggleFavorite = useCallback((document: SharedDocument) => {
+    const wasFavorite = favoriteSet.has(document.documentId);
     toggleFavoriteDoc(document.documentId);
-  }, []);
+    trackDocumentAction({
+      action: wasFavorite ? 'favorite_disabled' : 'favorite_enabled',
+      actorType: 'user',
+      documentType: document.documentType,
+      entryPoint: 'sidebar',
+    });
+  }, [favoriteSet]);
 
   const handleMarkDocRead = useCallback((document: SharedDocument) => {
     if (!teamOrgId) return;
     void markDocViewed(document.documentId, teamOrgId, document.updatedAt ?? null);
+    trackDocumentAction({
+      action: 'marked_read',
+      actorType: 'user',
+      documentType: document.documentType,
+      entryPoint: 'sidebar',
+    });
   }, [teamOrgId]);
 
   useEffect(() => {
@@ -413,6 +432,12 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     const url = buildSharedDocumentDeepLink(document.documentId, teamOrgId);
     try {
       await navigator.clipboard.writeText(url);
+      trackDocumentAction({
+        action: 'link_copied',
+        actorType: 'user',
+        documentType: document.documentType,
+        entryPoint: 'sidebar',
+      });
       errorNotificationService.showInfo(
         'Link copied',
         'Paste it anywhere to open this document in Nimbalyst.',
@@ -434,6 +459,12 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
       if (!canMutateMetadata('move this document to Trash')) return;
       const { document } = contextMenu.node;
       trashSharedDocument(document.documentId);
+      trackDocumentAction({
+        action: 'trashed',
+        actorType: 'user',
+        documentType: document.documentType,
+        entryPoint: 'context_menu',
+      });
       setContextMenu(null);
       return;
     }
@@ -455,14 +486,19 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     const detail = parts.length > 0 ? ` and its ${parts.join(' and ')}` : '';
     if (window.confirm(`Delete shared folder "${contextMenu.node.name}"${detail}? This cannot be undone.`)) {
       removeSharedFolder(folderId);
-      posthog?.capture('collab_folder_deleted', { documentCount: docCount, subfolderCount: folderCount });
+      trackFolderDeleted({
+        actorType: 'user',
+        source: 'sidebar',
+        documentCount: docCount,
+        subfolderCount: folderCount,
+      });
       if (selectedFolderId === folderId) {
         setSelectedFolderId(null);
         setSelectedFolderPath(null);
       }
     }
     setContextMenu(null);
-  }, [canMutateMetadata, contextMenu, sharedFolders, allSharedDocuments, selectedFolderId, posthog]);
+  }, [canMutateMetadata, contextMenu, sharedFolders, allSharedDocuments, selectedFolderId]);
 
   const handleCopyFolderLink = useCallback(async (folderId: string) => {
     if (!teamOrgId) {
@@ -476,7 +512,10 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     const url = buildSharedFolderDeepLink(folderId, teamOrgId);
     try {
       await navigator.clipboard.writeText(url);
-      posthog?.capture('collab_folder_link_copied');
+      trackFolderLinkCopied({
+        actorType: 'user',
+        entryPoint: 'sidebar',
+      });
       errorNotificationService.showInfo(
         'Folder link copied',
         'Paste it anywhere to open this folder in Nimbalyst.',
@@ -498,10 +537,13 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
       return;
     }
     await renameSharedFolder(folderToRename.folderId, name);
-    posthog?.capture('collab_folder_renamed');
+    trackFolderRenamed({
+      actorType: 'user',
+      source: 'sidebar',
+    });
     setFolderToRename(null);
     setContextMenu(null);
-  }, [canMutateMetadata, folderToRename, posthog]);
+  }, [canMutateMetadata, folderToRename]);
 
   const handleRenameLegacyFolder = useCallback(async (nextName: string) => {
     if (!legacyFolderToRename) return;
@@ -513,10 +555,13 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
       return;
     }
     await renameLegacyCollabFolder(legacyFolderToRename.path, name);
-    posthog?.capture('collab_folder_renamed', { legacy: true });
+    trackFolderRenamed({
+      actorType: 'user',
+      source: 'legacy_folder',
+    });
     setLegacyFolderToRename(null);
     setContextMenu(null);
-  }, [canMutateMetadata, legacyFolderToRename, posthog]);
+  }, [canMutateMetadata, legacyFolderToRename]);
 
   const toggleFolder = useCallback((folderPath: string) => {
     setUserTouchedExpansion(true);
@@ -635,7 +680,11 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     }
 
     const folderId = await createSharedFolder(name, parentId);
-    posthog?.capture('collab_folder_created', { nested: parentId !== null });
+    trackFolderCreated({
+      actorType: 'user',
+      source: 'sidebar',
+      nested: parentId !== null,
+    });
     setExpandedFolders((currentFolders) => {
       const next = new Set(currentFolders);
       next.add(nextPath);
@@ -646,7 +695,7 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     setSelectedFolderId(folderId);
     setIsCreateFolderOpen(false);
     setContextMenu(null);
-  }, [canMutateMetadata, createTargetFolderId, existingPaths, folderPathById, posthog]);
+  }, [canMutateMetadata, createTargetFolderId, existingPaths, folderPathById]);
 
   const handleCreateDocument = useCallback(async (documentName: string) => {
     if (!canMutateMetadata('create documents')) return;
@@ -660,6 +709,8 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
         requestedName: documentName,
         parentFolderId: parentId,
         sourceContent: descriptor.creation?.defaultContent ?? '',
+        analyticsSource: 'new_document',
+        analyticsActorType: 'user',
       });
     } catch (error) {
       errorNotificationService.showError(
@@ -707,6 +758,12 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     }
 
     await updateSharedDocumentTitle(documentToRename.documentId, nextPath);
+    trackDocumentAction({
+      action: 'renamed',
+      actorType: 'user',
+      documentType: documentToRename.documentType,
+      entryPoint: 'sidebar',
+    });
     setDocumentToRename(null);
     setContextMenu(null);
   }, [canMutateMetadata, documentToRename, existingPaths, folderPathById]);
@@ -735,6 +792,13 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     // First-class reparent + dual-write title (single doc → one title write).
     moveSharedDocument(draggedDocument.documentId, targetFolderId);
     await updateSharedDocumentTitle(draggedDocument.documentId, nextPath);
+    const movedDocument = allSharedDocuments.find((document) => document.documentId === draggedDocument.documentId);
+    trackDocumentAction({
+      action: 'moved',
+      actorType: 'user',
+      documentType: movedDocument?.documentType,
+      entryPoint: 'sidebar',
+    });
 
     if (targetFolderPath) {
       setExpandedFolders((currentFolders) => {
@@ -791,13 +855,17 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
       return;
     }
     moveSharedFolder(draggedFolder.folderId, targetFolderId);
-    posthog?.capture('collab_folder_moved', { toRoot: targetFolderId === null });
+    trackFolderMoved({
+      actorType: 'user',
+      source: 'sidebar',
+      toRoot: targetFolderId === null,
+    });
     if (targetFolderPath) {
       setExpandedFolders((currentFolders) => new Set(currentFolders).add(targetFolderPath));
     }
     setDropTargetPath(null);
     setDraggedFolder(null);
-  }, [draggedFolder, canDropFolder, canMutateMetadata, posthog]);
+  }, [draggedFolder, canDropFolder, canMutateMetadata]);
 
   const renderTree = useCallback((nodes: CollabTreeNode[], depth = 0): React.ReactNode => {
     return nodes.map((node) => {

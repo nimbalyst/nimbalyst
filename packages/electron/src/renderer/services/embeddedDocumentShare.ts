@@ -323,6 +323,8 @@ export async function shareEmbeddedDocuments(
         operationId: documentId,
         documentId,
         openAfterCreate: false,
+        analyticsSource: 'embedded_document',
+        analyticsActorType: 'user',
       });
       createdDocumentIds.push(document.documentId);
       sharedReferences.set(candidate.absolutePath, {

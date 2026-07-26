@@ -18,6 +18,9 @@ import { errorNotificationService } from '../../services/ErrorNotificationServic
 import { collabKeyRotationEpochAtom } from './collabEditor';
 import { activeWorkspacePathAtom } from './openProjects';
 import { pendingDocRegistrations } from './pendingDocRegistrations';
+import { CollaborationHealthAttemptTracker } from '../../../shared/analytics/collaborationHealth';
+import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
+import type { CollabDocumentOpenSource } from '../../utils/collabDocumentOpener';
 import {
   normalizeCollabPath,
   getCollabParentPath,
@@ -76,6 +79,7 @@ export interface SharedFolder {
 }
 
 type TeamSyncStatus = 'disconnected' | 'connecting' | 'syncing' | 'connected' | 'error';
+const initializedTeamSyncWorkspaces = new Set<string>();
 
 /** Map a runtime FolderNode projection to the renderer SharedFolder shape. */
 function mapFolderNode(f: FolderNode): SharedFolder {
@@ -394,6 +398,8 @@ export interface PendingCollabDocument {
   metadataVersion?: 2;
   fileExtension?: string;
   editorId?: string;
+  /** Privacy-safe origin used to attribute the explicit open request. */
+  analyticsSource?: CollabDocumentOpenSource;
 }
 export const pendingCollabDocumentAtom = atom<PendingCollabDocument | null>(null);
 
@@ -1055,6 +1061,13 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       }
     }
 
+    const healthTracker = new CollaborationHealthAttemptTracker(
+      'team_index',
+      serverManaged ? 'server_managed' : 'legacy_e2e',
+    );
+    healthTracker.start(initializedTeamSyncWorkspaces.has(workspacePath) ? 'reconnect' : 'initial');
+    initializedTeamSyncWorkspaces.add(workspacePath);
+
     const provider = new TeamSyncProvider({
       serverUrl,
       orgId,
@@ -1287,6 +1300,8 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
 
       onStatusChange: (status) => {
         store.set(teamSyncStatusAtomFamily(workspacePath), status);
+        const completed = healthTracker.observe(status);
+        if (completed) trackTeamAnalyticsEvent('collab_sync_attempt_completed', completed);
       },
     });
 
@@ -1314,6 +1329,8 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
         console.warn('[collabDocuments] Failed to flush pending doc registrations:', flushErr);
       });
     } catch (connectErr) {
+      const completed = healthTracker.observe('error', connectErr);
+      if (completed) trackTeamAnalyticsEvent('collab_sync_attempt_completed', completed);
       provider.destroy();
       throw connectErr;
     }

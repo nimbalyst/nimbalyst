@@ -532,6 +532,7 @@ export default defineConfig({
         'diff',
         'electron-log/renderer',
         'fast-deep-equal',
+        'fractional-indexing',
         'front-matter',
         'ghostty-web',
         'gifuct-js',
@@ -544,6 +545,7 @@ export default defineConfig({
         'marked',
         'mermaid',
         'monaco-editor',
+        'nanoid',
         'openai',
         'path',
         'pathe',
@@ -588,7 +590,19 @@ export default defineConfig({
       exclude: [
         '@shikijs/langs',
         'prettier',
-        '@nimbalyst/runtime'
+        '@nimbalyst/runtime',
+        // RevoGrid is a Stencil bundle: its runtime lazy-imports its own
+        // component entry chunks at render time. Pre-bundled, those dynamic
+        // imports are emitted WITHOUT a `?v=` query, so Vite re-transforms them
+        // on demand and stamps their `chunk-*.js` import with whatever the
+        // browserHash is *then* -- while the page graph stays pinned to the hash
+        // it loaded with. Any dep re-optimization between page load and the
+        // grid's first mount therefore yields two copies of the Stencil runtime,
+        // two `Host` sentinels, and `isHost()` fails: the grid renders literally
+        // nothing ("createElementNS('[object Object]')"). Serving it unbundled
+        // keeps every import in one module graph. See NIM-2165.
+        '@revolist/react-datagrid',
+        '@revolist/revogrid'
       ],
       esbuildOptions: {
         target: 'chrome109'

@@ -3,6 +3,11 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 import { ActionGuard } from './ActionGuard';
 import { AlphaBadge } from '../../common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../../common/TeamAlphaNotice';
+import {
+  bucketMemberCount,
+  categorizeTeamAnalyticsError,
+} from '../../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
 
 interface Member {
   memberId: string;
@@ -61,6 +66,9 @@ export function OrganizationMembersRolesPanel({
 
   useEffect(() => { void refresh().catch((reason) => setError(String(reason))); }, [refresh]);
   const canAdminister = callerRole === 'owner' || callerRole === 'admin';
+  const analyticsCallerRole = callerRole === 'owner' || callerRole === 'admin' || callerRole === 'member'
+    ? callerRole
+    : 'unknown';
   const selected = organizations.find((organization) => organization.orgId === orgId);
   const pending = organizations.filter((organization) => organization.membershipType && organization.membershipType !== 'active_member');
 
@@ -91,7 +99,26 @@ export function OrganizationMembersRolesPanel({
                   type="button"
                   className="pending-invitation-accept rounded-md bg-[var(--nim-primary)] px-3 py-1.5 text-xs font-semibold text-white"
                   data-testid="pending-invitation-accept"
-                  onClick={() => void window.electronAPI.organization.acceptInvitation(invitation.orgId).then(refresh)}
+                  onClick={() => void window.electronAPI.organization.acceptInvitation(invitation.orgId)
+                    .then((result) => {
+                      if (result?.success === false) throw new Error(result.error ?? 'Could not accept invitation');
+                      trackTeamAnalyticsEvent('team_invitation_accepted', {
+                        surface: 'desktop',
+                        entryPoint: 'organization_manager',
+                        projectMatched: false,
+                      });
+                      return refresh();
+                    })
+                    .catch((reason) => {
+                      trackTeamAnalyticsEvent('team_operation_failed', {
+                        surface: 'desktop',
+                        operation: 'accept_invitation',
+                        entryPoint: 'organization_manager',
+                        callerRole: analyticsCallerRole,
+                        errorCategory: categorizeTeamAnalyticsError('organization', reason),
+                      });
+                      setError(String(reason));
+                    })}
                 >
                   Accept
                 </button>
@@ -115,9 +142,25 @@ export function OrganizationMembersRolesPanel({
               sourcePersonalOrgId: sourcePersonalOrgId || undefined,
             }).then((result) => {
               if (!result?.success) throw new Error(result?.error ?? 'Could not create organization');
+              trackTeamAnalyticsEvent('team_organization_created', {
+                surface: 'desktop',
+                entryPoint: 'organization_manager',
+                projectAttached: false,
+                encryptionMode: 'server_managed',
+                memberCountBucket: bucketMemberCount(1),
+              });
               setNewOrganizationName('');
               return refresh();
-            }).catch((reason) => setError(String(reason)));
+            }).catch((reason) => {
+              trackTeamAnalyticsEvent('team_operation_failed', {
+                surface: 'desktop',
+                operation: 'create_organization',
+                entryPoint: 'organization_manager',
+                callerRole: analyticsCallerRole,
+                errorCategory: categorizeTeamAnalyticsError('organization', reason),
+              });
+              setError(String(reason));
+            });
           }}
         >
           {accounts.length > 1 && (
@@ -145,7 +188,30 @@ export function OrganizationMembersRolesPanel({
                   disabled={!canAdminister}
                   className="member-role-select rounded border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] px-2 py-1 text-xs disabled:cursor-not-allowed"
                   data-testid="member-role-select"
-                  onChange={(event) => void window.electronAPI.organization.updateMemberRole(orgId, member.memberId, event.target.value).then(refresh)}
+                  onChange={(event) => {
+                    const nextRole = event.target.value;
+                    void window.electronAPI.organization.updateMemberRole(orgId, member.memberId, nextRole)
+                      .then((result) => {
+                        if (result?.success === false) throw new Error(result.error ?? 'Could not update member role');
+                        trackTeamAnalyticsEvent('team_member_role_changed', {
+                          surface: 'desktop',
+                          callerRole: analyticsCallerRole,
+                          fromRole: member.role === 'owner' || member.role === 'admin' || member.role === 'member' ? member.role : 'unknown',
+                          toRole: nextRole === 'owner' || nextRole === 'admin' || nextRole === 'member' ? nextRole : 'unknown',
+                        });
+                        return refresh();
+                      })
+                      .catch((reason) => {
+                        trackTeamAnalyticsEvent('team_operation_failed', {
+                          surface: 'desktop',
+                          operation: 'change_member_role',
+                          entryPoint: 'organization_manager',
+                          callerRole: analyticsCallerRole,
+                          errorCategory: categorizeTeamAnalyticsError('organization', reason),
+                        });
+                        setError(String(reason));
+                      });
+                  }}
                 >
                   <option value="member">Member</option>
                   <option value="admin">Admin</option>
@@ -163,8 +229,27 @@ export function OrganizationMembersRolesPanel({
                 event.preventDefault();
                 if (!inviteEmail.trim()) return;
                 void window.electronAPI.organization.inviteMember(orgId, inviteEmail.trim())
-                  .then(() => { setInviteEmail(''); return refresh(); })
-                  .catch((reason) => setError(String(reason)));
+                  .then((result) => {
+                    if (result?.success === false) throw new Error(result.error ?? 'Could not send invitation');
+                    trackTeamAnalyticsEvent('team_invitation_sent', {
+                      surface: 'desktop',
+                      entryPoint: 'organization_manager',
+                      callerRole: analyticsCallerRole,
+                      memberCountBucket: bucketMemberCount(members.length + 1),
+                    });
+                    setInviteEmail('');
+                    return refresh();
+                  })
+                  .catch((reason) => {
+                    trackTeamAnalyticsEvent('team_operation_failed', {
+                      surface: 'desktop',
+                      operation: 'send_invitation',
+                      entryPoint: 'organization_manager',
+                      callerRole: analyticsCallerRole,
+                      errorCategory: categorizeTeamAnalyticsError('organization', reason),
+                    });
+                    setError(String(reason));
+                  });
               }}
             >
               <input className="min-w-0 flex-1 rounded border border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-2 text-sm" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="teammate@example.com" />

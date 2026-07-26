@@ -53,6 +53,40 @@ import {
 import { computeFrontmatterTrackerTransition } from './tracker/frontmatterTrackerTransition';
 import { applyHeadlessBodyMarkdown } from './MainBodyDocService';
 import { getWorkspaceState } from '../utils/store';
+import { AnalyticsService } from './analytics/AnalyticsService';
+import { sendTeamAnalyticsEvent } from './analytics/TeamAnalytics';
+import { toStableAnalyticsCategory } from '../../shared/analytics/teamAnalytics';
+import {
+  forgetTrackerMutationThrottle,
+  trackTrackerMutation as emitTrackerMutation,
+  type TrackerMutationAction,
+} from './analytics/trackerMutationAnalytics';
+
+const trackerAnalytics = AnalyticsService.getInstance();
+
+function trackerCollaborationScope(
+  policy: ReturnType<typeof getEffectiveTrackerSyncPolicy>,
+  item: Record<string, any>,
+): 'personal' | 'shared' {
+  return shouldSyncTrackerItem(policy, item) ? 'shared' : 'personal';
+}
+
+function trackerMutationAction(updates: Record<string, any>): 'status_changed' | 'assigned' | 'field_changed' {
+  if ('status' in updates) return 'status_changed';
+  if ('owner' in updates || 'assignee' in updates || 'assignedTo' in updates) return 'assigned';
+  return 'field_changed';
+}
+
+/** IPC seam: always a human action, so `actorType` is fixed to `user` here. */
+function trackTrackerMutation(params: {
+  itemId: string;
+  action: TrackerMutationAction;
+  collaborationScope: 'personal' | 'shared';
+  trackerType: string;
+  view: 'service' | 'detail';
+}): void {
+  emitTrackerMutation({ ...params, actorType: 'user', client: trackerAnalytics });
+}
 
 export interface ParsedInlineTrackerCandidate extends Omit<TrackerItem, 'id'> {
   id?: string;
@@ -1855,6 +1889,14 @@ export class ElectronDocumentService implements DocumentService {
     // getCurrentIdentity imported statically at top of file
     const modifierIdentity = getCurrentIdentity(row.workspace);
     data.lastModifiedBy = modifierIdentity;
+
+    // "Who triaged this" is stamped here rather than sent by the caller: the
+    // authoritative identity lives in main, and stamping it as an ordinary
+    // update key would log an activity entry reading "[object Object]".
+    if (updates.triagedAt !== undefined) {
+      if (updates.triagedAt) data.triagedBy = modifierIdentity;
+      else delete data.triagedBy;
+    }
 
     const changes: Record<string, { from: any; to: any }> = {};
 
@@ -3752,6 +3794,14 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         }
       }
 
+      trackTrackerMutation({
+        itemId: item.id,
+        action: 'created',
+        collaborationScope: trackerCollaborationScope(syncPolicy, item),
+        trackerType: item.type,
+        view: 'service',
+      });
+
       return { success: true, item };
     } catch (error) {
       console.error('[DocumentService] create-tracker-item failed:', error);
@@ -3833,6 +3883,14 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         console.error('[DocumentService] inverse relationship propagation failed:', invErr);
       }
 
+      trackTrackerMutation({
+        itemId: item.id,
+        action: trackerMutationAction(updates),
+        collaborationScope: trackerCollaborationScope(syncPolicy, item),
+        trackerType: item.type,
+        view: 'service',
+      });
+
       return { success: true, item };
     } catch (error) {
       console.error('[DocumentService] update-tracker-item failed:', error);
@@ -3847,6 +3905,13 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
   }) => {
     try {
       const item = await requireDocumentService(event).setTrackerItemShared(payload.itemId, payload.shared);
+      sendTeamAnalyticsEvent(trackerAnalytics, 'tracker_item_scope_changed', {
+        surface: 'desktop',
+        actorType: 'user',
+        fromScope: payload.shared ? 'personal' : 'shared',
+        toScope: payload.shared ? 'shared' : 'personal',
+        trackerType: toStableAnalyticsCategory(item.type),
+      });
       return { success: true, item };
     } catch (error) {
       console.error('[DocumentService] set-tracker-item-shared failed:', error);
@@ -3869,6 +3934,11 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
           [payload.itemId],
         );
         if (row.rows.length > 0) {
+          // Deliberately un-instrumented: this handler is reached by the
+          // tracker body editor's 800ms autosave debounce, so emitting here
+          // would produce one analytics event per typing pause. Body edits are
+          // covered by `collab_document_first_edited` at the editor lifecycle;
+          // `tracker_item_mutated` stays reserved for discrete mutations.
           await syncAfterCommentMutation(event, payload.itemId, row.rows[0].workspace, row.rows[0].type);
         }
       } catch (syncErr) {
@@ -3917,6 +3987,16 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
   }) => {
     try {
       const item = await requireDocumentService(event).archiveTrackerItem(payload.itemId, payload.archive);
+      const policy = getEffectiveTrackerSyncPolicy(item.workspace, item.type);
+      trackTrackerMutation({
+        itemId: payload.itemId,
+        // Archive/unarchive is a discrete lifecycle decision, not a text edit,
+        // so it reports as a status change rather than the throttled catch-all.
+        action: 'status_changed',
+        collaborationScope: trackerCollaborationScope(policy, item),
+        trackerType: item.type,
+        view: 'detail',
+      });
       return { success: true, item };
     } catch (error) {
       console.error('[DocumentService] tracker-item-archive failed:', error);
@@ -3929,7 +4009,25 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
     itemId: string;
   }) => {
     try {
-      await requireDocumentService(event).deleteTrackerItem(payload.itemId);
+      const service = requireDocumentService(event);
+      const row = await database.query<any>(
+        `SELECT type, workspace, data FROM tracker_items WHERE id = $1 OR issue_key = $1 LIMIT 1`,
+        [payload.itemId],
+      );
+      await service.deleteTrackerItem(payload.itemId);
+      const deleted = row.rows[0];
+      if (deleted) {
+        const policy = getEffectiveTrackerSyncPolicy(deleted.workspace, deleted.type);
+        const data = parseJsonColumn<Record<string, any>>(deleted.data) ?? {};
+        trackTrackerMutation({
+          itemId: payload.itemId,
+          action: 'deleted',
+          collaborationScope: trackerCollaborationScope(policy, data),
+          trackerType: deleted.type,
+          view: 'detail',
+        });
+        forgetTrackerMutationThrottle(payload.itemId);
+      }
       return { success: true };
     } catch (error) {
       console.error('[DocumentService] tracker-item-delete failed:', error);
@@ -3944,6 +4042,14 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
   }) => {
     try {
       const item = await requireDocumentService(event).updateTrackerItemInFile(payload.itemId, payload.updates);
+      const policy = getEffectiveTrackerSyncPolicy(item.workspace, item.type);
+      trackTrackerMutation({
+        itemId: payload.itemId,
+        action: trackerMutationAction(payload.updates),
+        collaborationScope: trackerCollaborationScope(policy, item),
+        trackerType: item.type,
+        view: 'detail',
+      });
       return { success: true, item };
     } catch (error) {
       console.error('[DocumentService] tracker-item-update-in-file failed:', error);
@@ -4091,6 +4197,17 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
 
       // Trigger sync
       await syncAfterCommentMutation(event, payload.itemId, row.rows[0].workspace, row.rows[0].type);
+
+      trackTrackerMutation({
+        itemId: payload.itemId,
+        action: 'commented',
+        collaborationScope: trackerCollaborationScope(
+          getEffectiveTrackerSyncPolicy(row.rows[0].workspace, row.rows[0].type),
+          data,
+        ),
+        trackerType: row.rows[0].type,
+        view: 'detail',
+      });
 
       return { success: true, commentId };
     } catch (error) {

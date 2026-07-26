@@ -1,26 +1,47 @@
 import { nativeImage } from "electron";
 
 /**
- * Compress a base64 image to JPEG if it exceeds 0.28 MB.
+ * Compress a base64 image to JPEG if it exceeds a byte / dimension budget.
  * Uses progressive JPEG quality reduction and image resizing to meet the target size.
  *
- * This is a workaround for a Claude Code bug where large base64 images cause issues.
- * See: https://discord.com/channels/1072196207201501266/1451693213931933846
+ * Two callers with different budgets:
+ *   - MCP tool results (default 0.28 MB, no dimension cap) -- a workaround for a
+ *     Claude Code bug where large base64 images cause issues.
+ *     See: https://discord.com/channels/1072196207201501266/1451693213931933846
+ *   - Mobile transcript sync (see SyncManager) -- a much smaller budget, since
+ *     every screenshot occupies a capped SessionRoom on the sync server.
  *
  * @param base64Data - The base64-encoded image data (without data URL prefix)
  * @param mimeType - The original MIME type of the image
+ * @param options - Byte ceiling and optional longest-edge cap
  * @returns Object containing the (possibly compressed) base64 data and updated MIME type
  */
 const MAX_IMAGE_SIZE_BYTES = 0.28 * 1024 * 1024; // 0.28 MB
 
+export interface CompressImageOptions {
+  /** Target byte ceiling for the decoded image. Defaults to the 0.28 MB MCP cap. */
+  maxBytes?: number;
+  /**
+   * Cap on the longest edge, applied before the quality/scale search. The MCP
+   * path leaves this unset (size is the only constraint); the mobile-sync path
+   * sets it so a 5K screenshot doesn't have to be crushed to JPEG mush just to
+   * hit its byte target.
+   */
+  maxDimension?: number;
+}
+
 export function compressImageIfNeeded(
   base64Data: string,
-  mimeType: string
+  mimeType: string,
+  options: CompressImageOptions = {}
 ): { data: string; mimeType: string; wasCompressed: boolean } {
+  const maxBytes = options.maxBytes ?? MAX_IMAGE_SIZE_BYTES;
+  const maxDimension = options.maxDimension;
+
   // Calculate actual byte size from base64 (base64 inflates by ~33%)
   const byteSize = Math.floor((base64Data.length * 3) / 4);
 
-  if (byteSize <= MAX_IMAGE_SIZE_BYTES) {
+  if (byteSize <= maxBytes && maxDimension === undefined) {
     return { data: base64Data, mimeType, wasCompressed: false };
   }
 
@@ -44,13 +65,35 @@ export function compressImageIfNeeded(
       return { data: base64Data, mimeType, wasCompressed: false };
     }
 
-    const image = nativeImage.createFromBuffer(buffer);
+    const decoded = nativeImage.createFromBuffer(buffer);
 
-    if (image.isEmpty()) {
+    if (decoded.isEmpty()) {
       console.warn(
         "[MCP Server] Failed to create image from base64 (image is empty), buffer may be corrupted. Returning original without compression."
       );
       return { data: base64Data, mimeType, wasCompressed: false };
+    }
+
+    // Bring the longest edge under maxDimension first, so the quality search
+    // below starts from a sensibly-sized image rather than trading all its
+    // detail for bytes.
+    let image = decoded;
+    const decodedSize = decoded.getSize();
+    const longestEdge = Math.max(decodedSize.width, decodedSize.height);
+
+    // Already small enough in both dimensions and bytes -- don't re-encode a
+    // lossless PNG into a lossy JPEG for nothing.
+    if (byteSize <= maxBytes && (maxDimension === undefined || longestEdge <= maxDimension)) {
+      return { data: base64Data, mimeType, wasCompressed: false };
+    }
+
+    if (maxDimension !== undefined && longestEdge > maxDimension) {
+      const ratio = maxDimension / longestEdge;
+      image = decoded.resize({
+        width: Math.max(1, Math.round(decodedSize.width * ratio)),
+        height: Math.max(1, Math.round(decodedSize.height * ratio)),
+        quality: "better",
+      });
     }
 
     const originalSize = image.getSize();
@@ -78,7 +121,7 @@ export function compressImageIfNeeded(
         const jpegBuffer = workingImage.toJPEG(quality);
         const compressedSize = jpegBuffer.length;
 
-        if (compressedSize <= MAX_IMAGE_SIZE_BYTES) {
+        if (compressedSize <= maxBytes) {
           const jpegBase64 = jpegBuffer.toString("base64");
           return {
             data: jpegBase64,

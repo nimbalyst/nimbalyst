@@ -40,6 +40,12 @@ import {
   shareEmbeddedDocuments,
   type EmbeddedDocumentCandidate,
 } from '../services/embeddedDocumentShare';
+import {
+  bucketItemCount,
+  categorizeTeamAnalyticsError,
+  toStableAnalyticsCategory,
+} from '../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../utils/teamAnalytics';
 
 interface CommonFileActionsProps {
   filePath: string;
@@ -109,6 +115,16 @@ export function CommonFileActions({
     selectedEmbeddedDocumentPaths: string[] = [],
   ) => {
     const { errorNotificationService } = await import('../services/ErrorNotificationService');
+    const trackShareFailure = (error: unknown) => {
+      trackTeamAnalyticsEvent('collab_operation_failed', {
+        surface: 'desktop',
+        operation: 'share_to_team',
+        source: 'share_to_team',
+        actorType: 'user',
+        documentType: toStableAnalyticsCategory(selectedDescriptor.documentType),
+        errorCategory: categorizeTeamAnalyticsError('document', error),
+      });
+    };
     const matchedSuffix = [...selectedDescriptor.fileExtensions]
       .sort((left, right) => right.length - left.length)
       .find(suffix => fileName.toLowerCase().endsWith(suffix.toLowerCase()))
@@ -119,6 +135,7 @@ export function CommonFileActions({
       documentTypeCatalog.editorIdForDescriptor(selectedDescriptor),
     );
     if (liveResolution.state !== 'ready') {
+      trackShareFailure(liveResolution.reason);
       errorNotificationService.showError(
         'Could not share to team',
         liveResolution.reason,
@@ -133,6 +150,7 @@ export function CommonFileActions({
     try {
       initialContent = await readShareToTeamSourceContent(filePath, descriptor);
     } catch (err) {
+      trackShareFailure(err);
       errorNotificationService.showError(
         'Could not share to team',
         err instanceof Error ? err.message : String(err),
@@ -218,6 +236,14 @@ export function CommonFileActions({
     }
 
     if (migrationToast.kind === 'total-failure') {
+      trackTeamAnalyticsEvent('collab_share_asset_migration_completed', {
+        surface: 'desktop',
+        outcome: 'failed',
+        assetCountBucket: bucketItemCount(migrationToast.failedCount ?? 0),
+        linkedDocumentCountBucket: bucketItemCount(selectedEmbeddedDocumentPaths.length),
+        errorCategory: 'asset_migration_failed',
+      });
+      trackShareFailure(new Error('Asset migration failed'));
       errorNotificationService.showError(
         'Could not share to team',
         `All ${migrationToast.failedCount ?? ''} attached images failed to upload. Check your connection and try again.`,
@@ -276,6 +302,17 @@ export function CommonFileActions({
         },
         operationId: documentId,
         documentId,
+        analyticsSource: 'share_to_team',
+        analyticsActorType: 'user',
+        analyticsLinkedDocumentCount: selectedEmbeddedDocumentPaths.length,
+        analyticsAssetMigrationOutcome:
+          migrationToast.kind === 'no-assets'
+            ? 'not_needed'
+            : migrationToast.kind === 'ok'
+              ? 'success'
+              : migrationToast.kind === 'partial'
+                ? 'partial'
+                : 'failed',
       });
     } catch (error) {
       // The cascade already created the child documents. Without this the
@@ -300,6 +337,23 @@ export function CommonFileActions({
     const finalTitle = createdDocument.title;
     const linkedCount = embeddedShareResult.sharedReferences.size;
     const linkedFailureCount = embeddedShareResult.failures.length;
+    const assetCount = (migrationToast.okCount ?? 0) + (migrationToast.failedCount ?? 0);
+    const migrationOutcome = migrationToast.kind === 'partial'
+      || migrationToast.kind === 'unavailable'
+      || linkedFailureCount > 0
+      ? 'partial'
+      : 'success';
+    trackTeamAnalyticsEvent('collab_share_asset_migration_completed', {
+      surface: 'desktop',
+      outcome: migrationOutcome,
+      assetCountBucket: bucketItemCount(assetCount),
+      linkedDocumentCountBucket: bucketItemCount(linkedCount + linkedFailureCount),
+      ...(migrationToast.kind === 'partial' || migrationToast.kind === 'unavailable'
+        ? { errorCategory: 'asset_migration_failed' as const }
+        : linkedFailureCount > 0
+          ? { errorCategory: 'linked_document_failed' as const }
+          : {}),
+    });
 
     // Remember the destination folder so the next share defaults to it.
     if (workspacePath && window.electronAPI?.invoke) {

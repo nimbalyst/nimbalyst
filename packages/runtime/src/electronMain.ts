@@ -26,6 +26,7 @@ export { fuzzyMatchPath } from './utils/fuzzyMatch';
 export { DocumentContextService } from './ai/services/DocumentContextService';
 export {
   CLAUDE_CODE_NATIVE_1M_VARIANTS,
+  claudeCodeFamilyKeyword,
   normalizeClaudeCodeVariant,
   resolveClaudeCodeParentContextWindow,
 } from './ai/modelConstants';

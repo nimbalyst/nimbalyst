@@ -112,6 +112,14 @@ import {
 import { hasCollabReplicaPreloadSupport } from '../../store/listeners/collabReplicaListeners';
 import { getCollaborativeDocumentTypeCatalog } from '../../services/CollaborativeDocumentTypeCatalog';
 import { getCodeCollabExportFileName } from '../../utils/CodeCollabContentAdapter';
+import { CollaborationHealthAttemptTracker } from '../../../shared/analytics/collaborationHealth';
+import {
+  bucketDuration,
+  bucketItemCount,
+  bucketRetryCount,
+  toStableAnalyticsCategory,
+} from '../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 
 interface CollaborativeTabEditorProps {
   /** The collab:// URI for this document */
@@ -217,6 +225,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   const lastObservedSnapshotAtRef = useRef<number>(Date.now());
   const lastRecordedRevisionHashRef = useRef<string | null>(null);
   const lastAutoRevisionAtRef = useRef(0);
+  const firstLocalEditTrackedRef = useRef(false);
   const setHistoryDialogFile = useSetAtom(historyDialogFileAtom);
   const bumpHistoryControllers = useSetAtom(collabHistoryControllerBumpAtom);
   const isActiveRef = useRef(isActive);
@@ -285,7 +294,32 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     lastObservedSnapshotAtRef.current = Date.now();
     lastRecordedRevisionHashRef.current = null;
     lastAutoRevisionAtRef.current = 0;
+    firstLocalEditTrackedRef.current = false;
   }, [activeConfig.orgId, activeConfig.documentId, filePath]);
+
+  const recordFirstLocalEdit = useCallback(() => {
+    if (firstLocalEditTrackedRef.current) return;
+    firstLocalEditTrackedRef.current = true;
+    const status = syncProviderRef.current?.getStatus();
+    // The open seam requires a source, so this fallback should be unreachable.
+    // It resolves to `restart_restore` rather than `home` deliberately:
+    // restart_restore is excluded from the activation and retention funnels, so
+    // an unattributed edit can never inflate them.
+    const source = activeConfig.analyticsSource ?? 'restart_restore';
+    trackTeamAnalyticsEvent('collab_document_first_edited', {
+      surface: 'desktop',
+      source,
+      actorType: activeConfig.analyticsActorType ?? (source === 'agent_tool' ? 'agent' : 'user'),
+      documentType: toStableAnalyticsCategory(activeConfig.documentType ?? 'markdown'),
+      editorCategory: activeConfig.editorId?.startsWith('builtin.monaco')
+        ? 'monaco'
+        : activeConfig.editorId?.startsWith('builtin.lexical') || (activeConfig.documentType ?? 'markdown') === 'markdown'
+          ? 'lexical'
+          : 'extension',
+      connectionPath: source === 'restart_restore' ? 'resume' : 'initial',
+      wasOffline: status !== 'connected' && status !== 'replaying',
+    });
+  }, [activeConfig]);
 
   useEffect(() => {
     const doc = sharedDocuments.find((entry) => entry.documentId === activeConfig.documentId);
@@ -415,7 +449,12 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       if (latestKeyRotationRequestRef.current !== keyRotationEpoch) return;
       if (freshConfig) {
         console.log('[CollaborativeTabEditor] Got fresh config with new key, recreating providers');
-        setActiveConfig(freshConfig);
+        setActiveConfig({
+          ...freshConfig,
+          analyticsSource: config.analyticsSource,
+          analyticsActorType: config.analyticsActorType,
+          analyticsWasUnread: config.analyticsWasUnread,
+        });
         setKeyRotationPending(false);
       } else {
         console.warn('[CollaborativeTabEditor] Failed to get fresh config after key rotation');
@@ -475,6 +514,57 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     if (keyRotationPending) return;
     const acquisitionKeyGeneration = replicaKeyGenerationRef.current;
     const tabOpenedAt = performance.now();
+    const healthTracker = new CollaborationHealthAttemptTracker(
+      'document',
+      activeConfig.keyCustody === 'server-managed' ? 'server_managed' : 'legacy_e2e',
+      () => performance.now(),
+    );
+    healthTracker.start(
+      activeConfig.analyticsSource === 'restart_restore' ? 'resume' : 'initial',
+      !!activeConfig.pendingUpdateBase64,
+    );
+    const observeHealth = (
+      status: 'disconnected' | 'connecting' | 'syncing' | 'replaying' | 'offline-unsynced' | 'connected' | 'error',
+    ) => {
+      const properties = healthTracker.observe(status);
+      if (properties) trackTeamAnalyticsEvent('collab_sync_attempt_completed', properties);
+    };
+    let outboxCycle: { startedAt: number; itemCount: number; retryCount: number; lastState: string } | null = null;
+    // Every local edit enqueues an outbox entry, so an active editing session
+    // completes a pending -> clean cycle every few seconds. Report at most one
+    // cycle per document per cooldown; the cooldown applies to successes and
+    // failures alike so the replay failure-rate alert stays unbiased.
+    const OUTBOX_REPORT_COOLDOWN_MS = 5 * 60 * 1000;
+    let lastOutboxReportAt: number | null = null;
+    const observeOutbox = (state: 'clean' | 'pending' | 'replaying' | 'rejected') => {
+      if (outboxCycle?.lastState === state) return;
+      const count = replicaRef.current?.getOutboxEntryCount() ?? (state === 'clean' ? 0 : 1);
+      if (state === 'pending' || state === 'replaying') {
+        if (!outboxCycle) {
+          outboxCycle = { startedAt: performance.now(), itemCount: count, retryCount: 0, lastState: state };
+        } else {
+          if (state === 'replaying' && outboxCycle.lastState !== 'replaying') outboxCycle.retryCount += 1;
+          outboxCycle.itemCount = Math.max(outboxCycle.itemCount, count);
+          outboxCycle.lastState = state;
+        }
+        return;
+      }
+      if (!outboxCycle) return;
+      const cycle = outboxCycle;
+      outboxCycle = null;
+      const completedAt = performance.now();
+      if (lastOutboxReportAt !== null && completedAt - lastOutboxReportAt < OUTBOX_REPORT_COOLDOWN_MS) return;
+      lastOutboxReportAt = completedAt;
+      trackTeamAnalyticsEvent('collab_outbox_replay_completed', {
+        surface: 'desktop',
+        resourceType: 'document',
+        outcome: state === 'clean' ? 'success' : 'failed',
+        ...(state === 'rejected' ? { errorCategory: 'rejected' as const } : {}),
+        itemCountBucket: bucketItemCount(cycle.itemCount),
+        durationCategory: bucketDuration(completedAt - cycle.startedAt),
+        retryCountBucket: bucketRetryCount(cycle.retryCount),
+      });
+    };
     let interactiveRecorded = false;
     let caughtUpRecorded = false;
     const recordInteractive = (source: 'local_replica' | 'server_hydration') => {
@@ -522,6 +612,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
           }
         },
         onStatusChange: (status) => {
+          observeHealth(status);
           publishCollabTransportState(filePath, status);
           setCollabOutboxState(
             filePath,
@@ -557,6 +648,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
             pendingUpdateBase64,
           );
         },
+        onLocalUpdate: recordFirstLocalEdit,
         onRemoteUpdate: (origin) => collabProviderRef.current?.handleRemoteUpdate(origin),
         onOfflineMetric: recordOfflineMetric,
         reviewGateEnabled: false,
@@ -608,12 +700,14 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         }
       },
       onOutboxStateChange: (state) => {
+        observeOutbox(state);
         setCollabOutboxState(filePath, state);
         if (isActiveRef.current && window.electronAPI?.setDocumentEdited) {
           window.electronAPI.setDocumentEdited(state !== 'clean');
         }
       },
       onTransportStateChange: (status) => {
+        observeHealth(status);
         // console.log('[CollaborativeTabEditor] Transport status change:', status);
         publishCollabTransportState(filePath, status);
         if (status === 'connected' || status === 'replaying') {
@@ -718,6 +812,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
                 console.warn('[CollaborativeTabEditor] Backup serialization failed:', error);
               }
             },
+            onLocalUpdate: recordFirstLocalEdit,
             onStatusChange: events.onTransportStateChange,
             onOfflineMetric: recordOfflineMetric,
             initialPendingUpdateBase64: activeConfig.pendingUpdateBase64,
@@ -786,6 +881,8 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       documentSyncRegistry.register(nextAcquisition.syncProvider);
       setProviderEpoch((epoch) => epoch + 1);
     }).catch((error) => {
+      const properties = healthTracker.observe('error', error);
+      if (properties) trackTeamAnalyticsEvent('collab_sync_attempt_completed', properties);
       console.error('[CollaborativeTabEditor] Failed to acquire local replica/provider:', error);
       if (!cancelled) {
         setProviderEpoch(0);
@@ -817,7 +914,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       resetCollabDocumentState(filePath);
       store.set(collabAwarenessAtom(filePath), new Map());
     };
-  }, [activeConfig, ensureBootstrapRevision, filePath, getDocReadWatermark, keyRotationPending, offlineReplicaEnabled, recordOfflineMetric]);
+  }, [activeConfig, ensureBootstrapRevision, filePath, getDocReadWatermark, keyRotationPending, offlineReplicaEnabled, recordFirstLocalEdit, recordOfflineMetric]);
 
   // Build the provider factory for CollaborationPlugin
   // This function is called by CollaborationPlugin with a doc ID and yjsDocMap.

@@ -65,6 +65,7 @@ export function buildFilters(args: ParsedArgs, workspace: string): ListFilters {
     until: until ? parseTimeBound(until) : undefined,
     dateField: (dateField as 'updated' | 'created' | undefined) ?? 'updated',
     where: parseWhere(flagList(args, 'where')),
+    inbox: flagBool(args, 'inbox') || undefined,
     includeArchived: flagBool(args, 'archived') || flagBool(args, 'all'),
     limit,
   };

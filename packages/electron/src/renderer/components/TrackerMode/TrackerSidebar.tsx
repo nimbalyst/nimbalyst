@@ -14,7 +14,21 @@ import { AlphaBadge } from '../common/AlphaBadge';
 import { FloatingPortal, useFloatingMenu, virtualElement } from '../../hooks/useFloatingMenu';
 import { buildTrackerNavigationTree } from './trackerNavigationTree';
 import { trackerSyncConnectionAtom } from '../../store/atoms/trackerSync';
+import { trackerSnoozedUntilByItemIdAtom } from '../../store/atoms/trackerPersonalState';
+import { countInboxItems, type InboxSignals } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import {
+  getRecordPriority,
+  getRecordStatus,
+  getFieldByRole,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { countFilteredTrackerItemsByTypes } from './trackerSavedViews';
+
+/** Same accessors the inbox view uses, so the badge and the queue can't disagree. */
+const INBOX_SIGNALS: InboxSignals = {
+  getStatus: getRecordStatus,
+  getPriority: getRecordPriority,
+  getAssignee: (record) => getFieldByRole(record, 'assignee'),
+};
 
 interface TrackerSidebarProps {
   workspacePath?: string;
@@ -92,6 +106,34 @@ function SidebarTypeCount({
     || (columnFilters?.clauses ?? []).some(clause => clause.field === 'favorite' || clause.field === 'viewed')
   ))) return null;
   return <>{count}</>;
+}
+
+/**
+ * Corner badge on the inbox button: how many items are waiting on a decision,
+ * falling back to the alpha dot when there is nothing to triage. Subscribes to
+ * the item store itself so the rest of the sidebar doesn't re-render on every
+ * tracker write, and so the inbox announces work instead of waiting to be found.
+ */
+function InboxButtonBadge(): React.ReactElement {
+  const loaded = useAtomValue(trackerDataLoadedAtom);
+  const items = useAtomValue(trackerItemsArrayAtom);
+  const snoozedUntilByItemId = useAtomValue(trackerSnoozedUntilByItemIdAtom);
+  const count = useMemo(
+    () => countInboxItems(items, { ...INBOX_SIGNALS, snoozedUntilByItemId }),
+    [items, snoozedUntilByItemId],
+  );
+  // Suppress a "0" while the atoms hydrate -- it would read as inbox zero.
+  if (!loaded || count === 0) {
+    return <AlphaBadge size="dot" className="absolute -top-1 -right-1 pointer-events-none" />;
+  }
+  return (
+    <span
+      className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] flex items-center justify-center rounded-full text-[9px] font-medium text-white bg-[var(--nim-primary)] pointer-events-none"
+      data-testid="tracker-inbox-count"
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
 }
 
 function SidebarFolderCount({
@@ -349,19 +391,6 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
                   </button>
                   <button
                     className={`relative flex items-center justify-center w-7 h-6 border-l border-nim transition-colors ${
-                      viewMode === 'grid'
-                        ? 'bg-nim-active text-nim'
-                        : 'bg-nim-secondary text-nim-muted hover:text-nim'
-                    }`}
-                    onClick={() => onViewModeChange('grid')}
-                    title="Editable grid view (alpha)"
-                    data-testid="tracker-view-mode-grid"
-                  >
-                    <MaterialSymbol icon="grid_on" size={16} />
-                    <AlphaBadge size="dot" className="absolute -top-1 -right-1 pointer-events-none" />
-                  </button>
-                  <button
-                    className={`relative flex items-center justify-center w-7 h-6 border-l border-nim transition-colors ${
                       viewMode === 'kanban'
                         ? 'bg-nim-active text-nim'
                         : 'bg-nim-secondary text-nim-muted hover:text-nim'
@@ -397,7 +426,7 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
                     data-testid="tracker-view-mode-inbox"
                   >
                     <MaterialSymbol icon="inbox" size={16} />
-                    <AlphaBadge size="dot" className="absolute -top-1 -right-1 pointer-events-none" />
+                    <InboxButtonBadge />
                   </button>
                 </div>
             </>

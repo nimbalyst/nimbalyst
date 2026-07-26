@@ -10,13 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Pull request review mode now includes a resizable AI session pane that carries the selected pull request into the conversation, with linked sessions listed in the pull request header and the pane following the selected pull request to its own session.
+- Git support for workspaces opened at a subfolder of a repository: commits, status, diffs, and commit detection resolve the repository root automatically, and AI agents can access repo-level files (#124)
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- The tracker Table view is now the virtualized editable grid, with favorites and right-click bulk actions; the separate grid view has been folded into it.
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Git operations now work when the opened folder is a subfolder of a repository: commits, status, diffs, and commit detection resolve the repository root automatically, and AI agents can access repo-level files (#124)
+- File links in a transcript now open the right file when the extension is longer than eight characters, such as `.excalidraw`.
+- Turning off usage analytics now stops all collection; some events kept being sent from the app window after opting out.
+- Screenshots taken by a desktop session appear in the mobile transcript again, sized so they stay sharp when zoomed.
+- The mobile session list no longer reshuffles while sessions are streaming.
+- Android session transcripts no longer stay stuck on "Waiting for session..." when the messages were already synced before the session was opened.
+- Android screens no longer show a white background behind their content on light-mode devices.
+- Session-pane title reveals now appear only for clipped names and expand from the truncated text.
+- New Claude Agent sessions now accept Sonnet 5 saved as an explicit default instead of failing before the first prompt runs.
+- Tracker saved views can be saved from any view state and exited with a Close control.
+- The grouping dropdown in tracker Display Options now groups rows.
+- Tracker filters can match items by the status they changed to or from.
+- Clicking a tracker grid column header toggles sorting.
+- The nim CLI now reports an error and exits non-zero when the app rejects a tracker create or update, instead of printing success.
+- The tracker triage inbox now shows the items waiting on a decision instead of always reading empty, badges the waiting count, and offers a "Leave it" action that clears an item for the whole team.
+- Claude Agent and Claude Code CLI pickers offer Opus 5 (1M) and Fable 5 (1M) rows again for plans that don't get the extended window automatically, and the CLI context meter now reports the window the session is really running at. (#989, diagnosed by @Derazien)
 
 ### Removed
 <!-- Removed features go here -->
@@ -41,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Session-pane session, workstream, and worktree labels now reveal their complete names in wrapped hover tooltips.
 - Remote MCP server OAuth now recognizes successful authorization instead of reporting it as rejected, and gives slower sign-ins more time to complete.
 - Resolved SQLite migration errors on startup and no longer offers the dry-run and migrate controls once you are already on SQLite.
 - Comment highlights in collaborative documents are now legible in dark mode.
@@ -49,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Code and Codex now honor relocated config directories, so usage, session history, settings, plugins, commands, and skills all resolve correctly.
 - Automations no longer rerun the same scheduled occurrence after restarting while a run is waiting or fails.
 - Voice Mode now explains blocked or missing microphones on Windows and links directly to microphone privacy settings.
+- The worktree name shown above the Commit panel no longer changes to the session title once the agent names the session.
 - Frontmatter plans now share to your team after a cold discovery pass instead of silently staying local.
 - Shared tracker saved views survive the view migration again.
 - Git actions are hidden in projects that are not git repositories.

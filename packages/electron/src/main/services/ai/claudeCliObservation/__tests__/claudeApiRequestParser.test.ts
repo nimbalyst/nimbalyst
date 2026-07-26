@@ -9,7 +9,38 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { extractLatestUserText, extractToolResults } from "../claudeApiRequestParser";
+import {
+  CONTEXT_1M_BETA_FLAG,
+  extractLatestUserText,
+  extractToolResults,
+  hasContext1mBeta,
+} from "../claudeApiRequestParser";
+
+/**
+ * NIM-2170: the outbound `anthropic-beta` header is the only live 1M signal on
+ * the CLI path — the CLI sends `context-1m-2025-08-07` if and only if the
+ * extended window is actually in effect for this account + model.
+ */
+describe("hasContext1mBeta", () => {
+  it("detects the flag among other beta flags", () => {
+    expect(
+      hasContext1mBeta({ "anthropic-beta": `fine-grained-tool-streaming-2025-05-14,${CONTEXT_1M_BETA_FLAG}` }),
+    ).toBe(true);
+  });
+
+  it("tolerates spacing, casing, and array-valued headers", () => {
+    expect(hasContext1mBeta({ "anthropic-beta": ` ${CONTEXT_1M_BETA_FLAG.toUpperCase()} , oauth-2025-04-20` })).toBe(true);
+    expect(hasContext1mBeta({ "anthropic-beta": ["oauth-2025-04-20", CONTEXT_1M_BETA_FLAG] })).toBe(true);
+    expect(hasContext1mBeta({ "Anthropic-Beta": CONTEXT_1M_BETA_FLAG })).toBe(true);
+  });
+
+  it("is false when the header is absent or carries only other flags", () => {
+    expect(hasContext1mBeta({})).toBe(false);
+    expect(hasContext1mBeta({ "anthropic-beta": "oauth-2025-04-20" })).toBe(false);
+    // A superstring must not count as a match.
+    expect(hasContext1mBeta({ "anthropic-beta": `${CONTEXT_1M_BETA_FLAG}-preview` })).toBe(false);
+  });
+});
 
 describe("extractLatestUserText", () => {
   it("returns the trailing user message when content is a plain string", () => {

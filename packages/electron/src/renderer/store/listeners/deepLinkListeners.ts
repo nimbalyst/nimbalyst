@@ -52,7 +52,7 @@ function applySharedDocPayload(data: SharedDocPayload): void {
   if (!data?.documentId || !data?.workspacePath) return;
   ensureActiveWorkspace(data.workspacePath);
   store.set(setWindowModeAtom, 'collab');
-  store.set(pendingCollabDocumentAtom, { documentId: data.documentId });
+  store.set(pendingCollabDocumentAtom, { documentId: data.documentId, analyticsSource: 'deep_link' });
 }
 
 function applySharedFolderPayload(data: SharedFolderPayload): void {

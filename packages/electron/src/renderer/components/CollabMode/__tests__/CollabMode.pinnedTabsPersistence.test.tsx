@@ -36,8 +36,16 @@ vi.mock('../../../store/atoms/collabDocuments', async () => {
   };
 });
 
-vi.mock('../../../store/atoms/collabDiscovery', () => ({
-  hydrateCollabDiscovery: vi.fn(),
+vi.mock('../../../store/atoms/collabDiscovery', async () => {
+  const { atom } = await import('jotai');
+  return {
+    changedDocIdsAtom: atom(new Set<string>()),
+    hydrateCollabDiscovery: vi.fn(),
+  };
+});
+
+vi.mock('../../../utils/teamAnalytics', () => ({
+  trackTeamAnalyticsEvent: vi.fn(),
 }));
 
 vi.mock('../../../services/ErrorNotificationService', () => ({

@@ -1,6 +1,6 @@
 /**
- * Pure parsers for observed Claude `/v1/messages` request bodies (NIM-806,
- * Phase 3). The tee'd SSE response only carries ASSISTANT output; the user's
+ * Pure parsers for observed Claude `/v1/messages` requests — body and headers
+ * (NIM-806, Phase 3). The tee'd SSE response only carries ASSISTANT output; the user's
  * prompt and every `tool_result` ride in the REQUEST body's trailing user
  * message instead. These helpers extract both so the bridge can persist them.
  *
@@ -10,6 +10,28 @@
  * user's text prompt, or a synthetic user message carrying `tool_result` blocks
  * answering the previous assistant turn's tool calls (never both in practice).
  */
+
+/**
+ * Anthropic beta flag that enables the 1M-token context window. The CLI decides
+ * per account + model whether to send it, so its presence on the outbound
+ * request is an entitlement-aware, zero-cost signal that 1M is really in effect
+ * (NIM-2170). Nimbalyst only READS it — never injects it (adding it ourselves
+ * would opt a Pro account into credit-metered extended context).
+ */
+export const CONTEXT_1M_BETA_FLAG = "context-1m-2025-08-07";
+
+type HeaderBag = Record<string, string | string[] | undefined>;
+
+/** True when the request's `anthropic-beta` header carries the 1M-context flag. */
+export function hasContext1mBeta(headers: HeaderBag): boolean {
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() !== "anthropic-beta" || value === undefined) continue;
+    const flags = (Array.isArray(value) ? value : [value]).flatMap((v) => v.split(","));
+    // Exact per-flag match: `context-1m-2025-08-07-preview` is a different flag.
+    if (flags.some((flag) => flag.trim().toLowerCase() === CONTEXT_1M_BETA_FLAG)) return true;
+  }
+  return false;
+}
 
 interface ContentBlock {
   type?: string;

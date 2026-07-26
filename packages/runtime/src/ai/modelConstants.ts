@@ -249,7 +249,7 @@ export const OPENAI_MODELS: ModelDefinition[] = [
  *   `opus` to the next version.
  */
 export type ClaudeCodeVariant = 'fable' | 'opus' | 'sonnet' | 'haiku' | 'opus-4-8' | 'opus-4-7' | 'opus-4-6' | 'sonnet-4-6';
-export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5' | 'fable-5';
+export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5' | 'sonnet-5' | 'fable-5';
 
 /**
  * Accepted input aliases for Claude Agent model identifiers.
@@ -257,8 +257,9 @@ export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5' | 'fable-5';
  * `opus-5` is intentionally accepted as an alias for the canonical `opus`
  * variant so legacy code paths (meta-agent, Agent tool, imported session IDs)
  * can request the current Opus generation explicitly without requiring a
- * duplicate visible picker entry. `fable-5` is accepted as an alias for
- * `fable` for the same reason. `opus-4-8` is now a pinned previous-generation
+ * duplicate visible picker entry. `sonnet-5` and `fable-5` are accepted as
+ * aliases for `sonnet` and `fable` for the same reason.
+ * `opus-4-8` is now a pinned previous-generation
  * variant (its own row), not an alias — it resolves to that specific model.
  */
 export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInput[] = [
@@ -270,6 +271,7 @@ export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInpu
   'opus-4-7',
   'opus-4-6',
   'sonnet',
+  'sonnet-5',
   'sonnet-4-6',
   'haiku',
 ] as const;
@@ -283,6 +285,7 @@ const CLAUDE_CODE_VARIANT_INPUT_MAP: Readonly<Record<ClaudeCodeVariantInput, Cla
   'opus-4-7': 'opus-4-7',
   'opus-4-6': 'opus-4-6',
   sonnet: 'sonnet',
+  'sonnet-5': 'sonnet',
   'sonnet-4-6': 'sonnet-4-6',
   haiku: 'haiku',
 };
@@ -334,23 +337,31 @@ export const CLAUDE_CODE_PINNED_SDK_MODELS: Partial<Record<ClaudeCodeVariant, st
 };
 
 /**
- * Current-generation variants that run a 1M context window natively — the
- * window is the SAME whether or not the `[1m]` suffix is sent, and 1M is GA at
- * a single flat price (no `[1m]` premium tier, no >200k long-context surcharge).
- * Verified against CLI 2.1.204 (GitHub #825 / NIM-1660): plain `opus`/`fable`/
- * `sonnet` sessions report `modelUsage[...].contextWindow === 1_000_000`.
+ * Variants whose PLAIN (non-`[1m]`) row is seeded at a 1M context window.
  *
- * Because plain and `[1m]` are identical for these, they get NO separate `-1m`
- * picker row (see `CLAUDE_CODE_VARIANTS_WITH_1M`) and their base context-window
- * is 1M. The earlier "plain models window at 200k client-side" behavior was real
- * on CLI 2.1.175 but is now stale.
+ * Verified against CLI 2.1.204/2.1.220 (GitHub #825 / NIM-1660 / NIM-2170): on
+ * the Agent-SDK path — the provider most users are on — plain `opus`/`fable`/
+ * `sonnet` sessions report `modelUsage[...].contextWindow === 1_000_000`, so
+ * seeding 200k here would show a meter that fills past 100% on the first long
+ * turn. This is a SEED, not a guarantee; two things make the real window vary:
+ *
+ *   - 1M is PLAN-GATED (code.claude.com/docs/en/model-config → "Extended
+ *     context"): Max/Team/Enterprise auto-upgrade Opus to 1M with no
+ *     configuration, Pro needs usage credits, API/pay-as-you-go has full access,
+ *     and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` turns 1M off entirely. Sonnet 5 on
+ *     the Anthropic API always runs 1M — it has no 200K variant at all.
+ *   - Setting `ANTHROPIC_BASE_URL` (our CLI observation proxy does) makes Claude
+ *     Code treat the connection as an LLM gateway it can't verify, so it SKIPS
+ *     the plan-based auto-upgrade and runs at 200k unless `[1m]` is explicit.
+ *
+ * Both paths correct the seed at runtime: the SDK path from the reported window
+ * (`resolveClaudeCodeParentContextWindow`), the CLI path from the outbound
+ * `anthropic-beta: context-1m-2025-08-07` header the proxy observes
+ * (`contextWindowForCliModel`). Users who need to force 1M pick the `-1m` row
+ * (see `CLAUDE_CODE_VARIANTS_WITH_1M`).
  *
  * The pinned legacy variants (`opus-4-7`/`opus-4-6`/`sonnet-4-6`) are included
- * too: the model catalog lists all three at a 1M window, and we don't want a
- * redundant second `-1m` picker row for them either. The SDK-path meter reads
- * the REAL reported window per turn (see `resolveClaudeCodeParentContextWindow`),
- * so even if a legacy variant's live window differed it would self-correct — the
- * 1M value here is only the pre-first-result seed / CLI-proxy fallback.
+ * because the model catalog lists all three at a 1M window.
  */
 export const CLAUDE_CODE_NATIVE_1M_VARIANTS: readonly ClaudeCodeVariant[] = [
   'fable',
@@ -363,24 +374,34 @@ export const CLAUDE_CODE_NATIVE_1M_VARIANTS: readonly ClaudeCodeVariant[] = [
 ];
 
 /**
- * Variants that still get a SEPARATE 1M-context (`-1m`) picker row.
+ * Variants that get a SEPARATE 1M-context (`-1m`) picker row, which sends the
+ * CLI/SDK's explicit `model[1m]` form (GitHub #989, PR #990 by @Derazien).
  *
- * Intentionally empty: every Claude Agent variant now runs 1M on its single base
- * row (see `CLAUDE_CODE_NATIVE_1M_VARIANTS`), so a `-1m` row would be a redundant
- * duplicate. Existing sessions pinned to `…-1m` still resolve fine
- * (`resolveClaudeCodeModelVariant` strips the suffix); we just stop offering the
- * row for new selections. The mechanism is retained (not deleted) so a future
- * model that genuinely gates 1M behind a beta suffix can opt back in here.
+ * The row exists because the plain row is NOT always 1M: a Pro account has to
+ * opt in (1M costs usage credits there), and any session behind an
+ * `ANTHROPIC_BASE_URL` gateway — including Nimbalyst's own CLI observation proxy
+ * — loses the plan-based auto-upgrade unless `[1m]` is explicit. Measured on one
+ * Max account minutes apart (CLI 2.1.220): direct, bare `opus` reports a 1M
+ * window; through the loopback proxy the same `opus` reports 200k and the
+ * outbound request omits `context-1m-2025-08-07` — with `opus[1m]` the flag is
+ * present and 1M applies either way.
+ *
+ * Deliberately limited to `opus` and `fable`:
+ *   - `sonnet` is excluded — Sonnet 5 has no 200K variant on the Anthropic API
+ *     and no `[1m]` suffix to select, so the row would be a dead option.
+ *   - `haiku` has no 1M window.
+ *   - the pinned legacy variants are excluded because `resolveClaudeCliModelArg`
+ *     collapses every `opus*` variant to the bare `opus` alias, so an
+ *     `opus-4-7-1m` row would run Opus 5 at 1M while claiming to be Opus 4.7.
  */
-export const CLAUDE_CODE_VARIANTS_WITH_1M: readonly ClaudeCodeVariant[] = [];
+export const CLAUDE_CODE_VARIANTS_WITH_1M: readonly ClaudeCodeVariant[] = ['opus', 'fable'];
 
 /**
  * The base (non-`-1m`) context window for a Claude Agent variant, used to seed
- * the context-fill meter before the first real `modelUsage` arrives and as the
- * fallback when the SDK doesn't report a per-model window. Current-gen variants
- * are 1M natively; everything else (legacy pinned variants, haiku) is 200k until
- * proven otherwise. The authoritative value at runtime is the CLI-reported
- * window — see `resolveClaudeCodeParentContextWindow`.
+ * the context-fill meter before any real signal arrives and as the fallback when
+ * the SDK doesn't report a per-model window. Haiku is 200k; see
+ * `CLAUDE_CODE_NATIVE_1M_VARIANTS` for why the rest are seeded at 1M and how the
+ * seed gets corrected at runtime on each path.
  */
 export function baseContextWindowForVariant(variant: ClaudeCodeVariant): number {
   return (CLAUDE_CODE_NATIVE_1M_VARIANTS as readonly string[]).includes(variant)
@@ -448,22 +469,21 @@ export function resolveClaudeCodeParentContextWindow(
  * Safe silent fallback for the Claude Agent providers (#631 / NIM-848).
  *
  * When a session's model is unexpectedly empty/lost, resolution falls back to
- * plain `claude-code:opus` (no `[1m]` suffix). Historically this guarded a
- * BILLING risk: 1M used to be a paid add-on gated behind `model[1m]`, so the
- * invisible fallback had to avoid the premium tier. That premium is gone for
- * current-gen models — 1M is GA at a single flat price and `[1m]` is a no-op
- * (verified 2.1.204, GitHub #825) — so this fallback no longer changes cost for
- * current-gen. It stays plain (not a `-1m` variant) as defensive correctness for
- * any legacy variant that might still carry a premium, and because plain is the
- * simplest valid choice.
+ * plain `claude-code:opus` (no `[1m]` suffix). This guards a BILLING risk: an
+ * explicit `[1m]` is metered against usage credits on a Pro plan, so an
+ * INVISIBLE fallback must never opt a user into extended context. Max/Team/
+ * Enterprise accounts get 1M on the plain alias anyway (plan auto-upgrade), so
+ * plain is both the safe and the simplest valid choice.
  */
 export const CLAUDE_CODE_SAFE_FALLBACK_MODEL = 'claude-code:opus' as const;
 
 export const DEFAULT_MODELS = {
   claude: 'claude:claude-opus-5',
   openai: 'openai:gpt-5.6-sol',
-  // Plain `opus` (not `opus-1m`): the current CLI runs plain Opus at 1M natively
-  // at a flat price, so the `[1m]` suffix is a redundant no-op (GitHub #825).
+  // Plain `opus` (not `opus-1m`): a plan-gated auto-upgrade gives Max/Team/
+  // Enterprise 1M on the plain alias, while an explicit `[1m]` would spend usage
+  // credits on Pro. The default must not opt anyone into that — see
+  // CLAUDE_CODE_SAFE_FALLBACK_MODEL.
   'claude-code': 'claude-code:opus',
   'claude-code-cli': 'claude-code-cli:opus',
   'openai-codex': 'openai-codex:gpt-5.6-sol',

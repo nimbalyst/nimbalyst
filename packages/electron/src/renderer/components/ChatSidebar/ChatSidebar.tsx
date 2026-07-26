@@ -84,6 +84,9 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
   const pendingPromptRef = useRef<string | null>(null);
   const isInitializingRef = useRef(false);
   const initializedWorkspaceRef = useRef<string | null>(null);
+  // A host that loads a specific session (e.g. the PR pane following the
+  // selected PR) wins over mount-time auto-init, which lands ~100ms later.
+  const explicitSelectionRef = useRef(false);
   const [internalSessionId, setInternalSessionId] = useState<string | null>(null);
   const isSessionControlled = controlledSessionId !== undefined;
   const sessionId = isSessionControlled ? controlledSessionId : internalSessionId;
@@ -170,6 +173,7 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
       }
     },
     loadSession: (id: string) => {
+      explicitSelectionRef.current = true;
       selectSession(id);
     },
     createNewSession: handleNewSession,
@@ -230,6 +234,12 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
         // Wait for session list to load (it's initialized in parallel above)
         // We need to give the session list time to populate
         await new Promise(resolve => setTimeout(resolve, 100));
+
+        // The host picked a session while we waited — don't overwrite it.
+        if (explicitSelectionRef.current) {
+          setIsLoading(false);
+          return;
+        }
 
         // Re-read session list after waiting
         const sessions = await window.electronAPI.invoke('sessions:list', workspacePath, {

@@ -164,7 +164,7 @@ function DocumentLinkPluginWrapper() {
         // the pending atom. CollabMode consumes it, opening (or focusing) the
         // shared doc with its own tab context + dedup.
         store.set(setWindowModeAtom, 'collab');
-        store.set(pendingCollabDocumentAtom, { documentId: targetDocumentId });
+        store.set(pendingCollabDocumentAtom, { documentId: targetDocumentId, analyticsSource: 'deep_link' });
       },
     };
   }, [isCollab, orgId, workspacePath, documentPath, sharedDocuments, sharedFolders]);

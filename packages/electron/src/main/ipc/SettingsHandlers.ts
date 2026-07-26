@@ -1,4 +1,5 @@
 import { BrowserWindow, safeStorage, session, dialog } from 'electron';
+import { applyAnalyticsEnabled } from '../services/analytics/applyAnalyticsEnabled';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -15,7 +16,7 @@ import {
     getRecentItems,
     getDefaultAIModel, setDefaultAIModel,
     getDefaultEffortLevel, setDefaultEffortLevel,
-    isAnalyticsEnabled, setAnalyticsEnabled,
+    isAnalyticsEnabled,
     getSessionSyncConfig, setSessionSyncConfig, SessionSyncConfig,
     isExtensionDevToolsEnabled, setExtensionDevToolsEnabled,
     getAppSetting, setAppSetting,
@@ -693,8 +694,8 @@ export function registerSettingsHandlers() {
         return isAnalyticsEnabled();
     });
 
-    safeHandle('analytics:set-enabled', (_event, enabled: boolean) => {
-        setAnalyticsEnabled(enabled);
+    safeHandle('analytics:set-enabled', async (_event, enabled: boolean) => {
+        await applyAnalyticsEnabled(enabled);
     });
 
     // NOTE: MockupLM settings handlers removed - MockupLM now managed via extension system

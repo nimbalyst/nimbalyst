@@ -10,6 +10,7 @@ interface TrackerViewTitleProps {
   onSaveView: (name: string) => void;
   onRenameSavedView: (name: string) => void;
   onUpdateSavedView: () => void;
+  onExitSavedView: () => void;
 }
 
 export function TrackerViewTitle({
@@ -20,6 +21,7 @@ export function TrackerViewTitle({
   onSaveView,
   onRenameSavedView,
   onUpdateSavedView,
+  onExitSavedView,
 }: TrackerViewTitleProps): JSX.Element {
   const [editMode, setEditMode] = useState<'create' | 'rename' | null>(null);
   const [viewName, setViewName] = useState('');
@@ -145,6 +147,18 @@ export function TrackerViewTitle({
           Save view
         </button>
       ) : null}
+      {activeSavedViewName && (
+        <button
+          type="button"
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-nim-faint hover:bg-nim-tertiary hover:text-nim"
+          onClick={onExitSavedView}
+          aria-label="Exit saved view"
+          title="Exit saved view"
+          data-testid="tracker-saved-view-exit"
+        >
+          <MaterialSymbol icon="close" size={14} />
+        </button>
+      )}
     </div>
   );
 }

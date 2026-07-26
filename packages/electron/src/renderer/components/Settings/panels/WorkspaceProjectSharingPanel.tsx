@@ -10,6 +10,12 @@ import { MoveProjectWizard } from './MoveProjectWizard';
 import { MergeOrgWizard } from './MergeOrgWizard';
 import { ProjectAccessEditor } from './ProjectAccessEditor';
 import { selectProjectSharingEntry } from './projectSharingEntry';
+import {
+  bucketMemberCount,
+  bucketProjectCount,
+  categorizeTeamAnalyticsError,
+} from '../../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
 
 // ============================================================================
 // Types
@@ -518,12 +524,42 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
   const [projects, setProjects] = useState<OrgProjectSummary[]>([]);
   const [adminOrgs, setAdminOrgs] = useState<{ orgId: string; name: string }[]>([]);
   const [addingProject, setAddingProject] = useState(false);
+  const surfaceOpenedRef = useRef(false);
   const [stytchAuth, setStytchAuth] = useState<{
     isAuthenticated: boolean;
     user: { user_id: string; emails: Array<{ email: string }>; name?: { first_name?: string; last_name?: string } } | null;
   }>({ isAuthenticated: false, user: null });
 
   const createTeamDialog = useDialogState<CreateTeamData>(DIALOG_IDS.CREATE_TEAM);
+  const analyticsCallerRole = team?.callerRole === 'owner' || team?.callerRole === 'admin' || team?.callerRole === 'member'
+    ? team.callerRole
+    : 'unknown';
+  const trackFailure = useCallback((
+    operation: 'create_organization' | 'send_invitation' | 'accept_invitation' | 'change_member_role' | 'remove_member' | 'add_project' | 'link_project' | 'unlink_project' | 'delete_organization',
+    reason: unknown,
+    area: 'organization' | 'project' = 'organization',
+  ) => {
+    trackTeamAnalyticsEvent('team_operation_failed', {
+      surface: 'desktop',
+      operation,
+      entryPoint: 'project_sharing',
+      callerRole: analyticsCallerRole,
+      errorCategory: area === 'project'
+        ? categorizeTeamAnalyticsError('project', reason)
+        : categorizeTeamAnalyticsError('organization', reason),
+    });
+  }, [analyticsCallerRole]);
+
+  useEffect(() => {
+    if (initialLoading || surfaceOpenedRef.current) return;
+    surfaceOpenedRef.current = true;
+    trackTeamAnalyticsEvent('team_surface_opened', {
+      surface: 'desktop',
+      entryPoint: 'project_sharing',
+      hasActiveOrganization: !!team,
+      callerRole: analyticsCallerRole,
+    });
+  }, [analyticsCallerRole, initialLoading, team]);
 
   // Load Stytch auth state on mount
   useEffect(() => {
@@ -706,12 +742,30 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
         try {
           const result = await (window as any).electronAPI.team.create(name, workspacePath, accountOrgId);
           if (result.success) {
+            trackTeamAnalyticsEvent('team_organization_created', {
+              surface: 'desktop',
+              entryPoint: 'project_sharing',
+              projectAttached: true,
+              encryptionMode: 'server_managed',
+              memberCountBucket: bucketMemberCount(1),
+              projectCountBucket: bucketProjectCount(1),
+            });
+            trackTeamAnalyticsEvent('team_project_added', {
+              surface: 'desktop',
+              entryPoint: 'project_sharing',
+              callerRole: 'owner',
+              organizationWasNew: true,
+              hasGitRemote: !!gitRemote,
+              projectCountBucket: bucketProjectCount(1),
+            });
             await loadTeamData();
           } else {
             setError(result.error || 'Failed to create organization');
+            trackFailure('create_organization', result.error);
           }
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Failed to create organization');
+          trackFailure('create_organization', err);
         } finally {
           setLoading(false);
         }
@@ -730,13 +784,23 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.addProject(orgId, workspacePath);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_project_added', {
+          surface: 'desktop',
+          entryPoint: 'project_sharing',
+          callerRole: 'admin',
+          organizationWasNew: false,
+          hasGitRemote: !!gitRemote,
+          projectCountBucket: bucketProjectCount(projects.length + 1),
+        });
         await loadTeamData();
         await loadAdminOrgs();
       } else {
         setError(result.error || 'Failed to add project to organization');
+        trackFailure('add_project', result.error, 'project');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add project to organization');
+      trackFailure('add_project', err, 'project');
     } finally {
       setAddingProject(false);
     }
@@ -748,6 +812,12 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.invite(team.orgId, email);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_invitation_sent', {
+          surface: 'desktop',
+          entryPoint: 'project_sharing',
+          callerRole: analyticsCallerRole,
+          memberCountBucket: bucketMemberCount(team.members.length + 1),
+        });
         // Optimistic update -- add pending member
         setTeam({
           ...team,
@@ -768,9 +838,11 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
         setTimeout(() => loadTeamData(), 2000);
       } else {
         setError(result.error || 'Failed to send invite');
+        trackFailure('send_invitation', result.error);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send invite');
+      trackFailure('send_invitation', err);
     }
   };
 
@@ -789,6 +861,11 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.removeMember(team.orgId, memberId);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_member_removed', {
+          surface: 'desktop',
+          callerRole: analyticsCallerRole,
+          memberState: isPending ? 'pending' : 'active',
+        });
         // Optimistic update
         setTeam({
           ...team,
@@ -796,9 +873,11 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
         });
       } else {
         setError(result.error || 'Failed to remove member');
+        trackFailure('remove_member', result.error);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove member');
+      trackFailure('remove_member', err);
     }
   };
 
@@ -809,13 +888,20 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.acceptInvite(pendingInvite.orgId);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_invitation_accepted', {
+          surface: 'desktop',
+          entryPoint: 'project_sharing',
+          projectMatched: true,
+        });
         setPendingInvite(null);
         await loadTeamData();
       } else {
         setError(result.error || 'Failed to join organization');
+        trackFailure('accept_invitation', result.error);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to join organization');
+      trackFailure('accept_invitation', err);
     } finally {
       setLoading(false);
     }
@@ -827,12 +913,20 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.setProjectIdentity(team.orgId, workspacePath);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_project_identity_changed', {
+          surface: 'desktop',
+          action: 'linked',
+          callerRole: analyticsCallerRole,
+          hasGitRemote: !!gitRemote,
+        });
         await loadTeamData();
       } else {
         setError(result.error || 'Failed to link project');
+        trackFailure('link_project', result.error, 'project');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to link project');
+      trackFailure('link_project', err, 'project');
     }
   };
 
@@ -846,12 +940,20 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.clearProjectIdentity(team.orgId);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_project_identity_changed', {
+          surface: 'desktop',
+          action: 'unlinked',
+          callerRole: analyticsCallerRole,
+          hasGitRemote: !!gitRemote,
+        });
         await loadTeamData();
       } else {
         setError(result.error || 'Failed to unlink project');
+        trackFailure('unlink_project', result.error, 'project');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to unlink project');
+      trackFailure('unlink_project', err, 'project');
     }
   };
 
@@ -861,6 +963,13 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.updateRole(team.orgId, memberId, newRole);
       if (result.success) {
+        const previousRole = team.members.find((member) => member.id === memberId)?.role ?? 'member';
+        trackTeamAnalyticsEvent('team_member_role_changed', {
+          surface: 'desktop',
+          callerRole: analyticsCallerRole,
+          fromRole: previousRole,
+          toRole: newRole,
+        });
         // Optimistic update
         setTeam({
           ...team,
@@ -870,9 +979,11 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
         });
       } else {
         setError(result.error || 'Failed to update role');
+        trackFailure('change_member_role', result.error);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update role');
+      trackFailure('change_member_role', err);
     }
   };
 
@@ -886,12 +997,20 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.deleteTeam(team.orgId);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_organization_deleted', {
+          surface: 'desktop',
+          callerRole: analyticsCallerRole,
+          memberCountBucket: bucketMemberCount(team.members.length),
+          projectCountBucket: bucketProjectCount(projects.length),
+        });
         setTeam(null);
       } else {
         setError(result.error || 'Failed to delete organization');
+        trackFailure('delete_organization', result.error);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete organization');
+      trackFailure('delete_organization', err);
     }
   };
 

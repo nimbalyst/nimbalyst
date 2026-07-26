@@ -40,6 +40,26 @@ import type { ElectronDocumentService } from '../../services/ElectronDocumentSer
 import { getTrackerImporterRegistry } from '../../services/tracker/TrackerImporterRegistry';
 import { getTrackerImportService } from '../../services/tracker/TrackerImportService';
 import { materializeTrackerTypeDef, removeTrackerTypeDef } from '../../services/tracker/trackerTypeDefStore';
+import {
+  trackTrackerMutation,
+  type TrackerMutationAction,
+} from '../../services/analytics/trackerMutationAnalytics';
+
+function trackMcpTrackerMutation(
+  action: TrackerMutationAction,
+  itemId: string,
+  trackerType: string,
+  shared: boolean,
+): void {
+  trackTrackerMutation({
+    itemId,
+    action,
+    actorType: 'agent',
+    collaborationScope: shared ? 'shared' : 'personal',
+    trackerType,
+    view: 'agent_tool',
+  });
+}
 
 type McpToolResult = {
   content: Array<{ type: string; text?: string }>;
@@ -2056,6 +2076,12 @@ export async function handleTrackerCreate(
 
     // Notify renderer of the new item (correct channel + event format)
     await notifyTrackerItemAdded(workspacePath, id);
+    trackMcpTrackerMutation(
+      'created',
+      id,
+      args.type,
+      shouldSyncTrackerItem(syncPolicy, data),
+    );
 
     const structured = {
       action: "created" as const,
@@ -2369,6 +2395,22 @@ export async function handleTrackerUpdate(
             }
           }
         }
+
+        const fileBackedPolicy = getEffectiveTrackerSyncPolicy(
+          workspacePath ?? refreshedItem.workspace,
+          refreshedItem.type,
+          globalRegistry.get(refreshedItem.type)?.sync?.mode,
+        );
+        trackMcpTrackerMutation(
+          args.status !== undefined
+            ? 'status_changed'
+            : args.owner !== undefined || args.assigneeEmail !== undefined || args.assigneeId !== undefined
+              ? 'assigned'
+              : 'field_changed',
+          refreshedItem.id,
+          refreshedItem.type,
+          shouldSyncTrackerItem(fileBackedPolicy, refreshedItem),
+        );
 
         const updateSummaryParts: string[] = [];
         if (args.title !== undefined) updateSummaryParts.push(`- **Title**: ${args.title}`);
@@ -2705,6 +2747,23 @@ export async function handleTrackerUpdate(
       }
 
       const postSyncRow = await resolveTrackerRowByReference(db, row.id, workspacePath);
+      const analyticsRow = postSyncRow ?? refreshedRow ?? row;
+      const analyticsWorkspace = analyticsRow.workspace ?? workspacePath ?? '';
+      const analyticsPolicy = getEffectiveTrackerSyncPolicy(
+        analyticsWorkspace,
+        analyticsRow.type,
+        globalRegistry.get(analyticsRow.type)?.sync?.mode,
+      );
+      trackMcpTrackerMutation(
+        args.status !== undefined
+          ? 'status_changed'
+          : args.owner !== undefined || args.assigneeEmail !== undefined || args.assigneeId !== undefined
+            ? 'assigned'
+            : 'field_changed',
+        analyticsRow.id,
+        analyticsRow.type,
+        shouldSyncTrackerItem(analyticsPolicy, rowToTrackerItem(analyticsRow)),
+      );
 
       const updateSummaryParts: string[] = [];
       if (args.title !== undefined) updateSummaryParts.push(`- **Title**: ${args.title}`);
@@ -3185,6 +3244,15 @@ export async function handleTrackerAddComment(
     } catch (syncErr) {
       console.error('[MCP Server] tracker_add_comment sync failed:', syncErr);
     }
+
+    trackMcpTrackerMutation(
+      'commented',
+      row.id,
+      row.type,
+      workspacePath
+        ? shouldSyncTrackerItem(getEffectiveTrackerSyncPolicy(workspacePath, row.type), data)
+        : false,
+    );
 
     return {
       content: [

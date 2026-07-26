@@ -29,6 +29,7 @@ import {
   removeSharedFolder,
   collectFolderSubtree,
   sharedFoldersAtom,
+  allSharedDocumentsAtom,
 } from '../store/atoms/collabDocuments';
 import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
 import { createCollaborativeDocument } from '../services/collaborativeDocumentCreationOrchestrator';
@@ -42,6 +43,13 @@ import {
 } from '../store/atoms/menuCommands';
 import { openEditorFind } from '../components/TabEditor/editorFindCommand';
 import { acquireHeadlessCollabCommentController } from '../services/HeadlessCollabCommentController';
+import {
+  trackDocumentAction,
+  trackFolderCreated,
+  trackFolderDeleted,
+  trackFolderMoved,
+  trackFolderRenamed,
+} from '../utils/collabIndexAnalytics';
 
 // Tracker field updates now go through the generic trackerStatus frontmatter format.
 // No hardcoded plan-specific field list needed.
@@ -815,6 +823,8 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
             requestedName: title,
             parentFolderId: targetParentId,
             sourceContent: initialContent ?? '',
+            analyticsSource: 'agent_tool',
+            analyticsActorType: 'agent',
           });
 
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
@@ -837,6 +847,11 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
             ? await resolveSharedFolderPath(folderPath)
             : (parentFolderId ?? null);
           const folderId = await createSharedFolder(name, targetParentId);
+          trackFolderCreated({
+            actorType: 'agent',
+            source: 'agent_tool',
+            nested: targetParentId !== null,
+          });
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true, folderId });
         } catch (error) {
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
@@ -854,9 +869,22 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
             ? await resolveSharedFolderPath(folderPath)
             : (newParentFolderId ?? null);
           if (kind === 'doc') {
+            const movedType = store.get(allSharedDocumentsAtom)
+              .find(doc => doc.documentId === itemId)?.documentType;
             moveSharedDocument(itemId, targetParentId);
+            trackDocumentAction({
+              action: 'moved',
+              actorType: 'agent',
+              documentType: movedType,
+              entryPoint: 'agent_tool',
+            });
           } else {
             moveSharedFolder(itemId, targetParentId);
+            trackFolderMoved({
+              actorType: 'agent',
+              source: 'agent_tool',
+              toRoot: targetParentId === null,
+            });
           }
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
         } catch (error) {
@@ -872,9 +900,21 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
       cleanupFns.push(window.electronAPI.onMcpRenameSharedItem(async ({ itemId, kind, newName, resultChannel }) => {
         try {
           if (kind === 'doc') {
+            const renamedType = store.get(allSharedDocumentsAtom)
+              .find(doc => doc.documentId === itemId)?.documentType;
             await updateSharedDocumentTitle(itemId, newName);
+            trackDocumentAction({
+              action: 'renamed',
+              actorType: 'agent',
+              documentType: renamedType,
+              entryPoint: 'agent_tool',
+            });
           } else {
             await renameSharedFolder(itemId, newName);
+            trackFolderRenamed({
+              actorType: 'agent',
+              source: 'agent_tool',
+            });
           }
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
         } catch (error) {
@@ -890,12 +930,31 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
       cleanupFns.push(window.electronAPI.onMcpDeleteSharedItem(async ({ itemId, kind, resultChannel }) => {
         try {
           if (kind === 'doc') {
+            const trashedType = store.get(allSharedDocumentsAtom)
+              .find(doc => doc.documentId === itemId)?.documentType;
             removeSharedDocument(itemId);
+            trackDocumentAction({
+              action: 'trashed',
+              actorType: 'agent',
+              documentType: trashedType,
+              entryPoint: 'agent_tool',
+            });
             window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
           } else {
             // Count the subtree before removal so we can report what was pruned.
-            const removedCount = collectFolderSubtree(store.get(sharedFoldersAtom), itemId).length;
+            // Mirrors the sidebar's count so agent and human deletions of the
+            // same folder report the same buckets.
+            const subtreeFolderIds = new Set(collectFolderSubtree(store.get(sharedFoldersAtom), itemId));
+            const removedCount = subtreeFolderIds.size;
+            const documentCount = store.get(allSharedDocumentsAtom)
+              .filter(doc => doc.parentFolderId && subtreeFolderIds.has(doc.parentFolderId)).length;
             removeSharedFolder(itemId);
+            trackFolderDeleted({
+              actorType: 'agent',
+              source: 'agent_tool',
+              documentCount,
+              subfolderCount: Math.max(0, removedCount - 1),
+            });
             window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true, removedCount });
           }
         } catch (error) {

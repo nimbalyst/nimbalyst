@@ -52,6 +52,14 @@ export interface TrackerRecordSystem {
   comments?: TrackerComment[];
   /** Structured origin (how the item entered Nimbalyst; pointer to upstream for imports). */
   origin?: TrackerOrigin;
+  /**
+   * When a person decided this item is correctly where it is and retired it from
+   * the triage inbox without changing it. Shared rather than personal (unlike
+   * snooze): triage is a decision the team makes once, so a colleague's pass
+   * clears the item for everyone.
+   */
+  triagedAt?: string;
+  triagedBy?: TrackerIdentity | null;
 }
 
 export interface TrackerRecord {
@@ -85,6 +93,8 @@ const SYSTEM_KEYS = new Set([
   'activity',
   'comments',
   'origin',
+  'triagedAt',
+  'triagedBy',
   // also pulled from row-level columns, not from data JSONB
   'assigneeId',
   'reporterId',
@@ -238,7 +248,7 @@ export function trackerRecordToItem(record: TrackerRecord): TrackerItem {
       customFields[key] = value;
     }
   }
-  for (const key of ['linkedPullRequests', 'activity', 'comments'] as const) {
+  for (const key of ['linkedPullRequests', 'activity', 'comments', 'triagedAt', 'triagedBy'] as const) {
     const value = record.system[key];
     if (value !== undefined) customFields[key] = value;
   }
@@ -388,6 +398,8 @@ export function dbRowToRecord(row: any): TrackerRecord {
       activity: systemValue('activity') as TrackerActivity[] | undefined,
       comments: systemValue('comments') as TrackerComment[] | undefined,
       origin: systemValue('origin') as TrackerOrigin | undefined,
+      triagedAt: systemValue('triagedAt') as string | undefined,
+      triagedBy: systemValue('triagedBy') as TrackerIdentity | null | undefined,
     },
     fields,
   };
@@ -428,6 +440,8 @@ export function recordToDbParams(record: TrackerRecord): {
   if (record.system.activity?.length) data.activity = record.system.activity;
   if (record.system.comments?.length) data.comments = record.system.comments;
   if (record.system.origin) data.origin = record.system.origin;
+  if (record.system.triagedAt) data.triagedAt = record.system.triagedAt;
+  if (record.system.triagedBy) data.triagedBy = record.system.triagedBy;
   if (record.system.createdAt) data.created = record.system.createdAt;
   if (record.system.updatedAt) data.updated = record.system.updatedAt;
 

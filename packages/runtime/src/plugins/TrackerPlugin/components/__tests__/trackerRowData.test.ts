@@ -4,6 +4,8 @@ import {
   withEffectiveUpdated,
   searchMatchesRecord,
   filterTrackerRecords,
+  getTrackerGroupLabel,
+  groupTrackerRecords,
   sortTrackerRecords,
 } from '../trackerRowData';
 
@@ -119,5 +121,41 @@ describe('sortTrackerRecords', () => {
     const items = [record({ id: 'b', fields: { title: 'Beta' } }), record({ id: 'a', fields: { title: 'Alpha' } })];
     sortTrackerRecords(items, 'title', 'asc');
     expect(items.map(i => i.id)).toEqual(['b', 'a']);
+  });
+});
+
+describe('groupTrackerRecords', () => {
+  it('groups records by status while preserving sorted order within each group', () => {
+    const items = [
+      record({ id: 'a', fields: { title: 'A', status: 'in-progress' } }),
+      record({ id: 'b', fields: { title: 'B', status: 'done' } }),
+      record({ id: 'c', fields: { title: 'C', status: 'in-progress' } }),
+    ];
+
+    const groups = groupTrackerRecords(items, 'status');
+
+    expect(groups.map(group => group.label)).toEqual(['In Progress', 'Done']);
+    expect(groups[0].items.map(item => item.id)).toEqual(['a', 'c']);
+    expect(groups[1].items.map(item => item.id)).toEqual(['b']);
+  });
+
+  it('uses the schema assignee role and a readable unassigned bucket', () => {
+    const assigned = record({
+      id: 'assigned',
+      fields: {
+        title: 'Assigned',
+        owner: { email: 'greg@example.com', displayName: 'Greg' },
+      },
+    });
+    const unassigned = record({ id: 'unassigned', fields: { title: 'Unassigned' } });
+
+    expect(getTrackerGroupLabel(assigned, 'assignee')).toBe('Greg');
+    expect(groupTrackerRecords([assigned, unassigned], 'owner').map(group => group.label))
+      .toEqual(['Greg', 'Unassigned']);
+  });
+
+  it('returns a flat group when grouping is disabled', () => {
+    const items = [record({ id: 'a' }), record({ id: 'b' })];
+    expect(groupTrackerRecords(items, null)).toEqual([{ key: '', label: null, items }]);
   });
 });

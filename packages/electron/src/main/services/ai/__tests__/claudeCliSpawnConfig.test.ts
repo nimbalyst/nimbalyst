@@ -419,13 +419,23 @@ describe('resolveClaudeCliModelArg', () => {
     expect(resolveClaudeCliModelArg('claude-code-cli:opus-4-6')).toBe('opus');
   });
 
+  it('collapses a pinned-variant -1m id to plain `opus[1m]` — why no pinned -1m picker rows exist', () => {
+    // The collapse loses the pin, so an `opus-4-7-1m` row would silently run the
+    // CURRENT Opus at 1M while claiming to be 4.7. CLAUDE_CODE_VARIANTS_WITH_1M
+    // therefore offers `-1m` rows for the dateless aliases only (NIM-2170).
+    expect(resolveClaudeCliModelArg('claude-code-cli:opus-4-7-1m')).toBe('opus[1m]');
+  });
+
   it('passes the fable variant through as the CLI `fable` alias', () => {
     expect(resolveClaudeCliModelArg('claude-code-cli:fable')).toBe('fable');
     expect(resolveClaudeCliModelArg('claude-code-cli:fable-5')).toBe('fable');
     expect(resolveClaudeCliModelArg('fable')).toBe('fable');
   });
 
-  it('translates fable-1m to the CLI `fable[1m]` form — plain fable is windowed at 200k', () => {
+  // Plain `fable` is 1M on a plan that auto-upgrades, but NOT behind an
+  // ANTHROPIC_BASE_URL gateway (our observation proxy) and not on Pro without
+  // credits — the explicit `[1m]` form is the user's opt-in for those (NIM-2170).
+  it('translates fable-1m to the CLI `fable[1m]` form', () => {
     expect(resolveClaudeCliModelArg('claude-code-cli:fable-1m')).toBe('fable[1m]');
     expect(resolveClaudeCliModelArg('fable-1m')).toBe('fable[1m]');
   });

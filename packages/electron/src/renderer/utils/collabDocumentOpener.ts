@@ -16,6 +16,8 @@ import {
   normalizeCollabPath,
   UNRESOLVED_SHARED_DOCUMENT_NAME,
 } from '../components/CollabMode/collabTree';
+import { toStableAnalyticsCategory } from '../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from './teamAnalytics';
 
 /**
  * Configuration for opening a collaborative document.
@@ -80,6 +82,9 @@ export interface CollabDocumentConfig {
   metadataVersion?: 2;
   fileExtension?: string;
   editorId?: string;
+  analyticsSource?: CollabDocumentOpenSource;
+  analyticsActorType?: 'user' | 'agent';
+  analyticsWasUnread?: boolean;
   /**
    * Factory for creating WebSocket connections.
    * When running in Electron, this proxies WebSocket connections through
@@ -584,6 +589,23 @@ export async function resolveCollabConfigForUri(
  * 3. Setting up the getJwt callback via document-sync:get-jwt IPC
  * 4. Calling openCollabDocument() with the full config
  */
+/**
+ * Every route that can open a shared document. Required at the public open
+ * seam so a new caller cannot silently land in the `home` bucket -- an
+ * unattributed open used to default to `home` and inflate the Shared Docs
+ * adoption numbers.
+ */
+export type CollabDocumentOpenSource =
+  | 'sidebar'
+  | 'home'
+  | 'quick_open'
+  | 'deep_link'
+  | 'restart_restore'
+  | 'history'
+  | 'agent_tool'
+  | 'share_to_team'
+  | 'embedded_document';
+
 export async function openCollabDocumentViaIPC(options: {
   workspacePath: string;
   documentId: string;
@@ -598,6 +620,10 @@ export async function openCollabDocumentViaIPC(options: {
   metadataVersion?: 2;
   fileExtension?: string;
   editorId?: string;
+  /** Required: how the user reached this document. See CollabDocumentOpenSource. */
+  analyticsSource: CollabDocumentOpenSource;
+  analyticsActorType?: 'user' | 'agent';
+  analyticsWasUnread?: boolean;
   isPinned?: boolean;
   addTab: (
     filePath: string,
@@ -654,6 +680,9 @@ export async function openCollabDocumentViaIPC(options: {
     metadataVersion: options.metadataVersion,
     fileExtension: options.fileExtension,
     editorId: options.editorId,
+    analyticsSource: options.analyticsSource,
+    analyticsActorType: options.analyticsActorType,
+    analyticsWasUnread: options.analyticsWasUnread,
     isPinned: options.isPinned,
     keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
     documentKey,
@@ -680,6 +709,20 @@ export async function openCollabDocumentViaIPC(options: {
   if (!tabId) {
     throw new Error(`Failed to open collaborative document ${realUri}`);
   }
+
+  trackTeamAnalyticsEvent('collab_document_opened', {
+    surface: 'desktop',
+    source: options.analyticsSource,
+    actorType: options.analyticsActorType ?? 'user',
+    documentType: toStableAnalyticsCategory(documentType),
+    editorCategory: options.editorId?.startsWith('builtin.monaco')
+      ? 'monaco'
+      : options.editorId?.startsWith('builtin.lexical') || documentType === 'markdown'
+        ? 'lexical'
+        : 'extension',
+    wasUnread: options.analyticsWasUnread ?? false,
+    connectionPath: 'initial',
+  });
 
   return tabId;
 }

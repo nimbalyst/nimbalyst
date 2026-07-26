@@ -227,6 +227,11 @@ export class LocalDocumentReplica {
     return this.outbox.size > 0;
   }
 
+  /** Host observability may bucket this count; runtime never emits analytics. */
+  getOutboxEntryCount(): number {
+    return this.outbox.size;
+  }
+
   getOutboxState(): LocalDocumentReplicaOutboxState {
     const states = [...this.outbox.values()].map((entry) => entry.state);
     if (states.includes("rejected")) return "rejected";

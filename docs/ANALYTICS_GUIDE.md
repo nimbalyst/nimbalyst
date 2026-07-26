@@ -129,6 +129,16 @@ function MyComponent() {
 
 The renderer-side PostHog instance communicates with the main service over the electron IPC bridge during initialization and shares the same `distinctId` , `sessionId` , and opt-in status as the main process service, ensuring consistent tracking in both contexts.
 
+### How the opt-out actually reaches the renderer
+
+Sharing opt-in status is not automatic — it is wired explicitly, and it is easy to break:
+
+- Both toggle paths (the `analytics:set-enabled` IPC from the settings UI and the `analytics_set_enabled` MCP tool) go through `applyAnalyticsEnabled` in `packages/electron/src/main/services/analytics/applyAnalyticsEnabled.ts`. It persists the setting, opts the posthog-node client in or out, and broadcasts `analytics:enabled-changed` to every window.
+- The renderer holds the resolved answer in `packages/electron/src/renderer/utils/analyticsConsent.ts`. It **fails closed**: until the bootstrap resolves the setting from main, consent is denied.
+- `posthog.init`'s `before_send` in `src/renderer/index.tsx` consults that gate, so no `posthog.capture(...)` call site anywhere in the renderer can leak an event while analytics are off — including call sites written later that know nothing about this.
+
+Never write `analyticsEnabled` to the store directly. Doing so used to stop main-process events while leaving every renderer `posthog.capture(...)` firing, because nothing told the renderer the setting had changed. The broadcast is per-window on purpose: the renderer PostHog client is per-window, so toggling in the settings window has to reach the others.
+
 ### Event Naming Conventions
 
 Follow these conventions for consistency:
@@ -323,6 +333,49 @@ This helps with debugging and provides visibility into what events are being sen
 - Session ID changes
 - Opt-in/opt-out actions
 - Service shutdown timing
+
+## Nimbalyst Teams Analytics
+
+Teams and collaboration events use a stricter shared contract than the general analytics examples above:
+
+- Event schemas, enums, privacy validation, bucket helpers, and error categorization live in `packages/electron/src/shared/analytics/teamAnalytics.ts`.
+- Renderer code emits through `trackTeamAnalyticsEvent` or `captureTeamAnalyticsEvent` in `packages/electron/src/renderer/utils/teamAnalytics.ts`.
+- Main-process code emits through `sendTeamAnalyticsEvent` in `packages/electron/src/main/services/analytics/TeamAnalytics.ts`.
+- Runtime sync packages expose product-neutral callbacks and state only; they do not import PostHog.
+
+The adapters fail closed. An unknown event property, a value outside an allowlisted enum, a raw path/URL/email shape, or an unsafe high-cardinality category is rejected locally and is not sent.
+
+### Outcome timing and deduplication
+
+Emit product events only after the authoritative client operation succeeds. Do not emit from the initiating button click, optimistic state, individual Yjs updates, awareness messages, WebSocket messages, or polling loops.
+
+Connection telemetry represents one coalesced attempt. `connecting`, `syncing`, and repeated identical statuses are intermediate states; one `collab_sync_attempt_completed` event is emitted only when that attempt reaches `success`, `offline_ready`, or `failed`. Outbox events are emitted only for a replay cycle that had pending work.
+
+`collab_document_first_edited` is once per document open/attachment lifecycle. An explicit shared-document open may emit `collab_document_opened`; automatic `restart_restore` opens are excluded from the `has_opened_shared_document` person property and primary retention queries.
+
+### Volume discipline
+
+Several authoritative seams are reached by a debounced autosave or a retrying transport, not by a discrete user action. Instrumenting them naively produces one event per typing pause and makes both the metric and the bill unusable. Before adding a Teams event, ask what drives the seam:
+
+- **Discrete user decision** (create, status change, assign, comment, delete, invite, share) — emit every time.
+- **Debounced autosave** (tracker field saves, tracker body saves) — either do not instrument it, or route it through `AnalyticsEmissionThrottle` (`packages/electron/src/shared/analytics/analyticsThrottle.ts`). The tracker path does this in `trackerMutationAnalytics.ts`: `field_changed` collapses to one event per item per 10 minutes and body content saves are not instrumented at all.
+- **Transport lifecycle** (connection attempts, outbox cycles) — cap per resource. `CollaborationHealthAttemptTracker` reports at most one attempt per resource per 60 seconds.
+
+Apply a cap to **every outcome equally**. Throttling successes but not failures silently biases the failure-rate alerts upward. `docs/POSTHOG_EVENTS.md` records the caps currently in force; keep it in sync when you change one.
+
+### Activation and retention
+
+A user is Teams-activated after a meaningful collaboration outcome:
+
+- a shared document is created or shared;
+- an explicitly opened shared document receives its first local edit; or
+- a tracker item with `collaborationScope=shared` is created or mutated.
+
+Organization creation, invitation acceptance, and project attachment are setup stages, not terminal activation. Primary retention uses `collab_document_first_edited` and `tracker_item_mutated` filtered to shared scope. See `docs/TEAMS_ANALYTICS.md` for the reproducible dashboard and alert definitions.
+
+### Teams privacy rules
+
+Never send organization/project/document/folder/member/account/room identifiers, names, emails, titles, filenames, paths, git remotes, deep-link payloads, raw errors, URLs, tokens, content, sync payloads, or exact counts/durations/retries when the shared contract defines a bucket. Do not use PostHog Groups keyed by customer or collaboration entity.
 
 ## Best Practices
 

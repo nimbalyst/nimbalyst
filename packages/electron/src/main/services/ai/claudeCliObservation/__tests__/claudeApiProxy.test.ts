@@ -185,6 +185,35 @@ describe("claudeApiProxy", () => {
     expect(upstreamHeaders["host"]).toContain("127.0.0.1");
   });
 
+  it("reports the 1M-context beta flag from the outbound request headers", async () => {
+    // NIM-2170: the CLI sends `context-1m-2025-08-07` only when the account +
+    // model are entitled to the extended window, so the observation layer reads
+    // its presence as the live context-window signal (there is none in the SSE).
+    upstream = await startFakeUpstream();
+
+    const infos: Array<{ context1m: boolean }> = [];
+    proxy = await startClaudeApiProxy(
+      {
+        onSSEEvent: () => {},
+        onRequestBody: (_body, info) => infos.push(info),
+        onProxyError: (err) => {
+          throw err;
+        },
+      },
+      { upstreamUrl: upstream.url },
+    );
+
+    const body = JSON.stringify({ model: "claude-x", messages: [{ role: "user", content: "hi" }] });
+    await postToProxy(proxy.port, body, {
+      "anthropic-beta": "oauth-2025-04-20,context-1m-2025-08-07",
+    });
+    await postToProxy(proxy.port, body, { "anthropic-beta": "oauth-2025-04-20" });
+
+    expect(infos.map((i) => i.context1m)).toEqual([true, false]);
+    // The header is forwarded upstream untouched — we only read it.
+    expect(upstream.lastHeaders()["anthropic-beta"]).toBe("oauth-2025-04-20");
+  });
+
   it("forwards to /v1/messages unchanged when the upstream has no base path (default shape)", async () => {
     upstream = await startFakeUpstream();
 

@@ -68,6 +68,28 @@ export function getInitialStatus(type: string): string {
     : '';
 }
 
+/**
+ * The priority every write path stamps when the caller doesn't pick one --
+ * `tracker_create`, the inline/plan/decision capture paths, and the frontmatter
+ * projection all write `priority || 'medium'`. The predicate has to know that
+ * value: without it a stamp is indistinguishable from a human choosing Medium,
+ * every item counts as prioritized, and the inbox is empty forever (NIM-2172).
+ */
+export const STAMPED_DEFAULT_PRIORITY = 'medium';
+
+/**
+ * The priority value that means "nobody decided": the type's declared default,
+ * falling back to the stamp for a type that declares none -- such a type is
+ * still receiving the stamp on create, so the stamp is its de-facto default.
+ */
+export function getDefaultPriority(type: string): string {
+  const model = globalRegistry.get(type);
+  if (!model) return STAMPED_DEFAULT_PRIORITY;
+  const fieldName = getRoleField(model, 'priority') ?? 'priority';
+  const field = model.fields.find((f) => f.name === fieldName);
+  return typeof field?.default === 'string' ? field.default : STAMPED_DEFAULT_PRIORITY;
+}
+
 /** Whether an item belongs to at least one collection (milestone / release). */
 export function isInCollection(record: TrackerRecord): boolean {
   const field = getCollectionField(record.primaryType);
@@ -77,23 +99,29 @@ export function isInCollection(record: TrackerRecord): boolean {
 
 export interface TriageSignals {
   assigned: boolean;
+  /** Given a priority other than the one the write paths stamp by default. */
   prioritized: boolean;
   inCollection: boolean;
   /** Moved off the type's initial status (or the type has no default at all). */
   statusMoved: boolean;
+  /** Explicitly marked "looked at, correctly where it is" by a person. */
+  markedTriaged: boolean;
 }
 
 /** The individual acts that retire an item from the inbox. */
 export function triageSignals(record: TrackerRecord, signals: InboxSignals): TriageSignals {
   const initial = getInitialStatus(record.primaryType);
   const status = signals.getStatus(record);
+  const priority = signals.getPriority(record);
   return {
     assigned: Boolean(signals.getAssignee(record)),
-    prioritized: Boolean(signals.getPriority(record)),
+    // The default is a stamp, not a decision -- see STAMPED_DEFAULT_PRIORITY.
+    prioritized: Boolean(priority) && priority !== getDefaultPriority(record.primaryType),
     inCollection: isInCollection(record),
     // A type with no usable workflow lifecycle cannot tell "untouched" from
     // "moved", so the other signals decide.
     statusMoved: Boolean(initial) && Boolean(status) && status !== initial,
+    markedTriaged: Boolean(record.system.triagedAt),
   };
 }
 
@@ -106,7 +134,8 @@ export function isUntriaged(record: TrackerRecord, signals: InboxSignals): boole
   if (record.archived) return false;
   if (isCollectionType(record.primaryType)) return false;
   const triage = triageSignals(record, signals);
-  return !triage.assigned && !triage.prioritized && !triage.inCollection && !triage.statusMoved;
+  return !triage.assigned && !triage.prioritized && !triage.inCollection
+    && !triage.statusMoved && !triage.markedTriaged;
 }
 
 /** Whether a personal snooze is still holding this item out of the inbox. */

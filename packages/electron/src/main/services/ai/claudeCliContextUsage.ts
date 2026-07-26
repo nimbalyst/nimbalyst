@@ -18,27 +18,83 @@
  */
 
 import { BrowserWindow } from 'electron';
-import { AISessionsRepository, CLAUDE_CODE_NATIVE_1M_VARIANTS, normalizeClaudeCodeVariant } from '@nimbalyst/runtime';
+import {
+  AISessionsRepository,
+  CLAUDE_CODE_NATIVE_1M_VARIANTS,
+  claudeCodeFamilyKeyword,
+  normalizeClaudeCodeVariant,
+} from '@nimbalyst/runtime';
 import { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
 import type { AssembledUsage } from './claudeCliObservation/claudeApiMessageAssembler';
 
 type TokenUsage = NonNullable<SessionData['tokenUsage']>;
 
-/**
- * Context window for a CLI model id (`claude-code-cli:opus` / `…-1m`).
- *
- * The proxy assembler (`AssembledUsage`) does not carry a real per-model window,
- * so unlike the SDK path we can't read the CLI-reported value — we map by
- * variant. All 1M variants (`opus`/`fable`/`sonnet` and the pinned legacy
- * `opus-4-7`/`opus-4-6`/`sonnet-4-6`) run 1M natively at a flat price on the
- * current CLI, so their single base row is 1M — the earlier "plain fable windows
- * at 200k" behavior (real on 2.1.175) is stale. Only `haiku` stays 200k.
- */
 const CLI_DEFAULT_CONTEXT_WINDOW = 200_000;
 const CLI_1M_CONTEXT_WINDOW = 1_000_000;
 
-export function contextWindowForCliModel(model: string | undefined): number {
+/**
+ * Observed 1M entitlement per session, keyed by model FAMILY (`opus`/`sonnet`/…).
+ *
+ * Populated from the proxy's outbound `anthropic-beta` header (NIM-2170). Keyed
+ * by family so a Task sub-agent's Haiku request — which runs through the same
+ * proxy and never carries the flag — can't downgrade the parent's denominator.
+ */
+const observed1mBySession = new Map<string, Map<string, boolean>>();
+
+const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'] as const;
+
+/** Family keyword of a full Anthropic model id (`claude-opus-5-…` → `opus`). */
+function familyOfApiModel(model: unknown): string | undefined {
+  if (typeof model !== 'string') return undefined;
+  const lower = model.toLowerCase();
+  return MODEL_FAMILIES.find((family) => lower.includes(family));
+}
+
+/** Record whether the CLI asked for 1M on an observed `/v1/messages` request. */
+export function noteClaudeCliObserved1mSupport(
+  sessionId: string,
+  input: { model?: unknown; supports1m: boolean },
+): void {
+  const family = familyOfApiModel(input.model);
+  if (!family) return;
+  let byFamily = observed1mBySession.get(sessionId);
+  if (!byFamily) {
+    byFamily = new Map();
+    observed1mBySession.set(sessionId, byFamily);
+  }
+  byFamily.set(family, input.supports1m);
+}
+
+/** Drop a session's observations (call when its proxy observation stops). */
+export function clearClaudeCliObserved1mSupport(sessionId: string): void {
+  observed1mBySession.delete(sessionId);
+}
+
+function observed1mForSession(sessionId: string, sessionModel: string | undefined): boolean | undefined {
+  const family = claudeCodeFamilyKeyword(sessionModel);
+  if (!family) return undefined;
+  return observed1mBySession.get(sessionId)?.get(family);
+}
+
+/**
+ * Context window for a CLI model id (`claude-code-cli:opus` / `…-1m`).
+ *
+ * Unlike the SDK path there is NO runtime per-model window to read: the proxy
+ * assembler's `AssembledUsage` carries none, so this value is the PERMANENT
+ * denominator for the CLI meter. Resolution order:
+ *   1. `observed1m` — measured from the outbound `anthropic-beta` header, the
+ *      only live signal on this path. It wins in BOTH directions, because 1M is
+ *      plan-gated (Max/Team/Enterprise auto-upgrade, Pro needs credits) and
+ *      because pointing the CLI at our observation proxy via ANTHROPIC_BASE_URL
+ *      makes it treat the connection as a gateway and skip the auto-upgrade
+ *      (measured on CLI 2.1.220 — NIM-2170).
+ *   2. The per-variant seed below, used until the first observed request.
+ */
+export function contextWindowForCliModel(model: string | undefined, observed1m?: boolean): number {
+  if (observed1m !== undefined) {
+    return observed1m ? CLI_1M_CONTEXT_WINDOW : CLI_DEFAULT_CONTEXT_WINDOW;
+  }
   if (!model) return CLI_DEFAULT_CONTEXT_WINDOW;
   // Explicit `-1m` selection is always 1M.
   if (model.toLowerCase().includes('-1m')) return CLI_1M_CONTEXT_WINDOW;
@@ -141,7 +197,10 @@ export async function logClaudeCliContextUsage(
 
   try {
     const session = await deps.loadSession(input.sessionId);
-    const contextWindow = contextWindowForCliModel(session?.model);
+    const contextWindow = contextWindowForCliModel(
+      session?.model,
+      observed1mForSession(input.sessionId, session?.model),
+    );
     const tokenUsage = buildClaudeCliTokenUsage(session?.tokenUsage, input.usage, contextWindow);
     await deps.updateTokenUsage(input.sessionId, tokenUsage);
     deps.notifyTokenUsage(input.sessionId, tokenUsage);

@@ -9,6 +9,10 @@ describe('resolveClaudeCodeModelVariant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:sonnet', DEFAULT_MODEL)).toBe('sonnet');
     });
 
+    it('accepts the current Sonnet generation alias used by saved defaults', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:sonnet-5', DEFAULT_MODEL)).toBe('sonnet');
+    });
+
     it('resolves opus variant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:opus', DEFAULT_MODEL)).toBe('opus');
     });
@@ -40,6 +44,11 @@ describe('resolveClaudeCodeModelVariant', () => {
   describe('extended context (1M) variants', () => {
     it('sonnet-1m resolves to sonnet[1m] (Sonnet 4.6)', () => {
       const result = resolveClaudeCodeModelVariant('claude-code:sonnet-1m', DEFAULT_MODEL);
+      expect(result).toBe('sonnet[1m]');
+    });
+
+    it('sonnet-5-1m alias resolves to sonnet[1m]', () => {
+      const result = resolveClaudeCodeModelVariant('claude-code:sonnet-5-1m', DEFAULT_MODEL);
       expect(result).toBe('sonnet[1m]');
     });
 

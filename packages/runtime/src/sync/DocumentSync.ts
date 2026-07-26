@@ -1204,6 +1204,11 @@ export class DocumentSyncProvider {
       ) {
         return;
       }
+      try {
+        this.config.onLocalUpdate?.();
+      } catch (error) {
+        console.warn('[DocumentSync] onLocalUpdate callback failed:', error);
+      }
       this.notifyContentChanged();
       this.enqueuePendingLocalUpdate(update);
       if (this.ws && this.ws.readyState === WebSocket.OPEN && this.synced) {

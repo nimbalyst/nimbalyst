@@ -32,7 +32,11 @@ import { AgentMessagesRepository } from '@nimbalyst/runtime';
 import { broadcastMessageLogged as notifyMessageLogged } from './claudeCliUserPromptLog';
 import { logClaudeCliToolResults, loadSeenToolResultIds } from './claudeCliToolResultLog';
 import { getSeenToolResultIds, clearSeenToolResultIds } from './claudeCliToolResultSeen';
-import { logClaudeCliContextUsage } from './claudeCliContextUsage';
+import {
+  clearClaudeCliObserved1mSupport,
+  logClaudeCliContextUsage,
+  noteClaudeCliObserved1mSupport,
+} from './claudeCliContextUsage';
 import { classifyClaudeCliUpstreamError } from './claudeCliErrorClassifier';
 import { createClaudeCliErrorSurfacePolicy } from './claudeCliErrorSurfacePolicy';
 import { logClaudeCliUpstreamError } from './claudeCliErrorLog';
@@ -234,7 +238,12 @@ export async function startClaudeCliProxyObservation(opts: {
         recordClaudeCliTurnMessage(sessionId, { text: extractAssistantText(msg), toolNames });
       }
     },
-    onRequestBody: (body) => {
+    onRequestBody: (body, info) => {
+      // The CLI decides per account + model whether to request the 1M window, and
+      // says so in the outbound `anthropic-beta` header. That's the only live
+      // context-window signal on this path (the SSE response carries none), so
+      // record it to replace the static per-variant guess (NIM-2170).
+      noteClaudeCliObserved1mSupport(sessionId, { model: body.model, supports1m: info.context1m });
       // The tee'd SSE only carries the assistant's tool_use calls; the matching
       // tool_results ride in the next request body's trailing user message.
       const results = extractToolResults(body);
@@ -294,6 +303,7 @@ export async function startClaudeCliProxyObservation(opts: {
       clearSeenToolResultIds(sessionId);
       clearClaudeCliTurnSummary(sessionId);
       clearSubAgentTracking(sessionId);
+      clearClaudeCliObserved1mSupport(sessionId);
     },
   };
 }
