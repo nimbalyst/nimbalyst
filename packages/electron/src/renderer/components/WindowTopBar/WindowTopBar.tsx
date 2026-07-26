@@ -1,7 +1,10 @@
 import React from 'react';
+import { useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { MAIN_WINDOW_TITLE_BAR_HEIGHT } from '../../../shared/windowChrome';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
+import { chromeNewSlotAtom } from '../../store/atoms/chromeActions';
+import { HeaderCreateButton } from '../HeaderCreateButton';
 import './WindowTopBar.css';
 
 export interface WindowTopBarGitStatus {
@@ -47,6 +50,8 @@ export interface WindowTopBarGitActions {
 export interface WindowTopBarNewSessionControl {
   label: string;
   onCreate: () => void;
+  /** Material Symbol shown before the label. Defaults to `add`. */
+  icon?: string;
 }
 
 export interface WindowTopBarProps {
@@ -56,6 +61,19 @@ export interface WindowTopBarProps {
   gitActions: WindowTopBarGitActions;
   panelControls?: WindowTopBarPanelControls;
   newSessionControl?: WindowTopBarNewSessionControl;
+  /**
+   * X-offset (px from the window's left edge) of the active sidebar's right
+   * edge. When set, a create-launcher slot is pinned there so the active mode
+   * can portal its "+ New" button into the chrome, aligned with the sidebar.
+   * Undefined for modes without a left sidebar (no pinned slot).
+   */
+  pinnedNewOffset?: number;
+  /**
+   * Width (px) of the AI panel column on the right. When set, the "New Session"
+   * button is pinned to that column's left edge (equal-weight blue, symmetric to
+   * the pinned "+ New"). Undefined falls back to the far-right actions cluster.
+   */
+  pinnedSessionOffset?: number;
 }
 
 function PanelButton({
@@ -289,7 +307,26 @@ export function WindowTopBar({
   gitActions,
   panelControls,
   newSessionControl,
+  pinnedNewOffset,
+  pinnedSessionOffset,
 }: WindowTopBarProps) {
+  const setChromeNewSlot = useSetAtom(chromeNewSlotAtom);
+
+  // The "New Session" create button, shared with the pinned "+ New" component
+  // so both are the same equal-weight blue pill.
+  const sessionButton = newSessionControl ? (
+    <HeaderCreateButton
+      testId="window-top-bar-new-session"
+      className="window-top-bar__no-drag"
+      icon={newSessionControl.icon ?? 'add'}
+      label={newSessionControl.label}
+      tone="primary"
+      onClick={newSessionControl.onCreate}
+      title={newSessionControl.label}
+      ariaLabel={newSessionControl.label}
+    />
+  ) : null;
+
   return (
     <header
       className="window-top-bar"
@@ -300,6 +337,27 @@ export function WindowTopBar({
         minHeight: MAIN_WINDOW_TITLE_BAR_HEIGHT,
       }}
     >
+      {pinnedNewOffset != null && (
+        <div
+          className="window-top-bar__pinned-new"
+          style={{ width: Math.max(pinnedNewOffset, 210) }}
+        >
+          <div
+            ref={setChromeNewSlot}
+            className="window-top-bar__pinned-new-slot window-top-bar__no-drag"
+            data-testid="window-top-bar-new-slot"
+          />
+        </div>
+      )}
+      {pinnedSessionOffset != null && sessionButton && (
+        <div
+          className="window-top-bar__pinned-session"
+          style={{ width: Math.max(pinnedSessionOffset, 120) }}
+          data-testid="window-top-bar-session-slot"
+        >
+          {sessionButton}
+        </div>
+      )}
       <div className="window-top-bar__available-area">
         <div className="window-top-bar__left" />
 
@@ -334,19 +392,7 @@ export function WindowTopBar({
             className="window-top-bar__right-actions"
             data-testid="window-top-bar-right-actions"
           >
-            {newSessionControl && (
-              <button
-                type="button"
-                className="window-top-bar__new-session window-top-bar__no-drag"
-                data-testid="window-top-bar-new-session"
-                title={newSessionControl.label}
-                aria-label={newSessionControl.label}
-                onClick={newSessionControl.onCreate}
-              >
-                <MaterialSymbol icon="add" size={17} />
-                <span>New</span>
-              </button>
-            )}
+            {pinnedSessionOffset == null && sessionButton}
             {panelControls?.left && (
               <PanelButton side="left" control={panelControls.left} />
             )}

@@ -400,16 +400,16 @@ export async function selectFirstSession(page: Page): Promise<void> {
  * Scopes to session-history sidebar to avoid clicking chat mode button
  */
 export async function createNewAgentSession(page: Page): Promise<void> {
-  // Scope to agent mode to avoid clicking Files mode elements
-  const agentMode = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentMode);
-  const agentSidebar = agentMode.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistory);
-  const newSessionButton = agentSidebar.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewButton);
+  // The "+ New" launcher now lives in the window chrome (pinned to the sidebar
+  // edge) and its dropdown is portaled to the body, so both are page-level.
+  // Only the active mode renders its launcher, so this stays unambiguous.
+  const newSessionButton = page.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewButton);
   await newSessionButton.click({ timeout: 5000 });
 
   // The button may open a dropdown if multiple options are available.
   // If a dropdown appeared, click "New Session" inside it.
-  const dropdown = agentMode.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewMenu);
-  const newSessionItem = agentMode.locator(PLAYWRIGHT_TEST_SELECTORS.newSessionButton);
+  const dropdown = page.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewMenu);
+  const newSessionItem = page.locator(PLAYWRIGHT_TEST_SELECTORS.newSessionButton);
   if (await dropdown.isVisible({ timeout: 300 }).catch(() => false)) {
     await newSessionItem.click({ timeout: 2000 });
   }

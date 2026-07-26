@@ -1332,40 +1332,43 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       {/* Main content area */}
       <div className="editor-mode__content" style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', minWidth: 0 }}>
         {/* Left sidebar - file tree (hidden when collapsed) */}
+        {/* Left sidebar — kept mounted (width 0 when collapsed) so the "+ New"
+            launcher WorkspaceSidebar portals into the title bar survives a
+            collapse, and the wrapper stays measurable for chrome positioning. */}
+        <div
+          className="editor-mode-file-sidebar"
+          style={{ width: sidebarCollapsed ? 0 : sidebarWidth, position: 'relative', overflow: 'hidden', flexShrink: 0 }}
+          aria-hidden={sidebarCollapsed || undefined}
+        >
+          <WorkspaceSidebar
+            workspaceName={workspaceName || ''}
+            workspacePath={workspacePath}
+            currentFilePath={currentFilePath}
+            currentView="files"
+            onFileSelect={handleWorkspaceFileSelect}
+            onCloseWorkspace={onCloseWorkspace || (() => {})}
+            onOpenQuickSearch={onOpenQuickSearch}
+            onViewWorkspaceHistory={(folderPath) => {
+              setWorkspaceHistoryPath(folderPath);
+              setIsWorkspaceHistoryDialogOpen(true);
+            }}
+            onSelectedFolderChange={setSelectedFolderPath}
+            currentAISessionId={null}
+          />
+        </div>
         {!sidebarCollapsed && (
-          <>
-            <div style={{ width: sidebarWidth, position: 'relative' }}>
-              <WorkspaceSidebar
-                workspaceName={workspaceName || ''}
-                workspacePath={workspacePath}
-                currentFilePath={currentFilePath}
-                currentView="files"
-                onFileSelect={handleWorkspaceFileSelect}
-                onCloseWorkspace={onCloseWorkspace || (() => {})}
-                onOpenQuickSearch={onOpenQuickSearch}
-                onViewWorkspaceHistory={(folderPath) => {
-                  setWorkspaceHistoryPath(folderPath);
-                  setIsWorkspaceHistoryDialogOpen(true);
-                }}
-                onSelectedFolderChange={setSelectedFolderPath}
-                currentAISessionId={null}
-              />
-            </div>
-
-            {/* Resize handle */}
+          <div
+            onPointerDown={startSidebarResize}
+            className="editor-mode-sidebar-resize-handle w-1 cursor-col-resize shrink-0 relative z-10 bg-nim-secondary"
+            data-testid="editor-mode-sidebar-resize-handle"
+            role="separator"
+            aria-label="Resize file sidebar"
+            aria-orientation="vertical"
+          >
             <div
-              onPointerDown={startSidebarResize}
-              className="editor-mode-sidebar-resize-handle w-1 cursor-col-resize shrink-0 relative z-10 bg-nim-secondary"
-              data-testid="editor-mode-sidebar-resize-handle"
-              role="separator"
-              aria-label="Resize file sidebar"
-              aria-orientation="vertical"
-            >
-              <div
-                className="w-0.5 h-full mx-auto bg-nim-border transition-colors duration-200 hover:bg-nim-accent"
-              />
-            </div>
-          </>
+              className="w-0.5 h-full mx-auto bg-nim-border transition-colors duration-200 hover:bg-nim-accent"
+            />
+          </div>
         )}
 
         {/* Center - editor tabs and content */}

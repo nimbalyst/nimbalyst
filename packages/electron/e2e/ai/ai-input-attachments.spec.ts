@@ -305,9 +305,9 @@ test.describe('File Mention Typeahead', () => {
     // Dismiss any auth dialogs from previous tests
     await dismissAPIKeyDialog(page);
 
-    // Create a new session to get a clean input
-    const agentMode = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentMode);
-    const newSessionButton = agentMode.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewButton);
+    // Create a new session to get a clean input. The "+ New" launcher lives in
+    // the window chrome (page-level), not inside the agent panel.
+    const newSessionButton = page.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistoryNewButton);
     if (await newSessionButton.isVisible().catch(() => false)) {
       await newSessionButton.click();
       await page.waitForTimeout(500);

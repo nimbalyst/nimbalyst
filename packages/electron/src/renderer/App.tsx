@@ -5,7 +5,7 @@ import './hooks/useExtensionInputGuard';
 // Side-effect: ensure atomFamily registry is initialized and window.__atomFamilyStats is set
 import './store/debug/atomFamilyRegistry';
 
-import React, { Activity, useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import React, { Activity, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { logger } from './utils/logger';
@@ -191,12 +191,15 @@ import { setDiffTreeGroupByDirectoryAtom, setAgentFileScopeModeAtom, hydrateFile
 import {
   toggleSessionHistoryCollapsedAtom,
   sessionHistoryCollapsedAtom,
+  sessionHistoryWidthAtom,
   scrollToMessageAtom,
   initAgentModeLayout,
 } from './store/atoms/agentMode';
 import {
   aiChatCollapsedAtomFamily,
+  aiChatWidthAtomFamily,
   sidebarCollapsedAtomFamily,
+  sidebarWidthAtomFamily,
 } from './store/atoms/workspaceLayout';
 import { gitStatusAtom } from './store/atoms/gitOperations';
 import { normalizeGitStatus } from './utils/gitStatus';
@@ -573,8 +576,11 @@ export default function App() {
   const setActiveMode = useSetAtom(setWindowModeAtom);
   const toggleAgentCollapsed = useSetAtom(toggleSessionHistoryCollapsedAtom);
   const agentHistoryCollapsed = useAtomValue(sessionHistoryCollapsedAtom);
+  const agentHistoryWidth = useAtomValue(sessionHistoryWidthAtom);
   const filesSidebarCollapsed = useAtomValue(sidebarCollapsedAtomFamily(workspacePath || ''));
+  const filesSidebarWidth = useAtomValue(sidebarWidthAtomFamily(workspacePath || ''));
   const filesAIChatCollapsed = useAtomValue(aiChatCollapsedAtomFamily(workspacePath || ''));
+  const filesAIChatWidth = useAtomValue(aiChatWidthAtomFamily(workspacePath || ''));
   const toggleAIChatPanelVersion = useAtomValue(toggleAIChatPanelRequestAtom);
   const gitStatus = useAtomValue(gitStatusAtom);
   const setGitStatus = useSetAtom(gitStatusAtom);
@@ -1104,9 +1110,14 @@ export default function App() {
   ]);
 
   const windowTopBarNewSessionControl = useMemo(() => {
+    // The far-right chrome button creates an AI chat session over the AI panel.
+    // It coexists with the pinned "+ New" (files/agent create) but is
+    // differentiated by a chat icon and the explicit "New Session" label, so the
+    // two read as clearly different actions rather than duplicate "New" buttons.
     if (isFullscreenPanelActive && activeFullscreenPanel?.aiSupported) {
       return {
-        label: 'New AI session',
+        label: 'New Session',
+        icon: 'add_comment',
         onCreate: () => {
           void chatSidebarRef.current?.createNewSession();
         },
@@ -1114,7 +1125,8 @@ export default function App() {
     }
     if (activeMode === 'files') {
       return {
-        label: 'New AI session',
+        label: 'New Session',
+        icon: 'add_comment',
         onCreate: () => {
           void editorModeRef.current?.createNewChatSession();
         },
@@ -1122,7 +1134,8 @@ export default function App() {
     }
     if (activeMode === 'collab') {
       return {
-        label: 'New AI session',
+        label: 'New Session',
+        icon: 'add_comment',
         onCreate: () => {
           void collabModeRef.current?.createNewChatSession();
         },
@@ -1150,6 +1163,60 @@ export default function App() {
     };
     return labels[activeMode];
   }, [activeMode]);
+
+  // Pin the "+ New" launcher to the ACTUAL right edge of the active sidebar
+  // column, measured from the DOM. Measuring (vs. a hardcoded offset) keeps it
+  // correct across the project rail, an extension sidebar, and resize/collapse —
+  // the sidebar stays mounted at width 0 when collapsed, so its wrapper is
+  // always measurable. Hidden entirely while a fullscreen panel is active.
+  const [pinnedNewOffset, setPinnedNewOffset] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (isFullscreenPanelActive || (activeMode !== 'agent' && activeMode !== 'files')) {
+      setPinnedNewOffset(undefined);
+      return;
+    }
+    const selector = activeMode === 'files'
+      ? '[data-layout="files-mode-wrapper"] .editor-mode-file-sidebar'
+      : '[data-layout="agent-mode-wrapper"] .resizable-panel-left';
+    const measure = () => {
+      const el = document.querySelector(selector);
+      if (!el) return;
+      const right = Math.round(el.getBoundingClientRect().right);
+      if (right > 0) setPinnedNewOffset(right);
+    };
+    measure();
+    const el = document.querySelector(selector);
+    const ro = el && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(el as Element);
+    window.addEventListener('resize', measure);
+    const raf = requestAnimationFrame(measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measure);
+      cancelAnimationFrame(raf);
+    };
+  }, [
+    activeMode,
+    isFullscreenPanelActive,
+    workspacePath,
+    isMultiProjectMode,
+    activeExtensionPanel,
+    filesSidebarCollapsed,
+    agentHistoryCollapsed,
+    filesSidebarWidth,
+    agentHistoryWidth,
+  ]);
+
+  // Width of the AI panel column (Files mode), so the "New Session" button pins
+  // to its left edge. Undefined when the panel is collapsed, absent, or a
+  // fullscreen panel is active.
+  const pinnedSessionOffset = useMemo<number | undefined>(() => {
+    if (isFullscreenPanelActive) return undefined;
+    if (activeMode === 'files' && !filesAIChatCollapsed) {
+      return filesAIChatWidth;
+    }
+    return undefined;
+  }, [activeMode, isFullscreenPanelActive, filesAIChatCollapsed, filesAIChatWidth]);
 
   const runTitleBarGitAction = useCallback(async (action: 'pull' | 'push') => {
     if (!workspacePath || gitActionState.busyAction) return;
@@ -2462,6 +2529,8 @@ export default function App() {
           }}
           panelControls={windowTopBarPanelControls}
           newSessionControl={windowTopBarNewSessionControl}
+          pinnedNewOffset={pinnedNewOffset}
+          pinnedSessionOffset={pinnedSessionOffset}
         />
       )}
       <div data-layout="workspace-row" className="flex flex-row flex-1 min-h-0">

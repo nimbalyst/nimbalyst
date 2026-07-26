@@ -669,6 +669,7 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
         maxWidth={500}
         onWidthChange={(width) => setHistoryWidth(width)}
         collapsed={historyCollapsed}
+        keepLeftMounted
       />
       <BlitzDialog
         isOpen={blitzDialogOpen}

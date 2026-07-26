@@ -278,4 +278,77 @@ describe('WindowTopBar', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Chat with Session' }));
     expect(onChat).toHaveBeenCalledTimes(1);
   });
+
+  it('pins a no-drag "+ New" slot sized to the sidebar edge when pinnedNewOffset is set', () => {
+    render(
+      <WindowTopBar
+        workspaceName="Repo"
+        activeModeLabel="Agent"
+        gitStatus={null}
+        gitActions={{ onPull: () => {}, onPush: () => {}, onOpenLog: () => {} }}
+        pinnedNewOffset={320}
+      />,
+    );
+    const slot = screen.getByTestId('window-top-bar-new-slot');
+    expect(slot.classList.contains('window-top-bar__no-drag')).toBe(true);
+    expect((slot.parentElement as HTMLElement).style.width).toBe('320px');
+  });
+
+  it('clamps the pinned slot width so it never overlaps the traffic lights', () => {
+    render(
+      <WindowTopBar
+        workspaceName="Repo"
+        activeModeLabel="Files"
+        gitStatus={null}
+        gitActions={{ onPull: () => {}, onPush: () => {}, onOpenLog: () => {} }}
+        pinnedNewOffset={48}
+      />,
+    );
+    expect((screen.getByTestId('window-top-bar-new-slot').parentElement as HTMLElement).style.width).toBe('210px');
+  });
+
+  it('omits the pinned slot when pinnedNewOffset is undefined', () => {
+    render(
+      <WindowTopBar
+        workspaceName="Repo"
+        activeModeLabel="Tracker"
+        gitStatus={null}
+        gitActions={{ onPull: () => {}, onPush: () => {}, onOpenLog: () => {} }}
+      />,
+    );
+    expect(screen.queryByTestId('window-top-bar-new-slot')).toBeNull();
+  });
+
+  it('pins "New Session" into its own AI-column slot when pinnedSessionOffset is set', () => {
+    render(
+      <WindowTopBar
+        workspaceName="Repo"
+        activeModeLabel="Files"
+        gitStatus={null}
+        gitActions={{ onPull: () => {}, onPush: () => {}, onOpenLog: () => {} }}
+        newSessionControl={{ label: 'New Session', icon: 'add_comment', onCreate: () => {} }}
+        pinnedSessionOffset={360}
+      />,
+    );
+    const slot = screen.getByTestId('window-top-bar-session-slot');
+    expect((slot as HTMLElement).style.width).toBe('360px');
+    expect(screen.getByTestId('window-top-bar-new-session').parentElement).toBe(slot);
+    const rightActions = screen.getByTestId('window-top-bar-right-actions');
+    expect(rightActions.contains(screen.getByTestId('window-top-bar-new-session'))).toBe(false);
+  });
+
+  it('falls back to the right-actions cluster when pinnedSessionOffset is unset', () => {
+    render(
+      <WindowTopBar
+        workspaceName="Repo"
+        activeModeLabel="Collab"
+        gitStatus={null}
+        gitActions={{ onPull: () => {}, onPush: () => {}, onOpenLog: () => {} }}
+        newSessionControl={{ label: 'New Session', onCreate: () => {} }}
+      />,
+    );
+    expect(screen.queryByTestId('window-top-bar-session-slot')).toBeNull();
+    expect(screen.getByTestId('window-top-bar-new-session').parentElement)
+      .toBe(screen.getByTestId('window-top-bar-right-actions'));
+  });
 });
