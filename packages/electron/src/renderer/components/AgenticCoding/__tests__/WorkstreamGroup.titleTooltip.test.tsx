@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 vi.mock('jotai', () => ({
-  useAtomValue: () => ({}),
+  useAtomValue: (target: { __testValue?: unknown }) =>
+    target && Object.prototype.hasOwnProperty.call(target, '__testValue') ? target.__testValue : {},
   useSetAtom: () => () => {},
 }));
 vi.mock('@nimbalyst/runtime', () => ({
@@ -17,6 +18,7 @@ vi.mock('../../../store', () => ({
   sessionUnreadAtom: () => ({}),
   sessionPendingPromptAtom: () => ({}),
   sessionHasPendingInteractivePromptAtom: () => ({}),
+  sessionListTitleAtom: () => ({ __testValue: null }),
   groupSessionStatusAtom: () => ({}),
   reparentSessionAtom: () => ({}),
   refreshSessionListAtom: () => ({}),
