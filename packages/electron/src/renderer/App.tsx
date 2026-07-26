@@ -5,7 +5,7 @@ import './hooks/useExtensionInputGuard';
 // Side-effect: ensure atomFamily registry is initialized and window.__atomFamilyStats is set
 import './store/debug/atomFamilyRegistry';
 
-import React, { Activity, useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import React, { Activity, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { logger } from './utils/logger';
@@ -1164,29 +1164,59 @@ export default function App() {
     return labels[activeMode];
   }, [activeMode]);
 
-  // X-offset of the active sidebar's right edge, so WindowTopBar can pin the
-  // "+ New" launcher to the sidebar boundary. 48px is the navigation rail. A
-  // collapsed sidebar contributes 0 width; modes without a left sidebar get
-  // undefined (no pinned launcher).
-  const pinnedNewOffset = useMemo<number | undefined>(() => {
-    const NAV_RAIL_WIDTH = 48;
-    if (activeMode === 'agent') {
-      return NAV_RAIL_WIDTH + (agentHistoryCollapsed ? 0 : agentHistoryWidth);
+  // Pin the "+ New" launcher to the ACTUAL right edge of the active sidebar
+  // column, measured from the DOM. Measuring (vs. a hardcoded offset) keeps it
+  // correct across the project rail, an extension sidebar, and resize/collapse —
+  // the sidebar stays mounted at width 0 when collapsed, so its wrapper is
+  // always measurable. Hidden entirely while a fullscreen panel is active.
+  const [pinnedNewOffset, setPinnedNewOffset] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (isFullscreenPanelActive || (activeMode !== 'agent' && activeMode !== 'files')) {
+      setPinnedNewOffset(undefined);
+      return;
     }
-    if (activeMode === 'files') {
-      return NAV_RAIL_WIDTH + (filesSidebarCollapsed ? 0 : filesSidebarWidth);
-    }
-    return undefined;
-  }, [activeMode, agentHistoryWidth, agentHistoryCollapsed, filesSidebarWidth, filesSidebarCollapsed]);
+    const selector = activeMode === 'files'
+      ? '[data-layout="files-mode-wrapper"] .editor-mode-file-sidebar'
+      : '[data-layout="agent-mode-wrapper"] .resizable-panel-left';
+    const measure = () => {
+      const el = document.querySelector(selector);
+      if (!el) return;
+      const right = Math.round(el.getBoundingClientRect().right);
+      if (right > 0) setPinnedNewOffset(right);
+    };
+    measure();
+    const el = document.querySelector(selector);
+    const ro = el && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(el as Element);
+    window.addEventListener('resize', measure);
+    const raf = requestAnimationFrame(measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measure);
+      cancelAnimationFrame(raf);
+    };
+  }, [
+    activeMode,
+    isFullscreenPanelActive,
+    workspacePath,
+    isMultiProjectMode,
+    activeExtensionPanel,
+    filesSidebarCollapsed,
+    agentHistoryCollapsed,
+    filesSidebarWidth,
+    agentHistoryWidth,
+  ]);
 
   // Width of the AI panel column (Files mode), so the "New Session" button pins
-  // to its left edge. Undefined when the panel is collapsed or absent.
+  // to its left edge. Undefined when the panel is collapsed, absent, or a
+  // fullscreen panel is active.
   const pinnedSessionOffset = useMemo<number | undefined>(() => {
+    if (isFullscreenPanelActive) return undefined;
     if (activeMode === 'files' && !filesAIChatCollapsed) {
       return filesAIChatWidth;
     }
     return undefined;
-  }, [activeMode, filesAIChatCollapsed, filesAIChatWidth]);
+  }, [activeMode, isFullscreenPanelActive, filesAIChatCollapsed, filesAIChatWidth]);
 
   const runTitleBarGitAction = useCallback(async (action: 'pull' | 'push') => {
     if (!workspacePath || gitActionState.busyAction) return;

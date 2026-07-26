@@ -22,7 +22,7 @@ const TONE_CLASSES: Record<'default' | 'primary', string> = {
   default:
     'bg-[var(--nim-bg-secondary)] border-[var(--nim-border)] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] hover:border-[var(--nim-primary)] hover:text-[var(--nim-text)] active:bg-[var(--nim-bg-tertiary)]',
   primary:
-    'bg-[var(--nim-primary)] border-[var(--nim-primary)] text-white hover:bg-[var(--nim-primary-hover)] hover:border-[var(--nim-primary-hover)] active:opacity-90',
+    'bg-[var(--nim-primary)] border-[var(--nim-primary)] text-[var(--nim-on-primary)] hover:bg-[var(--nim-primary-hover)] hover:border-[var(--nim-primary-hover)] active:opacity-90',
 };
 
 /**

@@ -9,6 +9,12 @@ interface ResizablePanelProps {
   maxWidth?: number;
   onWidthChange: (width: number) => void;
   collapsed?: boolean;
+  /**
+   * When true, keep the left panel mounted (rendered at width 0, hidden) while
+   * collapsed instead of unmounting it. Used so a child that portals content
+   * into the window chrome (the "+ New" launcher) survives a collapse.
+   */
+  keepLeftMounted?: boolean;
 }
 
 export const ResizablePanel: React.FC<ResizablePanelProps> = ({
@@ -18,7 +24,8 @@ export const ResizablePanel: React.FC<ResizablePanelProps> = ({
   minWidth = 180,
   maxWidth = 400,
   onWidthChange,
-  collapsed = false
+  collapsed = false,
+  keepLeftMounted = false
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [currentWidth, setCurrentWidth] = useState(leftWidth);
@@ -59,28 +66,29 @@ export const ResizablePanel: React.FC<ResizablePanelProps> = ({
 
   return (
     <div className="resizable-panel-container flex flex-1 overflow-hidden h-full" ref={containerRef}>
+      {(keepLeftMounted || !collapsed) && (
+        <div
+          className="resizable-panel-left flex flex-col overflow-hidden bg-nim border-r border-nim"
+          style={{ width: `${displayWidth}px`, flexShrink: 0, borderRightWidth: collapsed ? 0 : undefined }}
+          aria-hidden={collapsed || undefined}
+        >
+          {leftPanel}
+        </div>
+      )}
       {!collapsed && (
-        <>
-          <div
-            className="resizable-panel-left flex flex-col overflow-hidden bg-nim border-r border-nim"
-            style={{ width: `${displayWidth}px`, flexShrink: 0 }}
-          >
-            {leftPanel}
-          </div>
-          <div
-            className={`resizable-panel-divider relative w-0.5 cursor-ew-resize bg-nim-border shrink-0 transition-colors duration-150 hover:bg-nim-accent ${isDragging ? 'bg-nim-accent' : ''}`}
-            data-testid="agent-history-resize-handle"
-            onPointerDown={handlePointerDown}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize session history panel"
-            aria-valuenow={currentWidth}
-            aria-valuemin={minWidth}
-            aria-valuemax={maxWidth}
-          >
-            <div className="resizable-panel-divider-handle absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-10 bg-transparent pointer-events-none" />
-          </div>
-        </>
+        <div
+          className={`resizable-panel-divider relative w-0.5 cursor-ew-resize bg-nim-border shrink-0 transition-colors duration-150 hover:bg-nim-accent ${isDragging ? 'bg-nim-accent' : ''}`}
+          data-testid="agent-history-resize-handle"
+          onPointerDown={handlePointerDown}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize session history panel"
+          aria-valuenow={currentWidth}
+          aria-valuemin={minWidth}
+          aria-valuemax={maxWidth}
+        >
+          <div className="resizable-panel-divider-handle absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-10 bg-transparent pointer-events-none" />
+        </div>
       )}
       <div className="resizable-panel-right flex-1 flex flex-col overflow-hidden bg-nim">
         {rightPanel}

@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { FloatingFocusManager } from '@floating-ui/react';
 import { MaterialSymbol, type NewFileMenuContribution } from '@nimbalyst/runtime';
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../hooks/useFloatingMenu';
 
@@ -73,38 +74,60 @@ export function NewFileMenu({
     ];
   }, [extensionFileTypes]);
 
+  // Menu rows are focusable buttons (role="menuitem") so the menu is fully
+  // keyboard-operable: FloatingFocusManager moves focus in on open, Tab/Shift+Tab
+  // cycle the items, Enter/Space activate, and useDismiss handles Escape.
+  const itemClass =
+    'new-file-menu-item flex items-center gap-2.5 w-full py-2 px-3 rounded cursor-pointer transition-colors text-nim bg-transparent border-0 text-left hover:bg-nim-hover focus:bg-nim-hover focus:outline-none';
+
   return (
     <FloatingPortal>
-      <div
-        ref={menu.refs.setFloating}
-        style={menu.floatingStyles}
-        {...menu.getFloatingProps()}
-        className="new-file-menu bg-nim-secondary border border-nim rounded-md shadow-lg p-1 min-w-[180px] max-h-[min(70vh,480px)] overflow-y-auto z-[10000] text-[13px] backdrop-blur-[10px]"
-      >
-        {items.map((item) => (
-          <div
-            key={item.key}
-            className="new-file-menu-item flex items-center gap-2.5 py-2 px-3 rounded cursor-pointer transition-colors text-nim hover:bg-nim-hover"
-            onClick={() => handleSelect(item.fileType)}
-          >
-            <MaterialSymbol icon={item.icon} size={18} />
-            <span>{item.label}</span>
-          </div>
-        ))}
+      <FloatingFocusManager context={menu.context} modal={false} initialFocus={0}>
+        <div
+          ref={menu.refs.setFloating}
+          style={menu.floatingStyles}
+          {...menu.getFloatingProps()}
+          className="new-file-menu bg-nim-secondary border border-nim rounded-md shadow-lg p-1 min-w-[180px] max-h-[min(70vh,480px)] overflow-y-auto z-[10000] text-[13px] backdrop-blur-[10px]"
+        >
+          {items.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              role="menuitem"
+              className={itemClass}
+              onClick={() => handleSelect(item.fileType)}
+            >
+              <MaterialSymbol icon={item.icon} size={18} />
+              <span>{item.label}</span>
+            </button>
+          ))}
 
-        {onNewFolder && (
-          <>
-            <div className="new-file-menu-separator h-px bg-[var(--nim-border)] mx-2 my-1" />
-            <div
-              className="new-file-menu-item new-folder-menu-item flex items-center gap-2.5 py-2 px-3 rounded cursor-pointer transition-colors text-nim hover:bg-nim-hover"
+          <div className="new-file-menu-separator h-px bg-[var(--nim-border)] mx-2 my-1" />
+
+          {/* Arbitrary-extension escape hatch: prompts for the full filename. */}
+          <button
+            type="button"
+            role="menuitem"
+            className={itemClass}
+            onClick={() => handleSelect('any')}
+          >
+            <MaterialSymbol icon="note_add" size={18} />
+            <span>New File...</span>
+          </button>
+
+          {onNewFolder && (
+            <button
+              type="button"
+              role="menuitem"
+              className={`${itemClass} new-folder-menu-item`}
               onClick={() => { onNewFolder(); onClose(); }}
             >
               <MaterialSymbol icon="create_new_folder" size={18} />
               <span>New Folder</span>
-            </div>
-          </>
-        )}
-      </div>
+            </button>
+          )}
+        </div>
+      </FloatingFocusManager>
     </FloatingPortal>
   );
 }
