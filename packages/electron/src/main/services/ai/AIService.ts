@@ -124,7 +124,6 @@ import {
   categorizeAIError,
 } from './aiServiceUtils';
 import { MessageStreamingHandler } from './MessageStreamingHandler';
-import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
@@ -485,6 +484,92 @@ export class AIService {
     return settlement;
   }
 
+  private getAskUserQuestionContinuationEvent(workspacePath?: string | null): Electron.IpcMainInvokeEvent | null {
+    if (!workspacePath) return null;
+    const targetWindow = findWindowByWorkspace(workspacePath);
+    if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+      return null;
+    }
+    return { sender: targetWindow.webContents } as Electron.IpcMainInvokeEvent;
+  }
+
+  private async continueAskUserQuestionSession(params: {
+    event?: Electron.IpcMainInvokeEvent;
+    sessionId: string;
+    workspacePath?: string | null;
+    answers: Record<string, unknown>;
+    source: string;
+    onCompleted?: () => Promise<void>;
+  }): Promise<boolean> {
+    if (!this.sendMessageHandler) return false;
+
+    const event = params.event ?? this.getAskUserQuestionContinuationEvent(params.workspacePath);
+    if (!event) {
+      logger.main.warn(
+        `[AIService] ${params.source}: no live workspace window available to resume AskUserQuestion session ${params.sessionId}`
+      );
+      return false;
+    }
+
+    const answerText = Object.entries(params.answers)
+      .map(([question, answer]) => `${question}: ${String(answer)}`)
+      .join('\n');
+    const resumeMessage = `[Resuming after answering a question]\n\n${answerText}`;
+    const handler = this.sendMessageHandler;
+
+    logger.main.info(`[AIService] ${params.source}: auto-resuming AskUserQuestion session ${params.sessionId}`);
+    try {
+      await handler(event, resumeMessage, undefined, params.sessionId, params.workspacePath ?? undefined);
+      await params.onCompleted?.();
+      return true;
+    } catch (err) {
+      logger.main.error(`[AIService] ${params.source}: failed to auto-resume session after AskUserQuestion: ${err}`);
+      return false;
+    }
+  }
+
+  private classifyDurableAskUserQuestionRequest(content: unknown, promptId: string): 'legacy' | 'canonical' | null {
+    let parsed: unknown = content;
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        return null;
+      }
+    }
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const request = parsed as Record<string, unknown>;
+    if (request.type === 'ask_user_question_request' && request.questionId === promptId) {
+      return 'legacy';
+    }
+    if (
+      request.type === 'nimbalyst_tool_use'
+      && request.name === 'AskUserQuestion'
+      && request.id === promptId
+    ) {
+      return 'canonical';
+    }
+    return null;
+  }
+
+  private isDurableAskUserQuestionContinuationCompleted(content: unknown, promptId: string): boolean {
+    let parsed: unknown = content;
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        return false;
+      }
+    }
+    if (!parsed || typeof parsed !== 'object') return false;
+    const marker = parsed as Record<string, unknown>;
+    return (
+      marker.type === 'ask_user_question_continuation_completed'
+      && marker.questionId === promptId
+    );
+  }
+
   private async respondToInteractivePromptOnce(params: {
     sessionId: string;
     promptId: string;
@@ -560,6 +645,154 @@ export class AIService {
       }
     }
 
+    let persistedAskRequestEncoding: 'legacy' | 'canonical' | null = null;
+    let askContinuationCompleted = false;
+    if (promptType === 'ask_user_question_request') {
+      const { rows: askRequestRows } = await database.query<{ id: string; content: unknown }>(
+        `SELECT id, content
+         FROM ai_agent_messages
+         WHERE session_id = $1
+           AND (
+             content LIKE '%"type":"ask_user_question_request"%'
+             OR (
+               content LIKE '%"type":"nimbalyst_tool_use"%'
+               AND content LIKE '%"name":"AskUserQuestion"%'
+             )
+           )
+         ORDER BY created_at DESC`,
+        [sessionId]
+      );
+      persistedAskRequestEncoding = askRequestRows
+        .map((row) => this.classifyDurableAskUserQuestionRequest(row.content, promptId))
+        .find((encoding) => encoding !== null) ?? null;
+
+      const { rows: completionRows } = await database.query<{ content: unknown }>(
+        `SELECT content
+         FROM ai_agent_messages
+         WHERE session_id = $1
+           AND content LIKE '%"type":"ask_user_question_continuation_completed"%'
+         ORDER BY created_at DESC`,
+        [sessionId]
+      );
+      askContinuationCompleted = completionRows.some(
+        (row) => this.isDurableAskUserQuestionContinuationCompleted(row.content, promptId)
+      );
+    }
+
+    if (promptType === 'ask_user_question_request') {
+      const settledResponse = {
+        answers: responseContent.answers || response.answers || response,
+        cancelled: responseContent.cancelled === true || response.cancelled === true,
+      };
+      const persistAskContinuationCompleted = async (
+        settlementMode: 'live' | 'resumed',
+      ): Promise<void> => {
+        await database.query(
+          `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            sessionId,
+            'nimbalyst',
+            'output',
+            JSON.stringify({
+              type: 'ask_user_question_continuation_completed',
+              questionId: promptId,
+              settlementMode,
+              completedAt: Date.now(),
+            }),
+            new Date(),
+            true,
+          ]
+        );
+      };
+      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+      const resolved = provider && isAskUserQuestionProvider(provider)
+        ? provider.resolveAskUserQuestion(promptId, settledResponse.answers, sessionId, respondedBy)
+        : false;
+
+      const askUserQuestionChannel = `ask-user-question-response:${sessionId}:${promptId}`;
+      const hasAskUserQuestionWaiter = ipcMain.listenerCount(askUserQuestionChannel) > 0;
+      const sessionFallbackChannel = `ask-user-question:${sessionId}`;
+      const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
+      const hasLiveHandler = resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter;
+
+      let continuationEvent: Electron.IpcMainInvokeEvent | undefined;
+      let shouldResumeCanonicalRequest = false;
+      if (
+        !hasLiveHandler
+        && !askContinuationCompleted
+        && persistedAskRequestEncoding === 'canonical'
+      ) {
+        continuationEvent = this.getAskUserQuestionContinuationEvent(session.workspacePath) ?? undefined;
+        if (!this.sendMessageHandler || !continuationEvent) {
+          return { success: false, error: 'No continuation route available' };
+        }
+        shouldResumeCanonicalRequest = true;
+      }
+
+      const hasPersistedQuestionRequest = persistedAskRequestEncoding !== null;
+      const accepted = persistedAskRequestEncoding === 'canonical'
+        ? hasLiveHandler || askContinuationCompleted || shouldResumeCanonicalRequest
+        : hasLiveHandler || hasPersistedQuestionRequest || replayedResponse;
+      if (!accepted) {
+        return { success: false, error: 'Question not found' };
+      }
+
+      if (!replayedResponse) {
+        await database.query(
+          `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false]
+        );
+      }
+
+      if (hasAskUserQuestionWaiter) {
+        ipcMain.emit(askUserQuestionChannel, {} as any, {
+          questionId: promptId,
+          answers: settledResponse.answers,
+          cancelled: settledResponse.cancelled,
+          respondedBy,
+          sessionId,
+        });
+      }
+      if (hasSessionFallbackWaiter) {
+        ipcMain.emit(sessionFallbackChannel, {} as any, {
+          questionId: promptId,
+          answers: settledResponse.answers,
+          cancelled: settledResponse.cancelled,
+          respondedBy,
+          sessionId,
+        });
+      }
+
+      if (
+        hasLiveHandler
+        && persistedAskRequestEncoding === 'canonical'
+        && !askContinuationCompleted
+      ) {
+        await persistAskContinuationCompleted('live');
+      }
+
+      if (shouldResumeCanonicalRequest) {
+        const completed = await this.continueAskUserQuestionSession({
+          event: continuationEvent,
+          sessionId,
+          workspacePath: session.workspacePath,
+          answers: settledResponse.answers as Record<string, unknown>,
+          source: 'respondToInteractivePrompt',
+          onCompleted: () => persistAskContinuationCompleted('resumed'),
+        });
+        if (!completed) {
+          return { success: false, error: 'Continuation failed' };
+        }
+      }
+
+      if (!(replayedResponse && askContinuationCompleted)) {
+        await setSessionPendingPrompt(sessionId, false);
+      }
+      return { success: true };
+    }
+
     if (!replayedResponse) {
       await database.query(
         `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
@@ -578,59 +811,6 @@ export class AIService {
       }
       (provider as any).resolveToolPermission(promptId, response, sessionId, respondedBy);
       return { success: true };
-    }
-
-    if (promptType === 'ask_user_question_request') {
-      const settledResponse = {
-        answers: responseContent.answers || response.answers || response,
-        cancelled: responseContent.cancelled === true || response.cancelled === true,
-      };
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      const resolved = provider && isAskUserQuestionProvider(provider)
-        ? provider.resolveAskUserQuestion(promptId, settledResponse.answers, sessionId, respondedBy)
-        : false;
-
-      const { rows: askRequestRows } = await database.query<{ id: string }>(
-        `SELECT id
-         FROM ai_agent_messages
-         WHERE session_id = $1
-           AND content LIKE '%"type":"ask_user_question_request"%'
-           AND content LIKE $2
-         LIMIT 1`,
-        [sessionId, `%"questionId":"${promptId}"%`]
-      );
-      const hasPersistedQuestionRequest = askRequestRows.length > 0;
-
-      const askUserQuestionChannel = `ask-user-question-response:${sessionId}:${promptId}`;
-      const hasAskUserQuestionWaiter = ipcMain.listenerCount(askUserQuestionChannel) > 0;
-      if (hasAskUserQuestionWaiter) {
-        ipcMain.emit(askUserQuestionChannel, {} as any, {
-          questionId: promptId,
-          answers: settledResponse.answers,
-          cancelled: settledResponse.cancelled,
-          respondedBy,
-          sessionId,
-        });
-      }
-
-      const sessionFallbackChannel = `ask-user-question:${sessionId}`;
-      const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
-      if (hasSessionFallbackWaiter) {
-        ipcMain.emit(sessionFallbackChannel, {} as any, {
-          questionId: promptId,
-          answers: settledResponse.answers,
-          cancelled: settledResponse.cancelled,
-          respondedBy,
-          sessionId,
-        });
-      }
-
-      const accepted = resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter || hasPersistedQuestionRequest || replayedResponse;
-      if (accepted) {
-        await setSessionPendingPrompt(sessionId, false);
-        return { success: true };
-      }
-      return { success: false, error: 'Question not found' };
     }
 
     const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
@@ -2758,24 +2938,13 @@ export class AIService {
       // while session was waiting for input). Auto-resume the session by sending
       // a new message that includes the user's answer. The Claude Code SDK will
       // resume using the stored providerSessionId, picking up conversation history.
-      if (resolvedSessionId && this.sendMessageHandler && session) {
-        const answerText = Object.entries(answers)
-          .map(([question, answer]) => `${question}: ${answer}`)
-          .join('\n');
-        const resumeMessage = `[Resuming after answering a question]\n\n${answerText}`;
-
-        logger.main.info(`[AIService] No live handler for AskUserQuestion, auto-resuming session: ${resolvedSessionId}`);
-
-        // Fire-and-forget: resume the session in the background
-        const workspacePath = session.workspacePath;
-        setImmediate(async () => {
-          try {
-            await this.sendMessageHandler!(event, resumeMessage, undefined, resolvedSessionId, workspacePath);
-          } catch (err) {
-            logger.main.error(`[AIService] Failed to auto-resume session after AskUserQuestion: ${err}`);
-          }
-        });
-
+      if (resolvedSessionId && await this.continueAskUserQuestionSession({
+        event,
+        sessionId: resolvedSessionId,
+        workspacePath: session.workspacePath,
+        answers,
+        source: 'claude-code:answer-question',
+      })) {
         return { success: true };
       }
 
