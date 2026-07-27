@@ -24,6 +24,7 @@ import { getEnhancedPath, getShellEnvironment } from '../CLIManager';
 import { ClaudeCliSessionLauncher } from './ClaudeCliSessionLauncher';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { resolveClaudeCliWorktreeCwd } from './resolveClaudeCliWorktreeCwd';
+import { resolveClaudeCliEffort } from './claudeCliEffort';
 import { resolveClaudeExecutablePath, isClaudeExecutableInstalled } from './claudeExecutableResolver';
 import { resolveClaudeCliSupportsPluginDir } from './claudeCliPluginSupport';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
@@ -119,6 +120,33 @@ function prepareAttachmentsAllowDir(workspacePath: string): string[] | undefined
   }
 }
 
+/**
+ * Wire the pure effort resolver to the real session store and app settings.
+ * `AISessionsRepository` and the settings store are imported lazily here to match
+ * how the neighbouring worktree lookup in this file already loads them.
+ */
+async function resolveClaudeCliEffortLevel(
+  input: EnsureClaudeCliSessionInput,
+): Promise<string | undefined> {
+  const { resolveEffortLevel } = await import('@nimbalyst/runtime/ai/server/effortLevels');
+  const { getDefaultEffortLevel } = await import('../../utils/store');
+  return resolveClaudeCliEffort(
+    { explicit: input.effortLevel, sessionId: input.sessionId },
+    {
+      getSessionEffortLevel: async (sessionId) => {
+        const { AISessionsRepository } = await import(
+          '@nimbalyst/runtime/storage/repositories/AISessionsRepository'
+        );
+        const session = await AISessionsRepository.get(sessionId);
+        return (session?.metadata as { effortLevel?: string } | undefined)?.effortLevel;
+      },
+      getDefaultEffortLevel,
+      resolveEffortLevel,
+      logWarn: (message, err) => console.warn(message, err),
+    },
+  );
+}
+
 function buildMcpConfigService(): McpConfigService {
   return getMcpConfigService({
     mcpConfigLoader: config.mcpConfigLoader,
@@ -171,6 +199,11 @@ export interface EnsureClaudeCliSessionInput {
   /** Resolved CLI model value (`--model`). Omit to let the CLI default. */
   model?: string;
   resumeSessionId?: string;
+  /**
+   * Explicit effort level. Omit to resolve it from the session's own selection
+   * falling back to the app default, the same way the Agent SDK path does.
+   */
+  effortLevel?: string;
   cols?: number;
   rows?: number;
 }
@@ -271,12 +304,20 @@ export async function ensureClaudeCliSession(
         logWarn: (message, err) => console.warn(message, err),
       });
 
+      // #844: the Agent SDK path forwards the selected effort as
+      // CLAUDE_CODE_EFFORT_LEVEL; the CLI path never did, so the selector had no
+      // effect here. Resolve the same way the SDK path does (session selection,
+      // then app default). Best-effort: a lookup failure just leaves the CLI on
+      // its own default rather than blocking the launch.
+      const effortLevel = await resolveClaudeCliEffortLevel(input);
+
       await launcher.launch({
         sessionId: input.sessionId,
         workspacePath: input.workspacePath,
         cwd: resolvedCwd,
         model: input.model,
         resumeSessionId: input.resumeSessionId,
+        effortLevel,
         cols: input.cols,
         rows: input.rows,
         additionalDirectories,

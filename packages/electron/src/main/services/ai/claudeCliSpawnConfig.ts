@@ -88,6 +88,14 @@ export interface ClaudeCliSpawnInput {
    */
   extraEnv?: Record<string, string>;
   /**
+   * Resolved effort level for this session, forwarded as
+   * `CLAUDE_CODE_EFFORT_LEVEL`. Mirrors the Agent SDK path, which sets the same
+   * variable (`sdkOptionsBuilder`). Every resolved value is forwarded, including
+   * `high`, so the selector matches what the CLI actually runs (#844). Omit to
+   * leave the CLI on its own default.
+   */
+  effortLevel?: string;
+  /**
    * Names of trusted MCP servers to pre-allow (NIM-806 BUG 2). Each becomes a
    * server-level `mcp__<server>` entry in `--allowedTools`, so the genuine CLI
    * never shows its built-in TUI permission prompt for those servers' tools (our
@@ -342,6 +350,12 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
   // Set as a default the user can still override via their own shell/`baseEnv`.
   if (merged.ENABLE_TOOL_SEARCH == null) {
     merged.ENABLE_TOOL_SEARCH = 'true';
+  }
+  // Mirrors the Agent SDK path. Set after baseEnv so an explicit selection wins
+  // over an inherited value; when nothing is selected the inherited value (or
+  // the CLI's own default) stands.
+  if (input.effortLevel) {
+    merged.CLAUDE_CODE_EFFORT_LEVEL = input.effortLevel;
   }
   if (input.extraEnv) {
     Object.assign(merged, input.extraEnv);
