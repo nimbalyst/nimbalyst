@@ -23,6 +23,7 @@ import { createPGLiteQueuedPromptsStore, type QueuedPromptsStore } from './PGLit
 import { createPGLiteSessionWakeupsStore, type SessionWakeupsStore } from './PGLiteSessionWakeupsStore';
 import { runAgentMessagesBackfill } from './AgentMessagesBackfill';
 import { healArchivedWorkstreamChildren } from './healArchivedWorkstreamChildren';
+import { repairNestedWorkstreamContainers } from './repairNestedWorkstreamContainers';
 import { runWhenFirstUsable } from './startupMaintenanceGate';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { createSQLiteStoreAdapter } from '../database/sqlite/SQLiteStoreAdapter';
@@ -182,6 +183,23 @@ class RepositoryManager {
         const { healed } = await healArchivedWorkstreamChildren(dbAdapter);
         if (healed > 0) {
           logger.main.info(`[RepositoryManager] Archived ${healed} orphaned workstream child session(s) whose parent was archived (NIM-1831)`);
+        }
+      });
+
+      // NIM-421: typed workstream containers are always roots. Repair only
+      // the invalid parent edge and route the write through the registered
+      // session store so ordinary sync metadata propagation still applies.
+      const hierarchyRepairSessionStore = this.sessionStore;
+      if (!hierarchyRepairSessionStore) {
+        throw new Error('Session store unavailable for NIM-421 hierarchy repair');
+      }
+      runWhenFirstUsable('nested-workstream-container-repair', async () => {
+        const { repaired } = await repairNestedWorkstreamContainers(
+          dbAdapter,
+          (sessionId, metadata) => hierarchyRepairSessionStore.updateMetadata(sessionId, metadata),
+        );
+        if (repaired > 0) {
+          logger.main.info(`[RepositoryManager] Unparented ${repaired} nested workstream container(s) (NIM-421)`);
         }
       });
 

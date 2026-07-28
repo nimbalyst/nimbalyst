@@ -99,6 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resolved SQLite migration errors on startup and no longer offers the dry-run and migrate controls once you are already on SQLite.
 - Comment highlights in collaborative documents are now legible in dark mode.
 - Collaborative tracker items can now be filtered by who created them.
+- Empty workstreams now remain explicit containers instead of exposing another session's transcript or becoming draggable sessions.
 - Agent-mode document embeds now recover when their target file is created after the document opens.
 - Claude Code and Codex now honor relocated config directories, so usage, session history, settings, plugins, commands, and skills all resolve correctly.
 - Automations no longer rerun the same scheduled occurrence after restarting while a run is waiting or fails.
