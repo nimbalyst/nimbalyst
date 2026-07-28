@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   archiveSessionsAndDestroyProviders,
   destroyProviderForArchivedSession,
+  releaseSessionRuntime,
 } from '../archiveSessionProviderLifecycle';
 
 describe('archive session provider lifecycle', () => {
@@ -84,5 +85,80 @@ describe('archive session provider lifecycle', () => {
       'ordinary-session',
       expect.any(Error),
     );
+  });
+});
+
+describe('releaseSessionRuntime', () => {
+  it('releases the terminal as well as the provider (#903)', async () => {
+    const destroyProvider = vi.fn();
+    const destroyTerminal = vi.fn(async () => {});
+
+    const result = await releaseSessionRuntime('cli-session', {
+      destroyProvider,
+      destroyTerminal,
+    });
+
+    expect(destroyProvider).toHaveBeenCalledWith('cli-session');
+    expect(destroyTerminal).toHaveBeenCalledWith('cli-session');
+    expect(result).toEqual({ providerReleased: true, terminalReleased: true });
+  });
+
+  it('still releases the terminal when destroying the provider throws', async () => {
+    const destroyTerminal = vi.fn(async () => {});
+    const onProviderCleanupError = vi.fn();
+
+    const result = await releaseSessionRuntime('cli-session', {
+      destroyProvider: vi.fn(() => {
+        throw new Error('provider cleanup failed');
+      }),
+      destroyTerminal,
+      onProviderCleanupError,
+    });
+
+    // The whole point: a provider failure must not strand the CLI process.
+    expect(destroyTerminal).toHaveBeenCalledWith('cli-session');
+    expect(onProviderCleanupError).toHaveBeenCalledWith('cli-session', expect.any(Error));
+    expect(result).toEqual({ providerReleased: false, terminalReleased: true });
+  });
+
+  it('still releases the provider when destroying the terminal throws', async () => {
+    const destroyProvider = vi.fn();
+    const onTerminalCleanupError = vi.fn();
+
+    const result = await releaseSessionRuntime('cli-session', {
+      destroyProvider,
+      destroyTerminal: vi.fn(async () => {
+        throw new Error('pty already gone');
+      }),
+      onTerminalCleanupError,
+    });
+
+    expect(destroyProvider).toHaveBeenCalledWith('cli-session');
+    expect(onTerminalCleanupError).toHaveBeenCalledWith('cli-session', expect.any(Error));
+    expect(result).toEqual({ providerReleased: true, terminalReleased: false });
+  });
+
+  it('never rejects, so a delete/archive flow always converges', async () => {
+    await expect(
+      releaseSessionRuntime('cli-session', {
+        destroyProvider: vi.fn(() => {
+          throw new Error('boom');
+        }),
+        destroyTerminal: vi.fn(async () => {
+          throw new Error('bang');
+        }),
+      }),
+    ).resolves.toEqual({ providerReleased: false, terminalReleased: false });
+  });
+
+  it('is a no-op-safe call for an SDK session that never had a terminal', async () => {
+    // destroyTerminal is a lookup-then-return for a sessionId with no PTY, so
+    // the common SDK case must not be treated as a failure.
+    const result = await releaseSessionRuntime('sdk-session', {
+      destroyProvider: vi.fn(),
+      destroyTerminal: vi.fn(async () => {}),
+    });
+
+    expect(result).toEqual({ providerReleased: true, terminalReleased: true });
   });
 });

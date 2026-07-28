@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Bug fixes go here -->
 - AI sessions that preview a web page no longer strand a blank, unclosable window on a second monitor.
 - Sorting a tracker view by Updated, or any other date column, now orders rows by date instead of alphabetically by month name.
+- Deleting or archiving a Claude Code CLI session now stops its CLI process instead of leaving it running invisibly in the background.
 
 ### Removed
 <!-- Removed features go here -->
