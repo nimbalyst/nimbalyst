@@ -656,7 +656,11 @@ export class AIService {
     targetWindow: Electron.BrowserWindow | null,
     source: string
   ): Promise<void> {
-    if (!targetWindow || targetWindow.isDestroyed()) {
+    const liveWindow =
+      targetWindow && !targetWindow.isDestroyed()
+        ? targetWindow
+        : findWindowByWorkspace(workspacePath);
+    if (!liveWindow || liveWindow.isDestroyed()) {
       logger.main.info(`[AIService] ${source}: no live window available to continue queued prompts for session ${sessionId}`);
       return;
     }
@@ -672,7 +676,7 @@ export class AIService {
     logger.main.info(
       `[AIService] ${source}: ${pendingPrompts.length} pending prompts remain for session ${sessionId}, triggering next`
     );
-    await this.processQueuedPrompt(sessionId, workspacePath, targetWindow);
+    await this.processQueuedPrompt(sessionId, workspacePath, liveWindow);
   }
 
   public async tryDispatchNextQueuedPrompt(
@@ -713,6 +717,7 @@ export class AIService {
         this.continueQueuedPromptChain(nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource),
       logError: (message, error) => logger.main.error(message, error),
       logInfo: (message) => logger.main.info(message),
+      resolveLiveWindow: findWindowByWorkspace,
       onAfterSettled: async () => {
         try {
           const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
