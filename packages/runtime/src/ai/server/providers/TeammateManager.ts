@@ -97,6 +97,16 @@ export interface PackagedBuildOptions {
   pathToClaudeCodeExecutable?: string;
 }
 
+/**
+ * Per-session launch state for every managed native Claude Code Agent child.
+ * Unlike packagedBuildOptions this exists in development and packaged builds.
+ */
+export interface ManagedChildLaunchOptions extends PackagedBuildOptions {
+  /** When present, task input cannot override the qualified backend model. */
+  exactModel?: string;
+  backendId?: string;
+}
+
 // ─── Class ──────────────────────────────────────────────────────────────────
 
 export class TeammateManager {
@@ -130,6 +140,8 @@ export class TeammateManager {
 
   /** Packaged-build options set by ClaudeCodeProvider for production Electron builds */
   packagedBuildOptions?: PackagedBuildOptions;
+  /** Per-session child route set on every lead SDK-options rebuild. */
+  managedChildLaunchOptions?: ManagedChildLaunchOptions;
   private static readonly EMIT_DEBOUNCE_MS = 100;
 
   /** Captured from lead's sendMessage() for teammate spawning. */
@@ -1291,13 +1303,17 @@ export class TeammateManager {
 
   // ─── Lifecycle: spawn ───────────────────────────────────────────────────
 
+  private resolveManagedChildModel(requestedModel: string | undefined): string | undefined {
+    return this.managedChildLaunchOptions?.exactModel ?? requestedModel;
+  }
+
   spawnManagedTeammate(sessionId: string | undefined, taskInput: any): void {
     const teamName = this.sanitizeName(taskInput.team_name, 'team');
     const name = this.sanitizeName(taskInput.name, 'teammate');
     const agentId = `${name}@${teamName}`;
     const prompt = taskInput.prompt || 'Do your assigned work.';
     const agentType = taskInput.subagent_type || 'general-purpose';
-    const model = taskInput.model;
+    const model = this.resolveManagedChildModel(taskInput.model);
     const color = TeammateManager.TEAMMATE_COLORS[this.teammateColorIndex % TeammateManager.TEAMMATE_COLORS.length];
     this.teammateColorIndex++;
     const cwd = this.lastUsedCwd || process.cwd();
@@ -1365,6 +1381,7 @@ export class TeammateManager {
     agentType: string,
     model: string | undefined,
   ): void {
+    model = this.resolveManagedChildModel(model);
     const color = TeammateManager.TEAMMATE_COLORS[this.teammateColorIndex % TeammateManager.TEAMMATE_COLORS.length];
     this.teammateColorIndex++;
     const cwd = this.lastUsedCwd || process.cwd();
@@ -1424,12 +1441,19 @@ export class TeammateManager {
 
     const permissionsPath = this.lastUsedPermissionsPath;
 
-    // Build environment: use packaged build env if available (production Electron),
-    // otherwise fall back to process.env (development mode)
-    const baseEnv = this.packagedBuildOptions?.env ?? process.env;
+    // Use the per-session lead-derived environment in both development and
+    // packaged execution. Falling back to process.env is allowed only for
+    // legacy/unconfigured sessions; qualified custom backends always populate
+    // managedChildLaunchOptions before a Task can be intercepted.
+    const managedChildOptions = this.managedChildLaunchOptions;
+    const baseEnv =
+      managedChildOptions?.env
+      ?? this.packagedBuildOptions?.env
+      ?? process.env;
+    const effectiveModel = managedChildOptions?.exactModel ?? model ?? 'haiku';
 
     const options: any = {
-      model: model || 'haiku',
+      model: effectiveModel,
       maxTurns: 20,
       permissionMode: 'default',
       persistSession: true,
@@ -1466,9 +1490,11 @@ export class TeammateManager {
       additionalDirectories: teammateAdditionalDirectories,
     };
 
-    // Apply packaged-build options (production Electron)
-    if (this.packagedBuildOptions?.pathToClaudeCodeExecutable) {
-      options.pathToClaudeCodeExecutable = this.packagedBuildOptions.pathToClaudeCodeExecutable;
+    const childExecutable =
+      managedChildOptions?.pathToClaudeCodeExecutable
+      ?? this.packagedBuildOptions?.pathToClaudeCodeExecutable;
+    if (childExecutable) {
+      options.pathToClaudeCodeExecutable = childExecutable;
     }
 
     if (resumeSessionId) {
@@ -1829,7 +1855,7 @@ export class TeammateManager {
             name,
             team_name: teamName,
             agent_type: toolInput.subagent_type || 'general-purpose',
-            model: toolInput.model,
+            model: this.resolveManagedChildModel(toolInput.model),
             color: 'blue',
           },
           'teammate_task'

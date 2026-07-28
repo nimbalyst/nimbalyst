@@ -252,6 +252,20 @@ export type ClaudeCodeVariant = 'fable' | 'opus' | 'sonnet' | 'haiku' | 'opus-4-
 export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5' | 'sonnet-5' | 'fable-5';
 
 /**
+ * Persisted identity for the one approved non-Anthropic Claude Agent route.
+ *
+ * This is intentionally not a visible picker variant. It is accepted only as
+ * this exact full identifier at the programmatic session-creation boundary.
+ * Similar `claude-code:ollama-*` strings remain invalid.
+ */
+export const CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL =
+  'claude-code:ollama-glm-5-2-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_VARIANT =
+  'ollama-glm-5-2-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS =
+  'claude-sonnet-4-5-20250929' as const;
+
+/**
  * Accepted input aliases for Claude Agent model identifiers.
  *
  * `opus-5` is intentionally accepted as an alias for the canonical `opus`

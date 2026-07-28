@@ -13,6 +13,10 @@ import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { type ThinkingMode } from '../../effortLevels';
 import { DEEPSEEK_CLAUDE_BACKEND_ID, normalizeDeepSeekEffort, normalizeDeepSeekThinkingMode, readDeepSeekApiKeyFromEnvFile } from '../../deepSeekClaudeAgent';
+import {
+  applyClaudeCodeBackendEnv,
+  resolveClaudeCodeBackendForConfig,
+} from './customBackends';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
 
@@ -40,10 +44,23 @@ export interface BuildSdkOptionsDeps {
     lastUsedSessionId?: string | undefined;
     lastUsedPermissionsPath?: string | undefined;
     packagedBuildOptions?: any;
+    managedChildLaunchOptions?: {
+      env: Record<string, string | undefined>;
+      pathToClaudeCodeExecutable?: string;
+      exactModel?: string;
+      backendId?: string;
+    };
     resolveTeamContext: (sessionId?: string) => Promise<string | undefined>;
   };
   sessions: { getSessionId: (sessionId: string) => string | null | undefined };
-  config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode; customBackend?: string };
+  config: {
+    model?: string;
+    apiKey?: string;
+    effortLevel?: string;
+    thinkingMode?: ThinkingMode;
+    customBackend?: string;
+    claudeCodeBackend?: string;
+  };
   abortController: AbortController;
 }
 
@@ -228,6 +245,9 @@ export async function buildSdkOptions(
   }
   const effectivePath = customPath || resolvedBinaryPath;
   // console.log(`[CLAUDE-CODE] Binary path: custom=${customPath || '(none)'} resolved=${resolvedBinaryPath ?? '(none)'} effective=${effectivePath ?? '(none)'}`);
+  // Resolve before constructing any launch options. A stale/unknown backend id
+  // throws here, before the native process can fall through to Anthropic.
+  const customBackend = resolveClaudeCodeBackendForConfig(config);
   const resolvedModel = resolveModelVariant();
 
   const options: any = {
@@ -299,7 +319,7 @@ export async function buildSdkOptions(
     },
   };
 
-  if (config.thinkingMode === 'disabled') {
+  if (!customBackend && config.thinkingMode === 'disabled') {
     if (canDisableThinkingForModel(resolvedModel)) {
       options.thinking = { type: 'disabled' as const };
     } else {
@@ -391,7 +411,7 @@ export async function buildSdkOptions(
     // The Claude CLI currently defaults to xhigh when this variable is absent.
     // Always forward a resolved Nimbalyst selection, including "high", so the
     // effort shown in the selector matches the request sent to the CLI.
-    ...(config.effortLevel && {
+    ...(!customBackend && config.effortLevel && {
       CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
     }),
     // The bundled claude binary runs a per-tool idle-timeout watchdog (default
@@ -510,6 +530,37 @@ export async function buildSdkOptions(
       teammateManager.packagedBuildOptions.env.ANTHROPIC_API_KEY = config.apiKey;
     }
   }
+
+  // Apply the selected profile after every other auth source. This guarantees
+  // that a configured Anthropic key cannot shadow the per-session proxy route.
+  // Missing proxy/model support then fails at the fixed loopback route instead
+  // of falling back to Anthropic or direct Ollama.
+  if (customBackend) {
+    applyClaudeCodeBackendEnv(env, customBackend);
+    if (
+      teammateManager.packagedBuildOptions?.env
+      && teammateManager.packagedBuildOptions.env !== env
+    ) {
+      applyClaudeCodeBackendEnv(teammateManager.packagedBuildOptions.env, customBackend);
+    }
+    console.info(
+      `[ClaudeCodeBackend] backend=${customBackend.id} provider=${customBackend.provider} `
+      + `requestedModel=${customBackend.model} baseUrl=${customBackend.baseUrl}`
+    );
+  }
+
+  // Managed native Agent children are separate SDK query() calls. Persist a
+  // per-session copy of the fully composed and scrubbed lead environment in
+  // both development and packaged builds, and pin custom-backend children to
+  // the same exact alias. Binary-path handling remains orthogonal.
+  teammateManager.managedChildLaunchOptions = {
+    env: { ...env },
+    ...(effectivePath && { pathToClaudeCodeExecutable: effectivePath }),
+    ...(customBackend && {
+      exactModel: customBackend.claudeModelAlias,
+      backendId: customBackend.id,
+    }),
+  };
 
   options.env = env;
 

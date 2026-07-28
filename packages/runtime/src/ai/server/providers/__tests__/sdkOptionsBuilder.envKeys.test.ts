@@ -32,6 +32,7 @@ vi.mock('../../../../electron/claudeCodeEnvironment', () => ({
 }));
 
 import { buildSdkOptions } from '../claudeCode/sdkOptionsBuilder';
+import { OLLAMA_GLM_5_2_CLOUD_BACKEND_ID } from '../claudeCode/customBackends';
 
 function makeDeps(overrides: Partial<Parameters<typeof buildSdkOptions>[0]> = {}) {
   return {
@@ -155,6 +156,109 @@ describe('buildSdkOptions env-key hardening', () => {
     );
 
     expect(options.env.ANTHROPIC_API_KEY).toBe('sk-ant-user-configured');
+  });
+
+  it('routes one session through the exact Ollama profile and removes the configured Anthropic key', async () => {
+    const { options } = await buildSdkOptions(
+      makeDeps({
+        config: {
+          apiKey: 'sk-ant-user-configured',
+          model: 'claude-code:ollama-glm-5-2-cloud',
+          claudeCodeBackend: OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
+          effortLevel: 'max',
+          thinkingMode: 'disabled',
+        },
+        resolveModelVariant: () => 'claude-sonnet-4-5-20250929',
+      }),
+      makeParams({
+        shellEnv: {
+          ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+          ANTHROPIC_AUTH_TOKEN: 'ambient-token',
+          CLAUDE_CODE_USE_BEDROCK: '1',
+          AWS_ACCESS_KEY_ID: 'ambient-aws-id',
+          CLAUDE_CODE_USE_VERTEX: '1',
+          GOOGLE_APPLICATION_CREDENTIALS: 'ambient-google-path',
+          CLAUDE_CODE_USE_FOUNDRY: '1',
+          ANTHROPIC_FOUNDRY_AUTH_TOKEN: 'ambient-foundry-token',
+        },
+      })
+    );
+
+    expect(options.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(options.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:4002');
+    expect(options.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-nim-local-proxy');
+    expect(options.env.CLAUDE_CODE_SUBAGENT_MODEL).toBe('claude-sonnet-4-5-20250929');
+    expect(options.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('claude-sonnet-4-5-20250929');
+    expect(options.model).toBe('claude-sonnet-4-5-20250929');
+    expect(options.env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+    expect(options.env.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(options.env.CLAUDE_CODE_USE_VERTEX).toBeUndefined();
+    expect(options.env.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+    expect(options.env.CLAUDE_CODE_USE_FOUNDRY).toBeUndefined();
+    expect(options.env.ANTHROPIC_FOUNDRY_AUTH_TOKEN).toBeUndefined();
+    expect(options.thinking).toBeUndefined();
+    expect(options.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+
+  it('rejects an unknown backend before launching a native process', async () => {
+    await expect(
+      buildSdkOptions(
+        makeDeps({
+          config: {
+            model: 'claude-code:ollama-glm-5-2-cloud',
+            claudeCodeBackend: 'ollama-unknown',
+          },
+        }),
+        makeParams()
+      )
+    ).rejects.toThrow('Unsupported Claude Code backend profile');
+  });
+
+  it('rebuilds the exact route for first turn, cached second turn, and restored resume', async () => {
+    const providerSessionId = 'provider-session-ollama';
+    const routeConfig = {
+      model: 'claude-code:ollama-glm-5-2-cloud',
+      claudeCodeBackend: OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
+    };
+    const firstTurn = await buildSdkOptions(
+      makeDeps({
+        config: routeConfig,
+        resolveModelVariant: () => 'claude-sonnet-4-5-20250929',
+        sessions: { getSessionId: () => null },
+      }),
+      makeParams({ sessionId: 'nimbalyst-session-1' })
+    );
+    const cachedSecondTurn = await buildSdkOptions(
+      makeDeps({
+        config: routeConfig,
+        resolveModelVariant: () => 'claude-sonnet-4-5-20250929',
+        sessions: { getSessionId: () => providerSessionId },
+      }),
+      makeParams({ sessionId: 'nimbalyst-session-1' })
+    );
+    const restoredResume = await buildSdkOptions(
+      makeDeps({
+        config: { ...routeConfig },
+        resolveModelVariant: () => 'claude-sonnet-4-5-20250929',
+        sessions: { getSessionId: () => providerSessionId },
+      }),
+      makeParams({ sessionId: 'nimbalyst-session-1' })
+    );
+
+    const expectedRoute = {
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:4002',
+      ANTHROPIC_AUTH_TOKEN: 'sk-nim-local-proxy',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-sonnet-4-5-20250929',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-5-20250929',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-sonnet-4-5-20250929',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-4-5-20250929',
+    };
+    expect(firstTurn.options.env).toMatchObject(expectedRoute);
+    expect(cachedSecondTurn.options.env).toMatchObject(expectedRoute);
+    expect(restoredResume.options.env).toMatchObject(expectedRoute);
+    expect(firstTurn.options.resume).toBeUndefined();
+    expect(cachedSecondTurn.options.resume).toBe(providerSessionId);
+    expect(restoredResume.options.resume).toBe(providerSessionId);
   });
 
   it('sets the base env flags buildSdkOptions applies to every spawn', async () => {

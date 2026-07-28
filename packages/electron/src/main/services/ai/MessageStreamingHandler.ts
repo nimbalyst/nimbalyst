@@ -42,6 +42,7 @@ import { AISessionsRepository, resolveClaudeCodeParentContextWindow } from '@nim
 import { toolRegistry } from './tools';
 import { resolveExtensionAgentRef } from './providerResolution';
 import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
+import { prepareClaudeCodeProviderTurn } from './ClaudeCodeTurnLifecycle';
 
 /**
  * Resolve the human-readable model name (e.g. "Gemini 3.5 Flash (High)") for an
@@ -684,7 +685,11 @@ export class MessageStreamingHandler {
 
       // CRITICAL: Restore provider session data from database
       // This is essential for session resumption (e.g., Claude Code sessions)
-      if (session.providerSessionId && provider.setProviderSessionData) {
+      if (
+        session.provider !== 'claude-code'
+        && session.providerSessionId
+        && provider.setProviderSessionData
+      ) {
         provider.setProviderSessionData(session.id, {
           providerSessionId: session.providerSessionId,
           // Backward-compatible keys for existing providers
@@ -703,7 +708,11 @@ export class MessageStreamingHandler {
     // on first creation, but the provider can outlive its in-memory session ID mapping
     // across Nimbalyst restarts (process restart -> empty map). Running this on every
     // message guarantees `options.resume` is populated.
-    if (session.providerSessionId && (provider as any).setProviderSessionData) {
+    if (
+      session.provider !== 'claude-code'
+      && session.providerSessionId
+      && (provider as any).setProviderSessionData
+    ) {
       (provider as any).setProviderSessionData(session.id, {
         providerSessionId: session.providerSessionId,
         claudeSessionId: session.providerSessionId,
@@ -1234,9 +1243,14 @@ export class MessageStreamingHandler {
       const logPrefix = isClaudeCode ? '[CLAUDE-CODE-SERVICE]' : '[AIService]';
 
       if (isClaudeCode) {
-        // Refresh provider config every turn so auth/key changes in settings apply immediately.
-        const refreshedConfig = await this.svc.buildClaudeCodeRuntimeConfig(session, effectiveWorkspacePath);
-        await provider.initialize(refreshedConfig);
+        // Refresh, qualify, initialize, and restore as one fail-closed
+        // lifecycle. This exact seam runs for first turns, cached second turns,
+        // and provider instances rebuilt after process restart.
+        await prepareClaudeCodeProviderTurn(
+          provider,
+          session,
+          () => this.svc.buildClaudeCodeRuntimeConfig(session, effectiveWorkspacePath),
+        );
 
         //   messageLength: message.length,
         //   hasContext: !!documentContext,

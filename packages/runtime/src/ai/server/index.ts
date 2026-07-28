@@ -5,6 +5,7 @@ export * from './ModelRegistry';
 export * from './SessionManager';
 export * from './providers/ClaudeProvider';
 export * from './providers/ClaudeCodeProvider';
+export * from './providers/claudeCode/customBackends';
 export * from './providers/OpenAIProvider';
 export * from './providers/OpenAICodexProvider';
 export * from './providers/OpenAICodexACPProvider';

@@ -23,14 +23,12 @@ import {
   ClaudeCodeProvider,
   OpenAICodexProvider,
 } from '@nimbalyst/runtime/ai/server';
-import { CLAUDE_CODE_SAFE_FALLBACK_MODEL } from '@nimbalyst/runtime/ai/modelConstants';
 import { reconcileClaudeCodeModels } from './claudeCodeModelReconcile';
 import { isModelEnabled } from './modelEnablementFilter';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
 import { resolveEffortLevel, resolveThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
-import { applyDeepSeekClaudeAgentProfile, isDeepSeekClaudeAgentModel } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -88,6 +86,7 @@ import {
 } from '../../utils/store';
 import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../../utils/aiSettingsMerge';
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
+import { buildClaudeCodeRuntimeConfigForTurn } from './ClaudeCodeTurnLifecycle';
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { applyRemoteReadReceipt } from '../../ipc/ReadReceiptHandlers';
 import { applyRemoteTrackerPersonalState } from '../../ipc/TrackerPersonalStateHandlers';
@@ -762,33 +761,16 @@ export class AIService {
     workspacePath?: string
   ): Promise<ProviderConfig> {
     const effectiveWorkspacePath = session.workspacePath || workspacePath;
-    const selectedModel = session.model || session.providerConfig?.model;
-    const apiKey = this.getApiKeyForProvider(
-      isDeepSeekClaudeAgentModel(selectedModel) ? 'deepseek' : 'claude-code',
-      effectiveWorkspacePath,
-    );
-
-    const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
-    const config: ProviderConfig = {
-      maxTokens: (session.providerConfig as any)?.maxTokens,
-      temperature: (session.providerConfig as any)?.temperature,
-      ...(apiKey ? { apiKey } : {}),
-      ...(effortLevel && { effortLevel }),
-      thinkingMode: resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode()),
-    };
-
-    const fullModel = session.model || session.providerConfig?.model;
-    if (fullModel) {
-      config.model = fullModel;
-    } else {
-      // Billing safety (#631 / NIM-848): a session with no resolved model must
-      // fall back to a STANDARD 200k model, never the 1M user-facing default
-      // (ModelRegistry.getDefaultModel('claude-code') is `opus-1m`). Sending the
-      // paid 1M beta for an empty/lost model silently bills the user.
-      config.model = CLAUDE_CODE_SAFE_FALLBACK_MODEL;
-    }
-
-    return applyDeepSeekClaudeAgentProfile(config);
+    // DeepSeek no longer needs a settings-sourced apiKey lookup here (2026-07-30):
+    // sdkOptionsBuilder.ts's DEEPSEEK_CLAUDE_BACKEND_ID branch reads the real key
+    // directly from .env via readDeepSeekApiKeyFromEnvFile(), independent of this
+    // plumbing. Always fetching under 'claude-code' matches the Ollama fleet path
+    // and is a no-op for DeepSeek's own key sourcing.
+    const apiKey = this.getApiKeyForProvider('claude-code', effectiveWorkspacePath);
+    // buildClaudeCodeRuntimeConfigForTurn also applies applyDeepSeekClaudeAgentProfile
+    // internally -- see ClaudeCodeTurnLifecycle.ts. It preserves the #631/NIM-848
+    // billing-safety fallback (no resolved model -> CLAUDE_CODE_SAFE_FALLBACK_MODEL).
+    return buildClaudeCodeRuntimeConfigForTurn(session, apiKey);
   }
 
   /**

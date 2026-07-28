@@ -11,18 +11,60 @@ vi.mock('@nimbalyst/runtime', () => ({
     updateMetadata: vi.fn(),
     get: vi.fn(),
   },
-  AgentMessagesRepository: {},
+  AgentMessagesRepository: {
+    create: vi.fn(),
+  },
   SessionFilesRepository: {},
 }));
 
-vi.mock('@nimbalyst/runtime/ai/server', () => ({
+vi.mock('@nimbalyst/runtime/ai/server', () => {
+  const backend = {
+    id: 'ollama-glm-5-2-cloud',
+    persistedModel: 'claude-code:ollama-glm-5-2-cloud',
+    provider: 'ollama',
+    model: 'glm-5.2:cloud',
+    upstreamModel: 'openai/glm-5.2:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    claudeModelAlias: 'claude-sonnet-4-5-20250929',
+  };
+  const resolveBackend = (id?: string | null) => {
+    if (!id) return undefined;
+    if (id !== backend.id) {
+      throw new Error(`Unsupported Claude Code backend profile: ${id}`);
+    }
+    return backend;
+  };
+  const resolveBackendForConfig = (config: {
+    model?: string;
+    claudeCodeBackend?: string;
+  }) => {
+    const fromModel =
+      config.model === backend.persistedModel
+        ? backend
+        : undefined;
+    if (config.model?.startsWith('claude-code:ollama-') && !fromModel) {
+      throw new Error(`Unsupported Claude Code Ollama model identity: ${config.model}`);
+    }
+    const configured = resolveBackend(config.claudeCodeBackend);
+    if (configured && config.model !== configured.persistedModel) {
+      throw new Error(
+        `Claude Code backend ${configured.id} requires exact persisted model ${configured.persistedModel}`
+      );
+    }
+    return fromModel ?? configured;
+  };
+  return {
   ClaudeCodeProvider: { setMetaAgentServerPort: vi.fn() },
   OpenAICodexProvider: { setMetaAgentServerPort: vi.fn() },
   OpenAICodexACPProvider: { setMetaAgentServerPort: vi.fn() },
+  resolveClaudeCodeBackend: resolveBackend,
+  resolveClaudeCodeBackendForConfig: resolveBackendForConfig,
   SessionManager: class {
     async initialize() {}
   },
-}));
+  };
+});
 
 vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
   ModelIdentifier: {
@@ -88,6 +130,9 @@ vi.mock('../../database/PGLiteDatabaseWorker', () => ({
 vi.mock('../../database/initialize', () => ({ getDatabase: () => null }));
 vi.mock('../../file/GitRefWatcher', () => ({ gitRefWatcher: {} }));
 vi.mock('./ai/AIService', () => ({ AIService: class {} }));
+vi.mock('../ai/OllamaClaudeCodePreflight', () => ({
+  preflightOllamaClaudeCodeBackend: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../../mcp/metaAgentServer', () => ({
   setMetaAgentToolFns: vi.fn(),
 }));
@@ -105,6 +150,7 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { database as databaseWorker } from '../../database/PGLiteDatabaseWorker';
 import { MetaAgentService } from '../MetaAgentService';
+import { preflightOllamaClaudeCodeBackend } from '../ai/OllamaClaudeCodePreflight';
 
 const GEMINI_PARENT = {
   id: 'parent-gemini-session',
@@ -118,6 +164,12 @@ const CLAUDE_PARENT = {
   model: 'claude-code:opus',
 };
 
+const OLLAMA_PARENT = {
+  id: 'parent-ollama-session',
+  provider: 'claude-code',
+  model: 'claude-code:ollama-glm-5-2-cloud',
+};
+
 const CODEX_PARENT = {
   id: 'parent-codex-session',
   provider: 'openai-codex',
@@ -129,6 +181,10 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
   beforeEach(() => {
     vi.mocked(AISessionsRepository.create).mockReset();
     vi.mocked(AISessionsRepository.get).mockReset();
+    vi.mocked(AISessionsRepository.updateMetadata).mockReset();
+    vi.mocked(preflightOllamaClaudeCodeBackend).mockReset();
+    vi.mocked(preflightOllamaClaudeCodeBackend).mockResolvedValue(undefined);
+    vi.mocked(databaseWorker.query).mockClear();
   });
 
   it('inherits the gemini parent provider+model when the parent is a chat-only extension agent and no provider is given', async () => {
@@ -181,6 +237,335 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
     // not fire and the child inherits the parent provider+model unchanged.
     expect(created.provider).toBe('claude-code');
     expect(created.model).toBe('claude-code:opus');
+  });
+
+  it('persists the exact Ollama backend on a real claude-code child session', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+
+    const result = await (service as any).createChildSessionInternal(
+      'parent-claude-session',
+      '/workspace/path',
+      { claudeCodeBackend: 'ollama-glm-5-2-cloud' }
+    );
+
+    const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
+    expect(created.provider).toBe('claude-code');
+    expect(created.model).toBe('claude-code:ollama-glm-5-2-cloud');
+    expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledTimes(1);
+    expect(AISessionsRepository.updateMetadata).not.toHaveBeenCalled();
+    expect(result.claudeCodeBackend).toEqual({
+      id: 'ollama-glm-5-2-cloud',
+      persistedModel: 'claude-code:ollama-glm-5-2-cloud',
+      transportProfile: 'litellm',
+      provider: 'ollama',
+      model: 'glm-5.2:cloud',
+      upstreamModel: 'openai/glm-5.2:cloud',
+      downstreamAlias: 'claude-sonnet-4-5-20250929',
+      baseUrl: 'http://127.0.0.1:4002',
+    });
+  });
+
+  it('derives and persists the backend from the canonical model without a backend argument', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+
+    const result = await (service as any).createChildSessionInternal(
+      'parent-claude-session',
+      '/workspace/path',
+      { model: 'claude-code:ollama-glm-5-2-cloud' }
+    );
+
+    expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledTimes(1);
+    expect(AISessionsRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'claude-code',
+        model: 'claude-code:ollama-glm-5-2-cloud',
+      })
+    );
+    expect(result.claudeCodeBackend).toMatchObject({
+      id: 'ollama-glm-5-2-cloud',
+      persistedModel: 'claude-code:ollama-glm-5-2-cloud',
+    });
+  });
+
+  it('derives the backend from an inherited canonical parent before session or queue mutation', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = {
+      queuePromptForSession: vi.fn(),
+      triggerQueuedPromptProcessingForSession: vi.fn(),
+    };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(OLLAMA_PARENT as any);
+    vi.mocked(preflightOllamaClaudeCodeBackend).mockRejectedValue(
+      new Error('inherited route is unhealthy')
+    );
+
+    await expect(
+      (service as any).createChildSessionInternal(
+        'parent-ollama-session',
+        '/workspace/path',
+        { prompt: 'Must remain unqueued.' }
+      )
+    ).rejects.toThrow('inherited route is unhealthy');
+
+    expect(AISessionsRepository.get).toHaveBeenCalledWith('parent-ollama-session');
+    expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledTimes(1);
+    expect(AISessionsRepository.create).not.toHaveBeenCalled();
+    expect((service as any).aiService.queuePromptForSession).not.toHaveBeenCalled();
+    expect(
+      (service as any).aiService.triggerQueuedPromptProcessingForSession
+    ).not.toHaveBeenCalled();
+  });
+
+  it('rejects backend/provider mismatches before creating a session', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+
+    await expect(
+      (service as any).createChildSessionInternal(
+        'parent-claude-session',
+        '/workspace/path',
+        {
+          provider: 'openai-codex',
+          model: 'openai-codex:gpt-5.4',
+          claudeCodeBackend: 'ollama-glm-5-2-cloud',
+        }
+      )
+    ).rejects.toThrow('require');
+
+    expect(AISessionsRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown backend ids instead of silently creating an Anthropic session', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+
+    await expect(
+      (service as any).createChildSessionInternal(
+        'parent-claude-session',
+        '/workspace/path',
+        { claudeCodeBackend: 'ollama-unknown' }
+      )
+    ).rejects.toThrow('Unsupported Claude Code backend profile');
+
+    expect(AISessionsRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('carries the exact backend through spawn_session into the persisted session', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      ...CLAUDE_PARENT,
+      workspacePath: '/workspace/path',
+    } as any);
+
+    const rawResult = await (service as any).spawnSession(
+      'parent-claude-session',
+      '/workspace/path',
+      {
+        prompt: 'Inspect one file with a native child agent.',
+        isolated: true,
+        claudeCodeBackend: 'ollama-glm-5-2-cloud',
+      }
+    );
+
+    const result = JSON.parse(rawResult);
+    expect(result.provider).toBe('claude-code');
+    expect(result.claudeCodeBackend).toMatchObject({
+      id: 'ollama-glm-5-2-cloud',
+      provider: 'ollama',
+      model: 'glm-5.2:cloud',
+    });
+    const created = vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any;
+    expect(created.model).toBe('claude-code:ollama-glm-5-2-cloud');
+    expect(AISessionsRepository.updateMetadata).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          claudeCodeBackend: expect.anything(),
+        }),
+      })
+    );
+  });
+
+  it('routes a model-only spawn_session through the canonical backend', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      ...CLAUDE_PARENT,
+      workspacePath: '/workspace/path',
+    } as any);
+
+    const rawResult = await (service as any).spawnSession(
+      'parent-claude-session',
+      '/workspace/path',
+      {
+        prompt: 'Inspect the route.',
+        isolated: true,
+        model: 'claude-code:ollama-glm-5-2-cloud',
+      }
+    );
+
+    const result = JSON.parse(rawResult);
+    expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledTimes(1);
+    expect(result.claudeCodeBackend).toMatchObject({
+      id: 'ollama-glm-5-2-cloud',
+      persistedModel: 'claude-code:ollama-glm-5-2-cloud',
+    });
+    expect(AISessionsRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'claude-code',
+        model: 'claude-code:ollama-glm-5-2-cloud',
+      })
+    );
+  });
+
+  it('does not create a worktree, session, or queue row when preflight fails', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = {
+      queuePromptForSession: vi.fn(),
+      triggerQueuedPromptProcessingForSession: vi.fn(),
+    };
+    vi.mocked(preflightOllamaClaudeCodeBackend).mockRejectedValue(
+      new Error('wrong LiteLLM mapping')
+    );
+
+    await expect(
+      (service as any).createChildSessionInternal(
+        'parent-claude-session',
+        '/workspace/path',
+        {
+          prompt: 'This must never be queued.',
+          useWorktree: true,
+          claudeCodeBackend: 'ollama-glm-5-2-cloud',
+        }
+      )
+    ).rejects.toThrow('wrong LiteLLM mapping');
+
+    expect(AISessionsRepository.get).toHaveBeenCalledWith('parent-claude-session');
+    expect(AISessionsRepository.create).not.toHaveBeenCalled();
+    expect((service as any).aiService.queuePromptForSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects spawn_session after read-only parent resolution but before workstream mutation when preflight fails', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = {
+      queuePromptForSession: vi.fn(),
+      triggerQueuedPromptProcessingForSession: vi.fn(),
+    };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      ...CLAUDE_PARENT,
+      workspacePath: '/workspace/path',
+    } as any);
+    vi.mocked(preflightOllamaClaudeCodeBackend).mockRejectedValue(
+      new Error('proxy profile mismatch')
+    );
+    const workstreamSpy = vi.spyOn(service as any, 'resolveOrCreateWorkstream');
+
+    try {
+      await expect(
+        (service as any).spawnSession(
+          'parent-claude-session',
+          '/workspace/path',
+          {
+            prompt: 'This must not create a workstream.',
+            claudeCodeBackend: 'ollama-glm-5-2-cloud',
+          }
+        )
+      ).rejects.toThrow('proxy profile mismatch');
+
+      expect(AISessionsRepository.get).toHaveBeenCalledWith('parent-claude-session');
+      expect(workstreamSpy).not.toHaveBeenCalled();
+      expect(AISessionsRepository.create).not.toHaveBeenCalled();
+      expect((service as any).aiService.queuePromptForSession).not.toHaveBeenCalled();
+    } finally {
+      workstreamSpy.mockRestore();
+    }
+  });
+
+  it('preflights an inherited canonical spawn route before workstream mutation', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = {
+      queuePromptForSession: vi.fn(),
+      triggerQueuedPromptProcessingForSession: vi.fn(),
+    };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      ...OLLAMA_PARENT,
+      workspacePath: '/workspace/path',
+    } as any);
+    vi.mocked(preflightOllamaClaudeCodeBackend).mockRejectedValue(
+      new Error('targeted upstream unhealthy')
+    );
+    const workstreamSpy = vi.spyOn(service as any, 'resolveOrCreateWorkstream');
+
+    try {
+      await expect(
+        (service as any).spawnSession(
+          'parent-ollama-session',
+          '/workspace/path',
+          {
+            prompt: 'Must not mutate workstream state.',
+            inheritModel: true,
+          }
+        )
+      ).rejects.toThrow('targeted upstream unhealthy');
+
+      expect(AISessionsRepository.get).toHaveBeenCalledWith('parent-ollama-session');
+      expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledTimes(1);
+      expect(workstreamSpy).not.toHaveBeenCalled();
+      expect(AISessionsRepository.create).not.toHaveBeenCalled();
+      expect((service as any).aiService.queuePromptForSession).not.toHaveBeenCalled();
+    } finally {
+      workstreamSpy.mockRestore();
+    }
+  });
+
+  it('preflights an omitted-model Ollama parent before every mutation even when inheritModel is false', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = {
+      queuePromptForSession: vi.fn(),
+      triggerQueuedPromptProcessingForSession: vi.fn(),
+    };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      ...OLLAMA_PARENT,
+      workspacePath: '/workspace/path',
+      worktreeId: 'existing-parent-worktree',
+    } as any);
+    vi.mocked(preflightOllamaClaudeCodeBackend).mockRejectedValue(
+      new Error('default inherited Ollama route is unhealthy')
+    );
+    const workstreamSpy = vi.spyOn(service as any, 'resolveOrCreateWorkstream');
+
+    try {
+      await expect(
+        (service as any).spawnSession(
+          'parent-ollama-session',
+          '/workspace/path',
+          {
+            prompt: 'Must fail before workstream, reparent, worktree, session, or queue writes.',
+            inheritModel: false,
+            useWorktree: true,
+          }
+        )
+      ).rejects.toThrow('default inherited Ollama route is unhealthy');
+
+      expect(AISessionsRepository.get).toHaveBeenCalledWith('parent-ollama-session');
+      expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledTimes(1);
+      expect(workstreamSpy).not.toHaveBeenCalled();
+      expect(AISessionsRepository.updateMetadata).not.toHaveBeenCalled();
+      expect(databaseWorker.query).not.toHaveBeenCalled();
+      expect(AISessionsRepository.create).not.toHaveBeenCalled();
+      expect((service as any).aiService.queuePromptForSession).not.toHaveBeenCalled();
+      expect(
+        (service as any).aiService.triggerQueuedPromptProcessingForSession
+      ).not.toHaveBeenCalled();
+    } finally {
+      workstreamSpy.mockRestore();
+    }
   });
 
   it('still inherits a dev-capable built-in parent (openai-codex) when no provider is given', async () => {

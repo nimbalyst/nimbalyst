@@ -17,6 +17,20 @@ describe('ModelIdentifier', () => {
       expect(id.combined).toBe('claude-code:opus');
     });
 
+    it('accepts only the exact canonical Nimbalyst Ollama brain identity', () => {
+      const id = ModelIdentifier.parse('claude-code:ollama-glm-5-2-cloud');
+      expect(id.provider).toBe('claude-code');
+      expect(id.model).toBe('ollama-glm-5-2-cloud');
+      expect(id.combined).toBe('claude-code:ollama-glm-5-2-cloud');
+
+      expect(() =>
+        ModelIdentifier.parse('claude-code:ollama-glm-5-2-cloud-ish')
+      ).toThrow('Invalid Claude Code variant');
+      expect(() =>
+        ModelIdentifier.parse('claude-code-cli:ollama-glm-5-2-cloud')
+      ).toThrow('Invalid Claude Code variant');
+    });
+
     it('parses claude-code with 1m suffix', () => {
       const id = ModelIdentifier.parse('claude-code:sonnet-1m');
       expect(id.provider).toBe('claude-code');

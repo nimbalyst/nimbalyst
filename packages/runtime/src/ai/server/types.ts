@@ -9,6 +9,8 @@ import type { ToolResult } from './protocols/ProtocolInterface';
 import { ModelIdentifier } from './ModelIdentifier';
 import {
   CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS,
+  CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL,
+  CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS,
   CLAUDE_CODE_PINNED_SDK_MODELS,
   normalizeClaudeCodeVariant,
 } from '../modelConstants';
@@ -257,6 +259,9 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
   // Try parsing with ModelIdentifier
   const parsed = ModelIdentifier.tryParse(configured);
   if (parsed && isClaudeCodeFamily(parsed.provider)) {
+    if (parsed.combined === CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL) {
+      return CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS;
+    }
     // baseVariant strips suffixes like -1m
     const variant = parsed.baseVariant as ClaudeCodeVariant;
     if ((CLAUDE_CODE_VARIANTS as readonly string[]).includes(variant)) {
@@ -414,7 +419,12 @@ export interface ProviderConfig {
   allowedTools?: string[];  // List of allowed tool names, ['*'] for all tools
   effortLevel?: EffortLevel;  // Effort level for Opus 4.6 adaptive reasoning (low/medium/high/max)
   thinkingMode?: ThinkingMode;  // Extended thinking mode for Claude Agent (enabled/disabled)
-  customBackend?: string;  // Per-session Claude Agent backend selected by a synthetic model profile
+  customBackend?: string;  // Per-session Claude Agent backend selected by a synthetic model profile (DeepSeek)
+  /**
+   * Claude Code only: exact per-session backend profile. The profile is
+   * resolved for every turn and unknown values fail closed. (Ollama fleet)
+   */
+  claudeCodeBackend?: string;
   responseFormat?: ProviderResponseFormat;  // Response format constraint (extension chat completions)
   skipLogging?: boolean;  // Skip message logging to DB (extension stateless completions)
 }

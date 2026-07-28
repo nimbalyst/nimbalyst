@@ -47,6 +47,7 @@ import {
   CLAUDE_CODE_SAFE_FALLBACK_MODEL,
   baseContextWindowForVariant,
 } from '../../modelConstants';
+import { resolveClaudeCodeBackendForConfig } from './claudeCode/customBackends';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
 import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
@@ -508,7 +509,18 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     //   config: safeConfig
     // }, null, 2));
 
-    this.config = applyDeepSeekClaudeAgentProfile(config);
+    const deepSeekResolvedConfig = applyDeepSeekClaudeAgentProfile(config);
+    // Validate persisted custom routes at initialization as well as at spawn.
+    // Unknown profiles must never degrade to an ordinary Anthropic session.
+    // Mutually exclusive with the DeepSeek profile above (a session's model is
+    // either a DeepSeek identity or an Ollama fleet identity, never both), so
+    // composing the two resolvers is safe: this one is a no-op pass-through
+    // for a DeepSeek-resolved config since its model/claudeCodeBackend won't
+    // match any Ollama backend id.
+    const backend = resolveClaudeCodeBackendForConfig(deepSeekResolvedConfig);
+    this.config = backend
+      ? { ...deepSeekResolvedConfig, claudeCodeBackend: backend.id, model: backend.persistedModel }
+      : deepSeekResolvedConfig;
 
     // Claude Code manages its own authentication - do not require or use API key
   }
