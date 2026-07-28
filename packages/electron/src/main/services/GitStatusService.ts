@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFile, execSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { getUntrackedFilesInDirectory, isGitAvailable, logEbadfDiagnostic } from '../utils/gitUtils';
@@ -98,6 +98,14 @@ export function findGitRootForFile(filePath: string, boundary: string): string |
 export class GitStatusService {
   private cache: Map<string, { status: GitStatusResult; timestamp: number }> = new Map();
   private readonly CACHE_TTL_MS = 5000; // 5 seconds cache
+  // `clearCache` can run while an async status command is pending. Incrementing
+  // this generation prevents an older command from repopulating an invalidated
+  // cache entry after it completes.
+  private cacheGeneration = 0;
+  // Coalesce same-repository cache misses from independent status APIs. This
+  // holds only the child-process result; each caller still parses and caches
+  // its own result shape.
+  private readonly inFlightGitStatus = new Map<string, Promise<string>>();
 
   /**
    * Get git status for a list of files in a workspace.
@@ -160,11 +168,12 @@ export class GitStatusService {
     }
 
     const result: GitStatusResult = {};
+    const cacheGeneration = this.cacheGeneration;
 
     for (const [rootPath, rootFiles] of filesByRoot) {
       let statusMap: Map<string, FileGitStatus>;
       try {
-        const statusOutput = this.executeGitStatus(rootPath);
+        const statusOutput = await this.executeGitStatus(rootPath);
         statusMap = this.parseGitStatus(statusOutput);
       } catch (error) {
         logEbadfDiagnostic('GitStatusService', error);
@@ -223,7 +232,9 @@ export class GitStatusService {
     }
 
     // Cache the result
-    this.cache.set(cacheKey, { status: result, timestamp: Date.now() });
+    if (this.cacheGeneration === cacheGeneration) {
+      this.cache.set(cacheKey, { status: result, timestamp: Date.now() });
+    }
 
     return result;
   }
@@ -232,14 +243,33 @@ export class GitStatusService {
    * Execute git status --porcelain command and return raw output
    * @private
    */
-  private executeGitStatus(workspacePath: string): string {
-    // IMPORTANT: Don't trim() here as it removes the leading space from status codes
-    return execSync('git status --porcelain', {
-      cwd: workspacePath,
-      encoding: 'utf8',
-      timeout: 5000, // 5 second timeout
-      stdio: ['pipe', 'pipe', 'pipe']
+  private async executeGitStatus(workspacePath: string): Promise<string> {
+    const inFlight = this.inFlightGitStatus.get(workspacePath);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    let statusPromise: Promise<string>;
+    statusPromise = new Promise<string>((resolve, reject) => {
+      execFile('git', ['status', '--porcelain'], {
+        cwd: workspacePath,
+        encoding: 'utf8',
+        timeout: 5000, // Preserve the existing 5 second timeout.
+      }, (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(stdout);
+      });
+    }).finally(() => {
+      if (this.inFlightGitStatus.get(workspacePath) === statusPromise) {
+        this.inFlightGitStatus.delete(workspacePath);
+      }
     });
+    this.inFlightGitStatus.set(workspacePath, statusPromise);
+    // IMPORTANT: Don't trim() here as it removes the leading space from status codes.
+    return statusPromise;
   }
 
   /**
@@ -393,9 +423,10 @@ export class GitStatusService {
       return Object.keys(cached.status);
     }
 
+    const cacheGeneration = this.cacheGeneration;
     try {
       // Get git status for the entire repository using porcelain format
-      const statusOutput = this.executeGitStatus(workspacePath);
+      const statusOutput = await this.executeGitStatus(workspacePath);
 
       // Parse status output
       const statusMap = this.parseGitStatus(statusOutput);
@@ -450,7 +481,9 @@ export class GitStatusService {
           };
         }
       }
-      this.cache.set(cacheKey, { status: cacheResult, timestamp: Date.now() });
+      if (this.cacheGeneration === cacheGeneration) {
+        this.cache.set(cacheKey, { status: cacheResult, timestamp: Date.now() });
+      }
 
       return uncommittedFiles;
     } catch (error) {
@@ -627,6 +660,7 @@ export class GitStatusService {
       return Object.keys(cached.status);
     }
 
+    const cacheGeneration = this.cacheGeneration;
     try {
       // Get the current branch of this worktree
       const worktreeBranch = this.getCurrentBranch(workspacePath);
@@ -693,7 +727,9 @@ export class GitStatusService {
       }
 
       // Cache the result
-      this.cache.set(cacheKey, { status: cacheResult, timestamp: Date.now() });
+      if (this.cacheGeneration === cacheGeneration) {
+        this.cache.set(cacheKey, { status: cacheResult, timestamp: Date.now() });
+      }
 
       // Convert Set to Array
       return Array.from(filePathSet);
@@ -734,9 +770,10 @@ export class GitStatusService {
       return cached.status;
     }
 
+    const cacheGeneration = this.cacheGeneration;
     try {
       // Get git status for the entire repository using porcelain format
-      const statusOutput = this.executeGitStatus(workspacePath);
+      const statusOutput = await this.executeGitStatus(workspacePath);
 
       // Parse status output
       const statusMap = this.parseGitStatus(statusOutput);
@@ -780,7 +817,9 @@ export class GitStatusService {
       }
 
       // Cache the result
-      this.cache.set(cacheKey, { status: result, timestamp: Date.now() });
+      if (this.cacheGeneration === cacheGeneration) {
+        this.cache.set(cacheKey, { status: result, timestamp: Date.now() });
+      }
 
       return result;
     } catch (error) {
@@ -870,6 +909,7 @@ export class GitStatusService {
    * Clear the cache for a specific workspace or all workspaces
    */
   clearCache(workspacePath?: string): void {
+    this.cacheGeneration += 1;
     if (workspacePath) {
       // Clear cache entries for this workspace.
       //
