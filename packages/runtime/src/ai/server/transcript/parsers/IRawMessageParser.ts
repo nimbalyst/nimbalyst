@@ -100,6 +100,7 @@ export interface ToolCallStartedDescriptor {
   type: 'tool_call_started';
   toolName: string;
   toolDisplayName: string;
+  sourceLabel?: string;
   arguments: Record<string, unknown>;
   targetFilePath?: string | null;
   mcpServer?: string | null;

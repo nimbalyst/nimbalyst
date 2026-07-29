@@ -141,7 +141,7 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   // Editor screenshot capture tool (works for mockups and all other editor types)
   'capture_editor_screenshot': EditorScreenshotWidget,
 
-  // AskUserQuestion tool - displays questions from Claude for user input
+  // AskUserQuestion tool - displays assistant/model questions for user input
   'AskUserQuestion': AskUserQuestionWidget,
 
   // PromptForUserInput tool - generic structured-input prompt with typed fields

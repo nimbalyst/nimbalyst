@@ -175,6 +175,7 @@ export class TranscriptWriter {
     params: {
       toolName: string;
       toolDisplayName: string;
+      sourceLabel?: string;
       description?: string | null;
       arguments: Record<string, unknown>;
       targetFilePath?: string | null;
@@ -188,6 +189,7 @@ export class TranscriptWriter {
     const payload: ToolCallPayload = {
       toolName: params.toolName,
       toolDisplayName: params.toolDisplayName,
+      ...(params.sourceLabel ? { sourceLabel: params.sourceLabel } : {}),
       status: 'running',
       description: params.description ?? null,
       arguments: params.arguments,

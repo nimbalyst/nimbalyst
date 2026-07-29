@@ -101,6 +101,8 @@ export interface SystemMessagePayload {
 export interface ToolCallPayload {
   toolName: string;
   toolDisplayName: string;
+  /** Model/agent label captured when the tool call was created. */
+  sourceLabel?: string;
   status: 'running' | 'completed' | 'error';
   description: string | null;
   arguments: Record<string, unknown>;
@@ -140,6 +142,8 @@ export interface PermissionRequestPayload {
 export interface AskUserQuestionPayload {
   promptType: 'ask_user_question';
   requestId: string;
+  /** Model/agent label captured when the prompt was created. */
+  sourceLabel?: string;
   status: 'pending' | 'resolved' | 'cancelled';
   questions: Array<{
     question: string;

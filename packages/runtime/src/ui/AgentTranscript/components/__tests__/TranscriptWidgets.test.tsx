@@ -20,7 +20,11 @@ import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import * as rtl from '@testing-library/react';
 import { createStore, Provider as JotaiProvider } from 'jotai';
-import type { TranscriptViewMessage } from '../../../../ai/server/transcript/TranscriptProjector';
+import {
+  TranscriptProjector,
+  type TranscriptViewMessage,
+} from '../../../../ai/server/transcript/TranscriptProjector';
+import type { TranscriptEvent } from '../../../../ai/server/transcript/types';
 import type { CustomToolWidgetProps } from '../CustomToolWidgets/index';
 
 const { render, screen, fireEvent } = rtl;
@@ -758,6 +762,58 @@ describe('AskUserQuestionWidget', () => {
     // Submit must stay disabled until the host arrives.
     expect((screen.getByTestId('ask-user-question-submit') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('ask-user-question-cancel') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('uses the model label in the question header when available', () => {
+    const event: TranscriptEvent = {
+      id: 1,
+      sessionId: 'model-label',
+      sequence: 0,
+      createdAt: new Date(),
+      eventType: 'tool_call',
+      searchableText: null,
+      payload: {
+        toolName: 'AskUserQuestion',
+        toolDisplayName: 'AskUserQuestion',
+        status: 'running',
+        description: null,
+        arguments: {
+          questions: [
+            {
+              question: 'Which framework?',
+              header: 'Framework',
+              options: [
+                { label: 'React', description: 'Component library' },
+                { label: 'Vue', description: 'Progressive framework' },
+              ],
+              multiSelect: false,
+            },
+          ],
+        },
+        targetFilePath: null,
+        mcpServer: null,
+        mcpTool: null,
+        sourceLabel: 'Claude Sonnet 4.5',
+      },
+      parentEventId: null,
+      searchable: false,
+      subagentId: null,
+      provider: 'claude-code',
+      providerToolCallId: 'question-1',
+    };
+    const message = TranscriptProjector.project([event]).messages[0];
+
+    render(
+      <Wrapper>
+        <AskUserQuestionWidget
+          message={message}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="model-label"
+        />
+      </Wrapper>
+    );
+    expect(screen.getByText('Questions from Claude Sonnet 4.5')).toBeDefined();
   });
 
   it('renders completed state with answers', () => {

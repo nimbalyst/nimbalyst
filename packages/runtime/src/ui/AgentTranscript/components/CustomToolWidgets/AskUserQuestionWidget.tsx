@@ -2,7 +2,7 @@
  * AskUserQuestionWidget
  *
  * Interactive widget for the AskUserQuestion tool.
- * Renders questions from Claude and allows user to select answers.
+ * Renders questions from the assistant/model and allows user to select answers.
  *
  * Uses InteractiveWidgetHost for operations that require access to atoms, callbacks, and analytics.
  * The host is read from interactiveWidgetHostAtom(sessionId) - no prop drilling needed.
@@ -230,6 +230,7 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   const host = useAtomValue(interactiveWidgetHostAtom(sessionId));
 
   const questions = parseQuestions(toolCall.arguments);
+  const questionSourceLabel = toolCall.sourceLabel?.trim() || 'assistant';
 
   // Parse result to determine completion state
   const rawResult = toolCall.result;
@@ -555,7 +556,7 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
           </svg>
         </div>
         <span className="text-sm font-semibold text-nim flex-1">
-          Questions from Claude
+          {`Questions from ${questionSourceLabel}`}
         </span>
         {!host && (
           <span data-testid="ask-user-question-pending" className="text-xs text-nim-muted">Waiting...</span>

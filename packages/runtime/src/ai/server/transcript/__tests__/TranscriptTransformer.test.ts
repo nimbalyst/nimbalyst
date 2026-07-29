@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TranscriptTransformer } from '../TranscriptTransformer';
+import { TranscriptProjector } from '../TranscriptProjector';
 import type { IRawMessageStore, RawMessage, ISessionMetadataStore } from '../TranscriptTransformer';
 import type { ITranscriptEventStore, TranscriptEvent } from '../types';
 
@@ -290,6 +291,35 @@ describe('TranscriptTransformer', () => {
       const status = metadataStore.getStatus(SESSION_ID);
       expect(status.transformStatus).toBe('complete');
       expect(status.transformVersion).toBe(TranscriptTransformer.CURRENT_VERSION);
+    });
+
+    it('preserves the model label from a raw tool call through projection', async () => {
+      const rawStore = createMockRawStore([
+        makeRawMessage({
+          id: 1,
+          sessionId: SESSION_ID,
+          direction: 'output',
+          content: JSON.stringify({
+            type: 'assistant',
+            message: {
+              model: 'claude-sonnet-4-5-20250929',
+              content: [{
+                type: 'tool_use',
+                id: 'question-1',
+                name: 'AskUserQuestion',
+                input: { questions: [] },
+              }],
+            },
+          }),
+        }),
+      ]);
+      const transformer = new TranscriptTransformer(rawStore, transcriptStore, metadataStore);
+
+      await transformer.ensureTransformed(SESSION_ID, PROVIDER);
+
+      const events = await transcriptStore.getSessionEvents(SESSION_ID);
+      const message = TranscriptProjector.project(events).messages[0];
+      expect(message.toolCall?.sourceLabel).toBe('Claude Sonnet 4.5');
     });
 
     it('resumes from lastRawMessageId when pending', async () => {

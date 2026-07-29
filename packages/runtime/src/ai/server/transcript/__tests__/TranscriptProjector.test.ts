@@ -114,6 +114,49 @@ describe('TranscriptProjector', () => {
     expect(vm.messages[0].toolCall!.progress[1].elapsedSeconds).toBe(10);
   });
 
+  it('projects an explicit tool source label', () => {
+    const vm = TranscriptProjector.project([
+      makeEvent({
+        eventType: 'tool_call',
+        provider: 'claude-code',
+        payload: {
+          toolName: 'AskUserQuestion',
+          toolDisplayName: 'AskUserQuestion',
+          status: 'running',
+          description: null,
+          arguments: { questions: [] },
+          targetFilePath: null,
+          mcpServer: null,
+          mcpTool: null,
+          sourceLabel: 'Claude Sonnet 4.5',
+        },
+      }),
+    ]);
+
+    expect(vm.messages[0].toolCall?.sourceLabel).toBe('Claude Sonnet 4.5');
+  });
+
+  it('falls back to the provider label for tool calls without a source label', () => {
+    const vm = TranscriptProjector.project([
+      makeEvent({
+        eventType: 'tool_call',
+        provider: 'openai-codex',
+        payload: {
+          toolName: 'AskUserQuestion',
+          toolDisplayName: 'AskUserQuestion',
+          status: 'running',
+          description: null,
+          arguments: { questions: [] },
+          targetFilePath: null,
+          mcpServer: null,
+          mcpTool: null,
+        },
+      }),
+    ]);
+
+    expect(vm.messages[0].toolCall?.sourceLabel).toBe('OpenAI Codex');
+  });
+
   it('nests subagent events under subagent parent', () => {
     const events: TranscriptEvent[] = [
       makeEvent({
@@ -127,7 +170,7 @@ describe('TranscriptProjector', () => {
         payload: {
           agentType: 'Explore',
           status: 'completed',
-          teammateName: null,
+          teammateName: 'Researcher',
           teamName: null,
           teammateMode: null,
           model: null,
@@ -142,8 +185,9 @@ describe('TranscriptProjector', () => {
         eventType: 'tool_call',
         subagentId: 'sub-1',
         payload: {
-          toolName: 'Glob',
-          toolDisplayName: 'Glob',
+          toolName: 'AskUserQuestion',
+          toolDisplayName: 'AskUserQuestion',
+          sourceLabel: 'Claude Sonnet 4.5',
           status: 'completed',
           description: null,
           arguments: { pattern: '*.ts' },
@@ -176,6 +220,7 @@ describe('TranscriptProjector', () => {
     });
     expect(vm.messages[1].subagent!.childEvents).toHaveLength(2);
     expect(vm.messages[1].subagent!.childEvents[0].type).toBe('tool_call');
+    expect(vm.messages[1].subagent!.childEvents[0].toolCall?.sourceLabel).toBe('Researcher');
     expect(vm.messages[1].subagent!.childEvents[1].type).toBe('assistant_message');
   });
 
