@@ -905,4 +905,128 @@ describe('ToolCallMatcher', () => {
       expect(diffs).toEqual([]);
     });
   });
+
+  describe('matchSession', () => {
+    const queryMock = database.query as ReturnType<typeof vi.fn>;
+
+    it('bounds the raw-message query to the session_files time window, not the full history', async () => {
+      const sessionId = 'bounded-session';
+      const earliestTimestamp = 1_700_000_000_000;
+      const latestTimestamp = earliestTimestamp + 45_000;
+
+      queryMock
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('FROM ai_sessions');
+          expect(params).toEqual([sessionId]);
+          return { rows: [{ workspace_id: '/workspace' }] };
+        })
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('FROM session_files');
+          expect(params).toEqual([sessionId]);
+          return {
+            rows: [
+              { id: 'early-file', file_path: '/workspace/src/early.ts', timestamp_ms: earliestTimestamp, metadata: {} },
+              { id: 'middle-file', file_path: '/workspace/src/middle.ts', timestamp_ms: earliestTimestamp + 18_000, metadata: {} },
+              { id: 'late-file', file_path: '/workspace/src/late.ts', timestamp_ms: latestTimestamp, metadata: {} },
+            ],
+          };
+        })
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('FROM ai_agent_messages');
+          expect(sql).toContain('(EXTRACT(EPOCH FROM created_at) * 1000) >= $2');
+          expect(sql).toContain('(EXTRACT(EPOCH FROM created_at) * 1000) <= $3');
+          expect(params).toEqual([sessionId, earliestTimestamp - 10_000, latestTimestamp + 10_000]);
+          return { rows: [] };
+        });
+
+      await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(0);
+      expect(queryMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('matches correctly when the bounded window is embedded in thousands of out-of-window rows', async () => {
+      const sessionId = 'noisy-session';
+      const baseTimestamp = 1_700_000_000_000;
+      const sessionFiles = [
+        { id: 'file-a', file_path: '/workspace/src/a.ts', timestamp_ms: baseTimestamp + 2_000, metadata: {} },
+        { id: 'file-b', file_path: '/workspace/src/b.ts', timestamp_ms: baseTimestamp + 8_000, metadata: {} },
+      ];
+      const makeToolCallRow = (id: number, created_at_ms: number, itemId: string, filePath: string) => ({
+        id,
+        created_at_ms,
+        content: JSON.stringify({
+          type: 'item.completed',
+          item: {
+            type: 'file_change',
+            id: itemId,
+            changes: [{ path: filePath, kind: 'update' }],
+          },
+        }),
+      });
+      const outOfWindowRows = Array.from({ length: 3_000 }, (_, index) => ({
+        id: index + 1,
+        created_at_ms: baseTimestamp - (30 * 24 * 60 * 60 * 1_000) + (index * 60_000),
+        content: JSON.stringify({ type: 'item.completed', item: { type: 'message', id: `noise-${index}` } }),
+      }));
+      const noisyRows = [
+        ...outOfWindowRows,
+        makeToolCallRow(3_001, baseTimestamp + 2_400, 'tool-a', '/workspace/src/a.ts'),
+        makeToolCallRow(3_002, baseTimestamp + 8_300, 'tool-b', '/workspace/src/b.ts'),
+      ];
+      let insertedNoisyParams: unknown[] | undefined;
+
+      queryMock
+        .mockImplementationOnce(async () => ({ rows: [{ workspace_id: '/workspace' }] }))
+        .mockImplementationOnce(async () => ({ rows: sessionFiles }))
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('FROM ai_agent_messages');
+          expect(params).toEqual([sessionId, baseTimestamp - 8_000, baseTimestamp + 18_000]);
+          return { rows: noisyRows };
+        })
+        .mockImplementationOnce(async (sql: string) => {
+          expect(sql).toContain('FROM ai_tool_call_file_edits');
+          return { rows: [] };
+        })
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('INSERT INTO ai_tool_call_file_edits');
+          insertedNoisyParams = params;
+          return { rows: [] };
+        });
+
+      await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(2);
+      expect(insertedNoisyParams).toBeDefined();
+      expect(insertedNoisyParams).toEqual(expect.arrayContaining([
+        sessionId, 'file-a', 3_001, 'tool-a',
+        sessionId, 'file-b', 3_002, 'tool-b',
+      ]));
+
+      queryMock.mockReset();
+      const normalSessionId = 'normal-session';
+      const normalTimestamp = baseTimestamp + 100_000;
+      const normalFiles = [
+        { id: 'normal-file-a', file_path: '/workspace/src/normal-a.ts', timestamp_ms: normalTimestamp, metadata: {} },
+        { id: 'normal-file-b', file_path: '/workspace/src/normal-b.ts', timestamp_ms: normalTimestamp + 3_000, metadata: {} },
+      ];
+      const normalRows = [
+        makeToolCallRow(4_001, normalTimestamp + 200, 'normal-tool-a', '/workspace/src/normal-a.ts'),
+        makeToolCallRow(4_002, normalTimestamp + 3_200, 'normal-tool-b', '/workspace/src/normal-b.ts'),
+      ];
+      let insertedNormalParams: unknown[] | undefined;
+
+      queryMock
+        .mockImplementationOnce(async () => ({ rows: [{ workspace_id: '/workspace' }] }))
+        .mockImplementationOnce(async () => ({ rows: normalFiles }))
+        .mockImplementationOnce(async () => ({ rows: normalRows }))
+        .mockImplementationOnce(async () => ({ rows: [] }))
+        .mockImplementationOnce(async (_sql: string, params: unknown[]) => {
+          insertedNormalParams = params;
+          return { rows: [] };
+        });
+
+      await expect(toolCallMatcher.matchSession(normalSessionId)).resolves.toBe(2);
+      expect(insertedNormalParams).toEqual(expect.arrayContaining([
+        normalSessionId, 'normal-file-a', 4_001, 'normal-tool-a',
+        normalSessionId, 'normal-file-b', 4_002, 'normal-tool-b',
+      ]));
+    });
+  });
 });
