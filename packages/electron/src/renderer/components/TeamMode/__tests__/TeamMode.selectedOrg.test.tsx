@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { Provider, createStore } from 'jotai';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
@@ -94,9 +94,12 @@ describe('TeamMode organization targeting', () => {
     render(<Provider store={store}><TeamMode workspacePath="/workspace" isActive /></Provider>);
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Other Org' })).toBeTruthy());
+    // The window lands on Inbox; Members is one tab over.
+    fireEvent.click(screen.getByTestId('team-tab-members'));
     // Members is the full editable roster (no read-only duplicate), scoped to the org.
     expect(screen.getByTestId('admin-members').getAttribute('data-org-id')).toBe('org-other');
-    // Single left-nav org-admin layout: Members, Projects, Billing, Danger.
+    // Single left-nav layout: Inbox, Members, Projects, Billing, Danger.
+    expect(screen.getByTestId('team-tab-inbox')).toBeTruthy();
     expect(screen.getByTestId('team-tab-members')).toBeTruthy();
     expect(screen.getByTestId('team-tab-projects')).toBeTruthy();
     expect(screen.getByTestId('team-tab-billing')).toBeTruthy();
@@ -110,6 +113,7 @@ describe('TeamMode organization targeting', () => {
     render(<Provider store={store}><TeamMode workspacePath="/workspace" isActive /></Provider>);
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Workspace Org' })).toBeTruthy());
+    fireEvent.click(screen.getByTestId('team-tab-members'));
     expect(screen.getByTestId('admin-members').getAttribute('data-org-id')).toBe('org-workspace');
   });
 
@@ -122,6 +126,7 @@ describe('TeamMode organization targeting', () => {
     render(<Provider store={store}><TeamMode /></Provider>);
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Other Org' })).toBeTruthy());
+    fireEvent.click(screen.getByTestId('team-tab-members'));
     expect(screen.getByTestId('admin-members').getAttribute('data-org-id')).toBe('org-other');
     // No workspace-scoped "Project sharing" tab; org projects live under Projects.
     expect(screen.queryByRole('button', { name: /project sharing/i })).toBeNull();

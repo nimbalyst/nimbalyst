@@ -14,7 +14,79 @@ export {
   asPersonalJwt,
   asPersonalMemberId,
   asTeamJwt,
+  asTeamMemberId,
 } from './auth/jwtScopes';
+export type {
+  PersonalJwt,
+  PersonalMemberId,
+  TeamJwt,
+  TeamMemberId,
+} from './auth/jwtScopes';
+export {
+  ConversationSync,
+  ConversationSyncError,
+} from './sync/ConversationSync';
+export type {
+  ConversationAppendInput,
+  ConversationHistoryPage,
+  ConversationSyncConfig,
+  ConversationSyncEvent,
+  ConversationTarget,
+} from './sync/ConversationSync';
+export type {
+  AgentMessage,
+  ChatAttachment,
+  CreateAgentMessageInput,
+  FileLink,
+  FileLinkType,
+} from './ai/server/types';
+export type {
+  ChatSession,
+  CreateSessionPayload,
+  SessionListOptions,
+  SessionMeta,
+  SessionSearchOptions,
+  SessionStore,
+  UpdateSessionMetadataPayload,
+} from './ai/adapters/sessionStore';
+export type {
+  Document,
+  DocumentMetadataEntry,
+  DocumentOpenOptions,
+  DocumentService,
+  ExternalSourceRef,
+  MetadataChangeEvent,
+  TrackerIdentity,
+  TrackerItem,
+  TrackerItemChangeEvent,
+  TrackerItemType,
+  TrackerOrigin,
+} from './core/DocumentService';
+export type { DocumentRecord } from './core/types';
+export type { DocumentsRepository } from './storage/repositories/DocumentsRepository';
+export { trackerItemToRecord } from './core/TrackerRecord';
+export type { LinkedCommit } from './core/TrackerRecord';
+export type {
+  FileInfo,
+  FileListOptions,
+  FileReadOptions,
+  FileSearchOptions,
+  FileSearchResult,
+  FileSystemService,
+} from './core/FileSystemService';
+export type {
+  PreparedDocumentContext,
+  RawDocumentContext,
+} from './ai/services/types';
+export type { SessionFileStore } from './storage/repositories/SessionFilesRepository';
+export type {
+  ProjectFileEdit,
+  ProjectFileSnapshot,
+  ProjectFileWriteReceipt,
+} from '@nimbalyst/extension-sdk';
+export type {
+  PermissionScope,
+} from './ui/AgentTranscript/components/CustomToolWidgets/InteractiveWidgetHost';
 export {
   clearFileSystemService,
   clearFileSystemServiceFor,

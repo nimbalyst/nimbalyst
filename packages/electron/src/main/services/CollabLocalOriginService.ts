@@ -14,8 +14,7 @@ import {
 import { database } from '../database/PGLiteDatabaseWorker';
 import { getCollabSyncHttpUrl, getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { logger } from '../utils/logger';
-import { encryptAndUploadCollabAsset } from './CollabAssetUploader';
-import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey } from './OrgKeyService';
+import { uploadCollabAsset } from './CollabAssetUploader';
 import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
 import {
   rewriteMarkdownImageRefs,
@@ -342,23 +341,10 @@ async function resolveDocumentSyncConfig(
   const team = await findTeamForWorkspace(workspacePath);
   if (!team) return null;
 
-  let documentKey = await getOrgKey(team.orgId);
-  if (!documentKey) {
-    try {
-      const orgJwt = await getOrgScopedJwt(team.orgId);
-      documentKey = await fetchAndUnwrapOrgKey(team.orgId, orgJwt);
-    } catch (error) {
-      logger.main.warn('[CollabLocalOrigin] Failed to fetch org key for headless read:', error);
-    }
-  }
-  if (!documentKey) return null;
-
   return {
     serverUrl: getCollabSyncWsUrl(),
     getJwt: () => getOrgScopedJwt(team.orgId),
     orgId: team.orgId,
-    documentKey,
-    orgKeyFingerprint: getOrgKeyFingerprint(team.orgId) ?? undefined,
     userId: '',
     documentId,
     createWebSocket: ((url: string) => new WebSocket(url)) as unknown as DocumentSyncConfig['createWebSocket'],
@@ -539,7 +525,7 @@ async function migrateMarkdownAssetsForCollab(params: {
 
     try {
       const fileBytes = await fs.readFile(resolved.absolutePath);
-      const upload = await encryptAndUploadCollabAsset({
+      const upload = await uploadCollabAsset({
         orgId: params.orgId,
         documentId: params.documentId,
         fileBytes: fileBytes.buffer.slice(

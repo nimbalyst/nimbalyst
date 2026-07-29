@@ -6,12 +6,16 @@
  * subscribes to `trackerSyncRejectionAtom`, which is populated by
  * `trackerSyncListeners` on `tracker-sync:mutation-rejected` events.
  *
- * Two states, distinct affordances:
- * - `rotationLocked`: team is mid-rotation; writes will resume in a
- *   moment. Auto-clears 30s after the last event.
- * - `staleKeyEpoch` with `refreshKey -> null`: the user's admin hasn't
- *   shared the new envelope yet. Persistent until cleared; "Retry"
- *   triggers `tracker-sync:connect` which re-fetches the org key.
+ * States, distinct affordances:
+ * - `custodyUnavailable`: the server could not load the team DEK -- the
+ *   organization's encryption was never migrated to server-managed
+ *   custody, so writes are refused. Persistent until dismissed.
+ * - `rotationLocked` (legacy, old servers only): team is mid-rotation;
+ *   writes will resume in a moment. Auto-clears 30s after the last event.
+ * - `staleKeyEpoch` (legacy, old servers only) with `refreshKey -> null`:
+ *   the user's admin hasn't shared the new envelope yet. Persistent until
+ *   cleared; "Retry" triggers `tracker-sync:connect` which re-fetches the
+ *   org key.
  *
  * No button-gating: the mutation surface stays available so the user
  * can keep trying. The banner itself is the explanation for any
@@ -35,13 +39,14 @@ export const TrackerSyncRejectionBanner: React.FC<TrackerSyncRejectionBannerProp
   // (mutation-rejected is broadcast to all windows). A user with multiple
   // workspaces open shouldn't see a peer workspace's banner.
   const active = useMemo(() => {
-    const candidates = [state.staleKeyEpoch, state.rotationLocked].filter(
+    const candidates = [state.custodyUnavailable, state.staleKeyEpoch, state.rotationLocked].filter(
       (r): r is NonNullable<typeof r> => r != null && (!workspacePath || r.workspacePath === workspacePath),
     );
     if (candidates.length === 0) return null;
-    // Show the most recent. staleKeyEpoch needs explicit user action,
-    // rotationLocked auto-clears -- if both are present at once,
-    // staleKeyEpoch wins because it's the one that won't disappear.
+    // Priority: custodyUnavailable and staleKeyEpoch need explicit user
+    // action and won't disappear on their own; rotationLocked auto-clears.
+    const custody = candidates.find((r) => r.code === 'custodyUnavailable');
+    if (custody) return custody;
     const stale = candidates.find((r) => r.code === 'staleKeyEpoch');
     if (stale) return stale;
     return candidates[0];
@@ -67,6 +72,7 @@ export const TrackerSyncRejectionBanner: React.FC<TrackerSyncRejectionBannerProp
   if (!active) return null;
 
   const isRotation = active.code === 'rotationLocked';
+  const isCustodyUnavailable = active.code === 'custodyUnavailable';
 
   return (
     <div
@@ -75,7 +81,14 @@ export const TrackerSyncRejectionBanner: React.FC<TrackerSyncRejectionBannerProp
       data-testid="tracker-sync-rejection-banner"
       data-rejection-code={active.code}
     >
-      {isRotation ? (
+      {isCustodyUnavailable ? (
+        <>
+          <MaterialSymbol icon="key_off" size={16} className="text-nim-warning" />
+          <span className="flex-1">
+            This organization's encryption isn't migrated, so your changes can't sync. Ask an organization admin to finish setting up the organization.
+          </span>
+        </>
+      ) : isRotation ? (
         <>
           <MaterialSymbol icon="sync" size={16} className="text-nim-faint animate-spin" />
           <span className="flex-1">

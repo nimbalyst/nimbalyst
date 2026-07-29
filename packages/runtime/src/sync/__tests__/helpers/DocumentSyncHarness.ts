@@ -560,8 +560,6 @@ export class HarnessDocumentServer {
         this.acceptCompaction(socket, message);
         return;
       case "docAwareness":
-      case "addKeyEnvelope":
-      case "requestKeyEnvelope":
       case "docSetMetadata":
         return;
     }
@@ -1022,7 +1020,6 @@ export class HarnessClient {
       orgId: "org-harness",
       documentId: "doc-harness",
       userId: this.userId,
-      keyCustody: "server-managed",
       reviewGateEnabled: false,
       replica: this.replica,
       initialPendingUpdateBase64:

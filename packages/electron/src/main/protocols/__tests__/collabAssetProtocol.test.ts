@@ -1,4 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// The global electron mock (vitest.setup.ts) has no `net`; the upstream-fetch
+// tests below need one. `protocol` is only touched by installer helpers the
+// tests do not call, but the module imports it, so stub it too.
+const netFetch = vi.fn();
+vi.mock("electron", () => ({
+  net: { fetch: (...args: unknown[]) => netFetch(...args) },
+  protocol: { handle: vi.fn(), registerSchemesAsPrivileged: vi.fn() },
+}));
+
 import {
   parseCollabAssetUrl,
   registerCollabAssetDocument,
@@ -186,10 +196,7 @@ describe("collabAssetProtocol", () => {
       registerCollabAssetDocument("org-1", "doc-1", SENDER_A);
     });
 
-    it("serves cached bytes without an org-key or authorization round trip", async () => {
-      const getOrgKey = vi.fn(async () => {
-        throw new Error("must not run");
-      });
+    it("serves cached bytes without an authorization round trip", async () => {
       const getOrgScopedJwt = vi.fn(async () => {
         throw new Error("must not run");
       });
@@ -199,7 +206,6 @@ describe("collabAssetProtocol", () => {
         fileName: "cached.png",
       }));
       const handler = createCollabAssetRequestHandler({
-        getOrgKey,
         getOrgScopedJwt,
         getCollabHttpUrl: () => "https://sync.invalid",
         getAccountId: () => "account-1",
@@ -217,8 +223,127 @@ describe("collabAssetProtocol", () => {
       expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([
         1, 2, 3,
       ]);
-      expect(getOrgKey).not.toHaveBeenCalled();
       expect(getOrgScopedJwt).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("upstream read path", () => {
+    const SERVED_BYTES = new Uint8Array([9, 8, 7]);
+
+    function handlerWithoutCache() {
+      return createCollabAssetRequestHandler({
+        getOrgScopedJwt: vi.fn(async () => "jwt-token"),
+        getCollabHttpUrl: () => "https://sync.invalid",
+        // No accountId => no cache identity, so every read hits upstream.
+        getAccountId: () => null,
+      });
+    }
+
+    beforeEach(() => {
+      netFetch.mockReset();
+      clearCollabAssetRegistry();
+      registerCollabAssetDocument("org-1", "doc-1", SENDER_A);
+    });
+
+    it("serves the plaintext the server decrypted, with its filename", async () => {
+      netFetch.mockResolvedValue(
+        new Response(SERVED_BYTES, {
+          status: 200,
+          headers: {
+            "X-Collab-Asset-Format": "plaintext.v1",
+            "X-Collab-Asset-Stored-Format": "server-dek-aes-gcm.v1",
+            "X-Collab-Asset-Mime-Type": "image/png",
+            "X-Collab-Asset-File-Name": encodeURIComponent("holiday photo.png"),
+          },
+        })
+      );
+
+      const response = await handlerWithoutCache()(
+        new Request(`${COLLAB_ASSET_SCHEME}://doc/doc-1/asset/asset-1`)
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("image/png");
+      expect(response.headers.get("Content-Disposition")).toContain(
+        "holiday photo.png"
+      );
+      expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([
+        9, 8, 7,
+      ]);
+    });
+
+    it("fails closed on a blob the server cannot decode", async () => {
+      // A leftover from the retired client-managed lane. Its key is gone, so
+      // the only honest outcome is a terminal, typed refusal -- not a retry
+      // loop, and not ciphertext handed to an <img> tag.
+      netFetch.mockResolvedValue(
+        new Response(JSON.stringify({ code: "asset_format_unreadable" }), {
+          status: 409,
+          headers: {
+            "X-Collab-Asset-Error-Code": "asset_format_unreadable",
+            "X-Collab-Asset-Stored-Format": "legacy-client-aes-gcm.v1",
+          },
+        })
+      );
+
+      const response = await handlerWithoutCache()(
+        new Request(`${COLLAB_ASSET_SCHEME}://doc/doc-1/asset/asset-1`)
+      );
+
+      expect(response.status).toBe(415);
+      expect(response.headers.get("X-Collab-Asset-Error-Code")).toBe(
+        "asset_format_unreadable"
+      );
+      expect(response.headers.get("X-Collab-Asset-Stored-Format")).toBe(
+        "legacy-client-aes-gcm.v1"
+      );
+      await expect(response.text()).resolves.toContain(
+        "organization key that is no longer in use"
+      );
+    });
+
+    it("refuses a 200 whose body is not the plaintext this build can render", async () => {
+      // A server ahead of this build. The bytes would otherwise go straight to
+      // an <img> tag on the strength of the status code alone.
+      netFetch.mockResolvedValue(
+        new Response(SERVED_BYTES, {
+          status: 200,
+          headers: {
+            "X-Collab-Asset-Format": "envelope-per-blob.v1",
+            "X-Collab-Asset-Stored-Format": "envelope-per-blob.v1",
+          },
+        })
+      );
+
+      const response = await handlerWithoutCache()(
+        new Request(`${COLLAB_ASSET_SCHEME}://doc/doc-1/asset/asset-1`)
+      );
+
+      expect(response.status).toBe(415);
+      expect(response.headers.get("X-Collab-Asset-Error-Code")).toBe(
+        "asset_format_unreadable"
+      );
+      await expect(response.text()).resolves.toContain("unsupported format");
+    });
+
+    it("reports a real upstream failure as a bad gateway, not a format problem", async () => {
+      netFetch.mockResolvedValue(new Response("boom", { status: 500 }));
+
+      const response = await handlerWithoutCache()(
+        new Request(`${COLLAB_ASSET_SCHEME}://doc/doc-1/asset/asset-1`)
+      );
+
+      expect(response.status).toBe(502);
+    });
+
+    it("returns a terminal offline response instead of hanging", async () => {
+      netFetch.mockRejectedValue(new Error("offline"));
+
+      const response = await handlerWithoutCache()(
+        new Request(`${COLLAB_ASSET_SCHEME}://doc/doc-1/asset/asset-1`)
+      );
+
+      expect(response.status).toBe(503);
     });
   });
 });

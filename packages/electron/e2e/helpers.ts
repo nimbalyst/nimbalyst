@@ -40,16 +40,49 @@ export interface CdpElectronApp {
   close(): Promise<void>;
 }
 
-async function clearTestDatabase(preserveTestDatabase?: boolean): Promise<void> {
-  if (preserveTestDatabase) {
+/**
+ * Remove a directory, but only when it lives under the system temp dir.
+ *
+ * The guard is the point: this helper deletes state on every launch, and a
+ * `NIMBALYST_USER_DATA_DIR` that accidentally pointed at the developer's real
+ * `Application Support` directory would otherwise be wiped by running the
+ * suite.
+ */
+async function removeTempDir(dir: string): Promise<void> {
+  const resolved = path.resolve(dir);
+  const tmp = path.resolve(os.tmpdir());
+  if (resolved === tmp || !resolved.startsWith(tmp + path.sep)) {
     return;
   }
-  const testDbPath = path.join(os.tmpdir(), 'nimbalyst-test-db');
   try {
-    await fs.rm(testDbPath, { recursive: true, force: true });
+    await fs.rm(resolved, { recursive: true, force: true });
   } catch {
     // Ignore errors - directory might not exist
   }
+}
+
+/**
+ * Clear the state a previous launch persisted: the test database AND the test
+ * `userData` directory.
+ *
+ * The database was cleared from the start; `userData` was not, so every spec
+ * inherited the settings, workspace state and Stytch credentials written by
+ * whichever spec ran before it (`playwright.config.ts` is serial, so specs do
+ * not race, but they do accumulate). Two independent Playwright invocations on
+ * one machine also share the fixed path.
+ *
+ * `preserveTestDatabase` skips both, because the specs that set it are the ones
+ * that relaunch the app and need the earlier launch's state to survive.
+ */
+async function clearTestState(options?: {
+  preserveTestDatabase?: boolean;
+  userDataDir?: string;
+}): Promise<void> {
+  if (options?.preserveTestDatabase) {
+    return;
+  }
+  await removeTempDir(path.join(os.tmpdir(), 'nimbalyst-test-db'));
+  await removeTempDir(options?.userDataDir ?? TEST_USER_DATA_DIR);
 }
 
 async function findDevServerUrl(): Promise<string> {
@@ -88,21 +121,62 @@ function buildElectronArgs(electronMain: string, workspace?: string): string[] {
   return args;
 }
 
-function buildTestEnv(
+/**
+ * Where E2E runs are allowed to keep `userData`.
+ *
+ * `PLAYWRIGHT=1` only redirects the database and the extensions folder --
+ * `app.getPath('userData')` itself is only moved by `NIMBALYST_USER_DATA_DIR`
+ * (see `src/main/bootstrap.ts`). Without this, every test run reads and writes
+ * the developer's real `app-settings.json`, `workspace-settings.json`,
+ * `ai-settings.json` and `stytch-*.enc`, concurrently with their running dev
+ * instance (`allowMultipleInstances` is true under `PLAYWRIGHT`). Two
+ * electron-store instances doing read-modify-write on the same file is how a
+ * test run silently rewrites real settings.
+ *
+ * Fixed rather than random so a spec that relaunches the app can still see the
+ * state its earlier launch persisted -- same convention as `nimbalyst-test-db`,
+ * and cleared on the same terms: `launchElectronApp` wipes it unless the spec
+ * passes `preserveTestDatabase: true`. A per-spec directory would isolate
+ * concurrent Playwright invocations too, but it would break the
+ * relaunch-and-restore specs, which depend on a path that is stable across two
+ * launches; that trade is not taken here.
+ */
+export const TEST_USER_DATA_DIR = path.join(os.tmpdir(), 'nimbalyst-test-user-data');
+
+/**
+ * `process.env` is typed `string | undefined` per key, but Playwright's `env`
+ * option and `child_process.spawn` both want `Record<string, string>`. Drop the
+ * undefined-valued keys at this boundary rather than casting: an explicit
+ * `undefined` in a spawn env is not the same as an absent key, and the cast
+ * would hide that.
+ */
+function definedEnvEntries(env: NodeJS.ProcessEnv): Record<string, string> {
+  const defined: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) defined[key] = value;
+  }
+  return defined;
+}
+
+export function buildTestEnv(
   devServerUrl: string,
   options?: {
     env?: Record<string, string>;
     permissionMode?: TestPermissionMode;
   }
-): Record<string, string | undefined> {
+): Record<string, string> {
   const { ELECTRON_RUN_AS_NODE, ELECTRON_NO_ATTACH_CONSOLE, NODE_PATH, ...cleanEnv } = process.env;
-  const testEnv: Record<string, string | undefined> = {
-    ...cleanEnv,
+  const testEnv: Record<string, string> = {
+    ...definedEnvEntries(cleanEnv),
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? 'playwright-test-key',
     ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
     ELECTRON_RENDERER_URL: devServerUrl,
     PLAYWRIGHT: '1',
     NIMBALYST_CDP_PORT: '9333',
+    // After the `cleanEnv` spread so an inherited value (a worktree dev shell
+    // exports one) can't drag the run back onto real user data, and before
+    // `options.env` so a spec can still pick its own directory.
+    NIMBALYST_USER_DATA_DIR: TEST_USER_DATA_DIR,
     ...options?.env,
   };
 
@@ -197,9 +271,13 @@ export async function launchElectronApp(options?: {
     ? undefined
     : (options?.recordVideo ?? { dir: defaultVideoDir });
 
-  // Clear the test database directory to prevent corruption issues from previous runs
-  // The test database is stored in the system temp directory with a fixed name
-  await clearTestDatabase(options?.preserveTestDatabase);
+  // Clear the test database and userData directories to prevent corruption and
+  // leaked settings/credentials from previous runs. Both live in the system temp
+  // directory under fixed names.
+  await clearTestState({
+    preserveTestDatabase: options?.preserveTestDatabase,
+    userDataDir: options?.env?.NIMBALYST_USER_DATA_DIR,
+  });
   const devServerUrl = await findDevServerUrl();
   const args = buildElectronArgs(electronMain, options?.workspace);
   const testEnv = buildTestEnv(devServerUrl, {
@@ -232,7 +310,10 @@ export async function launchElectronAppViaCdp(options?: {
   const electronCwd = path.resolve(__dirname, '../../../');
   const cdpPort = options?.env?.NIMBALYST_CDP_PORT ?? '9333';
 
-  await clearTestDatabase(options?.preserveTestDatabase);
+  await clearTestState({
+    preserveTestDatabase: options?.preserveTestDatabase,
+    userDataDir: options?.env?.NIMBALYST_USER_DATA_DIR,
+  });
   const devServerUrl = await findDevServerUrl();
   const args = buildElectronArgs(electronMain, options?.workspace);
   const testEnv = buildTestEnv(devServerUrl, {

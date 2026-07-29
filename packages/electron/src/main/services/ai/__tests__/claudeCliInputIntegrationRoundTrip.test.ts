@@ -144,6 +144,12 @@ function makeQueueStore(
 const SESSION_ID = 's';
 const WORKSPACE = '/w';
 
+/**
+ * The composed path wraps its payload in bracketed-paste markers so the CLI
+ * treats a PTY-fragmented write as ONE paste — see `claudeCliSubmit.ts`.
+ */
+const pasted = (s: string) => `\x1b[200~${s}\x1b[201~`;
+
 describe('claude-code-cli input integration round-trip (attachments + queued prompts)', () => {
   let pipe: ReturnType<typeof makePipeline>;
 
@@ -166,9 +172,10 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
 
     expect(result.submitted).toBe(true);
 
-    // PTY: the composed line (prompt + inline path) then a SEPARATE Enter.
+    // PTY: the composed line (prompt + inline path), bracketed-paste wrapped,
+    // then a SEPARATE Enter.
     expect(pipe.ptyWrites).toEqual([
-      ['s', 'look at this /tmp/shot.png'],
+      ['s', pasted('look at this /tmp/shot.png')],
       ['s', '\r'],
     ]);
 
@@ -234,7 +241,7 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
 
     expect(result.submitted).toBe(true);
     expect(pipe.ptyWrites).toEqual([
-      ['s', '/tmp/only.png'],
+      ['s', pasted('/tmp/only.png')],
       ['s', '\r'],
     ]);
 
@@ -271,7 +278,7 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
     expect(flushed1).toBe(true);
     expect(store.items.find((i) => i.id === 'q1')?.status).toBe('completed');
     expect(pipe.ptyWrites).toEqual([
-      ['s', 'first /tmp/a.png'],
+      ['s', pasted('first /tmp/a.png')],
       ['s', '\r'],
     ]);
     expect(pipe.rows).toHaveLength(1);
@@ -286,7 +293,7 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
     expect(flushed2).toBe(true);
     expect(store.items.find((i) => i.id === 'q2')?.status).toBe('completed');
     expect(pipe.ptyWrites.slice(2)).toEqual([
-      ['s', 'second'],
+      ['s', pasted('second')],
       ['s', '\r'],
     ]);
     expect(pipe.rows).toHaveLength(2);

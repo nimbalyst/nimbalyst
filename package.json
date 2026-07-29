@@ -21,7 +21,7 @@
     "test": "npm run test:unit",
     "test:unit": "vitest",
     "test:prepush": "vitest --run",
-    "test:prepush-gate": "node --test scripts/__tests__/prepush-test-gate.test.mjs scripts/__tests__/check-main-bundle-graph.test.mjs scripts/__tests__/check-push-authors.test.mjs",
+    "test:prepush-gate": "node --test scripts/__tests__/prepush-test-gate.test.mjs scripts/__tests__/check-main-bundle-graph.test.mjs scripts/__tests__/check-push-authors.test.mjs packages/electron/scripts/__tests__/dev-user2.test.mjs",
     "test:unit:ui": "vitest --ui",
     "test:unit:coverage": "vitest --coverage",
     "test:provider:integration": "cross-env RUN_AI_PROVIDER_TESTS=true vitest --run",
@@ -46,6 +46,8 @@
     "android:screenshots": "bash packages/android/scripts/take-screenshots.sh",
     "android:walkthrough": "bash packages/android/scripts/record-walkthrough.sh",
     "test:extensions": "bash scripts/run-extension-tests.sh",
+    "electron:resign": "bash scripts/resign-dev-electron.sh",
+    "dev:url-handler": "bash scripts/install-dev-url-handler.sh",
     "postinstall": "patch-package"
   },
   "devDependencies": {

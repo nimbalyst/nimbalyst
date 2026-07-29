@@ -59,6 +59,25 @@ describe('resolveGitContext', () => {
     expect(resolveGitContext(tmpRoot)).toEqual({ isRepo: true, gitRoot: tmpRoot });
   });
 
+  it('ignores an inherited GIT_DIR pointing at another repository', async () => {
+    await initRepo(tmpRoot);
+    const decoy = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'nim-git-context-decoy-')));
+    await initRepo(decoy);
+
+    const previous = { dir: process.env.GIT_DIR, workTree: process.env.GIT_WORK_TREE };
+    process.env.GIT_DIR = path.join(decoy, '.git');
+    process.env.GIT_WORK_TREE = decoy;
+    try {
+      expect(resolveGitContext(tmpRoot)).toEqual({ isRepo: true, gitRoot: tmpRoot });
+    } finally {
+      if (previous.dir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previous.dir;
+      if (previous.workTree === undefined) delete process.env.GIT_WORK_TREE;
+      else process.env.GIT_WORK_TREE = previous.workTree;
+      await fs.rm(decoy, { recursive: true, force: true });
+    }
+  });
+
   it('returns the worktree root inside a linked worktree', async () => {
     await initRepo(tmpRoot);
     await fs.writeFile(path.join(tmpRoot, 'a.txt'), 'a\n');

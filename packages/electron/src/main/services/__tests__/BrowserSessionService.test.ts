@@ -11,6 +11,7 @@ import {
   clampBounds,
   isAllowedBrowserUrl,
   resolveBrowserPartitionName,
+  selectIdleHeadlessSessions,
 } from '../BrowserSessionService';
 
 describe('clampBounds', () => {
@@ -95,6 +96,64 @@ describe('isAllowedBrowserUrl', () => {
     expect(isAllowedBrowserUrl(null)).toBe(false);
     // @ts-expect-error
     expect(isAllowedBrowserUrl(undefined)).toBe(false);
+  });
+});
+
+describe('selectIdleHeadlessSessions', () => {
+  const TTL = 5 * 60 * 1000;
+  const NOW = 1_000_000_000;
+
+  it('reaps a headless session idle past the TTL', () => {
+    expect(
+      selectIdleHeadlessSessions(
+        [{ sessionId: 'agent-preview:1', headless: true, lastUsedAt: NOW - TTL - 1 }],
+        NOW,
+        TTL,
+      ),
+    ).toEqual(['agent-preview:1']);
+  });
+
+  it('reaps exactly at the TTL boundary', () => {
+    expect(
+      selectIdleHeadlessSessions(
+        [{ sessionId: 'agent-preview:1', headless: true, lastUsedAt: NOW - TTL }],
+        NOW,
+        TTL,
+      ),
+    ).toEqual(['agent-preview:1']);
+  });
+
+  it('spares a headless session used within the TTL', () => {
+    expect(
+      selectIdleHeadlessSessions(
+        [{ sessionId: 'agent-preview:1', headless: true, lastUsedAt: NOW - TTL + 1 }],
+        NOW,
+        TTL,
+      ),
+    ).toEqual([]);
+  });
+
+  it('never reaps editor-backed sessions, however old', () => {
+    expect(
+      selectIdleHeadlessSessions(
+        [{ sessionId: 'browser-virtual:tab-1', headless: false, lastUsedAt: 0 }],
+        NOW,
+        TTL,
+      ),
+    ).toEqual([]);
+  });
+
+  it('reaps only the idle headless sessions from a mixed set', () => {
+    const candidates = [
+      { sessionId: 'browser-virtual:tab-1', headless: false, lastUsedAt: 0 },
+      { sessionId: 'agent-preview:stale', headless: true, lastUsedAt: NOW - TTL * 3 },
+      { sessionId: 'agent-preview:active', headless: true, lastUsedAt: NOW - 1000 },
+    ];
+    expect(selectIdleHeadlessSessions(candidates, NOW, TTL)).toEqual(['agent-preview:stale']);
+  });
+
+  it('returns nothing for an empty session set', () => {
+    expect(selectIdleHeadlessSessions([], NOW, TTL)).toEqual([]);
   });
 });
 

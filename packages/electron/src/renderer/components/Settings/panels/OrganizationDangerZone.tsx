@@ -1,7 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { ActionGuard } from './ActionGuard';
 import { MergeOrgWizard } from './MergeOrgWizard';
-import { bucketMemberCount, bucketProjectCount, categorizeTeamAnalyticsError } from '../../../../shared/analytics/teamAnalytics';
+import {
+  bucketMemberCount,
+  bucketProjectCount,
+  categorizeTeamAnalyticsError,
+  normalizeTeamAnalyticsCallerRole,
+} from '../../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
 
 export function OrganizationDangerZone({ orgId }: { orgId?: string }) {
@@ -68,7 +73,7 @@ export function OrganizationDangerZone({ orgId }: { orgId?: string }) {
             if (result?.success) {
               trackTeamAnalyticsEvent('team_organization_deleted', {
                 surface: 'desktop',
-                callerRole: role === 'owner' || role === 'admin' || role === 'member' ? role : 'unknown',
+                callerRole: normalizeTeamAnalyticsCallerRole(role),
                 memberCountBucket: bucketMemberCount(memberCount),
                 projectCountBucket: bucketProjectCount(projectCount),
               });
@@ -81,7 +86,7 @@ export function OrganizationDangerZone({ orgId }: { orgId?: string }) {
                 surface: 'desktop',
                 operation: 'delete_organization',
                 entryPoint: 'organization_manager',
-                callerRole: role === 'owner' || role === 'admin' || role === 'member' ? role : 'unknown',
+                callerRole: normalizeTeamAnalyticsCallerRole(role),
                 errorCategory: categorizeTeamAnalyticsError('organization', result?.error),
               });
               setMessage(result?.error ?? 'Delete failed');
@@ -91,7 +96,7 @@ export function OrganizationDangerZone({ orgId }: { orgId?: string }) {
               surface: 'desktop',
               operation: 'delete_organization',
               entryPoint: 'organization_manager',
-              callerRole: role === 'owner' || role === 'admin' || role === 'member' ? role : 'unknown',
+              callerRole: normalizeTeamAnalyticsCallerRole(role),
               errorCategory: categorizeTeamAnalyticsError('organization', error),
             });
             setMessage(error instanceof Error ? error.message : 'Delete failed');

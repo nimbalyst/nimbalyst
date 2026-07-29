@@ -13,6 +13,7 @@ import {
   bucketQueryLength,
   bucketRetryCount,
   categorizeTeamAnalyticsError,
+  normalizeTeamAnalyticsCallerRole,
   teamPersonPropertiesForEvent,
   validateTeamAnalyticsEvent,
 } from '../teamAnalytics';
@@ -74,6 +75,16 @@ describe('Teams analytics contract', () => {
     expect(() => validateTeamAnalyticsEvent('collab_sync_attempt_completed', {
       outcome: 'retrying',
     } as never)).toThrow('not an allowlisted category');
+  });
+
+  it('records viewer roles without treating unknown roles as known', () => {
+    expect(normalizeTeamAnalyticsCallerRole('viewer')).toBe('viewer');
+    expect(normalizeTeamAnalyticsCallerRole('future-role')).toBe('unknown');
+    expect(validateTeamAnalyticsEvent('team_organization_switched', {
+      surface: 'desktop',
+      entryPoint: 'org_switcher',
+      callerRole: 'viewer',
+    }).properties.callerRole).toBe('viewer');
   });
 
   it('buckets counts and durations without returning exact high-cardinality values', () => {

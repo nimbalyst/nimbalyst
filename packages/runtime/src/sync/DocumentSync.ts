@@ -64,37 +64,6 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
-async function encryptBinary(
-  data: Uint8Array,
-  key: CryptoKey
-): Promise<{ encrypted: string; iv: string }> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    data as BufferSource
-  );
-  return {
-    encrypted: uint8ArrayToBase64(new Uint8Array(ciphertext)),
-    iv: uint8ArrayToBase64(iv),
-  };
-}
-
-async function decryptBinary(
-  encrypted: string,
-  iv: string,
-  key: CryptoKey
-): Promise<Uint8Array> {
-  const ciphertext = base64ToUint8Array(encrypted);
-  const ivBytes = base64ToUint8Array(iv);
-  const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: ivBytes as BufferSource },
-    key,
-    ciphertext as BufferSource
-  );
-  return new Uint8Array(plaintext);
-}
-
 // ============================================================================
 // DocumentSyncProvider
 // ============================================================================
@@ -544,86 +513,37 @@ export class DocumentSyncProvider {
     this.send({ type: 'docSetMetadata', entries });
   }
 
-  /** Epic H2: true when the server holds the team DEK (no client crypto). */
-  private get serverManaged(): boolean {
-    return this.config.keyCustody === 'server-managed';
-  }
-
   /**
-   * Ordered candidate keys for decrypting a legacy-e2e (non-empty-iv) row in
-   * server-managed mode. Tries the multi-epoch list first (NIM-959), then the
-   * singular legacy key, then the document key as a last resort. Duplicates are
-   * harmless (a wrong key just throws and we move on), so no dedup is needed.
-   */
-  private get legacyCandidateKeys(): CryptoKey[] {
-    const keys: CryptoKey[] = [];
-    if (this.config.legacyDocumentKeys) keys.push(...this.config.legacyDocumentKeys);
-    if (this.config.legacyDocumentKey) keys.push(this.config.legacyDocumentKey);
-    if (this.config.documentKey) keys.push(this.config.documentKey);
-    return keys;
-  }
-
-  /**
-   * Encrypt bytes for the wire. Legacy: AES-256-GCM with the document key.
-   * Server-managed: pass-through (base64 raw bytes, empty-string iv sentinel) —
-   * the server encrypts at rest with the team DEK.
+   * Encrypt bytes for the wire: pass-through (base64 raw bytes, empty-string iv
+   * sentinel). The server encrypts at rest with the team DEK; the client holds
+   * no team key.
    */
   private async encryptForWire(data: Uint8Array): Promise<{ encrypted: string; iv: string }> {
-    if (this.serverManaged) {
-      return { encrypted: uint8ArrayToBase64(data), iv: '' };
-    }
-    return encryptBinary(data, this.config.documentKey!);
+    return { encrypted: uint8ArrayToBase64(data), iv: '' };
   }
 
   /**
    * Decrypt bytes from the wire.
    *
-   * Server-managed mode is mixed during/after migration:
-   *   - Rows the server decrypted with the team DEK arrive as PLAINTEXT with an
-   *     empty-iv sentinel ('') -> just base64-decode.
-   *   - PRE-MIGRATION (legacy-e2e) rows are passed through UNCHANGED: AES
-   *     ciphertext with their original (non-empty) iv. These must be AES-
-   *     decrypted with the legacy org key, or they decode to garbage and Yjs
-   *     throws. We fall back to `legacyDocumentKey` (or `documentKey`) for them.
+   * The server decrypts rows it owns and sends them as PLAINTEXT with the
+   * empty-iv sentinel (''). A NON-EMPTY iv means the row is pre-cutover
+   * ciphertext from the retired client-managed lane: no supported client holds
+   * the key for it, so throw rather than hand Yjs bytes that decode to garbage.
+   * The per-payload catch skips just that row instead of blanking the document.
    */
   private async decryptFromWire(encrypted: string, iv: string): Promise<Uint8Array> {
-    if (this.serverManaged) {
-      // Empty iv sentinel => server already decrypted (plaintext passthrough).
-      if (!iv) {
-        return base64ToUint8Array(encrypted);
-      }
-      // Non-empty iv => legacy ciphertext that survived the migration. The row
-      // may have been written under any past org-key epoch (the team could have
-      // rotated while still legacy-e2e), so try EVERY candidate epoch in turn --
-      // current cached key, the singular legacy key, and all archived epochs --
-      // until one AES-decrypts. If none match, surface an error so the per-
-      // payload catch skips just this row rather than blanking the doc (NIM-959).
-      const legacyKeys = this.legacyCandidateKeys;
-      if (legacyKeys.length === 0) {
-        throw new Error('legacy-e2e row in server-managed doc but no legacy org key available');
-      }
-      let lastErr: unknown;
-      for (const key of legacyKeys) {
-        try {
-          return await decryptBinary(encrypted, iv, key);
-        } catch (err) {
-          lastErr = err;
-        }
-      }
-      throw lastErr instanceof Error
-        ? lastErr
-        : new Error('legacy-e2e row did not match any candidate org-key epoch');
+    if (iv) {
+      throw new Error(
+        'Document row is pre-cutover client-encrypted content and can no longer be read',
+      );
     }
-    return decryptBinary(encrypted, iv, this.config.documentKey!);
-  }
-
-  /** Org key fingerprint to attach to a write; null/undefined in server-managed. */
-  private get wireOrgKeyFingerprint(): string | undefined {
-    return this.serverManaged ? undefined : this.config.orgKeyFingerprint;
+    return base64ToUint8Array(encrypted);
   }
 
   /**
-   * Send encrypted awareness state to other connected clients.
+   * Send awareness state to other connected clients. Awareness is plaintext
+   * over TLS now that team custody is server-managed; the empty-iv sentinel
+   * keeps the wire shape unchanged.
    * Sends immediately (no throttling). Use setLocalAwareness() for throttled updates.
    */
   async sendAwareness(state: AwarenessState): Promise<void> {
@@ -889,14 +809,6 @@ export class DocumentSyncProvider {
         case 'docAwarenessBroadcast':
           await this.handleAwarenessBroadcast(msg);
           break;
-        case 'keyEnvelope':
-          this.config.onKeyEnvelope?.({
-            wrappedKey: msg.wrappedKey,
-            iv: msg.iv,
-            senderPublicKey: msg.senderPublicKey,
-            senderUserId: msg.senderUserId,
-          });
-          break;
         case 'docRoomMoved':
           // Epic H3 P1: the room was relocated to another org. Stop (the old
           // room is frozen) and let the host re-resolve + reconnect.
@@ -987,11 +899,10 @@ export class DocumentSyncProvider {
           Y.applyUpdate(this.ydoc, stateBytes, SNAPSHOT_ORIGIN);
         }
       } catch (err) {
-        // Any per-payload failure -- stale key epoch (OperationError), an
-        // un-migrated legacy-e2e row with no legacy key, or corrupt bytes that
-        // make Y.applyUpdate throw (TypeError/RangeError) -- must skip only THIS
-        // payload, never abort the whole sync. One bad row must not blank the
-        // entire document body. See NIM-878.
+        // Any per-payload failure -- a pre-cutover client-encrypted row, or
+        // corrupt bytes that make Y.applyUpdate throw (TypeError/RangeError) --
+        // must skip only THIS payload, never abort the whole sync. One bad row
+        // must not blank the entire document body. See NIM-878.
         console.warn('[DocumentSync] Skipping undecodable snapshot; sync will continue:', err instanceof Error ? err.message : err);
         this.skippedUndecodablePayload = true;
         decodedCompleteBatch = false;
@@ -1017,7 +928,7 @@ export class DocumentSyncProvider {
           Y.applyUpdate(this.ydoc, updateBytes, REMOTE_ORIGIN);
         }
       } catch (err) {
-        // Skip only this update (stale key epoch, un-migrated legacy row, or
+        // Skip only this update (a pre-cutover client-encrypted row, or
         // corrupt bytes); never abort the whole sync. See NIM-878.
         console.warn(`[DocumentSync] Skipping undecodable update at seq ${update.sequence}:`, err instanceof Error ? err.message : err);
         this.skippedUndecodablePayload = true;
@@ -1129,7 +1040,7 @@ export class DocumentSyncProvider {
         Y.applyUpdate(this.ydoc, updateBytes, REMOTE_ORIGIN);
       }
     } catch (err) {
-      // Skip only this broadcast (stale key epoch, un-migrated legacy row, or
+      // Skip only this broadcast (a pre-cutover client-encrypted row, or
       // corrupt bytes that make Y.applyUpdate throw); never abort sync. The
       // applyUpdate is INSIDE the try so garbage bytes can't escape. See NIM-878.
       console.warn(`[DocumentSync] Skipping undecodable or unpersisted broadcast at seq ${msg.sequence}:`, err instanceof Error ? err.message : err);
@@ -1374,7 +1285,6 @@ export class DocumentSyncProvider {
         encryptedUpdate: encrypted,
         iv,
         clientUpdateId,
-        orgKeyFingerprint: this.wireOrgKeyFingerprint,
       });
       this.scheduleReplayAckTimeout(clientUpdateId);
     } catch (err) {
@@ -1855,7 +1765,6 @@ export class DocumentSyncProvider {
         iv,
         replacesUpTo: currentSeq,
         clientCompactId,
-        orgKeyFingerprint: this.wireOrgKeyFingerprint,
       });
       this.pendingCompactionId = clientCompactId;
       this.scheduleCompactionAckTimeout(clientCompactId);
@@ -1952,7 +1861,6 @@ export class DocumentSyncProvider {
       iv,
       replacesUpTo: this.lastSeq,
       clientCompactId,
-      orgKeyFingerprint: this.wireOrgKeyFingerprint,
     });
 
     return acked;

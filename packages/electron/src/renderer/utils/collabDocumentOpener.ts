@@ -30,28 +30,6 @@ export interface CollabDocumentConfig {
   title: string;
   /** Last-known logical path used while the shared index resolves. */
   displayPath?: string;
-  /**
-   * Epic H2 key custody. `legacy-e2e` (default): client encrypts/decrypts doc
-   * data with `documentKey`. `server-managed`: the server holds the per-team
-   * DEK and encrypts at rest, so the client syncs PLAINTEXT and `documentKey`
-   * is absent.
-   */
-  keyCustody?: 'legacy-e2e' | 'server-managed';
-  /** Org AES-256-GCM key. Present in legacy-e2e; absent in server-managed. */
-  documentKey?: CryptoKey;
-  /**
-   * Legacy org key for reading PRE-MIGRATION rows in server-managed mode
-   * (NIM-878). Rows written before the legacy-e2e -> server-managed flip are
-   * still AES-ciphertext and must be decrypted with the original org key.
-   */
-  legacyDocumentKey?: CryptoKey;
-  /**
-   * NIM-959: all candidate legacy org-key epochs for server-managed reads. A
-   * team that rotated its org key while still legacy-e2e can have content rows
-   * spanning epochs; DocumentSync tries each. Mirrors the doc-index multi-epoch
-   * fix (NIM-906/910).
-   */
-  legacyDocumentKeys?: CryptoKey[];
   serverUrl: string;
   getJwt: (opts?: { forceRefresh?: boolean }) => Promise<string>;
   /** Optional extra query appended to revision-history HTTP requests. */
@@ -67,8 +45,6 @@ export interface CollabDocumentConfig {
   initialContent?: string;
   /** Persisted local updates that still need server acknowledgement. */
   pendingUpdateBase64?: string;
-  /** Org key fingerprint for key epoch enforcement on document writes. */
-  orgKeyFingerprint?: string;
   /**
    * Logical document type (e.g. 'markdown', 'excalidraw', 'mindmap'). Used by
    * `CollaborativeTabEditor` to route to the right editor branch (built-in
@@ -229,39 +205,6 @@ export function openCollabDocument(options: CollabDocumentConfig & {
     collabConfigRegistry.delete(uri);
     throw error;
   }
-}
-
-/**
- * Reconstruct a CryptoKey from raw base64 bytes (sent over IPC).
- */
-async function importOrgKeyFromBase64(base64: string): Promise<CryptoKey> {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return crypto.subtle.importKey(
-    'raw',
-    bytes,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt']
-  );
-}
-
-/**
- * Import every candidate legacy org-key epoch for server-managed reads (NIM-959).
- * Prefers the multi-epoch array; falls back to the singular legacy key for older
- * main-process handlers. Returns [] when none are available.
- */
-async function importLegacyOrgKeys(
-  legacyOrgKeysBase64: string[] | undefined,
-  legacyOrgKeyBase64: string | undefined,
-): Promise<CryptoKey[]> {
-  const raws = legacyOrgKeysBase64 && legacyOrgKeysBase64.length > 0
-    ? legacyOrgKeysBase64
-    : (legacyOrgKeyBase64 ? [legacyOrgKeyBase64] : []);
-  return Promise.all(raws.map((b64) => importOrgKeyFromBase64(b64)));
 }
 
 // ---------------------------------------------------------------------------
@@ -514,17 +457,9 @@ export async function resolveCollabConfigForUri(
       return null;
     }
 
-    const { orgId, title: resolvedTitle, orgKeyBase64, legacyOrgKeyBase64, legacyOrgKeysBase64, orgKeyFingerprint, serverUrl, accountId, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+    const { orgId, title: resolvedTitle, serverUrl, accountId, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
     const urlExtraQuery = result.config.urlExtraQuery;
     const resolvedDocumentType = documentType ?? result.config.documentType;
-    const serverManaged = result.config.keyCustody === 'server-managed';
-    const documentKey = serverManaged ? undefined : await importOrgKeyFromBase64(orgKeyBase64);
-    // Server-managed docs may still serve PRE-MIGRATION legacy-e2e rows; import
-    // every candidate legacy org-key epoch so old rows (possibly written under a
-    // rotated-away key) can be decrypted (NIM-878 / NIM-959).
-    const legacyDocumentKeys = serverManaged
-      ? await importLegacyOrgKeys(legacyOrgKeysBase64, legacyOrgKeyBase64)
-      : [];
     const hasWsProxy = !!window.electronAPI?.documentSync?.wsConnect;
 
     const config: CollabDocumentConfig = {
@@ -534,11 +469,6 @@ export async function resolveCollabConfigForUri(
       title: resolvedTitle,
       documentType: resolvedDocumentType,
       ...resolvedMetadata,
-      keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
-      documentKey,
-      legacyDocumentKey: legacyDocumentKeys[0],
-      legacyDocumentKeys,
-      orgKeyFingerprint,
       serverUrl,
       accountId,
       userId,
@@ -648,17 +578,8 @@ export async function openCollabDocumentViaIPC(options: {
     throw new Error(result.error || 'Failed to resolve collaborative document config');
   }
 
-  const { orgId, documentId, title, orgKeyBase64, legacyOrgKeyBase64, legacyOrgKeysBase64, serverUrl, accountId, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+  const { orgId, documentId, title, serverUrl, accountId, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
   const documentType = options.documentType ?? result.config.documentType;
-  const serverManaged = result.config.keyCustody === 'server-managed';
-
-  // Reconstruct CryptoKey from raw base64 (legacy only; server-managed has none)
-  const documentKey = serverManaged ? undefined : await importOrgKeyFromBase64(orgKeyBase64);
-  // Every candidate legacy org-key epoch for reading pre-migration rows in
-  // server-managed mode -- rows may span rotated epochs (NIM-878 / NIM-959).
-  const legacyDocumentKeys = serverManaged
-    ? await importLegacyOrgKeys(legacyOrgKeysBase64, legacyOrgKeyBase64)
-    : [];
 
   // Build the real URI now that we have orgId
   const realUri = buildCollabUri(orgId, documentId);
@@ -684,10 +605,6 @@ export async function openCollabDocumentViaIPC(options: {
     analyticsActorType: options.analyticsActorType,
     analyticsWasUnread: options.analyticsWasUnread,
     isPinned: options.isPinned,
-    keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
-    documentKey,
-    legacyDocumentKey: legacyDocumentKeys[0],
-    legacyDocumentKeys,
     serverUrl,
     accountId,
     userId,

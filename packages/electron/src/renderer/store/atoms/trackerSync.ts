@@ -34,8 +34,14 @@ export const trackerSyncConfigChangeAtom = atom<TrackerSyncConfigChange | null>(
  * without erasing a still-relevant `staleKeyEpoch`. `forbidden` and
  * `malformed` are bugs, not user-facing states -- the listener routes
  * them to console + toast instead of into this atom.
+ *
+ * `staleKeyEpoch` and `rotationLocked` are legacy codes: the server-managed
+ * custody server can no longer produce them, but they stay typed for
+ * compatibility with old servers. `custodyUnavailable` is the current
+ * user-facing rejection -- the server could not load the team DEK (the
+ * organization was never converted to server-managed custody).
  */
-export type TrackerSyncRejectionCode = 'staleKeyEpoch' | 'rotationLocked';
+export type TrackerSyncRejectionCode = 'staleKeyEpoch' | 'rotationLocked' | 'custodyUnavailable';
 
 export interface TrackerSyncRejection {
   workspacePath: string;
@@ -53,6 +59,7 @@ export type TrackerSyncRejectionState = {
 export const trackerSyncRejectionAtom = atom<TrackerSyncRejectionState>({
   staleKeyEpoch: null,
   rotationLocked: null,
+  custodyUnavailable: null,
 });
 
 export interface TrackerSyncConnectionState {

@@ -7,6 +7,7 @@ The Nimbalyst desktop app, built with Electron.
 - **Dev server**: `npm run dev` (user runs this — don't do it yourself)
 - **Dev with restart loop**: `npm run dev:loop` (enables restart button / `/restart` command)
 - **Build for Mac**: `npm run build:mac:local` or `npm run build:mac:notarized`
+- **Deep links in dev (macOS)**: `npm run dev:url-handler` (from the repo root) points `nimbalyst://` at this checkout. The dev app deliberately does *not* claim the scheme itself — in dev it runs inside `node_modules/electron/dist/Electron.app`, whose `com.github.Electron` bundle id is shared by every Electron copy on the machine, so macOS would launch an arbitrary one (blank Electron window) instead of Nimbalyst. See `scripts/install-dev-url-handler.sh` and `src/main/utils/protocolRegistration.ts`.
 
 ### Testing
 

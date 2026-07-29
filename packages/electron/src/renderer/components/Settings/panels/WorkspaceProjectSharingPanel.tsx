@@ -5,7 +5,6 @@ import { DIALOG_IDS } from '../../../dialogs/registry';
 import type { CreateTeamData } from '../../../dialogs/teamDialogs';
 import { AlphaBadge } from '../../common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../../common/TeamAlphaNotice';
-import { SecurityEncryptionSection } from './H2EncryptionMigration';
 import { MoveProjectWizard } from './MoveProjectWizard';
 import { MergeOrgWizard } from './MergeOrgWizard';
 import { ProjectAccessEditor } from './ProjectAccessEditor';
@@ -14,18 +13,23 @@ import {
   bucketMemberCount,
   bucketProjectCount,
   categorizeTeamAnalyticsError,
+  normalizeTeamAnalyticsCallerRole,
 } from '../../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
+import { organizationCreationEnabled } from '../../../store/atoms/settingsDomains';
 
 // ============================================================================
 // Types
 // ============================================================================
 
+type TeamMemberRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest' | 'unknown';
+type EditableTeamMemberRole = 'admin' | 'member' | 'viewer';
+
 interface TeamMember {
   id: string;
   name: string;
   email: string;
-  role: 'admin' | 'member';
+  role: TeamMemberRole;
   status: 'pending' | 'active';
   avatarColor: string;
   isYou?: boolean;
@@ -71,6 +75,30 @@ function getAvatarColor(index: number): string {
   return AVATAR_COLORS[index % AVATAR_COLORS.length];
 }
 
+function normalizeTeamMemberRole(role: unknown): TeamMemberRole {
+  switch (role) {
+    case 'owner':
+    case 'admin':
+    case 'member':
+    case 'viewer':
+    case 'guest':
+      return role;
+    default:
+      return 'unknown';
+  }
+}
+
+function teamMemberRoleLabel(role: TeamMemberRole): string {
+  switch (role) {
+    case 'owner': return 'Owner';
+    case 'admin': return 'Admin';
+    case 'member': return 'Member';
+    case 'viewer': return 'Viewer';
+    case 'guest': return 'Guest';
+    case 'unknown': return 'Unknown';
+  }
+}
+
 // ============================================================================
 // Sub-components
 // ============================================================================
@@ -100,27 +128,28 @@ function MemberAvatar({ name, email, color, isPending }: {
   );
 }
 
-function RoleBadge({ role, editable, onChange }: { role: 'admin' | 'member'; editable?: boolean; onChange?: (newRole: 'admin' | 'member') => void }) {
+function RoleBadge({ role, editable, onChange }: { role: TeamMemberRole; editable?: boolean; onChange?: (newRole: EditableTeamMemberRole) => void }) {
   const colorClass = role === 'admin'
     ? 'bg-[rgba(96,165,250,0.15)] text-[var(--nim-primary)]'
     : 'bg-[rgba(180,180,180,0.1)] text-[var(--nim-text-faint)]';
 
-  if (editable && onChange) {
+  if (editable && onChange && (role === 'admin' || role === 'member' || role === 'viewer')) {
     return (
       <select
         value={role}
-        onChange={(e) => onChange(e.target.value as 'admin' | 'member')}
+        onChange={(e) => onChange(e.target.value as EditableTeamMemberRole)}
         className={`${colorClass} px-[5px] py-[2px] rounded-[10px] text-[10px] font-semibold border-none cursor-pointer outline-none hover:ring-1 hover:ring-[var(--nim-primary)]`}
       >
         <option value="admin">Admin</option>
         <option value="member">Member</option>
+        <option value="viewer">Viewer</option>
       </select>
     );
   }
 
   return (
     <span className={`${colorClass} px-[7px] py-[2px] rounded-[10px] text-[10px] font-semibold`}>
-      {role === 'admin' ? 'Admin' : 'Member'}
+      {teamMemberRoleLabel(role)}
     </span>
   );
 }
@@ -285,22 +314,33 @@ export function UnsharedProjectSharingState({
               </div>
             )}
 
-            <div className="project-sharing-choice rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
-              <div className="text-[13px] font-medium text-[var(--nim-text)]">Create a new organization</div>
-              <p className="m-0 mt-0.5 mb-2 text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
-                {canChooseExisting
-                  ? 'Start a separate organization with its own members and billing.'
-                  : 'You are not in an organization yet. Create one to start sharing this project.'}
-              </p>
-              <button
-                type="button"
-                onClick={() => setChoice('new')}
-                className="rounded-md border border-[var(--nim-border)] px-4 py-2 text-[12px] font-medium text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
-                data-testid="project-sharing-choose-new"
+            {organizationCreationEnabled && (
+              <div className="project-sharing-choice rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
+                <div className="text-[13px] font-medium text-[var(--nim-text)]">Create a new organization</div>
+                <p className="m-0 mt-0.5 mb-2 text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
+                  {canChooseExisting
+                    ? 'Start a separate organization with its own members and billing.'
+                    : 'You are not in an organization yet. Create one to start sharing this project.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setChoice('new')}
+                  className="rounded-md border border-[var(--nim-border)] px-4 py-2 text-[12px] font-medium text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+                  data-testid="project-sharing-choose-new"
+                >
+                  Continue
+                </button>
+              </div>
+            )}
+            {!organizationCreationEnabled && !canChooseExisting && (
+              <p
+                className="project-sharing-invite-only m-0 text-[12px] leading-relaxed text-[var(--nim-text-muted)]"
+                data-testid="project-sharing-invite-only"
               >
-                Continue
-              </button>
-            </div>
+                Organizations are invite-only during the alpha. Once you are an admin of an
+                organization, you can add this project to it here.
+              </p>
+            )}
           </div>
         ) : (
           <div className="project-sharing-confirm rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4" data-testid="project-sharing-confirm">
@@ -419,7 +459,7 @@ export function ProjectScopedTeamExistsState({
   return (
     <div className="attached-project-sharing-state" data-testid="attached-project-sharing-state">
       <div className="project-identity-card rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4" data-testid="project-identity-card">
-        <div className="flex items-center gap-3"><MaterialSymbol icon="folder_shared" size={22} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{currentProject?.name || currentProject?.slug || team.name}</div><div className="truncate text-xs text-[var(--nim-text-muted)]">{team.name} · {team.callerRole || 'member'}</div></div></div>
+        <div className="flex items-center gap-3"><MaterialSymbol icon="folder_shared" size={22} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{currentProject?.name || currentProject?.slug || team.name}</div><div className="truncate text-xs text-[var(--nim-text-muted)]">{team.name} · {teamMemberRoleLabel(normalizeTeamMemberRole(team.callerRole))}</div></div></div>
         <div className="mt-3 flex items-center gap-2 rounded bg-[var(--nim-bg)] px-3 py-2"><MaterialSymbol icon={team.gitRemoteHash ? 'link' : 'link_off'} size={15} /><span className="min-w-0 flex-1 truncate select-text font-mono text-xs text-[var(--nim-text-muted)]">{localGitRemote || 'No git remote linked'}</span>{isAdmin && (team.gitRemoteHash ? <button type="button" className="text-xs text-[var(--nim-text-muted)]" onClick={onUnlinkProject}>Unlink</button> : localGitRemote ? <button type="button" className="text-xs text-[var(--nim-link)]" onClick={onLinkProject}>Relink</button> : null)}</div>
       </div>
 
@@ -531,9 +571,7 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
   }>({ isAuthenticated: false, user: null });
 
   const createTeamDialog = useDialogState<CreateTeamData>(DIALOG_IDS.CREATE_TEAM);
-  const analyticsCallerRole = team?.callerRole === 'owner' || team?.callerRole === 'admin' || team?.callerRole === 'member'
-    ? team.callerRole
-    : 'unknown';
+  const analyticsCallerRole = normalizeTeamAnalyticsCallerRole(team?.callerRole);
   const trackFailure = useCallback((
     operation: 'create_organization' | 'send_invitation' | 'accept_invitation' | 'change_member_role' | 'remove_member' | 'add_project' | 'link_project' | 'unlink_project' | 'delete_organization',
     reason: unknown,
@@ -628,7 +666,7 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       id: m.memberId,
       name: m.name || '',
       email: m.email,
-      role: m.role as 'admin' | 'member',
+      role: normalizeTeamMemberRole(m.role),
       status: m.status === 'pending' ? 'pending' as const : 'active' as const,
       avatarColor: getAvatarColor(i),
       isYou: m.memberId === currentUserId,
@@ -643,7 +681,7 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       gitRemoteHash: teamGitRemoteHash,
       teamProjectId: teamProjectId ?? null,
       members,
-      callerRole: membersResult.callerRole || 'member',
+      callerRole: normalizeTeamMemberRole(membersResult.callerRole),
       boundPersonalOrgId,
       boundAccountEmail: accounts.find((account) => account.personalOrgId === boundPersonalOrgId)?.email ?? null,
     });
@@ -957,18 +995,18 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     }
   };
 
-  const handleUpdateRole = async (memberId: string, newRole: 'admin' | 'member') => {
+  const handleUpdateRole = async (memberId: string, newRole: EditableTeamMemberRole) => {
     if (!team) return;
     setError(null);
     try {
       const result = await (window as any).electronAPI.team.updateRole(team.orgId, memberId, newRole);
       if (result.success) {
-        const previousRole = team.members.find((member) => member.id === memberId)?.role ?? 'member';
+        const previousRole = team.members.find((member) => member.id === memberId)?.role ?? 'unknown';
         trackTeamAnalyticsEvent('team_member_role_changed', {
           surface: 'desktop',
           callerRole: analyticsCallerRole,
-          fromRole: previousRole,
-          toRole: newRole,
+          fromRole: normalizeTeamAnalyticsCallerRole(previousRole),
+          toRole: normalizeTeamAnalyticsCallerRole(newRole),
         });
         // Optimistic update
         setTeam({

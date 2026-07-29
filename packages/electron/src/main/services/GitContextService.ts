@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import { sanitizeGitRepositoryEnv } from './gitRepositoryEnv';
 
 /**
  * The git context of a workspace: whether it lives inside a git repository,
@@ -20,6 +21,10 @@ export interface GitContext {
  * a `git init` (or a deleted repo) is reflected on the very next call. Every
  * caller is about to spawn a git subprocess anyway, so the extra ~5-10ms
  * rev-parse is marginal.
+ *
+ * Repository-selection variables are stripped from the environment: an inherited
+ * GIT_DIR/GIT_WORK_TREE (git exports these to hooks) would otherwise override the
+ * cwd and resolve the toplevel of an entirely different repository.
  */
 export function resolveGitContext(workspacePath: string): GitContext {
   if (!workspacePath) {
@@ -31,6 +36,7 @@ export function resolveGitContext(workspacePath: string): GitContext {
       encoding: 'utf8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: sanitizeGitRepositoryEnv(process.env),
     }).trim();
     return gitRoot
       ? { isRepo: true, gitRoot }

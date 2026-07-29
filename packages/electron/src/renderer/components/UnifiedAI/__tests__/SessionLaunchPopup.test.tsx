@@ -90,6 +90,7 @@ describe('SessionLaunchPopup', () => {
     testStore.set(agentModeSettingsAtom, {
       defaultModel: 'claude-code:sonnet',
       defaultEffortLevel: 'high',
+      defaultThinkingMode: 'enabled',
     });
     render(
       <Provider store={testStore}>
@@ -168,6 +169,33 @@ describe('SessionLaunchPopup', () => {
     });
   });
 
+  it('stamps the app-wide extended-thinking default onto a new session (#1034)', async () => {
+    const testStore = createStore();
+    testStore.set(activeWorkspacePathAtom, '/workspace');
+    initWorkstreamState('/workspace');
+    testStore.set(agentModeSettingsAtom, {
+      defaultModel: 'claude-code:sonnet',
+      defaultEffortLevel: 'high',
+      defaultThinkingMode: 'disabled',
+    });
+    render(
+      <Provider store={testStore}>
+        <SessionLaunchPopup workspacePath="/workspace" />
+      </Provider>,
+    );
+
+    act(() => testStore.set(sessionLaunchPopupRequestAtom, 1));
+    const input = await screen.findByTestId('session-launch-popup-input');
+    fireEvent.change(input, { target: { value: 'Quick lookup' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start Session' }));
+
+    await waitFor(() => {
+      expect(invoke.mock.calls.some(([channel]) => channel === 'sessions:create')).toBe(true);
+    });
+    const createCall = invoke.mock.calls.find(([channel]) => channel === 'sessions:create');
+    expect(createCall?.[1].session.metadata).toMatchObject({ thinkingMode: 'disabled' });
+  });
+
   it('moves the popup by dragging its title bar and closes from the title bar', async () => {
     const testStore = createStore();
     testStore.set(activeWorkspacePathAtom, '/workspace');
@@ -175,6 +203,7 @@ describe('SessionLaunchPopup', () => {
     testStore.set(agentModeSettingsAtom, {
       defaultModel: 'claude-code:sonnet',
       defaultEffortLevel: 'high',
+      defaultThinkingMode: 'enabled',
     });
     render(
       <Provider store={testStore}>

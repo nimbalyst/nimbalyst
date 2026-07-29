@@ -26,7 +26,6 @@
 import { test, expect } from '@playwright/test';
 test.skip(() => !process.env.RUN_COLLAB_TESTS, 'Requires RUN_COLLAB_TESTS=1 and wrangler dev');
 import type { ElectronApplication, Page } from '@playwright/test';
-import { webcrypto } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import {
@@ -49,17 +48,7 @@ const CSV_CONTENT = 'Name,Value\nAlice,100\nBob,200\nCarol,300\n';
 let electronApp: ElectronApplication;
 let page: Page;
 let workspaceDir: string;
-let encryptionKeyBase64: string;
 
-async function generateKeyBase64(): Promise<string> {
-  const key = await webcrypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt'],
-  );
-  const raw = await webcrypto.subtle.exportKey('raw', key);
-  return Buffer.from(raw).toString('base64');
-}
 
 /**
  * Read the visible grid's data-cell text content via the DOM. Returns the
@@ -94,7 +83,7 @@ async function waitForCsvGridText(page: Page, expected: string, timeoutMs = 10_0
 
 async function openCollabCsv(page: Page, opts: { initialContent?: string }): Promise<void> {
   await page.evaluate(
-    async ({ documentId, initialContent, serverUrl, orgId, userId, keyBase64 }) => {
+    async ({ documentId, initialContent, serverUrl, orgId, userId }) => {
       // Wait for the dev/test helper to register (EditorMode mounts it on
       // workspace ready). It can take a beat in StrictMode.
       const deadline = Date.now() + 5_000;
@@ -114,7 +103,6 @@ async function openCollabCsv(page: Page, opts: { initialContent?: string }): Pro
         serverUrl,
         orgId,
         userId,
-        encryptionKeyBase64: keyBase64,
         urlExtraQuery: `test_user_id=${encodeURIComponent(userId)}&test_org_id=${encodeURIComponent(orgId)}`,
       });
     },
@@ -124,7 +112,6 @@ async function openCollabCsv(page: Page, opts: { initialContent?: string }): Pro
       serverUrl: `ws://localhost:${WRANGLER_PORT}`,
       orgId: TEST_ORG_ID,
       userId: TEST_USER_ID,
-      keyBase64: encryptionKeyBase64,
     },
   );
 }
@@ -140,7 +127,6 @@ test.beforeAll(async ({}, testInfo) => {
   testInfo.setTimeout(90_000);
 
   workspaceDir = await createTempWorkspace();
-  encryptionKeyBase64 = await generateKeyBase64();
 
   await startWrangler(WRANGLER_PORT);
 

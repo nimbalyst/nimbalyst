@@ -171,9 +171,3 @@ export const collabAwarenessAtom = atomFamily(
 export function hasCollabUnsyncedChanges(status: DocumentSyncStatus): boolean {
   return status === 'offline-unsynced' || status === 'replaying';
 }
-
-/**
- * Monotonically increasing counter bumped when the org encryption key is rotated.
- * CollaborativeTabEditor watches this to teardown/recreate providers with the new key.
- */
-export const collabKeyRotationEpochAtom = atom(0);

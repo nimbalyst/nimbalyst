@@ -40,6 +40,10 @@ import {
   notePendingInteractiveWaiter,
   shouldSettleFromSessionFallback,
 } from "./interactivePromptFallback";
+import {
+  clearLiveInteractivePrompt,
+  noteLiveInteractivePrompt,
+} from "./interactivePromptLiveness";
 
 export function getInteractiveToolSchemas(sessionId: string | undefined) {
   if (!sessionId) return [];
@@ -305,6 +309,11 @@ export async function handleAskUserQuestion(
     }
   }
 
+  // NIM-2208: registered immediately before the wait and cleared in settle, so
+  // the stale-prompt reconcile can never clear the "awaiting input" bit while
+  // this handler is genuinely blocked.
+  if (sessionId) noteLiveInteractivePrompt(sessionId);
+
   return new Promise((resolve) => {
     let settled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -316,6 +325,7 @@ export async function handleAskUserQuestion(
     }, source: string = 'unknown') => {
       if (settled) return;
       settled = true;
+      if (sessionId) clearLiveInteractivePrompt(sessionId);
 
       console.log(`[MCP Server] AskUserQuestion settled via ${source}: questionId=${questionId}, cancelled=${result?.cancelled}`);
 
@@ -1003,6 +1013,9 @@ export async function handleGitCommitProposal(
   // Wait for user confirmation with DB polling fallback.
   // The IPC listener is the fast path; DB polling catches responses when the
   // transport drops (the bug that caused this tool to hang indefinitely).
+  // NIM-2208: see handleAskUserQuestion — paired with the clear in settle below.
+  if (targetSessionId) noteLiveInteractivePrompt(targetSessionId);
+
   return new Promise((resolve) => {
     const getFilePath = (f: FileToStage) =>
       typeof f === "string" ? f : f.path;
@@ -1022,6 +1035,7 @@ export async function handleGitCommitProposal(
     const settle = (result: CommitResult, source: string) => {
       if (settled) return;
       settled = true;
+      if (targetSessionId) clearLiveInteractivePrompt(targetSessionId);
 
       console.log(
         `[MCP Server] Git commit proposal settled via ${source}: action=${result.action}, hash=${result.commitHash || "none"}`
@@ -1470,6 +1484,9 @@ export async function handleRequestUserInput(
   // NIM-1981: track this waiter so the session-scoped fallback can be accepted
   // safely when it is the only pending prompt for the session.
   notePendingInteractiveWaiter(sessionKey);
+  // NIM-2208: separate registry (see interactivePromptLiveness) so the
+  // stale-prompt reconcile knows this session is genuinely blocked.
+  if (sessionId) noteLiveInteractivePrompt(sessionId);
 
   return new Promise((resolve) => {
     let settled = false;
@@ -1482,6 +1499,7 @@ export async function handleRequestUserInput(
       if (settled) return;
       settled = true;
       clearPendingInteractiveWaiter(sessionKey);
+      if (sessionId) clearLiveInteractivePrompt(sessionId);
 
       console.log(
         `[MCP Server] RequestUserInput settled via ${source}: promptId=${promptId}, cancelled=${result?.cancelled}`,

@@ -27,7 +27,7 @@ import { STYTCH_CONFIG, asPersonalJwt, asPersonalMemberId, type PersonalJwt, typ
 import { getSessionSyncConfig, setSessionSyncConfig } from '../utils/store';
 import { AnalyticsService } from './analytics/AnalyticsService';
 import { reconcilePersonalUserId } from './auth/personalUserIdReconcile';
-import { resetSilentMigrationScanState } from './SilentTeamEncryptionMigration';
+import { describeTransportError, isTransportError, type PersonalRefreshFailureReason } from './auth/personalJwtFailure';
 
 // Stytch types
 interface StytchUser {
@@ -992,9 +992,31 @@ export function getPersonalSessionJwtForAccount(personalOrgId: string): Personal
  * Refresh the personal-org-scoped JWT via session exchange.
  * Called by SyncManager to keep the personal JWT fresh for session sync.
  */
-let inflightPersonalSessionRefresh: Promise<boolean> | null = null;
+/**
+ * Result of a personal-session refresh. `reason` distinguishes a transport
+ * failure (server unreachable) from a server-confirmed rejection, so callers
+ * can log and react appropriately instead of treating both as "token is bad".
+ */
+export type PersonalRefreshOutcome =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: PersonalRefreshFailureReason;
+      /** Rendered transport error, present only when `reason === 'network'`. */
+      detail?: string;
+    };
 
-export function refreshPersonalSession(serverUrl: string): Promise<boolean> {
+let inflightPersonalSessionRefresh: Promise<PersonalRefreshOutcome> | null = null;
+
+/**
+ * Refresh the personal session and report *why* it failed.
+ *
+ * Callers that only branch on success keep using `refreshPersonalSession`.
+ * Sync uses this variant because "server unreachable" and "server rejected the
+ * session" need different handling and different log lines -- collapsing them
+ * to `false` made an offline collab worker look like an expired-JWT bug.
+ */
+export function refreshPersonalSessionDetailed(serverUrl: string): Promise<PersonalRefreshOutcome> {
   if (inflightPersonalSessionRefresh) {
     return inflightPersonalSessionRefresh;
   }
@@ -1004,16 +1026,20 @@ export function refreshPersonalSession(serverUrl: string): Promise<boolean> {
   return inflightPersonalSessionRefresh;
 }
 
-async function doRefreshPersonalSession(serverUrl: string): Promise<boolean> {
+export async function refreshPersonalSession(serverUrl: string): Promise<boolean> {
+  return (await refreshPersonalSessionDetailed(serverUrl)).ok;
+}
+
+async function doRefreshPersonalSession(serverUrl: string): Promise<PersonalRefreshOutcome> {
   const personalOrgId = authState.personalOrgId;
   if (!personalOrgId) {
     logger.main.warn('[StytchAuthService] Cannot refresh personal session: no personalOrgId');
-    return false;
+    return { ok: false, reason: 'no-session' };
   }
 
   if (!authState.sessionToken) {
     logger.main.warn('[StytchAuthService] Cannot refresh personal session: no session token');
-    return false;
+    return { ok: false, reason: 'no-session' };
   }
 
   // If we're already in the personal org (no team exchange happened),
@@ -1027,10 +1053,16 @@ async function doRefreshPersonalSession(serverUrl: string): Promise<boolean> {
     try {
       result = await refreshSession(serverUrl);
     } catch (error) {
-      if ((error as any)?.isNetworkError) {
-        logger.main.warn('[StytchAuthService] Network error refreshing personal session - will retry later');
+      if (isTransportError(error)) {
+        const detail = describeTransportError(error);
+        logger.main.warn(
+          `[StytchAuthService] Cannot reach ${serverUrl} to refresh personal session (${detail}) - will retry later`,
+        );
+        // Preserve the transport-level cause. Reporting this as an auth failure
+        // is what made an unreachable collab worker read as a JWT bug.
+        return { ok: false, reason: 'network', detail };
       }
-      return false;
+      return { ok: false, reason: 'auth' };
     }
     if (result && authState.sessionJwt) {
       // Verify the JWT sub matches personalUserId
@@ -1046,19 +1078,20 @@ async function doRefreshPersonalSession(serverUrl: string): Promise<boolean> {
               '-- session was team-exchanged, falling through to personal org exchange');
           } else {
             authState = { ...authState, personalSessionJwt: authState.sessionJwt };
-            return true;
+            return { ok: true };
           }
         }
       } catch {
         // Parse failed -- use the JWT as-is
         authState = { ...authState, personalSessionJwt: authState.sessionJwt };
-        return result;
+        return { ok: true };
       }
     } else if (result) {
       authState = { ...authState, personalSessionJwt: authState.sessionJwt };
-      return result;
+      return { ok: true };
     } else {
-      return false;
+      // refreshSession() resolved false => the server answered and refused.
+      return { ok: false, reason: 'auth' };
     }
   }
 
@@ -1073,7 +1106,7 @@ async function doRefreshPersonalSession(serverUrl: string): Promise<boolean> {
     // /auth/refresh rotates the session token. The personal-org exchange must
     // use the token returned by that refresh, not the token captured before it.
     const sessionToken = authState.sessionToken;
-    if (!jwt || !sessionToken) return false;
+    if (!jwt || !sessionToken) return { ok: false, reason: 'no-session' };
 
     const response = await net.fetch(`${httpUrl}/api/teams/${personalOrgId}/switch`, {
       method: 'POST',
@@ -1086,7 +1119,7 @@ async function doRefreshPersonalSession(serverUrl: string): Promise<boolean> {
 
     if (!response.ok) {
       logger.main.warn('[StytchAuthService] Personal session refresh failed:', response.status);
-      return false;
+      return { ok: false, reason: 'auth' };
     }
 
     const data = await response.json() as {
@@ -1096,7 +1129,7 @@ async function doRefreshPersonalSession(serverUrl: string): Promise<boolean> {
 
     if (!data.sessionJwt || data.sessionJwt.split('.').length !== 3) {
       logger.main.error('[StytchAuthService] Personal session refresh returned invalid JWT');
-      return false;
+      return { ok: false, reason: 'auth' };
     }
 
     // The personal-org exchange sub is authoritative. Correct a stale
@@ -1135,24 +1168,60 @@ async function doRefreshPersonalSession(serverUrl: string): Promise<boolean> {
       updateSessionToken(data.sessionToken);
     }
 
-    return true;
+    return { ok: true };
   } catch (error) {
+    // NOTE: the `/api/teams/{orgId}/switch` fetch above is NOT wrapped by the
+    // `isNetworkError`-tagging helper, so a raw ECONNREFUSED/DNS/socket-reset
+    // arrives here untagged. Checking the flag alone reported those as `auth`
+    // -- exactly the transport-wearing-auth's-clothes bug. Classify the error
+    // itself instead.
+    if (isTransportError(error)) {
+      const detail = describeTransportError(error);
+      logger.main.warn(
+        `[StytchAuthService] Cannot reach ${serverUrl} to refresh personal session (${detail}) - will retry later`,
+      );
+      return { ok: false, reason: 'network', detail };
+    }
     logger.main.error('[StytchAuthService] Error refreshing personal session:', error);
-    return false;
+    return { ok: false, reason: 'auth' };
   }
 }
 
+/**
+ * Result of an account-scoped refresh. Same rationale as
+ * `PersonalRefreshOutcome`: `string | null` cannot say whether the server
+ * refused us or was never reached, and collapsing the two is how an
+ * unreachable collab worker gets reported as an auth problem.
+ */
+export type AccountRefreshOutcome<TJwt extends string = string> =
+  | { ok: true; jwt: TJwt }
+  | {
+      ok: false;
+      reason: PersonalRefreshFailureReason;
+      /** Rendered transport error, present only when `reason === 'network'`. */
+      detail?: string;
+    };
+
 /** Refresh and return a personal-org JWT for an explicit signed-in account. */
+export async function refreshPersonalSessionForAccountDetailed(
+  personalOrgId: string,
+): Promise<AccountRefreshOutcome<PersonalJwt>> {
+  if (personalOrgId === syncAccountId) {
+    const outcome = await refreshPersonalSessionDetailed(getSyncServerUrl());
+    if (!outcome.ok) return outcome;
+    const jwt = getPersonalSessionJwt();
+    return jwt ? { ok: true, jwt } : { ok: false, reason: 'auth' };
+  }
+
+  const outcome = await refreshSessionForAccountDetailed(personalOrgId);
+  return outcome.ok ? { ok: true, jwt: asPersonalJwt(outcome.jwt) } : outcome;
+}
+
 export async function refreshPersonalSessionForAccount(
   personalOrgId: string,
 ): Promise<PersonalJwt | null> {
-  if (personalOrgId === syncAccountId) {
-    const refreshed = await refreshPersonalSession(getSyncServerUrl());
-    return refreshed ? getPersonalSessionJwt() : null;
-  }
-
-  const refreshedJwt = await refreshSessionForAccount(personalOrgId);
-  return refreshedJwt ? asPersonalJwt(refreshedJwt) : null;
+  const outcome = await refreshPersonalSessionForAccountDetailed(personalOrgId);
+  return outcome.ok ? outcome.jwt : null;
 }
 
 /**
@@ -1290,7 +1359,6 @@ export async function sendMagicLink(
  */
 export async function signOut(): Promise<void> {
   // Clear local state
-  resetSilentMigrationScanState();
   clearStytchCredentials();
   accounts.clear();
   syncAccountId = null;
@@ -1599,6 +1667,19 @@ async function doRefreshSession(serverUrl?: string): Promise<boolean> {
     if ((error as any)?.isNetworkError) {
       throw error;
     }
+    // The fetch above is tagged, but the response body read is not: a socket
+    // that dies mid-response throws here untagged, and returning `false` would
+    // report that transport failure as a server-confirmed auth rejection. Tag
+    // and re-throw so every caller's isNetworkError check still works.
+    if (isTransportError(error)) {
+      logger.main.warn(
+        `[StytchAuthService] Session refresh transport failure (${describeTransportError(error)}) - keeping credentials`,
+      );
+      const networkError = new Error('Network error during session refresh');
+      (networkError as any).isNetworkError = true;
+      (networkError as any).cause = error;
+      throw networkError;
+    }
     logger.main.error('[StytchAuthService] Session refresh error:', error);
     return false;
   }
@@ -1611,16 +1692,15 @@ async function doRefreshSession(serverUrl?: string): Promise<boolean> {
  * Each Stytch session_token is single-use; concurrent callers for the same
  * account would stampede the token and cascade into 401-retry storms.
  */
-const inflightRefreshForAccount = new Map<string, Promise<string | null>>();
+const inflightRefreshForAccount = new Map<string, Promise<AccountRefreshOutcome>>();
 
 /**
- * Refresh a specific account's session by personalOrgId.
- * Works for both sync and non-sync accounts.
- * Returns the fresh JWT on success, null on failure.
+ * Refresh a specific account's session by personalOrgId, reporting *why* it
+ * failed. Works for both sync and non-sync accounts.
  *
  * Concurrent callers for the same personalOrgId share a single in-flight refresh.
  */
-export function refreshSessionForAccount(personalOrgId: string): Promise<string | null> {
+export function refreshSessionForAccountDetailed(personalOrgId: string): Promise<AccountRefreshOutcome> {
   const inflight = inflightRefreshForAccount.get(personalOrgId);
   if (inflight) {
     return inflight;
@@ -1632,14 +1712,41 @@ export function refreshSessionForAccount(personalOrgId: string): Promise<string 
   return promise;
 }
 
-async function doRefreshSessionForAccount(personalOrgId: string): Promise<string | null> {
+/** Boolean-ish wrapper for callers that only branch on success. */
+export async function refreshSessionForAccount(personalOrgId: string): Promise<string | null> {
+  const outcome = await refreshSessionForAccountDetailed(personalOrgId);
+  return outcome.ok ? outcome.jwt : null;
+}
+
+/**
+ * Split a thrown refresh failure into transport vs server rejection. Both used
+ * to arrive here as a bare `return null`, so a dead sync URL was indistinguishable
+ * from "the server refused this account's session".
+ */
+function classifyAccountRefreshFailure(error: unknown, personalOrgId: string): AccountRefreshOutcome {
+  if (isTransportError(error)) {
+    const detail = describeTransportError(error);
+    logger.main.warn(
+      `[StytchAuthService] Cannot reach the sync server to refresh account ${personalOrgId} (${detail}) - keeping credentials, will retry later`,
+    );
+    return { ok: false, reason: 'network', detail };
+  }
+  logger.main.error(`[StytchAuthService] Account refresh error for ${personalOrgId}:`, error);
+  return { ok: false, reason: 'auth' };
+}
+
+async function doRefreshSessionForAccount(personalOrgId: string): Promise<AccountRefreshOutcome> {
   // For the sync account, delegate to refreshSession, which updates authState.
   if (personalOrgId === syncAccountId) {
     try {
       const ok = await refreshSession();
-      return ok ? (authState.sessionJwt ?? null) : null;
-    } catch {
-      return null; // Network error -- return null, don't propagate
+      if (!ok) return { ok: false, reason: 'auth' };
+      const jwt = authState.sessionJwt;
+      return jwt ? { ok: true, jwt } : { ok: false, reason: 'auth' };
+    } catch (error) {
+      // refreshSession() tags and rethrows transport failures; do NOT swallow
+      // that distinction here.
+      return classifyAccountRefreshFailure(error, personalOrgId);
     }
   }
 
@@ -1647,7 +1754,7 @@ async function doRefreshSessionForAccount(personalOrgId: string): Promise<string
   const creds = accounts.get(personalOrgId);
   if (!creds?.sessionToken) {
     logger.main.warn(`[StytchAuthService] Cannot refresh account ${personalOrgId} - no session token`);
-    return null;
+    return { ok: false, reason: 'no-session' };
   }
 
   const syncServerUrl = getSyncServerUrl();
@@ -1666,9 +1773,10 @@ async function doRefreshSessionForAccount(personalOrgId: string): Promise<string
     });
 
     if (!response.ok) {
+      // The server answered and refused -- a genuine auth outcome, not transport.
       const errorData = await response.json().catch(() => ({})) as { error?: string };
       logger.main.warn(`[StytchAuthService] Account refresh failed for ${personalOrgId}:`, errorData.error || response.status);
-      return null;
+      return { ok: false, reason: 'auth' };
     }
 
     const data = await response.json() as {
@@ -1682,7 +1790,7 @@ async function doRefreshSessionForAccount(personalOrgId: string): Promise<string
 
     if (!data.session_jwt || data.session_jwt.split('.').length !== 3) {
       logger.main.error(`[StytchAuthService] Account refresh returned invalid JWT for ${personalOrgId}`);
-      return null;
+      return { ok: false, reason: 'auth' };
     }
 
     let expiresAtMs = Date.now() + (7 * 24 * 60 * 60 * 1000);
@@ -1700,10 +1808,9 @@ async function doRefreshSessionForAccount(personalOrgId: string): Promise<string
     });
 
     logger.main.info(`[StytchAuthService] Account session refreshed for ${personalOrgId}`);
-    return data.session_jwt;
+    return { ok: true, jwt: data.session_jwt };
   } catch (error) {
-    logger.main.error(`[StytchAuthService] Account refresh error for ${personalOrgId}:`, error);
-    return null;
+    return classifyAccountRefreshFailure(error, personalOrgId);
   }
 }
 

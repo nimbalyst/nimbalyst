@@ -34,7 +34,6 @@
 import { test, expect } from '@playwright/test';
 test.skip(() => !process.env.RUN_COLLAB_TESTS, 'Requires RUN_COLLAB_TESTS=1 and wrangler dev - not for CI');
 import type { ElectronApplication, Page } from '@playwright/test';
-import { webcrypto } from 'crypto';
 import {
   launchElectronApp,
   createTempWorkspace,
@@ -58,18 +57,6 @@ test.describe.configure({ mode: 'serial' });
 // Use port 8792 to avoid conflicts with dev (8790) and unit integration tests (8791).
 const WRANGLER_PORT = 8792;
 const TEST_ORG_ID = 'e2e-test-org';
-
-async function generateAesKey(): Promise<CryptoKey> {
-  return webcrypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt'],
-  ) as Promise<CryptoKey>;
-}
-
-async function exportKeyAsJwk(key: CryptoKey): Promise<JsonWebKey> {
-  return webcrypto.subtle.exportKey('jwk', key);
-}
 
 async function launchIsolatedElectronApp(
   workspace: string,
@@ -96,9 +83,10 @@ async function launchIsolatedElectronApp(
 
 /**
  * Connect an Electron app's TrackerSyncManager to the test wrangler
- * server through the test-only IPC handler. Bypasses Stytch + team +
- * envelope unwrap but exercises the real `TrackerSyncEngine` for
- * encryption, queue lifecycle, and PGLite projection.
+ * server through the test-only IPC handler. Bypasses Stytch and team
+ * resolution but exercises the real `TrackerSyncEngine` for queue
+ * lifecycle and PGLite projection. Team content is encrypted at rest by
+ * the server, so no key material crosses this boundary.
  */
 async function connectTrackerSync(
   page: Page,
@@ -108,7 +96,6 @@ async function connectTrackerSync(
     teamProjectId: string;
     orgId: string;
     userId: string;
-    encryptionKeyJwk: JsonWebKey;
   },
 ): Promise<void> {
   const result = await page.evaluate(
@@ -171,15 +158,11 @@ test.describe('Collaborative Tracker Sync', () => {
   let dbDirB: string;
   let workspaceDirA: string;
   let workspaceDirB: string;
-  let sharedKeyJwk: JsonWebKey;
 
   test.beforeAll(async ({}, testInfo) => {
     testInfo.setTimeout(120_000);
 
     await startWrangler(WRANGLER_PORT);
-
-    const sharedKey = await generateAesKey();
-    sharedKeyJwk = await exportKeyAsJwk(sharedKey);
 
     workspaceDirA = await createTempWorkspace();
     workspaceDirB = await createTempWorkspace();
@@ -218,7 +201,6 @@ test.describe('Collaborative Tracker Sync', () => {
       serverUrl: `http://localhost:${WRANGLER_PORT}`,
       teamProjectId,
       orgId: TEST_ORG_ID,
-      encryptionKeyJwk: sharedKeyJwk,
     };
 
     // Subscribe to `tracker-sync:item-upserted` on B BEFORE the connect
@@ -286,7 +268,6 @@ test.describe('Collaborative Tracker Sync', () => {
       serverUrl: `http://localhost:${WRANGLER_PORT}`,
       teamProjectId,
       orgId: TEST_ORG_ID,
-      encryptionKeyJwk: sharedKeyJwk,
     };
 
     await Promise.all([

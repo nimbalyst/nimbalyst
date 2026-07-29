@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { GitWorktreeService, WorkspaceHasNoCommitsError } from '../GitWorktreeService';
+import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 /**
  * Regression coverage for the empty-repo silent-failure case: when a Blitz
@@ -29,7 +30,9 @@ describe('GitWorktreeService.validateWorkspaceHasCommits', () => {
   });
 
   it('throws WorkspaceHasNoCommitsError for a `git init`-ed repo with no commits', async () => {
-    const git = simpleGit(tmpDir);
+    // Never let a pre-push hook's GIT_DIR redirect this mutating init into the
+    // developer's shared repository.
+    const git = simpleGit(tmpDir).env(gitSandboxEnv(undefined, { pinConfigPaths: false }));
     await git.init();
 
     await expect(service.validateWorkspaceHasCommits(tmpDir))
@@ -38,10 +41,14 @@ describe('GitWorktreeService.validateWorkspaceHasCommits', () => {
   });
 
   it('resolves cleanly when the repo has at least one commit', async () => {
-    const git = simpleGit(tmpDir);
+    // .env() strips GIT_* — without it a hook-inherited GIT_DIR redirects this
+    // commit onto the developer's live branch. See testSupport/gitTestSandbox.ts.
+    const git = simpleGit(tmpDir).env(gitSandboxEnv(undefined, { pinConfigPaths: false }));
     await git.init();
     await git.addConfig('user.email', 'test@example.com', false, 'local');
     await git.addConfig('user.name', 'Test', false, 'local');
+    await git.addConfig('commit.gpgsign', 'false', false, 'local');
+    assertGitSandbox(tmpDir);
     fs.writeFileSync(path.join(tmpDir, 'README.md'), 'hi');
     await git.add('README.md');
     await git.commit('initial');

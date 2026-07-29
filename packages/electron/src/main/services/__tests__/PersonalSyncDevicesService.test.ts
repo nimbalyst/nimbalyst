@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   getCollabSyncHttpUrl: vi.fn(() => 'https://sync.nimbalyst.com'),
   getCollabSyncWsUrl: vi.fn(() => 'wss://sync.nimbalyst.com'),
   getPersonalSessionJwt: vi.fn(),
-  refreshPersonalSession: vi.fn(),
+  refreshPersonalSessionDetailed: vi.fn(),
 }));
 
 vi.mock('../../utils/store', () => ({
@@ -19,7 +19,7 @@ vi.mock('../../utils/collabSyncUrl', () => ({
 
 vi.mock('../StytchAuthService', () => ({
   getPersonalSessionJwt: mocks.getPersonalSessionJwt,
-  refreshPersonalSession: mocks.refreshPersonalSession,
+  refreshPersonalSessionDetailed: mocks.refreshPersonalSessionDetailed,
 }));
 
 import { listPersonalSyncDevices } from '../PersonalSyncDevicesService';
@@ -29,7 +29,7 @@ describe('listPersonalSyncDevices', () => {
     vi.clearAllMocks();
     mocks.getCollabSyncHttpUrl.mockReturnValue('https://sync.nimbalyst.com');
     mocks.getCollabSyncWsUrl.mockReturnValue('wss://sync.nimbalyst.com');
-    mocks.refreshPersonalSession.mockResolvedValue(true);
+    mocks.refreshPersonalSessionDetailed.mockResolvedValue({ ok: true });
     mocks.getPersonalSessionJwt.mockReturnValue('personal-jwt');
     vi.stubGlobal('fetch', vi.fn());
   });
@@ -47,7 +47,7 @@ describe('listPersonalSyncDevices', () => {
       sessionCount: 2,
       projectCount: 1,
     });
-    expect(mocks.refreshPersonalSession).not.toHaveBeenCalled();
+    expect(mocks.refreshPersonalSessionDetailed).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledWith('https://sync.nimbalyst.com/api/sessions', expect.objectContaining({
       headers: { Authorization: 'Bearer personal-jwt' },
     }));
@@ -66,10 +66,44 @@ describe('listPersonalSyncDevices', () => {
       } as Response);
 
     await expect(listPersonalSyncDevices()).resolves.toMatchObject({ success: true, devices: [] });
-    expect(mocks.refreshPersonalSession).toHaveBeenCalledWith('wss://sync.nimbalyst.com');
+    expect(mocks.refreshPersonalSessionDetailed).toHaveBeenCalledWith('wss://sync.nimbalyst.com');
     expect(fetch).toHaveBeenNthCalledWith(2, 'https://sync.nimbalyst.com/api/sessions', expect.objectContaining({
       headers: { Authorization: 'Bearer fresh-personal-jwt' },
     }));
+  });
+
+  /**
+   * A transport failure must not be reported to the user as an auth problem.
+   * "Not authenticated" told the user to sign in again when the truth was that
+   * the sync server could not be reached and their session was fine.
+   */
+  it('reports an unreachable sync server as unreachable, not as "Not authenticated"', async () => {
+    mocks.getSessionSyncConfig.mockReturnValue({ enabled: true });
+    mocks.getPersonalSessionJwt.mockReturnValue(null);
+    mocks.refreshPersonalSessionDetailed.mockResolvedValue({
+      ok: false,
+      reason: 'network',
+      detail: 'ECONNREFUSED (connect ECONNREFUSED 127.0.0.1:8790)',
+    });
+
+    const result = await listPersonalSyncDevices();
+    expect(result).toMatchObject({ success: false, devices: [] });
+    expect((result as { error: string }).error).toContain('unreachable');
+    expect((result as { error: string }).error).toContain('ECONNREFUSED');
+    expect((result as { error: string }).error).not.toContain('Not authenticated');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('still reports a server-confirmed rejection as not authenticated', async () => {
+    mocks.getSessionSyncConfig.mockReturnValue({ enabled: true });
+    mocks.getPersonalSessionJwt.mockReturnValue(null);
+    mocks.refreshPersonalSessionDetailed.mockResolvedValue({ ok: false, reason: 'auth' });
+
+    await expect(listPersonalSyncDevices()).resolves.toEqual({
+      success: false,
+      devices: [],
+      error: 'Not authenticated',
+    });
   });
 
   it('does not contact the sync server when personal sync is disabled', async () => {

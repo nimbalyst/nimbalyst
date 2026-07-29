@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.71.0",
+  "version": "0.71.3",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -12,8 +12,8 @@
   "scripts": {
     "start": "electron-vite preview",
     "dev": "./scripts/dev.sh",
-    "dev:user2": "NIMBALYST_USER_DATA_DIR=\"$HOME/Library/Application Support/@nimbalyst/electron-user2\" VITE_PORT=5274 ./scripts/dev.sh",
-    "dev:user2:loop": "NIMBALYST_USER_DATA_DIR=\"$HOME/Library/Application Support/@nimbalyst/electron-user2\" VITE_PORT=5274 ./scripts/dev-loop.sh",
+    "dev:user2": "node ./scripts/dev-user2.mjs",
+    "dev:user2:loop": "node ./scripts/dev-user2.mjs --loop",
     "dev:loop": "./scripts/dev-loop.sh",
     "licenses:generate": "node build/generate-third-party-licenses.js",
     "licenses:check": "node build/generate-third-party-licenses.js --check",

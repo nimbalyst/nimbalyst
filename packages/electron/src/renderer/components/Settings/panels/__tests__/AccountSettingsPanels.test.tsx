@@ -28,7 +28,7 @@ import {
   validateSettingsDestination,
 } from '../../settingsRoutes';
 
-const context = { developerMode: false, showDirectChatProviders: false };
+const context = { developerMode: false, showDirectChatProviders: false, teamsConfigured: false };
 
 describe('Account settings panels', () => {
   afterEach(() => cleanup());

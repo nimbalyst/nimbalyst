@@ -62,6 +62,56 @@ export function filterTrackerRecords(
   });
 }
 
+function isBlankCell(value: unknown): boolean {
+  return value === null || value === undefined || value === '';
+}
+
+function toEpoch(value: unknown): number | undefined {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? undefined : value.getTime();
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const parsed = new Date(value).getTime();
+    return Number.isNaN(parsed) ? undefined : parsed;
+  }
+  return undefined;
+}
+
+/**
+ * Compare two raw cell values, preserving the value's real type.
+ *
+ * Dates are the reason this exists: RevoGrid's built-in comparer stringifies
+ * every non-number, so a `Date` column sorts by `"wed may 20 2026"` -- weekday
+ * then month *name* -- rather than chronologically. A single date column can
+ * also legitimately hold a `Date` (unquoted YAML frontmatter), a `YYYY-MM-DD`
+ * string (inline editor) or a full ISO string (JSON round-trip), so a mixed
+ * pair is coerced to epoch rather than falling through to a string compare.
+ *
+ * Empty values sort as "greater", so they land last ascending and first
+ * descending -- callers negate the whole result for `desc`.
+ */
+export function compareCellValues(
+  aVal: unknown,
+  bVal: unknown,
+  render?: string,
+): number {
+  const aBlank = isBlankCell(aVal);
+  const bBlank = isBlankCell(bVal);
+  if (aBlank && bBlank) return 0;
+  if (aBlank) return 1;
+  if (bBlank) return -1;
+
+  if (render === 'date' || aVal instanceof Date || bVal instanceof Date) {
+    const aTime = toEpoch(aVal);
+    const bTime = toEpoch(bVal);
+    if (aTime !== undefined && bTime !== undefined) return aTime - bTime;
+  }
+  if (typeof aVal === 'number' && typeof bVal === 'number') return aVal - bVal;
+  if (typeof aVal === 'boolean' && typeof bVal === 'boolean') {
+    return Number(aVal) - Number(bVal);
+  }
+  return String(aVal).localeCompare(String(bVal));
+}
+
 /**
  * Compare two records on a column.
  *
@@ -87,19 +137,8 @@ export function compareRecords(a: TrackerRecord, b: TrackerRecord, sortBy: strin
       };
       return identityValue(a).localeCompare(identityValue(b));
     }
-    default: {
-      const aVal = getCellValue(a, sortBy);
-      const bVal = getCellValue(b, sortBy);
-      if (aVal == null && bVal == null) return 0;
-      if (aVal == null) return 1;
-      if (bVal == null) return -1;
-      if (aVal instanceof Date && bVal instanceof Date) return aVal.getTime() - bVal.getTime();
-      if (typeof aVal === 'number' && typeof bVal === 'number') return aVal - bVal;
-      if (typeof aVal === 'boolean' && typeof bVal === 'boolean') {
-        return Number(aVal) - Number(bVal);
-      }
-      return String(aVal).localeCompare(String(bVal));
-    }
+    default:
+      return compareCellValues(getCellValue(a, sortBy), getCellValue(b, sortBy));
   }
 }
 

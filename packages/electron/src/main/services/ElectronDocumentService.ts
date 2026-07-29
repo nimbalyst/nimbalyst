@@ -41,6 +41,8 @@ import {
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { shouldExcludeDir } from '../utils/fileFilters';
+import { isRendererUnsupportedImage, resolveImageExtension, sniffImageExtension } from '../utils/imageFormat';
+import { compressImage } from './ImageCompressor';
 import { getRegisteredExtensions } from '../extensions/RegisteredFileTypes';
 import { isPathInWorkspace, getRelativeWorkspacePath } from '../utils/workspaceDetection';
 import { syncTrackerItem, unsyncTrackerItem, isTrackerSyncActive } from './TrackerSyncManager';
@@ -3347,19 +3349,12 @@ export class ElectronDocumentService implements DocumentService {
 
   // Asset management methods
   async storeAsset(buffer: Buffer, mimeType: string, documentPath?: string): Promise<{ hash: string, extension: string, relativePath: string }> {
-    // Hash the image buffer
-    const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+    const { buffer: assetBuffer, mimeType: assetMimeType } = await this.transcodeUnsupportedImage(buffer, mimeType);
 
-    // Determine file extension from MIME type
-    const extensionMap: Record<string, string> = {
-      'image/png': 'png',
-      'image/jpeg': 'jpg',
-      'image/jpg': 'jpg',
-      'image/gif': 'gif',
-      'image/webp': 'webp',
-      'image/svg+xml': 'svg'
-    };
-    const extension = extensionMap[mimeType] || 'png';
+    // Hash the stored bytes so deduplication keys off what actually lands on disk
+    const hash = crypto.createHash('sha256').update(assetBuffer).digest('hex');
+
+    const extension = resolveImageExtension(assetMimeType, assetBuffer);
     const filename = `${hash}.${extension}`;
 
     // Determine asset storage location based on document path
@@ -3388,18 +3383,50 @@ export class ElectronDocumentService implements DocumentService {
       await fs.access(assetPath);
       // console.log(`[DocumentService] Asset ${filename} already exists at ${assetsDir}, skipping write`);
     } catch {
-      await fs.writeFile(assetPath, buffer);
-      // console.log(`[DocumentService] Stored asset ${filename} at ${assetsDir} (${buffer.length} bytes)`);
+      await fs.writeFile(assetPath, assetBuffer);
+      // console.log(`[DocumentService] Stored asset ${filename} at ${assetsDir} (${assetBuffer.length} bytes)`);
     }
 
     return { hash, extension, relativePath };
+  }
+
+  /**
+   * Convert images Chromium cannot decode (HEIC/HEIF from Apple devices) into a web-renderable
+   * format. Without this the raw bytes are stored under whatever extension the MIME map produced
+   * and the document shows a permanently broken image (NIM-2211).
+   *
+   * Detection uses the bytes as well as the MIME type because some drag sources report an empty
+   * `File.type`.
+   */
+  private async transcodeUnsupportedImage(
+    buffer: Buffer,
+    mimeType: string
+  ): Promise<{ buffer: Buffer; mimeType: string }> {
+    const needsTranscode = isRendererUnsupportedImage(mimeType) || sniffImageExtension(buffer) === 'heic';
+    if (!needsTranscode) {
+      return { buffer, mimeType };
+    }
+
+    try {
+      // Pass an explicit HEIC type so the decoder is selected even when the source MIME was blank.
+      const result = await compressImage(buffer, 'image/heic', {
+        maxDimension: 4096,
+        targetSizeBytes: 8 * 1024 * 1024
+      });
+      return { buffer: result.buffer, mimeType: result.mimeType };
+    } catch (error) {
+      // Keep the original bytes; resolveImageExtension will name them .heic so the file stays
+      // openable outside the app rather than masquerading as a png.
+      console.warn('[DocumentService] Failed to convert HEIC asset, storing original', error);
+      return { buffer, mimeType: mimeType || 'image/heic' };
+    }
   }
 
   async getAssetPath(hash: string): Promise<string | null> {
     const assetsDir = path.join(this.workspacePath, '.nimbalyst', 'assets');
 
     // Try common extensions
-    const extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
+    const extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'tiff', 'heic'];
     for (const ext of extensions) {
       const assetPath = path.join(assetsDir, `${hash}.${ext}`);
       try {

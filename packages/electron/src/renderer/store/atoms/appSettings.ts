@@ -19,7 +19,7 @@ import { atom, type Atom } from 'jotai';
 import posthog from 'posthog-js';
 import { copyToClipboard } from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
-import { type EffortLevel, DEFAULT_EFFORT_LEVEL, parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { type EffortLevel, type ThinkingMode, DEFAULT_EFFORT_LEVEL, DEFAULT_THINKING_MODE, parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import { AlphaFeatureTag, getDefaultAlphaFeatures } from '../../../shared/alphaFeatures';
 import { BetaFeatureTag } from '../../../shared/betaFeatures';
 import { DeveloperFeatureTag, DEVELOPER_FEATURES, getDefaultDeveloperFeatures, enableAllDeveloperFeatures, disableAllDeveloperFeatures, areAllDeveloperFeaturesEnabled } from '../../../shared/developerFeatures';
@@ -1040,6 +1040,8 @@ export interface AgentModeSettings {
   defaultModel: string;
   /** The effort level for Opus 4.6 adaptive reasoning (low/medium/high/max) */
   defaultEffortLevel: EffortLevel;
+  /** The last extended-thinking mode the user picked, used as default for new sessions */
+  defaultThinkingMode: ThinkingMode;
 }
 
 /**
@@ -1048,6 +1050,7 @@ export interface AgentModeSettings {
 const defaultAgentModeSettings: AgentModeSettings = {
   defaultModel: 'claude-code:opus-1m',
   defaultEffortLevel: DEFAULT_EFFORT_LEVEL,
+  defaultThinkingMode: DEFAULT_THINKING_MODE,
 };
 
 /**
@@ -1074,6 +1077,7 @@ function scheduleAgentModePersist(settings: AgentModeSettings): void {
     if (typeof window !== 'undefined' && window.electronAPI) {
       await window.electronAPI.invoke('settings:set-default-ai-model', settings.defaultModel);
       await window.electronAPI.invoke('settings:set-default-effort-level', settings.defaultEffortLevel);
+      await window.electronAPI.invoke('settings:set-default-thinking-mode', settings.defaultThinkingMode);
     }
   }, AGENT_MODE_PERSIST_DEBOUNCE_MS);
 }
@@ -1089,6 +1093,11 @@ export const defaultAgentModelAtom = atom((get) => get(agentModeSettingsAtom).de
  * Default effort level for Opus 4.6 adaptive reasoning.
  */
 export const defaultEffortLevelAtom = atom((get) => get(agentModeSettingsAtom).defaultEffortLevel);
+
+/**
+ * Default extended-thinking mode for new agent sessions.
+ */
+export const defaultThinkingModeAtom = atom((get) => get(agentModeSettingsAtom).defaultThinkingMode);
 
 // === Setter atoms ===
 
@@ -1119,9 +1128,11 @@ export async function initAgentModeSettings(): Promise<AgentModeSettings> {
   try {
     const defaultModel = await window.electronAPI.invoke('settings:get-default-ai-model');
     const defaultEffortLevel = await window.electronAPI.invoke('settings:get-default-effort-level');
+    const defaultThinkingMode = await window.electronAPI.invoke('settings:get-default-thinking-mode');
     const result = {
       defaultModel: defaultModel ?? defaultAgentModeSettings.defaultModel,
       defaultEffortLevel: parseEffortLevel(defaultEffortLevel),
+      defaultThinkingMode: parseThinkingMode(defaultThinkingMode),
     };
     return result;
   } catch (error) {

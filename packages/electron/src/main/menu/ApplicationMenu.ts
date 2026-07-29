@@ -44,6 +44,8 @@ import { getFocusedWindow } from '../utils/windowFocus';
 import { showSplashScreen } from '../window/SplashScreen';
 import { autoUpdaterService } from '../services/autoUpdater';
 import { KeyboardShortcuts } from './KeyboardShortcuts';
+import { notifyWindowMenuChanged } from './menuBarBridge';
+import { getHasOrganizationsForMenu, registerOrganizationMenuRebuild } from './organizationMenuState';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { FeatureTrackingService } from '../services/analytics/FeatureTrackingService';
 import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
@@ -1002,6 +1004,10 @@ export async function createApplicationMenu() {
                     // (or the first one you belong to), same as the switcher's
                     // untargeted entry points.
                     label: 'Organization Manager (Alpha)',
+                    // Orgs are invite-only during the alpha: hidden until
+                    // listTeams reports a membership (dev builds always show it
+                    // so the create flow stays reachable).
+                    visible: isDev || getHasOrganizationsForMenu(),
                     click: async () => {
                         AnalyticsService.getInstance().sendEvent('menu_action_used', {
                             menu: 'window',
@@ -1914,7 +1920,14 @@ export async function createApplicationMenu() {
     }
 
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    // Windows/Linux hide the native strip behind the custom title bar, so the
+    // renderer mirrors this menu — tell it the model changed.
+    notifyWindowMenuChanged();
 }
+
+// Rebuild when TeamService learns whether the account belongs to any org, so
+// the Organization Manager item can appear/disappear without a restart.
+registerOrganizationMenuRebuild(() => { void updateApplicationMenu(); });
 
 // Update application menu
 export async function updateApplicationMenu() {

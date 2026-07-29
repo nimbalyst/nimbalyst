@@ -21,18 +21,15 @@ export type {
   TeamMemberAddedMessage,
   TeamMemberRemovedMessage,
   TeamMemberRoleChangedMessage,
-  TeamKeyEnvelopeAvailableMessage,
-  TeamKeyEnvelopeMessage,
-  TeamIdentityKeyResponseMessage,
-  TeamIdentityKeyUploadedMessage,
   TeamDocIndexSyncResponseMessage,
   TeamDocIndexBroadcastMessage,
   TeamDocIndexRemoveBroadcastMessage,
   TeamFolderIndexSyncResponseMessage,
   TeamFolderBroadcastMessage,
   TeamFolderRemoveBroadcastMessage,
-  TeamOrgKeyRotatedMessage,
   TeamProjectAccessChangedMessage,
+  TeamDocumentCommentNotifyMessage,
+  TeamDocumentCommentNotifyAckMessage,
   TeamErrorMessage,
 } from '@nimbalyst/collab-protocol';
 
@@ -72,58 +69,6 @@ export interface TeamSyncConfig {
   /** Current user's ID */
   userId: string;
 
-  /**
-   * Current user's PERSONAL org id. When set, it is announced to the TeamRoom
-   * on every (re)connect via `announcePersonalOrg`, so the server can address
-   * this member's PersonalIndexRoom for inbox-event fanout. Omitted when the
-   * personal org id is not yet resolvable locally (e.g. mobile sync disabled).
-   */
-  personalOrgId?: string;
-
-  /**
-   * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
-   * doc-index titles with the org key (zero-knowledge). `server-managed`: the
-   * server holds the per-team DEK and encrypts titles at rest, so the client
-   * sends/receives PLAINTEXT titles and `encryptionKey` is unused.
-   */
-  keyCustody?: 'legacy-e2e' | 'server-managed';
-
-  /**
-   * AES-256-GCM key for encrypting/decrypting document titles (org key).
-   * Required in `legacy-e2e` mode; unused (and optional) in `server-managed`.
-   */
-  encryptionKey?: CryptoKey;
-
-  /**
-   * NIM-906/910: retained legacy org keys, used ONLY in `server-managed` mode to
-   * read PRE-MIGRATION doc-index titles. Titles registered before the team
-   * flipped to server-managed are still AES ciphertext — the TeamRoom passes
-   * them through unchanged with their original (non-empty) iv, since the server
-   * never held the zero-knowledge org key and so cannot re-key them.
-   *
-   * This is an ARRAY because the org key may have been ROTATED while the team
-   * was still legacy-e2e, so different titles can be encrypted under different
-   * org-key EPOCHS (current + archived). We try each candidate key until one
-   * decrypts; only when ALL fail do we surface the row as `decryptFailed`
-   * (locked) instead of raw base64. A client holding the right epoch can also
-   * re-register the recovered title as plaintext via `backfillLegacyTitles()`.
-   */
-  legacyOrgKeys?: CryptoKey[];
-
-  /**
-   * Disable the provider's fire-and-forget title repair when a host needs to
-   * await and verify the backfill explicitly (for migration finalization).
-   */
-  autoBackfillLegacyTitles?: boolean;
-
-  /**
-   * Fingerprint of the current org key (`SHA-256(rawKey).slice(0,32)`),
-   * attached to every doc-index write so the server can enforce key-epoch
-   * alignment during rotation. May be `null` while the host adapter is
-   * still bootstrapping; once set, writes that don't match the server's
-   * current fingerprint are rejected with `staleKeyEpoch`.
-   */
-  orgKeyFingerprint: string | null;
 
   /** Called when full team state snapshot is received (initial sync) */
   onTeamStateLoaded?: (state: TeamState) => void;
@@ -136,15 +81,6 @@ export interface TeamSyncConfig {
 
   /** Called when a member's role changes */
   onMemberRoleChanged?: (userId: string, role: string) => void;
-
-  /** Called when a key envelope becomes available for the current user */
-  onKeyEnvelopeAvailable?: (targetUserId: string) => void;
-
-  /** Called when a key envelope is delivered */
-  onKeyEnvelope?: (envelope: KeyEnvelopeData) => void;
-
-  /** Called when a member uploads their identity key (so admin can wrap for them) */
-  onIdentityKeyUploaded?: (userId: string) => void;
 
   /** Called when the full document list is loaded (from teamSync or docIndexSync) */
   onDocumentsLoaded?: (documents: DocIndexEntry[]) => void;
@@ -166,9 +102,6 @@ export interface TeamSyncConfig {
    * document id that was deleted so the host can prune its tree and links.
    */
   onFoldersRemoved?: (folderIds: string[], documentIds: string[]) => void;
-
-  /** Called when the org encryption key is rotated (fingerprint changed) */
-  onOrgKeyRotated?: (fingerprint: string) => void;
 
   /**
    * Called when a member's project-scoped access changed (Epic H1). `projectRole`
@@ -219,13 +152,6 @@ export interface TeamState {
   members: MemberInfo[];
   documents: DocIndexEntry[];
   folders: FolderNode[];
-  keyEnvelope?: KeyEnvelopeData | null;
-}
-
-export interface KeyEnvelopeData {
-  wrappedKey: string;
-  iv: string;
-  senderPublicKey: string;
 }
 
 /** Decrypted document index entry for UI consumption */

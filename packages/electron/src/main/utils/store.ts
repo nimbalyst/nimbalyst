@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import * as path from 'path';
 import { RecentItem, SessionState, SessionWindow } from '../types';
 import { logger } from './logger';
-import { type EffortLevel, parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { type EffortLevel, type ThinkingMode, parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { OnboardingConfig } from '../../shared/types/workspace';
 import { DEFAULT_ONBOARDING_CONFIG } from '../../shared/types/workspace';
 import { AlphaFeatureTag, getDefaultAlphaFeatures, ALPHA_FEATURES } from '../../shared/alphaFeatures';
@@ -82,6 +82,11 @@ interface AppStoreSchema {
   lastSelectedOrgId?: string;
   // Default AI model for new sessions (format: "provider:model" e.g., "claude-code:sonnet")
   defaultAIModel?: string;
+  // Defaults for the composer's effort / extended-thinking selectors. Both are
+  // written as a side effect of changing the selector, so the choice sticks
+  // across new sessions.
+  defaultEffortLevel?: EffortLevel;
+  defaultThinkingMode?: ThinkingMode;
   // Default GitHub CLI account login for PR review. A per-project
   // override lives on WorkspaceState.prReviewGhAccountOverride.
   prReviewDefaultGhAccount?: string;
@@ -1549,6 +1554,17 @@ export function getDefaultEffortLevel(): EffortLevel | undefined {
 
 export function setDefaultEffortLevel(level: EffortLevel): void {
   getAppStore().set('defaultEffortLevel', level);
+}
+
+// Default extended-thinking mode for new sessions (GitHub #1034)
+export function getDefaultThinkingMode(): ThinkingMode | undefined {
+  const stored = getAppStore().get('defaultThinkingMode');
+  if (!stored) return undefined;
+  return parseThinkingMode(stored);
+}
+
+export function setDefaultThinkingMode(mode: ThinkingMode): void {
+  getAppStore().set('defaultThinkingMode', mode);
 }
 
 // Analytics Settings

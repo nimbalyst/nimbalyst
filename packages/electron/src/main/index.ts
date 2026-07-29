@@ -15,6 +15,7 @@ import { createApplicationMenu } from './menu/ApplicationMenu';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
 import { getRestartSignalPath } from './utils/appPaths';
+import { planProtocolRegistration } from './utils/protocolRegistration';
 import { createWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
 import { setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { showSplashScreen, closeSplashScreen } from './window/SplashScreen';
@@ -47,6 +48,8 @@ import { registerWorktreeHandlers } from './ipc/WorktreeHandlers';
 import { registerPullRequestHandlers, stopPullRequestPollScheduler } from './ipc/PullRequestHandlers';
 import { registerReadReceiptHandlers } from './ipc/ReadReceiptHandlers';
 import { registerTrackerPersonalStateHandlers } from './ipc/TrackerPersonalStateHandlers';
+import { registerTeamInboxHandlers } from './ipc/TeamInboxHandlers';
+import { registerConversationHandlers } from './ipc/ConversationHandlers';
 import { registerWakeupHandlers } from './ipc/WakeupHandlers';
 import { registerBlitzHandlers } from './ipc/BlitzHandlers';
 import { registerProjectMigrationHandlers } from './ipc/ProjectMigrationHandlers';
@@ -184,7 +187,8 @@ import { initTrackerSavedViewService } from './services/TrackerSavedViewService'
 import { registerTeamHandlers, autoMatchTeamForWorkspace, getOrgScopedJwt, findTeamForWorkspace } from './services/TeamService';
 import { windowStates, windows, resolveActiveWorkspacePath } from './window/windowState';
 import { getRecentItems } from './utils/store';
-import { registerOrgKeyHandlers, getOrgKey } from './services/OrgKeyService';
+import { registerTeamCustodyHandlers } from './services/TeamCustodyService';
+import { purgeLegacyKeyFiles } from './services/LegacyKeyFilePurge';
 import { registerDocumentSyncHandlers } from './ipc/DocumentSyncHandlers';
 import { getCollabOutboxDrainCoordinator } from './services/CollabOutboxDrainerService';
 import { getCollabAssetOutboxDrainCoordinator } from './services/CollabAssetOutboxDrainCoordinator';
@@ -552,17 +556,25 @@ function initializeLogging() {
 
 // Register custom URL protocol handler (nimbalyst://)
 // Must be done before app is ready on macOS
-if (process.defaultApp) {
-    if (process.argv.length >= 2) {
-        // Remove any stale registration first (e.g. from packaged builds or Electron Fiddle)
-        app.removeAsDefaultProtocolClient('nimbalyst', process.execPath, [path.resolve(process.argv[1])]);
-        app.setAsDefaultProtocolClient('nimbalyst', process.execPath, [path.resolve(process.argv[1])]);
-        logger.main.info(`[DeepLink] Registered nimbalyst:// protocol for dev mode (exec: ${process.execPath}, arg: ${path.resolve(process.argv[1])})`);
-        logger.main.info(`[DeepLink] isDefaultProtocolClient: ${app.isDefaultProtocolClient('nimbalyst', process.execPath, [path.resolve(process.argv[1])])}`);
-    }
-} else {
+const protocolPlan = planProtocolRegistration({
+    platform: process.platform,
+    isDefaultApp: !!process.defaultApp,
+    argv: process.argv,
+    execPath: process.execPath,
+    forceDevRegistration: process.env.NIMBALYST_DEV_PROTOCOL === '1',
+});
+
+if (protocolPlan.action === 'register-packaged') {
     app.removeAsDefaultProtocolClient('nimbalyst');
     app.setAsDefaultProtocolClient('nimbalyst');
+} else if (protocolPlan.action === 'register-dev') {
+    // Remove any stale registration first (e.g. from packaged builds or Electron Fiddle)
+    app.removeAsDefaultProtocolClient('nimbalyst', protocolPlan.execPath, protocolPlan.args);
+    app.setAsDefaultProtocolClient('nimbalyst', protocolPlan.execPath, protocolPlan.args);
+    logger.main.info(`[DeepLink] Registered nimbalyst:// protocol for dev mode (exec: ${protocolPlan.execPath}, arg: ${protocolPlan.args.join(' ')})`);
+    logger.main.info(`[DeepLink] isDefaultProtocolClient: ${app.isDefaultProtocolClient('nimbalyst', protocolPlan.execPath, protocolPlan.args)}`);
+} else {
+    logger.main.info(`[DeepLink] Not claiming nimbalyst:// scheme: ${protocolPlan.reason}`);
 }
 
 registerLinuxAppImageProtocolHandler();
@@ -748,6 +760,28 @@ safeHandle('deep-link:consume-pending-shared-folder', (_event, workspacePath: st
     if (!pending) return null;
     pendingSharedFolderLinks.delete(workspacePath);
     return { ...pending, workspacePath };
+});
+
+safeHandle('deep-link:open-inbox-source', async (_event, rawUrl: string) => {
+    try {
+        const parsed = new URL(rawUrl);
+        const orgId = parsed.searchParams.get('orgId');
+        if (parsed.protocol !== 'nimbalyst:') return false;
+        if (parsed.host === 'tracker' && orgId) {
+            const trackerId = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+            return trackerId ? openTrackerFromDeepLink(trackerId, orgId) : false;
+        }
+        if (parsed.host === 'doc' && orgId) {
+            const documentId = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+            return documentId ? openSharedDocumentFromDeepLink(documentId, orgId) : false;
+        }
+        // Conversation deep links are already the canonical address, but the
+        // room surface has not landed in the desktop client yet. Returning
+        // false preserves unread state instead of pretending navigation won.
+        return false;
+    } catch {
+        return false;
+    }
 });
 
 // Sensitive query params that must not be logged verbatim. Anything not in
@@ -1060,7 +1094,7 @@ async function findWorkspaceForOrgId(orgId: string): Promise<string | null> {
  * team workspace. Queues the payload in `pendingSharedDocLinks` so a freshly
  * created window's renderer can drain it on listener init.
  */
-async function openSharedDocumentFromDeepLink(documentId: string, orgId: string): Promise<void> {
+async function openSharedDocumentFromDeepLink(documentId: string, orgId: string): Promise<boolean> {
     const reason = !isAuthenticated() ? 'not-authenticated' : 'no-workspace';
     const workspacePath = isAuthenticated() ? await findWorkspaceForOrgId(orgId) : null;
 
@@ -1072,7 +1106,7 @@ async function openSharedDocumentFromDeepLink(documentId: string, orgId: string)
             fallback.focus();
             fallback.webContents.send('deep-link:shared-document-not-available', { documentId, orgId, reason });
         }
-        return;
+        return false;
     }
 
     // Queue first; the renderer drains by workspacePath on listener init.
@@ -1090,13 +1124,14 @@ async function openSharedDocumentFromDeepLink(documentId: string, orgId: string)
             workspacePath,
         });
         logger.main.info('[DeepLink] Routed shared doc to existing window:', { workspacePath, documentId });
-        return;
+        return true;
     }
 
     // No window has this workspace open — create one. The renderer's
     // deep-link listener will drain the pending queue once it mounts.
     logger.main.info('[DeepLink] Opening new window for shared doc workspace:', { workspacePath, documentId });
     createWindow(false, true, workspacePath);
+    return true;
 }
 
 /**
@@ -1142,7 +1177,7 @@ async function openSharedFolderFromDeepLink(folderId: string, orgId: string): Pr
  * Route a tracker deep link to the matching team workspace. Mirrors the
  * shared-document flow, but targets tracker mode + tracker-item selection.
  */
-async function openTrackerFromDeepLink(trackerId: string, orgId: string): Promise<void> {
+async function openTrackerFromDeepLink(trackerId: string, orgId: string): Promise<boolean> {
     const reason = !isAuthenticated() ? 'not-authenticated' : 'no-workspace';
     const workspacePath = isAuthenticated() ? await findWorkspaceForOrgId(orgId) : null;
 
@@ -1154,7 +1189,7 @@ async function openTrackerFromDeepLink(trackerId: string, orgId: string): Promis
             fallback.focus();
             fallback.webContents.send('deep-link:tracker-not-available', { trackerId, orgId, reason });
         }
-        return;
+        return false;
     }
 
     pendingTrackerLinks.set(workspacePath, { trackerId, orgId });
@@ -1169,11 +1204,12 @@ async function openTrackerFromDeepLink(trackerId: string, orgId: string): Promis
             workspacePath,
         });
         logger.main.info('[DeepLink] Routed tracker to existing window:', { workspacePath, trackerId });
-        return;
+        return true;
     }
 
     logger.main.info('[DeepLink] Opening new window for tracker workspace:', { workspacePath, trackerId });
     createWindow(false, true, workspacePath);
+    return true;
 }
 
 // Handle file open from OS (macOS)
@@ -1385,12 +1421,14 @@ app.whenReady().then(async () => {
     // service itself owns the WebContentsView pool.
     registerBrowserSessionHandlers();
 
-    // collab-asset:// E2E-encrypted document attachment handler.
-    // Same-origins the production worker request from Chromium's perspective,
-    // so we can keep webSecurity:true. The per-doc registry is populated by
+    // collab-asset:// document attachment handler. Same-origins the production
+    // worker request from Chromium's perspective, so we can keep
+    // webSecurity:true. The per-doc registry is populated by
     // document-sync:open / torn down by document-sync:close-doc.
+    //
+    // No key material is wired in on purpose: attachments are encrypted at rest
+    // server-side under the team DEK, so this side only fetches and serves.
     installCollabAssetProtocolHandler({
-        getOrgKey,
         getOrgScopedJwt,
         getAccountId: getPersonalUserId,
         assetStore: getCollabAssetStore(),
@@ -1621,7 +1659,12 @@ app.whenReady().then(async () => {
     gitRefWatcher.onCommitDetected((event) => commitTrackerLinker.handleCommitDetected(event));
 
     registerTeamHandlers();
-    registerOrgKeyHandlers();
+    registerTeamInboxHandlers();
+    registerConversationHandlers();
+    registerTeamCustodyHandlers();
+    // Team custody is server-managed; drop the client key material the retired
+    // lane left in userData (some of it plaintext where safeStorage was off).
+    purgeLegacyKeyFiles();
     registerCollabConversionClient();
     registerDocumentSyncHandlers();
     getCollabOutboxDrainCoordinator().start();

@@ -74,6 +74,10 @@ import { usePostHog } from 'posthog-js/react';
 import { WorkspaceSummaryHeader, generateWorkspaceAccentColor } from '../WorkspaceSummaryHeader';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
+import {
+  reconcileSessionPinToggle,
+  workstreamChildrenNeedRefresh,
+} from './workstreamChildPinReconciliation';
 import './SessionHistory.css';
 
 // SessionItem is the shared SessionMeta type from the store atoms.
@@ -1777,11 +1781,14 @@ const SessionHistoryComponent: React.FC = () => {
   // Toggle pin status for a session
   const handleSessionPinToggle = useCallback(async (sessionId: string, isPinned: boolean) => {
     try {
-      await window.electronAPI.invoke('sessions:update-pinned', sessionId, isPinned);
-      // Update atom state (optimistic update)
-      updateSessionStore({ sessionId, updates: { isPinned } });
-      // Also update filtered list for immediate feedback
-      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, isPinned } : s));
+      await reconcileSessionPinToggle({
+        sessionId,
+        isPinned,
+        invoke: (channel, ...args) => window.electronAPI.invoke(channel, ...args),
+        updateSessionStore,
+        setSessions,
+        setWorkstreamChildrenCache,
+      });
     } catch (error) {
       console.error('[SessionHistory] Failed to toggle session pin:', error);
     }
@@ -2572,40 +2579,17 @@ const SessionHistoryComponent: React.FC = () => {
     const cache = workstreamChildrenCacheRef.current;
     const registrySnapshot = store.get(sessionRegistryAtom);
 
-    const workstreamChildrenNeedRefresh = (session: SessionItem) => {
-      const cachedChildren = cache.get(session.id);
-      if (!cachedChildren) {
-        return true;
-      }
-
-      // Only refetch on STRUCTURAL changes (add/remove child, or a child we
-      // cached is no longer in the registry). updatedAt/title/isArchived/etc
-      // churn on every streamed message via sessions:refresh-list, which used
-      // to make this comparison flap forever during an active session and
-      // burn the renderer at 100% CPU. Field updates for existing children
-      // already propagate via sessions:session-updated -> sessionRegistryAtom
-      // patch -- the UI reads those directly via per-id atoms, it doesn't
-      // need our cached SessionItem copy to also be up to date.
-      if (cachedChildren.length !== (session.childCount ?? 0)) {
-        return true;
-      }
-
-      for (const child of cachedChildren) {
-        if (!registrySnapshot.has(child.id)) {
-          return true;
-        }
-      }
-
-      return false;
-    };
-
     // Find workstream sessions that are expanded
     const workstreamSessionsNeedingFetch = sessions.filter(s =>
       !s.worktreeId &&
       (s.childCount ?? 0) > 0 &&
       !collapsedGroups.includes(`workstream:${s.id}`) &&
       !pendingWorkstreamChildrenFetchesRef.current.has(s.id) &&
-      workstreamChildrenNeedRefresh(s)
+      workstreamChildrenNeedRefresh(
+        cache.get(s.id),
+        s.childCount ?? 0,
+        registrySnapshot,
+      )
     );
 
     if (workstreamSessionsNeedingFetch.length === 0) {

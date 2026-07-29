@@ -21,8 +21,6 @@
  *
  * Intentionally simplified:
  *   - No issue-key prefix uniqueness check.
- *   - No rotation lock / key-epoch enforcement (tests that need that
- *     enable `keyEpoch` checking explicitly).
  *   - No hibernation / TTL.
  */
 
@@ -206,12 +204,6 @@ export interface FakeTrackerRoomOptions {
   config?: TrackerRoomConfig;
 
   /**
-   * If set, mutations carrying a different fingerprint get rejected
-   * with `staleKeyEpoch`. Lets tests drive the rotation-mid-flight path.
-   */
-  currentFingerprint?: string | null;
-
-  /**
    * If true, every mutation gets rejected with `forbidden`. Lets tests
    * drive the rejection / rollback path.
    */
@@ -237,7 +229,6 @@ export class FakeTrackerRoom {
   private savedViewSyncId: SyncId = 0;
   private nextIssueNumber = 1;
   private config: TrackerRoomConfig;
-  private currentFingerprint: string | null;
   private rejectAll: boolean;
 
   /** Mutation log for test assertions. */
@@ -248,13 +239,7 @@ export class FakeTrackerRoom {
 
   constructor(options: FakeTrackerRoomOptions = {}) {
     this.config = options.config ?? { issueKeyPrefix: 'NIM' };
-    this.currentFingerprint = options.currentFingerprint ?? null;
     this.rejectAll = options.rejectAll ?? false;
-  }
-
-  /** Tweak the rotation gate at runtime. */
-  setCurrentFingerprint(fingerprint: string | null): void {
-    this.currentFingerprint = fingerprint;
   }
 
   /** Stop rejecting (used after the "first attempt fails, retry succeeds" tests). */
@@ -382,21 +367,6 @@ export class FakeTrackerRoom {
       return;
     }
 
-    // Stale-key-epoch enforcement (when enabled by the test).
-    if (
-      this.currentFingerprint !== null &&
-      msg.encryptedPayload !== null &&
-      msg.orgKeyFingerprint !== this.currentFingerprint
-    ) {
-      this.sendReject(
-        ws,
-        msg.clientMutationId,
-        'staleKeyEpoch',
-        `Expected ${this.currentFingerprint}, got ${msg.orgKeyFingerprint ?? '(none)'}`,
-      );
-      return;
-    }
-
     const isDelete = msg.encryptedPayload === null;
     const now = Date.now();
     this.syncId++;
@@ -414,10 +384,10 @@ export class FakeTrackerRoom {
       itemId: msg.itemId,
       syncId: newSyncId,
       encryptedPayload: isDelete ? null : msg.encryptedPayload,
-      iv: isDelete ? null : (msg.iv ?? null),
+      iv: null,
       updatedAt: now,
       deletedAt: isDelete ? now : null,
-      orgKeyFingerprint: isDelete ? null : (msg.orgKeyFingerprint ?? null),
+      orgKeyFingerprint: null,
       issueNumber,
       issueKey,
     };
@@ -473,20 +443,6 @@ export class FakeTrackerRoom {
       return;
     }
 
-    if (
-      this.currentFingerprint !== null &&
-      msg.encryptedPayload !== null &&
-      msg.orgKeyFingerprint !== this.currentFingerprint
-    ) {
-      this.sendSchemaReject(
-        ws,
-        msg.clientMutationId,
-        'staleKeyEpoch',
-        `Expected ${this.currentFingerprint}, got ${msg.orgKeyFingerprint ?? '(none)'}`,
-      );
-      return;
-    }
-
     const isDelete = msg.encryptedPayload === null;
     const now = Date.now();
     this.schemaSyncId++;
@@ -496,10 +452,10 @@ export class FakeTrackerRoom {
       schemaType: msg.schemaType,
       syncId: newSyncId,
       encryptedPayload: isDelete ? null : msg.encryptedPayload,
-      iv: isDelete ? null : (msg.iv ?? null),
+      iv: null,
       updatedAt: now,
       deletedAt: isDelete ? now : null,
-      orgKeyFingerprint: isDelete ? null : (msg.orgKeyFingerprint ?? null),
+      orgKeyFingerprint: null,
     };
     this.schemas.set(msg.schemaType, stored);
 
@@ -557,10 +513,10 @@ export class FakeTrackerRoom {
       viewId: msg.viewId,
       syncId: ++this.savedViewSyncId,
       encryptedPayload: msg.encryptedPayload,
-      iv: isDelete ? null : (msg.iv ?? null),
+      iv: null,
       updatedAt: Date.now(),
       deletedAt: isDelete ? Date.now() : null,
-      orgKeyFingerprint: isDelete ? null : msg.orgKeyFingerprint,
+      orgKeyFingerprint: null,
     };
     this.savedViews.set(msg.viewId, stored);
     const envelope = toSavedViewEnvelope(stored);
@@ -615,10 +571,10 @@ export class FakeTrackerRoom {
       entryId: msg.entryId,
       syncId: ++this.navigationSyncId,
       encryptedPayload: msg.encryptedPayload,
-      iv: isDelete ? null : (msg.iv ?? null),
+      iv: null,
       updatedAt: Date.now(),
       deletedAt: isDelete ? Date.now() : null,
-      orgKeyFingerprint: isDelete ? null : msg.orgKeyFingerprint,
+      orgKeyFingerprint: null,
     };
     this.navigation.set(msg.entryId, stored);
     const envelope = toNavigationEnvelope(stored);

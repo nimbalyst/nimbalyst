@@ -10,8 +10,8 @@
  * a mark focuses its thread.
  *
  * When a comment `@`-mentions members, the host's `onMention` callback is
- * invoked (wired to `TeamSyncProvider.fanoutInboxEvent`) so each mentioned
- * member receives a polymorphic inbox event.
+ * invoked. It is currently unwired: the personal-index fanout lane was removed
+ * and the org-scoped TeamInboxRoom replacement is not shipped.
  *
  * Positioning uses `@floating-ui/react` (project rule — never manual
  * `position: fixed`). The MarkNode + `INSERT_INLINE_COMMENT_COMMAND` live in
@@ -626,6 +626,7 @@ export default function CommentsPlugin({
           actorName,
           sourceTitle: config.documentTitle,
           snippet: comment.content.slice(0, 200),
+          commentId: comment.id,
           threadId: thread.id,
           markId: thread.id,
           url: config.documentUri,
@@ -778,6 +779,7 @@ export default function CommentsPlugin({
       mentionedUserIds: string[],
       snippet: string,
       threadId: string,
+      commentId: string,
       actor: CommentActor,
     ) => {
       if (!config.onMention || mentionedUserIds.length === 0) return;
@@ -790,6 +792,7 @@ export default function CommentsPlugin({
           actor.kind === 'agent' ? actor.sessionName : actor.displayName,
         sourceTitle: config.documentTitle,
         snippet: snippet.slice(0, 200),
+        commentId,
         threadId,
         markId: threadId,
         url: config.documentUri,
@@ -856,7 +859,7 @@ export default function CommentsPlugin({
         clientMutationId: createClientMutationId(),
       });
       commentStore.addComment(comment, current.thread);
-      fanoutMention(mentionedUserIds, text, current.thread.id, actor);
+      fanoutMention(mentionedUserIds, text, current.thread.id, comment.id, actor);
       setComposer(null);
       setPanelOpen(true);
       setActiveThreadId(current.thread.id);
@@ -891,7 +894,7 @@ export default function CommentsPlugin({
         replyToCommentId: replyTarget?.id,
       });
       commentStore.addComment(comment, thread);
-      fanoutMention(mentionedUserIds, text, thread.id, actor);
+      fanoutMention(mentionedUserIds, text, thread.id, comment.id, actor);
       const replyRecipient =
         replyTarget?.actor?.kind === 'user' ? replyTarget.actor.userId : undefined;
       if (

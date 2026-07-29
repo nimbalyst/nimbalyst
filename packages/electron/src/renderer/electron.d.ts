@@ -144,20 +144,7 @@ interface SemanticSearchResult {
 
 interface ElectronAPI {
   team: {
-    getKeyCustodyStatus: (orgId: string) => Promise<{ success: boolean; mode?: 'legacy-e2e' | 'server-managed'; error?: string }>;
-    getEncryptionMigrationStatus?: (orgId: string) => Promise<{
-      success: boolean;
-      migration?:
-        | { status: 'migrating'; startedAt: string; documentsCompleted?: number; documentsTotal?: number; phase?: 'custody' | 'titles' | 'documents' | 'verifying' }
-        | { status: 'complete'; finishedAt: string }
-        | { status: 'stuck'; failedAt: string; message: string; retryAt?: string }
-        | null;
-    }>;
-    retryEncryptionMigration?: (orgId: string) => Promise<{
-      success: boolean;
-      migration?: unknown;
-      error?: string;
-    }>;
+    getKeyCustodyStatus: (orgId: string) => Promise<{ success: boolean; mode?: 'server-managed' | 'unmigrated'; error?: string }>;
     [method: string]: any;
   };
   organization: {
@@ -174,7 +161,6 @@ interface ElectronAPI {
     moveProject: (input: { sourceOrgId: string; projectId: string; destinationOrgId: string; dropMemberEmails?: string[] }) => Promise<any>;
     deleteOrganization: (orgId: string) => Promise<any>;
     getEncryptionStatus: (orgId: string) => Promise<any>;
-    getEncryptionMigrationStatus: (orgId: string) => Promise<any>;
   };
   // Global semantic search (nimbalyst-memory). Empty/false when memory is off.
   semanticSearch: {
@@ -219,6 +205,11 @@ interface ElectronAPI {
   onOpenFeedback: (callback: () => void) => () => void;
   onThemeChange: (callback: (theme: string) => void) => () => void;
   setTitleBarOverlayColors: (colors: { color: string; symbolColor: string }) => void;
+  getWindowMenuBar: () => Promise<import('../shared/menuBar').SerializedMenuBar>;
+  invokeWindowMenuItem: (
+    id: string,
+    revision: number,
+  ) => Promise<{ invoked: boolean; staleRevision?: boolean }>;
   onMcpConfigChanged: (callback: (data: { scope: 'user' | 'workspace'; workspacePath?: string }) => void) => () => void;
 
   // Offscreen editor IPC
@@ -1027,13 +1018,6 @@ interface ElectronAPI {
         documentId: string;
         title: string;
         documentType?: string;
-        keyCustody?: 'legacy-e2e' | 'server-managed';
-        orgKeyBase64: string;
-        /** Legacy org key for reading pre-migration rows in server-managed mode (NIM-878). */
-        legacyOrgKeyBase64?: string;
-        /** All candidate legacy org-key epochs for pre-migration rows that may span rotations (NIM-959). */
-        legacyOrgKeysBase64?: string[];
-        orgKeyFingerprint?: string;
         serverUrl: string;
         accountId: string;
         userId: string;
@@ -1297,14 +1281,8 @@ interface ElectronAPI {
       config?: {
         orgId: string;
         teamProjectId?: string | null;
-        keyCustody?: 'legacy-e2e' | 'server-managed';
-        orgKeyBase64: string;
-        /** Legacy org-key epochs (current + archived) for reading/healing pre-migration ciphertext titles in server-managed mode (NIM-906/910). */
-        legacyOrgKeysBase64?: string[];
-        orgKeyFingerprint: string | null;
         serverUrl: string;
         userId: string;
-        personalOrgId?: string;
         userName?: string;
         userEmail?: string;
       };
@@ -1347,7 +1325,15 @@ interface ElectronAPI {
       fileBytes: ArrayBuffer;
       mimeType: string;
       fileName: string;
-    }) => Promise<{ success: boolean; assetId?: string; uri?: string; queued?: boolean; error?: string }>;
+    }) => Promise<{
+      success: boolean;
+      assetId?: string;
+      uri?: string;
+      queued?: boolean;
+      error?: string;
+      /** Structured failure code, e.g. `http_413` for an oversize attachment. */
+      errorCode?: string;
+    }>;
     migrateLocalAssets: (payload: {
       workspacePath: string;
       orgId: string;

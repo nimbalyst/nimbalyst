@@ -68,6 +68,39 @@ export {
 } from './syncClientInfo';
 
 export {
+  DEFAULT_TEAM_INBOX_CONNECT_CONCURRENCY,
+  TeamInboxFanIn,
+  TeamInboxOrgClient,
+  isActivityRef,
+} from './TeamInboxSync';
+export type {
+  TeamInboxFanInConfig,
+  TeamInboxMaterializedDelivery,
+  TeamInboxOrgClientConfig,
+  TeamInboxOrgClientLike,
+  TeamInboxOrgConnectionStatus,
+  TeamInboxOrgDescriptor,
+  TeamInboxOrgEvent,
+  TeamInboxOrganizationState,
+  TeamInboxSnapshot,
+  TeamInboxUnavailableDelivery,
+  TeamInboxWatermark,
+  TeamInboxWireDelivery,
+} from './TeamInboxSync';
+
+export {
+  ConversationSync,
+  ConversationSyncError,
+} from './ConversationSync';
+export type {
+  ConversationAppendInput,
+  ConversationHistoryPage,
+  ConversationSyncConfig,
+  ConversationSyncEvent,
+  ConversationTarget,
+} from './ConversationSync';
+
+export {
   createSyncedSessionStore,
   createMessageSyncHandler,
   type SyncedSessionStoreOptions,
@@ -124,7 +157,6 @@ export {
 export {
   CollabHistoryClient,
   CollabHistoryError,
-  decryptRevisionPayload,
 } from './collabHistoryClient';
 
 export type {
@@ -143,16 +175,6 @@ export type {
   DocServerMessage,
 } from './documentSyncTypes';
 
-export {
-  ECDHKeyManager,
-  createECDHKeyManager,
-} from './ECDHKeyManager';
-
-export type {
-  ECDHKeyPair,
-  SerializedECDHKeyPair,
-  KeyEnvelope,
-} from './ECDHKeyManager';
 
 // ============================================================================
 // Tracker sync (rewrite in progress)
@@ -211,14 +233,7 @@ export {
 } from './trackerProtocol';
 
 export {
-  encryptTrackerPayload,
-  decryptTrackerEnvelope,
-  encryptTrackerNavigationPayload,
-  encryptTrackerSavedViewPayload,
-  decryptTrackerSavedViewEnvelope,
   decodeTrackerSavedViewEnvelopePlaintext,
-  decryptTrackerNavigationEnvelope,
-  fingerprintTrackerKey,
 } from './TrackerEnvelopeCrypto';
 
 export {
@@ -257,7 +272,6 @@ export {
 export type {
   TrackerSyncEngineConfig,
   TrackerSyncStatus,
-  TrackerKeyMaterial,
   AppliedTrackerItem,
   RejectedTrackerMutation,
 } from './TrackerSyncEngine';
@@ -282,7 +296,6 @@ export type {
   TeamSyncStatus,
   TeamState,
   MemberInfo as TeamMemberInfo,
-  KeyEnvelopeData,
   DocIndexEntry as TeamDocIndexEntry,
   FolderNode,
 } from './teamSyncTypes';

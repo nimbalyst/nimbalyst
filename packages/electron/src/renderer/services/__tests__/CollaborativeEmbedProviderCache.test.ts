@@ -155,7 +155,6 @@ describe('CollaborativeEmbedProviderCache', () => {
       documentId: 'mockup-1',
       title: 'Wireframe',
       documentType: 'mockup.html',
-      keyCustody: 'server-managed',
       serverUrl: 'ws://collab.test',
       accountId: 'account-1',
       userId: 'user-1',

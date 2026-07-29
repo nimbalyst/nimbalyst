@@ -26,6 +26,7 @@ export interface EncryptedTrackerItemEnvelope {
   iv?: string;
   updatedAt: number;
   deletedAt: number | null;
+  /** Fingerprint of the team DEK the row was encrypted at rest under. */
   orgKeyFingerprint: string | null;
   /** Server-allocated; never changes after first assignment. */
   issueNumber?: number;
@@ -54,6 +55,7 @@ export interface EncryptedTrackerSchemaEnvelope {
   iv?: string;
   updatedAt: number;
   deletedAt: number | null;
+  /** Fingerprint of the team DEK the row was encrypted at rest under. */
   orgKeyFingerprint: string | null;
 }
 
@@ -72,6 +74,7 @@ export interface EncryptedTrackerSavedViewEnvelope {
   iv?: string;
   updatedAt: number;
   deletedAt: number | null;
+  /** Fingerprint of the team DEK the row was encrypted at rest under. */
   orgKeyFingerprint: string | null;
 }
 
@@ -83,6 +86,7 @@ export interface EncryptedTrackerNavigationEnvelope {
   iv?: string;
   updatedAt: number;
   deletedAt: number | null;
+  /** Fingerprint of the team DEK the row was encrypted at rest under. */
   orgKeyFingerprint: string | null;
 }
 
@@ -115,9 +119,6 @@ export interface TrackerSavedViewMutationRequestMessage {
   viewId: string;
   /** Null for delete (tombstone). */
   encryptedPayload: string | null;
-  /** Omitted for delete. */
-  iv?: string;
-  orgKeyFingerprint: string | null;
 }
 
 export interface TrackerNavigationSyncRequestMessage {
@@ -130,8 +131,6 @@ export interface TrackerNavigationMutationRequestMessage {
   clientMutationId: string;
   entryId: string;
   encryptedPayload: string | null;
-  iv?: string;
-  orgKeyFingerprint: string | null;
 }
 
 /** Request the schema delta since a cursor. `sinceSyncId: 0` bootstraps. */
@@ -147,9 +146,6 @@ export interface TrackerSchemaMutationRequestMessage {
   schemaType: string;
   /** Null for delete (tombstone). */
   encryptedPayload: string | null;
-  /** Omitted for delete. */
-  iv?: string;
-  orgKeyFingerprint: string | null;
 }
 
 export interface TrackerSyncRequestMessage {
@@ -165,9 +161,6 @@ export interface TrackerMutationRequestMessage {
   itemId: string;
   /** Null for delete (tombstone). */
   encryptedPayload: string | null;
-  /** Omitted for delete. */
-  iv?: string;
-  orgKeyFingerprint: string | null;
   issueNumber?: number;
   issueKey?: string;
 }
@@ -294,6 +287,10 @@ export type TrackerMutationRejectCode =
   | 'staleKeyEpoch'
   | 'rotationLocked'
   | 'forbidden'
+  /** The server could not load the team DEK, so the write is refused. */
+  | 'custodyUnavailable'
+  /** The payload carried a client iv — the retired client-encrypted lane. */
+  | 'legacy_encryption_retired'
   | 'malformed';
 
 export interface TrackerMutationAckMessage {

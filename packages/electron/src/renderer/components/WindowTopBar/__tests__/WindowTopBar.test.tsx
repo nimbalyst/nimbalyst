@@ -2,7 +2,7 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { WindowTopBar } from '../WindowTopBar';
+import { WindowTopBar, clampGitFeedbackMessage } from '../WindowTopBar';
 
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => (
@@ -277,5 +277,36 @@ describe('WindowTopBar', () => {
     expect(screen.getByRole('menuitem', { name: 'Review' })).toBeTruthy();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Chat with Session' }));
     expect(onChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('clamps a long git failure message instead of rendering the whole log', () => {
+    const hookLog = Array.from({ length: 400 }, (_, i) => `log line ${i} ${'x'.repeat(80)}`).join('\n');
+
+    render(
+      <WindowTopBar
+        workspaceName="Repo"
+        activeModeLabel="Files"
+        gitStatus={{ branch: 'main', hasUncommitted: true, ahead: 1, behind: 0 }}
+        gitActions={{
+          onPull: () => {},
+          onPush: () => {},
+          onOpenLog: () => {},
+          feedback: { kind: 'error', message: hookLog },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('window-top-bar-git-status'));
+    const feedback = screen.getByTestId('window-top-bar-git-feedback');
+    expect(feedback.textContent!.length).toBeLessThanOrEqual(301);
+    expect(feedback.textContent!.endsWith('…')).toBe(true);
+    expect(feedback.textContent).toContain('log line 0');
+    expect(feedback.getAttribute('title')!.length).toBeLessThanOrEqual(2001);
+  });
+
+  it('leaves short git feedback untouched', () => {
+    expect(clampGitFeedbackMessage('Push completed')).toBe('Push completed');
+    expect(clampGitFeedbackMessage('line 1\nline 2')).toBe('line 1\nline 2');
+    expect(clampGitFeedbackMessage('a\nb\nc\nd\ne\nf\ng')).toBe('a\nb\nc\nd\ne\nf…');
   });
 });

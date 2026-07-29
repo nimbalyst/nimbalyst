@@ -14,11 +14,17 @@ import {
   sessionEventMatchesWorkspace,
 } from '../../shared/sessionWorkspaceRouting';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
-import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence';
+import {
+  getSessionsWithPendingPrompt,
+  resetPendingPromptTracking,
+  setSessionPendingPrompt,
+} from '../services/ai/pendingPromptPersistence';
 import {
   clearStalePendingPromptOnTerminal,
-  findCompletedSessionsWithPendingPrompt,
+  findSessionsWithPendingPrompt,
+  selectStalePendingPromptSessions,
 } from '../services/ai/pendingPromptTerminalClear';
+import { hasLiveInteractivePrompt } from '../mcp/tools/interactivePromptLiveness';
 
 // Track if handlers are registered to prevent double registration
 let handlersRegistered = false;
@@ -28,6 +34,12 @@ const windowSubscriptions = new Map<number, () => void>();
 
 // Track sync subscription cleanup
 let syncSubscriptionCleanup: (() => void) | null = null;
+
+// NIM-2208: how often to sweep for pending-prompt bits left behind by a turn
+// that died without a terminal event. Slow on purpose -- the startup sweep is
+// the primary heal and this only covers the mid-session case.
+const PENDING_PROMPT_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
+let pendingPromptReconcileInterval: ReturnType<typeof setInterval> | null = null;
 const sessionWorkspaceCache = new Map<string, string | null>();
 
 async function getCanonicalWorkspacePathForSession(sessionId: string): Promise<string | null> {
@@ -82,23 +94,66 @@ async function readPersistedHasPendingPrompt(sessionId: string): Promise<boolean
   }
 }
 
-/** One-time-by-state startup repair for rows created before NIM-871. */
-async function clearHistoricalCompletedPendingPrompts(): Promise<void> {
+/**
+ * NIM-2208: startup sweep of every stale pending-prompt bit.
+ *
+ * No AI process survives an app restart, so any bit still set at boot is stale
+ * by definition — no liveness check is needed or possible. This must run BEFORE
+ * anything can start a turn (automations, session resume), which is why it sits
+ * at the top of `registerSessionStateHandlers`.
+ *
+ * Supersedes the NIM-871 repair, which only matched `phase === 'complete'` and
+ * therefore missed the entire real population: sessions abandoned mid-workflow
+ * accumulated an "awaiting input" indicator for weeks.
+ */
+async function clearStalePendingPromptsAtStartup(): Promise<void> {
   try {
     const { rows } = await database.query<{ id: string; metadata: unknown }>(
       `SELECT id, metadata FROM ai_sessions`,
     );
-    const staleIds = findCompletedSessionsWithPendingPrompt(
+    const staleIds = findSessionsWithPendingPrompt(
       rows.map((row) => ({ id: row.id, metadata: parseJsonObjectColumn(row.metadata) })),
     );
     for (const sessionId of staleIds) {
       await setSessionPendingPrompt(sessionId, false);
     }
+    // Every row is now clear, so the in-memory mirror the reconcile reads starts
+    // from a known-empty state.
+    resetPendingPromptTracking();
     if (staleIds.length > 0) {
-      console.log(`[SessionStateHandlers] Cleared stale pending-prompt state from ${staleIds.length} completed session(s)`);
+      console.log(`[SessionStateHandlers] Cleared stale pending-prompt state from ${staleIds.length} session(s) at startup`);
     }
   } catch (error) {
-    console.error('[SessionStateHandlers] Failed to repair completed pending prompts:', error);
+    console.error('[SessionStateHandlers] Failed to repair pending prompts at startup:', error);
+  }
+}
+
+/**
+ * NIM-2208: mid-session counterpart to the startup sweep, for a turn that died
+ * without emitting a terminal event. Only clears a bit when neither an MCP
+ * handler nor an in-memory session could still be blocked on it — see
+ * `selectStalePendingPromptSessions` for why both guards are required.
+ */
+async function reconcileStalePendingPrompts(
+  stateManager: ReturnType<typeof getSessionStateManager>,
+): Promise<void> {
+  try {
+    const candidates = getSessionsWithPendingPrompt();
+    if (candidates.length === 0) return;
+    const tracked = new Set(stateManager.getTrackedSessionIds());
+    const staleIds = selectStalePendingPromptSessions({
+      sessionIds: candidates,
+      hasLiveInteractivePrompt,
+      isSessionTracked: (sessionId) => tracked.has(sessionId),
+    });
+    for (const sessionId of staleIds) {
+      await setSessionPendingPrompt(sessionId, false);
+    }
+    if (staleIds.length > 0) {
+      console.log(`[SessionStateHandlers] Reconcile cleared ${staleIds.length} stale pending prompt(s)`);
+    }
+  } catch (error) {
+    console.error('[SessionStateHandlers] Failed to reconcile stale pending prompts:', error);
   }
 }
 
@@ -112,7 +167,16 @@ export async function registerSessionStateHandlers() {
 
   // Initialize the state manager
   await stateManager.initialize();
-  await clearHistoricalCompletedPendingPrompts();
+  await clearStalePendingPromptsAtStartup();
+
+  // NIM-2208: slow safety net for a turn that dies mid-session without a
+  // terminal event (the startup sweep only heals on the next launch). Deliberately
+  // infrequent -- it reads every session row, and both guards inside make it a
+  // no-op in the common case.
+  pendingPromptReconcileInterval = setInterval(
+    () => void reconcileStalePendingPrompts(stateManager),
+    PENDING_PROMPT_RECONCILE_INTERVAL_MS,
+  );
 
   // Subscribe to state changes and sync to mobile
   setupSyncSubscription(stateManager);
@@ -437,6 +501,11 @@ export function hasActiveStreamingSessions(): boolean {
 export async function shutdownSessionStateHandlers() {
   const stateManager = getSessionStateManager();
   await stateManager.shutdown();
+
+  if (pendingPromptReconcileInterval) {
+    clearInterval(pendingPromptReconcileInterval);
+    pendingPromptReconcileInterval = null;
+  }
 
   // Clean up sync subscription
   if (syncSubscriptionCleanup) {

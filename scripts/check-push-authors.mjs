@@ -5,9 +5,10 @@
 // ("seed", "hook must reject", author "Test User") to public main. Any outgoing
 // commit with one of these identities is an escaped fixture, never real work.
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
-const FORBIDDEN_NAMES = new Set(['Test', 'Test User', 'Your Name']);
-const FORBIDDEN_EMAIL_PATTERN = /(^test@|@example\.(com|net|org)$|@test\.?$)/i;
+const FORBIDDEN_NAMES = new Set(['Test', 'Test User', 'Your Name', 'Gate Author', 'NIM-367 Gate Author']);
+const FORBIDDEN_EMAIL_PATTERN = /(^test@|^fixture[-@]|@example\.(com|net|org)$|@test\.?$|\.(test|invalid|example)$)/i;
 
 export function findForbiddenAuthors(commits) {
   return commits.filter(
@@ -57,6 +58,10 @@ function main() {
   console.log(`[check-push-authors] OK: no test-fixture authors in ${range}.`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// pathToFileURL, not a `file://` template: on Windows process.argv[1] is a
+// backslashed drive path ("C:\repo\scripts\...") while import.meta.url is
+// "file:///C:/repo/scripts/...", so the naive comparison never matched and the
+// guard silently no-op'd for every Windows contributor.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }

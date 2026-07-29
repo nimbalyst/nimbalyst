@@ -206,3 +206,47 @@ describe('buildGridColumns', () => {
     }));
   });
 });
+
+describe('buildGridColumns cellCompare', () => {
+  afterEach(() => globalRegistry.unregister(gridType));
+
+  function comparerFor(columnId: string) {
+    registerType();
+    const [column] = buildGridColumns(columnsFor([columnId]), {
+      trackerType: gridType,
+      isRowEditable: () => false,
+      sortingEnabled: true,
+    });
+    expect(column.cellCompare).toBeTypeOf('function');
+    return (a: unknown, b: unknown): number =>
+      column.cellCompare!.call({ order: 'asc' }, columnId, { [columnId]: a } as never, { [columnId]: b } as never);
+  }
+
+  it('orders Date cells chronologically, not by their stringified month name', () => {
+    const compare = comparerFor('updated');
+    // "wed may 20 2026" > "wed jun 24 2026" alphabetically, but May precedes June.
+    expect(compare(new Date('2026-05-20T12:00:00Z'), new Date('2026-06-24T12:00:00Z'))).toBeLessThan(0);
+    expect(compare(new Date('2026-06-24T12:00:00Z'), new Date('2026-05-20T12:00:00Z'))).toBeGreaterThan(0);
+    expect(compare(new Date('2026-06-24T12:00:00Z'), new Date('2026-06-24T12:00:00Z'))).toBe(0);
+  });
+
+  it('orders a date column holding mixed Date and string values chronologically', () => {
+    const compare = comparerFor('updated');
+    expect(compare('2026-01-05', new Date('2026-03-01T00:00:00Z'))).toBeLessThan(0);
+    expect(compare(new Date('2026-03-01T00:00:00Z'), '2026-01-05')).toBeGreaterThan(0);
+  });
+
+  it('keeps numeric columns numeric rather than lexicographic', () => {
+    const compare = comparerFor('points');
+    expect(compare(9, 10)).toBeLessThan(0);
+  });
+
+  it('sorts blank cells last ascending, matching the list comparator', () => {
+    const compare = comparerFor('updated');
+    expect(compare(undefined, new Date('2026-05-20T12:00:00Z'))).toBeGreaterThan(0);
+    expect(compare(new Date('2026-05-20T12:00:00Z'), undefined)).toBeLessThan(0);
+    // An emptied cell is stored as '' -- it must bucket with the blanks, not sort first.
+    expect(compare('', new Date('2026-05-20T12:00:00Z'))).toBeGreaterThan(0);
+    expect(compare('', undefined)).toBe(0);
+  });
+});

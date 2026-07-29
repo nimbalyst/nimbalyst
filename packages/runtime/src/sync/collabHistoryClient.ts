@@ -27,7 +27,6 @@ import type {
 } from '@nimbalyst/collab-protocol';
 import { encodeDocumentRoomId } from './collabDocumentId';
 
-const REVISION_PURPOSE = 'doc-revision';
 const REVISION_ENCODING_VERSION = 1;
 
 export interface CollabHistoryClientConfig {
@@ -41,15 +40,6 @@ export interface CollabHistoryClientConfig {
   orgId: string;
   /** Document identity. */
   documentId: string;
-  /**
-   * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
-   * revision payloads with `documentKey`. `server-managed`: the server encrypts
-   * at rest with the team DEK, so the client sends/receives PLAINTEXT payloads
-   * (base64, iv `''`) and `documentKey` is unused.
-   */
-  keyCustody?: 'legacy-e2e' | 'server-managed';
-  /** AES-256-GCM key shared with the document. Required in legacy-e2e only. */
-  documentKey?: CryptoKey;
 }
 
 export interface CreateRevisionInput {
@@ -102,16 +92,13 @@ export class CollabHistoryClient {
     const url = this.buildRequestUrl(`/sync/${this.roomId}/revisions/${encodeURIComponent(revisionId)}`);
     const response = await this.fetchAuthed(url, { method: 'GET' });
     const body = (await response.json()) as DocRevisionDetailResponse;
-    // Server-managed: the payload is already plaintext (the server decrypted it).
-    const plaintext = this.config.keyCustody === 'server-managed'
-      ? base64ToBytes(body.payload.encryptedSnapshot)
-      : await decryptRevisionPayload(
-          this.config.documentKey!,
-          this.config.orgId,
-          this.config.documentId,
-          body.metadata,
-          body.payload
-        );
+    // The server decrypts revision payloads it owns and serves them as
+    // PLAINTEXT with the empty-iv sentinel. A non-empty iv is pre-cutover
+    // client-encrypted content no supported client can read.
+    if (body.payload.iv) {
+      throw new Error('Revision payload is pre-cutover client-encrypted content and can no longer be read');
+    }
+    const plaintext = base64ToBytes(body.payload.encryptedSnapshot);
     return { metadata: body.metadata, plaintext };
   }
 
@@ -128,7 +115,7 @@ export class CollabHistoryClient {
     // server-returned id. To keep the model coherent and let the server
     // dedupe before we even attempt encryption work, we bind to the
     // content_hash (which the server validates indirectly via dedupe).
-    const payload = await this.encryptPayload(contentHash, input.plaintext);
+    const payload = await this.encodePayload(contentHash, input.plaintext);
 
     const body: DocRevisionCreateRequest = {
       revisionKind: input.revisionKind,
@@ -171,26 +158,12 @@ export class CollabHistoryClient {
     return response;
   }
 
-  private async encryptPayload(contentHash: string, plaintext: Uint8Array): Promise<DocRevisionPayload> {
-    // Server-managed: send PLAINTEXT (base64, iv sentinel ''); the server
-    // encrypts at rest with the team DEK.
-    if (this.config.keyCustody === 'server-managed') {
-      return {
-        encryptedSnapshot: bytesToBase64(plaintext),
-        iv: '',
-        encodingVersion: REVISION_ENCODING_VERSION,
-      };
-    }
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const aad = buildRevisionAad(this.config.orgId, this.config.documentId, contentHash);
-    const ciphertext = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv, additionalData: aad as BufferSource },
-      this.config.documentKey!,
-      plaintext as BufferSource
-    );
+  private async encodePayload(_contentHash: string, plaintext: Uint8Array): Promise<DocRevisionPayload> {
+    // Send PLAINTEXT (base64, iv sentinel ''); the server encrypts at rest
+    // with the team DEK.
     return {
-      encryptedSnapshot: bytesToBase64(new Uint8Array(ciphertext)),
-      iv: bytesToBase64(iv),
+      encryptedSnapshot: bytesToBase64(plaintext),
+      iv: '',
       encodingVersion: REVISION_ENCODING_VERSION,
     };
   }
@@ -206,29 +179,6 @@ export class CollabHistoryClient {
 
 }
 
-/**
- * Decrypt a revision payload using the metadata's content_hash for AAD.
- * Exposed for components that already hold both halves and want to avoid
- * a second fetch.
- */
-export async function decryptRevisionPayload(
-  documentKey: CryptoKey,
-  orgId: string,
-  documentId: string,
-  metadata: DocRevisionMetadata,
-  payload: DocRevisionPayload
-): Promise<Uint8Array> {
-  const aad = buildRevisionAad(orgId, documentId, metadata.contentHash);
-  const ciphertext = base64ToBytes(payload.encryptedSnapshot);
-  const iv = base64ToBytes(payload.iv);
-  const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: iv as BufferSource, additionalData: aad as BufferSource },
-    documentKey,
-    ciphertext as BufferSource
-  );
-  return new Uint8Array(plaintext);
-}
-
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -237,14 +187,6 @@ function toHttpUrl(serverUrl: string): string {
   if (serverUrl.startsWith('wss://')) return `https://${serverUrl.slice(6)}`;
   if (serverUrl.startsWith('ws://')) return `http://${serverUrl.slice(5)}`;
   return serverUrl;
-}
-
-function buildRevisionAad(orgId: string, documentId: string, contentHash: string): Uint8Array {
-  // Plaintext binding so a ciphertext for one (org,doc,content) can't be
-  // replayed against a different one. `purpose` namespaces this AAD shape
-  // away from any future ciphertext under the same document key.
-  const encoder = new TextEncoder();
-  return encoder.encode(`${REVISION_PURPOSE}|${orgId}|${documentId}|${contentHash}`);
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {

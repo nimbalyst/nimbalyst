@@ -41,6 +41,7 @@ describe('settings route registry', () => {
       for (const route of getSettingsRoutesForScope(scope, {
         developerMode: true,
         showDirectChatProviders: true,
+        teamsConfigured: true,
       })) {
         expect(seen.has(route.id)).toBe(false);
         seen.set(route.id, scope);
@@ -59,6 +60,7 @@ describe('settings route registry', () => {
     const projectRoutes = getSettingsRoutesForScope('project', {
       developerMode: false,
       showDirectChatProviders: false,
+      teamsConfigured: true,
     });
 
     expect(projectRoutes).toEqual(expect.arrayContaining([
@@ -79,14 +81,32 @@ describe('settings route registry', () => {
     });
   });
 
+  it('hides the project Sharing route until the account has a team (invite-only alpha)', () => {
+    const withoutTeams = getSettingsRoutesForScope('project', {
+      developerMode: true,
+      showDirectChatProviders: false,
+      teamsConfigured: false,
+    });
+    const withTeams = getSettingsRoutesForScope('project', {
+      developerMode: false,
+      showDirectChatProviders: false,
+      teamsConfigured: true,
+    });
+
+    expect(withoutTeams.map((route) => route.id)).not.toContain('project-sharing');
+    expect(withTeams.map((route) => route.id)).toContain('project-sharing');
+  });
+
   it('hides direct chat providers until the visibility policy reveals the group', () => {
     const hiddenRoutes = getSettingsRoutesForScope('application', {
       developerMode: false,
       showDirectChatProviders: false,
+      teamsConfigured: true,
     });
     const visibleRoutes = getSettingsRoutesForScope('application', {
       developerMode: false,
       showDirectChatProviders: true,
+      teamsConfigured: true,
     });
 
     expect(hiddenRoutes.map((route) => route.id)).not.toEqual(
@@ -113,12 +133,12 @@ describe('settings route registry', () => {
   it('merges extension routes only into their declared scope', () => {
     const projectRoutes = getSettingsRoutesForScope(
       'project',
-      { developerMode: false, showDirectChatProviders: false },
+      { developerMode: false, showDirectChatProviders: false, teamsConfigured: true },
       extensionRoutes,
     );
     const applicationRoutes = getSettingsRoutesForScope(
       'application',
-      { developerMode: false, showDirectChatProviders: false },
+      { developerMode: false, showDirectChatProviders: false, teamsConfigured: true },
       extensionRoutes,
     );
 

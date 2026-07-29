@@ -11,6 +11,7 @@ import { MaterialSymbol, getProviderIcon } from '@nimbalyst/runtime';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP } from '../common/TeamAlphaNotice';
 import { developerModeAtom } from '../../store/atoms/appSettings';
+import { teamsConfiguredAtom } from '../../store/atoms/settingsDomains';
 import {
   getSettingsRoutesForScope,
   type SettingsCategory,
@@ -52,6 +53,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   extensionRoutes = [],
 }) => {
   const developerMode = useAtomValue(developerModeAtom);
+  const teamsConfigured = useAtomValue(teamsConfiguredAtom);
   const [extAgentProviders, setExtAgentProviders] = useState<
     Array<{ id: string; name: string; icon?: string; status: string }>
   >([]);
@@ -78,7 +80,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
     const grouped = new Map<string, Array<SettingsRoute | { id: string; label: string; icon?: string; status: string }>>();
     for (const route of getSettingsRoutesForScope(
       scope,
-      { developerMode, showDirectChatProviders },
+      { developerMode, showDirectChatProviders, teamsConfigured },
       extensionRoutes,
     )) {
       const entries = grouped.get(route.group) ?? [];
@@ -91,7 +93,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
       grouped.set('Agent Providers', entries);
     }
     return [...grouped.entries()];
-  }, [developerMode, extAgentProviders, extensionRoutes, scope, showDirectChatProviders]);
+  }, [developerMode, extAgentProviders, extensionRoutes, scope, showDirectChatProviders, teamsConfigured]);
 
   return (
     <aside

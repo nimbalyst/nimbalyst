@@ -21,6 +21,7 @@ import { sessionLaunchPopupRequestAtom } from '../../store/atoms/appCommands';
 import {
   defaultAgentModelAtom,
   defaultEffortLevelAtom,
+  defaultThinkingModeAtom,
   developerModeAtom,
   setAgentModeSettingsAtom,
 } from '../../store/atoms/appSettings';
@@ -30,7 +31,7 @@ import {
 } from '../../store/atoms/sessionLaunchPopup';
 import { sessionRegistryAtom } from '../../store/atoms/sessions';
 import {
-  parseThinkingMode,
+  resolveThinkingMode,
   supportsEffortLevel,
   supportsThinkingToggle,
   type EffortLevel,
@@ -117,6 +118,7 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
   const [draft, setDraft] = useAtom(draftAtom);
   const defaultModel = useAtomValue(defaultAgentModelAtom);
   const defaultEffortLevel = useAtomValue(defaultEffortLevelAtom);
+  const defaultThinkingMode = useAtomValue(defaultThinkingModeAtom);
   const developerMode = useAtomValue(developerModeAtom);
   const sessionRegistry = useAtomValue(sessionRegistryAtom);
   const setAgentModeSettings = useSetAtom(setAgentModeSettingsAtom);
@@ -135,7 +137,7 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
   const parsedModel = selectedModel ? ModelIdentifier.tryParse(selectedModel) : null;
   const provider = parsedModel?.provider ?? 'claude-code';
   const effortLevel = draft.effortLevel ?? defaultEffortLevel;
-  const thinkingMode = draft.thinkingMode ?? parseThinkingMode(undefined);
+  const thinkingMode = resolveThinkingMode(draft.thinkingMode, defaultThinkingMode);
 
   const virtualReference = useMemo<VirtualElement>(() => ({
     getBoundingClientRect: () => DOMRect.fromRect({
@@ -275,7 +277,8 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
 
   const handleThinkingModeChange = useCallback((nextThinkingMode: ThinkingMode) => {
     setDraft((current) => ({ ...current, thinkingMode: nextThinkingMode }));
-  }, [setDraft]);
+    setAgentModeSettings({ defaultThinkingMode: nextThinkingMode });
+  }, [setDraft, setAgentModeSettings]);
 
   const handleSend = useCallback(async () => {
     let prompt = draft.value.trim();

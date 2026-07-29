@@ -4,6 +4,7 @@ import {
   DEFAULT_THINKING_MODE,
   parseThinkingMode,
   resolveEffortLevel,
+  resolveThinkingMode,
 } from '../effortLevels';
 
 describe('resolveEffortLevel', () => {
@@ -46,5 +47,27 @@ describe('thinking mode parsing', () => {
     expect(parseThinkingMode('on')).toBe('enabled');
     expect(parseThinkingMode('off')).toBe('enabled');
     expect(parseThinkingMode('')).toBe('enabled');
+  });
+});
+
+describe('resolveThinkingMode', () => {
+  it('uses the explicit per-session mode when set', () => {
+    expect(resolveThinkingMode('disabled', 'enabled')).toBe('disabled');
+    expect(resolveThinkingMode('enabled', 'disabled')).toBe('enabled');
+  });
+
+  it('falls back to the app default when the session has no mode', () => {
+    expect(resolveThinkingMode(undefined, 'disabled')).toBe('disabled');
+    expect(resolveThinkingMode(null, 'disabled')).toBe('disabled');
+    expect(resolveThinkingMode('', 'disabled')).toBe('disabled');
+  });
+
+  it('falls back to enabled when neither is set', () => {
+    expect(resolveThinkingMode(undefined, undefined)).toBe('enabled');
+    expect(resolveThinkingMode(null, undefined)).toBe('enabled');
+  });
+
+  it('sanitizes an invalid session value instead of trusting it', () => {
+    expect(resolveThinkingMode('off', 'disabled')).toBe(DEFAULT_THINKING_MODE);
   });
 });

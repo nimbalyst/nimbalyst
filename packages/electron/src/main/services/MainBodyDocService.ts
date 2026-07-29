@@ -30,7 +30,6 @@ import { convertFromFileIntoDoc, convertRecoveryPlaintext } from './CollabConver
 import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
-import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey, fetchTeamKeyStatus, getLastKnownTeamKeyStatus } from './OrgKeyService';
 import { getCollabBackupService } from './CollabBackupService';
 
 const IDLE_TTL_MS = 30_000;
@@ -69,48 +68,12 @@ async function resolveConfig(
   const team = await findTeamForWorkspace(workspacePath);
   if (!team) return null;
 
-  // Determine key custody (NIM-878). On failure, fall back to the LAST-KNOWN
-  // mode for the org (NIM-1778) -- hardcoding legacy-e2e misroutes a
-  // server-managed team into the legacy encrypt/decrypt lane. Only an org we
-  // have never successfully resolved defaults to legacy-e2e, so a status
-  // hiccup still can't cause us to send plaintext into a legacy room.
-  let serverManaged = false;
-  try {
-    const orgJwt = await getOrgScopedJwt(team.orgId);
-    serverManaged = (await fetchTeamKeyStatus(team.orgId, orgJwt)).mode === 'server-managed';
-  } catch (err) {
-    serverManaged = getLastKnownTeamKeyStatus(team.orgId)?.mode === 'server-managed';
-    logger.main.warn('[MainBodyDocService] key-status resolve failed; using last-known mode (serverManaged:', serverManaged, '):', err);
-  }
-
-  let key = await getOrgKey(team.orgId);
-  if (!key) {
-    try {
-      const orgJwt = await getOrgScopedJwt(team.orgId);
-      key = await fetchAndUnwrapOrgKey(team.orgId, orgJwt);
-    } catch (err) {
-      logger.main.warn('[MainBodyDocService] failed to fetch org key envelope:', err);
-    }
-  }
-  // Legacy mode REQUIRES the org key (it encrypts/decrypts with it). Server-
-  // managed mode writes PLAINTEXT, so it can proceed without the key -- the key,
-  // when available, is only used to read PRE-MIGRATION legacy rows.
-  if (!key && !serverManaged) return null;
-
-  const fingerprint = getOrgKeyFingerprint(team.orgId);
   const documentId = `tracker-content/${itemId}`;
 
   return {
     serverUrl: getCollabSyncWsUrl(),
     getJwt: () => getOrgScopedJwt(team.orgId),
     orgId: team.orgId,
-    // In server-managed mode the body syncs PLAINTEXT (no AES on write); the org
-    // key (if present) is supplied as the LEGACY key so the headless peer can
-    // still read pre-migration ciphertext rows when it loads the room.
-    keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
-    documentKey: serverManaged ? undefined : (key ?? undefined),
-    legacyDocumentKey: serverManaged ? (key ?? undefined) : undefined,
-    orgKeyFingerprint: serverManaged ? undefined : (fingerprint ?? undefined),
     // `userId` is informational; the server treats the JWT sub as
     // authoritative. Empty is fine.
     userId: '',

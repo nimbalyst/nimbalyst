@@ -8,8 +8,6 @@ function createProvider(onFoldersLoaded = vi.fn()): TeamSyncProvider {
     getJwt: async () => 'token',
     orgId: 'org-1',
     userId: 'user-1',
-    keyCustody: 'server-managed',
-    orgKeyFingerprint: null,
     onFoldersLoaded,
   };
   return new TeamSyncProvider(config);

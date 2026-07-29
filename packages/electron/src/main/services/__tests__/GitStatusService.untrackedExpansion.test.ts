@@ -19,11 +19,12 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { GitStatusService } from '../GitStatusService';
+import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 let repo: string;
 
 function git(args: string[], cwd: string): void {
-  execFileSync('git', args, { cwd, stdio: 'pipe' });
+  execFileSync('git', args, { cwd, stdio: 'pipe', env: gitSandboxEnv() });
 }
 
 beforeEach(async () => {
@@ -32,6 +33,9 @@ beforeEach(async () => {
   git(['config', 'user.email', 'test@example.com'], repo);
   git(['config', 'user.name', 'Test'], repo);
   git(['config', 'commit.gpgsign', 'false'], repo);
+  // A hook-inherited GIT_DIR would otherwise redirect the commit below onto the
+  // developer's live branch. See testSupport/gitTestSandbox.ts.
+  assertGitSandbox(repo);
 
   // Ignore node_modules, like every real repo.
   await fs.writeFile(path.join(repo, '.gitignore'), 'node_modules/\ndist/\n');

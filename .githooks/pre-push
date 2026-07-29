@@ -12,6 +12,15 @@ base=$(git merge-base HEAD origin/main 2>/dev/null || echo HEAD~1)
 echo "[pre-push] Checking outgoing commits for test-fixture authors..."
 node scripts/check-push-authors.mjs "$base..HEAD"
 
+# Hooks export repository-local GIT_* variables. In a linked worktree GIT_DIR
+# is absolute, so a real-Git test running in a temp directory can otherwise
+# mutate this branch and the shared repository config. Git documents this list
+# specifically for commands that leave the hook's repository.
+git_local_env=$(git rev-parse --local-env-vars)
+# Intentional word splitting: rev-parse returns one variable name per line.
+unset $git_local_env
+unset GIT_NAMESPACE
+
 if ! git diff --quiet "$base" HEAD -- package-lock.json 'package.json' '*/package.json' 2>/dev/null; then
   echo "[pre-push] Manifest/lockfile changed; validating lockfile sync (npm ci --dry-run)..."
   if ! npm ci --dry-run >/dev/null 2>&1; then

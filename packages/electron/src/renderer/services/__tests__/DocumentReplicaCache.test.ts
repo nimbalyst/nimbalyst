@@ -189,28 +189,4 @@ describe('DocumentReplicaCache', () => {
     await cache.dispose();
   });
 
-  it('keys rotated replicas by actual key fingerprint and supersedes the old provider', async () => {
-    const cache = new DocumentReplicaCache({ idleTimeoutMs: 60_000 });
-    const oldResources = makeFactory();
-    const newResources = makeFactory();
-    const identity = { accountId: 'account', orgId: 'org', documentId: 'doc' };
-    const oldKey = buildDocumentReplicaCacheKey(identity, 'legacy-e2ee', 'fingerprint-v1');
-    const newKey = buildDocumentReplicaCacheKey(identity, 'legacy-e2ee', 'fingerprint-v2');
-    expect(newKey).not.toBe(oldKey);
-
-    const oldAcquisition = await cache.acquire(oldKey, oldResources.factory);
-    await oldAcquisition.supersede();
-    const newAcquisition = await cache.acquire(newKey, newResources.factory);
-
-    expect(newAcquisition.replica).not.toBe(oldAcquisition.replica);
-    expect(oldResources.calls).toMatchObject({
-      flushed: 1,
-      providerDestroyed: 1,
-      replicaDestroyed: 1,
-      detached: 1,
-    });
-    expect(newResources.calls.providerDestroyed).toBe(0);
-    newAcquisition.release();
-    await cache.dispose();
-  });
 });

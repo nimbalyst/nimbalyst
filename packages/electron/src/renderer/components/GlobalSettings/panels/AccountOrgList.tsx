@@ -14,6 +14,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 
 import { AlphaBadge } from '../../common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP } from '../../common/TeamAlphaNotice';
+import { organizationCreationEnabled } from '../../../store/atoms/settingsDomains';
 import type { AccountOrganizationEntry, AccountOrganizationGroup } from './accountOrganizations';
 
 function openOrgWindow(orgId?: string) {
@@ -125,6 +126,10 @@ function AccountOrgRow({ organization }: { organization: AccountOrganizationEntr
 }
 
 export function AccountOrgList({ group }: { group: AccountOrganizationGroup }) {
+  // Teams is invite-only alpha: with no memberships and no creation affordance
+  // there is nothing actionable here, so the section disappears entirely.
+  if (group.organizations.length === 0 && !organizationCreationEnabled) return null;
+
   return (
     <div className="account-org-list mt-2 flex flex-col gap-1.5 pl-3" data-testid="account-org-list">
       {group.organizations.map((organization) => (
@@ -135,17 +140,19 @@ export function AccountOrgList({ group }: { group: AccountOrganizationGroup }) {
           No organizations
         </p>
       )}
-      <div className="account-org-new-row flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={() => openOrgWindow()}
-          className="account-org-new self-start rounded border border-dashed border-[var(--nim-border)] bg-transparent px-2.5 py-1 text-[11px] text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
-          data-testid="account-org-new"
-        >
-          New organization
-        </button>
-        <AlphaBadge size="xs" tooltip={TEAM_ALPHA_TOOLTIP} />
-      </div>
+      {organizationCreationEnabled && (
+        <div className="account-org-new-row flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => openOrgWindow()}
+            className="account-org-new self-start rounded border border-dashed border-[var(--nim-border)] bg-transparent px-2.5 py-1 text-[11px] text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+            data-testid="account-org-new"
+          >
+            New organization
+          </button>
+          <AlphaBadge size="xs" tooltip={TEAM_ALPHA_TOOLTIP} />
+        </div>
+      )}
     </div>
   );
 }

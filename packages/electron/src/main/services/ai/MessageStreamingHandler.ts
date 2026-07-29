@@ -35,7 +35,7 @@ import {
 } from '@nimbalyst/runtime/ai/server/types';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { parseThinkingMode, resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveEffortLevel, resolveThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository, resolveClaudeCodeParentContextWindow } from '@nimbalyst/runtime';
 import { toolRegistry } from './tools';
@@ -88,6 +88,7 @@ import {
   wasCommunityPopupShownThisLaunch,
   incrementCompletedSessionsWithTools,
   getDefaultEffortLevel,
+  getDefaultThinkingMode,
   getAppSetting,
 } from '../../utils/store';
 import {
@@ -578,7 +579,7 @@ export class MessageStreamingHandler {
         // selector displays (Opus 4.6 adaptive reasoning).
         ...(reinitEffortLevel && { effortLevel: reinitEffortLevel }),
         ...(isProviderClaudeCode ? {
-          thinkingMode: parseThinkingMode((session.metadata as any)?.thinkingMode),
+          thinkingMode: resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode()),
         } : {}),
       };
 

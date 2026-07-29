@@ -29,7 +29,7 @@ import { isModelEnabled } from './modelEnablementFilter';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { parseThinkingMode, resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveEffortLevel, resolveThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -82,7 +82,8 @@ import {
   normalizeAIProviderOverrides,
   shouldShowCommunityPopup,
   wasCommunityPopupShownThisLaunch,
-  getDefaultEffortLevel
+  getDefaultEffortLevel,
+  getDefaultThinkingMode
 } from '../../utils/store';
 import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../../utils/aiSettingsMerge';
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
@@ -122,6 +123,7 @@ import {
   categorizeAIError,
 } from './aiServiceUtils';
 import { MessageStreamingHandler } from './MessageStreamingHandler';
+import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
@@ -594,7 +596,7 @@ export class AIService {
       temperature: (session.providerConfig as any)?.temperature,
       ...(apiKey ? { apiKey } : {}),
       ...(effortLevel && { effortLevel }),
-      thinkingMode: parseThinkingMode((session.metadata as any)?.thinkingMode),
+      thinkingMode: resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode()),
     };
 
     const fullModel = session.model || session.providerConfig?.model;
@@ -1973,7 +1975,7 @@ export class AIService {
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }
-        initConfig.thinkingMode = parseThinkingMode((session.metadata as any)?.thinkingMode);
+        initConfig.thinkingMode = resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode());
       }
 
       // Pass effort level for OpenAI Codex
@@ -2645,8 +2647,19 @@ export class AIService {
       }
 
       if (!providerSupportsCancel && !hasMcpWaiter && !hasSessionFallbackWaiter) {
-        logger.main.warn(`[AIService] Question cancel target not found: ${resolvedSessionId}`);
-        return { success: false, error: 'Question not found' };
+        // NIM-2208: no provider, no MCP waiter, no fallback waiter means nothing
+        // is listening -- the process that opened this question is gone (app
+        // restarted, turn died). This used to return an error and leave
+        // `metadata.hasPendingPrompt` set, so the session kept showing "awaiting
+        // input" in AgentSessionsPopover with no way to dismiss it: the ONLY
+        // cancel affordance is this widget, and it was a no-op on exactly the
+        // sessions that needed it. Clearing the bit here makes the widget's
+        // Cancel button the working escape hatch for a dead prompt.
+        logger.main.info(`[AIService] Question cancel target not found; clearing stale pending-prompt bit: ${resolvedSessionId}`);
+        await setSessionPendingPrompt(resolvedSessionId, false).catch((err) => {
+          logger.main.warn(`[AIService] Failed to clear stale pending-prompt bit on cancel: ${err}`);
+        });
+        return { success: true, staleCleared: true };
       }
 
       // For MCP-backed AskUserQuestion (Codex), let the MCP tool call resolve with

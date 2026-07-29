@@ -18,6 +18,7 @@ import {
   formatRelativeDate,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import { compareCellValues } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerRowData';
 import { resolveCellEditor } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerCellEditors';
 import {
   createRowAwareTrackerCellEditor,
@@ -312,6 +313,11 @@ export function buildGridColumns(
       size: columnWidths[col.id] ?? (typeof col.width === 'number' ? col.width : 280),
       minSize: col.minWidth ?? 60,
       sortable: sortingEnabled && col.sortable,
+      // RevoGrid re-sorts `source` on every assignment using the sorting config,
+      // so its comparer -- not the pre-sort in TrackerGridView -- decides the
+      // final row order. Its default stringifies everything; delegate to the
+      // shared comparator so both surfaces agree and dates stay chronological.
+      cellCompare: (prop, a, b) => compareCellValues(a?.[prop], b?.[prop], col.render),
       editor,
       readonly: ({ model }) => {
         if (!editor) return true;

@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   isTerminalSessionEvent,
   clearStalePendingPromptOnTerminal,
-  findCompletedSessionsWithPendingPrompt,
+  findSessionsWithPendingPrompt,
+  selectStalePendingPromptSessions,
 } from '../pendingPromptTerminalClear';
 
 describe('isTerminalSessionEvent', () => {
@@ -19,13 +20,77 @@ describe('isTerminalSessionEvent', () => {
   });
 });
 
-describe('findCompletedSessionsWithPendingPrompt', () => {
-  it('selects only completed sessions whose prompt bit is still true', () => {
-    expect(findCompletedSessionsWithPendingPrompt([
-      { id: 'stale', metadata: { phase: 'complete', hasPendingPrompt: true } },
-      { id: 'valid-pending', metadata: { phase: 'validating', hasPendingPrompt: true } },
-      { id: 'complete-clean', metadata: { phase: 'complete', hasPendingPrompt: false } },
-    ])).toEqual(['stale']);
+describe('findSessionsWithPendingPrompt (NIM-2208 boot sweep)', () => {
+  it('selects every set bit regardless of phase', () => {
+    // Repro for NIM-2208: the old boot repair only matched phase === 'complete',
+    // so 32 real sessions (planning / implementing / validating / no phase) kept
+    // an "awaiting input" flag for weeks across restarts. No process survives an
+    // app restart, so at boot every set bit is stale by definition.
+    expect(findSessionsWithPendingPrompt([
+      { id: 'complete', metadata: { phase: 'complete', hasPendingPrompt: true } },
+      { id: 'planning', metadata: { phase: 'planning', hasPendingPrompt: true } },
+      { id: 'validating', metadata: { phase: 'validating', hasPendingPrompt: true } },
+      { id: 'no-phase', metadata: { hasPendingPrompt: true } },
+      { id: 'clean', metadata: { phase: 'planning', hasPendingPrompt: false } },
+      { id: 'absent', metadata: { phase: 'planning' } },
+    ])).toEqual(['complete', 'planning', 'validating', 'no-phase']);
+  });
+
+  it('returns nothing when no bit is set', () => {
+    expect(findSessionsWithPendingPrompt([
+      { id: 'a', metadata: { hasPendingPrompt: false } },
+    ])).toEqual([]);
+  });
+});
+
+describe('selectStalePendingPromptSessions (NIM-2208 live reconcile)', () => {
+  const none = () => false;
+  const all = () => true;
+
+  it('clears a set bit when nothing in-memory could still be blocked on it', () => {
+    expect(selectStalePendingPromptSessions({
+      sessionIds: ['dead'],
+      hasLiveInteractivePrompt: none,
+      isSessionTracked: none,
+    })).toEqual(['dead']);
+  });
+
+  it('never clears while an MCP prompt waiter is genuinely blocked', () => {
+    // The blocked handler is sitting in `new Promise` waiting on its response
+    // channel; clearing here would hide a session that IS waiting on the user.
+    expect(selectStalePendingPromptSessions({
+      sessionIds: ['blocked'],
+      hasLiveInteractivePrompt: (id) => id === 'blocked',
+      isSessionTracked: none,
+    })).toEqual([]);
+  });
+
+  it('never clears a session still tracked in memory', () => {
+    // Provider-driven prompts (ExitPlanMode et al, MessageStreamingHandler) set
+    // the bit without registering an MCP waiter, so the waiter registry alone is
+    // not sufficient. A tracked session may have a live provider blocked on one;
+    // leave it to the terminal-event clear and the next boot sweep.
+    expect(selectStalePendingPromptSessions({
+      sessionIds: ['tracked'],
+      hasLiveInteractivePrompt: none,
+      isSessionTracked: all,
+    })).toEqual([]);
+  });
+
+  it('is a no-op when nothing carries the bit', () => {
+    expect(selectStalePendingPromptSessions({
+      sessionIds: [],
+      hasLiveInteractivePrompt: none,
+      isSessionTracked: none,
+    })).toEqual([]);
+  });
+
+  it('sweeps only the stale subset of a mixed set', () => {
+    expect(selectStalePendingPromptSessions({
+      sessionIds: ['dead-a', 'blocked', 'tracked', 'dead-b'],
+      hasLiveInteractivePrompt: (id) => id === 'blocked',
+      isSessionTracked: (id) => id === 'tracked',
+    })).toEqual(['dead-a', 'dead-b']);
   });
 });
 

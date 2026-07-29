@@ -1109,6 +1109,7 @@ export const RichTranscriptView = React.forwardRef<
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollButtonRef = useRef<HTMLDivElement>(null);
+  const scrollButtonElementRef = useRef<HTMLButtonElement>(null);
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [showSearchBar, setShowSearchBar] = useState(false);
 
@@ -2449,7 +2450,11 @@ export const RichTranscriptView = React.forwardRef<
                       if (scrollButtonRef.current) {
                         const show = distanceFromBottom > viewportSize;
                         scrollButtonRef.current.style.opacity = show ? '1' : '0';
-                        scrollButtonRef.current.style.pointerEvents = show ? '' : 'none';
+                        // Only the button opts back into pointer events, and only while visible.
+                        // Clearing it lets the button inherit the container's pointer-events: none.
+                        if (scrollButtonElementRef.current) {
+                          scrollButtonElementRef.current.style.pointerEvents = show ? 'auto' : '';
+                        }
                       }
                       // Check if any pending permission widgets are visible in viewport
                       if (pendingPermissionIndices.length > 0) {
@@ -2510,11 +2515,14 @@ export const RichTranscriptView = React.forwardRef<
           </div>
         )}
 
-        {/* Scroll to bottom button - uses ref + opacity/pointer-events to avoid layout shifts that interfere with text selection */}
-        <div ref={scrollButtonRef} className="rich-transcript-scroll-button-container sticky bottom-3 flex justify-center opacity-0 transition-opacity">
+        {/* Scroll to bottom button - uses ref + opacity to avoid layout shifts that interfere with text selection.
+            The container spans the full pane width, so it must stay pointer-events-none in every state;
+            only the button opts back in, otherwise it becomes a dead band for clicks and the wheel. */}
+        <div ref={scrollButtonRef} className="rich-transcript-scroll-button-container sticky bottom-3 flex justify-center pointer-events-none opacity-0 transition-opacity">
           <button
+            ref={scrollButtonElementRef}
             onClick={scrollToBottom}
-            className="rich-transcript-scroll-button w-9 h-9 flex items-center justify-center bg-[var(--nim-primary)] text-white rounded-full border-none shadow-lg cursor-pointer transition-all hover:bg-[var(--nim-primary-hover)] hover:scale-110 pointer-events-auto"
+            className="rich-transcript-scroll-button w-9 h-9 flex items-center justify-center bg-[var(--nim-primary)] text-white rounded-full border-none shadow-lg cursor-pointer transition-all hover:bg-[var(--nim-primary-hover)] hover:scale-110"
             title="Scroll to bottom"
           >
             <MaterialSymbol icon="arrow_downward" size={20} />

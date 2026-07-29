@@ -16,6 +16,7 @@ import { windows } from "../window/windowState";
 import { workspaceToWindowMap } from "./mcpWorkspaceResolver";
 import { requireMcpAuth } from "./mcpAuth";
 import { getAllowedClipOrigin, hasAllowedClipContentType } from "./clipRequestGuards";
+import { withTrackerSchemaWorkspace } from "../services/tracker/trackerSchemaScope";
 
 // Extracted modules
 import {
@@ -475,8 +476,11 @@ function createSharedMcpServer(
     return { tools: dedupeAndWarn(allTools, serverName) };
   });
 
-  // Register tool execution handler
-  server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
+  // Register tool execution handler. Tracker schema lookups are process-global
+  // and keyed by type name, so a tool call must resolve schemas against ITS OWN
+  // workspace -- otherwise a call for one project reads (and used to overwrite)
+  // another open project's identically-named tracker types (#1035).
+  server.setRequestHandler(CallToolRequestSchema, withTrackerSchemaWorkspace(workspacePath, async (request: any) => {
     const { name, arguments: args } = request.params;
     if (request.params._meta) {
       console.log(
@@ -665,7 +669,7 @@ function createSharedMcpServer(
       console.error(`[MCP:${serverName}] Tool args:`, JSON.stringify(args).slice(0, 500));
       throw error;
     }
-  });
+  }));
 
   return server;
 }

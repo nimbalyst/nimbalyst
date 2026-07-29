@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { categorizeTeamAnalyticsError } from '../../../../shared/analytics/teamAnalytics';
+import {
+  categorizeTeamAnalyticsError,
+  normalizeTeamAnalyticsCallerRole,
+} from '../../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
 
 interface AccessGrant { userId: string; projectRole: string }
@@ -45,8 +48,8 @@ export function ProjectAccessEditor({ orgId, projectId }: { orgId: string; proje
                   trackTeamAnalyticsEvent('team_project_access_changed', {
                     surface: 'desktop',
                     action: role ? 'granted' : 'revoked',
-                    callerRole: callerRole === 'owner' || callerRole === 'admin' || callerRole === 'member' ? callerRole : 'unknown',
-                    targetRole: role === 'project-admin' ? 'admin' : 'member',
+                    callerRole: normalizeTeamAnalyticsCallerRole(callerRole),
+                    targetRole: role === 'project-admin' ? 'admin' : role === 'project-viewer' ? 'viewer' : 'member',
                   });
                   return refresh();
                 }).catch((error) => {
@@ -54,7 +57,7 @@ export function ProjectAccessEditor({ orgId, projectId }: { orgId: string; proje
                     surface: 'desktop',
                     operation: 'change_project_access',
                     entryPoint: 'project_sharing',
-                    callerRole: callerRole === 'owner' || callerRole === 'admin' || callerRole === 'member' ? callerRole : 'unknown',
+                    callerRole: normalizeTeamAnalyticsCallerRole(callerRole),
                     errorCategory: categorizeTeamAnalyticsError('project', error),
                   });
                 });

@@ -31,6 +31,7 @@ export {
   DEFAULT_THINKING_MODE,
   parseEffortLevel,
   parseThinkingMode,
+  resolveThinkingMode,
 } from '@nimbalyst/runtime/ai/server/effortLevels';
 
 interface ModelInfo {

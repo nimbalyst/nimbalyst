@@ -226,6 +226,25 @@ export class TrackerDataModelRegistry {
   /** Original built-in definitions, so a workspace override can be cleared. */
   private builtinModels: Map<string, TrackerDataModel> = new Map();
   private listeners: Set<() => void> = new Set();
+  /**
+   * Schema layers for workspaces OTHER than the active one (path -> type -> model).
+   *
+   * The `models` map above is the resolved view of the ACTIVE workspace. A
+   * background reader (the in-process MCP server serving a tool call for a
+   * different project) must be able to see that project's custom types without
+   * overwriting the active project's identically-named types — the registry is
+   * keyed by type name only, so `register()` from workspace B used to silently
+   * replace workspace A's `widget` schema and corrupt A's validation (#1035).
+   */
+  private workspaceLayers: Map<string, Map<string, TrackerDataModel>> = new Map();
+  /** Workspace path that `models` currently represents, if any. */
+  private activeWorkspace: string | null = null;
+  /**
+   * Supplies the workspace a read should resolve against, when the caller is
+   * operating on behalf of a non-active workspace. Installed by the host
+   * (Electron main uses AsyncLocalStorage); undefined means "use the active view".
+   */
+  private scopeProvider: (() => string | null | undefined) | null = null;
 
   register(model: TrackerDataModel, builtin = false): void {
     const normalized = ensureTagsSupport(model);
@@ -292,16 +311,86 @@ export class TrackerDataModelRegistry {
     return () => { this.listeners.delete(fn); };
   }
 
+  // -------------------------------------------------------------------------
+  // Workspace scoping (#1035)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Install the ambient scope resolver. The host calls this once; returning a
+   * workspace path from `fn` makes reads on the current async context resolve
+   * against that workspace's layer instead of the active view.
+   */
+  setScopeProvider(fn: (() => string | null | undefined) | null): void {
+    this.scopeProvider = fn;
+  }
+
+  /**
+   * Declare which workspace the live `models` view represents. Any cached layer
+   * for that workspace is dropped — the live view supersedes it (and the caller
+   * reloads it from disk).
+   */
+  setActiveWorkspace(workspacePath: string | null): void {
+    this.activeWorkspace = workspacePath;
+    if (workspacePath) this.workspaceLayers.delete(workspacePath);
+  }
+
+  /** The workspace the live view currently represents, if declared. */
+  getActiveWorkspace(): string | null {
+    return this.activeWorkspace;
+  }
+
+  /**
+   * Replace the cached schema layer for a NON-active workspace. Does not touch
+   * the active view, so a read-only lookup for another project can never
+   * clobber the open project's schemas. No change notification is emitted:
+   * nothing the active workspace can observe has changed.
+   */
+  setWorkspaceLayer(workspacePath: string, models: TrackerDataModel[]): void {
+    const layer = new Map<string, TrackerDataModel>();
+    for (const model of models) {
+      const normalized = ensureTagsSupport(model);
+      layer.set(normalized.type, normalized);
+    }
+    this.workspaceLayers.set(workspacePath, layer);
+  }
+
+  /** Drop a cached non-active workspace layer. */
+  clearWorkspaceLayer(workspacePath: string): void {
+    this.workspaceLayers.delete(workspacePath);
+  }
+
+  /**
+   * The layer a read should resolve against, or null to use the active view.
+   *
+   * When no workspace has claimed the live view (`activeWorkspace === null`)
+   * every read stays unscoped: the view is nobody's to corrupt, and scoping it
+   * would hide types registered before any workspace window opened (NIM-760).
+   */
+  private scopedLayer(): ReadonlyMap<string, TrackerDataModel> | null {
+    if (!this.activeWorkspace) return null;
+    const scope = this.scopeProvider?.();
+    if (!scope || scope === this.activeWorkspace) return null;
+    return this.workspaceLayers.get(scope) ?? EMPTY_LAYER;
+  }
+
   get(type: string): TrackerDataModel | undefined {
-    return this.models.get(type);
+    const layer = this.scopedLayer();
+    if (!layer) return this.models.get(type);
+    // Fall back to the built-in seed, never to the active workspace's
+    // override — that override belongs to a different project.
+    return layer.get(type) ?? this.builtinModels.get(type);
   }
 
   getAll(): TrackerDataModel[] {
-    return Array.from(this.models.values());
+    const layer = this.scopedLayer();
+    if (!layer) return Array.from(this.models.values());
+    const merged = new Map(this.builtinModels);
+    for (const [type, model] of layer) merged.set(type, model);
+    return Array.from(merged.values());
   }
 
   has(type: string): boolean {
-    return this.models.has(type);
+    return this.get(type) !== undefined;
   }
 
   isBuiltin(type: string): boolean {
@@ -435,6 +524,9 @@ export class TrackerDataModelRegistry {
     };
   }
 }
+
+/** Shared empty layer for a scoped read against a workspace we know nothing about. */
+const EMPTY_LAYER: ReadonlyMap<string, TrackerDataModel> = new Map();
 
 // Global registry instance
 export const globalRegistry = new TrackerDataModelRegistry();

@@ -11,20 +11,38 @@ import { AlphaBadge } from '../common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../common/TeamAlphaNotice';
 import { selectedOrgIdAtom } from '../../store/atoms/orgScope';
 import { OrgWindowSwitcher } from './OrgWindowSwitcher';
+import { InboxSection } from './Inbox';
 import { isActiveMembership, persistLastSelectedOrgId, resolveDefaultOrgId } from './defaultOrg';
+import { normalizeTeamAnalyticsCallerRole } from '../../../shared/analytics/teamAnalytics';
+import { organizationCreationEnabled } from '../../store/atoms/settingsDomains';
 import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 
 // Workstream F will replace this interim destination with the shipped console route.
 export const TEAM_CONSOLE_URL = 'https://console.nimbalyst.com';
 
-type AdminTab = 'members' | 'projects' | 'billing' | 'danger';
+export type AdminTab = 'inbox' | 'members' | 'projects' | 'billing' | 'danger';
 
-const ADMIN_TABS: Array<{ id: AdminTab; label: string; icon: string }> = [
+export const ADMIN_TABS: Array<{ id: AdminTab; label: string; icon: string }> = [
+  { id: 'inbox', label: 'Inbox', icon: 'inbox' },
   { id: 'members', label: 'Members', icon: 'groups' },
   { id: 'projects', label: 'Projects', icon: 'folder' },
   { id: 'billing', label: 'Billing', icon: 'credit_card' },
   { id: 'danger', label: 'Danger zone', icon: 'warning' },
 ];
+
+/**
+ * The window opens on the Inbox: it is the section a user lives in, while the
+ * rest of this window is occasional administration. Flip this back to
+ * `'members'` to restore the administration-first landing.
+ */
+export const DEFAULT_ADMIN_TAB: AdminTab = 'inbox';
+
+/**
+ * The Inbox is a two-pane surface (list plus context pane) and is the only tab
+ * that opts out of the shared 900px administration column — a form-width cap
+ * would leave the context pane unusable. Every other tab keeps it.
+ */
+export const FULL_WIDTH_TABS: ReadonlySet<AdminTab> = new Set<AdminTab>(['inbox']);
 
 interface TeamSummary {
   orgId: string;
@@ -41,7 +59,7 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
   const [team, setTeam] = useState<TeamSummary | null>(null);
   const [organizations, setOrganizations] = useState<TeamSummary[]>([]);
   const [boundEmail, setBoundEmail] = useState<string | null>(null);
-  const [tab, setTab] = useState<AdminTab>('members');
+  const [tab, setTab] = useState<AdminTab>(DEFAULT_ADMIN_TAB);
   // Which org project's access editor is open inside the Projects tab, if any.
   const [accessProjectId, setAccessProjectId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -52,11 +70,7 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
     trackTeamAnalyticsEvent('team_organization_switched', {
       surface: 'desktop',
       entryPoint: 'org_switcher',
-      callerRole: selectedOrganization?.role === 'owner'
-        || selectedOrganization?.role === 'admin'
-        || selectedOrganization?.role === 'member'
-        ? selectedOrganization.role
-        : 'unknown',
+      callerRole: normalizeTeamAnalyticsCallerRole(selectedOrganization?.role),
     });
     setSelectedOrgId(orgId);
     void persistLastSelectedOrgId(orgId);
@@ -109,9 +123,7 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
           surface: 'desktop',
           entryPoint: 'account_org_list',
           hasActiveOrganization: !!found?.orgId,
-          callerRole: found?.role === 'owner' || found?.role === 'admin' || found?.role === 'member'
-            ? found.role
-            : 'unknown',
+          callerRole: normalizeTeamAnalyticsCallerRole(found?.role),
         });
       }
       const personalOrgId = found?.boundPersonalOrgId ?? found?.owningPersonalOrgId;
@@ -139,7 +151,11 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
             Organizations
             <AlphaBadge size="sm" tooltip={TEAM_ALPHA_TOOLTIP} />
           </h1>
-          <p className="m-0 mt-1 text-sm text-[var(--nim-text-muted)]">Create an organization to collaborate with a team, or accept a pending invitation.</p>
+          <p className="m-0 mt-1 text-sm text-[var(--nim-text-muted)]">
+            {organizationCreationEnabled
+              ? 'Create an organization to collaborate with a team, or accept a pending invitation.'
+              : 'Organizations are invite-only during the alpha. Accept a pending invitation to get started.'}
+          </p>
           <TeamAlphaNotice className="mt-2.5 max-w-[640px]" />
         </header>
         <main className="team-mode-content flex-1 overflow-y-auto p-6">
@@ -157,6 +173,8 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
       </section>
     );
   }
+
+  const fullWidth = FULL_WIDTH_TABS.has(tab);
 
   return (
     <section className="team-mode flex h-full flex-col overflow-hidden" data-testid="team-mode" data-component="TeamMode">
@@ -206,7 +224,16 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
           ))}
         </nav>
 
-        <main className="team-mode-content min-w-0 flex-1 overflow-y-auto p-6">
+        <main
+          className={`team-mode-content min-w-0 flex-1 ${
+            fullWidth
+              ? 'team-mode-content-full overflow-hidden'
+              : 'overflow-y-auto p-6'
+          }`}
+        >
+          {fullWidth ? (
+            tab === 'inbox' && <InboxSection />
+          ) : (
           <div className="mx-auto max-w-[900px]">
             <TeamAlphaNotice className="mb-5 rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3" />
             {tab === 'members' && <OrganizationMembersRolesPanel orgId={team.orgId} allowOrganizationCreation={false} />}
@@ -229,6 +256,7 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
             {tab === 'billing' && <OrganizationBillingPanel />}
             {tab === 'danger' && <OrganizationDangerZone orgId={team.orgId} />}
           </div>
+          )}
         </main>
       </div>
     </section>

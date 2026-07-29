@@ -98,11 +98,8 @@ vi.mock('../../database/initialize', () => ({
 }));
 vi.mock('../OrgProjectionService', () => ({}));
 vi.mock('../OrgAccessResolver', () => ({ canAccess: canAccessMock }));
-vi.mock('../OrgKeyService', () => ({}));
-vi.mock('../KeyRotationService', () => ({}));
 vi.mock('../TrackerSyncManager', () => ({}));
 vi.mock('../CollabBackupService', () => ({}));
-vi.mock('../SilentTeamEncryptionMigration', () => ({ resetSilentMigrationScanState: vi.fn() }));
 vi.mock('../TeamAuthBootstrap', () => ({ createTeamAuthBootstrap: (fn: unknown) => fn }));
 
 import {

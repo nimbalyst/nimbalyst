@@ -1,6 +1,6 @@
 import { getCollabSyncHttpUrl, getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { getSessionSyncConfig } from '../utils/store';
-import { getPersonalSessionJwt, refreshPersonalSession } from './StytchAuthService';
+import { getPersonalSessionJwt, refreshPersonalSessionDetailed } from './StytchAuthService';
 
 export interface PersonalSyncDevice {
   deviceId: string;
@@ -28,6 +28,23 @@ function fetchPersonalSyncDevices(httpUrl: string, jwt: string): Promise<Respons
   });
 }
 
+/**
+ * Turn "we still have no personal JWT" into a message that names the real
+ * cause. A refresh that could not reach the sync server must not be reported as
+ * a sign-in problem: the stored session is fine and the fix is to retry, not to
+ * re-authenticate.
+ */
+function describeMissingJwt(
+  serverUrl: string,
+  refresh: { ok: boolean; reason?: string; detail?: string } | null,
+): string {
+  if (refresh && !refresh.ok && refresh.reason === 'network') {
+    const detail = refresh.detail ? ` (${refresh.detail})` : '';
+    return `Sync server ${serverUrl} is unreachable${detail}`;
+  }
+  return 'Not authenticated';
+}
+
 export async function listPersonalSyncDevices(): Promise<PersonalSyncDevicesResult> {
   const config = getSessionSyncConfig();
   if (!config?.enabled) {
@@ -38,20 +55,25 @@ export async function listPersonalSyncDevices(): Promise<PersonalSyncDevicesResu
     const wsUrl = getCollabSyncWsUrl();
     const httpUrl = getCollabSyncHttpUrl();
     let jwt = getPersonalSessionJwt();
+    let refresh: Awaited<ReturnType<typeof refreshPersonalSessionDetailed>> | null = null;
     if (!jwt) {
-      await refreshPersonalSession(wsUrl);
+      refresh = await refreshPersonalSessionDetailed(wsUrl);
       jwt = getPersonalSessionJwt();
     }
     if (!jwt) {
-      return { success: false, devices: [], error: 'Not authenticated' };
+      // "Not authenticated" was shown here even when the refresh failed because
+      // the sync server was unreachable -- a transport failure reported to the
+      // user as an auth failure, which is exactly what the classifier exists to
+      // prevent.
+      return { success: false, devices: [], error: describeMissingJwt(wsUrl, refresh) };
     }
 
     let response = await fetchPersonalSyncDevices(httpUrl, jwt);
     if (response.status === 401) {
-      await refreshPersonalSession(wsUrl);
+      refresh = await refreshPersonalSessionDetailed(wsUrl);
       jwt = getPersonalSessionJwt();
       if (!jwt) {
-        return { success: false, devices: [], error: 'Not authenticated' };
+        return { success: false, devices: [], error: describeMissingJwt(wsUrl, refresh) };
       }
       response = await fetchPersonalSyncDevices(httpUrl, jwt);
     }

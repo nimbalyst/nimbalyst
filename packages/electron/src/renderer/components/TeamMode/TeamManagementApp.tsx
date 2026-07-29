@@ -3,7 +3,12 @@ import { useSetAtom } from 'jotai';
 
 import { DialogProvider } from '../../contexts/DialogContext';
 import { selectedOrgIdAtom } from '../../store/atoms/orgScope';
+import { store } from '../../store';
 import { TeamMode } from './TeamMode';
+import {
+  createAtomInboxProvider,
+  InboxProviderContext,
+} from './Inbox/inboxProvider';
 import {
   persistLastSelectedOrgId,
   readLastSelectedOrgId,
@@ -47,6 +52,10 @@ function readTarget(): WindowTarget {
 }
 
 export function TeamManagementApp() {
+  const inboxProvider = React.useMemo(
+    () => createAtomInboxProvider(store),
+    [],
+  );
   const setSelectedOrgId = useSetAtom(selectedOrgIdAtom);
   const [target, setTarget] = useState(readTarget);
   // Untargeted opens resolve a default org before TeamMode mounts, so the
@@ -103,20 +112,22 @@ export function TeamManagementApp() {
   }, []);
 
   return (
-    <DialogProvider workspacePath={target.workspacePath ?? undefined}>
-      <div className="team-management-window flex h-screen flex-col overflow-hidden bg-[var(--nim-bg)] text-[var(--nim-text)]" data-component="TeamManagementApp">
-        {/* Draggable title-bar strip: the window uses titleBarStyle 'hiddenInset'
-            (no native bar), so without this the window can't be moved and the
-            macOS traffic lights have no clearance. */}
-        <div className="team-management-titlebar h-8 flex-shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties} />
-        {targetResolved
-          ? <TeamMode workspacePath={target.workspacePath ?? undefined} isActive />
-          : (
-            <div className="team-management-resolving flex flex-1 items-center justify-center text-sm text-[var(--nim-text-muted)]">
-              Loading organization…
-            </div>
-          )}
-      </div>
-    </DialogProvider>
+    <InboxProviderContext.Provider value={inboxProvider}>
+      <DialogProvider workspacePath={target.workspacePath ?? undefined}>
+        <div className="team-management-window flex h-screen flex-col overflow-hidden bg-[var(--nim-bg)] text-[var(--nim-text)]" data-component="TeamManagementApp">
+          {/* Draggable title-bar strip: the window uses titleBarStyle 'hiddenInset'
+              (no native bar), so without this the window can't be moved and the
+              macOS traffic lights have no clearance. */}
+          <div className="team-management-titlebar h-8 flex-shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties} />
+          {targetResolved
+            ? <TeamMode workspacePath={target.workspacePath ?? undefined} isActive />
+            : (
+              <div className="team-management-resolving flex flex-1 items-center justify-center text-sm text-[var(--nim-text-muted)]">
+                Loading organization…
+              </div>
+            )}
+        </div>
+      </DialogProvider>
+    </InboxProviderContext.Provider>
   );
 }

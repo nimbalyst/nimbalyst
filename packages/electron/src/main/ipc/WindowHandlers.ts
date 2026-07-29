@@ -8,6 +8,7 @@ import { reportDesktopActivity, setWindowFocused, setScreenLocked, setIdleThresh
 import { startNetworkAvailability, onNetworkAvailable, notifyNetworkAvailable } from '../services/NetworkAvailability';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { getPackageRoot } from '../utils/appPaths';
+import { resolveImageExtension } from '../utils/imageFormat';
 
 /** Timestamp of last app_foregrounded event, used to throttle to once per 30 minutes */
 let lastForegroundedEventAt = 0;
@@ -282,21 +283,14 @@ async function createTempFileFromDataURL(dataURL: string): Promise<string | null
 
         const mimeType = matches[1];
         const base64Data = matches[2];
+        const buffer = Buffer.from(base64Data, 'base64');
 
-        // Determine file extension from MIME type
-        const extensionMap: Record<string, string> = {
-            'image/png': 'png',
-            'image/jpeg': 'jpg',
-            'image/jpg': 'jpg',
-            'image/gif': 'gif',
-            'image/webp': 'webp',
-            'image/svg+xml': 'svg',
-        };
-        const extension = extensionMap[mimeType] || 'png';
+        // Name the temp file after its actual bytes -- a blind `png` default hands downstream
+        // consumers a file no decoder can open (NIM-2211).
+        const extension = resolveImageExtension(mimeType, buffer);
 
         // Create temp file
         const tempPath = join(tmpdir(), `image-${Date.now()}.${extension}`);
-        const buffer = Buffer.from(base64Data, 'base64');
         writeFileSync(tempPath, buffer);
 
         return tempPath;

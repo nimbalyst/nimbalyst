@@ -10,8 +10,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Pull request review mode now includes a resizable AI session pane that carries the selected pull request into the conversation, with linked sessions listed in the pull request header and the pane following the selected pull request to its own session.
 - Git support for workspaces opened at a subfolder of a repository: commits, status, diffs, and commit detection resolve the repository root automatically, and AI agents can access repo-level files (#124)
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- AI sessions that preview a web page no longer strand a blank, unclosable window on a second monitor.
+- Sorting a tracker view by Updated, or any other date column, now orders rows by date instead of alphabetically by month name.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.71.3] - 2026-07-28
+
+
+### Added
+<!-- New features go here -->
+- The organization window gains an Inbox with conversations plus mentions and replies from shared-document comments.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Teams is still in alpha and new signups limited.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Windows and Linux get the File/Edit/View menus back, now drawn in the project window's title bar.
+- Menus and popups that open over the title bar respond to clicks again on Windows and Linux, including "Open folder…" in the project switcher (#1052).
+- Tracker types defined in one project no longer overwrite another open project's identically-named types (#1035).
+- Codex sessions now reach for Nimbalyst's browser tools instead of dead-ending on the ChatGPT desktop app's in-app browser plugin.
+
+### Removed
+<!-- Removed features go here -->
+- Organizations still on the original client-managed encryption are no longer supported and must be set up again; all team collaboration — including attachments in shared documents — now uses Nimbalyst-managed encryption.
+
+## [0.71.2] - 2026-07-26
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- The composer's Extended thinking choice now sticks across new sessions instead of resetting each time.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Long or multi-line prompts sent to a Claude Code CLI session are no longer truncated or split across several pasted-text placeholders.
+- Sessions no longer stay stuck showing "awaiting input" once the AI has stopped waiting.
+- The transcript's scroll-to-bottom arrow no longer blocks clicks, selection, and scrolling across the full width of the pane.
+- Long git errors no longer stretch the title bar's Git menu across the window, and a rejected push now says to pull first.
+- Creating a plan or decision from an AI session no longer fails schema validation, and new items start on their type's own default status. (#1037)
+- Pinning or unpinning a session inside an expanded workstream updates its icon, menu, and position immediately. (#972)
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.71.1] - 2026-07-26
+
+
+### Added
+<!-- New features go here -->
+- Pull request review mode gains a resizable AI session pane that carries the selected pull request into the conversation, with its linked sessions shown in the header.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -27,13 +88,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android screens no longer show a white background behind their content on light-mode devices.
 - Session-pane title reveals now appear only for clipped names and expand from the truncated text.
 - New Claude Agent sessions now accept Sonnet 5 saved as an explicit default instead of failing before the first prompt runs.
-- Tracker saved views can be saved from any view state and exited with a Close control.
-- The grouping dropdown in tracker Display Options now groups rows.
-- Tracker filters can match items by the status they changed to or from.
-- Clicking a tracker grid column header toggles sorting.
+- Tracker grid column headers toggle sorting, and the Display Options grouping dropdown actually groups rows.
+- Tracker saved views can be saved from any view state and exited with a Close control, and filters can match the status an item changed to or from.
 - The nim CLI now reports an error and exits non-zero when the app rejects a tracker create or update, instead of printing success.
-- The tracker triage inbox now shows the items waiting on a decision instead of always reading empty, badges the waiting count, and offers a "Leave it" action that clears an item for the whole team.
-- Claude Agent and Claude Code CLI pickers offer Opus 5 (1M) and Fable 5 (1M) rows again for plans that don't get the extended window automatically, and the CLI context meter now reports the window the session is really running at. (#989, diagnosed by @Derazien)
+- The tracker triage inbox now shows items waiting on a decision, badges the waiting count, and offers a "Leave it" action that clears an item for the whole team.
+- Claude Agent and Claude Code CLI pickers offer Opus 5 (1M) and Fable 5 (1M) rows again, and the CLI context meter reports the window the session is really running at. (#989, diagnosed by @Derazien)
+- Clearing the last queued prompt now syncs to your other devices instead of leaving a stale queued count. (#817)
 
 ### Removed
 <!-- Removed features go here -->

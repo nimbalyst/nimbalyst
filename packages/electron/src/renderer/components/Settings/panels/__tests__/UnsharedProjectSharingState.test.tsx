@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
-vi.mock('../H2EncryptionMigration', () => ({ SecurityEncryptionSection: () => null }));
+vi.mock('../SecurityEncryptionSection', () => ({ SecurityEncryptionSection: () => null }));
 vi.mock('../MoveProjectWizard', () => ({ MoveProjectWizard: () => null }));
 vi.mock('../MergeOrgWizard', () => ({ MergeOrgWizard: () => null }));
 vi.mock('../ProjectAccessEditor', () => ({ ProjectAccessEditor: () => null }));

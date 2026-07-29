@@ -3,7 +3,7 @@
  *
  * The runtime editor is platform-agnostic, so everything it needs to power
  * comments (the shared Y.Doc, the current user, team members for @-mentions,
- * document metadata, and the inbox-fanout callback) is supplied by the host
+ * document metadata, and the notification callbacks) is supplied by the host
  * through `EditorConfig.comments`. The electron `CollaborativeTabEditor`
  * populates this from the DocumentSyncProvider + TeamSyncProvider.
  */
@@ -15,18 +15,14 @@ export interface CommentMember {
   userId: string;
   /** Display name shown in the mention picker. */
   name: string;
-  /**
-   * The member's personal org id, required by inbox fanout routing. Members
-   * without one (haven't announced yet) can still be mentioned, but won't
-   * receive an inbox event until they do.
-   */
+  /** The member's personal org id, when the roster carries one. */
   personalOrgId?: string | null;
 }
 
 /**
- * Decrypted inbox-event payload for a comment `@`-mention. Mirrors
- * `InboxEventPayload` from `@nimbalyst/collab-protocol`; redeclared here so the
- * runtime editor's public config has no protocol dependency.
+ * Notification payload for a comment `@`-mention, handed to the host's
+ * `onMention` callback. Declared here so the runtime editor's public config has
+ * no protocol dependency.
  */
 export interface CommentMentionPayload {
   /** Display name of the comment author. */
@@ -35,6 +31,8 @@ export interface CommentMentionPayload {
   sourceTitle?: string;
   /** Short excerpt of the comment text. */
   snippet?: string;
+  /** Id of the comment that triggered the notification. */
+  commentId?: string;
   /** Comment thread id. */
   threadId?: string;
   /** MarkNode id anchoring the comment in the document. */
@@ -73,20 +71,21 @@ export interface CommentsConfig {
   isHydrated?: () => boolean;
   /** Team members available to @-mention. Read lazily so the roster stays fresh. */
   getMembers: () => CommentMember[];
-  /** Title of the document (used in inbox payloads). */
+  /** Title of the document (used in notification payloads). */
   documentTitle: string;
-  /** Document id within the source org (the inbox event `sourceId`). */
+  /** Document id within the source org. */
   documentId: string;
   /** `collab://` deep-link URI for the document. */
   documentUri: string;
   /**
-   * Called when a submitted comment `@`-mentions one or more members. The host
-   * wires this to `TeamSyncProvider.fanoutInboxEvent`. `recipientUserIds`
-   * excludes the author. No-op safe when undefined.
+   * Called when a submitted comment `@`-mentions one or more members.
+   * `recipientUserIds` excludes the author. The host owns delivery (the
+   * electron hosts route it to the org-scoped TeamInboxRoom); failures do not
+   * roll back the Y.Doc mutation. No-op safe when undefined.
    */
   onMention?: (recipientUserIds: string[], payload: CommentMentionPayload) => void;
   /**
-   * Called after a canonical reply is appended. The host owns inbox routing;
+   * Called after a canonical reply is appended. The host owns delivery;
    * failures do not roll back the Y.Doc mutation.
    */
   onReply?: (recipientUserIds: string[], payload: CommentReplyPayload) => void;

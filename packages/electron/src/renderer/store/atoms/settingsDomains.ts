@@ -37,6 +37,23 @@ export interface OrganizationDirectoryEntry {
 export const personalAccountsAtom = atom<PersonalAccountSummary[]>([]);
 export const personalSyncProfilesAtom = atom<Record<string, PersonalSyncProfileSummary>>({});
 export const organizationDirectoryAtom = atom<OrganizationDirectoryEntry[]>([]);
+
+/**
+ * Teams is an invite-only alpha: org-creation affordances (New organization
+ * buttons, create-team-from-workspace) only render in dev builds. The packaged
+ * app also blocks the `team:create` IPC handler, so this is presentation-side
+ * of the same policy.
+ */
+export const organizationCreationEnabled = import.meta.env.DEV;
+
+/**
+ * Whether the Teams/organization surfaces (settings routes, account org list,
+ * org window entry points) should be visible at all. True once the account has
+ * any org membership — active or pending invite — so invited users can still
+ * accept. Dev builds always show the surfaces to keep the flows testable.
+ */
+export const teamsConfiguredAtom = atom((get) =>
+  organizationCreationEnabled || get(organizationDirectoryAtom).length > 0);
 export const projectSettingsContextAtom = atom<ProjectSettingsTarget | undefined>(undefined);
 
 export const usePersonalAccounts = () => useAtom(personalAccountsAtom);

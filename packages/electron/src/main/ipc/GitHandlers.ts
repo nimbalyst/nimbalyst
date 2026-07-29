@@ -43,6 +43,39 @@ async function hasCommits(git: SimpleGit): Promise<boolean> {
   }
 }
 
+/**
+ * Turn a rejected push into a sentence the user can act on.
+ *
+ * `git push` buries the one fact that matters under a `To <url>` line and five
+ * wrapped `hint:` lines, and its final line -- `error: failed to push some refs`
+ * -- is IDENTICAL to the one a failing pre-push hook prints. That collision is
+ * what makes "the remote moved, pull first" read as "the pre-push gate broke".
+ * Key off the `! [rejected] ... (<reason>)` line instead, which only a real
+ * rejection emits, and leave hook failures alone.
+ *
+ * The raw output is kept underneath so the menu tooltip still shows everything.
+ */
+export function explainGitPushFailure(
+  rawError: string | undefined,
+  context: { remote: string; branch: string },
+): string | undefined {
+  if (!rawError) return rawError;
+
+  const lower = rawError.toLowerCase();
+  if (!lower.includes('[rejected]')) return rawError;
+
+  const target = `${context.remote}/${context.branch}`;
+  let summary: string | undefined;
+  if (lower.includes('(stale info)')) {
+    // --force-with-lease refusing because the remote advanced since our fetch.
+    summary = `Push rejected: ${target} moved since your last fetch. Pull first, then push again.`;
+  } else if (lower.includes('(fetch first)') || lower.includes('(non-fast-forward)')) {
+    summary = `Push rejected: ${target} has commits you don't have locally. Pull first, then push again.`;
+  }
+
+  return summary ? `${summary}\n\n${rawError}` : rawError;
+}
+
 export function isDetachedHeadState(branch: string | null | undefined): boolean {
   const normalized = branch?.trim();
   if (!normalized) return false;
@@ -320,7 +353,9 @@ export function registerGitHandlers(): void {
 
           pushArgs.push(remote, branch);
           const result = await runGitCommandStreaming(operationLog, workspacePath, pushArgs);
-          return result.success ? { success: true } : { success: false, error: result.error };
+          return result.success
+            ? { success: true }
+            : { success: false, error: explainGitPushFailure(result.error, { remote, branch }) };
         } catch (error) {
           log.error('[git:push] Failed:', error);
           return { success: false, error: error instanceof Error ? error.message : String(error) };

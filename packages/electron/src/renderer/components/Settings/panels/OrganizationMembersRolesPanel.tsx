@@ -6,8 +6,10 @@ import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../../common/TeamAlphaNotic
 import {
   bucketMemberCount,
   categorizeTeamAnalyticsError,
+  normalizeTeamAnalyticsCallerRole,
 } from '../../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
+import { organizationCreationEnabled } from '../../../store/atoms/settingsDomains';
 
 interface Member {
   memberId: string;
@@ -33,7 +35,8 @@ interface PersonalAccount {
 export function OrganizationMembersRolesPanel({
   orgId,
   readOnlyRoles = false,
-  allowOrganizationCreation = true,
+  // Invite-only alpha: the create-org card only renders in dev builds.
+  allowOrganizationCreation = organizationCreationEnabled,
 }: {
   orgId?: string;
   readOnlyRoles?: boolean;
@@ -66,9 +69,7 @@ export function OrganizationMembersRolesPanel({
 
   useEffect(() => { void refresh().catch((reason) => setError(String(reason))); }, [refresh]);
   const canAdminister = callerRole === 'owner' || callerRole === 'admin';
-  const analyticsCallerRole = callerRole === 'owner' || callerRole === 'admin' || callerRole === 'member'
-    ? callerRole
-    : 'unknown';
+  const analyticsCallerRole = normalizeTeamAnalyticsCallerRole(callerRole);
   const selected = organizations.find((organization) => organization.orgId === orgId);
   const pending = organizations.filter((organization) => organization.membershipType && organization.membershipType !== 'active_member');
 
@@ -196,8 +197,8 @@ export function OrganizationMembersRolesPanel({
                         trackTeamAnalyticsEvent('team_member_role_changed', {
                           surface: 'desktop',
                           callerRole: analyticsCallerRole,
-                          fromRole: member.role === 'owner' || member.role === 'admin' || member.role === 'member' ? member.role : 'unknown',
-                          toRole: nextRole === 'owner' || nextRole === 'admin' || nextRole === 'member' ? nextRole : 'unknown',
+                          fromRole: normalizeTeamAnalyticsCallerRole(member.role),
+                          toRole: normalizeTeamAnalyticsCallerRole(nextRole),
                         });
                         return refresh();
                       })
@@ -213,6 +214,7 @@ export function OrganizationMembersRolesPanel({
                       });
                   }}
                 >
+                  <option value="viewer">Viewer</option>
                   <option value="member">Member</option>
                   <option value="admin">Admin</option>
                   <option value="owner">Owner</option>

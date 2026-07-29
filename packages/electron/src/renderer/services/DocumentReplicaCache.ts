@@ -64,21 +64,11 @@ interface CacheEntry {
   discardOnRelease: boolean;
 }
 
-export function buildDocumentReplicaCacheKey(
-  identity: LocalReplicaIdentity,
-  keyCustody: string | undefined,
-  orgKeyFingerprint: string | undefined,
-): string {
-  const normalizedKeyCustody = keyCustody ?? 'legacy-e2e';
-  const keyVersion = normalizedKeyCustody === 'server-managed'
-    ? 'server-managed'
-    : orgKeyFingerprint ?? 'missing-fingerprint';
+export function buildDocumentReplicaCacheKey(identity: LocalReplicaIdentity): string {
   return [
     identity.accountId,
     identity.orgId,
     identity.documentId,
-    normalizedKeyCustody,
-    keyVersion,
   ].join('\u0000');
 }
 

@@ -66,3 +66,24 @@ export function parseThinkingMode(value: unknown): ThinkingMode {
   }
   return DEFAULT_THINKING_MODE;
 }
+
+/**
+ * Resolve the effective thinking mode for a session.
+ *
+ * An explicit per-session value wins; otherwise we fall back to the app-wide
+ * default the composer's Extended selector last wrote. Without this the toggle
+ * reset to "Extended: On" at the start of every session because nothing
+ * persisted the user's choice beyond the session row (GitHub #1034).
+ *
+ * Unlike effort level this always returns a mode, since 'enabled' is itself
+ * the "leave the SDK on its adaptive default" value.
+ */
+export function resolveThinkingMode(
+  sessionThinkingMode: unknown,
+  appDefaultThinkingMode: ThinkingMode | undefined
+): ThinkingMode {
+  if (sessionThinkingMode != null && sessionThinkingMode !== '') {
+    return parseThinkingMode(sessionThinkingMode);
+  }
+  return appDefaultThinkingMode ?? DEFAULT_THINKING_MODE;
+}

@@ -1,4 +1,3 @@
-import { createCipheriv, randomBytes } from "crypto";
 import { net } from "electron";
 import WebSocket from "ws";
 import {
@@ -14,11 +13,6 @@ import { getCollabDocumentReplicaStore } from "./CollabDocumentReplicaStore";
 import { getCollabSyncWsUrl } from "../utils/collabSyncUrl";
 import { getOrgScopedJwt } from "./TeamService";
 import {
-  fetchTeamKeyStatus,
-  getOrgKey,
-  getOrgKeyFingerprint,
-} from "./OrgKeyService";
-import {
   getPersonalUserId,
   onAuthStateChange,
 } from "./StytchAuthService";
@@ -33,28 +27,8 @@ import { ProviderAttachmentRegistry } from "./ProviderAttachmentRegistry";
 const PERIODIC_DRAIN_MS = 30_000;
 const ACK_TIMEOUT_MS = 10_000;
 
-async function encryptLegacyUpdate(
-  update: Uint8Array,
-  key: CryptoKey
-): Promise<{ encryptedUpdate: string; iv: string }> {
-  const rawKey = Buffer.from(await crypto.subtle.exportKey("raw", key));
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", rawKey, iv);
-  const ciphertext = Buffer.concat([cipher.update(update), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  return {
-    encryptedUpdate: Buffer.concat([ciphertext, authTag]).toString("base64"),
-    iv: iv.toString("base64"),
-  };
-}
-
 class ElectronDocumentOutboxTransport implements OutboxDrainTransport {
-  private constructor(
-    private readonly socket: WebSocket,
-    private readonly serverManaged: boolean,
-    private readonly orgKey: CryptoKey | null,
-    private readonly orgKeyFingerprint: string | undefined
-  ) {}
+  private constructor(private readonly socket: WebSocket) {}
 
   static async connect(
     identity: LocalReplicaIdentity
@@ -69,12 +43,6 @@ class ElectronDocumentOutboxTransport implements OutboxDrainTransport {
     forceRefresh: boolean
   ): Promise<ElectronDocumentOutboxTransport> {
     const jwt = await getOrgScopedJwt(identity.orgId, undefined, forceRefresh);
-    const keyStatus = await fetchTeamKeyStatus(identity.orgId, jwt);
-    const serverManaged = keyStatus.mode === "server-managed";
-    const orgKey = serverManaged ? null : await getOrgKey(identity.orgId);
-    if (!serverManaged && !orgKey) {
-      throw new Error("No org key available for durable outbox drain");
-    }
     const roomId = encodeDocumentRoomId(identity.orgId, identity.documentId);
     const url = appendSyncClientParams(
       `${getCollabSyncWsUrl()}/sync/${roomId}?token=${encodeURIComponent(jwt)}`
@@ -100,23 +68,16 @@ class ElectronDocumentOutboxTransport implements OutboxDrainTransport {
         reject(new OutboxUpgradeRejectedError(response.statusCode ?? 0));
       });
     });
-    return new ElectronDocumentOutboxTransport(
-      socket,
-      serverManaged,
-      orgKey,
-      serverManaged
-        ? undefined
-        : getOrgKeyFingerprint(identity.orgId) ?? undefined
-    );
+    return new ElectronDocumentOutboxTransport(socket);
   }
 
   async send(batch: OutboxDrainBatch) {
-    const encrypted = this.serverManaged
-      ? {
-          encryptedUpdate: Buffer.from(batch.update).toString("base64"),
-          iv: "",
-        }
-      : await encryptLegacyUpdate(batch.update, this.orgKey!);
+    // The server encrypts at rest with the team DEK; send plaintext bytes
+    // with the empty-iv sentinel.
+    const encrypted = {
+      encryptedUpdate: Buffer.from(batch.update).toString("base64"),
+      iv: "",
+    };
 
     return new Promise<
       | { status: "acknowledged"; sequence: number }
@@ -172,7 +133,6 @@ class ElectronDocumentOutboxTransport implements OutboxDrainTransport {
           encryptedUpdate: encrypted.encryptedUpdate,
           iv: encrypted.iv,
           clientUpdateId: batch.batchId,
-          orgKeyFingerprint: this.orgKeyFingerprint,
         })
       );
     });

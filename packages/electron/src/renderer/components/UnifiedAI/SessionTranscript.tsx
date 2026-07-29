@@ -107,8 +107,8 @@ import {
 } from '../../store/atoms/terminals';
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
-import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom, developerModeAtom } from '../../store/atoms/appSettings';
-import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, parseThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
+import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, defaultThinkingModeAtom, chatShowToolCallsAtom, developerModeAtom } from '../../store/atoms/appSettings';
+import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, resolveThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
@@ -462,6 +462,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionParentId = useAtomValue(sessionParentIdAtom(sessionId));
   const defaultModel = useAtomValue(defaultAgentModelAtom);
   const defaultEffortLevel = useAtomValue(defaultEffortLevelAtom);
+  const defaultThinkingMode = useAtomValue(defaultThinkingModeAtom);
 
   const sessionData = useMemo(() => {
     if (!hasSessionData) return null;
@@ -526,7 +527,10 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // (adaptive/enabled) applies.
   const developerMode = useAtomValue(developerModeAtom);
   const showThinkingToggle = useMemo(() => developerMode && supportsThinkingToggle(currentModel), [developerMode, currentModel]);
-  const thinkingMode = useMemo(() => parseThinkingMode(rawThinkingMode), [rawThinkingMode]);
+  const thinkingMode = useMemo(
+    () => resolveThinkingMode(rawThinkingMode, defaultThinkingMode),
+    [rawThinkingMode, defaultThinkingMode]
+  );
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -1555,6 +1559,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const handleThinkingModeChange = useCallback(async (mode: ThinkingMode) => {
     const previousMode = thinkingMode;
     await updateSessionMetadataField(sessionId, 'thinkingMode', mode, null, updateSessionStore);
+    // Sticky across sessions: without this the selector reset to "Extended: On"
+    // at the start of every new session (GitHub #1034).
+    setAgentModeSettings({ defaultThinkingMode: mode });
     posthog?.capture('ai_thinking_mode_changed', {
       thinking_mode: mode,
       previous_mode: previousMode,

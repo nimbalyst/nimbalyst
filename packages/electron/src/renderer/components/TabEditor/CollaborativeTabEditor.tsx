@@ -60,12 +60,12 @@ import type { Doc } from 'yjs';
 import type { Provider } from '@lexical/yjs';
 import {
   collabAwarenessAtom,
-  collabKeyRotationEpochAtom,
   collabProductStatusAtom,
   type RemoteUser,
 } from '../../store/atoms/collabEditor';
 import { documentSyncRegistry } from '../../store/atoms/documentSyncRegistry';
 import { CollabAssetService } from '../../services/CollabAssetService';
+import { notifyDocumentCommentRecipients } from '../../services/documentCommentNotifier';
 import { ElectronLocalReplicaStore } from '../../services/ElectronLocalReplicaStore';
 import {
   buildDocumentReplicaCacheKey,
@@ -210,7 +210,6 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [activeConfig, setActiveConfig] = useState(initialCollabConfig);
   const activeConfigRef = useRef(initialCollabConfig);
-  const [keyRotationPending, setKeyRotationPending] = useState(false);
   const syncProviderRef = useRef<DocumentSyncProvider | null>(null);
   const replicaRef = useRef<LocalDocumentReplica | null>(null);
   const replicaAcquisitionRef = useRef<DocumentReplicaAcquisition | null>(null);
@@ -257,9 +256,6 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     activeConfig.documentId,
     activeConfig.documentType ?? 'markdown',
   );
-  const keyRotationEpoch = useAtomValue(collabKeyRotationEpochAtom);
-  const latestKeyRotationRequestRef = useRef(0);
-  const replicaKeyGenerationRef = useRef(0);
   const offlineReplicaEnabled = hasCollabReplicaPreloadSupport();
   const recordOfflineMetric = useCallback((event: {
     metric: string;
@@ -339,8 +335,6 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     urlExtraQuery: activeConfig.urlExtraQuery,
     orgId: activeConfig.orgId,
     documentId: activeConfig.documentId,
-    keyCustody: activeConfig.keyCustody,
-    documentKey: activeConfig.documentKey,
   }), [activeConfig]);
 
   const createRevisionFromCurrentSnapshot = useCallback(async (
@@ -421,51 +415,6 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     }
   }, [createRevisionFromCurrentSnapshot]);
 
-  // Re-key: when the rotation epoch changes, re-fetch config with new encryption key
-  useEffect(() => {
-    if (keyRotationEpoch === 0) return; // Initial render, no rotation yet
-
-    console.log('[CollaborativeTabEditor] Key rotation detected (epoch:', keyRotationEpoch, '), re-fetching config...');
-    latestKeyRotationRequestRef.current = keyRotationEpoch;
-    replicaKeyGenerationRef.current += 1;
-    setKeyRotationPending(true);
-    // Retire the old-key connection immediately. The next provider is not
-    // acquired until resolveCollabConfigForUri returns the actual new key
-    // fingerprint, so an epoch notification can never cache stale key bytes.
-    void replicaAcquisitionRef.current?.supersede().catch((error) => {
-      console.warn('[CollaborativeTabEditor] Failed to retire rotated replica provider:', error);
-    });
-
-    const config = activeConfigRef.current;
-
-    resolveCollabConfigForUri(
-      config.workspacePath,
-      filePath,
-      config.documentId,
-      config.title,
-      config.documentType,
-      { forceRefresh: true },
-    ).then((freshConfig) => {
-      if (latestKeyRotationRequestRef.current !== keyRotationEpoch) return;
-      if (freshConfig) {
-        console.log('[CollaborativeTabEditor] Got fresh config with new key, recreating providers');
-        setActiveConfig({
-          ...freshConfig,
-          analyticsSource: config.analyticsSource,
-          analyticsActorType: config.analyticsActorType,
-          analyticsWasUnread: config.analyticsWasUnread,
-        });
-        setKeyRotationPending(false);
-      } else {
-        console.warn('[CollaborativeTabEditor] Failed to get fresh config after key rotation');
-        setCollabReplicaState(filePath, 'unavailable');
-      }
-    }).catch((error) => {
-      if (latestKeyRotationRequestRef.current !== keyRotationEpoch) return;
-      console.warn('[CollaborativeTabEditor] Failed to resolve fresh config after key rotation:', error);
-      setCollabReplicaState(filePath, 'unavailable');
-    });
-  }, [filePath, keyRotationEpoch]);
    // Increments each time a fresh CollabLexicalProvider is ready; 0 = not
   // ready. Also used as the editor subtree's key so every (re)acquisition
   // mounts a fresh CollaborationPlugin. The previous ref+forceUpdate gate
@@ -511,12 +460,10 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     setProviderEpoch(0);
     setHasHydrated(false);
     resetCollabDocumentState(filePath);
-    if (keyRotationPending) return;
-    const acquisitionKeyGeneration = replicaKeyGenerationRef.current;
     const tabOpenedAt = performance.now();
     const healthTracker = new CollaborationHealthAttemptTracker(
       'document',
-      activeConfig.keyCustody === 'server-managed' ? 'server_managed' : 'legacy_e2e',
+      'server_managed',
       () => performance.now(),
     );
     healthTracker.start(
@@ -586,10 +533,6 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         serverUrl: activeConfig.serverUrl,
         getJwt: activeConfig.getJwt,
         orgId: activeConfig.orgId,
-        keyCustody: activeConfig.keyCustody,
-        documentKey: activeConfig.documentKey,
-        legacyDocumentKey: activeConfig.legacyDocumentKey,
-        orgKeyFingerprint: activeConfig.orgKeyFingerprint,
         userId: activeConfig.userId,
         documentId: activeConfig.documentId,
         createWebSocket: activeConfig.createWebSocket,
@@ -685,11 +628,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       orgId: activeConfig.orgId,
       documentId: activeConfig.documentId,
     };
-    const cacheKey = buildDocumentReplicaCacheKey(
-      replicaIdentity,
-      activeConfig.keyCustody,
-      activeConfig.orgKeyFingerprint,
-    );
+    const cacheKey = buildDocumentReplicaCacheKey(replicaIdentity);
 
     const listener: DocumentReplicaCacheListener = {
       onReplicaStateChange: (state) => {
@@ -784,10 +723,6 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
             serverUrl: activeConfig.serverUrl,
             getJwt: activeConfig.getJwt,
             orgId: activeConfig.orgId,
-            keyCustody: activeConfig.keyCustody,
-            documentKey: activeConfig.documentKey,
-            legacyDocumentKey: activeConfig.legacyDocumentKey,
-            orgKeyFingerprint: activeConfig.orgKeyFingerprint,
             userId: activeConfig.userId,
             documentId: activeConfig.documentId,
             createWebSocket: activeConfig.createWebSocket,
@@ -838,11 +773,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       listener,
     ).then((nextAcquisition) => {
       if (cancelled) {
-        if (acquisitionKeyGeneration !== replicaKeyGenerationRef.current) {
-          void nextAcquisition.supersede();
-        } else {
-          nextAcquisition.release();
-        }
+        nextAcquisition.release();
         return;
       }
       acquisition = nextAcquisition;
@@ -895,11 +826,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       awarenessUnsub?.();
       if (acquisition) {
         documentSyncRegistry.unregister(acquisition.syncProvider);
-        if (acquisitionKeyGeneration !== replicaKeyGenerationRef.current) {
-          void acquisition.supersede();
-        } else {
-          acquisition.release();
-        }
+        acquisition.release();
       }
       if (replicaAcquisitionRef.current === acquisition) {
         replicaAcquisitionRef.current = null;
@@ -914,7 +841,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       resetCollabDocumentState(filePath);
       store.set(collabAwarenessAtom(filePath), new Map());
     };
-  }, [activeConfig, ensureBootstrapRevision, filePath, getDocReadWatermark, keyRotationPending, offlineReplicaEnabled, recordFirstLocalEdit, recordOfflineMetric]);
+  }, [activeConfig, ensureBootstrapRevision, filePath, getDocReadWatermark, offlineReplicaEnabled, recordFirstLocalEdit, recordOfflineMetric]);
 
   // Build the provider factory for CollaborationPlugin
   // This function is called by CollaborationPlugin with a doc ID and yjsDocMap.
@@ -952,8 +879,9 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   }), [providerFactory, activeConfig.initialContent, activeConfig.userName, activeConfig.userId, cursorColor]);
 
   // Document comments config for the markdown collab branch. Comments live in
-  // the same shared Y.Doc (top-level `comments` array); @-mentions fan out as
-  // inbox events through the TeamSyncProvider.
+  // the same shared Y.Doc (top-level `comments` array); `onMention` / `onReply`
+  // route notifications to the org-scoped TeamInboxRoom over the team
+  // connection (see documentCommentNotifier).
   const commentsMemoConfig = useMemo<CommentsConfig>(() => ({
     getYDoc: () => collabProviderRef.current?.getYDoc() ?? null,
     // Reaching this mounted editor means the document sync lifecycle already
@@ -980,40 +908,22 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     documentId: activeConfig.documentId,
     documentUri: buildCollabUri(activeConfig.orgId, activeConfig.documentId),
     onMention: (recipientUserIds, payload) => {
-      const teamProvider = getTeamSyncProvider(activeConfig.workspacePath);
-      if (!teamProvider) {
-        console.warn('[CollaborativeTabEditor] No TeamSyncProvider for mention fanout');
-        return;
-      }
-      void teamProvider
-        .fanoutInboxEvent({
-          recipients: recipientUserIds,
-          kind: 'mention',
-          sourceKind: 'lexical_document',
-          sourceId: activeConfig.documentId,
-          payload,
-        })
-        .catch((err) => {
-          console.warn('[CollaborativeTabEditor] fanoutInboxEvent failed', err);
-        });
+      notifyDocumentCommentRecipients({
+        workspacePath: activeConfig.workspacePath,
+        documentId: activeConfig.documentId,
+        reason: 'mention',
+        recipientUserIds,
+        payload,
+      });
     },
     onReply: (recipientUserIds, payload) => {
-      const teamProvider = getTeamSyncProvider(activeConfig.workspacePath);
-      if (!teamProvider) {
-        console.warn('[CollaborativeTabEditor] No TeamSyncProvider for reply fanout');
-        return;
-      }
-      void teamProvider
-        .fanoutInboxEvent({
-          recipients: recipientUserIds,
-          kind: 'reply',
-          sourceKind: 'lexical_document',
-          sourceId: activeConfig.documentId,
-          payload,
-        })
-        .catch((err) => {
-          console.warn('[CollaborativeTabEditor] reply fanout failed', err);
-        });
+      notifyDocumentCommentRecipients({
+        workspacePath: activeConfig.workspacePath,
+        documentId: activeConfig.documentId,
+        reason: 'reply',
+        recipientUserIds,
+        payload,
+      });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [

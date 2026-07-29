@@ -16,6 +16,7 @@ import {
     getRecentItems,
     getDefaultAIModel, setDefaultAIModel,
     getDefaultEffortLevel, setDefaultEffortLevel,
+    getDefaultThinkingMode, setDefaultThinkingMode,
     isAnalyticsEnabled,
     getSessionSyncConfig, setSessionSyncConfig, SessionSyncConfig,
     isExtensionDevToolsEnabled, setExtensionDevToolsEnabled,
@@ -60,7 +61,7 @@ import * as StytchAuth from '../services/StytchAuthService';
 import { getRestartSignalPath } from '../utils/appPaths';
 import { TrayManager } from '../tray/TrayManager';
 import { STYTCH_CONFIG } from '@nimbalyst/runtime';
-import { type EffortLevel, parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { type EffortLevel, parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import { repositoryManager } from '../services/RepositoryManager';
 import {
     migratePersonalSyncProfiles,
@@ -687,6 +688,15 @@ export function registerSettingsHandlers() {
 
     safeHandle('settings:set-default-effort-level', (_event, level: string) => {
         setDefaultEffortLevel(parseEffortLevel(level));
+    });
+
+    // Default extended-thinking mode (composer "Extended" selector)
+    safeHandle('settings:get-default-thinking-mode', () => {
+        return getDefaultThinkingMode();
+    });
+
+    safeHandle('settings:set-default-thinking-mode', (_event, mode: string) => {
+        setDefaultThinkingMode(parseThinkingMode(mode));
     });
 
     // Analytics settings

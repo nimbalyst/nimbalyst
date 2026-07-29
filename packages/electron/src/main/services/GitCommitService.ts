@@ -5,6 +5,7 @@ import simpleGit, { SimpleGit } from 'simple-git';
 import { gitOperationLock } from './GitOperationLock';
 import { resolveGitContext } from './GitContextService';
 import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
+import { sanitizeGitRepositoryEnv } from './gitRepositoryEnv';
 
 export interface GitCommitExecutionResult {
   success: boolean;
@@ -75,9 +76,13 @@ function toRepositoryRelativePath(workspacePath: string, repoRoot: string, fileP
     throw new Error('Invalid file path in commit proposal');
   }
 
+  // repoRoot comes from `rev-parse --show-toplevel`, which is always physical, so
+  // the workspace base has to be canonicalized too -- otherwise a workspace under a
+  // symlinked parent (macOS /var -> /private/var) makes every relative path in the
+  // proposal look like it escapes the repository.
   const resolvedPath = isAbsolute(filePath)
     ? toRealPath(filePath)
-    : toRealPath(resolve(workspacePath, filePath));
+    : toRealPath(resolve(toRealPath(workspacePath), filePath));
   const relativePath = relative(repoRoot, resolvedPath);
   const escapesRepository =
     relativePath === '..' ||
@@ -187,7 +192,9 @@ export async function executeGitCommit(
      * Environment for the git subprocess (and any hooks it runs). Production callers
      * pass an enhanced env (see getGitSubprocessEnv) so husky hooks invoking nvm/Homebrew
      * binaries like `yarn` resolve, since GUI-launched apps don't inherit the shell PATH.
-     * When omitted, git inherits process.env as usual.
+     * Repository-selection variables are always removed so the repository resolved
+     * from workspacePath remains authoritative. When omitted, all other values come
+     * from process.env.
      */
     env?: Record<string, string>;
     /** Stream git and hook output while the commit workflow is running. */
@@ -236,9 +243,11 @@ export async function executeGitCommit(
         return restored;
       };
       try {
-        const git: SimpleGit = options?.env
-          ? simpleGit(gitRoot, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(options.env)
-          : simpleGit(gitRoot);
+        const gitEnv = sanitizeGitRepositoryEnv(options?.env ?? process.env);
+        const git: SimpleGit = simpleGit(
+          gitRoot,
+          { unsafe: GIT_INHERITED_ENV_UNSAFE }
+        ).env(gitEnv);
         if (options?.onOutput) {
           git.outputHandler((_command, stdout, stderr) => {
             stdout.on('data', (chunk: Buffer | string) => options.onOutput?.('stdout', chunk.toString()));

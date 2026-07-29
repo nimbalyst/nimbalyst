@@ -17,6 +17,28 @@ import { AISessionsRepository } from '@nimbalyst/runtime';
 import { getSyncProvider } from '../SyncManager';
 import { logger } from '../../utils/logger';
 
+/**
+ * NIM-2208: session ids whose bit this process has set since startup.
+ *
+ * The stale-prompt reconcile needs the (normally empty) set of sessions carrying
+ * the bit. Reading it back from the DB meant a `SELECT id, metadata FROM
+ * ai_sessions` scan over every session row — 5k+ on a working install — on every
+ * pass. This function is the single writer of the bit, and the startup sweep
+ * clears every row before anything can set one, so an in-memory mirror is
+ * authoritative for the running process and costs no query at all.
+ */
+const sessionsWithPendingPrompt = new Set<string>();
+
+/** Sessions currently carrying a pending-prompt bit set by this process. */
+export function getSessionsWithPendingPrompt(): string[] {
+  return [...sessionsWithPendingPrompt];
+}
+
+/** Reset the mirror; called by the startup sweep once every row is cleared. */
+export function resetPendingPromptTracking(): void {
+  sessionsWithPendingPrompt.clear();
+}
+
 export async function setSessionPendingPrompt(
   sessionId: string,
   hasPendingPrompt: boolean,
@@ -27,6 +49,11 @@ export async function setSessionPendingPrompt(
     await AISessionsRepository.updateMetadata(sessionId, {
       metadata: { hasPendingPrompt },
     });
+    if (hasPendingPrompt) {
+      sessionsWithPendingPrompt.add(sessionId);
+    } else {
+      sessionsWithPendingPrompt.delete(sessionId);
+    }
   } catch (err) {
     logger.main.warn(
       `[pendingPromptPersistence] Failed to persist hasPendingPrompt=${hasPendingPrompt} for session ${sessionId}:`,

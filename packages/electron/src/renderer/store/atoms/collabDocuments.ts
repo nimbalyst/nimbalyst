@@ -14,8 +14,6 @@ import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
 import type { TeamSyncProvider as TeamSyncProviderType, FolderNode } from '@nimbalyst/runtime/sync';
-import { errorNotificationService } from '../../services/ErrorNotificationService';
-import { collabKeyRotationEpochAtom } from './collabEditor';
 import { activeWorkspacePathAtom } from './openProjects';
 import { pendingDocRegistrations } from './pendingDocRegistrations';
 import { CollaborationHealthAttemptTracker } from '../../../shared/analytics/collaborationHealth';
@@ -1020,50 +1018,15 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
     }
 
     store.set(workspaceHasTeamAtomFamily(workspacePath), true);
-    const { orgId, teamProjectId, keyCustody, orgKeyBase64, legacyOrgKeysBase64, orgKeyFingerprint, serverUrl, userId, personalOrgId } = result.config;
+    const { orgId, teamProjectId, serverUrl, userId } = result.config;
     store.set(teamOrgIdAtomFamily(workspacePath), orgId);
     store.set(teamUserIdAtomFamily(workspacePath), userId ?? null);
 
     const { TeamSyncProvider } = await import('@nimbalyst/runtime/sync');
 
-    // Epic H2: server-managed teams sync doc-index titles as plaintext (the
-    // server encrypts at rest with the team DEK), so there is no org key to
-    // import.
-    const serverManaged = keyCustody === 'server-managed';
-    const encryptionKey = serverManaged
-      ? undefined
-      : await crypto.subtle.importKey(
-          'raw',
-          Uint8Array.from(atob(orgKeyBase64), c => c.charCodeAt(0)),
-          { name: 'AES-GCM', length: 256 },
-          false,
-          ['encrypt', 'decrypt']
-        );
-
-    // NIM-906/910: in server-managed mode, import every retained legacy org-key
-    // EPOCH (current + archived) so the provider can read and self-heal
-    // PRE-MIGRATION ciphertext titles even when the org key was rotated and
-    // titles span epochs. Absent any, such titles render as locked entries,
-    // never raw base64.
-    const legacyOrgKeys: CryptoKey[] = [];
-    if (serverManaged && Array.isArray(legacyOrgKeysBase64)) {
-      for (const b64 of legacyOrgKeysBase64) {
-        if (!b64) continue;
-        legacyOrgKeys.push(
-          await crypto.subtle.importKey(
-            'raw',
-            Uint8Array.from(atob(b64), c => c.charCodeAt(0)),
-            { name: 'AES-GCM', length: 256 },
-            false,
-            ['encrypt', 'decrypt']
-          )
-        );
-      }
-    }
-
     const healthTracker = new CollaborationHealthAttemptTracker(
       'team_index',
-      serverManaged ? 'server_managed' : 'legacy_e2e',
+      'server_managed',
     );
     healthTracker.start(initializedTeamSyncWorkspaces.has(workspacePath) ? 'reconnect' : 'initial');
     initializedTeamSyncWorkspaces.add(workspacePath);
@@ -1075,14 +1038,6 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       // server's project-partitioned index attributes docs to the right project.
       teamProjectId,
       userId,
-      // Announced to the TeamRoom on connect so inbox-event fanout can reach
-      // this member's PersonalIndexRoom. Undefined when personal sync is not
-      // yet configured locally.
-      personalOrgId,
-      keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
-      encryptionKey,
-      legacyOrgKeys,
-      orgKeyFingerprint,
       getJwt: async () => {
         const jwtResult = await window.electronAPI.documentSync.getJwt(orgId);
         if (!jwtResult.success || !jwtResult.jwt) {
@@ -1211,9 +1166,6 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
       },
 
       onMemberAdded: (member) => {
-        (window as any).electronAPI.team.autoWrapNewMembers(orgId).catch((err: unknown) => {
-          console.error('[collabDocuments] auto-wrap after memberAdded failed:', err);
-        });
         // Epic H1: keep the local org_members projection live.
         (window as any).electronAPI.org
           .applyMemberUpserted(orgId, member.userId, member.email ?? null, member.role)
@@ -1246,57 +1198,6 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
           });
       },
 
-      onIdentityKeyUploaded: (_userId) => {
-        (window as any).electronAPI.team.autoWrapNewMembers(orgId).catch((err: unknown) => {
-          console.error('[collabDocuments] auto-wrap after identityKeyUploaded failed:', err);
-        });
-      },
-
-      onOrgKeyRotated: (fingerprint) => {
-        // The org encryption key was rotated. ALL providers holding the old
-        // key must be torn down and recreated with the new key.
-        errorNotificationService.showInfo(
-          'Team encryption key updated',
-          'Reconnecting with the new key...',
-          { duration: 5000 }
-        );
-
-        (window as any).electronAPI.invoke('team:handle-org-key-rotated', orgId, fingerprint)
-          .then(async (result: { success: boolean; keyRefreshed?: boolean; error?: string }) => {
-            if (result?.success && result.keyRefreshed) {
-              destroyTeamSync(workspacePath);
-              await initSharedDocuments(workspacePath);
-
-              try {
-                (window as any).electronAPI.invoke('tracker-sync:restart-for-workspace', workspacePath);
-              } catch (trackerErr) {
-                console.error('[collabDocuments] Failed to restart tracker sync:', trackerErr);
-              }
-
-              store.set(collabKeyRotationEpochAtom, (prev: number) => prev + 1);
-
-              errorNotificationService.showInfo(
-                'Encryption key updated',
-                'All sync providers reconnected with the new key.',
-                { duration: 5000 }
-              );
-            } else if (result?.success && !result.keyRefreshed) {
-              errorNotificationService.showWarning(
-                'Waiting for updated key',
-                'An admin needs to share the updated encryption key with you. Some items may be temporarily unreadable.',
-                { duration: 10000 }
-              );
-            }
-          })
-          .catch((err: unknown) => {
-            console.error('[collabDocuments] Failed to handle org key rotation:', err);
-            errorNotificationService.showWarning(
-              'Key rotation failed',
-              'Failed to fetch the updated encryption key. Try reopening the workspace.',
-              { duration: 10000 }
-            );
-          });
-      },
 
       onStatusChange: (status) => {
         store.set(teamSyncStatusAtomFamily(workspacePath), status);

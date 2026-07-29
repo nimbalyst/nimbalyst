@@ -1,6 +1,7 @@
 import simpleGit, { SimpleGit, SimpleGitOptions } from 'simple-git';
 import { getEnhancedPath, getShellEnvironment } from './CLIManager';
 import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
+import { sanitizeGitRepositoryEnv } from './gitRepositoryEnv';
 
 /**
  * Build the environment for git subprocesses that may run hooks (commit, merge,
@@ -22,11 +23,11 @@ export function getGitSubprocessEnv(): Record<string, string> {
       base[key] = value;
     }
   }
-  return {
+  return sanitizeGitRepositoryEnv({
     ...base,
     ...(getShellEnvironment() ?? {}),
     PATH: getEnhancedPath(),
-  };
+  });
 }
 
 /**

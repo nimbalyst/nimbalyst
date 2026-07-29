@@ -16,7 +16,6 @@ function provider(): DocumentSyncProvider {
     serverUrl: 'ws://example.test',
     getJwt: async () => 'token',
     orgId: 'org-1',
-    keyCustody: 'server-managed',
     userId: 'user-1',
     documentId: 'doc-1',
     reviewGateEnabled: false,

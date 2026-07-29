@@ -13,7 +13,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
-vi.mock('../H2EncryptionMigration', () => ({
+vi.mock('../SecurityEncryptionSection', () => ({
   SecurityEncryptionSection: () => <div data-testid="security-encryption-section" />,
 }));
 vi.mock('../MoveProjectWizard', () => ({ MoveProjectWizard: () => null }));
@@ -32,7 +32,7 @@ vi.mock('../../../../dialogs/registry', () => ({ DIALOG_IDS: { CREATE_TEAM: 'cre
 
 import { ProjectScopedTeamExistsState } from '../WorkspaceProjectSharingPanel';
 
-function renderServerManagedTeamSurface() {
+function renderServerManagedTeamSurface(callerRole = 'admin') {
   const team = {
     orgId: 'org-sm',
     name: 'Server Managed Team',
@@ -43,7 +43,7 @@ function renderServerManagedTeamSurface() {
       { id: 'm1', name: 'Alice', email: 'alice@example.com', role: 'admin' as const, status: 'active' as const, avatarColor: '#60a5fa', isYou: true },
       { id: 'm2', name: 'Bob', email: 'bob@example.com', role: 'member' as const, status: 'active' as const, avatarColor: '#a78bfa' },
     ],
-    callerRole: 'admin',
+    callerRole,
   };
   const projects = [
     { projectId: 'proj-1', teamProjectId: 'proj-1', gitRemoteHash: 'abc123', slug: 'app', name: 'App' },
@@ -79,5 +79,10 @@ describe('WorkspaceProjectSharingPanel server-managed team surface (NIM-1779/C2)
     expect(screen.queryByText(/your fingerprint/i)).toBeNull();
     expect(screen.queryByTitle(/identity verified/i)).toBeNull();
     expect(screen.queryByTitle(/not verified/i)).toBeNull();
+  });
+
+  it('labels an organization viewer as Viewer', () => {
+    renderServerManagedTeamSurface('viewer');
+    expect(screen.getByText('Server Managed Team · Viewer')).toBeTruthy();
   });
 });

@@ -1423,3 +1423,92 @@ describe('handleTrackerUpdate session linking (NIM-879)', () => {
     expect(sqls.some((s) => s.includes('UPDATE ai_sessions'))).toBe(true);
   });
 });
+
+describe('handleTrackerCreate schema defaults', () => {
+  // A plan-shaped model: its status has no 'to-do' option, and planId is a
+  // required, non-inline field no MCP caller ever supplies.
+  const PLAN_MODEL = {
+    type: 'plan',
+    fields: [
+      { name: 'planId', type: 'string', required: true, displayInline: false },
+      { name: 'title', type: 'string', required: true, displayInline: true },
+      {
+        name: 'status',
+        type: 'select',
+        required: true,
+        default: 'draft',
+        options: [{ value: 'draft' }, { value: 'in-development' }, { value: 'completed' }],
+      },
+    ],
+  };
+
+  function setupCreateQueue() {
+    const createdRow = makeRow({ id: 'plan_test', type: 'plan', workspace: '/tmp/ws', issue_key: null, issue_number: null });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] }) // INSERT
+      .mockResolvedValueOnce({ rows: [createdRow] }) // resolve created
+      .mockResolvedValueOnce({ rows: [{ max_num: 0 }] }) // MAX(issue_number)
+      .mockResolvedValueOnce({ rows: [] }) // UPDATE issue_key
+      .mockResolvedValueOnce({ rows: [{ ...createdRow, issue_key: 'NIM-1', issue_number: 1 }] }) // re-resolve
+      .mockResolvedValueOnce({ rows: [{ ...createdRow, issue_key: 'NIM-1', issue_number: 1 }] }); // notifyTrackerItemAdded
+  }
+
+  /** The data JSONB handed to the INSERT. */
+  function insertedData(): Record<string, any> {
+    const insert = mockQuery.mock.calls.find((c) => String(c[0]).includes('INSERT INTO tracker_items'));
+    return JSON.parse(String((insert as any[])[1][3]));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDocumentServices.clear();
+    mockGlobalRegistry.get.mockReturnValue(PLAN_MODEL as any);
+    mockGlobalRegistry.validate.mockReturnValue({ valid: true, errors: [] });
+  });
+
+  it('defaults status from the schema rather than a hardcoded "to-do"', async () => {
+    setupCreateQueue();
+    const result = await handleTrackerCreate({ type: 'plan', title: 'A plan' }, '/tmp/ws');
+    expect(result.isError).toBe(false);
+    expect(insertedData().status).toBe('draft');
+  });
+
+  it('honours an explicit status over the schema default', async () => {
+    setupCreateQueue();
+    await handleTrackerCreate({ type: 'plan', title: 'A plan', status: 'in-development' }, '/tmp/ws');
+    expect(insertedData().status).toBe('in-development');
+  });
+
+  it('populates a required self-id field no caller supplies', async () => {
+    setupCreateQueue();
+    await handleTrackerCreate({ type: 'plan', title: 'A plan' }, '/tmp/ws');
+    const data = insertedData();
+    expect(typeof data.planId).toBe('string');
+    expect(data.planId.length).toBeGreaterThan(0);
+  });
+
+  it('does not clobber a caller-supplied self-id field', async () => {
+    setupCreateQueue();
+    await handleTrackerCreate(
+      { type: 'plan', title: 'A plan', fields: { planId: 'explicit-id' } },
+      '/tmp/ws',
+    );
+    expect(insertedData().planId).toBe('explicit-id');
+  });
+
+  it('leaves inline required fields (title) alone', async () => {
+    setupCreateQueue();
+    await handleTrackerCreate({ type: 'plan', title: 'A plan' }, '/tmp/ws');
+    expect(insertedData().title).toBe('A plan');
+  });
+
+  it('falls back to "to-do" when the schema declares no default', async () => {
+    mockGlobalRegistry.get.mockReturnValue({
+      type: 'task',
+      fields: [{ name: 'title', type: 'string', required: true }, { name: 'status', type: 'select' }],
+    } as any);
+    setupCreateQueue();
+    await handleTrackerCreate({ type: 'task', title: 'A task' }, '/tmp/ws');
+    expect(insertedData().status).toBe('to-do');
+  });
+});

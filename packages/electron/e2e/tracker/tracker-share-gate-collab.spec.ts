@@ -29,7 +29,6 @@
 import { test, expect } from '@playwright/test';
 test.skip(() => !process.env.RUN_COLLAB_TESTS, 'Requires RUN_COLLAB_TESTS=1 and wrangler dev - not for CI');
 import type { ElectronApplication, Page } from '@playwright/test';
-import { webcrypto } from 'crypto';
 import {
   launchElectronApp,
   createTempWorkspace,
@@ -55,18 +54,6 @@ test.describe.configure({ mode: 'serial' });
 const WRANGLER_PORT = 8793;
 const TEST_ORG_ID = 'e2e-test-org';
 
-async function generateAesKey(): Promise<CryptoKey> {
-  return webcrypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt'],
-  ) as Promise<CryptoKey>;
-}
-
-async function exportKeyAsJwk(key: CryptoKey): Promise<JsonWebKey> {
-  return webcrypto.subtle.exportKey('jwk', key);
-}
-
 async function launchIsolatedElectronApp(
   workspace: string,
   instanceName: string,
@@ -76,7 +63,9 @@ async function launchIsolatedElectronApp(
     workspace,
     permissionMode: 'allow-all',
     preserveTestDatabase: true,
-    env: { NIMBALYST_USER_DATA_PATH: dbDir },
+    // NIMBALYST_USER_DATA_DIR, not _PATH -- bootstrap.ts only reads _DIR, so
+    // the old name left both "isolated" instances on the real userData dir.
+    env: { NIMBALYST_USER_DATA_DIR: dbDir },
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
@@ -93,7 +82,6 @@ async function connectTrackerSync(
     teamProjectId: string;
     orgId: string;
     userId: string;
-    encryptionKeyJwk: JsonWebKey;
   },
 ): Promise<void> {
   const result = await page.evaluate(
@@ -154,14 +142,10 @@ test.describe('Selective per-plan share gate (hybrid)', () => {
   let dbDirB: string;
   let workspaceDirA: string;
   let workspaceDirB: string;
-  let sharedKeyJwk: JsonWebKey;
 
   test.beforeAll(async ({}, testInfo) => {
     testInfo.setTimeout(300_000);
     await startWrangler(WRANGLER_PORT);
-
-    const sharedKey = await generateAesKey();
-    sharedKeyJwk = await exportKeyAsJwk(sharedKey);
 
     workspaceDirA = await createTempWorkspace();
     workspaceDirB = await createTempWorkspace();
@@ -196,7 +180,6 @@ test.describe('Selective per-plan share gate (hybrid)', () => {
       serverUrl: `http://localhost:${WRANGLER_PORT}`,
       teamProjectId,
       orgId: TEST_ORG_ID,
-      encryptionKeyJwk: sharedKeyJwk,
     };
 
     await Promise.all([

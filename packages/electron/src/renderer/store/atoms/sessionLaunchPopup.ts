@@ -9,7 +9,8 @@ export interface SessionLaunchDraft {
   model: string | null;
   mode: 'agent' | 'planning';
   effortLevel: EffortLevel | null;
-  thinkingMode: ThinkingMode;
+  /** null means "use the app-wide default" (GitHub #1034). */
+  thinkingMode: ThinkingMode | null;
   pendingSessionId: string | null;
 }
 
@@ -20,7 +21,7 @@ export function createEmptySessionLaunchDraft(): SessionLaunchDraft {
     model: null,
     mode: 'agent',
     effortLevel: null,
-    thinkingMode: 'enabled',
+    thinkingMode: null,
     pendingSessionId: null,
   };
 }

@@ -27,13 +27,60 @@ export function isTerminalSessionEvent(type: string): boolean {
   return TERMINAL_SESSION_EVENT_TYPES.has(type);
 }
 
-/** Find historical rows whose workflow is complete but prompt bit is stale. */
-export function findCompletedSessionsWithPendingPrompt(
+/**
+ * NIM-2208: every row whose prompt bit is set, for the startup sweep.
+ *
+ * This intentionally ignores `phase`. The previous repair only matched
+ * `phase === 'complete'`, which missed the entire real-world population — the
+ * sessions that stick are the ones abandoned mid-workflow (planning /
+ * implementing / validating / no phase at all), and they accumulated for weeks.
+ *
+ * At startup the sweep needs no liveness check: no AI process survives an app
+ * restart and `SessionStateManager.activeSessions` is empty, so a set bit cannot
+ * correspond to anything still blocked. Callers must only run this BEFORE any
+ * session can start a turn.
+ */
+export function findSessionsWithPendingPrompt(
   sessions: Array<{ id: string; metadata: Record<string, unknown> }>,
 ): string[] {
   return sessions
-    .filter(({ metadata }) => metadata.phase === 'complete' && metadata.hasPendingPrompt === true)
+    .filter(({ metadata }) => metadata.hasPendingPrompt === true)
     .map(({ id }) => id);
+}
+
+/**
+ * NIM-2208: rows whose prompt bit is set but which nothing in memory could still
+ * be blocked on — the mid-session counterpart to the startup sweep, for a turn
+ * that died without emitting a terminal event.
+ *
+ * Both guards are required, because the bit has two independent writers:
+ *
+ * - MCP handlers (AskUserQuestion, GitCommitProposal, RequestUserInput) block on
+ *   a response channel and are covered by `hasLiveInteractivePrompt`.
+ * - Provider-driven prompts (ExitPlanMode and friends, wired in
+ *   `MessageStreamingHandler`) set the bit with no MCP waiter at all, so the
+ *   waiter registry reads 0 for a genuinely blocked session. `isSessionTracked`
+ *   (bare `SessionStateManager` map membership, NOT a running check) covers
+ *   them: if a session has no in-memory entry, no live provider can be waiting
+ *   on it.
+ *
+ * Anything still tracked is left alone and healed by the terminal-event clear or
+ * the next startup sweep. Erring toward keeping the flag only reproduces today's
+ * behaviour; erring the other way would hide a session that really is waiting on
+ * the user.
+ */
+export function selectStalePendingPromptSessions(params: {
+  /**
+   * Sessions currently carrying the bit. Supplied from the in-memory mirror in
+   * `pendingPromptPersistence` rather than a query — reading it back would mean
+   * scanning every session row (5k+ on a working install) on every pass.
+   */
+  sessionIds: readonly string[];
+  hasLiveInteractivePrompt: (sessionId: string) => boolean;
+  isSessionTracked: (sessionId: string) => boolean;
+}): string[] {
+  const { sessionIds, hasLiveInteractivePrompt, isSessionTracked } = params;
+  return sessionIds.filter((id) => !hasLiveInteractivePrompt(id) && !isSessionTracked(id));
 }
 
 export interface PendingPromptTerminalClearDeps {

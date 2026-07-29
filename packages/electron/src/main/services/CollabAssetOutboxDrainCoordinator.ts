@@ -4,7 +4,7 @@ import {
   type CollabAssetUploadTransport,
 } from "./CollabAssetOutboxDrainer";
 import { getCollabAssetStore } from "./CollabAssetStore";
-import { encryptAndUploadCollabAsset } from "./CollabAssetUploader";
+import { uploadCollabAsset } from "./CollabAssetUploader";
 import { getCollabSyncHttpUrl } from "../utils/collabSyncUrl";
 import { getPersonalUserId, onAuthStateChange } from "./StytchAuthService";
 import { onNetworkAvailable } from "./NetworkAvailability";
@@ -14,7 +14,7 @@ const PERIODIC_DRAIN_MS = 30_000;
 
 class ElectronCollabAssetUploadTransport implements CollabAssetUploadTransport {
   async upload(asset: Parameters<CollabAssetUploadTransport["upload"]>[0]) {
-    let result = await encryptAndUploadCollabAsset({
+    let result = await uploadCollabAsset({
       orgId: asset.identity.orgId,
       documentId: asset.identity.documentId,
       assetId: asset.identity.assetId,
@@ -30,7 +30,7 @@ class ElectronCollabAssetUploadTransport implements CollabAssetUploadTransport {
       !result.success &&
       (result.statusCode === 401 || result.statusCode === 403)
     ) {
-      result = await encryptAndUploadCollabAsset({
+      result = await uploadCollabAsset({
         orgId: asset.identity.orgId,
         documentId: asset.identity.documentId,
         assetId: asset.identity.assetId,

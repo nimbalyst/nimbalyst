@@ -1,18 +1,29 @@
 import { describe, it, expect, vi } from 'vitest';
-import { submitClaudeCliPrompt } from '../claudeCliSubmit';
+import {
+  submitClaudeCliPrompt,
+  submitWriteGapMs,
+  SUBMIT_WRITE_GAP_MS,
+  SUBMIT_WRITE_GAP_MAX_MS,
+} from '../claudeCliSubmit';
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
+
+/** Bracketed-paste markers the composed path wraps its payload in. */
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
+const pasted = (s: string) => PASTE_START + s + PASTE_END;
 
 function harness() {
   const writes: Array<[string, string]> = [];
+  const delays: number[] = [];
   const logUserPrompt = vi.fn(async () => undefined);
   const sendAnalytics = vi.fn();
   const deps = {
     writeToTerminal: (sessionId: string, data: string) => { writes.push([sessionId, data]); },
     logUserPrompt,
     sendAnalytics,
-    delay: async () => undefined,
+    delay: async (ms: number) => { delays.push(ms); },
   };
-  return { writes, logUserPrompt, sendAnalytics, deps };
+  return { writes, delays, logUserPrompt, sendAnalytics, deps };
 }
 
 const img = (filepath: string): ChatAttachment => ({
@@ -27,7 +38,7 @@ describe('submitClaudeCliPrompt', () => {
       h.deps,
     );
     expect(h.writes).toEqual([
-      ['s1', 'do it /tmp/a.png'],
+      ['s1', pasted('do it /tmp/a.png')],
       ['s1', '\r'],
     ]);
   });
@@ -181,9 +192,66 @@ describe('submitClaudeCliPrompt', () => {
         h.deps,
       );
       expect(h.writes).toEqual([
-        ['s1', '/review /tmp/a.png'],
+        ['s1', pasted('/review /tmp/a.png')],
         ['s1', '\r'],
       ]);
+    });
+  });
+
+  /**
+   * A single large pty.write is fragmented by the OS PTY layer; the CLI's paste
+   * detector saw each fragment as its own paste, so one message arrived as
+   * several "[Pasted text #N]" placeholders. Enter landing mid-drain then
+   * submitted only part of it.
+   */
+  describe('large-payload submission', () => {
+    it('wraps the composed payload in bracketed-paste markers', async () => {
+      const h = harness();
+      await submitClaudeCliPrompt(
+        { sessionId: 's1', workspacePath: '/w', prompt: 'hello' },
+        h.deps,
+      );
+      expect(h.writes[0][1]).toBe(pasted('hello'));
+    });
+
+    it('does NOT wrap a slash command (the trigger must stay a real keystroke)', async () => {
+      const h = harness();
+      await submitClaudeCliPrompt(
+        { sessionId: 's1', workspacePath: '/w', prompt: '/clear' },
+        h.deps,
+      );
+      for (const [, data] of h.writes) {
+        expect(data).not.toContain(PASTE_START);
+        expect(data).not.toContain(PASTE_END);
+      }
+    });
+
+    it('keeps the original gap for ordinary prompts', () => {
+      expect(submitWriteGapMs(0)).toBe(SUBMIT_WRITE_GAP_MS);
+      expect(submitWriteGapMs(500)).toBe(SUBMIT_WRITE_GAP_MS);
+    });
+
+    it('scales the gap with payload size so Enter cannot land mid-drain', () => {
+      expect(submitWriteGapMs(20_000)).toBeGreaterThan(SUBMIT_WRITE_GAP_MS);
+      expect(submitWriteGapMs(20_000)).toBeGreaterThanOrEqual(75);
+    });
+
+    it('caps the gap so a huge paste cannot stall submission', () => {
+      expect(submitWriteGapMs(50_000_000)).toBe(SUBMIT_WRITE_GAP_MAX_MS);
+    });
+
+    it('waits longer before Enter for a large prompt than a small one', async () => {
+      const small = harness();
+      await submitClaudeCliPrompt(
+        { sessionId: 's1', workspacePath: '/w', prompt: 'hi' },
+        small.deps,
+      );
+      const large = harness();
+      await submitClaudeCliPrompt(
+        { sessionId: 's1', workspacePath: '/w', prompt: 'x'.repeat(20_000) },
+        large.deps,
+      );
+      expect(large.delays[0]).toBeGreaterThan(small.delays[0]);
     });
   });
 });

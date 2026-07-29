@@ -110,7 +110,10 @@ export function composeClaudeCliContextPreamble(
  *   context alone is not a submission.
  */
 export function composeClaudeCliPtySubmission(input: ComposeClaudeCliInput): string {
-  const trimmed = (input.prompt ?? '').trim();
+  // Flatten the typed prompt for the same reason the selection is flattened: a
+  // real newline is Enter to the CLI's readline, so a multi-line prompt submits
+  // at the first line break and the rest is lost.
+  const trimmed = flattenToSingleLine((input.prompt ?? '').trim());
 
   const paths = (input.attachments ?? [])
     .map((a) => (a && typeof a.filepath === 'string' ? a.filepath.trim() : ''))

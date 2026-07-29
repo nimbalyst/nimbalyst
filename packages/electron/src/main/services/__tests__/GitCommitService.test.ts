@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -7,12 +8,16 @@ import {
   createGitCommitProposalResponse,
   executeGitCommit,
 } from '../GitCommitService';
+import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 const execFileAsync = promisify(execFile);
 
 let tmpRoot: string;
-const testTempRoot = process.env.NIMBALYST_TEST_TEMP_DIR
-  ?? path.join(process.cwd(), 'nimbalyst-local', 'test-tmp');
+// os.tmpdir(), never the working checkout. This suite used to scratch inside
+// `<cwd>/nimbalyst-local/test-tmp`; if `git init` was ever skipped or hijacked,
+// every subsequent commit walked up into the real stravu-editor repo and was
+// authored from the developer's ~/.gitconfig. See testSupport/gitTestSandbox.ts.
+const testTempRoot = process.env.NIMBALYST_TEST_TEMP_DIR ?? os.tmpdir();
 
 beforeEach(async () => {
   await fs.mkdir(testTempRoot, { recursive: true });
@@ -24,17 +29,17 @@ afterEach(async () => {
 });
 
 async function git(args: string[], cwd: string): Promise<void> {
-  await execFileAsync('git', args, { cwd });
+  await execFileAsync('git', args, { cwd, env: gitSandboxEnv(testTempRoot) });
 }
 
 async function gitOutput(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync('git', args, { cwd });
+  const { stdout } = await execFileAsync('git', args, { cwd, env: gitSandboxEnv(testTempRoot) });
   return stdout;
 }
 
 async function gitBytes(args: string[], cwd: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, encoding: 'buffer' }, (error, stdout) => {
+    execFile('git', args, { cwd, encoding: 'buffer', env: gitSandboxEnv(testTempRoot) }, (error, stdout) => {
       if (error) {
         reject(error);
         return;
@@ -44,11 +49,18 @@ async function gitBytes(args: string[], cwd: string): Promise<Buffer> {
   });
 }
 
+/** `git init` + a sandbox assertion, so no test can commit outside tmpRoot. */
+async function initScratchRepo(cwd: string): Promise<void> {
+  await git(['init', '-q'], cwd);
+  await git(['config', 'user.email', 'test@example.com'], cwd);
+  await git(['config', 'user.name', 'Test User'], cwd);
+  await git(['config', 'commit.gpgsign', 'false'], cwd);
+  assertGitSandbox(cwd, testTempRoot);
+}
+
 describe('GitCommitService', () => {
   it('rejects an empty proposal without committing the current index', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
     await fs.writeFile(path.join(tmpRoot, 'already-staged.txt'), 'keep\n', 'utf8');
     await git(['add', 'already-staged.txt'], tmpRoot);
 
@@ -59,9 +71,7 @@ describe('GitCommitService', () => {
   });
 
   it('commits a selected absolute file path relative to its repository', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     const absoluteFilePath = path.join(tmpRoot, 'a.txt');
     await fs.writeFile(absoluteFilePath, 'hello\n', 'utf8');
@@ -72,10 +82,46 @@ describe('GitCommitService', () => {
     expect(result.commitHash).toBeTruthy();
   });
 
+  it('ignores inherited repository-selection env and commits only in the requested workspace', async () => {
+    await initScratchRepo(tmpRoot);
+    const selectedPath = path.join(tmpRoot, 'a.txt');
+    await fs.writeFile(selectedPath, 'scratch\n', 'utf8');
+
+    const decoyRoot = await fs.mkdtemp(path.join(testTempRoot, 'nim-git-commit-decoy-'));
+    await initScratchRepo(decoyRoot);
+    await fs.writeFile(path.join(decoyRoot, 'seed.txt'), 'seed\n', 'utf8');
+    await git(['add', 'seed.txt'], decoyRoot);
+    await git(['commit', '-q', '-m', 'decoy baseline'], decoyRoot);
+    const decoyHeadBefore = (await gitOutput(['rev-parse', 'HEAD'], decoyRoot)).trim();
+    await fs.writeFile(path.join(decoyRoot, 'a.txt'), 'must stay uncommitted\n', 'utf8');
+
+    const inheritedKeys = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'] as const;
+    const previousValues = new Map(
+      inheritedKeys.map((key) => [key, process.env[key]])
+    );
+    process.env.GIT_DIR = path.join(decoyRoot, '.git');
+    process.env.GIT_WORK_TREE = decoyRoot;
+    process.env.GIT_INDEX_FILE = path.join(decoyRoot, '.git', 'index');
+
+    try {
+      const result = await executeGitCommit(tmpRoot, 'commit requested workspace', [selectedPath]);
+
+      expect(result.success).toBe(true);
+      expect((await gitOutput(['rev-parse', 'HEAD'], decoyRoot)).trim()).toBe(decoyHeadBefore);
+      expect(await gitOutput(['status', '--porcelain', '--', 'a.txt'], decoyRoot)).toBe('?? a.txt\n');
+      expect(await gitOutput(['log', '-1', '--format=%s'], tmpRoot)).toBe('commit requested workspace\n');
+    } finally {
+      for (const key of inheritedKeys) {
+        const previousValue = previousValues.get(key);
+        if (previousValue === undefined) delete process.env[key];
+        else process.env[key] = previousValue;
+      }
+      await fs.rm(decoyRoot, { recursive: true, force: true });
+    }
+  });
+
   it('commits only the selected file while preserving unrelated staged and unstaged hunks', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     const unrelatedPath = path.join(tmpRoot, 'unrelated.txt');
     const selectedPath = path.join(tmpRoot, 'selected.txt');
@@ -109,9 +155,7 @@ describe('GitCommitService', () => {
   });
 
   it('commits an absolute path in the selected linked worktree, not its parent checkout', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
     await fs.writeFile(path.join(tmpRoot, 'seed.txt'), 'seed\n', 'utf8');
     await git(['add', 'seed.txt'], tmpRoot);
     await git(['commit', '-q', '-m', 'seed'], tmpRoot);
@@ -133,9 +177,7 @@ describe('GitCommitService', () => {
   });
 
   it('rejects a selected path outside the repository', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     const outsidePath = path.join(path.dirname(tmpRoot), 'outside.txt');
     await fs.writeFile(outsidePath, 'outside\n', 'utf8');
@@ -151,9 +193,7 @@ describe('GitCommitService', () => {
   });
 
   it('preserves existing staging when rejecting an outside path', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     await fs.writeFile(path.join(tmpRoot, 'already-staged.txt'), 'keep\n', 'utf8');
     await git(['add', 'already-staged.txt'], tmpRoot);
@@ -171,9 +211,7 @@ describe('GitCommitService', () => {
   });
 
   it('rejects Git pathspec magic in a proposal', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     const result = await executeGitCommit(tmpRoot, 'must not expand a pathspec', [':(glob)**/*']);
 
@@ -182,9 +220,7 @@ describe('GitCommitService', () => {
   });
 
   it('returns a failure result with hook output when pre-commit rejects the commit', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     const hooksDir = path.join(tmpRoot, '.git', 'hooks');
     await fs.mkdir(hooksDir, { recursive: true });
@@ -213,9 +249,7 @@ describe('GitCommitService', () => {
   });
 
   it('restores the exact existing index when a hook rejects the proposed commit', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     await fs.writeFile(path.join(tmpRoot, 'already-staged.txt'), 'keep\n', 'utf8');
     await git(['add', 'already-staged.txt'], tmpRoot);
@@ -233,9 +267,7 @@ describe('GitCommitService', () => {
   });
 
   it('runs hooks with the injected subprocess env so PATH-dependent hooks resolve', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     // A binary that lives ONLY in a directory absent from the test process PATH,
     // standing in for an nvm-managed `yarn` that husky hooks invoke.
@@ -275,9 +307,7 @@ describe('GitCommitService', () => {
   });
 
   it('retries past a briefly-held .git/index.lock and commits successfully', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     // Seed commit so executeGitCommit's reset-HEAD path (which writes the index) runs.
     await fs.writeFile(path.join(tmpRoot, 'seed.txt'), 'seed\n', 'utf8');
@@ -307,9 +337,7 @@ describe('GitCommitService', () => {
   });
 
   it('surfaces a clear lock error when .git/index.lock is held persistently', async () => {
-    await git(['init', '-q'], tmpRoot);
-    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
-    await git(['config', 'user.name', 'Test User'], tmpRoot);
+    await initScratchRepo(tmpRoot);
 
     await fs.writeFile(path.join(tmpRoot, 'seed.txt'), 'seed\n', 'utf8');
     await git(['add', 'seed.txt'], tmpRoot);

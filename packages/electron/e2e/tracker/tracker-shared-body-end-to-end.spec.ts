@@ -48,7 +48,6 @@
 import { test, expect } from '@playwright/test';
 test.skip(() => !process.env.RUN_COLLAB_TESTS, 'Requires RUN_COLLAB_TESTS=1 and wrangler dev');
 import type { ElectronApplication, Page } from '@playwright/test';
-import { webcrypto } from 'crypto';
 import {
   launchElectronApp,
   createTempWorkspace,
@@ -82,23 +81,12 @@ let electronApp: ElectronApplication;
 let page: Page;
 let workspaceDir: string;
 let itemId: string;
-let encryptionKeyBase64: string;
 
-async function generateKeyBase64(): Promise<string> {
-  const key = await webcrypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt'],
-  );
-  const raw = await webcrypto.subtle.exportKey('raw', key);
-  return Buffer.from(raw).toString('base64');
-}
 
 test.beforeAll(async ({}, testInfo) => {
   testInfo.setTimeout(90_000);
 
   workspaceDir = await createTempWorkspace();
-  encryptionKeyBase64 = await generateKeyBase64();
 
   await startWrangler(WRANGLER_PORT);
 
@@ -119,7 +107,7 @@ test.beforeAll(async ({}, testInfo) => {
   // bug lives in. (The sibling spec misses this and silently tests
   // the local editor under a "collaborative" name.)
   await page.evaluate(
-    ({ orgId, userId, serverUrl, keyBase64 }) => {
+    ({ orgId, userId, serverUrl }) => {
       (window as any).electronAPI.documentSync.open = async (
         _workspacePath: string,
         documentId: string,
@@ -131,7 +119,6 @@ test.beforeAll(async ({}, testInfo) => {
           userId,
           documentId,
           title,
-          encryptionKeyBase64: keyBase64,
         });
       };
       (window as any).electronAPI.documentSync.getJwt = async () => ({
@@ -153,7 +140,6 @@ test.beforeAll(async ({}, testInfo) => {
       orgId: TEST_ORG_ID,
       userId: TEST_USER_ID,
       serverUrl: `ws://localhost:${WRANGLER_PORT}`,
-      keyBase64: encryptionKeyBase64,
     },
   );
 

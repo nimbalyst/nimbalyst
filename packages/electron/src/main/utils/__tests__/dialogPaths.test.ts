@@ -9,7 +9,7 @@ describe('dialogPaths', () => {
     expect(selectDialogDefaultPath({
       workspacePath: '/workspace/active',
       lastDirectory: '/previous',
-      documentsPath: '/documents',
+      documentsPath: () => '/documents',
     })).toBe('/workspace/active');
   });
 
@@ -17,14 +17,14 @@ describe('dialogPaths', () => {
     expect(selectDialogDefaultPath({
       workspacePath: null,
       lastDirectory: '/previous',
-      documentsPath: '/documents',
+      documentsPath: () => '/documents',
     })).toBe('/previous');
   });
 
   it('falls back to Documents before Electron can default to Downloads', () => {
     expect(selectDialogDefaultPath({
       workspacePath: null,
-      documentsPath: '/documents',
+      documentsPath: () => '/documents',
     })).toBe('/documents');
   });
 
@@ -32,7 +32,7 @@ describe('dialogPaths', () => {
     expect(selectDialogDefaultPath({
       explicitPath: 'export.pdf',
       workspacePath: '/workspace/active',
-      documentsPath: '/documents',
+      documentsPath: () => '/documents',
     })).toBe('/workspace/active/export.pdf');
   });
 
@@ -40,16 +40,43 @@ describe('dialogPaths', () => {
     expect(selectDialogDefaultPath({
       explicitPath: '/chosen/export.pdf',
       workspacePath: '/workspace/active',
-      documentsPath: '/documents',
+      documentsPath: () => '/documents',
     })).toBe('/chosen/export.pdf');
   });
 
   it('retains the filename while applying a suggested name', () => {
     expect(selectDialogDefaultPath({
       workspacePath: '/workspace/active',
-      documentsPath: '/documents',
+      documentsPath: () => '/documents',
       suggestedName: 'untitled.md',
     })).toBe('/workspace/active/untitled.md');
+  });
+
+  it('never resolves Documents when a usable directory is already in hand', () => {
+    // `app.getPath('documents')` throws when the Documents known-folder is
+    // unavailable (unsynced OneDrive Known Folder Move on Windows). Resolving it
+    // eagerly meant every dialog in the app died, folder picker included, even
+    // though the workspace path was perfectly usable. See NIM-2243.
+    const documentsPath = () => {
+      throw new Error("Failed to get 'documents' path");
+    };
+
+    expect(selectDialogDefaultPath({
+      workspacePath: '/workspace/active',
+      documentsPath,
+    })).toBe('/workspace/active');
+
+    expect(selectDialogDefaultPath({
+      workspacePath: null,
+      lastDirectory: '/previous',
+      documentsPath,
+    })).toBe('/previous');
+
+    expect(selectDialogDefaultPath({
+      explicitPath: '/chosen/export.pdf',
+      workspacePath: null,
+      documentsPath,
+    })).toBe('/chosen/export.pdf');
   });
 
   it('remembers a file parent and a selected directory directly', () => {
@@ -87,7 +114,7 @@ describe('usableDirectory', () => {
     expect(selectDialogDefaultPath({
       workspacePath: usableDirectory(path.join(tmpRoot, 'gone')) ?? null,
       lastDirectory: usableDirectory(path.join(tmpRoot, 'also-gone')),
-      documentsPath: '/documents',
+      documentsPath: () => '/documents',
     })).toBe('/documents');
   });
 });

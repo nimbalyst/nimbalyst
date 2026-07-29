@@ -192,7 +192,7 @@ The canonical property allowlists live in `packages/electron/src/shared/analytic
 | Shared trackers | `tracker_item_clicked`, `tracker_table_sort`, `tracker_item_mutated`, `tracker_item_scope_changed`, `tracker_mutation_rejected` | Tracker service mutation, explicit view interaction, or sync-rejection seam |
 | Collaboration health | `collab_sync_attempt_completed`, `collab_outbox_replay_completed`, `collab_share_asset_migration_completed`, `collab_server_mutation_rejected` | Coalesced client-observed terminal attempt or replay/migration/rejection outcome |
 
-Common Teams properties are low-cardinality subsets of `surface`, `entryPoint`, `source`, `outcome`, `errorCategory`, `actorType`, `callerRole`, `documentType`, `editorCategory`, `collaborationScope`, `resourceType`, `connectionPath`, `encryptionMode`, `durationCategory`, and the defined count/retry buckets. Event-specific enums and permitted fields are enforced by the shared contract.
+Common Teams properties are low-cardinality subsets of `surface`, `entryPoint`, `source`, `outcome`, `errorCategory`, `actorType`, `callerRole` (`owner`, `admin`, `member`, `viewer`, or `unknown`), `documentType`, `editorCategory`, `collaborationScope`, `resourceType`, `connectionPath`, `encryptionMode`, `durationCategory`, and the defined count/retry buckets. Event-specific enums and permitted fields are enforced by the shared contract.
 
 Never add organization, project, document, folder, member, account, room, or session IDs to these events. Also forbidden are names, email addresses, titles, filenames, paths, git remotes, raw errors, URLs, tokens, content, payloads, and exact values where a bucket exists.
 
