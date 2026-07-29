@@ -4,13 +4,14 @@ import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resolveGitContext } from '../GitContextService';
+import { __resetGitContextCache, resolveGitContext } from '../GitContextService';
 
 const execFileAsync = promisify(execFile);
 
 let tmpRoot: string;
 
 beforeEach(async () => {
+  __resetGitContextCache();
   const raw = await fs.mkdtemp(path.join(os.tmpdir(), 'nim-git-context-'));
   // git rev-parse returns physical paths; normalize the fixture the same way
   tmpRoot = await fs.realpath(raw);
@@ -53,9 +54,25 @@ describe('resolveGitContext', () => {
     expect(resolveGitContext('')).toEqual({ isRepo: false, gitRoot: null });
   });
 
-  it('picks up git init on the very next call (no caching)', async () => {
-    expect(resolveGitContext(tmpRoot).isRepo).toBe(false);
+  it('serves repeat lookups from cache instead of respawning git', async () => {
     await initRepo(tmpRoot);
+    expect(resolveGitContext(tmpRoot)).toEqual({ isRepo: true, gitRoot: tmpRoot });
+
+    // Remove the repo from disk. An uncached resolver would now report "not a
+    // repo"; the memoized one keeps the answer it already has.
+    await fs.rm(path.join(tmpRoot, '.git'), { recursive: true, force: true });
+
+    expect(resolveGitContext(tmpRoot)).toEqual({ isRepo: true, gitRoot: tmpRoot });
+  });
+
+  it('re-resolves after __resetGitContextCache', async () => {
+    expect(resolveGitContext(tmpRoot)).toEqual({ isRepo: false, gitRoot: null });
+
+    await initRepo(tmpRoot);
+    // Still cached as a non-repo -- this is the accepted staleness.
+    expect(resolveGitContext(tmpRoot)).toEqual({ isRepo: false, gitRoot: null });
+
+    __resetGitContextCache();
     expect(resolveGitContext(tmpRoot)).toEqual({ isRepo: true, gitRoot: tmpRoot });
   });
 

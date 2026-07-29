@@ -15,12 +15,24 @@ export interface GitContext {
   gitRoot: string | null;
 }
 
+// Per-workspace cache of the resolved context. resolveGitContext spawns a git
+// subprocess, and its callers sit in the same hot paths where uncached `.git`
+// probing measured 18-42% of main-process CPU (nimbalyst#895) -- a spawn there
+// is strictly worse than the existsSync it replaces. Git roots do not move
+// during a session, so memoizing is safe; same shape and rationale as
+// gitDirExistsCache in GitStatusService.
+const gitContextCache = new Map<string, GitContext>();
+
+/** Test-only: reset the git-context cache. */
+export function __resetGitContextCache(): void {
+  gitContextCache.clear();
+}
+
 /**
- * Resolve the git context by asking git itself (`rev-parse --show-toplevel`).
- * Deliberately uncached: mirrors the previous existsSync(.git) semantics, so
- * a `git init` (or a deleted repo) is reflected on the very next call. Every
- * caller is about to spawn a git subprocess anyway, so the extra ~5-10ms
- * rev-parse is marginal.
+ * Resolve the git context by asking git itself (`rev-parse --show-toplevel`),
+ * memoized for the lifetime of the process. A workspace that is not a repo when
+ * first resolved keeps that answer until restart, matching the staleness the
+ * existing gitDirExistsCache already carries.
  *
  * Repository-selection variables are stripped from the environment: an inherited
  * GIT_DIR/GIT_WORK_TREE (git exports these to hooks) would otherwise override the
@@ -30,6 +42,12 @@ export function resolveGitContext(workspacePath: string): GitContext {
   if (!workspacePath) {
     return { isRepo: false, gitRoot: null };
   }
+
+  const cached = gitContextCache.get(workspacePath);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   try {
     const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd: workspacePath,
@@ -38,11 +56,15 @@ export function resolveGitContext(workspacePath: string): GitContext {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: sanitizeGitRepositoryEnv(process.env),
     }).trim();
-    return gitRoot
+    const context: GitContext = gitRoot
       ? { isRepo: true, gitRoot }
       : { isRepo: false, gitRoot: null };
+    gitContextCache.set(workspacePath, context);
+    return context;
   } catch {
     // Not a repo, git missing, or the path does not exist.
-    return { isRepo: false, gitRoot: null };
+    const context: GitContext = { isRepo: false, gitRoot: null };
+    gitContextCache.set(workspacePath, context);
+    return context;
   }
 }
