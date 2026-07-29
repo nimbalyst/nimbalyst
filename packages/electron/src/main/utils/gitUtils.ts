@@ -111,6 +111,53 @@ export function getUntrackedFilesInDirectory(repoRoot: string, dirAbsolutePath: 
   }
 }
 
+export interface UntrackedExpansionOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxBufferBytes?: number;
+}
+
+/**
+ * Asynchronously list untracked, non-ignored files across several untracked
+ * directories with one Git invocation. `-z` is deliberately retained end to
+ * end: filenames may contain newlines, spaces, or other line separators.
+ *
+ * Git, rather than a filesystem walk, remains the authority for both ignore
+ * rules and nested-repository boundaries.
+ */
+export async function getUntrackedFilesInDirectories(
+  repoRoot: string,
+  dirAbsolutePaths: string[],
+  options: UntrackedExpansionOptions = {}
+): Promise<string[]> {
+  if (dirAbsolutePaths.length === 0) return [];
+
+  const pathspecs = [...new Set(dirAbsolutePaths.map(dir => {
+    const relDir = relative(repoRoot, dir);
+    return relDir === '' ? '.' : relDir;
+  }))];
+
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['ls-files', '--others', '--exclude-standard', '-z', '--', ...pathspecs],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        timeout: options.timeoutMs ?? 5000,
+        maxBuffer: options.maxBufferBytes ?? 8 * 1024 * 1024,
+        signal: options.signal,
+      }
+    );
+    return stdout.split('\0').filter(Boolean);
+  } catch (error) {
+    // An invalidation must reach the owner so it can reject this generation
+    // instead of publishing a partial, now-stale expansion.
+    if (options.signal?.aborted) throw error;
+    return [];
+  }
+}
+
 /**
  * Returns the number of open file descriptors in the current process,
  * or null if unavailable (Windows or read error).

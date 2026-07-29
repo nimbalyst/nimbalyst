@@ -84,6 +84,7 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | `worktree_archive_failed` | `WorktreeHandlers.ts:937, 961` | Worktree archive fails | `error_type`<br/>`stage` (archiving-sessions/removing-worktree) | (pending release as of 6d0b51b5) |  |
 | `worktree_rebase_attempted` | `WorktreeHandlers.ts:804` | User initiates rebase of worktree from base branch | `success`<br/>`had_conflicts`<br/>`had_untracked_files_conflict` | (pending release) |  |
 | `worktree_merge_attempted` | `WorktreeHandlers.ts:756` | User initiates merge of worktree to main branch | `success`<br/>`had_conflicts` | (pending release) |  |
+| `git_status_untracked_expanded` | `GitStatusService.ts` | A repository-wide status refresh expands collapsed untracked directories | `workspace_hash` (truncated SHA-256)<br/>`caller_class` (whole_workspace/worktree_session/mixed)<br/>`generation` (capped)<br/>`in_flight_count` (capped)<br/>`git_duration_ms` (capped)<br/>`expansion_duration_ms` (capped)<br/>`untracked_directory_count` (capped)<br/>`untracked_result_count` (capped)<br/>`event_loop_lag_ms` (capped) | (pending release) | No workspace paths or filenames are collected. |
 
 ### Theme Management
 
