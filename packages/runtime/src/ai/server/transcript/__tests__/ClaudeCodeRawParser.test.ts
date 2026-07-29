@@ -248,6 +248,7 @@ describe('ClaudeCodeRawParser', () => {
         content: JSON.stringify({
           type: 'assistant',
           message: {
+            model: 'claude-sonnet-4-5-20250929',
             content: [{
               type: 'tool_use',
               id: 'tool-1',
@@ -266,6 +267,7 @@ describe('ClaudeCodeRawParser', () => {
         toolName: 'Read',
         providerToolCallId: 'tool-1',
         arguments: { file_path: '/test.ts' },
+        sourceLabel: 'Claude Sonnet 4.5',
       });
     });
 

@@ -34,19 +34,6 @@ interface Question {
   multiSelect: boolean;
 }
 
-function resolveQuestionSourceLabel(input: {
-  displayName?: string | null;
-  agentName?: string | null;
-  modelName?: string | null;
-}): string {
-  return (
-    input.displayName?.trim() ||
-    input.agentName?.trim() ||
-    input.modelName?.trim() ||
-    'assistant'
-  );
-}
-
 // ============================================================
 // Helper Functions
 // ============================================================
@@ -243,14 +230,7 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   const host = useAtomValue(interactiveWidgetHostAtom(sessionId));
 
   const questions = parseQuestions(toolCall.arguments);
-  const displayName = (message.metadata?.teammateName as string | undefined) ?? null;
-  const agentName = message.subagent?.teamName ?? null;
-  const modelName = message.model ?? message.subagent?.model ?? null;
-  const questionSourceLabel = resolveQuestionSourceLabel({
-    displayName,
-    agentName,
-    modelName,
-  });
+  const questionSourceLabel = toolCall.sourceLabel?.trim() || 'assistant';
 
   // Parse result to determine completion state
   const rawResult = toolCall.result;

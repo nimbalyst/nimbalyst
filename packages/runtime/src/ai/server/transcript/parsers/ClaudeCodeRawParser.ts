@@ -13,6 +13,7 @@
 
 import type { RawMessage } from '../TranscriptTransformer';
 import { parseMcpToolName } from '../utils';
+import { CLAUDE_MODELS } from '../../../modelConstants';
 import type {
   IRawMessageParser,
   ParseContext,
@@ -248,6 +249,7 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
                 block,
                 context,
                 parentToolUseId,
+                this.resolveModelSourceLabel(turnModel),
               );
               descriptors.push(...toolDescriptors);
             } else if (block.type === 'tool_result') {
@@ -411,6 +413,7 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
     block: any,
     context: ParseContext,
     parentToolUseId?: string,
+    sourceLabel?: string,
   ): Promise<CanonicalEventDescriptor[]> {
     const descriptors: CanonicalEventDescriptor[] = [];
     const toolName = block.name ?? 'unknown';
@@ -482,6 +485,7 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
       type: 'tool_call_started',
       toolName,
       toolDisplayName: toolName,
+      ...(sourceLabel ? { sourceLabel } : {}),
       arguments: args,
       mcpServer,
       mcpTool,
@@ -491,6 +495,11 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
     });
 
     return descriptors;
+  }
+
+  private resolveModelSourceLabel(model: string | undefined): string | undefined {
+    if (!model) return undefined;
+    return CLAUDE_MODELS.find((candidate) => candidate.id === model)?.displayName ?? model;
   }
 
   private parseToolResult(

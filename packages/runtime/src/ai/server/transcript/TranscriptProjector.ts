@@ -18,6 +18,19 @@ import type {
   AssistantMessagePayload,
 } from './types';
 
+const PROVIDER_SOURCE_LABELS: Record<string, string> = {
+  claude: 'Claude',
+  'claude-code': 'Claude Agent',
+  'claude-code-cli': 'Claude Code CLI',
+  openai: 'OpenAI',
+  'openai-codex': 'OpenAI Codex',
+  'openai-codex-acp': 'OpenAI Codex',
+  opencode: 'OpenCode',
+  'copilot-cli': 'GitHub Copilot',
+  lmstudio: 'LM Studio',
+  voice: 'Voice Agent',
+};
+
 // ---------------------------------------------------------------------------
 // View model types
 // ---------------------------------------------------------------------------
@@ -47,6 +60,7 @@ export interface TranscriptViewMessage {
   toolCall?: {
     toolName: string;
     toolDisplayName: string;
+    sourceLabel?: string;
     status: 'running' | 'completed' | 'error';
     description: string | null;
     arguments: Record<string, unknown>;
@@ -153,7 +167,16 @@ export class TranscriptProjector {
     // Attach child events to subagent parents
     for (const [subagentId, parent] of subagentParents) {
       if (parent.subagent) {
-        parent.subagent.childEvents = subagentEvents.get(subagentId) ?? [];
+        const childEvents = subagentEvents.get(subagentId) ?? [];
+        const sourceLabel = resolveSubagentSourceLabel(parent.subagent);
+        if (sourceLabel) {
+          for (const child of childEvents) {
+            if (child.toolCall) {
+              child.toolCall.sourceLabel = sourceLabel;
+            }
+          }
+        }
+        parent.subagent.childEvents = childEvents;
       }
     }
 
@@ -250,6 +273,7 @@ function projectEvent(
       base.toolCall = {
         toolName: p.toolName,
         toolDisplayName: p.toolDisplayName,
+        sourceLabel: resolveToolSourceLabel(p.sourceLabel, event.provider),
         status: p.status,
         description: p.description,
         arguments: p.arguments,
@@ -278,7 +302,11 @@ function projectEvent(
       // Populate a synthetic toolCall so that existing custom widgets
       // (ToolPermissionWidget, AskUserQuestionWidget, etc.) can render
       // without changes -- they access data via message.toolCall.
-      base.toolCall = interactivePromptToToolCall(prompt, event.providerToolCallId);
+      base.toolCall = interactivePromptToToolCall(
+        prompt,
+        event.providerToolCallId,
+        event.provider,
+      );
       break;
     }
     case 'subagent': {
@@ -290,6 +318,8 @@ function projectEvent(
       base.toolCall = {
         toolName: 'Task',
         toolDisplayName: 'Task',
+        sourceLabel: resolveSubagentSourceLabel(p)
+          ?? resolveToolSourceLabel(undefined, event.provider),
         status: p.status === 'completed' ? 'completed' : 'running',
         description: null,
         arguments: {
@@ -334,6 +364,7 @@ const PROMPT_TYPE_TO_TOOL_NAME: Record<string, string> = {
 function interactivePromptToToolCall(
   prompt: InteractivePromptPayload,
   providerToolCallId: string | null,
+  provider: string,
 ): TranscriptViewMessage['toolCall'] {
   const toolName = PROMPT_TYPE_TO_TOOL_NAME[prompt.promptType] ?? prompt.promptType;
   const status: 'running' | 'completed' | 'error' =
@@ -349,6 +380,10 @@ function interactivePromptToToolCall(
   return {
     toolName,
     toolDisplayName: toolName,
+    sourceLabel: resolveToolSourceLabel(
+      prompt.promptType === 'ask_user_question' ? prompt.sourceLabel : undefined,
+      provider,
+    ),
     status,
     description: null,
     arguments: prompt as unknown as Record<string, unknown>,
@@ -359,4 +394,26 @@ function interactivePromptToToolCall(
     providerToolCallId: providerToolCallId ?? (prompt as any).requestId ?? null,
     progress: [],
   };
+}
+
+function resolveSubagentSourceLabel(
+  subagent: SubagentPayload,
+): string | undefined {
+  return (
+    subagent.teammateName?.trim()
+    || subagent.teamName?.trim()
+    || subagent.model?.trim()
+    || subagent.agentType?.trim()
+    || undefined
+  );
+}
+
+function resolveToolSourceLabel(
+  sourceLabel: string | null | undefined,
+  provider: string,
+): string {
+  const explicitLabel = sourceLabel?.trim();
+  if (explicitLabel) return explicitLabel;
+
+  return PROVIDER_SOURCE_LABELS[provider] ?? (provider.trim() || 'assistant');
 }
