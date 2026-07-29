@@ -2,7 +2,7 @@
  * AskUserQuestionWidget
  *
  * Interactive widget for the AskUserQuestion tool.
- * Renders questions from Claude and allows user to select answers.
+ * Renders questions from the assistant/model and allows user to select answers.
  *
  * Uses InteractiveWidgetHost for operations that require access to atoms, callbacks, and analytics.
  * The host is read from interactiveWidgetHostAtom(sessionId) - no prop drilling needed.
@@ -32,6 +32,19 @@ interface Question {
   header: string;
   options: QuestionOption[];
   multiSelect: boolean;
+}
+
+function resolveQuestionSourceLabel(input: {
+  displayName?: string | null;
+  agentName?: string | null;
+  modelName?: string | null;
+}): string {
+  return (
+    input.displayName?.trim() ||
+    input.agentName?.trim() ||
+    input.modelName?.trim() ||
+    'assistant'
+  );
 }
 
 // ============================================================
@@ -230,6 +243,14 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   const host = useAtomValue(interactiveWidgetHostAtom(sessionId));
 
   const questions = parseQuestions(toolCall.arguments);
+  const displayName = (message.metadata?.teammateName as string | undefined) ?? null;
+  const agentName = message.subagent?.teamName ?? null;
+  const modelName = message.model ?? message.subagent?.model ?? null;
+  const questionSourceLabel = resolveQuestionSourceLabel({
+    displayName,
+    agentName,
+    modelName,
+  });
 
   // Parse result to determine completion state
   const rawResult = toolCall.result;
@@ -555,7 +576,7 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
           </svg>
         </div>
         <span className="text-sm font-semibold text-nim flex-1">
-          Questions from Claude
+          {`Questions from ${questionSourceLabel}`}
         </span>
         {!host && (
           <span data-testid="ask-user-question-pending" className="text-xs text-nim-muted">Waiting...</span>

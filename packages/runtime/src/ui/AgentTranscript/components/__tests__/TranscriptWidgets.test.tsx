@@ -760,6 +760,38 @@ describe('AskUserQuestionWidget', () => {
     expect((screen.getByTestId('ask-user-question-cancel') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('uses the model label in the question header when available', () => {
+    const message = makeToolMessage(
+      'AskUserQuestion',
+      {
+        questions: [
+          {
+            question: 'Which framework?',
+            header: 'Framework',
+            options: [
+              { label: 'React', description: 'Component library' },
+              { label: 'Vue', description: 'Progressive framework' },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
+      undefined,
+      { model: 'Claude Sonnet 4.5' }
+    );
+    render(
+      <Wrapper>
+        <AskUserQuestionWidget
+          message={message}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="model-label"
+        />
+      </Wrapper>
+    );
+    expect(screen.getByText('Questions from Claude Sonnet 4.5')).toBeDefined();
+  });
+
   it('renders completed state with answers', () => {
     const message = makeToolMessage(
       'AskUserQuestion',
