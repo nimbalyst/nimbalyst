@@ -96,6 +96,10 @@ import {
 } from "./sessionContextServer";
 import { META_AGENT_TOOL_DEFS, dispatchMetaAgentTool } from "./metaAgentServer";
 import {
+  USAGE_POLLING_TOOL_SCHEMAS,
+  dispatchUsagePollingTool,
+} from "./usagePollingServer";
+import {
   buildSessionMetaToolSchemas,
   dispatchSessionMetaTool,
 } from "./sessionNamingServer";
@@ -365,6 +369,9 @@ const SESSION_CONTEXT_TOOL_NAMES = new Set(
   SESSION_CONTEXT_TOOL_SCHEMAS.map((t) => t.name)
 );
 const META_AGENT_TOOL_NAMES = new Set(META_AGENT_TOOL_DEFS.map((t) => t.name));
+const USAGE_POLLING_TOOL_NAMES = new Set(
+  USAGE_POLLING_TOOL_SCHEMAS.map((t) => t.name)
+);
 
 // ---- MCP Server Factory ----
 
@@ -448,6 +455,7 @@ function createSharedMcpServer(
       ...settingsToolSchemas,
       ...SESSION_CONTEXT_TOOL_SCHEMAS,
       ...META_AGENT_TOOL_DEFS,
+      ...USAGE_POLLING_TOOL_SCHEMAS,
       ...sessionMetaSchemas,
     ];
 
@@ -643,6 +651,9 @@ function createSharedMcpServer(
               args
             );
             return { content: [{ type: "text", text }], isError: false };
+          }
+          if (USAGE_POLLING_TOOL_NAMES.has(toolName)) {
+            return dispatchUsagePollingTool(name, args);
           }
           if (toolName === "update_session_meta") {
             return dispatchSessionMetaTool(name, args, sessionId ?? "");
