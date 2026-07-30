@@ -13,10 +13,7 @@ import {
 } from '@nimbalyst/runtime/ai/server/effortLevels';
 import { applyDeepSeekClaudeAgentProfile } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import { AISessionsRepository } from '@nimbalyst/runtime';
-import {
-  getDefaultEffortLevel,
-  getDefaultThinkingMode,
-} from '../../utils/store';
+import { getDefaultEffortLevel, getDefaultThinkingMode } from '../../utils/store';
 import { logger } from '../../utils/logger';
 import { resolveClaudeCodeSessionRoute } from './ClaudeCodeSessionRoute';
 import { preflightOllamaClaudeCodeBackend } from './OllamaClaudeCodePreflight';

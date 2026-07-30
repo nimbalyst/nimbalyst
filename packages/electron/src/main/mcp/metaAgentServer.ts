@@ -23,6 +23,16 @@ import type {
   EffortLevel,
   ThinkingMode,
 } from "@nimbalyst/runtime/ai/server/effortLevels";
+import { CLAUDE_CODE_BACKENDS } from "@nimbalyst/runtime/ai/server";
+
+// Deferred to call time (not evaluated at module load): several unrelated
+// test files provide a narrow vi.mock of the '@nimbalyst/runtime/ai/server'
+// barrel (for e.g. McpConfigService only) without CLAUDE_CODE_BACKENDS. A
+// module-scope `.map()` over that barrel would crash on merely importing this
+// file transitively, even though the enum below is never actually read there.
+function claudeCodeBackendIds(): string[] {
+  return CLAUDE_CODE_BACKENDS.map((backend) => backend.id);
+}
 
 type CreateSessionArgs = {
   title?: string;
@@ -34,6 +44,7 @@ type CreateSessionArgs = {
   toolScope?: SessionLaunchToolScope;
   effortLevel?: EffortLevel;
   thinkingMode?: ThinkingMode;
+  claudeCodeBackend?: string;
 };
 
 type SpawnSessionArgs = {
@@ -47,6 +58,7 @@ type SpawnSessionArgs = {
   toolScope?: SessionLaunchToolScope;
   effortLevel?: EffortLevel;
   thinkingMode?: ThinkingMode;
+  claudeCodeBackend?: string;
   notifyOnComplete?: boolean;
   /**
    * When true, the new session is created at the top level — no parent,
@@ -264,6 +276,12 @@ export const META_AGENT_TOOL_DEFS: Array<{
           description:
             "Optional Claude adaptive-thinking toggle for this child only. Accepted only for Claude Agent models whose transport implements the toggle; unsupported combinations fail before session creation.",
         },
+        claudeCodeBackend: {
+          type: "string",
+          get enum() { return claudeCodeBackendIds(); },
+          description:
+            "Optional explicit Ollama Claude-Agent backend profile id to route this claude-code child through instead of Anthropic. Omit model when set (it is derived from the backend); if both are set they must agree. Fails closed on an unknown id or a mismatched model/provider rather than silently running on Anthropic.",
+        },
       },
     },
   },
@@ -335,6 +353,12 @@ export const META_AGENT_TOOL_DEFS: Array<{
           enum: [...SESSION_LAUNCH_THINKING_MODES],
           description:
             "Optional Claude adaptive-thinking toggle for this session only. Accepted only for Claude Agent models whose transport implements the toggle; unsupported combinations fail before session creation.",
+        },
+        claudeCodeBackend: {
+          type: "string",
+          get enum() { return claudeCodeBackendIds(); },
+          description:
+            "Optional explicit Ollama Claude-Agent backend profile id to route this claude-code session through instead of Anthropic. Omit model when set (it is derived from the backend); if both are set they must agree. Fails closed on an unknown id or a mismatched model/provider rather than silently running on Anthropic.",
         },
         notifyOnComplete: {
           type: "boolean",

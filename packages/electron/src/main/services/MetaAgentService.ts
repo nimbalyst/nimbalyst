@@ -2,7 +2,13 @@ import path from 'path';
 import { BrowserWindow } from 'electron';
 import { randomUUID } from 'crypto';
 import { safeHandle } from '../utils/ipcRegistry';
-import { SessionManager } from '@nimbalyst/runtime/ai/server';
+import {
+  SessionManager,
+  resolveClaudeCodeBackend,
+  resolveClaudeCodeBackendForConfig,
+  type ClaudeCodeBackend,
+} from '@nimbalyst/runtime/ai/server';
+import { preflightOllamaClaudeCodeBackend } from './ai/OllamaClaudeCodePreflight';
 import type { AIProviderType } from '@nimbalyst/runtime/ai/server/types';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel, ThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
@@ -87,6 +93,40 @@ interface CreateChildSessionArgs {
   toolScope?: SessionLaunchToolScope;
   effortLevel?: EffortLevel;
   thinkingMode?: ThinkingMode;
+  /** Explicit Ollama Claude-Agent backend profile id (see customBackends.ts). */
+  claudeCodeBackend?: string;
+}
+
+/**
+ * Public MCP response projection of a resolved backend -- deliberately more
+ * stable/abstracted than the internal registry shape (ClaudeCodeBackend) so a
+ * future non-LiteLLM transport doesn't have to change the public shape. Drops
+ * internal-only fields (upstreamBaseUrl, authToken) and renames the
+ * Claude-facing alias to downstreamAlias, which reads clearer from the
+ * caller's point of view than the internal "claudeModelAlias".
+ */
+interface PublicClaudeCodeBackend {
+  id: string;
+  persistedModel: string;
+  transportProfile: 'litellm';
+  provider: 'ollama';
+  model: string;
+  upstreamModel: string;
+  downstreamAlias: string;
+  baseUrl: string;
+}
+
+function toPublicClaudeCodeBackend(backend: ClaudeCodeBackend): PublicClaudeCodeBackend {
+  return {
+    id: backend.id,
+    persistedModel: backend.persistedModel,
+    transportProfile: 'litellm',
+    provider: backend.provider,
+    model: backend.model,
+    upstreamModel: backend.upstreamModel,
+    downstreamAlias: backend.claudeModelAlias,
+    baseUrl: backend.baseUrl,
+  };
 }
 
 interface SendPromptNowArgs {
@@ -129,11 +169,14 @@ interface ResolvedChildModel {
   normalizedModel: string;
   providerSource: SessionLaunchValueSource;
   modelSource: SessionLaunchValueSource;
+  /** Present only for a claude-code child routed through a non-Anthropic
+   *  (currently Ollama) backend. Absent means an ordinary Anthropic session. */
+  claudeCodeBackend?: ClaudeCodeBackend;
 }
 
 async function resolveChildSessionModelAndProvider(
   parentSessionId: string,
-  args: Pick<CreateChildSessionArgs, 'provider' | 'model'>
+  args: Pick<CreateChildSessionArgs, 'provider' | 'model' | 'claudeCodeBackend'>
 ): Promise<ResolvedChildModel> {
   let parentProvider: string | null = null;
   let parentModel: string | null = null;
@@ -209,7 +252,45 @@ async function resolveChildSessionModelAndProvider(
         ? 'app-default'
         : 'default';
 
-  return { provider, normalizedModel, providerSource, modelSource };
+  if (args.claudeCodeBackend && provider !== 'claude-code') {
+    throw new Error(
+      `Claude Code backend ${args.claudeCodeBackend} requires provider claude-code, received ${provider}`
+    );
+  }
+
+  let finalModel = normalizedModel;
+  let finalModelSource = modelSource;
+  if (args.claudeCodeBackend && !explicitModel) {
+    // No explicit canonical model was requested -- adopt the backend's own
+    // canonical identity rather than an inherited/default Anthropic model.
+    finalModel = resolveClaudeCodeBackend(args.claudeCodeBackend)!.persistedModel;
+    finalModelSource = 'requested';
+  }
+
+  // Only consult backend resolution when there is an actual Ollama signal
+  // (an explicit backend id, or a canonical model that already carries the
+  // ollama-* identity). The overwhelming majority of child sessions are
+  // ordinary Anthropic/openai-codex/extension-agent spawns with neither, and
+  // skipping the call for them keeps this path a no-op dependency for those
+  // sessions -- matching every other call site in this file, which resolves
+  // claude-code backends the same way. Missing means an ordinary Anthropic
+  // session; a present signal fails closed on any inconsistency (unknown id,
+  // mismatched model) rather than silently falling back.
+  const claudeCodeBackend =
+    args.claudeCodeBackend || finalModel.startsWith('claude-code:ollama-')
+      ? resolveClaudeCodeBackendForConfig({
+          model: finalModel,
+          claudeCodeBackend: args.claudeCodeBackend,
+        })
+      : undefined;
+
+  return {
+    provider,
+    normalizedModel: finalModel,
+    providerSource,
+    modelSource: finalModelSource,
+    claudeCodeBackend,
+  };
 }
 
 function readSessionMetadata(metadata: unknown): Record<string, unknown> | null {
@@ -250,6 +331,8 @@ interface SpawnSessionArgs {
   toolScope?: SessionLaunchToolScope;
   effortLevel?: EffortLevel;
   thinkingMode?: ThinkingMode;
+  /** Explicit Ollama Claude-Agent backend profile id (see customBackends.ts). */
+  claudeCodeBackend?: string;
   /**
    * Records explicit inheritance intent in launch provenance. The current
    * default also inherits the caller when model is omitted.
@@ -540,6 +623,9 @@ export class MetaAgentService {
     args: CreateChildSessionArgs & {
       parentSessionIdOverride?: string | null;
       launchContext?: ChildLaunchContext;
+      /** Set by spawnSession when it already ran the backend preflight during
+       *  its pre-mutation preview resolution, so it is not repeated here. */
+      skipBackendPreflight?: boolean;
     }
   ): Promise<{
     sessionId: string;
@@ -553,6 +639,7 @@ export class MetaAgentService {
     queuedInitialPrompt: boolean;
     parentSessionId: string | null;
     launchConfiguration: SessionLaunchConfiguration;
+    claudeCodeBackend?: PublicClaudeCodeBackend;
   }> {
     if (!this.aiService) {
       throw new Error('AI service not initialized');
@@ -582,7 +669,18 @@ export class MetaAgentService {
       normalizedModel,
       providerSource,
       modelSource,
+      claudeCodeBackend,
     } = await resolveChildSessionModelAndProvider(metaSessionId, args);
+
+    // Preflight must run -- and be allowed to throw -- before any worktree,
+    // session, or queue-row mutation below. spawnSession already runs this
+    // during its own pre-mutation preview resolution (before it can create a
+    // workstream container), so it sets skipBackendPreflight to avoid a
+    // redundant second network round-trip here.
+    if (claudeCodeBackend && !args.skipBackendPreflight) {
+      await preflightOllamaClaudeCodeBackend(claudeCodeBackend);
+    }
+
     const toolScope = parseSessionLaunchToolScope(args.toolScope);
     const reasoning = resolveSessionReasoningConfiguration({
       provider,
@@ -766,15 +864,25 @@ export class MetaAgentService {
     // Persist the complete launch snapshot before the initial prompt is queued.
     // Runtime fields remain top-level for existing provider/tool-scope readers;
     // launchConfiguration is the truthful requested/resolved audit contract.
-    await AISessionsRepository.updateMetadata(sessionId, {
-      metadata: {
-        launchConfiguration,
-        ...(toolScope !== 'full' ? { toolScope } : {}),
-        ...(reasoning.effortLevel ? { effortLevel: reasoning.effortLevel } : {}),
-        ...(reasoning.thinkingMode ? { thinkingMode: reasoning.thinkingMode } : {}),
-        ...(!notifyOnComplete ? { notifyParent: false } : {}),
-      },
-    });
+    //
+    // A backend-routed session's canonical identity is the persisted `model`
+    // field alone (re-derived fresh every turn by resolveClaudeCodeBackendFromModel);
+    // effort/thinking-mode reasoning and the requested/resolved launch audit
+    // trail are Anthropic-specific concepts that do not apply to it, so they
+    // are omitted here rather than persisted alongside a redundant/misleading
+    // legacy claudeCodeBackend metadata field. toolScope and notifyParent are
+    // capability/notification settings independent of which backend is used,
+    // so they are still persisted whenever they differ from their default.
+    const metadataPayload: Record<string, unknown> = {
+      ...(!claudeCodeBackend ? { launchConfiguration } : {}),
+      ...(toolScope !== 'full' ? { toolScope } : {}),
+      ...(!claudeCodeBackend && reasoning.effortLevel ? { effortLevel: reasoning.effortLevel } : {}),
+      ...(!claudeCodeBackend && reasoning.thinkingMode ? { thinkingMode: reasoning.thinkingMode } : {}),
+      ...(!notifyOnComplete ? { notifyParent: false } : {}),
+    };
+    if (Object.keys(metadataPayload).length > 0) {
+      await AISessionsRepository.updateMetadata(sessionId, { metadata: metadataPayload });
+    }
 
     const initialPrompt = args.prompt?.trim();
     const shouldBypassExecution = this.shouldBypassChildAgentExecutionForTests();
@@ -828,6 +936,7 @@ export class MetaAgentService {
       queuedInitialPrompt: !!initialPrompt,
       parentSessionId: args.parentSessionIdOverride ?? null,
       launchConfiguration,
+      ...(claudeCodeBackend ? { claudeCodeBackend: toPublicClaudeCodeBackend(claudeCodeBackend) } : {}),
     };
   }
 
@@ -857,6 +966,7 @@ export class MetaAgentService {
     const previewResolution = await resolveChildSessionModelAndProvider(parentSessionId, {
       provider: args.provider,
       model: effectiveModel,
+      claudeCodeBackend: args.claudeCodeBackend,
     });
     parseSessionLaunchToolScope(args.toolScope);
     resolveSessionReasoningConfiguration({
@@ -866,6 +976,14 @@ export class MetaAgentService {
       thinkingMode: args.thinkingMode,
       appDefaultEffortLevel: getDefaultEffortLevel(),
     });
+
+    // Preflight here, before any workstream/worktree/session/queue mutation
+    // below (including resolveOrCreateWorkstream's reparent side effect).
+    // createChildSessionInternal is told to skip its own preflight via
+    // skipBackendPreflight so a healthy route is only checked once per call.
+    if (previewResolution.claudeCodeBackend) {
+      await preflightOllamaClaudeCodeBackend(previewResolution.claudeCodeBackend);
+    }
 
     const isolated = args.isolated === true;
     const targetWorkspaceId = requestedTargetWorkspace
@@ -921,6 +1039,8 @@ export class MetaAgentService {
       toolScope: args.toolScope,
       effortLevel: args.effortLevel,
       thinkingMode: args.thinkingMode,
+      claudeCodeBackend: args.claudeCodeBackend,
+      skipBackendPreflight: !!previewResolution.claudeCodeBackend,
       parentSessionIdOverride: workstreamId,
       launchContext: {
         inheritModel: args.inheritModel,
