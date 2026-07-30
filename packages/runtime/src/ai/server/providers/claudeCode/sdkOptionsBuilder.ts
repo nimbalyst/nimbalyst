@@ -12,7 +12,7 @@ import { app } from 'electron';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { type ThinkingMode } from '../../effortLevels';
-import { DEEPSEEK_CLAUDE_BACKEND_ID, normalizeDeepSeekEffort, normalizeDeepSeekThinkingMode } from '../../deepSeekClaudeAgent';
+import { DEEPSEEK_CLAUDE_BACKEND_ID, normalizeDeepSeekEffort, normalizeDeepSeekThinkingMode, readDeepSeekApiKeyFromEnvFile } from '../../deepSeekClaudeAgent';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
 
@@ -430,7 +430,12 @@ export async function buildSdkOptions(
   if (config.customBackend === DEEPSEEK_CLAUDE_BACKEND_ID) {
     delete env.ANTHROPIC_API_KEY;
     env.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
-    if (config.apiKey) env.ANTHROPIC_AUTH_TOKEN = config.apiKey;
+    // Key comes from .env only, never from settings JSON (Yogev, 2026-07-30) --
+    // see readDeepSeekApiKeyFromEnvFile's doc comment. config.apiKey is a
+    // settings-store fallback kept only for a user who deliberately re-enters
+    // a key through Nimbalyst's own key UI; the .env value always wins.
+    const deepSeekApiKey = readDeepSeekApiKeyFromEnvFile() || config.apiKey;
+    if (deepSeekApiKey) env.ANTHROPIC_AUTH_TOKEN = deepSeekApiKey;
     env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'deepseek-v4-pro[1m]';
     env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'deepseek-v4-pro[1m]';
     env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'deepseek-v4-flash';
