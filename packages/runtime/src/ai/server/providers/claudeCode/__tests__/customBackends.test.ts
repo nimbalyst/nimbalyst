@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES } from '../../../../modelConstants';
 import { resolveClaudeCodeModelVariant } from '../../../types';
 import {
   applyClaudeCodeBackendEnv,
+  CLAUDE_CODE_BACKENDS,
   OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
   resolveClaudeCodeBackend,
   resolveClaudeCodeBackendForConfig,
@@ -210,6 +212,23 @@ describe('Claude Code custom backends', () => {
         'claude-code:opus'
       )
     ).toBe('claude-sonnet-4-5-20250929');
+  });
+
+  it('binds every allowlisted backend to canonical parsing and its exact SDK alias', () => {
+    expect(CLAUDE_CODE_BACKENDS).toHaveLength(CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES.length);
+
+    for (const identity of CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES) {
+      const backend = resolveClaudeCodeBackend(identity.variant);
+      expect(backend).toMatchObject({
+        id: identity.variant,
+        persistedModel: identity.persistedModel,
+        claudeModelAlias: identity.sdkAlias,
+      });
+      expect(resolveClaudeCodeBackendFromModel(identity.persistedModel)).toBe(backend);
+      expect(
+        resolveClaudeCodeModelVariant(identity.persistedModel, 'claude-code:opus')
+      ).toBe(identity.sdkAlias);
+    }
   });
 
   it('rejects lookalike model identities and backend/model mismatches', () => {

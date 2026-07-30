@@ -13,7 +13,20 @@ describe('meta-agent Ollama Claude Code backend schema', () => {
       expect(property).toEqual(
         expect.objectContaining({
           type: 'string',
-          enum: ['ollama-glm-5-2-cloud'],
+          enum: [
+            'ollama-glm-5-2-cloud',
+            'ollama-gpt-oss-20b-cloud',
+            'ollama-nemotron-3-nano-cloud',
+            'ollama-deepseek-v4-flash-cloud',
+            'ollama-qwen3-5-cloud',
+            'ollama-nemotron-3-super-cloud',
+            'ollama-glm-5-1-cloud',
+            'ollama-minimax-m2-7-cloud',
+            'ollama-kimi-k2-6-cloud',
+            'ollama-kimi-k2-7-code-cloud',
+            'ollama-minimax-m3-cloud',
+            'ollama-deepseek-v4-pro-cloud',
+          ],
         })
       );
     });

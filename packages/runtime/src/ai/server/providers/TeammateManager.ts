@@ -107,6 +107,22 @@ export interface ManagedChildLaunchOptions extends PackagedBuildOptions {
   backendId?: string;
 }
 
+export const MANAGED_CHILD_ROUTE_RECEIPT_PREFIX =
+  '[NIMBALYST-OLLAMA-NATIVE-CHILD] ';
+
+function collectNativeChildResultText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map(collectNativeChildResultText).filter(Boolean).join('\n');
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === 'string') return record.text;
+    if (record.content !== undefined) return collectNativeChildResultText(record.content);
+  }
+  return '';
+}
+
 // ─── Class ──────────────────────────────────────────────────────────────────
 
 export class TeammateManager {
@@ -150,6 +166,58 @@ export class TeammateManager {
   lastUsedPermissionsPath?: string;
 
   constructor(private readonly deps: TeammateManagerDeps) {}
+
+  /**
+   * Record the SDK-native Agent/Task route after its successful tool result.
+   * These children are launched inside the Claude binary, so they do not pass
+   * through streamTeammateOutput() and need this explicit provider boundary.
+   */
+  recordNativeAgentToolResult(
+    sessionId: string | undefined,
+    toolName: string,
+    toolArguments: Record<string, unknown> | undefined,
+    toolResult: unknown,
+    isError: boolean,
+  ): void {
+    if ((toolName !== 'Agent' && toolName !== 'Task') || isError) return;
+    const route = this.managedChildLaunchOptions;
+    if (!route?.backendId) return;
+    const baseUrl = route.env.ANTHROPIC_BASE_URL;
+    if (!sessionId || !route.exactModel || baseUrl !== 'http://127.0.0.1:4002') {
+      throw new Error(
+        '[MANAGED-TEAMMATE] Qualified native Agent result is missing exact LiteLLM route identity'
+      );
+    }
+    const resultText = collectNativeChildResultText(toolResult);
+    const agentId = resultText.match(/\bagentId:\s*([A-Za-z0-9@._-]+)/)?.[1];
+    if (!agentId) {
+      throw new Error(
+        '[MANAGED-TEAMMATE] Qualified native Agent result did not expose its child agent ID'
+      );
+    }
+    const requestedName =
+      typeof toolArguments?.name === 'string' ? toolArguments.name : undefined;
+    const routeReceipt = {
+      schemaVersion: 1,
+      event: 'native_claude_code_agent_child_launch',
+      managerSessionId: sessionId,
+      backendId: route.backendId,
+      childModelAlias: route.exactModel,
+      baseUrl,
+      nativeChildAgentId: agentId,
+      nativeChildAgentName: requestedName || 'native-agent',
+      launchKind: 'spawn',
+    };
+    const serialized = JSON.stringify(routeReceipt);
+    console.log(`${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${serialized}`);
+    this.deps.logNonBlocking(
+      sessionId,
+      'claude-code',
+      'output',
+      serialized,
+      { messageType: 'native_claude_code_agent_child_route' },
+    );
+  }
 
   // ─── Teammate-to-lead message queue ────────────────────────────────────
 
@@ -1495,6 +1563,29 @@ export class TeammateManager {
       ?? this.packagedBuildOptions?.pathToClaudeCodeExecutable;
     if (childExecutable) {
       options.pathToClaudeCodeExecutable = childExecutable;
+    }
+
+    if (managedChildOptions?.backendId) {
+      const baseUrl = baseEnv.ANTHROPIC_BASE_URL;
+      if (!sessionId || !managedChildOptions.exactModel || !baseUrl) {
+        throw new Error(
+          '[MANAGED-TEAMMATE] Qualified child route is missing manager session, exact model, or base URL'
+        );
+      }
+      const routeReceipt = {
+        schemaVersion: 1,
+        event: 'native_claude_code_agent_child_launch',
+        managerSessionId: sessionId,
+        backendId: managedChildOptions.backendId,
+        childModelAlias: effectiveModel,
+        baseUrl,
+        nativeChildAgentId: agentId,
+        nativeChildAgentName: name,
+        launchKind: resumeSessionId ? 'resume' : 'spawn',
+      };
+      console.log(
+        `${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${JSON.stringify(routeReceipt)}`
+      );
     }
 
     if (resumeSessionId) {

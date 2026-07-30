@@ -62,9 +62,16 @@ vi.mock('../../../../electron/claudeCodeEnvironment', () => ({
   resolveNativeBinaryPath: () => undefined,
 }));
 
-import { TeammateManager } from '../TeammateManager';
+import {
+  MANAGED_CHILD_ROUTE_RECEIPT_PREFIX,
+  TeammateManager,
+} from '../TeammateManager';
 import { buildSdkOptions } from '../claudeCode/sdkOptionsBuilder';
-import { OLLAMA_GLM_5_2_CLOUD_BACKEND_ID } from '../claudeCode/customBackends';
+import {
+  CLAUDE_CODE_BACKENDS,
+  OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
+} from '../claudeCode/customBackends';
+import { resolveClaudeCodeModelVariant } from '../../types';
 import { resolveClaudeCodeSessionRoute } from '../../../../../../electron/src/main/services/ai/ClaudeCodeSessionRoute';
 
 const EXACT_ALIAS = 'claude-sonnet-4-5-20250929';
@@ -222,6 +229,46 @@ describe('programmatic Ollama route integration', () => {
     }
   });
 
+  it('reconstructs exact manager SDK options for every allowlisted Ollama backend', async () => {
+    for (const backend of CLAUDE_CODE_BACKENDS) {
+      const manager = makeManager();
+      const route = await resolveClaudeCodeSessionRoute(
+        `nimbalyst-session-${backend.id}`,
+        backend.persistedModel,
+        undefined,
+        async () => ({
+          id: `nimbalyst-session-${backend.id}`,
+          provider: 'claude-code',
+          model: backend.persistedModel,
+          metadata: {},
+        } as any)
+      );
+
+      expect(route).toMatchObject({
+        model: backend.persistedModel,
+        backend: {
+          id: backend.id,
+          persistedModel: backend.persistedModel,
+        },
+      });
+
+      const deps = makeBuildDeps(manager, null, {
+          model: route.model!,
+          claudeCodeBackend: route.backend!.id,
+      });
+      deps.resolveModelVariant = () =>
+        resolveClaudeCodeModelVariant(route.model, 'claude-code:opus');
+      const turn = await buildSdkOptions(deps, makeBuildParams());
+      expect(turn.options.model).toBe(backend.claudeModelAlias);
+      expect(turn.options.env).toMatchObject({
+        ANTHROPIC_BASE_URL: backend.baseUrl,
+        ANTHROPIC_AUTH_TOKEN: backend.authToken,
+        ANTHROPIC_MODEL: backend.claudeModelAlias,
+        CLAUDE_CODE_SUBAGENT_MODEL: backend.claudeModelAlias,
+      });
+    }
+  });
+
   it('rebuilds the exact route for first, cached, and restored lead turns, then pins a native child and its resume in development', async () => {
     const manager = makeManager();
     let persistedReads = 0;
@@ -269,12 +316,24 @@ describe('programmatic Ollama route integration', () => {
     expect(cachedTurn.options.resume).toBe('manager-provider-session');
     expect(restoredTurn.options.resume).toBe('manager-provider-session');
 
-    const firstChild = await launchNativeChild(restoredManager);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    let firstChild;
+    let resumedChild;
+    let routeReceipts: Array<Record<string, unknown>> = [];
+    try {
+      firstChild = await launchNativeChild(restoredManager);
+      resumedChild = await launchNativeChild(
+        restoredManager,
+        firstChild.capturedSessionId
+      );
+      routeReceipts = logSpy.mock.calls
+        .map(([message]) => String(message))
+        .filter((message) => message.startsWith(MANAGED_CHILD_ROUTE_RECEIPT_PREFIX))
+        .map((message) => JSON.parse(message.slice(MANAGED_CHILD_ROUTE_RECEIPT_PREFIX.length)));
+    } finally {
+      logSpy.mockRestore();
+    }
     const firstConsumedResult = restoredManager.drainNextTeammateMessage();
-    const resumedChild = await launchNativeChild(
-      restoredManager,
-      firstChild.capturedSessionId
-    );
     const resumedConsumedResult = restoredManager.drainNextTeammateMessage();
 
     expect(firstChild.capturedSessionId).toBe('native-child-1');
@@ -299,6 +358,31 @@ describe('programmatic Ollama route integration', () => {
     }
     expect(testState.queryCalls[0].options.resume).toBeUndefined();
     expect(testState.queryCalls[1].options.resume).toBe('native-child-1');
+
+    expect(routeReceipts).toEqual([
+      {
+        schemaVersion: 1,
+        event: 'native_claude_code_agent_child_launch',
+        managerSessionId: 'nimbalyst-session-1',
+        backendId: OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
+        childModelAlias: EXACT_ALIAS,
+        baseUrl: 'http://127.0.0.1:4002',
+        nativeChildAgentId: 'worker@route-team',
+        nativeChildAgentName: 'worker',
+        launchKind: 'spawn',
+      },
+      {
+        schemaVersion: 1,
+        event: 'native_claude_code_agent_child_launch',
+        managerSessionId: 'nimbalyst-session-1',
+        backendId: OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
+        childModelAlias: EXACT_ALIAS,
+        baseUrl: 'http://127.0.0.1:4002',
+        nativeChildAgentId: 'worker@route-team',
+        nativeChildAgentName: 'worker',
+        launchKind: 'resume',
+      },
+    ]);
 
     for (const [key, value] of Object.entries(HOSTILE_AMBIENT_ENV)) {
       expect(process.env[key]).toBe(value);
@@ -328,5 +412,51 @@ describe('programmatic Ollama route integration', () => {
     expect(testState.queryCalls[0].options.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(testState.queryCalls[0].options.env.ANTHROPIC_UNIX_SOCKET).toBeUndefined();
     expect(testState.queryCalls[0].options.env.HTTPS_PROXY).toBeUndefined();
+  });
+
+  it('emits a structured exact-route receipt for an SDK-native Agent result', async () => {
+    const logNonBlocking = vi.fn();
+    const manager = new TeammateManager({
+      logNonBlocking,
+      emit: vi.fn(),
+      createPreToolUseHook: vi.fn(() => vi.fn()),
+      createPostToolUseHook: vi.fn(() => vi.fn()),
+      getAbortSignal: () => undefined,
+      interruptWithMessage: vi.fn(async () => undefined),
+      createCanUseToolHandler: vi.fn(
+        () => vi.fn(async () => ({ behavior: 'allow' as const }))
+      ),
+    });
+    await buildSdkOptions(makeBuildDeps(manager, null), makeBuildParams());
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      manager.recordNativeAgentToolResult(
+        'nimbalyst-session-1',
+        'Agent',
+        { name: 'ChildAgent' },
+        [
+          { type: 'text', text: 'child result' },
+          { type: 'text', text: 'agentId: child-agent-123 (resume hint)' },
+        ],
+        false,
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+    const receipt = JSON.parse(logNonBlocking.mock.calls[0][3]);
+    expect(receipt).toEqual({
+      schemaVersion: 1,
+      event: 'native_claude_code_agent_child_launch',
+      managerSessionId: 'nimbalyst-session-1',
+      backendId: OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
+      childModelAlias: EXACT_ALIAS,
+      baseUrl: 'http://127.0.0.1:4002',
+      nativeChildAgentId: 'child-agent-123',
+      nativeChildAgentName: 'ChildAgent',
+      launchKind: 'spawn',
+    });
+    expect(logNonBlocking.mock.calls[0][4]).toEqual({
+      messageType: 'native_claude_code_agent_child_route',
+    });
   });
 });

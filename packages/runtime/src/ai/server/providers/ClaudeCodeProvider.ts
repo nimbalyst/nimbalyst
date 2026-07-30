@@ -1293,6 +1293,13 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                   }
 
                   this.processTeammateToolResult(sessionId, toolCall.name, toolCall.arguments, item.content, toolCall.isError === true, toolCall.id);
+                  this.teammateManager.recordNativeAgentToolResult(
+                    sessionId,
+                    toolCall.name,
+                    toolCall.arguments,
+                    item.content,
+                    toolCall.isError === true,
+                  );
 
                   // Mirror SDK-native task-list mutations into session metadata so
                   // the UI can show the tasks for this session (TaskCreate id is

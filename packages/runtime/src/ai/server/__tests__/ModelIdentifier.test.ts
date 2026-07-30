@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES } from '../../modelConstants';
 import { ModelIdentifier } from '../ModelIdentifier';
 
 describe('ModelIdentifier', () => {
@@ -17,18 +18,20 @@ describe('ModelIdentifier', () => {
       expect(id.combined).toBe('claude-code:opus');
     });
 
-    it('accepts only the exact canonical Nimbalyst Ollama brain identity', () => {
-      const id = ModelIdentifier.parse('claude-code:ollama-glm-5-2-cloud');
-      expect(id.provider).toBe('claude-code');
-      expect(id.model).toBe('ollama-glm-5-2-cloud');
-      expect(id.combined).toBe('claude-code:ollama-glm-5-2-cloud');
+    it('accepts every exact canonical Nimbalyst Ollama brain identity and rejects lookalikes', () => {
+      for (const identity of CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES) {
+        const id = ModelIdentifier.parse(identity.persistedModel);
+        expect(id.provider).toBe('claude-code');
+        expect(id.model).toBe(identity.variant);
+        expect(id.combined).toBe(identity.persistedModel);
 
-      expect(() =>
-        ModelIdentifier.parse('claude-code:ollama-glm-5-2-cloud-ish')
-      ).toThrow('Invalid Claude Code variant');
-      expect(() =>
-        ModelIdentifier.parse('claude-code-cli:ollama-glm-5-2-cloud')
-      ).toThrow('Invalid Claude Code variant');
+        expect(() =>
+          ModelIdentifier.parse(`${identity.persistedModel}-ish`)
+        ).toThrow('Invalid Claude Code variant');
+        expect(() =>
+          ModelIdentifier.parse(`claude-code-cli:${identity.variant}`)
+        ).toThrow('Invalid Claude Code variant');
+      }
     });
 
     it('parses claude-code with 1m suffix', () => {

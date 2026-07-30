@@ -18,19 +18,32 @@ vi.mock('@nimbalyst/runtime', () => ({
 }));
 
 vi.mock('@nimbalyst/runtime/ai/server', () => {
-  const backend = {
-    id: 'ollama-glm-5-2-cloud',
-    persistedModel: 'claude-code:ollama-glm-5-2-cloud',
-    provider: 'ollama',
-    model: 'glm-5.2:cloud',
-    upstreamModel: 'openai/glm-5.2:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    claudeModelAlias: 'claude-sonnet-4-5-20250929',
-  };
+  const backends = [
+    {
+      id: 'ollama-glm-5-2-cloud',
+      persistedModel: 'claude-code:ollama-glm-5-2-cloud',
+      provider: 'ollama',
+      model: 'glm-5.2:cloud',
+      upstreamModel: 'openai/glm-5.2:cloud',
+      upstreamBaseUrl: 'https://ollama.com/v1',
+      baseUrl: 'http://127.0.0.1:4002',
+      claudeModelAlias: 'claude-sonnet-4-5-20250929',
+    },
+    {
+      id: 'ollama-qwen3-5-cloud',
+      persistedModel: 'claude-code:ollama-qwen3-5-cloud',
+      provider: 'ollama',
+      model: 'qwen3.5:cloud',
+      upstreamModel: 'openai/qwen3.5:cloud',
+      upstreamBaseUrl: 'https://ollama.com/v1',
+      baseUrl: 'http://127.0.0.1:4002',
+      claudeModelAlias: 'claude-ollama-qwen3-5',
+    },
+  ];
   const resolveBackend = (id?: string | null) => {
     if (!id) return undefined;
-    if (id !== backend.id) {
+    const backend = backends.find((candidate) => candidate.id === id);
+    if (!backend) {
       throw new Error(`Unsupported Claude Code backend profile: ${id}`);
     }
     return backend;
@@ -39,10 +52,9 @@ vi.mock('@nimbalyst/runtime/ai/server', () => {
     model?: string;
     claudeCodeBackend?: string;
   }) => {
-    const fromModel =
-      config.model === backend.persistedModel
-        ? backend
-        : undefined;
+    const fromModel = backends.find(
+      (candidate) => candidate.persistedModel === config.model
+    );
     if (config.model?.startsWith('claude-code:ollama-') && !fromModel) {
       throw new Error(`Unsupported Claude Code Ollama model identity: ${config.model}`);
     }
@@ -168,6 +180,12 @@ const OLLAMA_PARENT = {
   id: 'parent-ollama-session',
   provider: 'claude-code',
   model: 'claude-code:ollama-glm-5-2-cloud',
+};
+
+const OLLAMA_QWEN_PARENT = {
+  id: 'parent-ollama-qwen-session',
+  provider: 'claude-code',
+  model: 'claude-code:ollama-qwen3-5-cloud',
 };
 
 const CODEX_PARENT = {
@@ -531,7 +549,7 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
       triggerQueuedPromptProcessingForSession: vi.fn(),
     };
     vi.mocked(AISessionsRepository.get).mockResolvedValue({
-      ...OLLAMA_PARENT,
+      ...OLLAMA_QWEN_PARENT,
       workspacePath: '/workspace/path',
       worktreeId: 'existing-parent-worktree',
     } as any);
@@ -543,7 +561,7 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
     try {
       await expect(
         (service as any).spawnSession(
-          'parent-ollama-session',
+          'parent-ollama-qwen-session',
           '/workspace/path',
           {
             prompt: 'Must fail before workstream, reparent, worktree, session, or queue writes.',
@@ -553,8 +571,14 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
         )
       ).rejects.toThrow('default inherited Ollama route is unhealthy');
 
-      expect(AISessionsRepository.get).toHaveBeenCalledWith('parent-ollama-session');
+      expect(AISessionsRepository.get).toHaveBeenCalledWith('parent-ollama-qwen-session');
       expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledTimes(1);
+      expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'ollama-qwen3-5-cloud',
+          persistedModel: 'claude-code:ollama-qwen3-5-cloud',
+        })
+      );
       expect(workstreamSpy).not.toHaveBeenCalled();
       expect(AISessionsRepository.updateMetadata).not.toHaveBeenCalled();
       expect(databaseWorker.query).not.toHaveBeenCalled();
