@@ -47,6 +47,7 @@
  * the in-app Claude Code "ollama" backend profiles for what it fronts.
  */
 
+import { BrowserWindow } from 'electron';
 import { logger } from '../utils/logger';
 import { getShellEnvironment } from './CLIManager';
 
@@ -97,7 +98,9 @@ const PROXY_BASE_URL = 'http://127.0.0.1:4002';
 const PROXY_AUTH_TOKEN = 'sk-nim-local-proxy';
 const PROXY_TIMEOUT_MS = 3_000;
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // Matches Claude/Codex's "don't hammer the API" spirit, shorter since there's no idle-poll loop here.
+const CACHE_TTL_MS = 5 * 60 * 1000; // Cache floor for on-demand callers (e.g. the MCP tool) between poll ticks.
+const POLL_INTERVAL_MS = 30 * 60 * 1000; // Matches Claude/Codex/Gemini.
+const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // Matches Claude/Codex/Gemini.
 
 const PLAN_TIERS: readonly OllamaUsagePlanTier[] = [
   { tier: 'Free', concurrentCloudModels: 1, weeklyGpuQuota: 'baseline' },
@@ -145,6 +148,37 @@ class OllamaUsageServiceImpl {
   private cachedUsage: OllamaUsageData | null = null;
   private lastFetchTime = 0;
   private inflightRefresh: Promise<OllamaUsageData> | null = null;
+  private pollTimer: NodeJS.Timeout | null = null;
+  private lastActivityTime = 0;
+  private isPolling = false;
+  private isSleeping = true;
+
+  /**
+   * Initialize the service. Does not start polling until activity is
+   * detected -- matches ClaudeUsageService/CodexUsageService/GeminiUsageService.
+   */
+  initialize(): void {
+    logger.main.info('[OllamaUsageService] Initialized (sleeping until activity detected)');
+  }
+
+  /**
+   * Called when the user sends a message to an Ollama-routed agent session.
+   * Wakes up the service and triggers an immediate refresh.
+   */
+  async recordActivity(): Promise<void> {
+    this.lastActivityTime = Date.now();
+
+    if (this.isSleeping) {
+      this.isSleeping = false;
+      this.startPolling();
+      await this.refresh();
+    }
+  }
+
+  stop(): void {
+    this.stopPolling();
+    logger.main.info('[OllamaUsageService] Stopped');
+  }
 
   /** Returns the cached snapshot if fresh, otherwise fetches a new one. */
   async getUsage(forceRefresh = false): Promise<OllamaUsageData> {
@@ -170,6 +204,33 @@ class OllamaUsageServiceImpl {
     }
   }
 
+  private startPolling(): void {
+    if (this.isPolling) return;
+    this.isPolling = true;
+    this.pollTimer = setInterval(() => {
+      this.pollTick();
+    }, POLL_INTERVAL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    this.isPolling = false;
+  }
+
+  private async pollTick(): Promise<void> {
+    const timeSinceActivity = Date.now() - this.lastActivityTime;
+    if (timeSinceActivity > IDLE_TIMEOUT_MS) {
+      logger.main.info('[OllamaUsageService] Going to sleep due to inactivity');
+      this.isSleeping = true;
+      this.stopPolling();
+      return;
+    }
+    await this.refresh();
+  }
+
   private async doRefresh(): Promise<OllamaUsageData> {
     const [accountUsage, proxyHealth] = await Promise.all([
       this.fetchAccountUsage(),
@@ -184,7 +245,17 @@ class OllamaUsageServiceImpl {
     };
     this.cachedUsage = usageData;
     this.lastFetchTime = Date.now();
+    this.broadcastUpdate();
     return usageData;
+  }
+
+  private broadcastUpdate(): void {
+    const windows = BrowserWindow.getAllWindows();
+    for (const window of windows) {
+      if (!window.isDestroyed()) {
+        window.webContents.send('ollama-usage:update', this.cachedUsage);
+      }
+    }
   }
 
   private async fetchAccountUsage(): Promise<

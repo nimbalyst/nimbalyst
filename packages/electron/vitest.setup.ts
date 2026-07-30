@@ -69,5 +69,11 @@ vi.mock('electron', () => ({
   ipcMain: {
     handle: vi.fn(),
     on: vi.fn()
+  },
+  // Usage services (Claude/Codex/Gemini/Ollama) broadcast updates via
+  // BrowserWindow.getAllWindows() -- default to "no windows open" so a
+  // direct .refresh()/.doRefresh() call under test doesn't throw.
+  BrowserWindow: {
+    getAllWindows: vi.fn(() => [])
   }
 }));
