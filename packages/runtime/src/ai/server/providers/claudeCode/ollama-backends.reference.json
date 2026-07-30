@@ -1,0 +1,134 @@
+[
+  {
+    "id": "ollama-glm-5-2-cloud",
+    "persistedModel": "claude-code:ollama-glm-5-2-cloud",
+    "provider": "ollama",
+    "model": "glm-5.2:cloud",
+    "upstreamModel": "openai/glm-5.2:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-sonnet-4-5-20250929"
+  },
+  {
+    "id": "ollama-gpt-oss-20b-cloud",
+    "persistedModel": "claude-code:ollama-gpt-oss-20b-cloud",
+    "provider": "ollama",
+    "model": "gpt-oss:20b-cloud",
+    "upstreamModel": "openai/gpt-oss:20b-cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-gpt-oss-20b"
+  },
+  {
+    "id": "ollama-nemotron-3-nano-cloud",
+    "persistedModel": "claude-code:ollama-nemotron-3-nano-cloud",
+    "provider": "ollama",
+    "model": "nemotron-3-nano:30b-cloud",
+    "upstreamModel": "openai/nemotron-3-nano:30b-cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-nemotron-3-nano"
+  },
+  {
+    "id": "ollama-deepseek-v4-flash-cloud",
+    "persistedModel": "claude-code:ollama-deepseek-v4-flash-cloud",
+    "provider": "ollama",
+    "model": "deepseek-v4-flash:cloud",
+    "upstreamModel": "openai/deepseek-v4-flash:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-deepseek-v4-flash"
+  },
+  {
+    "id": "ollama-qwen3-5-cloud",
+    "persistedModel": "claude-code:ollama-qwen3-5-cloud",
+    "provider": "ollama",
+    "model": "qwen3.5:cloud",
+    "upstreamModel": "openai/qwen3.5:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-qwen3-5"
+  },
+  {
+    "id": "ollama-nemotron-3-super-cloud",
+    "persistedModel": "claude-code:ollama-nemotron-3-super-cloud",
+    "provider": "ollama",
+    "model": "nemotron-3-super:cloud",
+    "upstreamModel": "openai/nemotron-3-super:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-nemotron-3-super"
+  },
+  {
+    "id": "ollama-glm-5-1-cloud",
+    "persistedModel": "claude-code:ollama-glm-5-1-cloud",
+    "provider": "ollama",
+    "model": "glm-5.1:cloud",
+    "upstreamModel": "openai/glm-5.1:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-glm-5-1"
+  },
+  {
+    "id": "ollama-minimax-m2-7-cloud",
+    "persistedModel": "claude-code:ollama-minimax-m2-7-cloud",
+    "provider": "ollama",
+    "model": "minimax-m2.7:cloud",
+    "upstreamModel": "openai/minimax-m2.7:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-minimax-m2-7"
+  },
+  {
+    "id": "ollama-kimi-k2-6-cloud",
+    "persistedModel": "claude-code:ollama-kimi-k2-6-cloud",
+    "provider": "ollama",
+    "model": "kimi-k2.6:cloud",
+    "upstreamModel": "openai/kimi-k2.6:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-kimi-k2-6"
+  },
+  {
+    "id": "ollama-kimi-k2-7-code-cloud",
+    "persistedModel": "claude-code:ollama-kimi-k2-7-code-cloud",
+    "provider": "ollama",
+    "model": "kimi-k2.7-code:cloud",
+    "upstreamModel": "openai/kimi-k2.7-code:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-kimi-k2-7-code"
+  },
+  {
+    "id": "ollama-minimax-m3-cloud",
+    "persistedModel": "claude-code:ollama-minimax-m3-cloud",
+    "provider": "ollama",
+    "model": "minimax-m3:cloud",
+    "upstreamModel": "openai/minimax-m3:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-minimax-m3"
+  },
+  {
+    "id": "ollama-deepseek-v4-pro-cloud",
+    "persistedModel": "claude-code:ollama-deepseek-v4-pro-cloud",
+    "provider": "ollama",
+    "model": "deepseek-v4-pro:cloud",
+    "upstreamModel": "openai/deepseek-v4-pro:cloud",
+    "upstreamBaseUrl": "https://ollama.com/v1",
+    "baseUrl": "http://127.0.0.1:4002",
+    "authToken": "sk-nim-local-proxy",
+    "claudeModelAlias": "claude-ollama-deepseek-v4-pro"
+  }
+]

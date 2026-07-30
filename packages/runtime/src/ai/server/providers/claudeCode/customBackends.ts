@@ -5,8 +5,21 @@
  * process spawned for one Nimbalyst session. They never mutate process.env or
  * provider settings, and an unknown persisted profile is an error rather than
  * a request to use the default Anthropic route.
+ *
+ * Backend list is JSON-driven (2026-07-30, Yogev-directed): the list below is
+ * a fallback seed baked into the app so it never breaks if the external file
+ * is missing or malformed. On every load, an optional user-editable override
+ * at userData/ollama-backends.json is preferred if present and valid -- this
+ * is what lets a new Ollama model be added, changed, or removed without a
+ * Nimbalyst code change or rebuild. No secret ever lives in this file: every
+ * entry's authToken is the same fixed, non-secret local-proxy placeholder
+ * that tools/Ollala/nimbalyst-brainswap/litellm-ollama.yaml also expects --
+ * the real OLLAMA_API_KEY stays in .env, read only by the LiteLLM proxy
+ * process, never by Nimbalyst.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL,
   CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS,
@@ -66,168 +79,221 @@ export interface ClaudeCodeBackend {
   claudeModelAlias: string;
 }
 
-const OLLAMA_GLM_5_2_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
-  persistedModel: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'glm-5.2:cloud',
-  upstreamModel: 'openai/glm-5.2:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS,
-};
-
-// Remaining Ollama Cloud high-runner backends (Program 2 full-fleet build,
-// 2026-07-29). All route through the same per-session LiteLLM proxy
-// (tools/Ollala/nimbalyst-brainswap/litellm-ollama.yaml, port 4002); each has
-// its own distinct upstream model and SDK alias so the proxy can tell them apart.
-const OLLAMA_GPT_OSS_20B_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'gpt-oss:20b-cloud',
-  upstreamModel: 'openai/gpt-oss:20b-cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_NEMOTRON_3_NANO_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'nemotron-3-nano:30b-cloud',
-  upstreamModel: 'openai/nemotron-3-nano:30b-cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'deepseek-v4-flash:cloud',
-  upstreamModel: 'openai/deepseek-v4-flash:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_QWEN3_5_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'qwen3.5:cloud',
-  upstreamModel: 'openai/qwen3.5:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_NEMOTRON_3_SUPER_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'nemotron-3-super:cloud',
-  upstreamModel: 'openai/nemotron-3-super:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_GLM_5_1_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'glm-5.1:cloud',
-  upstreamModel: 'openai/glm-5.1:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_MINIMAX_M2_7_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'minimax-m2.7:cloud',
-  upstreamModel: 'openai/minimax-m2.7:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_KIMI_K2_6_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'kimi-k2.6:cloud',
-  upstreamModel: 'openai/kimi-k2.6:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_KIMI_K2_7_CODE_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'kimi-k2.7-code:cloud',
-  upstreamModel: 'openai/kimi-k2.7-code:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_MINIMAX_M3_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'minimax-m3:cloud',
-  upstreamModel: 'openai/minimax-m3:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_SDK_ALIAS,
-};
-
-const OLLAMA_DEEPSEEK_V4_PRO_CLOUD_BACKEND: ClaudeCodeBackend = {
-  id: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_VARIANT,
-  persistedModel: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_MODEL,
-  provider: 'ollama',
-  model: 'deepseek-v4-pro:cloud',
-  upstreamModel: 'openai/deepseek-v4-pro:cloud',
-  upstreamBaseUrl: 'https://ollama.com/v1',
-  baseUrl: 'http://127.0.0.1:4002',
-  authToken: 'sk-nim-local-proxy',
-  claudeModelAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_SDK_ALIAS,
-};
-
-export const CLAUDE_CODE_BACKENDS: readonly ClaudeCodeBackend[] = [
-  OLLAMA_GLM_5_2_CLOUD_BACKEND,
-  OLLAMA_GPT_OSS_20B_CLOUD_BACKEND,
-  OLLAMA_NEMOTRON_3_NANO_CLOUD_BACKEND,
-  OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_BACKEND,
-  OLLAMA_QWEN3_5_CLOUD_BACKEND,
-  OLLAMA_NEMOTRON_3_SUPER_CLOUD_BACKEND,
-  OLLAMA_GLM_5_1_CLOUD_BACKEND,
-  OLLAMA_MINIMAX_M2_7_CLOUD_BACKEND,
-  OLLAMA_KIMI_K2_6_CLOUD_BACKEND,
-  OLLAMA_KIMI_K2_7_CODE_CLOUD_BACKEND,
-  OLLAMA_MINIMAX_M3_CLOUD_BACKEND,
-  OLLAMA_DEEPSEEK_V4_PRO_CLOUD_BACKEND,
+const SEED_BACKENDS: readonly ClaudeCodeBackend[] = [
+  {
+    id: OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
+    persistedModel: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'glm-5.2:cloud',
+    upstreamModel: 'openai/glm-5.2:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'gpt-oss:20b-cloud',
+    upstreamModel: 'openai/gpt-oss:20b-cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'nemotron-3-nano:30b-cloud',
+    upstreamModel: 'openai/nemotron-3-nano:30b-cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'deepseek-v4-flash:cloud',
+    upstreamModel: 'openai/deepseek-v4-flash:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'qwen3.5:cloud',
+    upstreamModel: 'openai/qwen3.5:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'nemotron-3-super:cloud',
+    upstreamModel: 'openai/nemotron-3-super:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'glm-5.1:cloud',
+    upstreamModel: 'openai/glm-5.1:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'minimax-m2.7:cloud',
+    upstreamModel: 'openai/minimax-m2.7:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'kimi-k2.6:cloud',
+    upstreamModel: 'openai/kimi-k2.6:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'kimi-k2.7-code:cloud',
+    upstreamModel: 'openai/kimi-k2.7-code:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'minimax-m3:cloud',
+    upstreamModel: 'openai/minimax-m3:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_SDK_ALIAS,
+  },
+  {
+    id: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_VARIANT,
+    persistedModel: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_MODEL,
+    provider: 'ollama',
+    model: 'deepseek-v4-pro:cloud',
+    upstreamModel: 'openai/deepseek-v4-pro:cloud',
+    upstreamBaseUrl: 'https://ollama.com/v1',
+    baseUrl: 'http://127.0.0.1:4002',
+    authToken: 'sk-nim-local-proxy',
+    claudeModelAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_SDK_ALIAS,
+  },
 ];
+
+function isValidBackend(candidate: unknown): candidate is ClaudeCodeBackend {
+  if (typeof candidate !== 'object' || candidate === null) return false;
+  const c = candidate as Record<string, unknown>;
+  return (
+    typeof c.id === 'string' && c.id.length > 0 &&
+    typeof c.persistedModel === 'string' && c.persistedModel.length > 0 &&
+    c.provider === 'ollama' &&
+    typeof c.model === 'string' && c.model.length > 0 &&
+    typeof c.upstreamModel === 'string' && c.upstreamModel.length > 0 &&
+    typeof c.upstreamBaseUrl === 'string' && c.upstreamBaseUrl.length > 0 &&
+    typeof c.baseUrl === 'string' && c.baseUrl.length > 0 &&
+    typeof c.authToken === 'string' && c.authToken.length > 0 &&
+    typeof c.claudeModelAlias === 'string' && c.claudeModelAlias.length > 0
+  );
+}
+
+/**
+ * userData/ollama-backends.json -- same directory electron-store already
+ * resolves ai-settings.json into (verified: %APPDATA%/@nimbalyst/electron on
+ * Windows). Resolved via process.env.APPDATA directly rather than Electron's
+ * app.getPath('userData') so this module stays a plain, Electron-free data
+ * module -- it is unit-tested with plain vitest today and must stay that way.
+ */
+function getOverrideFilePath(): string | undefined {
+  const appData = process.env.APPDATA;
+  if (!appData) return undefined;
+  return path.join(appData, '@nimbalyst', 'electron', 'ollama-backends.json');
+}
+
+function loadOverrideBackends(): readonly ClaudeCodeBackend[] | undefined {
+  const filePath = getOverrideFilePath();
+  if (!filePath) return undefined;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      console.warn(`[customBackends] ${filePath} is not a non-empty array; using seed backends.`);
+      return undefined;
+    }
+    if (!parsed.every(isValidBackend)) {
+      console.warn(`[customBackends] ${filePath} has an entry missing a required field; using seed backends.`);
+      return undefined;
+    }
+    return parsed as ClaudeCodeBackend[];
+  } catch (err) {
+    // ENOENT (file doesn't exist yet) is the expected first-run case, handled
+    // silently by the bootstrap step below. Anything else is worth a warning.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      console.warn(`[customBackends] Failed to read ${filePath}: ${(err as Error).message}. Using seed backends.`);
+    }
+    return undefined;
+  }
+}
+
+/** Best-effort: seed the override file on first run so it exists as an editable file. Never throws. */
+function bootstrapOverrideFile(): void {
+  const filePath = getOverrideFilePath();
+  if (!filePath) return;
+  try {
+    if (fs.existsSync(filePath)) return;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(SEED_BACKENDS, null, 2) + '\n', 'utf-8');
+  } catch {
+    // Non-fatal: read-only environment, missing permissions, etc. The app
+    // still works off the in-memory seed either way.
+  }
+}
+
+const loadedOverride = loadOverrideBackends();
+if (!loadedOverride) {
+  bootstrapOverrideFile();
+}
+
+/**
+ * The effective backend list for this process. Prefers a valid userData
+ * override; falls back to the baked-in seed. Adding, removing, or changing a
+ * model going forward means editing the override JSON file directly -- no
+ * Nimbalyst code change or rebuild required. See the module doc comment.
+ */
+export const CLAUDE_CODE_BACKENDS: readonly ClaudeCodeBackend[] = loadedOverride ?? SEED_BACKENDS;
 
 /**
  * Resolve a persisted backend id.
