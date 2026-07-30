@@ -1,28 +1,44 @@
 /**
  * OllamaUsageService - Reports what's knowable about Ollama Cloud usage
  *
- * Unlike ClaudeUsageService / CodexUsageService, there is no account-level
- * usage/quota API to poll: verified against current docs (2026-07-30):
+ * Unlike ClaudeUsageService / CodexUsageService, there is no OLLAMA_API_KEY
+ * -authenticated usage/quota API to poll: verified against current docs
+ * (2026-07-30):
  * - https://docs.ollama.com/api/usage documents only PER-RESPONSE metrics
  *   (prompt_eval_count, eval_count, durations) returned inline with each
- *   /api/generate or /api/chat call. There is no `GET` endpoint that reports
- *   cumulative account usage or remaining quota, unlike Anthropic's
- *   /api/oauth/usage or the Codex app-server's account/rateLimits/read.
+ *   /api/generate or /api/chat call. Neither the native nor the OpenAI-
+ *   compatible Ollama Cloud API exposes a `GET` endpoint for cumulative
+ *   account usage or remaining quota, unlike Anthropic's /api/oauth/usage or
+ *   the Codex app-server's account/rateLimits/read.
  * - https://ollama.com/pricing documents tier-based CONCURRENCY limits (Free
  *   = 1 concurrent cloud model, Pro = 3, Max = 10) and weekly GPU-time quotas
- *   (Pro = 50x Free, Max = 5x Pro), but these are plan facts, not a live
- *   "how much have I used" number Ollama exposes anywhere.
+ *   (Pro = 50x Free, Max = 5x Pro): plan facts, not a live reading.
+ *
+ * The live number DOES exist -- ollama.com/settings ("Cloud usage") shows
+ * real Session usage / Weekly usage percentages with reset countdowns
+ * (confirmed live by Yogev 2026-07-30). That page is backed by ollama.com's
+ * own account dashboard, authenticated by the user's BROWSER LOGIN SESSION
+ * (OAuth/cookies), not by an OLLAMA_API_KEY Bearer token -- it is not part of
+ * the documented developer API surface at docs.ollama.com, and there's no
+ * public contract for calling whatever internal endpoint the dashboard uses.
+ * Replicating it server-side would mean Nimbalyst driving a real browser
+ * through the user's personal Ollama login and holding that session --
+ * a materially different, heavier, and more privacy-sensitive integration
+ * than an API-key REST call, out of scope here without explicit direction.
+ * A caller that needs the exact live number today should check
+ * ollama.com/settings directly; this service says so (see `note` below)
+ * rather than pretending the number doesn't exist anywhere.
  *
  * So this service does NOT call ollama.com directly, for two reasons: (1)
- * there is nothing useful to fetch, and (2) it shouldn't hold OLLAMA_API_KEY
- * at all. The Nimbalyst<->Ollama Cloud brain-swap route runs every request
- * through a local LiteLLM proxy (see tools/Ollala/nimbalyst-brainswap/
- * litellm-ollama.yaml in the workspace, and the in-app Claude Code "ollama"
- * backend profiles) specifically so the real OLLAMA_API_KEY stays only in
- * the proxy process's environment; Nimbalyst talks to the proxy with a
- * fixed, non-secret local placeholder token. Reading the real key from here
- * would cut across that boundary for no benefit, since Ollama has nothing to
- * report even with it.
+ * there is no API-key-authenticated endpoint to fetch from, and (2) it
+ * shouldn't hold OLLAMA_API_KEY at all. The Nimbalyst<->Ollama Cloud
+ * brain-swap route runs every request through a local LiteLLM proxy (see
+ * tools/Ollala/nimbalyst-brainswap/litellm-ollama.yaml in the workspace, and
+ * the in-app Claude Code "ollama" backend profiles) specifically so the real
+ * OLLAMA_API_KEY stays only in the proxy process's environment; Nimbalyst
+ * talks to the proxy with a fixed, non-secret local placeholder token.
+ * Reading the real key from here would cut across that boundary for no
+ * benefit, since the API-key surface has nothing to report even with it.
  *
  * What this service DOES report, by querying the local proxy:
  * - Whether the proxy is reachable right now (it's an optional, manually
@@ -80,9 +96,12 @@ const PLAN_TIERS: readonly OllamaUsagePlanTier[] = [
 ];
 
 const NO_ACCOUNT_API_NOTE =
-  'Ollama Cloud has no account-level usage/quota API (verified docs.ollama.com/api/usage, ' +
-  '2026-07-30): only per-response token metrics are available, not a cumulative or remaining-quota ' +
-  'reading. Plan tiers below are static reference figures from ollama.com/pricing, not a live count.';
+  'Ollama Cloud has no OLLAMA_API_KEY-authenticated usage/quota API (verified docs.ollama.com/api/usage, ' +
+  '2026-07-30): only per-response token metrics are available via API key auth, not a cumulative or ' +
+  'remaining-quota reading. The real live number DOES exist at https://ollama.com/settings ("Cloud usage" ' +
+  '-- Session/Weekly % with reset countdowns), but that page is authenticated by the browser login session, ' +
+  'not an API key, so it cannot be polled from here -- check it directly if you need the exact figure. ' +
+  'Plan tiers below are static reference figures from ollama.com/pricing, not a live count.';
 
 interface LiteLLMModelInfoEntry {
   model_name?: unknown;
