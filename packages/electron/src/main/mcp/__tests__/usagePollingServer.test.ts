@@ -5,13 +5,18 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { claudeUsageServiceMock, codexUsageServiceMock, ollamaUsageServiceMock } = vi.hoisted(() => ({
+const { claudeUsageServiceMock, codexUsageServiceMock, geminiUsageServiceMock, ollamaUsageServiceMock } = vi.hoisted(() => ({
   claudeUsageServiceMock: {
     recordActivity: vi.fn(),
     getCachedUsage: vi.fn(),
     refresh: vi.fn(),
   },
   codexUsageServiceMock: {
+    recordActivity: vi.fn(),
+    getCachedUsage: vi.fn(),
+    refresh: vi.fn(),
+  },
+  geminiUsageServiceMock: {
     recordActivity: vi.fn(),
     getCachedUsage: vi.fn(),
     refresh: vi.fn(),
@@ -26,6 +31,9 @@ vi.mock('../../services/ClaudeUsageService', () => ({
 }));
 vi.mock('../../services/CodexUsageService', () => ({
   codexUsageService: codexUsageServiceMock,
+}));
+vi.mock('../../services/GeminiUsageService', () => ({
+  geminiUsageService: geminiUsageServiceMock,
 }));
 vi.mock('../../services/OllamaUsageService', () => ({
   ollamaUsageService: ollamaUsageServiceMock,
@@ -56,6 +64,12 @@ describe('usagePollingServer', () => {
       limitsAvailable: true,
       lastUpdated: Date.now(),
     });
+    geminiUsageServiceMock.getCachedUsage.mockReturnValue({
+      fiveHour: { utilization: 8, resetsAt: '2026-07-30T20:00:00.000Z' },
+      sevenDay: { utilization: 3, resetsAt: '2026-08-06T00:00:00.000Z' },
+      limitsAvailable: true,
+      lastUpdated: Date.now(),
+    });
     ollamaUsageServiceMock.getUsage.mockResolvedValue({
       limitsAvailable: true,
       session: { utilization: 0, resetsAt: null, models: [{ name: 'gpt-oss:120b', requestCount: 1 }] },
@@ -72,13 +86,28 @@ describe('usagePollingServer', () => {
     expect(USAGE_POLLING_TOOL_SCHEMAS.map((t) => t.name)).toEqual(['get_provider_usage']);
   });
 
-  it('returns a combined report for all three providers when none is specified', async () => {
+  it('returns a combined report for all four providers when none is specified', async () => {
     const result = await dispatchUsagePollingTool('get_provider_usage', {});
     expect(result.isError).toBe(false);
     const text = result.content[0].text;
     expect(text).toContain('Claude Code usage:');
     expect(text).toContain('OpenAI Codex usage:');
+    expect(text).toContain('Gemini usage:');
     expect(text).toContain('Ollama Cloud usage:');
+  });
+
+  it('scopes to gemini alone and surfaces its notStarted state distinctly from a hard error', async () => {
+    geminiUsageServiceMock.getCachedUsage.mockReturnValue({
+      fiveHour: { utilization: 0, resetsAt: null },
+      sevenDay: { utilization: 0, resetsAt: null },
+      lastUpdated: Date.now(),
+      notStarted: true,
+      error: 'Gemini usage will appear after your first request.',
+    });
+
+    const result = await dispatchUsagePollingTool('get_provider_usage', { provider: 'gemini' });
+
+    expect(result.content[0].text).toContain('not started -- Gemini usage will appear after your first request.');
   });
 
   it('scopes to a single provider when specified', async () => {

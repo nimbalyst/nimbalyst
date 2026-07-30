@@ -1,14 +1,15 @@
 /**
  * Provider usage-polling tool surface (`get_provider_usage`).
  *
- * Claude Code and Codex usage are already tracked (ClaudeUsageService,
- * CodexUsageService) and shown in Nimbalyst's own UI via renderer-only IPC
- * channels (claude-usage:get, codex-usage:get) -- but nothing wired that data
- * to a running AI session. This server closes that gap: it exposes the same
- * cached/refreshed usage data those IPC handlers already produce, plus a
- * matching reading for Ollama Cloud (its own undocumented account-usage API,
- * verified live 2026-07-30 -- see OllamaUsageService's module doc), through
- * one MCP tool a session can call directly.
+ * Claude Code, Codex, and Gemini usage are already tracked (ClaudeUsageService,
+ * CodexUsageService, GeminiUsageService) and shown in Nimbalyst's own UI via
+ * renderer-only IPC channels (claude-usage:get, codex-usage:get, gemini-usage:get)
+ * -- but nothing wired that data to a running AI session. This server closes
+ * that gap: it exposes the same cached/refreshed usage data those IPC handlers
+ * already produce, plus a matching reading for Ollama Cloud (its own
+ * undocumented account-usage API, verified live 2026-07-30 -- see
+ * OllamaUsageService's module doc), through one MCP tool a session can call
+ * directly.
  *
  * Follows the sessionContextServer.ts pattern: exports a tool-schema array +
  * an endpoint-agnostic dispatch fn, folded into the unified `/mcp/host`
@@ -19,6 +20,7 @@
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { claudeUsageService, ClaudeUsageData } from "../services/ClaudeUsageService";
 import { codexUsageService, CodexUsageData } from "../services/CodexUsageService";
+import { geminiUsageService, GeminiUsageData } from "../services/GeminiUsageService";
 import { ollamaUsageService, OllamaUsageData } from "../services/OllamaUsageService";
 
 // ─── Formatting ─────────────────────────────────────────────────────
@@ -97,6 +99,40 @@ function formatCodexUsage(data: CodexUsageData): string {
   return lines.join("\n");
 }
 
+function formatGeminiUsage(data: GeminiUsageData): string {
+  if (data.notStarted) {
+    return `Gemini usage: not started -- ${data.error || "will appear after your first request"}`;
+  }
+  if (data.error) {
+    return `Gemini usage: unavailable -- ${data.error}`;
+  }
+  const lines: string[] = ["Gemini usage:"];
+  const limitsAvailable = data.limitsAvailable ?? true;
+  if (limitsAvailable) {
+    lines.push(
+      `  5-hour window: ${data.fiveHour.utilization}%${formatResetsAt(data.fiveHour.resetsAt)}`
+    );
+    lines.push(
+      `  7-day window: ${data.sevenDay.utilization}%${formatResetsAt(data.sevenDay.resetsAt)}`
+    );
+  } else {
+    lines.push("  Rate-limit windows unavailable.");
+  }
+  if (data.credits) {
+    lines.push(
+      `  Credits: ${data.credits.unlimited ? "unlimited" : data.credits.hasCredits ? (data.credits.balance ?? "available") : "none"}`
+    );
+  }
+  if (data.tokenUsage) {
+    lines.push(
+      `  Token usage -- total: ${data.tokenUsage.totalTokens.toLocaleString()}` +
+      (data.tokenUsage.lastTokens !== null ? `, last turn: ${data.tokenUsage.lastTokens.toLocaleString()}` : "")
+    );
+  }
+  lines.push(`  Last updated: ${formatRelativeAge(data.lastUpdated)}`);
+  return lines.join("\n");
+}
+
 function formatOllamaWindow(label: string, window: OllamaUsageData["session"]): string {
   if (!window) return `  ${label}: unavailable`;
   const topModels = [...window.models]
@@ -133,8 +169,8 @@ function formatOllamaUsage(data: OllamaUsageData): string {
 
 // ─── Tool handler ───────────────────────────────────────────────────
 
-type ProviderKey = "claude-code" | "openai-codex" | "ollama";
-const ALL_PROVIDERS: ProviderKey[] = ["claude-code", "openai-codex", "ollama"];
+type ProviderKey = "claude-code" | "openai-codex" | "gemini" | "ollama";
+const ALL_PROVIDERS: ProviderKey[] = ["claude-code", "openai-codex", "gemini", "ollama"];
 
 async function handleGetProviderUsage(
   provider: ProviderKey | undefined,
@@ -161,6 +197,14 @@ async function handleGetProviderUsage(
         sections.push(formatCodexUsage(data));
         break;
       }
+      case "gemini": {
+        await geminiUsageService.recordActivity();
+        const data = forceRefresh
+          ? await geminiUsageService.refresh()
+          : geminiUsageService.getCachedUsage() ?? (await geminiUsageService.refresh());
+        sections.push(formatGeminiUsage(data));
+        break;
+      }
       case "ollama": {
         const data = await ollamaUsageService.getUsage(forceRefresh);
         sections.push(formatOllamaUsage(data));
@@ -180,19 +224,20 @@ export const USAGE_POLLING_TOOL_SCHEMAS = [
     description:
       "Get current usage/rate-limit status for an AI provider: Claude Code subscription usage " +
       "(5-hour and 7-day rolling utilization), OpenAI Codex usage (rate-limit windows or token " +
-      "counts), or Ollama Cloud usage (session and weekly utilization percentages, per-model " +
-      "request breakdown, plus local brain-swap proxy health). Returns cached data by default, " +
-      "refreshed roughly every 30 minutes in the background for Claude/Codex once this tool has " +
-      "been called at least once in the session (Ollama caches for 5 minutes); pass forceRefresh " +
-      "for a live read.",
+      "counts), Gemini usage (5-hour/7-day utilization, credits, or token usage depending on " +
+      "what's available), or Ollama Cloud usage (session and weekly utilization percentages, " +
+      "per-model request breakdown, plus local brain-swap proxy health). Returns cached data by " +
+      "default, refreshed roughly every 30 minutes in the background once this tool has been " +
+      "called at least once in the session (Ollama caches for 5 minutes); pass forceRefresh for " +
+      "a live read.",
     inputSchema: {
       type: "object",
       properties: {
         provider: {
           type: "string",
-          enum: ["claude-code", "openai-codex", "ollama"],
+          enum: ["claude-code", "openai-codex", "gemini", "ollama"],
           description:
-            "Which provider's usage to check. Omit to get a combined report for all three.",
+            "Which provider's usage to check. Omit to get a combined report for all four.",
         },
         forceRefresh: {
           type: "boolean",
@@ -220,10 +265,9 @@ export async function dispatchUsagePollingTool(
     switch (toolName) {
       case "get_provider_usage": {
         const rawProvider = args?.provider as string | undefined;
-        const provider =
-          rawProvider === "claude-code" || rawProvider === "openai-codex" || rawProvider === "ollama"
-            ? rawProvider
-            : undefined;
+        const provider = (ALL_PROVIDERS as string[]).includes(rawProvider ?? "")
+          ? (rawProvider as ProviderKey)
+          : undefined;
         if (rawProvider && !provider) {
           return {
             content: [{
