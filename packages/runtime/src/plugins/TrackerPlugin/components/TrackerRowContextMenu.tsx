@@ -32,6 +32,8 @@ export interface TrackerRowContextMenuProps {
   onSetPriority: (priority: string) => void;
   onAddToCollection?: (collection: TrackerRecord) => void;
   onCopyDeepLink?: (itemId: string) => void;
+  /** Open the item as a document (focused document view); single selection only. */
+  onOpenDocument?: (itemId: string) => void;
   onArchiveItems?: (itemIds: string[], archive: boolean) => void;
   onDeleteItems?: (itemIds: string[]) => void;
   closeContextMenu: () => void;
@@ -50,6 +52,7 @@ export function TrackerRowContextMenu({
   onSetPriority,
   onAddToCollection,
   onCopyDeepLink,
+  onOpenDocument,
   onArchiveItems,
   onDeleteItems,
   closeContextMenu,
@@ -132,6 +135,21 @@ export function TrackerRowContextMenu({
         )}
 
         <div className="border-b border-[var(--nim-border)] my-1" />
+
+        {onOpenDocument && selectedIds.size === 1 && (
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
+            data-testid="tracker-row-context-open-document"
+            onClick={() => {
+              const [onlyId] = selectedIds;
+              closeContextMenu();
+              onOpenDocument(onlyId);
+            }}
+          >
+            <span className="material-symbols-outlined text-sm">article</span>
+            Open document
+          </button>
+        )}
 
         {onCopyDeepLink && selectedIds.size === 1 && (
           <button

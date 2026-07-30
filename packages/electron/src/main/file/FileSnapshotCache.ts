@@ -178,7 +178,10 @@ export class FileSnapshotCache {
 
     // Get dirty files (tracked + untracked) via git status
     try {
-      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+      // `--no-optional-locks` keeps this read-only status from refreshing (and
+      // so locking) `.git/index`, where it would contend with concurrent git
+      // writers such as the commit path (NIM-2285).
+      const { stdout } = await execFileAsync('git', ['--no-optional-locks', 'status', '--porcelain'], {
         cwd: workspacePath,
         timeout: 10000,
         maxBuffer: 5_000_000, // 5MB cap on git status output

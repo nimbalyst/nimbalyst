@@ -151,6 +151,12 @@ interface UnifiedEditorHeaderBarProps {
   showSharedDocButton?: boolean;
   showHistoryAction?: boolean;
   showCommonFileActions?: boolean;
+  /**
+   * "Set Document Type" writes tracker frontmatter into the document. Shells
+   * whose document is already owned by a tracker item (the tracker document
+   * view) turn it off -- the type lives on the record, not in the body.
+   */
+  showDocumentTypeAction?: boolean;
   sharedDocumentLinkTarget?: {
     documentId: string;
     orgId: string;
@@ -183,6 +189,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   showSharedDocButton = true,
   showHistoryAction = true,
   showCommonFileActions = true,
+  showDocumentTypeAction = true,
   sharedDocumentLinkTarget,
 }) => {
   const openHistoryDialog = useSetAtom(historyDialogFileAtom);
@@ -1003,7 +1010,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
                   )}
 
                   {/* Set Document Type with submenu */}
-                  {lexicalEditor && (
+                  {lexicalEditor && showDocumentTypeAction && (
                     <div
                       className="dropdown-item dropdown-item-with-submenu relative w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
                       onMouseEnter={() => setShowDocTypeSubmenu(true)}

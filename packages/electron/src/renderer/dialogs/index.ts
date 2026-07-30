@@ -44,6 +44,7 @@ export {
   registerTeamDialogs,
   type CreateTeamData,
   type ShareToTeamData,
+  type OrgCreationWizardData,
 } from './teamDialogs';
 export { registerAccountDialogs, type AccountLoginData } from './accountDialogs';
 export { useNavigationDialogs, type UseNavigationDialogsReturn } from './useNavigationDialogs';

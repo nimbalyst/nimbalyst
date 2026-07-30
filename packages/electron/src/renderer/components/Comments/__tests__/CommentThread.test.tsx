@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CommentThread } from '../CommentThread';
 import { suppressDuplicateActivity } from '../ActivityRow';
 import { createConversationCommentAdapter } from '../ConversationCommentAdapter';
+import { composerText, type as typeIntoComposer } from '../composerTestDriver';
 import {
   FULL_CAPABILITIES,
   LEAK_CANARIES,
@@ -164,12 +165,31 @@ describe('CommentThread', () => {
     const { fixtureAdapter } = renderThread();
     await waitFor(() => expect(screen.getByTestId('comment-row-msg-001')).toBeTruthy());
 
-    const input = screen.getByTestId('comment-composer-input');
-    fireEvent.change(input, { target: { value: 'ack', selectionStart: 3, selectionEnd: 3 } });
+    typeIntoComposer('ack');
     fireEvent.click(screen.getByTestId('comment-composer-send'));
 
     await waitFor(() => expect(screen.getByTestId('comment-row-msg-local-1')).toBeTruthy());
     expect(fixtureAdapter.snapshot().some((comment) => comment.body.text === 'ack')).toBe(true);
+  });
+
+  it('clears the composer as soon as an optimistic send is accepted', async () => {
+    const create = vi.fn(() => new Promise<never>(() => undefined));
+    const adapter: CommentAdapter = {
+      list: async () => ({ comments: [] }),
+      create,
+      edit: vi.fn(),
+      remove: vi.fn(),
+      subscribe: () => () => undefined,
+    };
+    renderThread({ adapter });
+    await waitFor(() => expect(screen.getByTestId('comment-thread-empty')).toBeTruthy());
+
+    typeIntoComposer('accepted optimistically');
+    fireEvent.click(screen.getByTestId('comment-composer-send'));
+
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('comment-row-pending').textContent).toContain('Sending');
+    expect(composerText()).toBe('');
   });
 
   it('keeps a failed send reachable and retries the real IPC append with the same mutation id', async () => {
@@ -207,14 +227,7 @@ describe('CommentThread', () => {
     renderThread({ adapter });
     await waitFor(() => expect(screen.getByTestId('comment-thread-empty')).toBeTruthy());
 
-    const input = screen.getByTestId('comment-composer-input');
-    fireEvent.change(input, {
-      target: {
-        value: 'retry this message',
-        selectionStart: 18,
-        selectionEnd: 18,
-      },
-    });
+    typeIntoComposer('retry this message');
     fireEvent.click(screen.getByTestId('comment-composer-send'));
 
     const failed = await screen.findByTestId('comment-row-failed');

@@ -61,6 +61,7 @@
 import { DocumentSyncProvider } from '@nimbalyst/runtime/sync';
 import { CollabLexicalProvider } from '@nimbalyst/runtime/collab-lexical';
 import type {
+  AwarenessState,
   DocumentSyncConfig,
   DocumentSyncStatus,
   ReviewGateState,
@@ -88,11 +89,17 @@ const DEFAULT_PREWARM_CONCURRENCY = 5;
  * subscribers via the entry's event bus. Callers should pass `undefined`
  * (or stub no-ops) for these fields.
  */
-export type BodyDocConfigFactory = (itemId: string) => Promise<DocumentSyncConfig | null>;
+export interface BodyDocConfig extends DocumentSyncConfig {
+  userName?: string;
+  userEmail?: string;
+}
+
+export type BodyDocConfigFactory = (itemId: string) => Promise<BodyDocConfig | null>;
 
 export interface BodyDocEntryListener {
   onStatusChange?: (status: DocumentSyncStatus) => void;
   onRemoteUpdate?: (origin: string) => void;
+  onAwarenessChange?: (states: Map<string, AwarenessState>) => void;
   /**
    * Fires on every review-gate transition. `null` is delivered to new
    * subscribers when the gate hasn't fired yet for this entry, so a
@@ -105,6 +112,8 @@ export interface BodyDocEntryListener {
 export interface BodyDocAcquisition {
   /** The shared sync provider. Read-only -- do NOT call destroy(). */
   readonly syncProvider: DocumentSyncProvider;
+  /** Stable room/user metadata retained across warm-cache re-acquisitions. */
+  readonly config: BodyDocConfig;
   /**
    * Construct a fresh `CollabLexicalProvider` bound to this entry's
    * Y.Doc. Each Lexical mount needs its own wrapper; the underlying
@@ -130,14 +139,19 @@ export interface BodyDocCacheOptions {
 
 interface CacheEntry {
   itemId: string;
+  config: BodyDocConfig;
   syncProvider: DocumentSyncProvider;
   refCount: number;
   /** Last status delivered to subscribers; new subscribers get this synchronously. */
   lastStatus: DocumentSyncStatus;
   /** Last review-gate state; new subscribers get this synchronously. */
   lastReviewState: ReviewGateState | null;
+  /** Last remote awareness snapshot; new subscribers get a defensive copy. */
+  lastAwarenessStates: Map<string, AwarenessState>;
   /** Listener fan-out for status / remote-update / review-state. */
   listeners: Set<BodyDocEntryListener>;
+  /** Cache-owned provider subscription, released only when the entry is destroyed. */
+  awarenessUnsubscribe: (() => void) | null;
   /** Set to a timer when refCount hits 0; cleared on next acquire. */
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** Bumped on every acquire/release; used for LRU ordering. */
@@ -192,11 +206,15 @@ export class BodyDocCache {
       // already-delivered status / review notification.
       if (listener.onStatusChange) listener.onStatusChange(entry.lastStatus);
       if (listener.onReviewStateChange) listener.onReviewStateChange(entry.lastReviewState);
+      if (listener.onAwarenessChange) {
+        listener.onAwarenessChange(new Map(entry.lastAwarenessStates));
+      }
     }
 
     let released = false;
     return {
       syncProvider: entry.syncProvider,
+      config: entry.config,
       makeCollabProvider: (options) => new CollabLexicalProvider(entry.syncProvider, options),
       release: () => {
         if (released) return;
@@ -249,6 +267,8 @@ export class BodyDocCache {
   dispose(): void {
     for (const entry of this.entries.values()) {
       this.clearIdleTimer(entry);
+      try { entry.awarenessUnsubscribe?.(); } catch { /* ignore */ }
+      entry.awarenessUnsubscribe = null;
       try { entry.syncProvider.destroy(); } catch { /* ignore */ }
     }
     this.entries.clear();
@@ -295,11 +315,14 @@ export class BodyDocCache {
 
     const entry: CacheEntry = {
       itemId,
+      config,
       syncProvider: null as unknown as DocumentSyncProvider, // assigned below
       refCount: 0,
       lastStatus: 'disconnected',
       lastReviewState: null,
+      lastAwarenessStates: new Map(),
       listeners: new Set(),
+      awarenessUnsubscribe: null,
       idleTimer: null,
       lastTouchedAt: Date.now(),
     };
@@ -335,6 +358,18 @@ export class BodyDocCache {
     };
 
     entry.syncProvider = new DocumentSyncProvider(cacheConfig);
+    if (typeof entry.syncProvider.onAwarenessChange === 'function') {
+      entry.awarenessUnsubscribe = entry.syncProvider.onAwarenessChange((states) => {
+        entry.lastAwarenessStates = new Map(states);
+        for (const listener of entry.listeners) {
+          try {
+            listener.onAwarenessChange?.(new Map(entry.lastAwarenessStates));
+          } catch (err) {
+            console.warn('[BodyDocCache] awareness listener threw:', err);
+          }
+        }
+      });
+    }
     this.entries.set(itemId, entry);
     // Do NOT evict here -- the caller (acquire/prewarm) has not had a
     // chance to bump refCount or otherwise mark the entry as "wanted".
@@ -367,6 +402,8 @@ export class BodyDocCache {
 
   private destroyEntry(entry: CacheEntry): void {
     this.clearIdleTimer(entry);
+    try { entry.awarenessUnsubscribe?.(); } catch { /* ignore */ }
+    entry.awarenessUnsubscribe = null;
     try { entry.syncProvider.destroy(); } catch (err) {
       console.warn('[BodyDocCache] destroy threw for', entry.itemId, err);
     }

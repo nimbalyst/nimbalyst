@@ -1,0 +1,45 @@
+.project-window-status-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 26px;
+  padding: 0 10px;
+  color: var(--nim-text-muted);
+  background: var(--nim-bg-secondary);
+  border-top: 1px solid var(--nim-border);
+  font-size: 11px;
+  -webkit-app-region: no-drag;
+}
+
+.project-window-status-bar__unread-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 1px 8px;
+  color: var(--nim-text);
+  background: color-mix(in srgb, var(--nim-error) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--nim-error) 35%, transparent);
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.project-window-status-bar__unread-chip:hover {
+  background: color-mix(in srgb, var(--nim-error) 20%, transparent);
+}
+
+.project-window-status-bar__unread-chip:focus-visible {
+  outline: 2px solid var(--nim-border-focus);
+  outline-offset: 2px;
+}
+
+.project-window-status-bar__unread-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--nim-error);
+  flex: 0 0 auto;
+}

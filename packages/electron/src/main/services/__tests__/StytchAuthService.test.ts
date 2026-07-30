@@ -263,6 +263,49 @@ describe('StytchAuthService auth-state-change dedupe (NIM-1828)', () => {
   });
 });
 
+describe('StytchAuthService callback replay', () => {
+  beforeEach(async () => {
+    await signOut();
+    files.clear();
+    fetchMock.mockReset();
+  });
+
+  it('updates the existing account instead of creating duplicate onboarding identity', async () => {
+    const firstJwt = createJwt({
+      sub: 'member-personal',
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const replayedJwt = createJwt({
+      sub: 'member-personal',
+      exp: Math.floor(Date.now() / 1000) + 600,
+    });
+
+    await handleAuthCallback({
+      sessionToken: 'first-token',
+      sessionJwt: firstJwt,
+      userId: 'member-personal',
+      email: 'member@example.com',
+      orgId: 'org-personal',
+    });
+    await handleAuthCallback({
+      sessionToken: 'replayed-token',
+      sessionJwt: replayedJwt,
+      userId: 'member-personal',
+      email: 'member@example.com',
+      orgId: 'org-personal',
+    });
+
+    expect(getAccounts()).toHaveLength(1);
+    expect(getAccounts()[0]).toMatchObject({
+      personalOrgId: 'org-personal',
+      personalUserId: 'member-personal',
+      email: 'member@example.com',
+      isSyncAccount: true,
+    });
+    expect(getPersonalSessionJwt()).toBe(replayedJwt);
+  });
+});
+
 describe('StytchAuthService sync-account persistence', () => {
   beforeEach(async () => {
     await signOut();

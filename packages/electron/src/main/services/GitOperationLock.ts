@@ -11,6 +11,7 @@
  */
 
 import log from 'electron-log/main';
+import { realpathSync } from 'fs';
 
 const logger = log.scope('GitOperationLock');
 
@@ -40,6 +41,32 @@ class GitOperationLockService {
    */
   private waitingCount: Map<string, number> = new Map();
 
+  /** Resolved repository paths, so the realpath syscall runs once per caller string. */
+  private canonicalPaths: Map<string, string> = new Map();
+
+  /**
+   * Two callers naming the same repository must share a queue. A raw string key
+   * silently fails that whenever the paths differ only by a trailing slash, a
+   * symlinked checkout, or letter case on a case-insensitive volume — the lock
+   * appears to work while providing no serialization at all.
+   */
+  private canonicalize(repoPath: string): string {
+    const cached = this.canonicalPaths.get(repoPath);
+    if (cached !== undefined) return cached;
+
+    try {
+      // `.native` also normalizes case on macOS and Windows.
+      const canonical = realpathSync.native(repoPath);
+      this.canonicalPaths.set(repoPath, canonical);
+      return canonical;
+    } catch {
+      // Not yet on disk, or unreadable. The raw string is still a usable key,
+      // just a weaker one — and deliberately not cached, so the path gets
+      // another chance to resolve once it exists.
+      return repoPath;
+    }
+  }
+
   /**
    * Execute an operation with a lock on the repository.
    * Operations are strictly serialized per repository path.
@@ -52,12 +79,13 @@ class GitOperationLockService {
    * @throws Error if timeout exceeded waiting for lock
    */
   async withLock<T>(
-    repoPath: string,
+    callerRepoPath: string,
     operationName: string,
     operation: () => Promise<T>,
     options: LockOptions = {}
   ): Promise<T> {
     const { timeout = 30000 } = options;
+    const repoPath = this.canonicalize(callerRepoPath);
 
     // Capture the current tail of the queue (the operation we need to wait for)
     const predecessor = this.queueTails.get(repoPath);
@@ -146,14 +174,14 @@ class GitOperationLockService {
    * Check if a repository currently has an active lock
    */
   isLocked(repoPath: string): boolean {
-    return this.queueTails.has(repoPath);
+    return this.queueTails.has(this.canonicalize(repoPath));
   }
 
   /**
    * Get the number of operations waiting for a lock on a repository
    */
   getWaitingCount(repoPath: string): number {
-    return this.waitingCount.get(repoPath) || 0;
+    return this.waitingCount.get(this.canonicalize(repoPath)) || 0;
   }
 }
 

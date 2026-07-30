@@ -10,6 +10,7 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
+import { getShowInFileBrowserLabel } from '@nimbalyst/runtime';
 import {
   useFloating,
   FloatingPortal,
@@ -40,12 +41,7 @@ import {
 import { generateWorkspaceAccentColor } from './WorkspaceSummaryHeader';
 import './ProjectRail.css';
 
-const REVEAL_LABEL = (() => {
-  const platform = typeof navigator !== 'undefined' ? navigator.platform : '';
-  if (platform.startsWith('Mac')) return 'Reveal in Finder';
-  if (platform.startsWith('Win')) return 'Show in Explorer';
-  return 'Show in Folder';
-})();
+const REVEAL_LABEL = getShowInFileBrowserLabel();
 
 function projectInitials(name: string): string {
   const trimmed = name.trim();

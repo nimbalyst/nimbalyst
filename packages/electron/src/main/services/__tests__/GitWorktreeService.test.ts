@@ -70,3 +70,115 @@ describe('GitWorktreeService.validateWorkspaceHasCommits', () => {
       .toThrow(/Not a git repository/);
   });
 });
+
+/**
+ * getChangedFiles goes through simple-git, which runs `git status --porcelain -b
+ * -u --null` -- `-u` is `--untracked-files=all`, so ordinary untracked
+ * directories are already reported file-by-file and never need re-expanding.
+ * The one entry git still collapses is an EMBEDDED REPOSITORY, which it will not
+ * look inside. That is the case the expansion handles, now batched into a single
+ * async git call for the whole worktree instead of a synchronous child process
+ * per entry (NIM-2286).
+ *
+ * Either way git stays the authority on directory contents, so gitignored files
+ * stay out of the changed-files list and the "Commit with AI" context (NIM-1782).
+ */
+describe('GitWorktreeService.getChangedFiles untracked-directory expansion', () => {
+  let tmpDir: string;
+  const service = new GitWorktreeService();
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-gws-changed-'));
+    const git = simpleGit(tmpDir).env(gitSandboxEnv(undefined, { pinConfigPaths: false }));
+    await git.init();
+    await git.addConfig('user.email', 'test@example.com', false, 'local');
+    await git.addConfig('user.name', 'Test', false, 'local');
+    await git.addConfig('commit.gpgsign', 'false', false, 'local');
+    assertGitSandbox(tmpDir);
+
+    fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'node_modules/\n');
+    await git.add('.gitignore');
+    await git.commit('initial');
+
+    // Three collapsed `?? dir/` entries, one holding a gitignored install.
+    for (const name of ['pkg-a', 'pkg-b', 'pkg-c']) {
+      fs.mkdirSync(path.join(tmpDir, name, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, name, 'src', 'index.ts'), 'export {};\n');
+    }
+    fs.writeFileSync(path.join(tmpDir, 'pkg-a', 'src', 'with spaces.ts'), 'export {};\n');
+    fs.mkdirSync(path.join(tmpDir, 'pkg-b', 'node_modules', 'left-pad'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'pkg-b', 'node_modules', 'left-pad', 'index.js'),
+      'module.exports = () => {};\n',
+    );
+
+    // An embedded repository: the one untracked entry git still collapses, and
+    // whose contents belong to IT rather than to the outer worktree.
+    const embedded = path.join(tmpDir, 'embedded-repo');
+    fs.mkdirSync(embedded);
+    const embeddedGit = simpleGit(embedded).env(gitSandboxEnv(undefined, { pinConfigPaths: false }));
+    await embeddedGit.init();
+    await embeddedGit.addConfig('user.email', 'test@example.com', false, 'local');
+    await embeddedGit.addConfig('user.name', 'Test', false, 'local');
+    await embeddedGit.addConfig('commit.gpgsign', 'false', false, 'local');
+    fs.writeFileSync(path.join(embedded, 'inner.ts'), 'export {};\n');
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore Windows file-lock noise during teardown
+    }
+  });
+
+  it('reports untracked files individually and keeps gitignored ones out', async () => {
+    const changed = await service.getChangedFiles(tmpDir);
+    const paths = changed.map((file) => file.path).sort();
+
+    expect(paths).toContain('pkg-a/src/index.ts');
+    expect(paths).toContain('pkg-b/src/index.ts');
+    expect(paths).toContain('pkg-c/src/index.ts');
+    // NUL-separated parsing keeps filenames with spaces intact.
+    expect(paths).toContain('pkg-a/src/with spaces.ts');
+
+    // Gitignored, so it must not reach the commit context (NIM-1782).
+    expect(paths.filter((p) => p.includes('node_modules'))).toEqual([]);
+
+    // Untracked directories are not reported as entries of their own.
+    expect(paths).not.toContain('pkg-a/');
+    expect(paths).not.toContain('pkg-a');
+
+    // Every untracked path is reported as a new, unstaged file.
+    expect(changed.every((file) => file.status === 'added' && !file.staged)).toBe(true);
+  });
+
+  it('still runs when the environment contains vars simple-git treats as unsafe', async () => {
+    // The read-only status is spawned with an explicit env (to set
+    // GIT_OPTIONAL_LOCKS), which makes simple-git scan that env and refuse to
+    // spawn git at all unless the unsafe flags are opted into. A developer with
+    // GIT_EDITOR exported would otherwise see every changed-files read fail.
+    const previousEditor = process.env.GIT_EDITOR;
+    process.env.GIT_EDITOR = 'vim';
+    try {
+      const paths = (await service.getChangedFiles(tmpDir)).map((file) => file.path);
+      expect(paths).toContain('pkg-a/src/index.ts');
+    } finally {
+      if (previousEditor === undefined) delete process.env.GIT_EDITOR;
+      else process.env.GIT_EDITOR = previousEditor;
+    }
+  });
+
+  it('keeps an embedded repository as one entry without enumerating its contents', async () => {
+    const paths = (await service.getChangedFiles(tmpDir)).map((file) => file.path);
+
+    // This entry only survives the collapsed-directory branch: git reports
+    // `embedded-repo/` and the expansion asks git what is inside, which returns
+    // the embedded repo itself rather than descending into it.
+    expect(paths).toContain('embedded-repo/');
+
+    // The embedded repo owns its own untracked file; the outer worktree must
+    // not claim it.
+    expect(paths).not.toContain('embedded-repo/inner.ts');
+  });
+});

@@ -2,6 +2,7 @@ import {
   DEFAULT_TEAM_INBOX_CONNECT_CONCURRENCY,
   TeamInboxFanIn,
   TeamInboxOrgClient,
+  type PresenceDesiredStatus,
   type TeamInboxOrgClientLike,
   type TeamInboxOrgDescriptor,
   type TeamInboxSnapshot,
@@ -9,6 +10,7 @@ import {
 import { asTeamMemberId, type TeamJwt } from '@nimbalyst/runtime';
 
 import { getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
+import { getSettingsService } from './SettingsService';
 import { getSubFromJwt } from './jwtOrg';
 import {
   getOrgScopedJwt,
@@ -47,6 +49,7 @@ const DEFAULT_SNAPSHOT: TeamInboxSnapshot = {
   status: 'loading',
   deliveries: [],
   organizations: [],
+  presence: {},
 };
 
 function activeOrganization(team: TeamDetails): boolean {
@@ -85,6 +88,9 @@ async function mapWithConcurrency<T, R>(
 export class TeamInboxService {
   private readonly dependencies: TeamInboxServiceDependencies;
   private readonly listeners = new Set<(snapshot: TeamInboxSnapshot) => void>();
+  private readonly deliveryListeners = new Set<
+    (delivery: TeamInboxSnapshot['deliveries'][number]) => void
+  >();
   private fanIn: TeamInboxFanIn | null = null;
   private fanInCleanup: (() => void) | null = null;
   private snapshot: TeamInboxSnapshot = DEFAULT_SNAPSHOT;
@@ -117,6 +123,13 @@ export class TeamInboxService {
     return () => { this.listeners.delete(listener); };
   }
 
+  subscribeNewDelivery(
+    listener: (delivery: TeamInboxSnapshot['deliveries'][number]) => void,
+  ): () => void {
+    this.deliveryListeners.add(listener);
+    return () => { this.deliveryListeners.delete(listener); };
+  }
+
   async markRead(deliveryIds: string[]): Promise<void> {
     if (!this.fanIn) throw new Error('Team inbox has not started');
     await this.fanIn.markRead(deliveryIds);
@@ -125,6 +138,10 @@ export class TeamInboxService {
   async dismiss(deliveryId: string): Promise<void> {
     if (!this.fanIn) throw new Error('Team inbox has not started');
     await this.fanIn.dismiss(deliveryId);
+  }
+
+  setPresenceStatus(status: PresenceDesiredStatus): void {
+    this.fanIn?.setPresenceStatus(status);
   }
 
   destroy(): void {
@@ -188,6 +205,9 @@ export class TeamInboxService {
     this.destroyFanIn();
     this.fanIn = new TeamInboxFanIn({
       connectConcurrency: concurrency,
+      onDelivery: (delivery) => {
+        for (const listener of this.deliveryListeners) listener(delivery);
+      },
       createClient: (org) => {
         const entry = resolved.find(
           (candidate) => candidate.descriptor.orgId === org.orgId,
@@ -208,6 +228,8 @@ export class TeamInboxService {
               serverUrl: this.dependencies.getServerUrl(),
               org,
               getTeamJwt: getTeamJwtForOrg,
+              getPresenceStatus: () =>
+                getSettingsService().get('team.presence.status'),
             });
       },
     });

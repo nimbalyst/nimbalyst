@@ -15,6 +15,8 @@ interface TagBoardProps {
   onItemSelect?: (itemId: string) => void;
   /** Currently selected item ID for card highlighting. */
   selectedItemId?: string | null;
+  /** Open a card's item as a document (double-click). */
+  onOpenDocument?: (itemId: string) => void;
   favoriteItemIds?: ReadonlySet<string>;
   onToggleFavorite?: (itemId: string) => void;
 }
@@ -46,6 +48,7 @@ export const TagBoard: React.FC<TagBoardProps> = ({
   overrideItems,
   onItemSelect,
   selectedItemId,
+  onOpenDocument,
   favoriteItemIds = new Set<string>(),
   onToggleFavorite,
 }) => {
@@ -129,6 +132,7 @@ export const TagBoard: React.FC<TagBoardProps> = ({
                         : 'border-nim'
                     }`}
                     onClick={() => onItemSelect?.(item.id)}
+                    onDoubleClick={() => onOpenDocument?.(item.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();

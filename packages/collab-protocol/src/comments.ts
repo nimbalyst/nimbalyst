@@ -11,6 +11,18 @@ export const MAX_RICH_COMMENT_TEXT_BYTES = 32 * 1024;
 /** Maximum UTF-8 bytes in the complete JSON-encoded body envelope. */
 export const MAX_RICH_COMMENT_BODY_ENVELOPE_BYTES = 64 * 1024;
 export const MAX_RESOURCE_REFS_PER_MESSAGE = 16;
+export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
+/**
+ * Per-file messaging cap.
+ *
+ * Deliberately below the 25 MiB the asset route accepts: a chat attachment is
+ * not a document asset, and the smaller number is what the composer enforces
+ * before it ever reads the bytes, so an oversize drop fails instantly instead
+ * of after a full read, a queue, and a 413.
+ */
+export const MAX_MESSAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/** Matches the asset route's own file-name bound, so a long name never 400s. */
+export const MAX_MESSAGE_ATTACHMENT_FILE_NAME_LENGTH = 255;
 export const MAX_MENTIONED_USERS_PER_MESSAGE = 50;
 export const MAX_MENTIONED_AGENTS_PER_MESSAGE = 8;
 export const MAX_REACTION_EMOJI_PER_MESSAGE = 20;
@@ -57,18 +69,49 @@ export type BodyEntity =
     };
 
 /**
+ * A file posted with a message.
+ *
+ * Metadata only. The bytes live in the encrypted collab asset store and are
+ * addressed by `collab-asset://doc/{conversationId}/asset/{assetId}` -- a body
+ * never carries a data URL, because the 32 KiB text bound and the 64 KiB
+ * envelope bound make inline bytes impossible by construction rather than by
+ * convention.
+ *
+ * Attachments are NOT inline entities: they carry no `start`/`end`, they are
+ * not placed in the text, and they render as a block after it. That is why
+ * there is no `attachment` `BodyEntity` kind -- an entity has to name a byte
+ * range, and there is no range to name.
+ */
+export type MessageAttachment = {
+  /** Random per-upload id inside the conversation's asset namespace. */
+  assetId: string;
+  fileName: string;
+  mimeType: string;
+  /** Plaintext byte length, as the author's client measured it. */
+  byteSize: number;
+  /** Intrinsic pixel dimensions. Images only, and only when known. */
+  width?: number;
+  height?: number;
+};
+
+/**
  * The shared V1 body representation.
  *
  * Entity positions are UTF-8 byte offsets into `text`. `plainText` means no
  * inline interpretation at all, including no emoji shortcode substitution.
  * `nimbalystMarkdown` names Nimbalyst's bounded inline dialect rather than
  * promising general Markdown behavior.
+ *
+ * `attachments` is additive and optional: a body without files is byte-identical
+ * to what every prior client produced, and a server that predates this field
+ * stores the payload verbatim, so no deploy gates the feature.
  */
 export type RichCommentBody = {
   version: 1;
   format: "plainText" | "nimbalystMarkdown";
   text: string;
   entities?: BodyEntity[];
+  attachments?: MessageAttachment[];
 };
 
 export type ReactionAggregate = {
@@ -158,6 +201,15 @@ export type Unsubscribe = () => void;
 
 export interface CommentAdapter {
   list(cursor?: string): Promise<CommentPage>;
+  /**
+   * What the client already holds for this conversation, synchronously.
+   *
+   * Optional: an adapter with no local cache omits it and the surface waits for
+   * `list()` as before. When it is present the surface paints from it on mount
+   * and revalidates behind that, so returning to a conversation visited a
+   * moment ago is instant instead of an empty pane until the round trip lands.
+   */
+  snapshot?(): Comment[];
   create(input: CreateCommentInput): Promise<Comment>;
   edit(ref: CommentRef, body: RichCommentBody): Promise<Comment>;
   remove(ref: CommentRef): Promise<void>;
@@ -185,6 +237,10 @@ export type MessagingValidationErrorCode =
   | "bodyEntitiesOverlap"
   | "bodyEntityResourceRefMissing"
   | "bodyEntityMentionHintMissing"
+  | "tooManyAttachments"
+  | "attachmentTooLarge"
+  | "attachmentFieldInvalid"
+  | "duplicateAttachmentAssetId"
   | "tooManyResourceRefs"
   | "resourceRefProjectIdRequired"
   | "resourceRefMessageIdNotAllowed"
@@ -277,6 +333,8 @@ export function validateRichCommentBody(
       actual: envelopeBytes,
     });
   }
+
+  collectAttachmentErrors(body.attachments, errors);
 
   const entities = body.entities;
   if (entities === undefined || entities.length === 0) {
@@ -376,6 +434,111 @@ export function validateRichCommentBody(
   });
 
   return validationResult(errors);
+}
+
+/**
+ * Attachment bounds.
+ *
+ * The byte size is the author's claim about a blob this validator cannot see,
+ * so checking it here is not the enforcement -- the composer refuses the file
+ * before reading it and the asset route refuses the upload. What this catches
+ * is a body that claims something the client is not allowed to claim, which is
+ * worth rejecting before it becomes history everyone replays.
+ */
+function collectAttachmentErrors(
+  attachments: readonly MessageAttachment[] | undefined,
+  errors: MessagingValidationError[]
+): void {
+  if (attachments === undefined) return;
+  if (attachments.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    errors.push({
+      code: "tooManyAttachments",
+      path: "body.attachments",
+      message: `A message may carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} attachments.`,
+      limit: MAX_ATTACHMENTS_PER_MESSAGE,
+      actual: attachments.length,
+    });
+  }
+
+  const seenAssetIds = new Set<string>();
+  attachments.forEach((attachment, index) => {
+    const path = `body.attachments[${index}]`;
+    if (
+      typeof attachment.assetId !== "string" ||
+      attachment.assetId.length === 0
+    ) {
+      errors.push({
+        code: "attachmentFieldInvalid",
+        path: `${path}.assetId`,
+        message: "Attachment assetId must be a non-empty string.",
+      });
+    } else if (seenAssetIds.has(attachment.assetId)) {
+      errors.push({
+        code: "duplicateAttachmentAssetId",
+        path: `${path}.assetId`,
+        message: "A message may reference each attachment only once.",
+      });
+    } else {
+      seenAssetIds.add(attachment.assetId);
+    }
+
+    if (
+      typeof attachment.fileName !== "string" ||
+      attachment.fileName.length === 0 ||
+      attachment.fileName.length > MAX_MESSAGE_ATTACHMENT_FILE_NAME_LENGTH
+    ) {
+      errors.push({
+        code: "attachmentFieldInvalid",
+        path: `${path}.fileName`,
+        message: `Attachment fileName must be 1 to ${MAX_MESSAGE_ATTACHMENT_FILE_NAME_LENGTH} characters.`,
+        limit: MAX_MESSAGE_ATTACHMENT_FILE_NAME_LENGTH,
+      });
+    }
+
+    if (
+      typeof attachment.mimeType !== "string" ||
+      attachment.mimeType.length === 0
+    ) {
+      errors.push({
+        code: "attachmentFieldInvalid",
+        path: `${path}.mimeType`,
+        message: "Attachment mimeType must be a non-empty string.",
+      });
+    }
+
+    if (
+      !Number.isInteger(attachment.byteSize) ||
+      attachment.byteSize < 0
+    ) {
+      errors.push({
+        code: "attachmentFieldInvalid",
+        path: `${path}.byteSize`,
+        message: "Attachment byteSize must be a non-negative integer.",
+      });
+    } else if (attachment.byteSize > MAX_MESSAGE_ATTACHMENT_BYTES) {
+      errors.push({
+        code: "attachmentTooLarge",
+        path: `${path}.byteSize`,
+        message: `Attachments must not exceed ${Math.round(
+          MAX_MESSAGE_ATTACHMENT_BYTES / (1024 * 1024)
+        )} MB.`,
+        limit: MAX_MESSAGE_ATTACHMENT_BYTES,
+        actual: attachment.byteSize,
+      });
+    }
+
+    for (const dimension of ["width", "height"] as const) {
+      const value = attachment[dimension];
+      if (value === undefined) continue;
+      if (!Number.isInteger(value) || value <= 0) {
+        errors.push({
+          code: "attachmentFieldInvalid",
+          path: `${path}.${dimension}`,
+          message: `Attachment ${dimension} must be a positive integer when present.`,
+        });
+      }
+    }
+  });
 }
 
 function utf8ByteBoundaries(text: string): ReadonlySet<number> {

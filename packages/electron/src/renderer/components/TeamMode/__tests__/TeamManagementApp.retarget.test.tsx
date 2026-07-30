@@ -19,6 +19,10 @@ vi.mock('../../../contexts/DialogContext', () => ({
 import { TeamManagementApp } from '../TeamManagementApp';
 import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
 import { LAST_SELECTED_ORG_SETTING_KEY } from '../defaultOrg';
+import {
+  ORG_WINDOW_PENDING_ROUTE_SETTING_KEY,
+  pendingGeneralRoute,
+} from '../onboarding/orgWelcomeModel';
 
 let setTargetHandler: ((payload: { orgId?: string | null; workspacePath?: string | null }) => void) | null = null;
 const settings = new Map<string, unknown>();
@@ -112,5 +116,27 @@ describe('TeamManagementApp retargeting', () => {
 
     retarget({ orgId: 'org-b' });
     await waitFor(() => expect(settings.get(LAST_SELECTED_ORG_SETTING_KEY)).toBe('org-b'));
+  });
+
+  it('preserves a replayed invite destination across restart instead of choosing the first org', async () => {
+    window.history.replaceState({}, '', '/?mode=team-management');
+    settings.set(
+      ORG_WINDOW_PENDING_ROUTE_SETTING_KEY,
+      pendingGeneralRoute('org-invite'),
+    );
+    settings.set(LAST_SELECTED_ORG_SETTING_KEY, 'org-a');
+    const store = createStore();
+
+    render(<Provider store={store}><TeamManagementApp /></Provider>);
+
+    await waitFor(() => expect(store.get(selectedOrgIdAtom)).toBe('org-invite'));
+
+    // Replaying the callback/open event is idempotent: the same single pending
+    // record wins again, and no first-org fallback replaces it.
+    retarget({ orgId: null });
+    await waitFor(() => expect(store.get(selectedOrgIdAtom)).toBe('org-invite'));
+    expect(settings.get(ORG_WINDOW_PENDING_ROUTE_SETTING_KEY)).toEqual(
+      pendingGeneralRoute('org-invite'),
+    );
   });
 });

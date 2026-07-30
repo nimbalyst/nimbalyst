@@ -1,4 +1,9 @@
 import { app, BrowserWindow, dialog, nativeImage, nativeTheme, session } from 'electron';
+import {
+    parseTrackerDeepLink,
+    type TrackerDeepLinkTarget,
+    type TrackerDeepLinkView,
+} from '../shared/trackerDeepLinks';
 import { safeHandle, safeOn } from './utils/ipcRegistry';
 import { installMicrophoneGate } from './mediaPermissionGate';
 import { markBootComplete } from './utils/bootState';
@@ -48,8 +53,15 @@ import { registerWorktreeHandlers } from './ipc/WorktreeHandlers';
 import { registerPullRequestHandlers, stopPullRequestPollScheduler } from './ipc/PullRequestHandlers';
 import { registerReadReceiptHandlers } from './ipc/ReadReceiptHandlers';
 import { registerTrackerPersonalStateHandlers } from './ipc/TrackerPersonalStateHandlers';
-import { registerTeamInboxHandlers } from './ipc/TeamInboxHandlers';
-import { registerConversationHandlers } from './ipc/ConversationHandlers';
+import {
+    registerTeamInboxHandlers,
+    shutdownTeamInboxHandlers,
+} from './ipc/TeamInboxHandlers';
+import {
+    registerConversationHandlers,
+    shutdownConversationHandlers,
+} from './ipc/ConversationHandlers';
+import { registerOrgSettingsHandlers } from './ipc/OrgSettingsHandlers';
 import { registerWakeupHandlers } from './ipc/WakeupHandlers';
 import { registerBlitzHandlers } from './ipc/BlitzHandlers';
 import { registerProjectMigrationHandlers } from './ipc/ProjectMigrationHandlers';
@@ -740,8 +752,9 @@ safeHandle('deep-link:consume-pending-shared-doc', (_event, workspacePath: strin
     return { ...pending, workspacePath };
 });
 
-// Same pattern for tracker deep links: nimbalyst://tracker/{trackerId}?orgId=...
-const pendingTrackerLinks = new Map<string, { trackerId: string; orgId: string }>();
+// Same pattern for tracker deep links:
+// nimbalyst://tracker/{trackerId}?orgId=...&view=document
+const pendingTrackerLinks = new Map<string, TrackerDeepLinkTarget>();
 
 safeHandle('deep-link:consume-pending-tracker', (_event, workspacePath: string) => {
     if (!workspacePath) return null;
@@ -762,14 +775,18 @@ safeHandle('deep-link:consume-pending-shared-folder', (_event, workspacePath: st
     return { ...pending, workspacePath };
 });
 
-safeHandle('deep-link:open-inbox-source', async (_event, rawUrl: string) => {
+async function openInboxSourceFromDeepLink(rawUrl: string): Promise<boolean> {
     try {
         const parsed = new URL(rawUrl);
         const orgId = parsed.searchParams.get('orgId');
         if (parsed.protocol !== 'nimbalyst:') return false;
         if (parsed.host === 'tracker' && orgId) {
-            const trackerId = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
-            return trackerId ? openTrackerFromDeepLink(trackerId, orgId) : false;
+            const trackerLink = parseTrackerDeepLink(rawUrl);
+            return openTrackerFromDeepLink(
+                trackerLink.trackerId,
+                trackerLink.orgId,
+                trackerLink.view,
+            );
         }
         if (parsed.host === 'doc' && orgId) {
             const documentId = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
@@ -782,6 +799,10 @@ safeHandle('deep-link:open-inbox-source', async (_event, rawUrl: string) => {
     } catch {
         return false;
     }
+}
+
+safeHandle('deep-link:open-inbox-source', async (_event, rawUrl: string) => {
+    return openInboxSourceFromDeepLink(rawUrl);
 });
 
 // Sensitive query params that must not be logged verbatim. Anything not in
@@ -951,25 +972,24 @@ async function handleDeepLink(url: string): Promise<void> {
 
             await openSharedFolderFromDeepLink(folderId, orgId);
         } else if (parsed.host === 'tracker' || parsed.pathname?.startsWith('/tracker/')) {
-            // Handle tracker link: nimbalyst://tracker/{trackerId}?orgId={orgId}
-            const encoded = parsed.host === 'tracker'
-                ? parsed.pathname?.replace(/^\//, '')
-                : parsed.pathname?.replace('/tracker/', '');
-            let trackerId: string | undefined;
+            // Handle tracker link:
+            // nimbalyst://tracker/{trackerId}?orgId={orgId}&view=document
+            let trackerLink: TrackerDeepLinkTarget;
             try {
-                trackerId = encoded ? decodeURIComponent(encoded) : undefined;
-            } catch {
-                logger.main.warn('[DeepLink] Tracker link has malformed trackerId:', summarizeDeepLink(url));
-                return;
-            }
-            const orgId = parsed.searchParams.get('orgId');
-
-            if (!trackerId || !orgId) {
-                logger.main.warn('[DeepLink] Tracker link missing trackerId or orgId:', summarizeDeepLink(url));
+                trackerLink = parseTrackerDeepLink(url);
+            } catch (error) {
+                logger.main.warn('[DeepLink] Invalid tracker link:', {
+                    link: summarizeDeepLink(url),
+                    error: error instanceof Error ? error.message : String(error),
+                });
                 return;
             }
 
-            await openTrackerFromDeepLink(trackerId, orgId);
+            await openTrackerFromDeepLink(
+                trackerLink.trackerId,
+                trackerLink.orgId,
+                trackerLink.view,
+            );
         } else {
             logger.main.warn('[DeepLink] Unknown deep link:', summarizeDeepLink(url));
         }
@@ -1177,37 +1197,56 @@ async function openSharedFolderFromDeepLink(folderId: string, orgId: string): Pr
  * Route a tracker deep link to the matching team workspace. Mirrors the
  * shared-document flow, but targets tracker mode + tracker-item selection.
  */
-async function openTrackerFromDeepLink(trackerId: string, orgId: string): Promise<boolean> {
+async function openTrackerFromDeepLink(
+    trackerId: string,
+    orgId: string,
+    view?: TrackerDeepLinkView,
+): Promise<boolean> {
+    const trackerLink: TrackerDeepLinkTarget = {
+        trackerId,
+        orgId,
+        ...(view ? { view } : {}),
+    };
     const reason = !isAuthenticated() ? 'not-authenticated' : 'no-workspace';
     const workspacePath = isAuthenticated() ? await findWorkspaceForOrgId(orgId) : null;
 
     if (!workspacePath) {
-        logger.main.warn('[DeepLink] Cannot route tracker:', { reason, orgId, trackerId });
+        logger.main.warn('[DeepLink] Cannot route tracker:', { reason, ...trackerLink });
         const fallback = getMostRecentlyFocusedWorkspaceWindow();
         if (fallback) {
             if (fallback.isMinimized()) fallback.restore();
             fallback.focus();
-            fallback.webContents.send('deep-link:tracker-not-available', { trackerId, orgId, reason });
+            fallback.webContents.send('deep-link:tracker-not-available', {
+                ...trackerLink,
+                reason,
+            });
         }
         return false;
     }
 
-    pendingTrackerLinks.set(workspacePath, { trackerId, orgId });
+    pendingTrackerLinks.set(workspacePath, trackerLink);
 
     const existing = findWindowByWorkspace(workspacePath);
     if (existing && !existing.isDestroyed()) {
         if (existing.isMinimized()) existing.restore();
         existing.focus();
         existing.webContents.send('deep-link:open-tracker', {
-            trackerId,
-            orgId,
+            ...trackerLink,
             workspacePath,
         });
-        logger.main.info('[DeepLink] Routed tracker to existing window:', { workspacePath, trackerId });
+        logger.main.info('[DeepLink] Routed tracker to existing window:', {
+            workspacePath,
+            trackerId,
+            view,
+        });
         return true;
     }
 
-    logger.main.info('[DeepLink] Opening new window for tracker workspace:', { workspacePath, trackerId });
+    logger.main.info('[DeepLink] Opening new window for tracker workspace:', {
+        workspacePath,
+        trackerId,
+        view,
+    });
     createWindow(false, true, workspacePath);
     return true;
 }
@@ -1659,8 +1698,11 @@ app.whenReady().then(async () => {
     gitRefWatcher.onCommitDetected((event) => commitTrackerLinker.handleCommitDetected(event));
 
     registerTeamHandlers();
-    registerTeamInboxHandlers();
+    registerTeamInboxHandlers({
+        openInboxSource: openInboxSourceFromDeepLink,
+    });
     registerConversationHandlers();
+    registerOrgSettingsHandlers();
     registerTeamCustodyHandlers();
     // Team custody is server-managed; drop the client key material the retired
     // lane left in userData (some of it plaintext where safeStorage was off).
@@ -2900,6 +2942,17 @@ app.on('before-quit', async (event) => {
         shutdownStytchAuth();
     } catch (error) {
         console.error('[QUIT] Error shutting down Stytch auth:', error);
+    }
+
+    try {
+        shutdownTeamInboxHandlers();
+    } catch (error) {
+        console.error('[QUIT] Error shutting down Teams inbox:', error);
+    }
+    try {
+        shutdownConversationHandlers();
+    } catch (error) {
+        console.error('[QUIT] Error shutting down Teams conversations:', error);
     }
 
     // Check if we can write to userData directory

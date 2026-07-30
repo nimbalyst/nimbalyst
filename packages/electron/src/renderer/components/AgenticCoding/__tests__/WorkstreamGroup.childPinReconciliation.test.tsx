@@ -31,6 +31,7 @@ vi.mock('../../../store', () => {
     sessionUnreadAtom: () => value(false),
     sessionPendingPromptAtom: () => value(false),
     sessionHasPendingInteractivePromptAtom: () => value(false),
+    sessionListTitleAtom: () => value(null),
     groupSessionStatusAtom: () => value({
       hasPendingInteractivePrompt: false,
       hasProcessing: false,

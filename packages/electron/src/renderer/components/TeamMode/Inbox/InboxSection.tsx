@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 
-import { TeamAlphaNotice } from '../../common/TeamAlphaNotice';
 import { InboxContextPane } from './InboxContextPane';
 import { InboxEmptyState, InboxOfflineWithoutCache } from './InboxEmptyState';
 import { InboxFilterBar } from './InboxFilterBar';
@@ -11,6 +10,10 @@ import { InboxSkeleton } from './InboxSkeleton';
 import { InboxStatusBanner } from './InboxStatusBanner';
 import { InboxStatePicker } from './InboxStatePicker';
 import { DEFAULT_INBOX_PREFERENCES, persistInboxPreferences, readInboxPreferences } from './inboxPreferences';
+import {
+  consumeInboxSearchFocusRequest,
+  subscribeInboxSearchFocus,
+} from '../orgWindowCommandBus';
 import { useInboxProvider, type InboxProvider } from './inboxProvider';
 import {
   INBOX_FILTERS,
@@ -40,10 +43,30 @@ const RELATIVE_LABEL_TICK_MS = 60_000;
 export function InboxSection({
   provider: providerProp,
   now: nowProp,
+  onBrowseRooms,
+  onNewMessage,
+  composeUnavailableLabel = 'Compose is available in the organization window',
 }: {
   provider?: InboxProvider;
   /** Deterministic clock seam for grouping and relative-label tests. */
   now?: number;
+  /**
+   * Where "Browse rooms" goes. Supplied by the org window, which owns the
+   * rooms directory; absent when the Inbox is mounted without one.
+   */
+  onBrowseRooms?: () => void;
+  /**
+   * Opens the compose destination picker. Supplied by the org window, which
+   * owns the conversation directory the picker lists; the control renders
+   * disabled without it rather than doing nothing when clicked.
+   */
+  onNewMessage?: () => void;
+  /**
+   * Why compose is unavailable, when it is. The default speaks to the project
+   * window; the org window overrides it when the organization turned messaging
+   * off, where "open the organization window" would be nonsense advice.
+   */
+  composeUnavailableLabel?: string;
 } = {}) {
   const provider = useInboxProvider(providerProp);
 
@@ -56,6 +79,22 @@ export function InboxSection({
   const [activationNotice, setActivationNotice] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const preferencesLoaded = useRef(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Messages > Search Messages. The command routes the window to the Inbox
+  // first, so it may well arrive before this surface exists — hence the latched
+  // request, consumed either on mount or on notification, whichever comes second.
+  useEffect(() => {
+    const focusSearch = () => {
+      if (!consumeInboxSearchFocusRequest()) return;
+      const input = searchInputRef.current;
+      if (!input) return;
+      input.focus();
+      input.select();
+    };
+    focusSearch();
+    return subscribeInboxSearchFocus(focusSearch);
+  }, []);
 
   useEffect(() => {
     // A quiet inbox still ages: without a tick, "12m" would sit there until the
@@ -150,7 +189,10 @@ export function InboxSection({
       data-source="packages/electron/src/renderer/components/TeamMode/Inbox/InboxSection.tsx"
       data-status={snapshot.status}
     >
-      <header className="inbox-header shrink-0 border-b border-[var(--nim-border)] px-5 py-4">
+      <header
+        className="inbox-header org-window-drag-region shrink-0 border-b border-[var(--nim-border)] px-5 py-4"
+        data-window-drag-region="true"
+      >
         <div className="inbox-header-title flex items-center gap-2">
           <h2 className="m-0 text-[15px] font-semibold text-[var(--nim-text)]">Inbox</h2>
           {unreadInScope > 0 && (
@@ -164,7 +206,7 @@ export function InboxSection({
           <div className="ml-auto flex items-center gap-2">
             <button
               type="button"
-              className="inbox-mark-all-read rounded-md border border-[var(--nim-border)] px-2.5 py-1 text-[12px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] disabled:cursor-not-allowed disabled:text-[var(--nim-text-disabled)]"
+              className="inbox-mark-all-read org-window-no-drag rounded-md border border-[var(--nim-border)] px-2.5 py-1 text-[12px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] disabled:cursor-not-allowed disabled:text-[var(--nim-text-disabled)]"
               data-testid="inbox-mark-all-read"
               disabled={loading || unreadInScope === 0}
               title={`Mark everything in ${filterLabel} as read`}
@@ -174,20 +216,24 @@ export function InboxSection({
             </button>
             <button
               type="button"
-              className="inbox-new-message flex items-center gap-1.5 rounded-md bg-[var(--nim-primary)] px-2.5 py-1 text-[12px] text-[var(--nim-on-primary)] hover:bg-[var(--nim-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+              className="inbox-new-message org-window-no-drag flex items-center gap-1.5 rounded-md bg-[var(--nim-primary)] px-2.5 py-1 text-[12px] text-[var(--nim-on-primary)] hover:bg-[var(--nim-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60"
               data-testid="inbox-new-message"
-              disabled
-              title="Compose from the inbox arrives with the destination picker"
+              disabled={!onNewMessage}
+              title={onNewMessage
+                ? 'Write to a room or a person'
+                : composeUnavailableLabel}
+              onClick={onNewMessage}
             >
               <MaterialSymbol icon="edit_square" size={14} /> New message
             </button>
           </div>
         </div>
 
-        <TeamAlphaNotice className="mt-2" />
-
-        <div className="inbox-controls mt-3 flex flex-col gap-2">
-          <InboxSearchField value={query} filterLabel={filterLabel} disabled={loading} onChange={setQuery} />
+        {/* The alpha disclosure is the org window's bottom status bar now
+            (2026-07-28 layout decision) — two lines of it above every Inbox
+            was the thing being replaced. */}
+        <div className="inbox-controls org-window-no-drag mt-3 flex flex-col gap-2">
+          <InboxSearchField value={query} filterLabel={filterLabel} disabled={loading} inputRef={searchInputRef} onChange={setQuery} />
           <InboxFilterBar
             filter={filter}
             counts={counts}
@@ -247,7 +293,7 @@ export function InboxSection({
               query={query}
               scopeActive={isScopeActive(scope)}
               onClearFilters={clearFilters}
-              onBrowse={() => { /* Rooms navigation lands with the rooms section. */ }}
+              onBrowse={onBrowseRooms}
             >
               {query ? <InboxSearchEscalation query={query} matchCount={0} onEscalate={() => { /* federated search lands in Phase 4 */ }} /> : null}
             </InboxEmptyState>

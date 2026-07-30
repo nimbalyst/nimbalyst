@@ -5,6 +5,7 @@
 
 import type {
   Actor,
+  CommentDeliveryHints,
   CommentRef,
   MessagingValidationError,
   MessagingValidationResult,
@@ -24,10 +25,21 @@ export type ConversationDescriptor = {
   visibility: "public" | "private" | "sourceInherited";
   documentId?: string;
   title?: string;
+  topic?: string;
   agentPostingEnabled: boolean;
   createdByUserId: string;
   createdAt: number;
   archivedAt?: number;
+  /**
+   * Lean participant identity for direct conversations. Omitted for rooms and
+   * by older servers.
+   */
+  participants?: ConversationParticipant[];
+  /** Calling member's directory subscription. Omitted when none is stored. */
+  subscription?: {
+    state: "following" | "muted";
+    notificationLevel: "all" | "mentions" | "none";
+  };
 };
 
 export type ConversationMembership = {
@@ -37,6 +49,19 @@ export type ConversationMembership = {
   addedByUserId: string;
   createdAt: number;
   removedAt?: number;
+  /** Org-roster identity when the server has it. */
+  email?: string | null;
+};
+
+export type ConversationParticipant = {
+  userId: string;
+  role: ConversationMembership["role"];
+  /** Org-roster identity when the server has it. */
+  email?: string | null;
+};
+
+export type ConversationMembersResponse = {
+  memberships: ConversationMembership[];
 };
 
 export type ConversationEvent = {
@@ -59,6 +84,11 @@ export type ConversationEvent = {
     replyToMessageId?: string;
     agentHopDepth?: number;
   };
+  /**
+   * Server-reconciled delivery metadata. Mention ids correspond only to
+   * validated visible body mentions; assignments remain a separate channel.
+   */
+  deliveryHints?: CommentDeliveryHints;
   createdAt: number;
   serverReceivedAt: number;
 };

@@ -40,6 +40,7 @@ import type { ElectronDocumentService } from '../../services/ElectronDocumentSer
 import { getTrackerImporterRegistry } from '../../services/tracker/TrackerImporterRegistry';
 import { getTrackerImportService } from '../../services/tracker/TrackerImportService';
 import { materializeTrackerTypeDef, removeTrackerTypeDef } from '../../services/tracker/trackerTypeDefStore';
+import { fromDbBoolean } from '../../services/tracker/trackerDbValue';
 import {
   trackTrackerMutation,
   type TrackerMutationAction,
@@ -1113,7 +1114,7 @@ export async function handleTrackerList(
 
     const items = rawItems
       .filter((item) => !workspacePath || item.workspace === workspacePath)
-      .filter((item) => args.archived ? item.archived === true : item.archived !== true)
+      .filter((item) => fromDbBoolean(item.archived) === Boolean(args.archived))
       .filter((item) => !args.type || item.type === args.type)
       .filter((item) => !args.typeTag || (item.typeTags || [item.type]).includes(args.typeTag))
       .filter((item) => {

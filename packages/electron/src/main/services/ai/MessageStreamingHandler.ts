@@ -66,6 +66,7 @@ function resolveExtensionModelDisplayName(
 import { extractFilePath } from './tools/extractFilePath';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { notificationService } from '../NotificationService';
+import { composeNotificationTitle } from '../../../shared/notificationTitle';
 import { TrayManager } from '../../tray/TrayManager';
 import { logger } from '../../utils/logger';
 import { windowStates, findWindowByWorkspace } from '../../window/WindowManager';
@@ -2634,10 +2635,11 @@ export class MessageStreamingHandler {
               // });
 
               await notificationService.showNotification({
-                title: `${sessionLabel} -- Response Ready`,
+                title: composeNotificationTitle(sessionLabel, 'Response Ready'),
                 body: notificationBody,
                 sessionId: session.id,
                 workspacePath: workspacePath,
+                sourceLabel: sessionLabel,
                 provider: session.provider
               });
 

@@ -83,6 +83,11 @@ export function createConversationCommentAdapter(
   };
 
   return {
+    // Conversation events are already materialized in the store, so a room the
+    // window showed a moment ago paints from here on mount rather than waiting
+    // out an `conversation:list` round trip against a cache it already has.
+    snapshot: currentComments,
+
     async list(cursor?: string): Promise<CommentPage> {
       const page = await invoke('conversation:list', {
         orgId: config.orgId,
@@ -271,6 +276,7 @@ export function materializeConversationComments(
         createdAt: event.createdAt,
         replyToCommentId: event.payload?.replyToMessageId,
         resourceRefs: event.payload?.resourceRefs ?? [],
+        deliveryHints: event.deliveryHints,
         reactions: [],
         capabilities: capabilitiesFor(event.actor, config),
       });
@@ -314,6 +320,7 @@ export function materializeConversationComments(
         body: event.payload?.body ?? current.body,
         resourceRefs:
           event.payload?.resourceRefs ?? current.resourceRefs,
+        deliveryHints: event.deliveryHints ?? current.deliveryHints,
         editedAt: event.createdAt,
       });
     } else if (event.operation === 'messageDeleted') {

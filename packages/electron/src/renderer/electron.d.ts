@@ -131,6 +131,12 @@ interface PullRequestListFilters {
   search?: string;
 }
 
+interface TeamManagementWindowTarget {
+  orgId?: string;
+  workspacePath?: string;
+  conversationId?: string;
+}
+
 interface SemanticSearchResult {
   refType: string;
   refId: string;
@@ -145,11 +151,34 @@ interface SemanticSearchResult {
 interface ElectronAPI {
   team: {
     getKeyCustodyStatus: (orgId: string) => Promise<{ success: boolean; mode?: 'server-managed' | 'unmigrated'; error?: string }>;
+    openManagementWindow: (target?: TeamManagementWindowTarget) => Promise<{ success: boolean }>;
+    resolveOrgProjectsLocalState: (orgId: string) => Promise<{
+      success: boolean;
+      projects?: Array<{
+        projectId: string;
+        teamProjectId: string;
+        name: string | null;
+        slug: string | null;
+        gitRemoteHash: string | null;
+        localStatus: 'open' | 'closed' | 'notLocal';
+        workspacePath: string | null;
+      }>;
+      error?: string;
+    }>;
+    openProjectWorkspace: (workspacePath: string) => Promise<{ success: boolean; error?: string }>;
     [method: string]: any;
   };
   organization: {
     list: () => Promise<any>;
     get: (orgId: string) => Promise<any>;
+    rename: (
+      orgId: string,
+      name: string,
+    ) => Promise<{
+      success: boolean;
+      organization?: { orgId: string; name: string };
+      error?: string;
+    }>;
     create: (input: { name: string; workspacePath?: string; sourcePersonalOrgId?: string }) => Promise<any>;
     acceptInvitation: (orgId: string) => Promise<any>;
     listMembers: (orgId: string) => Promise<any>;
@@ -161,6 +190,19 @@ interface ElectronAPI {
     moveProject: (input: { sourceOrgId: string; projectId: string; destinationOrgId: string; dropMemberEmails?: string[] }) => Promise<any>;
     deleteOrganization: (orgId: string) => Promise<any>;
     getEncryptionStatus: (orgId: string) => Promise<any>;
+  };
+  conversation: {
+    setSubscription: (
+      request: import('../shared/conversationDirectory').ConversationSetSubscriptionRequest,
+    ) => Promise<import('@nimbalyst/collab-protocol').ConversationSubscription>;
+    registerAssets: (request: { orgId: string; conversationId: string }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    unregisterAssets: (request: { conversationId: string }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
   };
   // Global semantic search (nimbalyst-memory). Empty/false when memory is off.
   semanticSearch: {
@@ -275,6 +317,7 @@ interface ElectronAPI {
 
   setDocumentEdited: (edited: boolean) => void;
   setTitle: (title: string) => void;
+  openAccountSettings: () => Promise<{ success: boolean; error?: string }>;
   sendToMainWindow?: (channel: string, data: unknown) => Promise<void>;
   reportUserActivity?: () => void;
 

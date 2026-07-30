@@ -1,12 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MAX_ATTACHMENTS_PER_MESSAGE } from '@nimbalyst/collab-protocol';
 
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
-import { CommentBody } from './CommentBody';
-import { EmojiAutocomplete, EmojiPicker, EmojiTriggerButton } from './EmojiPicker';
-import { MentionPicker } from './MentionPicker';
-import { caretRect } from './caretRect';
-import { parseCommentBody } from './commentBodyParser';
+import { ComposerLexicalInput, type ComposerInputHandle } from './ComposerLexicalInput';
+import { resourceIcon } from './composerRichText';
+import type { ComposerPillPayload } from './ComposerPillNode';
 import { searchEmoji } from './emojiCatalog';
 import {
   buildPillViews,
@@ -21,18 +20,18 @@ import {
   addPersonToPool,
   addRefToPool,
   deriveDraft,
-  detectTrigger,
-  labeledToken,
-  replaceRange,
   urnsInText,
   type DraftPool,
 } from './composerDraft';
 import { useResourcePreviews } from './useResourcePreviews';
 import { resourceRefToUrn } from './resourceUrn';
+import { formatAttachmentSize, toAttachmentView } from './commentBodyParser';
 import type {
+  AttachmentComposerHost,
   CommentCapabilities,
   ConversationContext,
   MentionDirectory,
+  MessageAttachment,
   ResourceCandidate,
   ResourcePreviewResolver,
   RichCommentBody,
@@ -47,13 +46,70 @@ export interface ComposerSubmission {
 }
 
 /**
+ * A file the author has added but not yet sent.
+ *
+ * Uploaded on add rather than on send: the durable outbox hands back an asset
+ * id immediately, so the strip shows a real thumbnail and a message posted
+ * offline still carries its files when the queue drains.
+ */
+interface PendingAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  byteSize: number;
+  /** Object URL for an image, revoked when the entry leaves. */
+  previewUrl?: string;
+  status: 'uploading' | 'ready' | 'failed';
+  attachment?: MessageAttachment;
+}
+
+function isImageFile(mimeType: string): boolean {
+  return mimeType.startsWith('image/') && mimeType !== 'image/svg+xml';
+}
+
+function createPendingId(): string {
+  return globalThis.crypto?.randomUUID?.()
+    ?? `attachment-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+const EMPTY_ATTACHMENTS: readonly MessageAttachment[] = [];
+
+/** Only blob URLs are ours to release; a `collab-asset://` src is not. */
+function releasePreview(url: string | undefined): void {
+  if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
+}
+
+/** An already-posted file, seeded into the strip so an edit keeps it. */
+function seedPendingAttachments(
+  attachments: readonly MessageAttachment[],
+  conversationId: string | undefined,
+): PendingAttachment[] {
+  return attachments.map((attachment) => ({
+    id: attachment.assetId,
+    fileName: attachment.fileName,
+    mimeType: attachment.mimeType,
+    byteSize: attachment.byteSize,
+    previewUrl: isImageFile(attachment.mimeType) && conversationId
+      ? toAttachmentView(attachment, conversationId).src
+      : undefined,
+    status: 'ready',
+    attachment,
+  }));
+}
+
+/**
  * The shared composer.
  *
  * Text is the model. The mention and reference lists are derived from it (see
- * composerDraft.ts), the preview under the input renders through the same
- * `CommentBody` the posted message will use, and the protocol validators are
- * enforced here rather than approximated -- so what the composer accepts is
- * exactly what the server will accept.
+ * composerDraft.ts), and the protocol validators are enforced here rather than
+ * approximated -- so what the composer accepts is exactly what the server will
+ * accept.
+ *
+ * The input is the preview. It renders the marks the reader renders (bold,
+ * italic, code, pills) as they are typed, so there is nothing to reconcile
+ * between what the author sees and what posts. The message text is still the
+ * single source of truth: `ComposerLexicalInput` reports it on every edit and
+ * everything below this line is unchanged from the textarea it replaced.
  *
  * Over-limit input is retained and reported. Nothing is truncated: a message
  * that quietly loses its tail is worse than one that refuses to send.
@@ -65,6 +121,7 @@ export function CommentComposer({
   orgId,
   resolver = null,
   resourceCandidates = [],
+  attachmentHost = null,
   placeholder,
   replyingTo,
   onCancelReply,
@@ -72,6 +129,7 @@ export function CommentComposer({
   autoFocus = false,
   initialText = '',
   initialPool = EMPTY_POOL,
+  initialAttachments = EMPTY_ATTACHMENTS,
   submitLabel = 'Send',
   onCancel,
 }: {
@@ -81,6 +139,8 @@ export function CommentComposer({
   orgId: string;
   resolver?: ResourcePreviewResolver | null;
   resourceCandidates?: ResourceCandidate[];
+  /** Absent on surfaces without an asset store: no paperclip, no paste capture. */
+  attachmentHost?: AttachmentComposerHost | null;
   placeholder?: string;
   /** One displayed level of reply context, mirroring the row. */
   replyingTo?: { commentId: string; actorLabel: string; snippet: string } | null;
@@ -90,21 +150,39 @@ export function CommentComposer({
   /** Edit mode seeds the existing body and its resolved pool. */
   initialText?: string;
   initialPool?: DraftPool;
+  /**
+   * Edit mode seeds the message's existing files too. Without this an edit
+   * would post a body with no `attachments` and silently detach them.
+   */
+  initialAttachments?: readonly MessageAttachment[];
   submitLabel?: string;
   onCancel?: () => void;
 }) {
   const [text, setText] = useState(initialText);
   const [pool, setPool] = useState<DraftPool>(initialPool);
-  const [caret, setCaret] = useState(initialText.length);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const [sending, setSending] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>(
+    () => seedPendingAttachments(initialAttachments, context.conversationId),
+  );
+  const [attachmentErrors, setAttachmentErrors] = useState<string[]>([]);
+  const inputRef = useRef<ComposerInputHandle | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Read by `addFiles` so a second paste sees the count the first one added
+  // without making the callback depend on it.
+  const pendingRef = useRef(pendingAttachments);
+  pendingRef.current = pendingAttachments;
 
   const restriction = describeComposerRestriction(capabilities, context);
 
-  const draft = useMemo(() => deriveDraft(text, 'nimbalystMarkdown', pool), [text, pool]);
+  const readyAttachments = useMemo(
+    () => pendingAttachments.flatMap((entry) => (entry.attachment ? [entry.attachment] : [])),
+    [pendingAttachments],
+  );
+  const draft = useMemo(
+    () => deriveDraft(text, 'nimbalystMarkdown', pool, readyAttachments),
+    [text, pool, readyAttachments],
+  );
   const validation = useMemo(() => validateDraft(draft), [draft]);
   const previews = useResourcePreviews(draft.resourceRefs, resolver);
   const pills = useMemo(
@@ -112,93 +190,155 @@ export function CommentComposer({
     [draft.resourceRefs, previews],
   );
 
-  // Escape dismisses the autocomplete for the token it is currently on, without
-  // dismissing autocomplete for the rest of the message.
-  const [suppressedStart, setSuppressedStart] = useState<number | null>(null);
-  const trigger = useMemo(() => {
-    const detected = detectTrigger(text, caret);
-    if (detected && detected.start === suppressedStart) return null;
-    return detected;
-  }, [text, caret, suppressedStart]);
-  const candidates = useMemo<MentionCandidate[]>(
-    () => (trigger?.kind === 'mention' ? mentionCandidates(directory, context, trigger.query) : []),
-    [trigger, directory, context],
-  );
-  const emojiSuggestions = useMemo(
-    () => (trigger?.kind === 'emoji' ? searchEmoji(trigger.query, 8) : []),
-    [trigger],
+  const candidatesFor = useCallback(
+    (query: string): MentionCandidate[] => mentionCandidates(directory, context, query),
+    [directory, context],
   );
 
-  const openList = trigger?.kind === 'mention' ? candidates.length : emojiSuggestions.length;
+  const emojiSuggestionsFor = useCallback((query: string) => searchEmoji(query, 8), []);
 
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [trigger?.kind, trigger?.query]);
-
-  // Re-anchor the autocomplete to the caret whenever the query moves.
-  useEffect(() => {
-    if (!trigger || !textareaRef.current) {
-      setAnchorRect(null);
-      return;
-    }
-    const measured = caretRect(textareaRef.current, caret);
-    setAnchorRect(measured ?? textareaRef.current.getBoundingClientRect());
-  }, [trigger?.start, trigger?.query, caret, trigger]);
-
-  const applyEdit = useCallback((next: { text: string; caret: number }) => {
-    setText(next.text);
-    setCaret(next.caret);
-    // Selection has to be restored after React commits the new value, or the
-    // caret snaps to the end and the next keystroke lands in the wrong place.
-    requestAnimationFrame(() => {
-      const node = textareaRef.current;
-      if (!node) return;
-      node.focus();
-      node.setSelectionRange(next.caret, next.caret);
-    });
-  }, []);
-
+  /**
+   * The pool records the handle; the editor gets back the pill to insert. Both
+   * sides agree on the URN, which is what the derivation keys off.
+   */
   const selectMention = useCallback(
-    (candidate: MentionCandidate) => {
-      if (!trigger) return;
+    (candidate: MentionCandidate): ComposerPillPayload => {
       if (candidate.kind === 'person') {
         const { pool: nextPool, urn } = addPersonToPool(pool, candidate.person);
         setPool(nextPool);
-        applyEdit(replaceRange(text, trigger.start, trigger.end, `${labeledToken(`@${candidate.person.displayName}`, urn)} `));
-      } else {
-        const { pool: nextPool, urn } = addAgentToPool(pool, candidate.agent, orgId);
-        setPool(nextPool);
-        applyEdit(replaceRange(text, trigger.start, trigger.end, `${labeledToken(`@${candidate.agent.sessionName}`, urn)} `));
+        return { label: `@${candidate.person.displayName}`, urn, kind: 'person' };
       }
+      const { pool: nextPool, urn } = addAgentToPool(pool, candidate.agent, orgId);
+      setPool(nextPool);
+      return { label: `@${candidate.agent.sessionName}`, urn, kind: 'agent' };
     },
-    [applyEdit, orgId, pool, text, trigger],
+    [orgId, pool],
   );
 
   const attachResource = useCallback(
     (candidate: ResourceCandidate) => {
       const { pool: nextPool, urn } = addRefToPool(pool, candidate.ref);
       setPool(nextPool);
-      const insertAt = caret;
-      applyEdit(replaceRange(text, insertAt, insertAt, `${labeledToken(candidate.label, urn)} `));
+      inputRef.current?.insertPill({
+        label: candidate.label,
+        urn,
+        kind: 'resource',
+        icon: resourceIcon(candidate.ref.kind),
+      });
     },
-    [applyEdit, caret, pool, text],
+    [pool],
   );
 
-  const removeAttachment = useCallback(
-    (urn: string) => {
-      // Remove the token, not just the ref, so the body and the derived list
-      // cannot disagree about what the message references.
-      const escaped = urn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const stripped = text
-        .replace(new RegExp(`\\[[^\\]\\n]{0,160}\\]\\(${escaped}\\)\\s?`, 'g'), '')
-        .replace(new RegExp(`${escaped}\\s?`, 'g'), '');
-      applyEdit({ text: stripped, caret: Math.min(caret, stripped.length) });
+  const removeAttachment = useCallback((urn: string) => {
+    // Remove the pill, not just the ref, so the body and the derived list
+    // cannot disagree about what the message references.
+    inputRef.current?.removePill(urn);
+  }, []);
+
+  /**
+   * Take files from a paste, a drop, or the picker.
+   *
+   * Each upload runs on its own: one refused file does not cancel the rest of
+   * a multi-file drop, and its reason is stated rather than logged.
+   */
+  const addFiles = useCallback(
+    (files: readonly File[]) => {
+      if (!attachmentHost || files.length === 0) return;
+
+      const room = MAX_ATTACHMENTS_PER_MESSAGE - pendingRef.current.length;
+      if (room <= 0) {
+        setAttachmentErrors([
+          `A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} files.`,
+        ]);
+        return;
+      }
+
+      const accepted = files.slice(0, room);
+      setAttachmentErrors(
+        accepted.length < files.length
+          ? [
+            `Only ${accepted.length} of ${files.length} files were added; a message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE}.`,
+          ]
+          : [],
+      );
+
+      const entries = accepted.map<PendingAttachment>((file) => ({
+        id: createPendingId(),
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        byteSize: file.size,
+        previewUrl: isImageFile(file.type) ? URL.createObjectURL(file) : undefined,
+        status: 'uploading',
+      }));
+      setPendingAttachments((current) => [...current, ...entries]);
+
+      entries.forEach((entry, index) => {
+        void attachmentHost
+          .upload(accepted[index])
+          .then((attachment) => {
+            setPendingAttachments((now) =>
+              now.map((candidate) =>
+                candidate.id === entry.id
+                  ? {
+                    ...candidate,
+                    status: 'ready',
+                    attachment,
+                    fileName: attachment.fileName,
+                    mimeType: attachment.mimeType,
+                    byteSize: attachment.byteSize,
+                  }
+                  : candidate,
+              ),
+            );
+          })
+          .catch((error: unknown) => {
+            setPendingAttachments((now) =>
+              now.map((candidate) =>
+                candidate.id === entry.id
+                  ? { ...candidate, status: 'failed' }
+                  : candidate,
+              ),
+            );
+            setAttachmentErrors((now) => [
+              ...now,
+              error instanceof Error && error.message
+                ? error.message
+                : `${entry.fileName} could not be attached.`,
+            ]);
+          });
+      });
     },
-    [applyEdit, caret, text],
+    [attachmentHost],
+  );
+
+  const removePendingAttachment = useCallback((id: string) => {
+    setPendingAttachments((current) => {
+      const leaving = current.find((entry) => entry.id === id);
+      releasePreview(leaving?.previewUrl);
+      return current.filter((entry) => entry.id !== id);
+    });
+    setAttachmentErrors([]);
+  }, []);
+
+  // Object URLs outlive the component unless they are released explicitly.
+  useEffect(
+    () => () => {
+      for (const entry of pendingRef.current) {
+        releasePreview(entry.previewUrl);
+      }
+    },
+    [],
+  );
+
+  // An upload still in flight, or one that failed, is a file the author
+  // believes is going with this message. Sending past it would drop it
+  // silently, so the send waits until every entry is resolved or removed.
+  const attachmentsSettling = pendingAttachments.some(
+    (entry) => entry.status !== 'ready',
   );
 
   const submit = useCallback(async () => {
-    if (!validation.canSend) {
+    if (!validation.canSend || attachmentsSettling) {
       setShowErrors(true);
       return;
     }
@@ -210,55 +350,26 @@ export function CommentComposer({
         mentionedUserIds: draft.mentionedUserIds,
         mentionedAgentSessionIds: draft.mentionedAgentSessionIds,
       });
+      inputRef.current?.clear();
       setText('');
       setPool(EMPTY_POOL);
-      setCaret(0);
-      setSuppressedStart(null);
       setShowErrors(false);
+      // Kept on failure: a send that threw must not also lose the files.
+      for (const entry of pendingAttachments) {
+        releasePreview(entry.previewUrl);
+      }
+      setPendingAttachments([]);
+      setAttachmentErrors([]);
     } finally {
       setSending(false);
     }
-  }, [draft, onSubmit, validation.canSend]);
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (openList > 0) {
-      if (event.key === 'ArrowDown') {
-        event.preventDefault();
-        setActiveIndex((index) => (index + 1) % openList);
-        return;
-      }
-      if (event.key === 'ArrowUp') {
-        event.preventDefault();
-        setActiveIndex((index) => (index - 1 + openList) % openList);
-        return;
-      }
-      if (event.key === 'Enter' || event.key === 'Tab') {
-        event.preventDefault();
-        if (trigger?.kind === 'mention') selectMention(candidates[activeIndex]);
-        else if (trigger) {
-          const entry = emojiSuggestions[activeIndex];
-          applyEdit(replaceRange(text, trigger.start, trigger.end, `${entry.glyph} `));
-        }
-        return;
-      }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        setSuppressedStart(trigger?.start ?? null);
-        setAnchorRect(null);
-        return;
-      }
-    }
-
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      void submit();
-    }
-  };
-
-  const syncCaret = () => {
-    const node = textareaRef.current;
-    if (node) setCaret(node.selectionStart ?? 0);
-  };
+  }, [
+    attachmentsSettling,
+    draft,
+    onSubmit,
+    pendingAttachments,
+    validation.canSend,
+  ]);
 
   if (restriction) {
     return (
@@ -306,24 +417,35 @@ export function CommentComposer({
         </div>
       )}
 
-      <textarea
-        ref={textareaRef}
-        value={text}
-        rows={2}
+      <ComposerLexicalInput
+        ref={inputRef}
+        initialText={initialText}
+        initialPool={initialPool}
         autoFocus={autoFocus}
-        data-testid="comment-composer-input"
-        aria-label={`Message ${context.surfaceLabel}`}
+        ariaLabel={`Message ${context.surfaceLabel}`}
         placeholder={placeholder ?? `Message ${context.surfaceLabel}. Type @ to mention someone or an agent.`}
-        onChange={(event) => {
-          setText(event.target.value);
-          setCaret(event.target.selectionStart ?? event.target.value.length);
-        }}
-        onKeyUp={syncCaret}
-        onClick={syncCaret}
-        onSelect={syncCaret}
-        onKeyDown={onKeyDown}
-        className="comment-composer-input max-h-[220px] w-full resize-y rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-2.5 py-2 text-[13px] leading-[1.5] text-[var(--nim-text)] outline-none placeholder:text-[var(--nim-text-faint)] focus:border-[var(--nim-border-focus)]"
+        onChange={setText}
+        onSubmit={() => void submit()}
+        mentionCandidatesFor={candidatesFor}
+        onMentionSelected={selectMention}
+        emojiSuggestionsFor={emojiSuggestionsFor}
+        onFiles={attachmentHost ? addFiles : undefined}
       />
+
+      {pendingAttachments.length > 0 && (
+        <div
+          className="comment-composer-pending-attachments mt-1.5 flex flex-wrap gap-1.5"
+          data-testid="comment-composer-pending-attachments"
+        >
+          {pendingAttachments.map((entry) => (
+            <PendingAttachmentChip
+              key={entry.id}
+              entry={entry}
+              onRemove={() => removePendingAttachment(entry.id)}
+            />
+          ))}
+        </div>
+      )}
 
       {attachedUrns.length > 0 && (
         <div className="comment-composer-attachments mt-1.5 flex flex-wrap items-center gap-1" data-testid="comment-composer-attachments">
@@ -348,25 +470,21 @@ export function CommentComposer({
         </div>
       )}
 
-      {text.trim().length > 0 && (
-        <div className="comment-composer-preview mt-1.5 rounded border border-dashed border-[var(--nim-border)] px-2 py-1.5" data-testid="comment-composer-preview">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--nim-text-faint)]">Preview</div>
-          <CommentBody
-            segments={parseCommentBody(draft.body, {
-              resourceRefs: draft.resourceRefs,
-              mentionedUserIds: draft.mentionedUserIds,
-              mentionedAgentSessionIds: draft.mentionedAgentSessionIds,
-              directory,
-              viewerUserId: '',
-              pills,
-            })}
-          />
-        </div>
-      )}
-
-      {showErrors && validation.errors.length > 0 && (
+      {(attachmentErrors.length > 0 || (showErrors && validation.errors.length > 0)) && (
         <ul className="comment-composer-errors m-0 mt-1.5 list-none p-0" data-testid="comment-composer-errors">
-          {validation.errors.map((error, index) => (
+          {/* Attachment refusals are not gated on a send attempt: they answer
+              an action the author just took, so they are stated immediately. */}
+          {attachmentErrors.map((message, index) => (
+            <li
+              key={`attachment-${index}`}
+              className="flex items-center gap-1.5 text-[12px] text-[var(--nim-error)]"
+              data-error-code="attachmentRejected"
+            >
+              <MaterialSymbol icon="error" size={12} />
+              {message}
+            </li>
+          ))}
+          {showErrors && validation.errors.map((error, index) => (
             <li
               key={`${error.code}-${index}`}
               className="flex items-center gap-1.5 text-[12px] text-[var(--nim-error)]"
@@ -380,18 +498,36 @@ export function CommentComposer({
         </ul>
       )}
 
+      {/* No emoji button here on purpose: `:` shortcode typeahead in the input
+          is the emoji entry point, and a second, permanently-visible control for
+          the same thing is just clutter under every composer. */}
       <div className="comment-composer-footer mt-1.5 flex items-center gap-2">
-        <EmojiPicker
-          placement="top-start"
-          testId="composer-emoji-picker"
-          onSelect={(shortcode) => {
-            const entry = searchEmoji(shortcode, 1)[0];
-            applyEdit(replaceRange(text, caret, caret, `${entry ? entry.glyph : `:${shortcode}:`} `));
-          }}
-          trigger={(props) => (
-            <EmojiTriggerButton label="Insert emoji" testId="composer-emoji-trigger" triggerProps={props} />
-          )}
-        />
+        {attachmentHost && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              data-testid="comment-composer-file-input"
+              onChange={(event) => {
+                addFiles([...(event.target.files ?? [])]);
+                // Reset, or picking the same file twice in a row is a no-op.
+                event.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              data-testid="comment-composer-attach-file"
+              aria-label="Attach a file"
+              title="Attach a file"
+              onClick={() => fileInputRef.current?.click()}
+              className="comment-composer-attach-file flex size-6 items-center justify-center rounded border border-transparent text-[var(--nim-text-muted)] hover:border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)]"
+            >
+              <MaterialSymbol icon="attach_file" size={14} />
+            </button>
+          </>
+        )}
 
         {resourceCandidates.length > 0 && (
           <ResourceAttachMenu candidates={resourceCandidates} onAttach={attachResource} />
@@ -417,13 +553,13 @@ export function CommentComposer({
         <button
           type="button"
           data-testid="comment-composer-send"
-          disabled={sending || validation.isEmpty}
-          aria-disabled={!validation.canSend}
+          disabled={sending || validation.isEmpty || attachmentsSettling}
+          aria-disabled={!validation.canSend || attachmentsSettling}
           onClick={() => void submit()}
           className={`comment-composer-send flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-[12px] font-medium ${
             onCancel ? '' : 'ml-auto'
           } ${
-            validation.canSend && !sending
+            validation.canSend && !sending && !attachmentsSettling
               ? 'bg-[var(--nim-primary)] text-[var(--nim-on-primary)] hover:bg-[var(--nim-primary-hover)]'
               : 'cursor-not-allowed bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-disabled)]'
           }`}
@@ -432,27 +568,66 @@ export function CommentComposer({
           {sending ? 'Sending' : submitLabel}
         </button>
       </div>
-
-      {trigger?.kind === 'mention' && candidates.length > 0 && (
-        <MentionPicker
-          anchorRect={anchorRect}
-          candidates={candidates}
-          activeIndex={activeIndex}
-          onSelect={selectMention}
-          onActiveIndexChange={setActiveIndex}
-        />
-      )}
-
-      {trigger?.kind === 'emoji' && emojiSuggestions.length > 0 && (
-        <EmojiAutocomplete
-          anchorRect={anchorRect}
-          entries={emojiSuggestions}
-          activeIndex={activeIndex}
-          onSelect={(entry) => applyEdit(replaceRange(text, trigger.start, trigger.end, `${entry.glyph} `))}
-          onActiveIndexChange={setActiveIndex}
-        />
-      )}
     </div>
+  );
+}
+
+/**
+ * One file in the pre-send strip.
+ *
+ * An image shows itself, because "which screenshot did I just paste" is the
+ * question the strip exists to answer; anything else shows a type glyph, its
+ * name and its size. Both carry the same remove control -- an attachment added
+ * by accident has to be removable without clearing the message.
+ */
+function PendingAttachmentChip({
+  entry,
+  onRemove,
+}: {
+  entry: PendingAttachment;
+  onRemove: () => void;
+}) {
+  const failed = entry.status === 'failed';
+  return (
+    <span
+      className={`comment-composer-pending-attachment relative flex items-center gap-1.5 rounded-md border px-1.5 py-1 text-[12px] ${
+        failed
+          ? 'border-[var(--nim-error)] text-[var(--nim-error)]'
+          : 'border-[var(--nim-border)] text-[var(--nim-text-muted)]'
+      }`}
+      data-testid="comment-composer-pending-attachment"
+      data-status={entry.status}
+      data-file-name={entry.fileName}
+    >
+      {entry.previewUrl ? (
+        <img
+          src={entry.previewUrl}
+          alt={entry.fileName}
+          className="size-9 rounded object-cover"
+          data-testid="comment-composer-pending-attachment-preview"
+        />
+      ) : (
+        <MaterialSymbol icon={failed ? 'error' : 'draft'} size={16} />
+      )}
+      <span className="flex min-w-0 flex-col">
+        <span className="max-w-[160px] truncate text-[var(--nim-text)]">{entry.fileName}</span>
+        <span className="text-[11px] text-[var(--nim-text-faint)]">
+          {entry.status === 'uploading'
+            ? 'Attaching…'
+            : failed
+              ? 'Failed'
+              : formatAttachmentSize(entry.byteSize)}
+        </span>
+      </span>
+      <button
+        type="button"
+        aria-label={`Remove ${entry.fileName}`}
+        className="rounded p-0.5 hover:bg-[var(--nim-bg-hover)]"
+        onClick={onRemove}
+      >
+        <MaterialSymbol icon="close" size={12} />
+      </button>
+    </span>
   );
 }
 

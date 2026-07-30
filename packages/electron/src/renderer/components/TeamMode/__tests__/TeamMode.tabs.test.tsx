@@ -5,12 +5,8 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
-import {
-  ADMIN_TABS,
-  DEFAULT_ADMIN_TAB,
-  FULL_WIDTH_TABS,
-  TeamMode,
-} from '../TeamMode';
+import { ADMIN_TABS, TeamMode } from '../TeamMode';
+import { DEFAULT_ORG_WINDOW_ROUTE, isFullWidthRoute } from '../orgWindowState';
 
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span>{icon}</span>,
@@ -30,32 +26,49 @@ function installApi() {
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
-      team: { findForWorkspace: vi.fn().mockResolvedValue(null) },
-      organization: { list: vi.fn().mockResolvedValue({ success: true, teams: [team] }) },
+      team: {
+        findForWorkspace: vi.fn().mockResolvedValue(null),
+        resolveOrgProjectsLocalState: vi.fn().mockResolvedValue({
+          success: true,
+          projects: [],
+        }),
+        openProjectWorkspace: vi.fn().mockResolvedValue({ success: true }),
+      },
+      organization: {
+        list: vi.fn().mockResolvedValue({ success: true, teams: [team] }),
+        listMembers: vi.fn().mockResolvedValue({ success: true, members: [], callerRole: 'owner' }),
+      },
       stytch: { getAccounts: vi.fn().mockResolvedValue([{ personalOrgId: 'account-1', email: 'a@example.com' }]) },
+      invoke: vi.fn().mockResolvedValue([]),
+      on: vi.fn().mockReturnValue(() => {}),
       openExternal: vi.fn(),
+      openAccountSettings: vi.fn().mockResolvedValue({ success: true }),
     },
   });
 }
 
 /**
- * The org window lands on the Inbox, and the Inbox is the tab that opts out of
- * the 900px administration column. Both are deliberate placement decisions, so
- * they are asserted rather than left to whichever edit touches the file next.
+ * The org window lands on the Inbox, and only the administration panels keep
+ * the 900px column — the Inbox, conversations and the rooms directory are
+ * full-bleed surfaces. Both are deliberate placement decisions, so they are
+ * asserted rather than left to whichever edit touches the file next.
  */
-describe('TeamMode admin tabs', () => {
+describe('TeamMode org window navigation', () => {
   afterEach(() => cleanup());
 
-  it('lists the tabs in the shipped order with the Inbox first', () => {
+  it('lists the administration panels in the shipped order, Inbox no longer among them', () => {
     expect(ADMIN_TABS.map((entry) => entry.id)).toEqual([
-      'inbox',
       'members',
       'projects',
+      // Organization settings sit between Projects and Billing.
+      'settings',
       'billing',
       'danger',
     ]);
-    expect(DEFAULT_ADMIN_TAB).toBe('inbox');
-    expect([...FULL_WIDTH_TABS]).toEqual(['inbox']);
+    expect(DEFAULT_ORG_WINDOW_ROUTE.view).toBe('inbox');
+    expect(isFullWidthRoute({ view: 'inbox' })).toBe(true);
+    expect(isFullWidthRoute({ view: 'conversation', conversationId: 'general' })).toBe(true);
+    expect(isFullWidthRoute({ view: 'admin', adminTab: 'members' })).toBe(false);
   });
 
   it('opens on the Inbox, full width, in one content region', async () => {
@@ -72,7 +85,7 @@ describe('TeamMode admin tabs', () => {
     expect(mains[0].querySelector('.max-w-\\[900px\\]')).toBeNull();
   });
 
-  it('restores the administration column on an administration tab', async () => {
+  it('restores the administration column on an administration panel', async () => {
     installApi();
     const store = createStore();
     store.set(selectedOrgIdAtom, 'org-1');
@@ -86,5 +99,21 @@ describe('TeamMode admin tabs', () => {
     expect(mains).toHaveLength(1);
     expect(mains[0].classList.contains('team-mode-content-full')).toBe(false);
     expect(mains[0].querySelector('.max-w-\\[900px\\]')).not.toBeNull();
+  });
+
+  it('opens the rooms directory from the sidebar', async () => {
+    installApi();
+    const store = createStore();
+    store.set(selectedOrgIdAtom, 'org-1');
+    render(<Provider store={store}><TeamMode /></Provider>);
+
+    // The directory has no row of its own any more — it is an item in the
+    // rooms section's + menu.
+    await waitFor(() => expect(screen.getByTestId('org-rooms-section-add')).toBeTruthy());
+    screen.getByTestId('org-rooms-section-add').click();
+    await waitFor(() => expect(screen.getByTestId('org-browse-rooms')).toBeTruthy());
+    screen.getByTestId('org-browse-rooms').click();
+
+    await waitFor(() => expect(screen.getByTestId('org-rooms-directory')).toBeTruthy());
   });
 });

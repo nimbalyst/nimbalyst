@@ -86,6 +86,8 @@ export type {
   TeamInboxUnavailableDelivery,
   TeamInboxWatermark,
   TeamInboxWireDelivery,
+  TeamPresenceMember,
+  PresenceDesiredStatus,
 } from './TeamInboxSync';
 
 export {

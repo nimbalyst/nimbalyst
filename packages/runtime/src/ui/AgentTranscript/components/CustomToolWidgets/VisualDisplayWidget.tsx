@@ -686,7 +686,11 @@ const ChartItemRenderer: React.FC<{
       <div className="rounded-md overflow-hidden border border-nim bg-nim p-3" role="img" aria-label={`${chartConfig.chartType} chart: ${item.description}`}>
         <p className="text-nim text-sm font-medium mb-3">{item.description}</p>
         <div style={{ height }}>
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer
+            width="100%"
+            height="100%"
+            initialDimension={{ width: 0, height }}
+          >
             {renderChart()}
           </ResponsiveContainer>
         </div>

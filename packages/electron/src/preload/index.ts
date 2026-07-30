@@ -13,6 +13,8 @@ import type {
   LocalReplicaStorageUsage,
   ReplaceLocalReplicaSnapshotInput,
 } from '@nimbalyst/runtime/sync';
+import type { ConversationSubscription } from '@nimbalyst/collab-protocol';
+import type { ConversationSetSubscriptionRequest } from '../shared/conversationDirectory.ts';
 
 // Nimbalyst is an IDE-like application with many concurrent IPC listeners:
 // - File watching, git status, AI sessions, terminals, extensions, etc.
@@ -325,6 +327,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Window operations
   setDocumentEdited: (edited: boolean) => ipcRenderer.send('set-document-edited', edited),
   setTitle: (title: string) => ipcRenderer.send('set-title', title),
+  openAccountSettings: () => ipcRenderer.invoke('app:open-account-settings'),
   /** Report user activity for sync presence awareness */
   reportUserActivity: () => ipcRenderer.send('user-activity'),
   /** Set the idle threshold for sync presence (in milliseconds). For testing, use 10000 (10 seconds). */
@@ -1570,7 +1573,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   team: {
     list: (options?: { forceRefresh?: boolean }) => ipcRenderer.invoke('team:list', options),
     /** Open (or focus + retarget) the dedicated org-management window. */
-    openManagementWindow: (target?: { orgId?: string; workspacePath?: string }) =>
+    openManagementWindow: (target?: {
+      orgId?: string;
+      workspacePath?: string;
+      conversationId?: string;
+    }) =>
       ipcRenderer.invoke('team-window:open', target),
     findForWorkspace: (workspacePath: string) => ipcRenderer.invoke('team:find-for-workspace', workspacePath),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
@@ -1580,6 +1587,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     addProject: (orgId: string, workspacePath?: string, name?: string) => ipcRenderer.invoke('team:add-project', orgId, workspacePath, name),
     // Epic H3 P0/A: enumerate every project in an org (member-gated).
     listProjects: (orgId: string) => ipcRenderer.invoke('team:list-projects', orgId),
+    resolveOrgProjectsLocalState: (orgId: string) =>
+      ipcRenderer.invoke('team:resolve-org-projects-local-state', orgId),
+    openProjectWorkspace: (workspacePath: string) =>
+      ipcRenderer.invoke('team:open-project-workspace', workspacePath),
     // Epic H3 P3: move-project wizard. Preview is read-only; move is destructive (admin on both orgs).
     moveProjectPreview: (srcOrgId: string, projectId: string, destOrgId: string) =>
       ipcRenderer.invoke('team:move-project-preview', srcOrgId, projectId, destOrgId),
@@ -1607,6 +1618,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   organization: {
     list: () => ipcRenderer.invoke('team:list'),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
+    rename: (orgId: string, name: string) =>
+      ipcRenderer.invoke('team:rename', orgId, name),
     create: (input: { name: string; workspacePath?: string; sourcePersonalOrgId?: string }) =>
       ipcRenderer.invoke('team:create', input.name, input.workspacePath, input.sourcePersonalOrgId),
     acceptInvitation: (orgId: string) => ipcRenderer.invoke('team:accept-invite', orgId),
@@ -1621,6 +1634,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('team:move-project', input.sourceOrgId, input.projectId, input.destinationOrgId, input.dropMemberEmails),
     deleteOrganization: (orgId: string) => ipcRenderer.invoke('team:delete', orgId),
     getEncryptionStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId),
+  },
+
+  conversation: {
+    setSubscription: (request: ConversationSetSubscriptionRequest) =>
+      ipcRenderer.invoke(
+        'conversation:set-subscription',
+        request,
+      ) as Promise<ConversationSubscription>,
+    /**
+     * Authorize this window to upload and read the conversation's encrypted
+     * attachments. Paired with `unregisterAssets` on unmount; refcounted in
+     * main, so two views of one conversation are safe.
+     */
+    registerAssets: (request: { orgId: string; conversationId: string }) =>
+      ipcRenderer.invoke('conversation:register-assets', request) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
+    unregisterAssets: (request: { conversationId: string }) =>
+      ipcRenderer.invoke('conversation:unregister-assets', request) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
   },
 
   // Epic H1: org / project access model. `canAccess` is the single client-side

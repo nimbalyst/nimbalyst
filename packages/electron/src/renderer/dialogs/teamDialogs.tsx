@@ -10,6 +10,7 @@ import type { DialogConfig } from '../contexts/DialogContext.types';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { DIALOG_IDS } from './registry';
 import { ShareToTeamDialog } from '../components/ShareToTeamDialog';
+import { OrgCreationWizard } from '../components/TeamMode/onboarding/OrgCreationWizard';
 import { AlphaBadge } from '../components/common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../components/common/TeamAlphaNotice';
 import type { CollaborativeDocumentTypeDescriptor } from '../services/CollaborativeDocumentTypeCatalog';
@@ -251,7 +252,40 @@ function ShareToTeamDialogWrapper({
   );
 }
 
+/**
+ * The four-step organization creation wizard. Registered here so both the org
+ * window and Account settings (different windows, same registry) can open it.
+ */
+export interface OrgCreationWizardData {
+  onOrganizationCreated?: (orgId: string) => void;
+}
+
+function OrgCreationWizardWrapper({
+  isOpen,
+  onClose,
+  data,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  data?: OrgCreationWizardData;
+}) {
+  return (
+    <OrgCreationWizard
+      isOpen={isOpen}
+      onClose={onClose}
+      onOrganizationCreated={data?.onOrganizationCreated}
+    />
+  );
+}
+
 export function registerTeamDialogs() {
+  registerDialog<OrgCreationWizardData>({
+    id: DIALOG_IDS.ORG_CREATION_WIZARD,
+    group: 'system',
+    component: OrgCreationWizardWrapper as DialogConfig<OrgCreationWizardData>['component'],
+    priority: 150,
+  });
+
   registerDialog<CreateTeamData>({
     id: DIALOG_IDS.CREATE_TEAM,
     group: 'system',

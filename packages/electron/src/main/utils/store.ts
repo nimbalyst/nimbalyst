@@ -27,6 +27,11 @@ export interface TrackerSyncPolicySetting {
   scope?: 'project' | 'workspace';
 }
 
+export interface TeamManagementWindowState {
+  bounds: { x: number; y: number; width: number; height: number };
+  maximized: boolean;
+}
+
 /**
  * Extension settings stored per extension.
  * Tracks enabled state and extension-specific configuration.
@@ -80,6 +85,8 @@ interface AppStoreSchema {
   // explicit orgId (Window > Organization Manager, or the switcher's untargeted
   // entries). Written whenever the selection changes.
   lastSelectedOrgId?: string;
+  // Bounds for the single global organization-management window.
+  teamManagementWindowState?: TeamManagementWindowState;
   // Default AI model for new sessions (format: "provider:model" e.g., "claude-code:sonnet")
   defaultAIModel?: string;
   // Defaults for the composer's effort / extended-thinking selectors. Both are
@@ -839,6 +846,17 @@ export function saveSessionState(state: SessionState): void {
 
 export function clearSessionState(): void {
   getAppStore().delete('sessionState');
+}
+
+export function getTeamManagementWindowState(): TeamManagementWindowState | undefined {
+  return getAppStore().get('teamManagementWindowState');
+}
+
+export function saveTeamManagementWindowState(state: TeamManagementWindowState): void {
+  getAppStore().set('teamManagementWindowState', {
+    bounds: { ...state.bounds },
+    maximized: state.maximized,
+  });
 }
 
 export function getTheme(): AppTheme {

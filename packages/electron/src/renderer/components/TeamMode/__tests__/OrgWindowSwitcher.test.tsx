@@ -44,13 +44,62 @@ describe('OrgWindowSwitcher', () => {
     expect(screen.queryByTestId('org-window-switcher-menu')).toBeNull();
   });
 
-  it('stays out of the way when there is nothing to switch between', () => {
-    const { container } = render(
+  // The row is the window's org header now, so it stays even with a single
+  // organization — dropping it would leave the window with no org identity.
+  it('shows the org identity when there is nothing to switch between', () => {
+    render(
       <OrgWindowSwitcher
         organizations={[organizations[0], organizations[2]]}
         selectedOrgId="org-a"
+        selectedOrgName="Acme"
         onSelect={vi.fn()}
       />,
+    );
+
+    const button = screen.getByTestId('org-window-switcher-button');
+    expect(button.textContent).toContain('Acme');
+    // Initials avatar and the alpha chip that used to live in the header band.
+    expect(button.querySelector('.org-window-switcher-avatar')?.textContent).toBe('AC');
+    expect(screen.getByTestId('alpha-badge')).toBeTruthy();
+
+    fireEvent.click(button);
+    expect(screen.queryAllByTestId('org-window-switcher-item')).toHaveLength(0);
+  });
+
+  it('prefers the bound organization name so a rename shows immediately', () => {
+    render(
+      <OrgWindowSwitcher
+        organizations={organizations}
+        selectedOrgId="org-a"
+        selectedOrgName="Acme Renamed"
+        onSelect={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('org-window-switcher-button').textContent).toContain('Acme Renamed');
+  });
+
+  it('offers the web console from the menu, replacing the header button', () => {
+    const onOpenWebConsole = vi.fn();
+    render(
+      <OrgWindowSwitcher
+        organizations={organizations}
+        selectedOrgId="org-a"
+        onSelect={vi.fn()}
+        onOpenWebConsole={onOpenWebConsole}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('org-window-switcher-button'));
+    fireEvent.click(screen.getByTestId('org-window-switcher-console'));
+
+    expect(onOpenWebConsole).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('org-window-switcher-menu')).toBeNull();
+  });
+
+  it('renders nothing with no organization to identify or switch to', () => {
+    const { container } = render(
+      <OrgWindowSwitcher organizations={[organizations[2]]} selectedOrgId={null} onSelect={vi.fn()} />,
     );
 
     expect(container.querySelector('.org-window-switcher')).toBeNull();

@@ -348,4 +348,46 @@ describe('InboxSection', () => {
     expect(availabilities).toEqual(new Set(['available', 'accessRemoved', 'deletedSource']));
     expect(screen.getByTestId('inbox-row-delivery-deleted-source').getAttribute('data-availability')).toBe('deletedSource');
   });
+
+  it('enables "New message" only when a compose destination picker is supplied', async () => {
+    const provider = createFixtureInboxProvider({ now: NOW });
+    const onNewMessage = vi.fn();
+
+    const { rerender } = render(<InboxSection provider={provider} now={NOW} />);
+    await screen.findByTestId('inbox-list');
+    const disabledButton = screen.getByTestId('inbox-new-message') as HTMLButtonElement;
+    expect(disabledButton.disabled).toBe(true);
+    fireEvent.click(disabledButton);
+    expect(onNewMessage).not.toHaveBeenCalled();
+
+    rerender(
+      <InboxSection provider={provider} now={NOW} onNewMessage={onNewMessage} />,
+    );
+    const button = screen.getByTestId('inbox-new-message') as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    expect(onNewMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the host explain why compose is unavailable', async () => {
+    const provider = createFixtureInboxProvider({ now: NOW });
+
+    const { rerender } = render(<InboxSection provider={provider} now={NOW} />);
+    await screen.findByTestId('inbox-list');
+    // Mounted in the project window: the org window is where compose lives.
+    expect((screen.getByTestId('inbox-new-message') as HTMLButtonElement).title)
+      .toBe('Compose is available in the organization window');
+
+    // Mounted in the org window with messaging turned off, where that advice
+    // would send the user to the window they are already in.
+    rerender(
+      <InboxSection
+        provider={provider}
+        now={NOW}
+        composeUnavailableLabel="Rooms and direct messages are turned off for this organization"
+      />,
+    );
+    expect((screen.getByTestId('inbox-new-message') as HTMLButtonElement).title)
+      .toBe('Rooms and direct messages are turned off for this organization');
+  });
 });

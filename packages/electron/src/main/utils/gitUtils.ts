@@ -1,4 +1,4 @@
-import { execFile, execFileSync, execSync } from 'child_process';
+import { execFile, execSync } from 'child_process';
 import { readdirSync } from 'fs';
 import { relative } from 'path';
 import { promisify } from 'util';
@@ -77,9 +77,46 @@ export function resetGitAvailableCache(): void {
   gitAvailableCache = null;
 }
 
+// `git ls-files` output is bounded by the repo's ignore rules, but an untracked
+// tree of source files can still be large. 64MB matches what the previous
+// per-directory implementation allowed; lowering it would silently erase
+// untracked files from the changed-files UI and the commit-context prompt.
+const LS_FILES_MAX_BUFFER = 64 * 1024 * 1024;
+
+// Pathspecs are passed as argv, which the OS caps (ARG_MAX: 1MB on macOS, less
+// on some platforms). A repo with thousands of untracked directories would blow
+// past that and fail the whole batch, so split into chunks well under the cap.
+// Normal repos have a handful of untracked directories and use a single chunk.
+const LS_FILES_MAX_PATHSPEC_BYTES = 96 * 1024;
+const LS_FILES_MAX_PATHSPECS_PER_CALL = 500;
+
+function chunkPathspecs(pathspecs: string[]): string[][] {
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  let currentBytes = 0;
+  for (const pathspec of pathspecs) {
+    const bytes = Buffer.byteLength(pathspec) + 1; // + argv NUL terminator
+    if (
+      current.length > 0 &&
+      (currentBytes + bytes > LS_FILES_MAX_PATHSPEC_BYTES ||
+        current.length >= LS_FILES_MAX_PATHSPECS_PER_CALL)
+    ) {
+      chunks.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(pathspec);
+    currentBytes += bytes;
+  }
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+  return chunks;
+}
+
 /**
- * List untracked, non-ignored files inside an untracked directory, honoring
- * `.gitignore`.
+ * List untracked, non-ignored files inside a set of untracked directories,
+ * honoring `.gitignore`, using ONE asynchronous `git ls-files` per repository.
  *
  * `git status --porcelain` collapses an untracked directory into a single
  * `?? dir/` entry. Callers that need the individual files (the edited-files UI,
@@ -87,28 +124,97 @@ export function resetGitAvailableCache(): void {
  * descends into gitignored `node_modules`/`dist`/`out` and can explode a single
  * untracked package dir into tens of thousands of paths (NIM-1782: a worktree
  * "Commit with AI" enumerated 90k files / ~3.1M tokens). `git ls-files` applies
- * the repo's ignore rules, so only files the user would actually commit return.
+ * the repo's ignore rules AND stops at nested-repository boundaries, so only
+ * files the user would actually commit return. Git stays the authority for
+ * both; do not replace this with a filesystem walk.
+ *
+ * Takes every directory at once because the previous per-directory version
+ * spawned a SYNCHRONOUS child process each time (NIM-2286): a repo with N
+ * untracked directories blocked the Electron main thread on N subprocesses.
+ * `--no-optional-locks` keeps this read-only call from touching `.git/index`
+ * and contending with concurrent git writers (NIM-2285).
  *
  * @param repoRoot Absolute path to the git working-tree root (or worktree root).
- * @param dirAbsolutePath Absolute path to the untracked directory to expand.
- * @returns File paths relative to `repoRoot`, forward-slashed (git's native
- *          output). Empty array on any git error.
+ * @param dirAbsolutePaths Absolute paths of the untracked directories to expand.
+ * @returns Map from each input directory path to the files inside it, relative
+ *          to `repoRoot` and forward-slashed (git's native output). Directories
+ *          with no git-visible files are absent from the map. Empty map on any
+ *          git error.
  */
-export function getUntrackedFilesInDirectory(repoRoot: string, dirAbsolutePath: string): string[] {
-  try {
-    const relDir = relative(repoRoot, dirAbsolutePath);
+export async function getUntrackedFilesInDirectories(
+  repoRoot: string,
+  dirAbsolutePaths: string[]
+): Promise<Map<string, string[]>> {
+  const byDirectory = new Map<string, string[]>();
+  if (dirAbsolutePaths.length === 0) {
+    return byDirectory;
+  }
+
+  // Several input paths can normalize onto the same pathspec (duplicate entries,
+  // differing separators), so keep every input that maps to a given pathspec.
+  const inputsByPathspec = new Map<string, string[]>();
+  for (const dirAbsolutePath of dirAbsolutePaths) {
+    const relDir = relative(repoRoot, dirAbsolutePath).replace(/\\/g, '/');
     // An empty pathspec would match the whole repo; scope to the directory.
     const pathspec = relDir === '' ? '.' : relDir;
-    const stdout = execFileSync(
-      'git',
-      ['ls-files', '--others', '--exclude-standard', '-z', '--', pathspec],
-      { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
-    );
-    // `-z` gives NUL-separated paths so filenames with spaces/newlines survive.
-    return stdout.split('\0').filter(Boolean);
-  } catch {
-    return [];
+    const existing = inputsByPathspec.get(pathspec);
+    if (existing) {
+      existing.push(dirAbsolutePath);
+    } else {
+      inputsByPathspec.set(pathspec, [dirAbsolutePath]);
+    }
   }
+
+  let stdout: string;
+  try {
+    const chunks = chunkPathspecs(Array.from(inputsByPathspec.keys()));
+    const outputs = await Promise.all(chunks.map(chunk => new Promise<string>((resolveOutput, rejectOutput) => {
+      execFile(
+        'git',
+        ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z', '--', ...chunk],
+        { cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER },
+        (error, chunkStdout) => {
+          if (error) {
+            rejectOutput(error);
+            return;
+          }
+          resolveOutput(chunkStdout);
+        }
+      );
+    })));
+    stdout = outputs.join('\0');
+  } catch (error) {
+    // Don't swallow this silently: a failure here makes untracked files vanish
+    // from the changed-files UI with no other symptom.
+    logEbadfDiagnostic('getUntrackedFilesInDirectories', error);
+    console.error('[gitUtils] git ls-files failed while expanding untracked directories', repoRoot, error);
+    return byDirectory;
+  }
+
+  // `-z` gives NUL-separated paths so filenames with spaces/newlines survive.
+  for (const filePath of stdout.split('\0')) {
+    if (!filePath) continue;
+    // Attribute the file to the longest matching input directory. Porcelain
+    // never reports nested untracked directories (the outer one collapses the
+    // inner), but longest-match is the correct semantic regardless.
+    const parts = filePath.split('/');
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const prefix = i === 0 ? '.' : parts.slice(0, i).join('/');
+      const inputs = inputsByPathspec.get(prefix);
+      if (!inputs) continue;
+      for (const input of inputs) {
+        const list = byDirectory.get(input);
+        if (list) {
+          list.push(filePath);
+        } else {
+          byDirectory.set(input, [filePath]);
+        }
+      }
+      break;
+    }
+  }
+
+  return byDirectory;
 }
 
 /**

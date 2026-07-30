@@ -79,6 +79,8 @@ interface KanbanBoardProps {
    *  exactly one item is selected. Callers omit this when the workspace
    *  has no team configured. */
   onCopyDeepLink?: (itemId: string) => void;
+  /** Open a card's item as a document -- double-click and the card context menu. */
+  onOpenDocument?: (itemId: string) => void;
   favoriteItemIds?: ReadonlySet<string>;
   onToggleFavorite?: (itemId: string) => void;
 }
@@ -119,6 +121,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   onArchiveItems,
   onDeleteItems,
   onCopyDeepLink,
+  onOpenDocument,
   favoriteItemIds = new Set<string>(),
   onToggleFavorite,
 }) => {
@@ -621,6 +624,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                       : 'border-nim'
                   }`}
                   onClick={(e) => handleCardSelect(e, item)}
+                  onDoubleClick={() => onOpenDocument?.(item.id)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
@@ -767,6 +771,21 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
           </KanbanContextSubmenu>
 
           <div className="border-b border-nim my-1" />
+
+          {onOpenDocument && selectedIds.size === 1 && (
+            <button
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-nim hover:bg-nim-tertiary cursor-pointer"
+              data-testid="tracker-kanban-context-open-document"
+              onClick={() => {
+                const [onlyId] = selectedIds;
+                closeContextMenu();
+                onOpenDocument(onlyId);
+              }}
+            >
+              <MaterialSymbol icon="article" size={16} />
+              Open document
+            </button>
+          )}
 
           {onCopyDeepLink && selectedIds.size === 1 && (
             <button

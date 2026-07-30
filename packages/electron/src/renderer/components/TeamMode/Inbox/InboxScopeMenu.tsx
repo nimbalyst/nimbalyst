@@ -58,7 +58,7 @@ export function InboxScopeMenu({
         disabled={disabled}
         data-testid="inbox-scope-trigger"
         onClick={() => menu.setIsOpen(!menu.isOpen)}
-        className={`inbox-scope-trigger flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] ${
+        className={`inbox-scope-trigger org-window-no-drag flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] ${
           disabled
             ? 'cursor-not-allowed border-[var(--nim-border)] text-[var(--nim-text-disabled)]'
             : active
@@ -77,7 +77,7 @@ export function InboxScopeMenu({
             ref={menu.refs.setFloating}
             style={menu.floatingStyles}
             {...menu.getFloatingProps()}
-            className="inbox-scope-menu z-[10000] min-w-[240px] overflow-y-auto rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg)] p-1 shadow-[0_4px_12px_rgba(0,0,0,0.15)]"
+            className="inbox-scope-menu org-window-no-drag z-[10000] min-w-[240px] overflow-y-auto rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg)] p-1 shadow-[0_4px_12px_rgba(0,0,0,0.15)]"
             data-testid="inbox-scope-menu"
           >
             {options.orgs.length > 1 && (

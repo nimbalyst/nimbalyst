@@ -27,7 +27,7 @@ vi.mock('electron', () => ({
   net: { fetch: fetchMock },
 }));
 
-vi.mock('../../utils/ipcRegistry', () => ({ safeHandle: safeHandleMock }));
+vi.mock('../../utils/ipcRegistry', () => ({ safeHandle: safeHandleMock, safeOn: vi.fn() }));
 
 vi.mock('../../utils/logger', () => ({
   logger: { main: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } },
@@ -36,6 +36,16 @@ vi.mock('../../utils/logger', () => ({
 vi.mock('../../utils/gitUtils', () => ({ getNormalizedGitRemote: vi.fn() }));
 
 vi.mock('../teamProjectResolver', () => ({ resolveTeamForRemoteHash: vi.fn() }));
+
+vi.mock('../../window/WindowManager', () => ({
+  createWindow: vi.fn(),
+  windows: new Map(),
+  windowStates: new Map(),
+}));
+
+vi.mock('../../window/windowState', () => ({
+  windowReferencesWorkspace: vi.fn(() => false),
+}));
 
 vi.mock('../../utils/collabSyncUrl', () => ({ getCollabSyncHttpUrl: () => 'https://sync.test' }));
 
@@ -97,8 +107,14 @@ const EXPECTED_TEAM_CHANNELS = [
   'team:move-project',
   'team:move-project-preview',
   'team:remove-member',
+  'team:rename',
+  'team:resolve-org-projects-local-state',
   'team:set-project-identity',
   'team:update-role',
+];
+
+const TEAM_CHANNELS_REGISTERED_OUTSIDE_TEAM_SERVICE = [
+  'team:open-project-workspace',
 ];
 
 const EXPECTED_ORG_CHANNELS = [
@@ -137,7 +153,10 @@ describe('registerTeamHandlers channel registration', () => {
     );
     expect(invoked.size).toBeGreaterThan(0);
 
-    const unregistered = [...invoked].filter((channel) => !handlers.has(channel)).sort();
+    const externallyRegistered = new Set(TEAM_CHANNELS_REGISTERED_OUTSIDE_TEAM_SERVICE);
+    const unregistered = [...invoked]
+      .filter((channel) => !handlers.has(channel) && !externallyRegistered.has(channel))
+      .sort();
     expect(unregistered).toEqual([]);
   });
 });

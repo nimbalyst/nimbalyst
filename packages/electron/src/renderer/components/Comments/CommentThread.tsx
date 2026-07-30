@@ -3,7 +3,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 
 import { ActivityRow, shouldGroupWithPrevious, suppressDuplicateActivity } from './ActivityRow';
 import { CommentComposer, type ComposerSubmission } from './CommentComposer';
-import { CommentRow } from './CommentRow';
+import { CommentRow, type CommentDensity } from './CommentRow';
 import { buildCommentView } from './commentViewModel';
 import { segmentsToPlainText } from './commentBodyParser';
 import { EMPTY_POOL, type DraftPool } from './composerDraft';
@@ -12,6 +12,7 @@ import { mentionUrn, agentMentionUrn, resourceRefToUrn } from './resourceUrn';
 import type {
   ActivityView,
   Actor,
+  AttachmentComposerHost,
   Comment,
   CommentActionKind,
   CommentAdapter,
@@ -55,6 +56,7 @@ export function CommentThread({
   viewerActor,
   resolver = null,
   resourceCandidates = [],
+  attachmentHost = null,
   activity = NO_ACTIVITY,
   now,
   onCopyLink,
@@ -62,6 +64,8 @@ export function CommentThread({
   onOpenSession,
   onOpenMention,
   emptyLabel = 'No messages yet.',
+  autoFocusComposer = false,
+  density = 'comfortable',
 }: {
   adapter: CommentAdapter;
   /** Surface-level capabilities, used for the composer. Rows use their own. */
@@ -73,6 +77,11 @@ export function CommentThread({
   viewerActor: Actor;
   resolver?: ResourcePreviewResolver | null;
   resourceCandidates?: ResourceCandidate[];
+  /**
+   * Uploads for pasted, dropped and picked files. Absent on surfaces with no
+   * asset store, which is what removes the affordance rather than a flag.
+   */
+  attachmentHost?: AttachmentComposerHost | null;
   activity?: ActivityView[];
   now?: number;
   /** Defaults to the system clipboard. Overridden in tests. */
@@ -81,9 +90,28 @@ export function CommentThread({
   onOpenSession?: (sessionId: string) => void;
   onOpenMention?: (userId: string) => void;
   emptyLabel?: string;
+  /**
+   * Put the caret in the composer as soon as the thread mounts. Set by chat
+   * surfaces (rooms and DMs), where opening a conversation means you are about
+   * to write in it; left off for tracker and document comments, where stealing
+   * focus from the thing being read would be wrong.
+   */
+  autoFocusComposer?: boolean;
+  /**
+   * Row density. Chosen by the surface, not by the thread: the org window
+   * passes the user's message-display preference, and document comments leave
+   * it alone so a margin discussion stays comfortable regardless.
+   */
+  density?: CommentDensity;
 }) {
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seeded from whatever the adapter already holds, so a conversation the
+  // window showed a moment ago paints its history on the first frame. The
+  // `list()` below still runs and merges over it — this is stale-while-
+  // revalidate, not a replacement for the fetch.
+  const [comments, setComments] = useState<Comment[]>(
+    () => adapter.snapshot?.() ?? [],
+  );
+  const [loading, setLoading] = useState(comments.length === 0);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
@@ -100,7 +128,13 @@ export function CommentThread({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    const cached = adapter.snapshot?.() ?? [];
+    if (cached.length > 0) {
+      setComments((current) => mergeComments(current, cached));
+    }
+    // A cached page is shown while the fetch below revalidates; only an empty
+    // one is worth a skeleton.
+    setLoading(cached.length === 0);
     setLoadFailed(false);
     void adapter.list().then((page) => {
       if (cancelled) return;
@@ -265,7 +299,7 @@ export function CommentThread({
   );
 
   const submit = useCallback(
-    async (submission: ComposerSubmission) => {
+    (submission: ComposerSubmission) => {
       const clientMutationId = createClientMutationId();
       const tempId = `pending:${clientMutationId}`;
       const input: CreateCommentInput = {
@@ -303,7 +337,10 @@ export function CommentThread({
       setComments((current) => mergeComments(current, [optimistic]));
       setPendingSends((current) => new Map(current).set(tempId, pending));
       setReplyTo(null);
-      await attemptSend(pending);
+      // The optimistic row now owns the message and its retry state. Let the
+      // composer clear immediately instead of holding the submitted draft
+      // until the durable append round trip completes.
+      void attemptSend(pending);
     },
     [
       attemptSend,
@@ -382,10 +419,12 @@ export function CommentThread({
                 orgId={orgId}
                 resolver={resolver}
                 resourceCandidates={resourceCandidates}
+                attachmentHost={attachmentHost}
                 submitLabel="Save"
                 autoFocus
                 initialText={editingComment.body.text}
                 initialPool={poolForComment(editingComment, directory)}
+                initialAttachments={editingComment.body.attachments}
                 onCancel={() => setEditing(null)}
                 onSubmit={async (submission) => {
                   await adapter.edit(editingComment.ref, submission.body);
@@ -398,6 +437,10 @@ export function CommentThread({
               key={view.key}
               view={view}
               grouped={shouldGroupWithPrevious(comments[index], comments[index - 1])}
+              density={density}
+              // The view model's timestamp is relative; the compact gutter
+              // needs the wall clock, which only the raw comment carries.
+              timestampMs={comments[index]?.createdAt}
               onAction={handleAction}
               onToggleReaction={handleToggleReaction}
               onOpenResource={onOpenResource}
@@ -427,12 +470,14 @@ export function CommentThread({
       )}
 
       <CommentComposer
+        autoFocus={autoFocusComposer}
         capabilities={capabilities}
         context={context}
         directory={directory}
         orgId={orgId}
         resolver={resolver}
         resourceCandidates={resourceCandidates}
+        attachmentHost={attachmentHost}
         replyingTo={
           replyView
             ? {

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
   getEmbeddableExtensions: () => ['.mockup.html'],
+  getShowInFileBrowserLabel: () => 'Show in Explorer',
   parseEmbedAttrs: () => ({}),
   serializeEmbedAttrs: (attrs: Record<string, string>) =>
     Object.entries(attrs).map(([key, value]) => `${key}=${value}`).join(' '),
@@ -95,6 +96,14 @@ function renderActions(fileName: string) {
 }
 
 describe('CommonFileActions Share to Team catalog eligibility', () => {
+  it('uses the platform-aware system file browser label', () => {
+    mocks.resolveShareability.mockReturnValue({ state: 'unsupported', reason: 'Unsupported' });
+    renderActions('index.ts');
+
+    expect(screen.getByRole('button', { name: 'Show in Explorer' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Show in Finder' })).toBeNull();
+  });
+
   it('inspects markdown embeds before opening the share dialog', async () => {
     const markdownDescriptor = {
       ...spreadsheetDescriptor,

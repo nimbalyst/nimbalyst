@@ -92,6 +92,7 @@ describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', (
 
     vi.mocked(AISessionsRepository.get).mockResolvedValue({
       id: 'caller-session',
+      title: 'Build release',
       workspacePath: '/workspace',
     } as never);
 
@@ -103,12 +104,13 @@ describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', (
     const notificationOptions = showNotificationWithResult.mock.calls[0][0];
 
     expect(notificationOptions.title).toHaveLength(120);
-    expect(notificationOptions.title).toBe(`${'T'.repeat(117)}...`);
+    expect(notificationOptions.title).toBe(`Build release -- ${'T'.repeat(100)}...`);
     expect(notificationOptions.body).toHaveLength(1_000);
     expect(notificationOptions.body).toBe(`${'B'.repeat(997)}...`);
     expect(notificationOptions).toMatchObject({
       sessionId: 'caller-session',
       workspacePath: '/workspace',
+      sourceLabel: 'Build release',
       provider: 'agent',
       bypassFocusCheck: true,
       silent: false,

@@ -103,6 +103,8 @@ interface TrackerGridViewProps {
   onNewItem?: (type: TrackerItemType) => void;
   /** Copy a shareable deep link (team workspaces only). */
   onCopyDeepLink?: (itemId: string) => void;
+  /** Open a row's item as a document -- double-click and the row context menu. */
+  onOpenDocument?: (itemId: string) => void;
   favoriteItemIds?: ReadonlySet<string>;
   onToggleFavorite?: (itemId: string) => void;
 }
@@ -136,6 +138,7 @@ export function TrackerGridView({
   preserveItemOrder = false,
   onNewItem,
   onCopyDeepLink,
+  onOpenDocument,
   favoriteItemIds,
   onToggleFavorite,
 }: TrackerGridViewProps): JSX.Element {
@@ -445,6 +448,24 @@ export function TrackerGridView({
     void commitRow(single.rowIndex, { [String(single.prop)]: single.val });
   }, [commitRow]);
 
+  /**
+   * Double-click opens the row's item as a document. RevoGrid renders its own
+   * cells, so the row comes from the same `data-rgrow` attribute the context
+   * menu resolves against rather than a React row handler.
+   */
+  const handleGridDoubleClick = useCallback(async (
+    event: ReactMouseEvent<HTMLDivElement>,
+  ): Promise<void> => {
+    if (!onOpenDocument) return;
+    const cell = (event.target as HTMLElement | null)?.closest?.('[data-rgrow]');
+    const rowAttr = cell?.getAttribute('data-rgrow');
+    if (rowAttr == null) return;
+    const rowIndex = Number(rowAttr);
+    if (!Number.isFinite(rowIndex)) return;
+    const item = await resolveGridRowItem(rowIndex);
+    if (item) onOpenDocument(item.id);
+  }, [onOpenDocument, resolveGridRowItem]);
+
   const openFocusedItem = useCallback(async (): Promise<void> => {
     const focused = await gridRef.current?.getFocused();
     const rowIndex = focused?.cell.y;
@@ -684,6 +705,7 @@ export function TrackerGridView({
         className="tracker-grid-canvas relative min-h-0 flex-1 outline-none"
         onKeyDownCapture={handleGridKeyDownCapture}
         onContextMenu={(event) => { void handleGridContextMenu(event); }}
+        onDoubleClick={(event) => { void handleGridDoubleClick(event); }}
         onPointerDownCapture={() => {
           focusOriginRef.current = null;
         }}
@@ -801,6 +823,7 @@ export function TrackerGridView({
         onSetPriority={handleBulkPriorityUpdate}
         onAddToCollection={handleAddSelectionToCollection}
         onCopyDeepLink={onCopyDeepLink}
+        onOpenDocument={onOpenDocument}
         onArchiveItems={onArchiveItems}
         onDeleteItems={onDeleteItems}
         closeContextMenu={closeContextMenu}

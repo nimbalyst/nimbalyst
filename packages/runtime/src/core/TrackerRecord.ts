@@ -8,6 +8,10 @@
 
 import type { TrackerIdentity, TrackerActivity, TrackerItem, TrackerItemSource, TrackerOrigin } from './DocumentService';
 import type { TrackerCommentEntry as TrackerComment } from '../sync/trackerProtocol';
+import { fromDbBoolean } from './dbBoolean';
+
+// Re-exported so hosts reading tracker rows share one coercion (NIM-2280).
+export { fromDbBoolean } from './dbBoolean';
 
 // ---------------------------------------------------------------------------
 // Canonical Record
@@ -190,7 +194,7 @@ export function trackerItemToRecord(item: TrackerItem): TrackerRecord {
     issueKey: item.issueKey,
     source: (item.source as TrackerRecord['source']) ?? 'native',
     sourceRef: item.sourceRef,
-    archived: item.archived ?? false,
+    archived: fromDbBoolean(item.archived),
     syncStatus: (item.syncStatus as TrackerRecord['syncStatus']) ?? 'local',
     content: item.content,
     system: {
@@ -377,7 +381,7 @@ export function dbRowToRecord(row: any): TrackerRecord {
     issueKey: row.issue_key ?? undefined,
     source: row.source || (row.document_path ? 'inline' : 'native'),
     sourceRef: row.source_ref ?? undefined,
-    archived: row.archived ?? false,
+    archived: fromDbBoolean(row.archived),
     syncStatus: row.sync_status || 'local',
     content: row.content ?? undefined,
     system: {

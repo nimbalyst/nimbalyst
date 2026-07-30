@@ -18,7 +18,10 @@ import { activeWorkspacePathAtom } from './openProjects';
 import { pendingDocRegistrations } from './pendingDocRegistrations';
 import { CollaborationHealthAttemptTracker } from '../../../shared/analytics/collaborationHealth';
 import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
+import { applyOrgSettingsBroadcast } from '../../services/orgSettingsClient';
+import { applyConversationDescriptorBroadcast } from '../../services/conversationDirectoryClient';
 import type { CollabDocumentOpenSource } from '../../utils/collabDocumentOpener';
+import type { TrackerDeepLinkView } from '../../../shared/trackerDeepLinks';
 import {
   normalizeCollabPath,
   getCollabParentPath,
@@ -370,8 +373,25 @@ export function buildSharedFolderDeepLink(folderId: string, orgId: string): stri
  * documents: the recipient's app uses the orgId to find the matching team
  * workspace and opens the tracker in tracker mode.
  */
-export function buildTrackerDeepLink(trackerId: string, orgId: string): string {
-  return `nimbalyst://tracker/${encodeURIComponent(trackerId)}?orgId=${encodeURIComponent(orgId)}`;
+export interface BuildTrackerDeepLinkOptions {
+  view?: TrackerDeepLinkView;
+}
+
+export function buildTrackerDeepLink(
+  trackerId: string,
+  orgId: string,
+  options: BuildTrackerDeepLinkOptions = {},
+): string {
+  if (options.view !== undefined && options.view !== 'document') {
+    throw new Error(`Unsupported tracker deep-link view: ${options.view}`);
+  }
+  const viewParam = options.view === 'document' ? '&view=document' : '';
+  return `nimbalyst://tracker/${encodeURIComponent(trackerId)}?orgId=${encodeURIComponent(orgId)}${viewParam}`;
+}
+
+/** Build the URL copied by document-view headers; clipboard I/O stays in the caller. */
+export function buildTrackerDocumentDeepLink(trackerId: string, orgId: string): string {
+  return buildTrackerDeepLink(trackerId, orgId, { view: 'document' });
 }
 
 /**
@@ -1163,6 +1183,27 @@ export async function initSharedDocuments(workspacePath: string, retryCount = 0)
         store.set(sharedDocumentsAtomFamily(workspacePath), (current) =>
           current.filter(d => !removedDocs.has(d.documentId))
         );
+      },
+
+      onOrgSettingsUpdated: (settings) => {
+        // The organization window is a separate renderer with no team-sync
+        // socket, so the change is forwarded to main and fanned back out to
+        // every window rather than applied to this window's atoms only.
+        void applyOrgSettingsBroadcast({ orgId, settings }).catch((err: unknown) => {
+          console.error('[collabDocuments] applyOrgSettingsBroadcast failed:', err);
+        });
+      },
+
+      onConversationDescriptorUpdated: (descriptor) => {
+        // Same forward as the settings broadcast above: the org window renders
+        // the directory but holds no socket, so main fans the row out.
+        void applyConversationDescriptorBroadcast({ orgId, descriptor })
+          .catch((err: unknown) => {
+            console.error(
+              '[collabDocuments] applyConversationDescriptorBroadcast failed:',
+              err,
+            );
+          });
       },
 
       onMemberAdded: (member) => {

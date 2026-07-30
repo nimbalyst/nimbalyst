@@ -30,6 +30,7 @@ import {
   clearCollabAssetSender,
 } from '../protocols/collabAssetProtocol';
 import { uploadCollabAsset } from '../services/CollabAssetUploader';
+import { MAX_COLLAB_ASSET_BYTES } from '../../shared/collabAssetFormat';
 import {
   scanMarkdownImageRefs,
   resolveAssetRef,
@@ -278,6 +279,15 @@ export function registerDocumentSyncHandlers(): void {
     }
     if (!isCollabAssetDocumentRegisteredForSender(event.sender.id, payload.orgId, payload.documentId)) {
       return { success: false, error: 'Document not open in this window' };
+    }
+    // Backstop under every caller's own cap: a blob the asset route will refuse
+    // must not occupy the durable outbox and retry against a permanent 413.
+    if (payload.fileBytes.byteLength > MAX_COLLAB_ASSET_BYTES) {
+      return {
+        success: false,
+        error: `Attachments must not exceed ${Math.round(MAX_COLLAB_ASSET_BYTES / (1024 * 1024))} MB.`,
+        errorCode: 'asset_too_large',
+      };
     }
 
     const accountId = getPersonalUserId();

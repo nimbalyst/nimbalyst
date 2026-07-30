@@ -3,6 +3,7 @@ import type { Store } from 'jotai/vanilla/store';
 
 import { teamInboxSnapshotAtom } from '../atoms/teamInbox';
 import { store } from '../index';
+import { setIfChanged } from './atomRevalidation';
 
 function isTeamInboxSnapshot(value: unknown): value is TeamInboxSnapshot {
   if (!value || typeof value !== 'object') return false;
@@ -30,7 +31,10 @@ export function initTeamInboxListeners(
     (snapshot: TeamInboxSnapshot) => {
       if (!isTeamInboxSnapshot(snapshot)) return;
       receivedBroadcast = true;
-      targetStore.set(teamInboxSnapshotAtom, snapshot);
+      // The fan-in re-broadcasts the whole snapshot for presence heartbeats and
+      // for the read receipts this window's own mark-read produces. Writing a
+      // fresh object for unchanged data repainted every row subscribed to it.
+      setIfChanged(targetStore, teamInboxSnapshotAtom, snapshot);
     },
   );
 
@@ -41,7 +45,7 @@ export function initTeamInboxListeners(
         && !receivedBroadcast
         && isTeamInboxSnapshot(snapshot)
       ) {
-        targetStore.set(teamInboxSnapshotAtom, snapshot);
+        setIfChanged(targetStore, teamInboxSnapshotAtom, snapshot);
       }
     })
     .catch((error) => {

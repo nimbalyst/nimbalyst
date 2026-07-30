@@ -19,6 +19,7 @@ import {
   getWorkspaceRelativeFilePath,
   type FileDirectoryNode,
 } from '@nimbalyst/extension-sdk/file-tree';
+import { getShowInFileBrowserLabel } from '../utils/fileBrowserLabel';
 
 interface FileEditsSidebarProps {
   fileEdits: FileEditSummary[];
@@ -517,7 +518,7 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
               }}
             >
               <MaterialSymbol icon="folder_open" size={16} className="text-[var(--nim-text-muted)]" />
-              Reveal in Finder
+              {getShowInFileBrowserLabel()}
             </button>
           )}
         </div>

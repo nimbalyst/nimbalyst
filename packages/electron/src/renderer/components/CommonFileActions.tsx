@@ -2,7 +2,7 @@
  * CommonFileActions - Shared menu items for file operations.
  *
  * Renders the common file action items (Open in Default App, Open in External Editor,
- * Show in Finder, Copy Path, Share Link, Share to Team) used across multiple context menus:
+ * Show in system file browser, Copy Path, Share Link, Share to Team) used across multiple context menus:
  * - FileContextMenu (file tree right-click)
  * - TabBar context menu (tab right-click)
  * - UnifiedEditorHeaderBar (header actions dropdown)
@@ -11,7 +11,11 @@
  */
 
 import React, { useCallback, useMemo, useSyncExternalStore } from 'react';
-import { getEmbeddableExtensions, MaterialSymbol } from '@nimbalyst/runtime';
+import {
+  getEmbeddableExtensions,
+  getShowInFileBrowserLabel,
+  MaterialSymbol,
+} from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { useAtomValue } from 'jotai';
 import { useFileActions } from '../hooks/useFileActions';
@@ -508,13 +512,13 @@ export function CommonFileActions({
         </Item>
       )}
 
-      {/* Show in Finder */}
+      {/* Show in system file browser */}
       <Item
         className={menuItemClass}
         onClick={() => { actions.revealInFinder(); onClose(); }}
       >
         {showIcons && <MaterialSymbol icon="folder_open" size={iconSize} />}
-        <span>Show in Finder</span>
+        <span>{getShowInFileBrowserLabel()}</span>
       </Item>
 
       {/* Copy Path */}

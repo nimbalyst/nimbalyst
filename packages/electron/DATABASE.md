@@ -14,6 +14,7 @@ running either.
 | --- | --- | --- |
 | `data->'key'` sub-extraction | returns parsed JS object/value | returns JSON-encoded TEXT |
 | Whole-column JSONB read | parsed object | TEXT (already handled at most call sites) |
+| Boolean column read | `true` / `false` | `1` / `0` (column is `INTEGER`) |
 | Concurrent writers | single worker; PID lock | WriteCoordinator serializes write lane |
 
 **JSONB sub-extraction is not shape-uniform.** A query like
@@ -33,6 +34,19 @@ A real bug from this divergence (2026-06-02): `applyRemoteItem` in
 was a parsed object, and on SQLite produced corrupted tracker rows whose
 `labelsMap` was a hybrid character-keyed string spread with the real CRDT
 entries merged on top.
+
+**Boolean columns need coercion on both sides.** SQLite declares them `INTEGER`
+and hands back `0`/`1`, so a `row.flag ?? false` mapping (which only guards
+null/undefined) leaks a number into a value typed `boolean`. Truthiness checks
+keep working, which is what makes this hard to spot -- only strict comparisons
+(`=== false`, `=== true`) silently go the wrong way. Bind writes through
+`toDbBoolean` and normalize reads through `fromDbBoolean`
+(`src/main/services/tracker/trackerDbValue.ts`).
+
+Two real bugs from this divergence: PGLite rejected integer flags on write
+(`Invalid input for boolean type`, NIM-864), and on SQLite an un-normalized
+`archived` made every Trackers sidebar type badge read 0 while the list and
+kanban still showed the items (NIM-2280 / #1071).
 
 **CRITICAL: Never use localStorage in the renderer process.** All persistent state must be stored via IPC to the main process using either:
 - **app-settings store** (`src/main/utils/store.ts`) for global app settings

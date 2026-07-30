@@ -19,6 +19,7 @@ import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 import type { NotificationOptions, NotificationResult } from './NotificationService';
+import { composeNotificationTitle } from '../../shared/notificationTitle';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -977,11 +978,14 @@ export class MetaAgentService {
     }
 
     const boundedBody = body.length > 1000 ? `${body.slice(0, 997)}...` : body;
+    const rawSourceLabel = session.title || session.provider || `Session ${targetSessionId.slice(0, 8)}`;
+    const sourceLabel = rawSourceLabel.trim().slice(0, 60) || `Session ${targetSessionId.slice(0, 8)}`;
     const result = await this.showNotificationWithResult({
-      title: title.length > 120 ? `${title.slice(0, 117)}...` : title,
+      title: composeNotificationTitle(sourceLabel, title),
       body: boundedBody,
       sessionId: targetSessionId,
       workspacePath: session.workspacePath,
+      sourceLabel,
       provider: 'agent',
       bypassFocusCheck: args.bypassFocusCheck === true,
       silent: args.silent === true,

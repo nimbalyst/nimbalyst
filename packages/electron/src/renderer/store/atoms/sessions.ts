@@ -828,6 +828,17 @@ export const sessionTitleAtom = atomFamily((sessionId: string) =>
 );
 
 /**
+ * Derived: Session title for normalized list surfaces.
+ *
+ * Targeted `sessions:session-updated` metadata events patch the registry
+ * without reloading an already-open session store. List rows therefore read
+ * the registry first so a loaded store cannot mask a newer external rename.
+ */
+export const sessionListTitleAtom = atomFamily((sessionId: string) =>
+  atom((get) => get(sessionRegistryAtom).get(sessionId)?.title)
+);
+
+/**
  * Derived: Session provider from sessionData.
  * For use in tabs and lists where the provider icon is needed.
  * Falls back to sessionRegistryAtom when sessionStoreAtom hasn't been loaded yet.

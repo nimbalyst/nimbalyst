@@ -8,9 +8,18 @@ vi.mock('@nimbalyst/runtime', () => ({
 
 import { AccountOrgList } from '../AccountOrgList';
 import type { AccountOrganizationGroup } from '../accountOrganizations';
+import { dialogRef } from '../../../../contexts/DialogContext';
+import { DIALOG_IDS } from '../../../../dialogs/registry';
+import {
+  ORG_WELCOME_DISMISSED_SETTING_KEY,
+  ORG_WINDOW_PENDING_ROUTE_SETTING_KEY,
+  pendingGeneralRoute,
+} from '../../../TeamMode/onboarding/orgWelcomeModel';
 
 const openManagementWindow = vi.fn();
 const acceptInvite = vi.fn();
+const openDialog = vi.fn();
+const invoke = vi.fn();
 
 function group(overrides: Partial<AccountOrganizationGroup> = {}): AccountOrganizationGroup {
   return {
@@ -25,12 +34,15 @@ describe('AccountOrgList', () => {
   beforeEach(() => {
     openManagementWindow.mockReset().mockResolvedValue({ success: true });
     acceptInvite.mockReset().mockResolvedValue({ success: true });
-    (window as any).electronAPI = { team: { openManagementWindow, acceptInvite } };
+    openDialog.mockReset();
+    invoke.mockReset().mockResolvedValue(undefined);
+    dialogRef.current = { open: openDialog } as unknown as typeof dialogRef.current;
+    (window as any).electronAPI = { team: { openManagementWindow, acceptInvite }, invoke };
   });
 
   afterEach(() => cleanup());
 
-  it('opens the org management window targeted at the clicked organization', () => {
+  it('opens a newly discovered active membership on the durable #general hand-off', async () => {
     render(
       <AccountOrgList
         group={group({
@@ -43,7 +55,69 @@ describe('AccountOrgList', () => {
 
     expect(screen.getByText('3 projects')).toBeTruthy();
     screen.getByTestId('account-org-manage').click();
-    expect(openManagementWindow).toHaveBeenCalledWith({ orgId: 'org-1' });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      'app-settings:get',
+      ORG_WELCOME_DISMISSED_SETTING_KEY,
+    ));
+    expect(invoke).toHaveBeenCalledWith(
+      'app-settings:set',
+      ORG_WINDOW_PENDING_ROUTE_SETTING_KEY,
+      pendingGeneralRoute('org-1'),
+    );
+    await waitFor(() => expect(openManagementWindow).toHaveBeenCalledWith({ orgId: 'org-1' }));
+  });
+
+  it('does not recreate onboarding after the organization welcome was dismissed', async () => {
+    invoke.mockImplementation(async (channel: string, key: string) => (
+      channel === 'app-settings:get' && key === ORG_WELCOME_DISMISSED_SETTING_KEY
+        ? ['org-1']
+        : undefined
+    ));
+
+    render(
+      <AccountOrgList
+        group={group({
+          organizations: [
+            { orgId: 'org-1', name: 'Acme', role: 'member', isPending: false, projectCount: 0, alsoReachableBy: [] },
+          ],
+        })}
+      />,
+    );
+
+    screen.getByTestId('account-org-manage').click();
+
+    await waitFor(() => expect(openManagementWindow).toHaveBeenCalledWith({ orgId: 'org-1' }));
+    expect(invoke).not.toHaveBeenCalledWith(
+      'app-settings:set',
+      ORG_WINDOW_PENDING_ROUTE_SETTING_KEY,
+      expect.anything(),
+    );
+  });
+
+  it('keeps an active membership recoverable when the durable hand-off cannot be saved', async () => {
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'app-settings:set') {
+        throw new Error('settings directory unavailable');
+      }
+      return undefined;
+    });
+
+    render(
+      <AccountOrgList
+        group={group({
+          organizations: [
+            { orgId: 'org-1', name: 'Acme', role: 'member', isPending: false, projectCount: 0, alsoReachableBy: [] },
+          ],
+        })}
+      />,
+    );
+
+    screen.getByTestId('account-org-manage').click();
+
+    await waitFor(() => expect(screen.getByText(
+      'Could not save the organization destination. Try again.',
+    )).toBeTruthy());
+    expect(openManagementWindow).not.toHaveBeenCalled();
   });
 
   it('accepts a pending invite in place and announces the directory change', async () => {
@@ -68,15 +142,22 @@ describe('AccountOrgList', () => {
 
     await waitFor(() => expect(acceptInvite).toHaveBeenCalledWith('org-invite'));
     await waitFor(() => expect(changed).toHaveBeenCalled());
+    // Accepting used to end in this list; the new member is now taken into the
+    // organization window (which lands on #general via the queued hand-off).
+    await waitFor(() => expect(openManagementWindow).toHaveBeenCalledWith({ orgId: 'org-invite' }));
     window.removeEventListener('nimbalyst:organizations-changed', changed);
   });
 
-  it('offers a per-account empty state that creates a new organization', () => {
+  it('offers a per-account empty state that launches the creation wizard', () => {
     render(<AccountOrgList group={group()} />);
 
     expect(screen.getByTestId('account-org-empty').textContent).toContain('No organizations');
     screen.getByTestId('account-org-new').click();
-    expect(openManagementWindow).toHaveBeenCalledWith(undefined);
+    expect(openDialog).toHaveBeenCalledWith(
+      DIALOG_IDS.ORG_CREATION_WIZARD,
+      expect.objectContaining({ onOrganizationCreated: expect.any(Function) }),
+    );
+    expect(openManagementWindow).not.toHaveBeenCalled();
   });
 
   it('credits the other signed-in login for a merged organization', () => {

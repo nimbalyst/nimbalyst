@@ -24,16 +24,31 @@ function installApi(teams: unknown[]) {
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
-      team: { findForWorkspace: vi.fn().mockResolvedValue(null) },
-      organization: { list: vi.fn().mockResolvedValue({ success: true, teams }) },
+      team: {
+        findForWorkspace: vi.fn().mockResolvedValue(null),
+        resolveOrgProjectsLocalState: vi.fn().mockResolvedValue({
+          success: true,
+          projects: [],
+        }),
+        openProjectWorkspace: vi.fn().mockResolvedValue({ success: true }),
+      },
+      organization: {
+        list: vi.fn().mockResolvedValue({ success: true, teams }),
+        listMembers: vi.fn().mockResolvedValue({ success: true, members: [], callerRole: 'owner' }),
+      },
       stytch: { getAccounts: vi.fn().mockResolvedValue([{ personalOrgId: 'account-1', email: 'a@example.com' }]) },
+      invoke: vi.fn().mockResolvedValue([]),
+      on: vi.fn().mockReturnValue(() => {}),
       openExternal: vi.fn(),
+      openAccountSettings: vi.fn().mockResolvedValue({ success: true }),
     },
   });
 }
 
 // Nobody should set up an organization without being told Teams is alpha and
 // will be paid after launch — on both the create surface and the admin surface.
+// In the bound window that disclosure is the slim bottom status bar (2026-07-28
+// layout decision), not a two-line banner inside the Inbox.
 describe('TeamMode alpha disclosure', () => {
   afterEach(() => cleanup());
 
@@ -49,14 +64,27 @@ describe('TeamMode alpha disclosure', () => {
     expect(screen.getAllByTestId('alpha-badge').length).toBeGreaterThan(0);
   });
 
-  it('discloses the alpha status while administering an organization', async () => {
+  it('discloses the alpha status in the window status bar while administering', async () => {
     installApi([team]);
     const store = createStore();
     store.set(selectedOrgIdAtom, 'org-1');
     render(<Provider store={store}><TeamMode /></Provider>);
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Acme' })).toBeTruthy());
-    expect(screen.getByTestId('team-alpha-notice').textContent).toMatch(/expect bugs/i);
+    await waitFor(() => expect(screen.getByTestId('org-sidebar-header').textContent).toContain('Acme'));
+    const statusBar = screen.getByTestId('org-window-status-bar');
+    expect(statusBar.textContent).toMatch(/expect bugs/i);
+    expect(statusBar.textContent).toMatch(/free during alpha/i);
     expect(screen.getAllByTestId('alpha-badge').length).toBeGreaterThan(0);
+  });
+
+  it('drops the two-line banner from the Inbox in favour of the status bar', async () => {
+    installApi([team]);
+    const store = createStore();
+    store.set(selectedOrgIdAtom, 'org-1');
+    render(<Provider store={store}><TeamMode /></Provider>);
+
+    // The window lands on Inbox.
+    await waitFor(() => expect(screen.getByTestId('org-window-status-bar')).toBeTruthy());
+    expect(screen.queryByTestId('team-alpha-notice')).toBeNull();
   });
 });

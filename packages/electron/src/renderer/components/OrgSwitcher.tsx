@@ -21,6 +21,12 @@ import {
 } from '@floating-ui/react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
+import { teamInboxSnapshotAtom } from '../store/atoms/teamInbox';
+import {
+  formatUnreadCount,
+  selectProjectWindowUnreadSummary,
+} from '../store/projectWindowUnreadViewModel';
+import './OrgSwitcher.css';
 
 interface OrgEntry {
   orgId: string;
@@ -39,6 +45,7 @@ function initials(name: string): string {
 
 export function OrgSwitcher() {
   const activePath = useAtomValue(activeWorkspacePathAtom);
+  const inboxSnapshot = useAtomValue(teamInboxSnapshotAtom);
 
   const [orgs, setOrgs] = useState<OrgEntry[]>([]);
   const [activeOrgId, setActiveOrgId] = useState<string | null>(null);
@@ -93,6 +100,14 @@ export function OrgSwitcher() {
     () => orgs.find((o) => o.orgId === activeOrgId) ?? orgs[0] ?? null,
     [orgs, activeOrgId],
   );
+  const unreadSummary = useMemo(
+    () => selectProjectWindowUnreadSummary(inboxSnapshot),
+    [inboxSnapshot],
+  );
+  const unreadByOrg = useMemo(
+    () => new Map(unreadSummary.orgs.map((org) => [org.orgId, org.unreadCount])),
+    [unreadSummary.orgs],
+  );
 
   const { refs, floatingStyles, context } = useFloating({
     open,
@@ -130,6 +145,15 @@ export function OrgSwitcher() {
         aria-label="Switch organization"
       >
         {activeOrg ? initials(activeOrg.name) : <MaterialSymbol icon="corporate_fare" size={18} />}
+        {unreadSummary.totalUnread > 0 && (
+          <span
+            className="org-switcher-unread-badge"
+            data-testid="org-switcher-unread-badge"
+            aria-label={`${unreadSummary.totalUnread} unread across organizations`}
+          >
+            {formatUnreadCount(unreadSummary.totalUnread)}
+          </span>
+        )}
       </button>
 
       {open && (
@@ -138,25 +162,36 @@ export function OrgSwitcher() {
             ref={refs.setFloating}
             style={floatingStyles}
             {...getFloatingProps()}
-            className="org-switcher-menu z-[1000] min-w-[220px] bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-lg shadow-lg py-1.5"
+            className="org-switcher-menu z-[1000] min-w-[260px] bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-lg shadow-lg py-1.5"
           >
             <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-[var(--nim-text-faint)]">
-              Organizations
+              Unread messages
             </div>
             {orgs.map((o) => (
               <button
                 key={o.orgId}
                 className={`org-switcher-item w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--nim-bg-secondary)] ${o.orgId === activeOrgId ? 'bg-[var(--nim-bg-secondary)]' : ''}`}
+                data-testid={`org-switcher-org-row-${o.orgId}`}
                 onClick={() => goToTeamSurface(o.orgId)}
               >
-                <span className="w-6 h-6 rounded bg-gradient-to-br from-[#60a5fa] to-[#a78bfa] text-white text-[10px] font-semibold flex items-center justify-center shrink-0">
+                <span className="org-switcher-org-avatar w-6 h-6 rounded bg-gradient-to-br from-[#60a5fa] to-[#a78bfa] text-white text-[10px] font-semibold flex items-center justify-center shrink-0">
                   {initials(o.name)}
                 </span>
                 <span className="flex-1 min-w-0">
                   <span className="block text-[13px] text-[var(--nim-text)] truncate">{o.name}</span>
-                  <span className="block text-[10px] text-[var(--nim-text-faint)] font-mono">{o.role}</span>
+                  <span className="block text-[10px] text-[var(--nim-text-faint)]">
+                    {(unreadByOrg.get(o.orgId) ?? 0) > 0
+                      ? `${unreadByOrg.get(o.orgId)} unread`
+                      : 'No unread messages'}
+                  </span>
                 </span>
-                {o.orgId === activeOrgId && <MaterialSymbol icon="check" size={14} className="text-[var(--nim-text-muted)]" />}
+                {(unreadByOrg.get(o.orgId) ?? 0) > 0 ? (
+                  <span className="org-switcher-row-unread-pill">
+                    {formatUnreadCount(unreadByOrg.get(o.orgId) ?? 0)}
+                  </span>
+                ) : (
+                  o.orgId === activeOrgId && <MaterialSymbol icon="check" size={14} className="text-[var(--nim-text-muted)]" />
+                )}
               </button>
             ))}
             {pendingInviteCount > 0 && (

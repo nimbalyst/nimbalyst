@@ -3,10 +3,15 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { WindowTopBar, clampGitFeedbackMessage } from '../WindowTopBar';
+import { NO_DRAG_REGION } from '../dragRegion';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => (
-    <span data-icon={icon} aria-hidden="true">{icon}</span>
+// Only the icon needs stubbing (jsdom has no font ligatures). The rest of the
+// barrel is kept real: the bar's imports reach other runtime exports
+// transitively, and listing each one by hand goes stale on every new import.
+vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  MaterialSymbol: ({ icon, className }: { icon: string; className?: string }) => (
+    <span data-icon={icon} className={className} aria-hidden="true">{icon}</span>
   ),
 }));
 
@@ -136,7 +141,7 @@ describe('WindowTopBar', () => {
     const left = screen.getByTestId('window-top-bar-left-pane');
     const right = screen.getByTestId('window-top-bar-right-pane');
     for (const target of [git, left, right]) {
-      expect(target.classList.contains('window-top-bar__no-drag')).toBe(true);
+      expect(target.classList.contains(NO_DRAG_REGION)).toBe(true);
     }
 
     fireEvent.click(left);
@@ -220,9 +225,18 @@ describe('WindowTopBar', () => {
     expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('selects an Agent right-panel mode from the window top-bar dropdown', () => {
-    const onChat = vi.fn();
-    render(
+  function renderAgentPanelControl({
+    collapsed = false,
+    onToggle = () => {},
+    onChat = () => {},
+    selectedId = 'edited-files',
+  }: {
+    collapsed?: boolean;
+    onToggle?: () => void;
+    onChat?: () => void;
+    selectedId?: string;
+  } = {}) {
+    return render(
       <WindowTopBar
         workspaceName="Repo"
         activeModeLabel="Agent"
@@ -235,35 +249,28 @@ describe('WindowTopBar', () => {
         panelControls={{
           right: {
             label: 'Agent right panel',
-            collapsed: false,
-            onToggle: () => {},
+            collapsed,
+            onToggle,
             options: [
-              {
-                id: 'hidden',
-                label: 'Hidden',
-                icon: 'dock_to_left',
-                selected: false,
-                onSelect: () => {},
-              },
               {
                 id: 'edited-files',
                 label: 'Edited Files',
                 icon: 'description',
-                selected: true,
+                selected: selectedId === 'edited-files',
                 onSelect: () => {},
               },
               {
                 id: 'review',
                 label: 'Review',
                 icon: 'rate_review',
-                selected: false,
+                selected: selectedId === 'review',
                 onSelect: () => {},
               },
               {
                 id: 'session-chat',
                 label: 'Chat with Session',
                 icon: 'forum',
-                selected: false,
+                selected: selectedId === 'session-chat',
                 onSelect: onChat,
               },
             ],
@@ -271,12 +278,50 @@ describe('WindowTopBar', () => {
         }}
       />,
     );
+  }
 
-    fireEvent.click(screen.getByTestId('window-top-bar-right-pane'));
+  it('selects an Agent right-panel mode from the window top-bar dropdown', () => {
+    const onChat = vi.fn();
+    const onToggle = vi.fn();
+    renderAgentPanelControl({ onChat, onToggle });
+
+    fireEvent.click(screen.getByTestId('window-top-bar-right-pane-menu-button'));
     expect(screen.getByRole('menuitem', { name: 'Edited Files' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Review' })).toBeTruthy();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Chat with Session' }));
     expect(onChat).toHaveBeenCalledTimes(1);
+    // Opening or choosing from the menu must never toggle visibility.
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+
+  it('toggles the Agent right panel from the split button without opening the menu', () => {
+    const onToggle = vi.fn();
+    renderAgentPanelControl({ onToggle });
+
+    const toggle = screen.getByTestId('window-top-bar-right-pane');
+    expect(toggle.getAttribute('aria-label')).toBe('Hide Agent right panel: Edited Files');
+    fireEvent.click(toggle);
+
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('window-top-bar-right-pane-menu')).toBeNull();
+  });
+
+  it('keeps the selected mode marked while the Agent right panel is hidden', () => {
+    renderAgentPanelControl({ collapsed: true, selectedId: 'review' });
+
+    const toggle = screen.getByTestId('window-top-bar-right-pane');
+    expect(toggle.getAttribute('data-collapsed')).toBe('true');
+    expect(toggle.getAttribute('aria-label')).toBe('Show Agent right panel: Review');
+    // The badge tells you which pane the toggle will bring back.
+    expect(toggle.querySelector('.window-top-bar__panel-mode-badge')?.textContent).toBe(
+      'rate_review',
+    );
+
+    fireEvent.click(screen.getByTestId('window-top-bar-right-pane-menu-button'));
+    expect(
+      screen.getByRole('menuitem', { name: 'Review' }).getAttribute('data-selected'),
+    ).toBe('true');
+    expect(screen.queryByRole('menuitem', { name: 'Hidden' })).toBeNull();
   });
 
   it('clamps a long git failure message instead of rendering the whole log', () => {

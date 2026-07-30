@@ -59,7 +59,8 @@ export function InboxEmptyState({
   query: string;
   scopeActive: boolean;
   onClearFilters: () => void;
-  onBrowse: () => void;
+  /** Absent when the host has no rooms directory to send the user to. */
+  onBrowse?: () => void;
   /** Slot for the `Search all messages` escalation when a query is active. */
   children?: React.ReactNode;
 }) {
@@ -96,7 +97,7 @@ export function InboxEmptyState({
             Clear filters
           </button>
         )}
-        {!query && copy.actionLabel && (
+        {!query && copy.actionLabel && onBrowse && (
           <button
             type="button"
             className="inbox-empty-browse rounded-md border border-[var(--nim-border)] px-2.5 py-1 text-[12px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"

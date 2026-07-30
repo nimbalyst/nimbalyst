@@ -84,11 +84,29 @@ export const KeyboardShortcuts = {
     contentSearch: 'Cmd+Shift+F',
     globalSearch: 'Cmd+Shift+O',
     teamQuickOpen: 'Cmd+Shift+D',
+    organizationManager: 'Cmd+Alt+O',
     projectQuickOpen: 'Cmd+Shift+P',
     kanbanView: 'Cmd+Shift+K',
     newWorktree: 'Cmd+Alt+W',
     aiModels: 'Cmd+,',
     minimize: 'Cmd+M'
+  },
+
+  // Messages Menu — organization window only.
+  //
+  // The application menu is a single global menu, so these accelerators are
+  // only attached while the organization window is the focused window (see the
+  // Messages menu in ApplicationMenu.ts). `newMessage` and `searchMessages`
+  // deliberately reuse `view.agentMode` and `edit.find`: both of those commands
+  // are meaningless in the organization window, and the menu hands the key back
+  // to them the moment focus leaves it.
+  orgWindow: {
+    newMessage: 'Cmd+K',
+    searchMessages: 'Cmd+F',
+    markAllRead: 'Cmd+Shift+U',
+    nextConversation: 'Cmd+Shift+]',
+    previousConversation: 'Cmd+Shift+[',
+    goToInbox: 'Cmd+I'
   },
 
   // Developer Menu

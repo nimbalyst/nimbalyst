@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { resizeTitleField, sanitizeTitleInput, TITLE_MAX_HEIGHT_PX } from '../trackerTitleAutoSize';
 

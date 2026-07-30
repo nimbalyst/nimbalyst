@@ -364,6 +364,12 @@ export class TeamSyncProvider {
         case 'teamSyncResponse':
           await this.handleTeamSyncResponse(message);
           break;
+        case 'orgSettingsUpdated':
+          this.config.onOrgSettingsUpdated?.(message.settings);
+          break;
+        case 'conversationDescriptorUpdated':
+          this.config.onConversationDescriptorUpdated?.(message.descriptor);
+          break;
         case 'memberAdded':
           this.handleMemberAdded(message);
           break;
@@ -451,6 +457,12 @@ export class TeamSyncProvider {
     // console.log('[TeamSync] Team state loaded:', server.members.length, 'members,', documents.length, 'documents');
 
     this.config.onTeamStateLoaded?.(this.teamState);
+    // Omitted by pre-settings servers; a snapshot that carries them is as
+    // authoritative as a broadcast, so a client that connects after a change
+    // still sees it.
+    if (server.settings) {
+      this.config.onOrgSettingsUpdated?.(server.settings);
+    }
     if (documents.length > 0) {
       this.config.onDocumentsLoaded?.(documents);
     }

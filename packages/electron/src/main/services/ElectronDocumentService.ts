@@ -17,6 +17,7 @@ import { getCurrentIdentity } from './TrackerIdentityService';
 import { applyCommentMutation, type CommentMutation } from './tracker/commentMutations';
 import { appendActivity } from './tracker/trackerActivity';
 import { extractItemCustomFields } from './tracker/trackerRowCustomFields';
+import { fromDbBoolean } from './tracker/trackerDbValue';
 import {
   getBacklinks as getRelationshipBacklinks,
   reindexItemRelationships,
@@ -1778,7 +1779,7 @@ export class ElectronDocumentService implements DocumentService {
       // undo that on read or the raw JSON-quoted string renders as literal text.
       content: row.content != null ? parseTrackerContentColumn(row.content) : undefined,
       // Archive state
-      archived: row.archived ?? false,
+      archived: fromDbBoolean(row.archived),
       archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
       // Source tracking
       source: row.source || (row.document_path ? 'inline' : 'native'),
@@ -3277,7 +3278,7 @@ export class ElectronDocumentService implements DocumentService {
             : (existing.updated != null
                 ? new Date(existing.updated).toISOString()
                 : scanNow);
-          const isArchived = item.archived === true;
+          const isArchived = fromDbBoolean(item.archived);
           const b = i * COLS_PER_ROW;
           valuesClauses.push(
             `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, NOW(), $${b + 7}, $${b + 8}, $${b + 9}, $${b + 10})`
@@ -4156,7 +4157,7 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         tags: d.tags || undefined, created: d.created || r.created || undefined,
         updated: d.updated || r.updated || undefined, dueDate: d.dueDate || undefined,
         lastIndexed: new Date(r.last_indexed), content: r.content || undefined,
-        archived: r.archived ?? false,
+        archived: fromDbBoolean(r.archived),
         archivedAt: r.archived_at ? new Date(r.archived_at).toISOString() : undefined,
         source: r.source || (r.document_path ? 'inline' : 'native'),
         sourceRef: r.source_ref || undefined,

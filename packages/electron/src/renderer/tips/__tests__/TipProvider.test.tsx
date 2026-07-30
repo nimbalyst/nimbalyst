@@ -36,6 +36,9 @@ describe('TipProvider', () => {
       featureUsage: {
         getAll: vi.fn(async () => ({})),
       },
+      toolUsage: {
+        getRollup: vi.fn(async () => ({})),
+      },
     };
 
     store.set(walkthroughStateAtom, {
@@ -199,11 +202,40 @@ describe('TipProvider', () => {
     });
 
     expect(store.get(activeTipIdAtom)).toBeNull();
+    expect((window as any).electronAPI.featureUsage.getAll).not.toHaveBeenCalled();
+    expect((window as any).electronAPI.toolUsage.getRollup).not.toHaveBeenCalled();
     expect((window as any).electronAPI.invoke).not.toHaveBeenCalledWith(
       'walkthroughs:record-shown',
       'tip-mobile-keep-awake',
       1,
     );
+  });
+
+  it('loads usage once when an empty transcript surface appears without polling', async () => {
+    render(
+      <JotaiProvider store={store as any}>
+        <TipProvider currentMode="files">
+          <InlineTipDisplay />
+        </TipProvider>
+      </JotaiProvider>
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect((window as any).electronAPI.featureUsage.getAll).toHaveBeenCalledTimes(1);
+    expect((window as any).electronAPI.toolUsage.getRollup).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect((window as any).electronAPI.featureUsage.getAll).toHaveBeenCalledTimes(1);
+    expect((window as any).electronAPI.toolUsage.getRollup).toHaveBeenCalledTimes(1);
   });
 
   it('loads feature usage and git workspace context when a workspace path is provided', async () => {
@@ -243,7 +275,7 @@ describe('TipProvider', () => {
     render(
       <JotaiProvider store={store as any}>
         <TipProvider currentMode="agent" workspacePath="/repo">
-          <div>App</div>
+          <InlineTipDisplay />
         </TipProvider>
       </JotaiProvider>
     );

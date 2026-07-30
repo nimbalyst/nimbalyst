@@ -2,7 +2,12 @@
 import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MAX_RICH_COMMENT_TEXT_BYTES } from '@nimbalyst/collab-protocol';
+import {
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_RICH_COMMENT_TEXT_BYTES,
+} from '@nimbalyst/collab-protocol';
+import { act } from '@testing-library/react';
+import { DRAG_DROP_PASTE } from '@lexical/rich-text';
 
 import { CommentComposer } from '../CommentComposer';
 import {
@@ -12,7 +17,8 @@ import {
   createFixtureResolver,
 } from '../commentFixtures';
 import { detectTrigger, deriveDraft, EMPTY_POOL, urnsInText } from '../composerDraft';
-import type { ConversationContext } from '../commentTypes';
+import { composerEditor, composerText, type } from '../composerTestDriver';
+import type { ConversationContext, MessageAttachment } from '../commentTypes';
 
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
@@ -40,13 +46,6 @@ function renderComposer(
     />,
   );
   return { fixtures, onSubmit, ...utils };
-}
-
-/** Type into the textarea and place the caret at the end, as a user would. */
-function type(value: string) {
-  const input = screen.getByTestId('comment-composer-input') as HTMLTextAreaElement;
-  fireEvent.change(input, { target: { value, selectionStart: value.length, selectionEnd: value.length } });
-  return input;
 }
 
 describe('composer trigger detection', () => {
@@ -128,48 +127,12 @@ describe('CommentComposer mention picker', () => {
     expect(within(picker).queryByTestId('mention-option-agent-session-detached')).toBeNull();
   });
 
-  it('inserts a person pill that renders with an avatar', async () => {
-    renderComposer();
-    type('@dan');
-
-    fireEvent.click(await screen.findByTestId('mention-option-person-user-dana'));
-
-    await waitFor(() => {
-      const preview = screen.getByTestId('comment-composer-preview');
-      expect(within(preview).getByTestId('comment-mention-person')).toBeTruthy();
-    });
-    const preview = screen.getByTestId('comment-composer-preview');
-    expect(within(preview).getByTestId('comment-mention-avatar').textContent).toBe('DO');
-    expect(within(preview).queryByTestId('comment-mention-agent')).toBeNull();
-    expect((screen.getByTestId('comment-composer-input') as HTMLTextAreaElement).value).toBe(
-      '[@Dana Okafor](nimbalyst://user/user-dana) ',
-    );
-  });
-
-  it('inserts an agent pill that renders with the agent glyph and session name', async () => {
-    renderComposer();
-    type('@sync');
-
-    fireEvent.click(await screen.findByTestId('mention-option-agent-session-sync-repro'));
-
-    await waitFor(() => {
-      const preview = screen.getByTestId('comment-composer-preview');
-      expect(within(preview).getByTestId('comment-mention-agent')).toBeTruthy();
-    });
-    const preview = screen.getByTestId('comment-composer-preview');
-    expect(within(preview).getByTestId('comment-mention-agent-glyph')).toBeTruthy();
-    expect(within(preview).getByTestId('comment-mention-agent').textContent).toContain('Sync repro');
-    expect(within(preview).queryByTestId('comment-mention-person')).toBeNull();
-  });
-
   it('sends the agent mention as both a delivery hint and a session reference', async () => {
     const { onSubmit } = renderComposer();
     type('@sync');
     fireEvent.click(await screen.findByTestId('mention-option-agent-session-sync-repro'));
 
-    await waitFor(() =>
-      expect((screen.getByTestId('comment-composer-input') as HTMLTextAreaElement).value).toContain('nimbalyst://session/'),
-    );
+    await waitFor(() => expect(composerText()).toContain('nimbalyst://session/'));
     fireEvent.click(screen.getByTestId('comment-composer-send'));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
@@ -194,21 +157,13 @@ describe('CommentComposer mention picker', () => {
 describe('CommentComposer emoji', () => {
   afterEach(() => cleanup());
 
-  it('completes a :shortcode: into its glyph', async () => {
+  it('carries no emoji control in the footer -- the `:` typeahead is the entry point', () => {
     renderComposer();
-    type('ship it :rock');
 
-    fireEvent.click(await screen.findByTestId('emoji-suggestion-rocket'));
-
-    await waitFor(() =>
-      expect((screen.getByTestId('comment-composer-input') as HTMLTextAreaElement).value).toBe('ship it \u{1F680} '),
-    );
-  });
-
-  it('opens the browse picker from the toolbar', async () => {
-    renderComposer();
-    fireEvent.click(screen.getByTestId('composer-emoji-trigger'));
-    expect(await screen.findByTestId('composer-emoji-picker')).toBeTruthy();
+    const footer = document.querySelector('.comment-composer-footer')!;
+    expect(footer).toBeTruthy();
+    expect(screen.queryByTestId('composer-emoji-trigger')).toBeNull();
+    expect(screen.queryByTestId('composer-emoji-picker')).toBeNull();
   });
 });
 
@@ -232,12 +187,11 @@ describe('CommentComposer resource attachment', () => {
     fireEvent.click(screen.getByTestId('composer-attach-trigger'));
     fireEvent.click(await screen.findByTestId('composer-attach-document-doc-comp-review'));
 
-    const preview = await screen.findByTestId('comment-composer-preview');
-    await waitFor(() => {
-      expect(within(preview).getByTestId('resource-pill-document').getAttribute('data-availability')).toBe('unavailable');
-    });
-    expect(within(preview).getByTestId('resource-pill-document').textContent).toContain('Unavailable');
-    expect(preview.textContent).not.toContain('Compensation review Q3');
+    const tray = await screen.findByTestId('comment-composer-attachments');
+    await waitFor(() =>
+      expect(within(tray).getByTestId('comment-composer-attachment-document').textContent).toContain('Unavailable'),
+    );
+    expect(tray.textContent).not.toContain('Compensation review Q3');
   });
 });
 
@@ -247,14 +201,14 @@ describe('CommentComposer bound enforcement', () => {
   it('refuses to send an over-limit body, reports why, and truncates nothing', async () => {
     const { onSubmit } = renderComposer();
     const oversized = 'a'.repeat(MAX_RICH_COMMENT_TEXT_BYTES + 64);
-    const input = type(oversized);
+    type(oversized);
 
     fireEvent.click(screen.getByTestId('comment-composer-send'));
 
     const errors = await screen.findByTestId('comment-composer-errors');
     expect(errors.querySelector('[data-error-code="richBodyTooLarge"]')).toBeTruthy();
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(input.value.length).toBe(oversized.length);
+    expect(composerText().length).toBe(oversized.length);
 
     const bounds = screen.getByTestId('comment-composer-bounds');
     expect(bounds.textContent).toContain('32K');
@@ -299,5 +253,221 @@ describe('CommentComposer read-only', () => {
   it('explains an archived conversation distinctly from a permission gap', () => {
     renderComposer({ context: { archived: true } });
     expect(screen.getByTestId('comment-composer-restriction-title').textContent).toContain('archived');
+  });
+});
+
+describe('CommentComposer attachments', () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  function imageFile(name = 'screenshot.png'): File {
+    return new File([new Uint8Array([1, 2, 3])], name, { type: 'image/png' });
+  }
+
+  function attachmentOf(overrides: Partial<MessageAttachment> = {}): MessageAttachment {
+    return {
+      assetId: 'asset-1',
+      fileName: 'screenshot.png',
+      mimeType: 'image/png',
+      byteSize: 2048,
+      width: 800,
+      height: 600,
+      ...overrides,
+    };
+  }
+
+  function renderWithHost(
+    upload: (file: File) => Promise<MessageAttachment>,
+    props: { initialAttachments?: MessageAttachment[] } = {},
+  ) {
+    const fixtures = createCommentFixtures({ now: NOW });
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CommentComposer
+        capabilities={FULL_CAPABILITIES}
+        context={fixtures.context}
+        directory={fixtures.directory}
+        orgId={fixtures.orgId}
+        resolver={createFixtureResolver()}
+        resourceCandidates={fixtures.candidates}
+        attachmentHost={{ upload }}
+        initialAttachments={props.initialAttachments}
+        onSubmit={onSubmit}
+      />,
+    );
+    return { fixtures, onSubmit };
+  }
+
+  /** Paste and drop arrive as the same Lexical command. */
+  function paste(files: File[]): void {
+    const editor = composerEditor();
+    act(() => {
+      editor.dispatchCommand(DRAG_DROP_PASTE, files);
+    });
+  }
+
+  beforeEach(() => {
+    // jsdom has no object URLs; the strip only needs a distinguishable string.
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:preview-1');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+  });
+
+  it('takes a pasted image, uploads it, and shows it in the strip', async () => {
+    renderWithHost(async () => attachmentOf());
+
+    paste([imageFile()]);
+
+    const chip = await screen.findByTestId('comment-composer-pending-attachment');
+    expect(chip.getAttribute('data-file-name')).toBe('screenshot.png');
+    await waitFor(() => expect(chip.getAttribute('data-status')).toBe('ready'));
+    expect(
+      within(chip).getByTestId('comment-composer-pending-attachment-preview'),
+    ).toBeTruthy();
+  });
+
+  it('sends an attachments-only message and clears the strip', async () => {
+    const { onSubmit } = renderWithHost(async () => attachmentOf());
+
+    paste([imageFile()]);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('comment-composer-pending-attachment').getAttribute('data-status'),
+      ).toBe('ready'));
+
+    const send = screen.getByTestId('comment-composer-send') as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].body).toEqual({
+      version: 1,
+      format: 'nimbalystMarkdown',
+      // No text at all: a screenshot with no caption is still a message.
+      text: '',
+      attachments: [attachmentOf()],
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId('comment-composer-pending-attachment')).toBeNull());
+  });
+
+  it('carries the text and the files together, leaving the text seam alone', async () => {
+    const { onSubmit } = renderWithHost(async () => attachmentOf());
+
+    type('look at this');
+    paste([imageFile()]);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('comment-composer-pending-attachment').getAttribute('data-status'),
+      ).toBe('ready'));
+    fireEvent.click(screen.getByTestId('comment-composer-send'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].body.text).toBe('look at this');
+    expect(onSubmit.mock.calls[0][0].body.attachments).toHaveLength(1);
+  });
+
+  it('does not send while an upload is still in flight', async () => {
+    let settle: ((attachment: MessageAttachment) => void) | null = null;
+    renderWithHost(() => new Promise((resolve) => { settle = resolve; }));
+
+    type('with a file');
+    paste([imageFile()]);
+
+    await screen.findByTestId('comment-composer-pending-attachment');
+    expect((screen.getByTestId('comment-composer-send') as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => { settle?.(attachmentOf()); });
+    await waitFor(() =>
+      expect((screen.getByTestId('comment-composer-send') as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('states why a file was refused and holds the send until it is removed', async () => {
+    renderWithHost(async () => {
+      throw new Error('capture.mov is 42.0 MB. Attachments are limited to 10.0 MB.');
+    });
+
+    type('here');
+    paste([imageFile('capture.mov')]);
+
+    const errors = await screen.findByTestId('comment-composer-errors');
+    expect(errors.textContent).toContain('Attachments are limited to 10.0 MB');
+    expect((screen.getByTestId('comment-composer-send') as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByLabelText('Remove capture.mov'));
+
+    await waitFor(() =>
+      expect((screen.getByTestId('comment-composer-send') as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByTestId('comment-composer-pending-attachment')).toBeNull();
+  });
+
+  it('drops a removed attachment from the body it would send', async () => {
+    const { onSubmit } = renderWithHost(async (file) =>
+      attachmentOf({ assetId: file.name, fileName: file.name }));
+
+    type('two files');
+    paste([imageFile('one.png'), imageFile('two.png')]);
+    await waitFor(() =>
+      expect(screen.getAllByTestId('comment-composer-pending-attachment')).toHaveLength(2));
+
+    fireEvent.click(screen.getByLabelText('Remove one.png'));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('comment-composer-pending-attachment')).toHaveLength(1));
+    fireEvent.click(screen.getByTestId('comment-composer-send'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].body.attachments).toEqual([
+      attachmentOf({ assetId: 'two.png', fileName: 'two.png' }),
+    ]);
+  });
+
+  it('refuses more than the per-message limit and says so', async () => {
+    renderWithHost(async (file) => attachmentOf({ assetId: file.name, fileName: file.name }));
+
+    paste(
+      Array.from({ length: MAX_ATTACHMENTS_PER_MESSAGE + 2 }, (_, index) =>
+        imageFile(`file-${index}.png`)),
+    );
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId('comment-composer-pending-attachment'))
+        .toHaveLength(MAX_ATTACHMENTS_PER_MESSAGE));
+    expect(screen.getByTestId('comment-composer-errors').textContent)
+      .toContain(`at most ${MAX_ATTACHMENTS_PER_MESSAGE}`);
+  });
+
+  it('keeps a message edit from silently detaching its existing files', async () => {
+    const existing = attachmentOf({ assetId: 'asset-existing', fileName: 'diagram.png' });
+    const { onSubmit } = renderWithHost(async () => attachmentOf(), {
+      initialAttachments: [existing],
+    });
+
+    type('edited text');
+    fireEvent.click(screen.getByTestId('comment-composer-send'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].body.attachments).toEqual([existing]);
+  });
+
+  it('offers no attachment affordance and ignores a paste without a host', () => {
+    renderComposer();
+
+    expect(screen.queryByTestId('comment-composer-attach-file')).toBeNull();
+    paste([imageFile()]);
+    expect(screen.queryByTestId('comment-composer-pending-attachment')).toBeNull();
+  });
+
+  it('uploads files chosen through the attach button', async () => {
+    const upload = vi.fn(async () => attachmentOf());
+    renderWithHost(upload);
+
+    expect(screen.getByTestId('comment-composer-attach-file')).toBeTruthy();
+    const input = screen.getByTestId('comment-composer-file-input') as HTMLInputElement;
+    const file = imageFile();
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    fireEvent.change(input);
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(file));
   });
 });

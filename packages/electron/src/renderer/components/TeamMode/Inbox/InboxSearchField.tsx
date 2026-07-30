@@ -13,11 +13,14 @@ export function InboxSearchField({
   value,
   filterLabel,
   disabled,
+  inputRef,
   onChange,
 }: {
   value: string;
   filterLabel: string;
   disabled: boolean;
+  /** Held by the Inbox so Messages > Search Messages can put the caret here. */
+  inputRef?: React.RefObject<HTMLInputElement | null>;
   onChange: (value: string) => void;
 }) {
   return (
@@ -29,6 +32,7 @@ export function InboxSearchField({
     >
       <MaterialSymbol icon="search" size={16} className="shrink-0 text-[var(--nim-text-faint)]" />
       <input
+        ref={inputRef}
         type="text"
         value={value}
         disabled={disabled}
@@ -36,12 +40,12 @@ export function InboxSearchField({
         aria-label={`Search ${filterLabel.toLowerCase()}`}
         placeholder={`Search ${filterLabel.toLowerCase()} by person, conversation, or text`}
         onChange={(event) => onChange(event.target.value)}
-        className="inbox-search-input min-w-0 flex-1 select-text border-none bg-transparent text-[13px] text-[var(--nim-text)] outline-none placeholder:text-[var(--nim-text-faint)]"
+        className="inbox-search-input org-window-no-drag min-w-0 flex-1 select-text border-none bg-transparent text-[13px] text-[var(--nim-text)] outline-none placeholder:text-[var(--nim-text-faint)]"
       />
       {value && (
         <button
           type="button"
-          className="inbox-search-clear shrink-0 rounded p-0.5 text-[var(--nim-text-faint)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+          className="inbox-search-clear org-window-no-drag shrink-0 rounded p-0.5 text-[var(--nim-text-faint)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
           data-testid="inbox-search-clear"
           aria-label="Clear search"
           onClick={() => onChange('')}

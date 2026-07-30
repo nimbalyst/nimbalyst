@@ -38,6 +38,64 @@ export const HelpContent: Record<string, HelpEntry> = {
   },
 
   // ============================================================================
+  // Organization window - sidebar, rooms and direct messages
+  // ============================================================================
+
+  'team-tab-inbox': {
+    title: 'Inbox',
+    body: 'Mentions, assignments, replies, and activity in conversations you follow across this organization. Tracker and document activity land here too, so the Inbox stays useful even when rooms are turned off.',
+  },
+  'org-rooms-section-add': {
+    title: 'Rooms',
+    body: 'Create a room or browse the directory.\n\nRooms are organization-wide conversations. **Public** rooms are open to everyone in the organization; **private** rooms are limited to the people you add. An organization can restrict room creation to admins in its settings — browsing stays open to everyone.',
+  },
+  'org-dms-section-add': {
+    title: 'Start a direct message',
+    body: 'A private conversation with up to seven other people. Direct messages cannot be renamed or joined later — pick the participants up front.',
+  },
+  'org-browse-rooms': {
+    title: 'Browse rooms',
+    body: 'Every room you can see: public rooms across the organization plus the private ones you belong to. Joining a public room makes its activity follow you into your Inbox.',
+  },
+  'org-rooms-create': {
+    title: 'Create a room',
+    body: 'Add a new organization room. Public rooms are open to everyone; private rooms are limited to the members you add.',
+  },
+  'org-admin-toggle': {
+    title: 'Administration',
+    body: 'Members, projects, organization settings and billing. Entries you cannot act on are hidden rather than shown disabled, so this group is shorter for members than for admins.',
+  },
+  'org-room-notifications': {
+    title: 'Notifications for this conversation',
+    body: 'Choose what reaches your Inbox from here:\n\n- **All messages** — every message\n- **Mentions only** — messages that @mention you\n- **Nothing** — nothing at all\n\nThe setting is per conversation and follows you across devices.',
+  },
+  'org-room-actions': {
+    title: 'Room actions',
+    body: 'Invite members and open room settings — rename, edit the topic, manage membership and room admins, allow or block agent posting, or archive the room. Available to room admins and organization admins.',
+  },
+  'org-window-status-bar': {
+    title: 'Nimbalyst Teams is in alpha',
+    body: 'Expect bugs, and keep your own copy of anything important — do not treat shared organization data as your only copy.\n\nOrganizations are free during alpha and will require a paid Nimbalyst Teams subscription after launch; existing organizations get advance notice before any pricing change.',
+  },
+
+  // ============================================================================
+  // Organization window - settings panel
+  // ============================================================================
+
+  'organization-settings-rooms-toggle': {
+    title: 'Rooms',
+    body: 'Turn organization rooms off for an organization that chats elsewhere. The rooms section, the directory and room creation disappear for everyone; existing rooms are kept and come back if you turn this on again. The Inbox, document comments and tracker comments are unaffected.',
+  },
+  'organization-settings-dms-toggle': {
+    title: 'Direct messages',
+    body: 'Turn direct messages off for this organization. The direct-messages section and every compose path to a person disappear; existing conversations are kept and come back if you turn this on again.',
+  },
+  'organization-settings-room-creation': {
+    title: 'Who can create rooms',
+    body: 'Any member can create rooms by default. Restricting creation to organization admins leaves everyone else able to read, post in, and join the rooms that exist.',
+  },
+
+  // ============================================================================
   // Files Mode - File Tree
   // ============================================================================
 

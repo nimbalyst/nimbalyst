@@ -48,7 +48,7 @@ export function InboxFilterBar({
             aria-selected={isActive}
             data-testid={`inbox-filter-${id}`}
             onClick={() => onFilterChange(id)}
-            className={`inbox-filter-chip flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] ${
+            className={`inbox-filter-chip org-window-no-drag flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] ${
               disabled
                 ? 'cursor-not-allowed bg-transparent text-[var(--nim-text-disabled)]'
                 : isActive

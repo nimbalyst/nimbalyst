@@ -41,6 +41,7 @@ import {
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { SerializedMenuItem } from '../../../shared/menuBar';
 import { windowMenuBarAtom } from '../../store/atoms/windowMenu';
+import { NO_DRAG_REGION } from './dragRegion';
 import './WindowMenuBar.css';
 
 interface MenuBarContextValue {
@@ -269,7 +270,7 @@ function TopLevelMenu({
       <button
         ref={refs.setReference}
         type="button"
-        className="window-menu-bar__top-item window-top-bar__no-drag"
+        className={`window-menu-bar__top-item ${NO_DRAG_REGION}`}
         data-testid={`window-menu-top-${item.id}`}
         data-open={isOpen}
         aria-haspopup="menu"

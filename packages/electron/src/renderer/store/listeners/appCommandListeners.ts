@@ -39,6 +39,12 @@ import {
   windowsClaudeCodeWarningRequestAtom,
   type InstallProgressStage,
 } from '../atoms/appCommands';
+import { openSettingsCommandAtom } from '../atoms/settingsNavigation';
+import type {
+  SettingsCategory,
+  SettingsDestination,
+  SettingsScope,
+} from '../../components/Settings/settingsRoutes';
 
 let onboardingCounter = 0;
 let openNavigationDialogCounter = 0;
@@ -143,6 +149,27 @@ export function initAppCommandListeners(): () => void {
     store.set(setContentModeRequestAtom, { version: setContentModeCounter, mode });
   });
   if (typeof u8 === 'function') cleanups.push(u8);
+
+  const u8b = window.electronAPI?.on?.(
+    'open-settings-command',
+    (command: {
+      category: SettingsCategory;
+      scope?: SettingsScope;
+      destination?: SettingsDestination;
+      anchor?: string;
+      timestamp?: number;
+    }) => {
+      if (!command?.category) return;
+      store.set(openSettingsCommandAtom, {
+        category: command.category,
+        scope: command.scope,
+        destination: command.destination,
+        anchor: command.anchor,
+        timestamp: command.timestamp ?? Date.now(),
+      });
+    },
+  );
+  if (typeof u8b === 'function') cleanups.push(u8b);
 
   const u9 = window.electronAPI?.on?.('agent:insert-plan-reference', (planPath: string) => {
     agentInsertPlanReferenceCounter += 1;

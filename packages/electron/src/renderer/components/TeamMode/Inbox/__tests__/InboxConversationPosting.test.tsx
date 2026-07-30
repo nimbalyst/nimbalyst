@@ -12,6 +12,7 @@ import { Provider, createStore } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { initConversationListeners } from '../../../../store/listeners/conversationListeners';
+import { type as typeIntoComposer } from '../../../Comments/composerTestDriver';
 import { InboxSection } from '../InboxSection';
 import { createFixtureInboxProvider } from '../inboxFixtureProvider';
 
@@ -60,14 +61,8 @@ describe('Inbox conversation posting', () => {
 
     render(<InboxSection provider={provider} />);
     fireEvent.click(screen.getByTestId('inbox-row-delivery-mention-room'));
-    const input = await screen.findByTestId('comment-composer-input');
-    fireEvent.change(input, {
-      target: {
-        value: 'posted from the inbox',
-        selectionStart: 21,
-        selectionEnd: 21,
-      },
-    });
+    await screen.findByTestId('comment-composer-input');
+    typeIntoComposer('posted from the inbox');
     fireEvent.click(screen.getByTestId('comment-composer-send'));
 
     await waitFor(() =>

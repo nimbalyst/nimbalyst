@@ -14,9 +14,14 @@ const GROUP_LABELS: Record<EmojiEntry['group'], string> = {
 };
 
 /**
- * Shortcode-first emoji picker, shared by the reaction affordance and the
- * composer toolbar. Selection yields a shortcode, not a glyph, because that is
- * what both `ReactionAggregate.emoji` and the `:shortcode:` body token store.
+ * Shortcode-first emoji picker for the reaction affordance. Selection yields a
+ * shortcode, not a glyph, because that is what both `ReactionAggregate.emoji`
+ * and the `:shortcode:` body token store.
+ *
+ * Open state can be lifted (`open` + `onOpenChange`) so a call site can keep a
+ * hover-revealed container visible while the popover is up. The picker
+ * autofocuses its search field inside a portal, so `focus-within` on the
+ * container -- which is what holds the row action menu open -- cannot see it.
  */
 export function EmojiPicker({
   trigger,
@@ -24,14 +29,18 @@ export function EmojiPicker({
   quickRow = true,
   placement = 'top-start',
   testId = 'emoji-picker',
+  open,
+  onOpenChange,
 }: {
   trigger: (props: { ref: (node: HTMLElement | null) => void; onClick: () => void; open: boolean } & Record<string, unknown>) => React.ReactNode;
   onSelect: (shortcode: string) => void;
   quickRow?: boolean;
   placement?: 'top-start' | 'top-end' | 'bottom-start' | 'bottom-end';
   testId?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const menu = useFloatingMenu({ placement });
+  const menu = useFloatingMenu({ placement, open, onOpenChange });
   const [query, setQuery] = useState('');
 
   const groups = useMemo(() => {
@@ -218,7 +227,10 @@ export function EmojiAutocomplete({
   );
 }
 
-/** Standard icon trigger, so the reaction bar and composer look identical. */
+/**
+ * Icon trigger for the picker, styled to match `CommentActionMenu`'s trigger --
+ * the two sit side by side in the comment row's hover actions.
+ */
 export function EmojiTriggerButton({
   label,
   testId,

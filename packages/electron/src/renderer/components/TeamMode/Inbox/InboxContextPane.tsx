@@ -1,7 +1,8 @@
 import React, { useMemo } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
-import { useStore } from 'jotai';
+import { useAtomValue, useStore } from 'jotai';
 
+import { settingAtom } from '../../../store/atoms/settingAtomFamily';
 import { CommentThread } from '../../Comments/CommentThread';
 import { createConversationCommentAdapter } from '../../Comments/ConversationCommentAdapter';
 import type { CommentCapabilities } from '../../Comments/commentTypes';
@@ -201,6 +202,9 @@ function InboxConversationThread({
     userId: row.viewerUserId,
     onBehalfOfUserId: row.viewerUserId,
   }), [row.viewerUserId]);
+  // Same org-window preference the room view reads: the inbox shows the same
+  // messages and must not disagree with the room about how they look.
+  const density = useAtomValue(settingAtom('team.messages.density'));
   const adapter = useMemo(
     () => createConversationCommentAdapter({
       orgId: row.orgId,
@@ -258,6 +262,7 @@ function InboxConversationThread({
         orgId={row.orgId}
         viewerUserId={row.viewerUserId}
         viewerActor={viewerActor}
+        density={density}
       />
     </div>
   );

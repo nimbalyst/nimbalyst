@@ -1,0 +1,210 @@
+/**
+ * Tracker document view - focused reading/editing layout inside Tracker Mode.
+ */
+
+.tracker-document-view-list-pane {
+  border-right: 1px solid var(--nim-border);
+  background: var(--nim-bg-secondary);
+  container-name: tracker-document-list-pane;
+  container-type: inline-size;
+}
+
+.tracker-document-list-pane-header {
+  background: var(--nim-bg-secondary);
+}
+
+.tracker-document-view-right-panel {
+  border-left: 1px solid var(--nim-border);
+  background: var(--nim-bg-secondary);
+}
+
+.tracker-document-view-header {
+  container-name: tracker-document-header;
+  container-type: inline-size;
+}
+
+.tracker-document-field-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px;
+  max-height: 58px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.tracker-document-field-pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 190px;
+  height: 24px;
+  margin: 0;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--nim-text-muted);
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.tracker-document-field-pill:hover,
+.tracker-document-field-pill[aria-expanded='true'] {
+  color: var(--nim-text);
+  background: var(--nim-bg-hover);
+}
+
+.tracker-document-field-pill:focus-visible {
+  outline: 2px solid var(--nim-border-focus);
+  outline-offset: 1px;
+}
+
+.tracker-document-field-pill-empty {
+  color: var(--nim-text-faint);
+  background: transparent;
+  border-style: dashed;
+}
+
+.tracker-document-field-pill:disabled {
+  color: var(--nim-text-disabled);
+  cursor: default;
+}
+
+.tracker-document-field-pill-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * Keep bracket/comma-heavy arbitrary Tailwind classes off portaled surfaces:
+ * jsdom's selector engine can turn those class names into invalid :has()
+ * selectors while tests inspect an open popover.
+ */
+.tracker-document-field-popover {
+  z-index: 10000;
+  width: min(320px, calc(100vw - 16px));
+  min-width: 220px;
+  padding: 10px;
+  overflow-y: auto;
+  color: var(--nim-text);
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--nim-text) 16%, transparent);
+}
+
+.tracker-document-field-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+}
+
+.tracker-document-field-choice {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  color: var(--nim-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tracker-document-field-choice:hover,
+.tracker-document-field-choice-selected {
+  background: var(--nim-bg-hover);
+}
+
+@container tracker-document-header (max-width: 720px) {
+  .tracker-document-field-pill {
+    max-width: 140px;
+  }
+}
+
+/*
+ * The list pane is deliberately narrow, so its rows have to give up the
+ * comfortable padding they carry at full width.
+ */
+.tracker-document-view-list-pane .tracker-table-row {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/*
+ * In the narrow document-list pane, reserve the first line for identity/meta
+ * and give the title the entire second line. The ordinary Tracker list keeps
+ * its single-row layout because this is scoped to the pane container.
+ */
+@container tracker-document-list-pane (max-width: 420px) {
+  .tracker-document-view-list-pane .tracker-table-row {
+    display: grid;
+    grid-template-columns: 8px 24px 20px minmax(0, 1fr) auto;
+    grid-template-rows: minmax(24px, auto) minmax(20px, auto);
+    column-gap: 8px;
+    row-gap: 2px;
+    align-items: center;
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-unread-dot {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-favorite-star {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > span.w-5 {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-table-cell.title {
+    display: contents;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-table-cell.title > div {
+    display: contents;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-cell.title .font-mono {
+    grid-column: 4;
+    grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-cell.title span:not(.font-mono) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-cell.title > input {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > div:last-child:not(.title) {
+    grid-column: 5;
+    grid-row: 1;
+  }
+}

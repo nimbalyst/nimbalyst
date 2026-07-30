@@ -6,7 +6,19 @@
  * is no client-held org key, so no envelope or identity-key traffic.
  */
 
-import type { BoundedPreview } from './conversation.js';
+import type {
+  BoundedPreview,
+  ConversationDescriptor,
+} from './conversation.js';
+
+export interface OrgSettings {
+  version: 1;
+  messaging: {
+    roomsEnabled: boolean;
+    dmsEnabled: boolean;
+    roomCreation: 'members' | 'admins';
+  };
+}
 
 // ============================================================================
 // Client -> Server Messages
@@ -187,6 +199,8 @@ export interface TeamDocumentCommentNotifyMessage {
 
 export type TeamServerMessage =
   | TeamSyncResponseMessage
+  | TeamOrgSettingsUpdatedMessage
+  | TeamConversationDescriptorUpdatedMessage
   | TeamMemberAddedMessage
   | TeamMemberRemovedMessage
   | TeamMemberRoleChangedMessage
@@ -204,6 +218,18 @@ export type TeamServerMessage =
 export interface TeamSyncResponseMessage {
   type: 'teamSyncResponse';
   team: TeamState;
+}
+
+/** Broadcast: organization settings changed. */
+export interface TeamOrgSettingsUpdatedMessage {
+  type: 'orgSettingsUpdated';
+  settings: OrgSettings;
+}
+
+/** Broadcast: a conversation registry descriptor changed. */
+export interface TeamConversationDescriptorUpdatedMessage {
+  type: 'conversationDescriptorUpdated';
+  descriptor: ConversationDescriptor;
 }
 
 /** Broadcast: member added */
@@ -387,6 +413,8 @@ export interface TeamState {
   documents: EncryptedDocIndexEntry[];
   /** First-class folder nodes (omitted by pre-folders servers). */
   folders?: EncryptedFolderNode[];
+  /** Organization configuration (omitted by pre-settings servers). */
+  settings?: OrgSettings;
 }
 
 /** Information about a team member */

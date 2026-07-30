@@ -15,6 +15,14 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 import { AlphaBadge } from '../../common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP } from '../../common/TeamAlphaNotice';
 import { organizationCreationEnabled } from '../../../store/atoms/settingsDomains';
+// Imported from the registry/context directly rather than the `dialogs` barrel,
+// which pulls every dialog component (and the extension SDK) into this panel.
+import { DIALOG_IDS } from '../../../dialogs/registry';
+import { dialogRef } from '../../../contexts/DialogContext';
+import {
+  queueOrgWindowGeneralRoute,
+  readOrgWelcomeDismissed,
+} from '../../TeamMode/onboarding/orgOnboardingStorage';
 import type { AccountOrganizationEntry, AccountOrganizationGroup } from './accountOrganizations';
 
 function openOrgWindow(orgId?: string) {
@@ -47,13 +55,38 @@ function AccountOrgRow({ organization }: { organization: AccountOrganizationEntr
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const handleOpen = async () => {
+    setError(null);
+    // Following the provider's invite link can activate the membership before
+    // the desktop sees it, so there is no Accept button in that path. An
+    // undismissed org is still first-open onboarding: queue the same durable
+    // #general destination before opening its window.
+    if (!(await readOrgWelcomeDismissed(organization.orgId))) {
+      const queued = await queueOrgWindowGeneralRoute(organization.orgId);
+      if (!queued) {
+        setError('Could not save the organization destination. Try again.');
+        return;
+      }
+    }
+    openOrgWindow(organization.orgId);
+  };
+
   const handleAccept = async () => {
     setAccepting(true);
     setError(null);
     try {
       const result = await window.electronAPI?.team?.acceptInvite(organization.orgId);
       if (result?.success) {
+        const queued = await queueOrgWindowGeneralRoute(organization.orgId);
+        if (!queued) {
+          throw new Error(
+            'Invitation accepted, but the organization destination could not be saved. Try again.',
+          );
+        }
         announceOrganizationsChanged();
+        // Accepting used to end here, in a settings list. The new member now
+        // lands in the organization window on #general.
+        openOrgWindow(organization.orgId);
       } else {
         setError(result?.error || 'Could not accept the invitation');
       }
@@ -113,7 +146,7 @@ function AccountOrgRow({ organization }: { organization: AccountOrganizationEntr
         ) : (
           <button
             type="button"
-            onClick={() => openOrgWindow(organization.orgId)}
+            onClick={() => { void handleOpen(); }}
             className="rounded border border-[var(--nim-border)] bg-transparent px-2.5 py-1 text-[11px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
             data-testid="account-org-manage"
           >
@@ -144,7 +177,9 @@ export function AccountOrgList({ group }: { group: AccountOrganizationGroup }) {
         <div className="account-org-new-row flex items-center gap-1.5">
           <button
             type="button"
-            onClick={() => openOrgWindow()}
+            onClick={() => dialogRef.current?.open(DIALOG_IDS.ORG_CREATION_WIZARD, {
+              onOrganizationCreated: () => announceOrganizationsChanged(),
+            })}
             className="account-org-new self-start rounded border border-dashed border-[var(--nim-border)] bg-transparent px-2.5 py-1 text-[11px] text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
             data-testid="account-org-new"
           >

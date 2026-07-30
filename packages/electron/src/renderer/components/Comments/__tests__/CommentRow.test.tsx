@@ -3,7 +3,7 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CommentRow } from '../CommentRow';
+import { CommentRow, formatClockTime, type CommentDensity } from '../CommentRow';
 import { buildCommentView } from '../commentViewModel';
 import { createCommentFixtures, createFixtureResolver, FULL_CAPABILITIES } from '../commentFixtures';
 import { resourceRefToUrn } from '../resourceUrn';
@@ -29,6 +29,9 @@ function renderRow(
     previews?: Record<string, ResourcePreviewState>;
     reactionsSupported?: boolean;
     replyParent?: Comment | null;
+    density?: CommentDensity;
+    grouped?: boolean;
+    timestampMs?: number;
   } = {},
 ) {
   const fixtures = createCommentFixtures({ now: NOW });
@@ -46,7 +49,14 @@ function renderRow(
   const onAction = vi.fn();
   const onToggleReaction = vi.fn();
   const utils = render(
-    <CommentRow view={view} onAction={onAction} onToggleReaction={onToggleReaction} />,
+    <CommentRow
+      view={view}
+      onAction={onAction}
+      onToggleReaction={onToggleReaction}
+      density={options.density}
+      grouped={options.grouped}
+      timestampMs={options.timestampMs}
+    />,
   );
   return { fixtures, view, onAction, onToggleReaction, ...utils };
 }
@@ -125,6 +135,61 @@ describe('CommentRow capability-driven affordances', () => {
     expect(screen.getByTestId('reaction-chip-eyes')).toBeTruthy();
     expect(screen.getByTestId('reaction-chip-eyes').hasAttribute('disabled')).toBe(true);
     expect(screen.queryByTestId('reaction-add-trigger')).toBeNull();
+  });
+
+  it('renders no reaction row for a message with no reactions, keeping the add affordance in the row actions', () => {
+    const [, noReactions] = commentsOf();
+    renderRow(noReactions);
+
+    // Zero reactions must cost zero vertical space -- no reserved row.
+    expect(screen.queryByTestId('reaction-bar')).toBeNull();
+    expect(
+      within(screen.getByTestId('comment-row-actions')).getByTestId('reaction-add-trigger'),
+    ).toBeTruthy();
+  });
+
+  it('keeps the reaction bar chips-only and the add trigger in the hover actions', () => {
+    const [withReactions] = commentsOf();
+    renderRow(withReactions);
+
+    // Aggregates are content and always visible; the affordance is not in the bar.
+    const bar = screen.getByTestId('reaction-bar');
+    expect(within(bar).getByTestId('reaction-chip-eyes').className).not.toContain('opacity-0');
+    expect(within(bar).queryByTestId('reaction-add-trigger')).toBeNull();
+
+    // Revealed with the action menu, keyed off the row's `group`.
+    const actions = screen.getByTestId('comment-row-actions');
+    expect(within(actions).getByTestId('reaction-add-trigger')).toBeTruthy();
+    expect(actions.className).toContain('opacity-0');
+    expect(actions.className).toContain('group-hover:opacity-100');
+    expect(actions.className).toContain('focus-within:opacity-100');
+  });
+
+  it('keeps the row actions visible while the add-reaction picker is open', () => {
+    const [withReactions] = commentsOf();
+    renderRow(withReactions);
+
+    fireEvent.click(screen.getByTestId('reaction-add-trigger'));
+
+    // The picker autofocuses into a portal, so focus-within cannot hold the
+    // container open -- a popover anchored to an invisible element reads as a bug.
+    expect(screen.getByTestId('reaction-emoji-picker')).toBeTruthy();
+    const actions = screen.getByTestId('comment-row-actions');
+    expect(actions.className).not.toContain('opacity-0');
+    expect(actions.className).toContain('opacity-100');
+  });
+
+  it('adds a reaction through the hover-actions picker', () => {
+    const [withReactions] = commentsOf();
+    const { onToggleReaction, view } = renderRow(withReactions);
+
+    fireEvent.click(screen.getByTestId('reaction-add-trigger'));
+    fireEvent.click(screen.getByTestId('emoji-quick-rocket'));
+
+    expect(onToggleReaction).toHaveBeenCalledWith('rocket', true, view);
+    // Choosing closes the popover, which releases the actions container again.
+    expect(screen.queryByTestId('reaction-emoji-picker')).toBeNull();
+    expect(screen.getByTestId('comment-row-actions').className).toContain('opacity-0');
   });
 });
 
@@ -239,6 +304,92 @@ describe('CommentRow states', () => {
     expect(strip.getAttribute('data-unavailable')).toBe('true');
     expect(strip.textContent).toContain('Replying to a message you cannot see');
     expect(strip.textContent).not.toContain('Fanout is landing');
+  });
+});
+
+describe('CommentRow compact density', () => {
+  afterEach(() => cleanup());
+
+  const POSTED_AT = Date.parse('2026-07-26T17:35:00.000Z');
+
+  it('renders author and message on one line behind a clock gutter, with no avatar', () => {
+    const [first] = commentsOf();
+    renderRow(first, { density: 'compact', timestampMs: POSTED_AT });
+
+    const row = screen.getByRole('article');
+    expect(row.getAttribute('data-density')).toBe('compact');
+    expect(row.className).toContain('items-baseline');
+    expect(screen.queryByTestId('comment-row-avatar')).toBeNull();
+    expect(screen.queryByTestId('comment-row-agent-glyph')).toBeNull();
+
+    // The gutter carries a wall clock, not the relative label the comfortable
+    // header uses. It participates in the row's baseline alignment instead of
+    // compensating with top padding, which drifts below the sender and body.
+    const clock = screen.getByTestId('comment-row-clock');
+    expect(clock.parentElement?.className).not.toContain('pt-[3px]');
+    expect(clock.textContent).toBe(formatClockTime(POSTED_AT));
+    expect(clock.textContent).toMatch(/\d{1,2}:\d{2}/);
+
+    // Author and body are siblings on the single line, in that order.
+    const line = row.querySelector('.comment-row-compact-line')!;
+    expect(line).toBeTruthy();
+    const actor = line.querySelector('.comment-row-actor')!;
+    const body = line.querySelector('.comment-row-compact-body')!;
+    expect(actor.textContent).toBe('Dana Okafor');
+    expect(body.textContent).toBeTruthy();
+    expect(actor.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('drops the repeated author on a grouped row but keeps the gutter reserved', () => {
+    const [first] = commentsOf();
+    renderRow(first, { density: 'compact', grouped: true, timestampMs: POSTED_AT });
+
+    const row = screen.getByRole('article');
+    expect(row.querySelector('.comment-row-actor')).toBeNull();
+
+    // The time is revealed on hover rather than removed: a run of messages
+    // reads as one block, but every row can still be dated, and the gutter
+    // keeps its width so grouped and ungrouped bodies line up.
+    const clock = screen.getByTestId('comment-row-clock');
+    expect(clock.getAttribute('data-hover-only')).toBe('true');
+    expect(clock.className).toContain('group-hover:opacity-100');
+    expect(row.querySelector('.comment-row-clock-gutter')).toBeTruthy();
+    expect(row.querySelector('.comment-row-compact-body')!.textContent).toBeTruthy();
+  });
+
+  it('keeps agent attribution and the pending marker on the compact line', () => {
+    const agentComment = commentsOf().find((comment) => comment.actor.kind === 'agent')!;
+    renderRow(agentComment, { density: 'compact', timestampMs: POSTED_AT });
+
+    const line = screen.getByRole('article').querySelector('.comment-row-compact-line')!;
+    expect(within(line as HTMLElement).getByTestId('comment-row-agent-badge')).toBeTruthy();
+    expect(within(line as HTMLElement).getByTestId('comment-row-agent-owner')).toBeTruthy();
+    expect(within(line as HTMLElement).getByTestId('comment-row-session-chip')).toBeTruthy();
+  });
+
+  it('keeps the hover actions and reaction bar working in compact', () => {
+    const withReactions = commentsOf().find((comment) => (comment.reactions ?? []).length > 0)!;
+    const { onToggleReaction } = renderRow(withReactions, {
+      density: 'compact',
+      timestampMs: POSTED_AT,
+    });
+
+    expect(screen.getByTestId('comment-row-actions')).toBeTruthy();
+    const bar = screen.getByTestId('reaction-bar');
+    fireEvent.click(bar.querySelector<HTMLButtonElement>('.reaction-chip')!);
+    expect(onToggleReaction).toHaveBeenCalled();
+  });
+
+  it('defaults to comfortable: avatar, relative timestamp, no clock gutter', () => {
+    const [first] = commentsOf();
+    renderRow(first, { timestampMs: POSTED_AT });
+
+    const row = screen.getByRole('article');
+    expect(row.getAttribute('data-density')).toBe('comfortable');
+    expect(screen.getByTestId('comment-row-avatar')).toBeTruthy();
+    expect(screen.queryByTestId('comment-row-clock')).toBeNull();
+    expect(row.querySelector('.comment-row-compact-line')).toBeNull();
+    expect(row.querySelector('.comment-row-timestamp')).toBeTruthy();
   });
 });
 

@@ -6,7 +6,7 @@ import { readdir } from 'fs/promises';
 import { resolveEntryType } from '../utils/FileTree';
 import { shouldExcludeDir } from '../utils/fileFilters';
 import { getRecentItems, addToRecentItems, store, getWorkspaceWindowState, getTheme } from '../utils/store';
-import { createWindow, findWindowByWorkspace, windowStates } from './WindowManager';
+import { createWindow, findWindowByWorkspace, windows, windowStates } from './WindowManager';
 import { safeHandle } from '../utils/ipcRegistry';
 import { getBackgroundColor } from '../theme/ThemeManager';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
@@ -16,6 +16,7 @@ import { autoMatchTeamForWorkspace } from '../services/TeamService';
 import { initializeTrackerSync } from '../services/TrackerSyncManager';
 import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
 import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
+import { windowReferencesWorkspace } from './windowState';
 
 let workspaceManagerWindow: BrowserWindow | null = null;
 
@@ -45,6 +46,15 @@ function bucketFileCount(count: number): string {
   if (count <= 50) return '11-50';
   if (count <= 100) return '51-100';
   return '100+';
+}
+
+function findWindowReferencingWorkspace(workspacePath: string): BrowserWindow | null {
+  for (const [windowId, state] of windowStates) {
+    if (!windowReferencesWorkspace(state, workspacePath)) continue;
+    const window = windows.get(windowId);
+    if (window && !window.isDestroyed()) return window;
+  }
+  return null;
 }
 
 async function hasSubfolders(workspacePath: string): Promise<boolean> {
@@ -439,6 +449,30 @@ export function setupWorkspaceManagerHandlers() {
     }
 
     return { success: true };
+  });
+
+  safeHandle('team:open-project-workspace', async (_event, workspacePath: string) => {
+    try {
+      if (!workspacePath || typeof workspacePath !== 'string') {
+        throw new Error('team:open-project-workspace requires workspacePath');
+      }
+      if (!existsSync(workspacePath)) {
+        throw new Error(`Workspace does not exist: ${workspacePath}`);
+      }
+
+      addToRecentItems('workspaces', workspacePath, basename(workspacePath));
+      const existingWindow = findWindowReferencingWorkspace(workspacePath);
+      if (existingWindow) {
+        existingWindow.focus();
+        return { success: true };
+      }
+
+      const savedState = getWorkspaceWindowState(workspacePath);
+      createWindow(false, true, workspacePath, savedState?.bounds);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
   });
 
   // Remove from recent.workspaces

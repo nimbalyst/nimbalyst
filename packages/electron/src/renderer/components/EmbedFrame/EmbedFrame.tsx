@@ -55,11 +55,14 @@ import { CollaborativeEmbedEditor } from './CollaborativeEmbedEditor';
 import {
   parseCollaborativeEmbedReference,
   type CollaborativeEmbedProviderRequest,
+  type CollaborativeEmbedReference,
 } from '../../services/CollaborativeEmbedProviderCache';
+import { resolveSharedSpaceEmbedReference } from './sharedSpaceEmbedResolution';
 import {
   activeTeamOrgIdAtom,
   pendingCollabDocumentAtom,
   sharedDocumentsAtom,
+  sharedFoldersAtom,
 } from '../../store/atoms/collabDocuments';
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
@@ -367,6 +370,7 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
   const { documentDir, documentPath } = useDocumentPath();
   const { theme } = useTheme();
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const sharedFolders = useAtomValue(sharedFoldersAtom);
   const activeWorkspacePath = useAtomValue(activeWorkspacePathAtom);
   const activeTeamOrgId = useAtomValue(activeTeamOrgIdAtom);
   const [editor] = useLexicalComposerContext();
@@ -385,10 +389,6 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
     return customEditorRegistry.findRegistrationForFile(absolutePath);
   }, [absolutePath]);
 
-  const collaborativeReference = useMemo(
-    () => parseCollaborativeEmbedReference(src),
-    [src],
-  );
   const hostDocumentOrgId = useMemo(() => {
     if (!documentPath || !isCollabUri(documentPath)) return null;
     try {
@@ -397,6 +397,34 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
       return null;
     }
   }, [documentPath]);
+
+  const explicitCollaborativeReference = useMemo(
+    () => parseCollaborativeEmbedReference(src),
+    [src],
+  );
+
+  // Inside a SHARED host document a plain relative link names a sibling in the
+  // team's collab space, not a file on this machine -- there is no workspace
+  // root to resolve it against. Map it onto a shared document so it takes the
+  // collaborative branch below; `null` falls through to filesystem resolution
+  // exactly as before (NIM-2271). Reduced to a primitive id here for the same
+  // reason the fields below are: the atoms churn on every TeamRoom broadcast.
+  const sharedSpaceDocumentId = useMemo(() => {
+    if (explicitCollaborativeReference) return null;
+    return resolveSharedSpaceEmbedReference({
+      src,
+      hostOrgId: hostDocumentOrgId,
+      documents: sharedDocuments,
+      folders: sharedFolders,
+    })?.documentId ?? null;
+  }, [explicitCollaborativeReference, src, hostDocumentOrgId, sharedDocuments, sharedFolders]);
+
+  const collaborativeReference = useMemo<CollaborativeEmbedReference | null>(() => {
+    if (explicitCollaborativeReference) return explicitCollaborativeReference;
+    if (!sharedSpaceDocumentId || !hostDocumentOrgId) return null;
+    return { documentId: sharedSpaceDocumentId, orgId: hostDocumentOrgId };
+  }, [explicitCollaborativeReference, sharedSpaceDocumentId, hostDocumentOrgId]);
+
   const effectiveTeamOrgId = hostDocumentOrgId ?? activeTeamOrgId;
 
   // `sharedDocumentsAtom` is a derived filter: every TeamRoom broadcast --

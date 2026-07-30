@@ -21,6 +21,7 @@
 
 import { BrowserWindow, net } from 'electron';
 import { createHash } from 'crypto';
+import { existsSync } from 'fs';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getNormalizedGitRemote } from '../utils/gitUtils';
@@ -45,6 +46,19 @@ import {
   getPersonalUserId,
 } from './StytchAuthService';
 import { asTeamJwt, type PersonalJwt, type TeamJwt } from '@nimbalyst/runtime';
+import type {
+  ConversationDirectoryEntry,
+  ConversationDirectoryMembersResult,
+  ConversationMutationResult,
+  CreateConversationInput,
+  CreateConversationResult,
+  ListConversationsOptions,
+  SetConversationMembershipInput,
+  SetConversationMembershipResult,
+  UpdateConversationInput,
+} from '../../shared/conversationDirectory';
+import type { OrgSettings } from '../../shared/orgSettings';
+import { normalizeOrgSettings } from '../../shared/orgSettings';
 import { getDatabase } from '../database/initialize';
 import {
   backfillProjection,
@@ -74,6 +88,13 @@ import {
   upsertAccountOrgBinding,
   type AccountOrgBindingSource,
 } from './AccountOrgBindingService';
+import { getRecentItems } from '../utils/store';
+import { windowReferencesWorkspace, windowStates } from '../window/windowState';
+import {
+  resolveOrgProjectLocalStates,
+  type OrgProjectLocalState,
+  type WorkspaceRemoteState,
+} from './orgProjectLocalState';
 
 // ============================================================================
 // Server URL Helper
@@ -181,7 +202,7 @@ export interface MergeResultSummary {
   error?: string;
 }
 
-interface TeamMember {
+export interface TeamMember {
   memberId: string;
   email: string;
   name: string;
@@ -686,6 +707,241 @@ async function persistServerAccountOrgBinding(
 // Public API
 // ============================================================================
 
+function requireConversationIdentifier(
+  value: string,
+  name: string,
+): string {
+  if (!value?.trim()) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
+}
+
+/**
+ * List the caller-visible conversation directory for one organization.
+ *
+ * Team JWT authentication is mandatory: passing `orgId` to `fetchTeamApi`
+ * selects `getOrgScopedJwt` and its org-binding checks. Direct conversations
+ * are included by default because the org window renders rooms and DMs from
+ * this one directory.
+ */
+export async function listConversations(
+  orgId: string,
+  options: ListConversationsOptions = {},
+): Promise<ConversationDirectoryEntry[]> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  const params = new URLSearchParams();
+  if (options.includeDirect !== false) params.set('includeDirect', 'true');
+  if (options.includeArchived === true) params.set('includeArchived', 'true');
+  const suffix = params.size > 0 ? `?${params.toString()}` : '';
+  const result = await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations${suffix}`,
+    'GET',
+    undefined,
+    orgId,
+  ) as { conversations?: ConversationDirectoryEntry[] };
+  // A server old enough to omit capabilities must not take the directory down
+  // with it: the row arrives with no grants and the renderer filters it out.
+  return (result.conversations ?? []).map((conversation) => ({
+    ...conversation,
+    capabilities: conversation.capabilities ?? [],
+  }));
+}
+
+export async function createConversation(
+  orgId: string,
+  input: CreateConversationInput,
+): Promise<CreateConversationResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  if (!input?.kind || !input.visibility) {
+    throw new Error('Conversation kind and visibility are required');
+  }
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations`,
+    'POST',
+    input,
+    orgId,
+  ) as CreateConversationResult;
+}
+
+/**
+ * Rename an organization room or change its topic.
+ *
+ * Only the supplied fields are serialized: the server treats a present `topic`
+ * key as "replace" (with `null` clearing it) and an absent one as "leave
+ * alone", so sending `undefined` fields would silently wipe the topic on a
+ * rename. Rooms are the only kind with editable titles — the server rejects
+ * DMs and document discussions.
+ */
+export async function updateConversation(
+  orgId: string,
+  conversationId: string,
+  input: UpdateConversationInput,
+): Promise<ConversationMutationResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  const body: Record<string, unknown> = {};
+  if (input?.title !== undefined) {
+    if (typeof input.title !== 'string' || !input.title.trim()) {
+      throw new Error('Conversation title must be a non-empty string');
+    }
+    body.title = input.title.trim();
+  }
+  if (input?.topic !== undefined) {
+    if (input.topic !== null && typeof input.topic !== 'string') {
+      throw new Error('Conversation topic must be a string or null');
+    }
+    body.topic = typeof input.topic === 'string' && input.topic.trim()
+      ? input.topic.trim()
+      : null;
+  }
+  if (Object.keys(body).length === 0) {
+    throw new Error('Conversation title or topic is required');
+  }
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}`,
+    'PUT',
+    body,
+    orgId,
+  ) as ConversationMutationResult;
+}
+
+export async function archiveConversation(
+  orgId: string,
+  conversationId: string,
+): Promise<ConversationMutationResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/archive`,
+    'POST',
+    undefined,
+    orgId,
+  ) as ConversationMutationResult;
+}
+
+export async function setConversationMembership(
+  orgId: string,
+  conversationId: string,
+  userId: string,
+  input: SetConversationMembershipInput,
+): Promise<SetConversationMembershipResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  requireConversationIdentifier(userId, 'Conversation member user id');
+  if (typeof input?.active !== 'boolean') {
+    throw new Error('Conversation membership active state is required');
+  }
+  if (
+    input.role !== undefined
+    && input.role !== 'member'
+    && input.role !== 'roomAdmin'
+  ) {
+    throw new Error('Conversation membership role is invalid');
+  }
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(userId)}`,
+    input.active ? 'PUT' : 'DELETE',
+    input.active ? { role: input.role ?? 'member' } : undefined,
+    orgId,
+  ) as SetConversationMembershipResult;
+}
+
+export async function listConversationMembers(
+  orgId: string,
+  conversationId: string,
+): Promise<ConversationDirectoryMembersResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  const result = await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/members`,
+    'GET',
+    undefined,
+    orgId,
+  ) as ConversationDirectoryMembersResult;
+  return { memberships: result.memberships ?? [] };
+}
+
+/**
+ * Read one organization's settings.
+ *
+ * Team JWT authentication (any active member may read). Pre-settings servers
+ * and never-configured orgs answer with an absent or partial object, so the
+ * result is defaulted field by field rather than trusted as complete.
+ */
+export async function getOrgSettings(orgId: string): Promise<OrgSettings> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  const result = await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/settings`,
+    'GET',
+    undefined,
+    orgId,
+  ) as { settings?: unknown };
+  return normalizeOrgSettings(result?.settings);
+}
+
+/**
+ * Replace one organization's settings (organization admins only, enforced
+ * server-side).
+ *
+ * The server's PUT is a whole-object replace — omitted fields fall back to
+ * their defaults rather than keeping their current value — so callers send the
+ * complete settings they want stored, not a patch.
+ */
+export async function updateOrgSettings(
+  orgId: string,
+  settings: OrgSettings,
+): Promise<OrgSettings> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  if (!settings || typeof settings !== 'object') {
+    throw new Error('Organization settings are required');
+  }
+  const result = await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/settings`,
+    'PUT',
+    normalizeOrgSettings(settings),
+    orgId,
+  ) as { settings?: unknown };
+  return normalizeOrgSettings(result?.settings);
+}
+
+export async function renameOrganization(
+  orgId: string,
+  name: string,
+): Promise<{ orgId: string; name: string }> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  const normalizedName = name?.trim();
+  if (!normalizedName) {
+    throw new Error('Organization name is required');
+  }
+  await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}`,
+    'PUT',
+    { name: normalizedName },
+    orgId,
+  );
+  invalidateListTeamsCache();
+  return { orgId, name: normalizedName };
+}
+
+export async function setAgentPosting(
+  orgId: string,
+  conversationId: string,
+  enabled: boolean,
+): Promise<ConversationMutationResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  if (typeof enabled !== 'boolean') {
+    throw new Error('Agent posting enabled state is required');
+  }
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/agent-posting`,
+    'PUT',
+    { enabled },
+    orgId,
+  ) as ConversationMutationResult;
+}
+
 /**
  * List all teams the current user belongs to, across all signed-in accounts.
  * Queries each account's teams and deduplicates by orgId.
@@ -1064,6 +1320,48 @@ async function listProjectsForOrg(orgId: string): Promise<TeamProjectSummary[]> 
   return result.projects || [];
 }
 
+function isWorkspaceOpen(workspacePath: string): boolean {
+  for (const state of windowStates.values()) {
+    if (windowReferencesWorkspace(state, workspacePath)) return true;
+  }
+  return false;
+}
+
+async function getRecentWorkspaceRemoteStates(
+  projectGitRemoteHashes: ReadonlySet<string>,
+): Promise<WorkspaceRemoteState[]> {
+  const states: WorkspaceRemoteState[] = [];
+  for (const workspace of getRecentItems('workspaces')) {
+    if (!workspace.path || !existsSync(workspace.path)) continue;
+    const remote = await getNormalizedGitRemote(workspace.path);
+    if (!remote) continue;
+    const gitRemoteHash = hashGitRemote(remote);
+    if (!projectGitRemoteHashes.has(gitRemoteHash)) continue;
+    states.push({
+      workspacePath: workspace.path,
+      gitRemoteHash,
+      open: isWorkspaceOpen(workspace.path),
+    });
+  }
+  return states;
+}
+
+async function resolveLocalProjectStatesForOrg(
+  orgId: string,
+): Promise<OrgProjectLocalState[]> {
+  if (!orgId || typeof orgId !== 'string') {
+    throw new Error('team:resolve-org-projects-local-state requires orgId');
+  }
+  const projects = await listProjectsForOrg(orgId);
+  const hashes = new Set(
+    projects
+      .map((project) => project.gitRemoteHash)
+      .filter((hash): hash is string => !!hash),
+  );
+  const workspaces = await getRecentWorkspaceRemoteStates(hashes);
+  return resolveOrgProjectLocalStates(projects, workspaces);
+}
+
 /** Epic H3 P3: read-only pre-flight for the "Move to another org" wizard.
  *  Admin on BOTH orgs (server-enforced). */
 async function previewMoveProject(
@@ -1159,7 +1457,7 @@ async function acceptInvite(orgId: string): Promise<TeamDetails> {
 /**
  * List members of a team. Requires explicit orgId.
  */
-async function listMembers(orgId: string): Promise<{ members: TeamMember[]; callerRole: string }> {
+export async function listMembers(orgId: string): Promise<{ members: TeamMember[]; callerRole: string }> {
   const data = await fetchTeamApi(`/api/teams/${orgId}/members`, 'GET', undefined, orgId) as {
     members: TeamMember[];
     callerRole: string;
@@ -1579,6 +1877,18 @@ export function registerTeamHandlers(): void {
     }
   });
 
+  safeHandle('team:rename', async (_event, orgId: string, name: string) => {
+    try {
+      const organization = await renameOrganization(orgId, name);
+      return { success: true, organization };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
   safeHandle('team:create', async (_event, name: string, workspacePath?: string, accountOrgId?: string) => {
     try {
       // Org creation is disabled while Teams is invite-only alpha. The renderer
@@ -1609,6 +1919,15 @@ export function registerTeamHandlers(): void {
   safeHandle('team:list-projects', async (_event, orgId: string) => {
     try {
       const projects = await listProjectsForOrg(orgId);
+      return { success: true, projects };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  safeHandle('team:resolve-org-projects-local-state', async (_event, orgId: string) => {
+    try {
+      const projects = await resolveLocalProjectStatesForOrg(orgId);
       return { success: true, projects };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };

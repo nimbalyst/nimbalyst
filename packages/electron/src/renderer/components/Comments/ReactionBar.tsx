@@ -1,22 +1,28 @@
 import React from 'react';
 
-import { EmojiPicker, EmojiTriggerButton } from './EmojiPicker';
 import { emojiGlyphOrShortcode } from './emojiCatalog';
 import type { ReactionAggregate } from './commentTypes';
 
 /**
- * Aggregate reactions for one comment.
+ * Aggregate reactions for one comment: chips only, and nothing at all when
+ * there are none.
  *
- * Two absence rules, and they mean different things:
+ * The add-reaction affordance deliberately does *not* live here. Rendering it
+ * in the bar meant every reactable message reserved a row of vertical space for
+ * a button that was invisible until hover; in a dense timeline that is most of
+ * the scroll height spent on nothing. It now sits in the row's hover actions
+ * next to the action menu (see `CommentRow`), so an unreacted message costs
+ * zero height.
+ *
+ * Two absence rules survive, and they mean different things:
  *
  *   `supported === false`  the adapter omits `react` -- tracker comments and
- *                          inline document comments in V1. Nothing renders. No
- *                          disabled button, because the capability is not
- *                          missing, the feature is.
+ *                          inline document comments in V1. Nothing renders,
+ *                          even if aggregates came down the wire, because the
+ *                          capability is not missing, the feature is.
  *   `canReact === false`   the surface supports reactions but this reader lacks
  *                          the `react` capability. Existing aggregates still
- *                          render (they are content), but they are inert and
- *                          the picker is withheld.
+ *                          render (they are content) but are inert.
  */
 export function ReactionBar({
   reactions,
@@ -30,7 +36,7 @@ export function ReactionBar({
   onToggle: (emoji: string, on: boolean) => void;
 }) {
   if (!supported) return null;
-  if (reactions.length === 0 && !canReact) return null;
+  if (reactions.length === 0) return null;
 
   return (
     <div className="reaction-bar mt-1.5 flex flex-wrap items-center gap-1" data-testid="reaction-bar">
@@ -54,17 +60,6 @@ export function ReactionBar({
           <span className="reaction-chip-count tabular-nums">{reaction.count}</span>
         </button>
       ))}
-
-      {canReact && (
-        <EmojiPicker
-          placement="top-start"
-          testId="reaction-emoji-picker"
-          onSelect={(emoji) => onToggle(emoji, true)}
-          trigger={(props) => (
-            <EmojiTriggerButton label="Add reaction" testId="reaction-add-trigger" triggerProps={props} />
-          )}
-        />
-      )}
     </div>
   );
 }

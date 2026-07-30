@@ -14,7 +14,14 @@
  */
 
 import type { DraftState } from './commentViewModel';
-import type { AgentHandle, BodyEntity, PersonHandle, ResourceRef, RichCommentBody } from './commentTypes';
+import type {
+  AgentHandle,
+  BodyEntity,
+  MessageAttachment,
+  PersonHandle,
+  ResourceRef,
+  RichCommentBody,
+} from './commentTypes';
 import { agentMentionUrn, mentionUrn, resourceRefToUrn } from './resourceUrn';
 
 /** Every `nimbalyst://` token in the text, labeled or bare. */
@@ -62,7 +69,20 @@ export function urnsInText(text: string): string[] {
   return found;
 }
 
-export function deriveDraft(text: string, format: RichCommentBody['format'], pool: DraftPool): DraftState {
+/**
+ * `attachments` rides alongside the text; it never touches it.
+ *
+ * The text seam is the whole reason mentions and refs stay consistent, so
+ * files are appended to the body as their own field and the derivation above
+ * is left exactly as it was. A draft with no files serializes byte-for-byte as
+ * it did before attachments existed.
+ */
+export function deriveDraft(
+  text: string,
+  format: RichCommentBody['format'],
+  pool: DraftPool,
+  attachments: readonly MessageAttachment[] = [],
+): DraftState {
   const occurrences = urnOccurrences(text);
   const resourceRefs: ResourceRef[] = [];
   const mentionedUserIds: string[] = [];
@@ -111,6 +131,7 @@ export function deriveDraft(text: string, format: RichCommentBody['format'], poo
       format,
       text,
       ...(entities.length > 0 ? { entities } : {}),
+      ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
     },
     resourceRefs,
     mentionedUserIds,

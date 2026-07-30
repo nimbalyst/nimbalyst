@@ -59,6 +59,7 @@ import {
 } from './claudeCliTurnSummary';
 import { AnalyticsService } from '../analytics/AnalyticsService';
 import { notificationService } from '../NotificationService';
+import { composeNotificationTitle } from '../../../shared/notificationTitle';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { AISessionsRepository } from '@nimbalyst/runtime';
@@ -88,10 +89,11 @@ async function notifyClaudeCliTurnComplete(
     }
 
     await notificationService.showNotification({
-      title: `${title} -- Response Ready`,
+      title: composeNotificationTitle(title, 'Response Ready'),
       body,
       sessionId,
       workspacePath,
+      sourceLabel: title,
       provider: 'claude-code-cli',
     });
 
@@ -272,9 +274,18 @@ export async function startClaudeCliProxyObservation(opts: {
         statusCode === 529
           ? 'Anthropic is overloaded. Claude will retry shortly.'
           : `Rate limited by Anthropic${retryAfter ? ` (retry after ${retryAfter}s)` : ''}.`;
-      void notificationService
-        .showNotification({ title: 'Claude CLI -- paused', body, sessionId, workspacePath, provider: 'claude-code-cli' })
-        .catch(() => {});
+      void (async () => {
+        const session = await AISessionsRepository.get(sessionId).catch(() => null);
+        const sourceLabel = session?.title || session?.provider || `Session ${sessionId.slice(0, 8)}`;
+        await notificationService.showNotification({
+          title: composeNotificationTitle(sourceLabel, 'Claude CLI paused'),
+          body,
+          sessionId,
+          workspacePath,
+          sourceLabel,
+          provider: 'claude-code-cli',
+        });
+      })().catch(() => {});
     },
     onUpstreamError: ({ statusCode, body, retryAfter }) => {
       // Render a failed turn IN the rich transcript so a rate-limited / failed

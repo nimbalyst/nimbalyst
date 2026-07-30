@@ -29,7 +29,6 @@ import {
   sessionListWorkspaceAtom,
   updateSessionStoreAtom,
   selectedWorkstreamAtom,
-  setSelectedWorkstreamAtom,
   sessionUnreadAtom,
   sessionLastActivityAtom,
   sessionLastReadAtom,
@@ -44,9 +43,8 @@ import {
   type PendingPrompt,
 } from './atoms/sessions';
 import { workstreamActiveChildAtom, workstreamStateAtom } from './atoms/workstreamState';
-import { setWindowModeAtom } from './atoms/windowMode';
 import { triggerWorktreeRefreshAtom } from './atoms/gitOperations';
-import { multiProjectModeAtom, openProjectsAtom } from './atoms/openProjects';
+import { activeWorkspacePathAtom, multiProjectModeAtom, openProjectsAtom } from './atoms/openProjects';
 import {
   markSessionStreamingAtom,
   clearSessionStreamingAtom,
@@ -57,6 +55,8 @@ import {
 import type { TranscriptEvent } from '@nimbalyst/runtime/ai/server/transcript/types';
 import { TranscriptStreamAccumulator } from './transcriptStreamAccumulator';
 import { resolveOwnedWorkspacePath } from '../../shared/sessionWorkspaceRouting';
+import type { SessionNotificationNavigationTarget } from '../../shared/sessionNotificationNavigation';
+import { navigateToNotificationSession } from './actions/sessionNotificationNavigation';
 
 /**
  * Per-session accumulator of canonical events received via IPC.
@@ -910,49 +910,34 @@ export function initSessionStateListeners(): () => void {
   };
 
   /**
-   * Handle notification click events.
-   * Switches to the session that was clicked in the OS notification.
-   * If the session is a child of a workstream, selects the parent instead.
+   * Route a native notification click. Never returns a rejected promise: the
+   * IPC callback has nowhere to hand one, so a throw here would surface as an
+   * unhandled rejection instead of a visible failure.
    */
-  const handleNotificationClicked = (data: { sessionId: string }) => {
-    const { sessionId } = data;
-    if (!sessionId) return;
-
-    const workspacePath = store.get(sessionListWorkspaceAtom);
-    if (!workspacePath) {
-      console.warn('[sessionStateListeners] No workspace path available for notification click');
-      return;
-    }
-
-    // Switch to agent mode so the session is visible
-    store.set(setWindowModeAtom, 'agent');
-
-    // Check if this is a child session - if so, select the parent workstream
-    const registry = store.get(sessionRegistryAtom);
-    const sessionMeta = registry.get(sessionId);
-    if (sessionMeta?.parentSessionId) {
-      // Child session - select parent and set this child as active
-      const parentState = store.get(workstreamStateAtom(sessionMeta.parentSessionId));
-      const parentType = parentState.type === 'worktree' ? 'worktree'
-        : parentState.type === 'workstream' ? 'workstream'
-        : 'workstream'; // Default to workstream since it has children
-      store.set(setSelectedWorkstreamAtom, {
-        workspacePath,
-        selection: { type: parentType, id: sessionMeta.parentSessionId },
+  const handleNotificationClicked = (
+    data: SessionNotificationNavigationTarget,
+  ): Promise<void> =>
+    navigateToNotificationSession(data)
+      .then(() => undefined)
+      .catch((error) => {
+        console.error('[sessionStateListeners] Notification navigation failed:', error);
       });
-      return;
+
+  const drainPendingNotificationNavigation = async (
+    workspacePath: string | null,
+  ): Promise<void> => {
+    if (!workspacePath) return;
+    try {
+      const pending = await window.electronAPI.invoke(
+        'notifications:consume-pending-navigation',
+        workspacePath,
+      ) as SessionNotificationNavigationTarget | null;
+      if (pending) {
+        await navigateToNotificationSession(pending);
+      }
+    } catch (error) {
+      console.error('[sessionStateListeners] Failed to consume pending notification navigation:', error);
     }
-
-    // Root session - determine its type
-    const state = store.get(workstreamStateAtom(sessionId));
-    const type = state.type === 'worktree' ? 'worktree'
-      : state.type === 'workstream' ? 'workstream'
-      : 'session';
-
-    store.set(setSelectedWorkstreamAtom, {
-      workspacePath,
-      selection: { type, id: sessionId },
-    });
   };
 
   /**
@@ -1106,6 +1091,7 @@ export function initSessionStateListeners(): () => void {
   let cleanupRequestUserInput: (() => void) | undefined;
   let cleanupRequestUserInputResolved: (() => void) | undefined;
   let cleanupNotificationClicked: (() => void) | undefined;
+  let cleanupPendingNotificationNavigation: (() => void) | undefined;
   let cleanupSyncReadState: (() => void) | undefined;
   let cleanupSyncDraftInput: (() => void) | undefined;
   let cleanupTranscriptEvent: (() => void) | undefined;
@@ -1131,6 +1117,11 @@ export function initSessionStateListeners(): () => void {
     cleanupNotificationClicked = window.electronAPI.on('notification-clicked', handleNotificationClicked);
     cleanupSyncReadState = window.electronAPI.on('sessions:sync-read-state', handleSyncReadState);
     cleanupSyncDraftInput = window.electronAPI.on('sessions:sync-draft-input', handleSyncDraftInput);
+
+    void drainPendingNotificationNavigation(store.get(activeWorkspacePathAtom));
+    cleanupPendingNotificationNavigation = store.sub(activeWorkspacePathAtom, () => {
+      void drainPendingNotificationNavigation(store.get(activeWorkspacePathAtom));
+    });
   }
 
   // Return cleanup function
@@ -1182,6 +1173,7 @@ export function initSessionStateListeners(): () => void {
     cleanupRequestUserInput?.();
     cleanupRequestUserInputResolved?.();
     cleanupNotificationClicked?.();
+    cleanupPendingNotificationNavigation?.();
     cleanupSyncReadState?.();
     cleanupSyncDraftInput?.();
     cleanupTranscriptEvent?.();
