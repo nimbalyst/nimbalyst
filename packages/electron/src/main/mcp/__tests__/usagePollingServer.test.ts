@@ -57,12 +57,14 @@ describe('usagePollingServer', () => {
       lastUpdated: Date.now(),
     });
     ollamaUsageServiceMock.getUsage.mockResolvedValue({
+      limitsAvailable: true,
+      session: { utilization: 0, resetsAt: null, models: [{ name: 'gpt-oss:120b', requestCount: 1 }] },
+      weekly: { utilization: 5.1, resetsAt: null, models: [{ name: 'glm-5.2', requestCount: 253 }] },
+      costUSD: 0,
       proxyReachable: false,
       configuredAliases: [],
-      limitsAvailable: false,
       planTiers: [{ tier: 'Free', concurrentCloudModels: 1, weeklyGpuQuota: 'baseline' }],
       lastUpdated: Date.now(),
-      note: 'not reachable',
     });
   });
 
@@ -76,7 +78,7 @@ describe('usagePollingServer', () => {
     const text = result.content[0].text;
     expect(text).toContain('Claude Code usage:');
     expect(text).toContain('OpenAI Codex usage:');
-    expect(text).toContain('Ollama Cloud (local brain-swap proxy):');
+    expect(text).toContain('Ollama Cloud usage:');
   });
 
   it('scopes to a single provider when specified', async () => {

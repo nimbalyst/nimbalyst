@@ -6,9 +6,9 @@
  * channels (claude-usage:get, codex-usage:get) -- but nothing wired that data
  * to a running AI session. This server closes that gap: it exposes the same
  * cached/refreshed usage data those IPC handlers already produce, plus a
- * matching (much more limited -- see OllamaUsageService's module doc for why)
- * reading for the local Ollama Cloud brain-swap route, through one MCP tool a
- * session can call directly.
+ * matching reading for Ollama Cloud (its own undocumented account-usage API,
+ * verified live 2026-07-30 -- see OllamaUsageService's module doc), through
+ * one MCP tool a session can call directly.
  *
  * Follows the sessionContextServer.ts pattern: exports a tool-schema array +
  * an endpoint-agnostic dispatch fn, folded into the unified `/mcp/host`
@@ -97,17 +97,31 @@ function formatCodexUsage(data: CodexUsageData): string {
   return lines.join("\n");
 }
 
+function formatOllamaWindow(label: string, window: OllamaUsageData["session"]): string {
+  if (!window) return `  ${label}: unavailable`;
+  const topModels = [...window.models]
+    .sort((a, b) => b.requestCount - a.requestCount)
+    .slice(0, 5)
+    .map((m) => `${m.name} (${m.requestCount})`)
+    .join(", ");
+  return `  ${label}: ${window.utilization}%${topModels ? ` -- top models: ${topModels}` : ""}`;
+}
+
 function formatOllamaUsage(data: OllamaUsageData): string {
-  const lines: string[] = ["Ollama Cloud (local brain-swap proxy):"];
-  lines.push(`  Local proxy reachable: ${data.proxyReachable ? "yes" : "no"}`);
-  if (data.proxyReachable) {
-    lines.push(
-      data.configuredAliases.length > 0
-        ? `  Configured aliases (${data.configuredAliases.length}): ${data.configuredAliases.join(", ")}`
-        : "  No aliases configured on the proxy."
-    );
+  const lines: string[] = ["Ollama Cloud usage:"];
+  if (data.limitsAvailable) {
+    lines.push(formatOllamaWindow("Session usage", data.session));
+    lines.push(formatOllamaWindow("Weekly usage", data.weekly));
+    if (data.costUSD !== undefined) {
+      lines.push(`  Metered cost this period: $${data.costUSD.toFixed(5)}`);
+    }
+  } else {
+    lines.push(`  Account usage unavailable -- ${data.error ?? "unknown reason"}`);
   }
-  lines.push(`  Note: ${data.note}`);
+  lines.push(`  Local brain-swap proxy reachable: ${data.proxyReachable ? "yes" : "no"}`);
+  if (data.proxyReachable && data.configuredAliases.length > 0) {
+    lines.push(`  Configured aliases (${data.configuredAliases.length}): ${data.configuredAliases.join(", ")}`);
+  }
   lines.push(
     `  Plan tiers (static reference): ${data.planTiers
       .map((t) => `${t.tier}=${t.concurrentCloudModels} concurrent / ${t.weeklyGpuQuota} weekly GPU`)
@@ -166,10 +180,10 @@ export const USAGE_POLLING_TOOL_SCHEMAS = [
     description:
       "Get current usage/rate-limit status for an AI provider: Claude Code subscription usage " +
       "(5-hour and 7-day rolling utilization), OpenAI Codex usage (rate-limit windows or token " +
-      "counts), or the local Ollama Cloud brain-swap route (proxy health + configured aliases -- " +
-      "Ollama Cloud has no account-level usage API, so no live utilization number exists for it). " +
-      "Returns cached data by default, refreshed roughly every 30 minutes in the background for " +
-      "Claude/Codex once this tool has been called at least once in the session; pass forceRefresh " +
+      "counts), or Ollama Cloud usage (session and weekly utilization percentages, per-model " +
+      "request breakdown, plus local brain-swap proxy health). Returns cached data by default, " +
+      "refreshed roughly every 30 minutes in the background for Claude/Codex once this tool has " +
+      "been called at least once in the session (Ollama caches for 5 minutes); pass forceRefresh " +
       "for a live read.",
     inputSchema: {
       type: "object",
