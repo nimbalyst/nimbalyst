@@ -1,7 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
-import { getWindowId, windowStates } from '../window/WindowManager';
+import { documentServices, getWindowId, windowStates } from '../window/WindowManager';
 import { clearGitStatusCache } from '../ipc/GitStatusHandlers';
 import { optimizedWorkspaceWatcher } from './OptimizedWorkspaceWatcher';
 import { gitRefWatcher } from './GitRefWatcher';
@@ -111,6 +111,11 @@ export function startWorkspaceWatcher(window: BrowserWindow, workspacePath: stri
     startProjectFileSync(workspacePath).catch((error) => {
         logger.workspaceWatcher.error('Failed to start ProjectFileSync:', error);
     });
+
+    // Keep the document metadata cache warm on external .md edits (non-blocking)
+    startTrackerMetadataWatch(workspacePath).catch((error) => {
+        logger.workspaceWatcher.error('Failed to start tracker metadata watch:', error);
+    });
 }
 
 // Stop watching a workspace
@@ -135,6 +140,7 @@ export function stopWorkspaceWatcher(windowId: number) {
             }
             if (!otherWindowUsesWorkspace) {
                 stopProjectFileSync(path);
+                stopTrackerMetadataWatch(path);
             }
         }
     }
@@ -175,6 +181,10 @@ export async function stopAllWorkspaceWatchers() {
         stopProjectFileSync(workspacePath);
     }
 
+    for (const workspacePath of [...trackerMetadataWatches.keys()]) {
+        stopTrackerMetadataWatch(workspacePath);
+    }
+
     try {
         await Promise.all([
             optimizedWorkspaceWatcher.stopAll(),
@@ -186,6 +196,124 @@ export async function stopAllWorkspaceWatchers() {
         console.error('[WorkspaceWatcher] Error in stopAll:', error);
         throw error;
     }
+}
+
+// ============================================================================
+// Tracker Metadata Refresh
+// ============================================================================
+
+/**
+ * A workspace-wide watcher already existed on the bus, but none of its
+ * subscribers told ElectronDocumentService anything: the file tree consumed
+ * `file-changed-on-disk` for open editors only, and `refreshFileMetadata` was
+ * reachable only from the in-app save path. That left the tracker metadata
+ * cache -- what the Tracker view renders from -- refreshed once per renderer
+ * lifetime, so an external edit stayed invisible until the app restarted.
+ *
+ * `refreshFileMetadata` already fires the metadata + tracker-item watcher
+ * events the Tracker view subscribes to, so feeding it here updates the view
+ * live with no renderer changes.
+ *
+ * Note this covers files the bus reports on. Gitignored tracker files get no
+ * `change` events, so reads stay honest via the document service's own
+ * mtime revalidation rather than this watcher.
+ */
+
+/** Coalesces an editor's write-truncate-write burst without feeling laggy. */
+const TRACKER_METADATA_DEBOUNCE_MS = 300;
+
+/**
+ * Past this many distinct paths in one window, do a single workspace refresh
+ * instead of N bounded reads -- a git checkout or bulk agent rewrite otherwise
+ * turns into a per-file storm.
+ */
+const TRACKER_METADATA_BULK_THRESHOLD = 25;
+
+const TRACKER_METADATA_SUBSCRIBER_ID = 'tracker-metadata';
+
+interface TrackerMetadataWatch {
+  pendingPaths: Set<string>;
+  timer: NodeJS.Timeout | null;
+  needsFullRefresh: boolean;
+}
+
+const trackerMetadataWatches = new Map<string, TrackerMetadataWatch>();
+
+export async function startTrackerMetadataWatch(workspacePath: string): Promise<void> {
+  if (trackerMetadataWatches.has(workspacePath)) return;
+
+  const watch: TrackerMetadataWatch = {
+    pendingPaths: new Set(),
+    timer: null,
+    needsFullRefresh: false,
+  };
+  trackerMetadataWatches.set(workspacePath, watch);
+
+  const queue = (filePath: string, fullRefresh: boolean): void => {
+    if (!filePath.endsWith('.md')) return;
+
+    if (fullRefresh) {
+      watch.needsFullRefresh = true;
+    } else {
+      watch.pendingPaths.add(filePath);
+    }
+
+    if (watch.timer) return;
+    watch.timer = setTimeout(() => {
+      void flushTrackerMetadata(workspacePath);
+    }, TRACKER_METADATA_DEBOUNCE_MS);
+  };
+
+  try {
+    await workspaceEventBus.subscribe(workspacePath, TRACKER_METADATA_SUBSCRIBER_ID, {
+      onChange: (filePath) => queue(filePath, false),
+      onAdd: (filePath) => queue(filePath, false),
+      // There is no per-file removal API on the document service; a workspace
+      // refresh diffs mtimes and emits the `removed` metadata events the Tracker
+      // view already listens for.
+      onUnlink: (filePath) => queue(filePath, true),
+    });
+  } catch (error) {
+    // Drop the entry so a later start can retry rather than early-returning on
+    // a registration that never happened.
+    trackerMetadataWatches.delete(workspacePath);
+    throw error;
+  }
+}
+
+async function flushTrackerMetadata(workspacePath: string): Promise<void> {
+  const watch = trackerMetadataWatches.get(workspacePath);
+  if (!watch) return;
+
+  watch.timer = null;
+  const paths = [...watch.pendingPaths];
+  const fullRefresh = watch.needsFullRefresh || paths.length > TRACKER_METADATA_BULK_THRESHOLD;
+  watch.pendingPaths.clear();
+  watch.needsFullRefresh = false;
+
+  const documentService = documentServices.get(workspacePath);
+  if (!documentService) return;
+
+  try {
+    if (fullRefresh) {
+      await documentService.refreshWorkspaceData();
+      return;
+    }
+    // Bounded 4KB read behind a hash guard, so the echo of an in-app save that
+    // already updated the cache costs a stat and nothing else.
+    await Promise.all(paths.map((filePath) => documentService.refreshFileMetadata(filePath)));
+  } catch (error) {
+    logger.workspaceWatcher.error('Failed to refresh tracker metadata:', error);
+  }
+}
+
+export function stopTrackerMetadataWatch(workspacePath: string): void {
+  const watch = trackerMetadataWatches.get(workspacePath);
+  if (!watch) return;
+
+  if (watch.timer) clearTimeout(watch.timer);
+  trackerMetadataWatches.delete(workspacePath);
+  workspaceEventBus.unsubscribe(workspacePath, TRACKER_METADATA_SUBSCRIBER_ID);
 }
 
 // ============================================================================
