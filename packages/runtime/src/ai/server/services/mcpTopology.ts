@@ -160,6 +160,10 @@ export const HOST_TOOLS: readonly string[] = [
   'get_session_result',
   'list_spawned_sessions',
   'list_worktrees',
+  // Provider usage polling (usagePollingServer.ts): Claude Code / Codex
+  // subscription usage + the local Ollama brain-swap proxy's health. Host,
+  // rarely needed mid-task -> deferred, same as the rest of this bucket.
+  'get_provider_usage',
   // NOTE: `applyDiff` / `streamContent` are intentionally NOT declared here.
   // They have live CallTool handlers (httpServer switch) + renderer IPC
   // listeners, but no ListTools schema — they are deliberately unadvertised so
