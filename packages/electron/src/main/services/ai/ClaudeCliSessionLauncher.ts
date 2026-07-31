@@ -130,6 +130,11 @@ export interface LaunchClaudeCliSessionInput {
   cwd?: string;
   /** Resolved CLI model value (`--model`), e.g. `opus`. Omit to let the CLI default. */
   model?: string;
+  /**
+   * Resolved effort level for this session, passed to the CLI as `--effort`.
+   * Omit to leave the CLI on whatever the user already configured.
+   */
+  effortLevel?: string;
   /** Resume an existing CLI session id (`--resume <id>`). */
   resumeSessionId?: string;
   /**
@@ -320,6 +325,7 @@ export class ClaudeCliSessionLauncher {
       cwd,
       mcpConfigPath,
       model: input.model,
+      effortLevel: input.effortLevel,
       sessionId,
       resumeSessionId,
       baseEnv: this.deps.baseEnv ?? process.env,
