@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tracker sidebar type counts no longer read 0 for types that have items, and listing archived items no longer comes back empty.
 - Committing with the AI commit widget no longer leaves the just-committed files showing as deleted or reverted, and no longer discards changes you staged elsewhere at the same time.
 - Projects with many new, uncommitted folders no longer stall while the file tree and changed-files list refresh, and ignored files inside those folders no longer show up as changed.
+- Deleting or archiving a Claude Code CLI session now stops its CLI process instead of leaving it running invisibly in the background.
 
 ### Removed
 <!-- Removed features go here -->
