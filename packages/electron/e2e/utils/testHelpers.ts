@@ -60,6 +60,11 @@ export const PLAYWRIGHT_TEST_SELECTORS = {
   apiKeyDialogOverlay: '.api-key-dialog-overlay',
   apiKeyDialogDismissButton: '.api-key-dialog-button.secondary',
 
+  // Unified Quick Open
+  unifiedQuickOpenTabs: '.unified-quick-open-tabs',
+  unifiedQuickOpenTab: '.unified-quick-open-tab',
+  unifiedQuickOpenTabShortcut: '.unified-quick-open-tab-shortcut',
+
   // Discord invitation overlay (appears after N launches, intercepts pointer events)
   discordInvitationOverlay: '.discord-invitation-overlay',
 

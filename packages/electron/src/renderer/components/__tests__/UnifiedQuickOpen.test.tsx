@@ -144,6 +144,31 @@ describe('UnifiedQuickOpen — Projects tab', () => {
     expect(await screen.findByText('crystal')).toBeTruthy();
   });
 
+  it('keeps tab shortcuts at intrinsic width with a scroll fallback', async () => {
+    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <UnifiedQuickOpen
+          isOpen={true}
+          onClose={vi.fn()}
+          workspacePath="/Users/ghinkle/sources/crystal"
+          initialTab="files"
+          onFileSelect={vi.fn()}
+          onSessionSelect={vi.fn()}
+          onPromptSelect={vi.fn()}
+        />
+      </JotaiProvider>
+    );
+
+    expect(screen.getByRole('tablist').className).toContain('overflow-x-auto');
+    for (const tab of screen.getAllByRole('tab')) {
+      expect(tab.className).toContain('min-w-max');
+      const shortcut = tab.querySelector('kbd');
+      if (shortcut) expect(shortcut.className).toContain('shrink-0');
+    }
+  });
+
   it('does not filter hidden projects while typing in the Files tab', async () => {
     const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
     const store = createStore();

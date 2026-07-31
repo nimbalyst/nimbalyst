@@ -547,10 +547,9 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
         className="unified-quick-open-modal fixed top-[15%] left-1/2 -translate-x-1/2 w-[92%] max-w-[820px] max-h-[70vh] flex flex-col overflow-hidden rounded-lg z-[99999] bg-nim border border-nim shadow-[0_20px_60px_rgba(0,0,0,0.3)]"
         data-testid="unified-quick-open"
       >
-        {/* Tab strip — equal-width tabs so the row stays stable when switching
-            (the kbd chip widths varied otherwise). */}
+        {/* Tabs share spare space but keep their contents intact; narrow strips scroll. */}
         <div
-          className="unified-quick-open-tabs flex items-stretch border-b border-nim bg-nim-secondary"
+          className="unified-quick-open-tabs flex items-stretch overflow-x-auto border-b border-nim bg-nim-secondary"
           role="tablist"
         >
           {visibleTabs.map((tab) => {
@@ -561,7 +560,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
                 role="tab"
                 aria-selected={active}
                 data-tab={tab.id}
-                className={`unified-quick-open-tab flex-1 min-w-0 flex items-center justify-center gap-1.5 px-2 py-1.5 text-[13px] font-medium whitespace-nowrap border-b-2 cursor-pointer transition-colors duration-100 ${
+                className={`unified-quick-open-tab flex-auto min-w-max flex items-center justify-center gap-1.5 px-2 py-1.5 text-[13px] font-medium whitespace-nowrap border-b-2 cursor-pointer transition-colors duration-100 ${
                   active
                     ? 'text-nim border-[var(--nim-primary)] bg-nim'
                     : 'text-nim-muted border-transparent hover:text-nim hover:bg-nim-hover'
@@ -572,7 +571,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
                 <span>{tab.label}</span>
                 {tab.shortcut && (
                   <kbd
-                    className={`unified-quick-open-tab-shortcut font-mono text-[10px] px-1.5 py-0.5 rounded border min-w-[26px] text-center ${
+                    className={`unified-quick-open-tab-shortcut shrink-0 font-mono text-[10px] px-1.5 py-0.5 rounded border min-w-[26px] text-center ${
                       active
                         ? 'text-[var(--nim-primary)] border-[var(--nim-primary)] bg-transparent'
                         : 'text-nim-faint border-nim bg-nim-secondary'
@@ -587,7 +586,7 @@ export const UnifiedQuickOpen: React.FC<UnifiedQuickOpenProps> = ({
           {FUTURE_TABS.map((tab) => (
             <div
               key={tab.id}
-              className="unified-quick-open-tab future flex-1 min-w-0 flex items-center justify-center gap-1.5 px-2 py-1.5 text-[13px] font-medium whitespace-nowrap border-b-2 border-transparent text-nim-faint italic cursor-not-allowed opacity-60"
+              className="unified-quick-open-tab future flex-auto min-w-max flex items-center justify-center gap-1.5 px-2 py-1.5 text-[13px] font-medium whitespace-nowrap border-b-2 border-transparent text-nim-faint italic cursor-not-allowed opacity-60"
               title="Coming soon"
             >
               <span>{tab.label}</span>
