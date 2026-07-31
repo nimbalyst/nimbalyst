@@ -8,6 +8,7 @@ import { Notification, BrowserWindow, app, ipcMain, shell } from 'electron';
 import { logger } from '../utils/logger';
 import { isOSNotificationsEnabled, isNotifyWhenFocusedEnabled, isSessionBlockedNotificationsEnabled } from '../utils/store';
 import { findWindowByWorkspace } from '../window/WindowManager';
+import { resolveProjectPath } from '../utils/workspaceDetection';
 
 const NOTIFICATION_OUTCOME_TIMEOUT_MS = 2_000;
 
@@ -342,10 +343,16 @@ class NotificationService {
     targetWindow.focus();
     targetWindow.show();
 
-    // If session ID provided, send IPC event to switch to that session
+    // If session ID provided, send IPC event to switch to that session.
+    // The owning project path travels with it: in the multi-project rail one
+    // window hosts several projects, and without it the renderer would select
+    // the session inside whichever project happens to be visible. Worktree
+    // sessions notify from the worktree directory, which is not a rail entry,
+    // so resolve to the parent project the way window lookup already does.
     if (options.sessionId) {
       targetWindow.webContents.send('notification-clicked', {
         sessionId: options.sessionId,
+        workspacePath: resolveProjectPath(options.workspacePath),
       });
     }
   }

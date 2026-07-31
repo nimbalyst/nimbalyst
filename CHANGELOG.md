@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Clicking a session notification now brings up the project that session belongs to, instead of landing on a missing chat in whichever project was on screen.
 
 ### Removed
 <!-- Removed features go here -->

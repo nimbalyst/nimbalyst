@@ -41,12 +41,18 @@ import {
   sessionDraftInputAtom,
   sessionLastSubmitAtAtom,
   sessionDraftLocalModifiedAtAtom,
+  initSessionList,
   type PendingPrompt,
 } from './atoms/sessions';
-import { workstreamActiveChildAtom, workstreamStateAtom } from './atoms/workstreamState';
-import { setWindowModeAtom } from './atoms/windowMode';
+import {
+  initWorkstreamState,
+  loadWorkstreamStates,
+  workstreamActiveChildAtom,
+  workstreamStateAtom,
+} from './atoms/workstreamState';
+import { initWindowMode, setWindowModeAtom } from './atoms/windowMode';
 import { triggerWorktreeRefreshAtom } from './atoms/gitOperations';
-import { multiProjectModeAtom, openProjectsAtom } from './atoms/openProjects';
+import { activeWorkspacePathAtom, multiProjectModeAtom, openProjectsAtom } from './atoms/openProjects';
 import {
   markSessionStreamingAtom,
   clearSessionStreamingAtom,
@@ -910,15 +916,55 @@ export function initSessionStateListeners(): () => void {
   };
 
   /**
+   * Resolve which project the clicked notification belongs to, bringing it to
+   * the front first when the rail is showing a different one.
+   *
+   * The switch must complete before the caller reads session state: the
+   * registry is replaced wholesale per workspace, so until the new list loads
+   * it still holds the previous project's sessions. `activeWorkspacePathAtom`
+   * is the single funnel for activation — its subscriber notifies the main
+   * process. The mode and workstream modules are re-pointed here rather than
+   * left to AgentMode's mount effect, which only runs on the next render:
+   * without that, the `agent` switch and the workstream state below would be
+   * persisted against the project the user just left.
+   *
+   * Returns the workspace to select in, or null when there is none.
+   */
+  const activateNotificationWorkspace = async (requested?: string): Promise<string | null> => {
+    const visible = store.get(sessionListWorkspaceAtom);
+    // Some `showBlockedNotification` callers pass an empty path; those clicks
+    // keep their previous behaviour of landing in the visible project.
+    if (!requested || requested === visible) return visible;
+
+    const isOpenHere = store.get(openProjectsAtom).some((project) => project.path === requested);
+    if (store.get(multiProjectModeAtom) && isOpenHere) {
+      store.set(activeWorkspacePathAtom, requested);
+      initWorkstreamState(requested);
+      await Promise.all([
+        initWindowMode(requested),
+        loadWorkstreamStates(requested),
+        initSessionList(requested),
+      ]);
+      return requested;
+    }
+
+    // A path this window cannot bring forward — a single-project window, or one
+    // opened directly on a worktree whose parent is not a rail entry. The main
+    // process routed the click here deliberately, so fall back to the visible
+    // project rather than dropping the click.
+    return visible;
+  };
+
+  /**
    * Handle notification click events.
    * Switches to the session that was clicked in the OS notification.
    * If the session is a child of a workstream, selects the parent instead.
    */
-  const handleNotificationClicked = (data: { sessionId: string }) => {
+  const handleNotificationClicked = async (data: { sessionId: string; workspacePath?: string }) => {
     const { sessionId } = data;
     if (!sessionId) return;
 
-    const workspacePath = store.get(sessionListWorkspaceAtom);
+    const workspacePath = await activateNotificationWorkspace(data.workspacePath);
     if (!workspacePath) {
       console.warn('[sessionStateListeners] No workspace path available for notification click');
       return;
@@ -1128,7 +1174,9 @@ export function initSessionStateListeners(): () => void {
     cleanupGitCommitProposalResolved = window.electronAPI.on('ai:gitCommitProposalResolved', handleGitCommitProposalResolved);
     cleanupRequestUserInput = window.electronAPI.on('ai:requestUserInput', handleRequestUserInput);
     cleanupRequestUserInputResolved = window.electronAPI.on('ai:requestUserInputResolved', handleRequestUserInputResolved);
-    cleanupNotificationClicked = window.electronAPI.on('notification-clicked', handleNotificationClicked);
+    cleanupNotificationClicked = window.electronAPI.on('notification-clicked', (data) => {
+      void handleNotificationClicked(data);
+    });
     cleanupSyncReadState = window.electronAPI.on('sessions:sync-read-state', handleSyncReadState);
     cleanupSyncDraftInput = window.electronAPI.on('sessions:sync-draft-input', handleSyncDraftInput);
   }
