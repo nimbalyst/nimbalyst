@@ -1589,13 +1589,26 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   const handleEffortLevelChange = useCallback(async (level: EffortLevel) => {
     const previousLevel = effortLevel;
+    // A running CLI session retunes via the genuine CLI's `/effort` slash
+    // command typed into its PTY, the same way the model picker uses `/model`.
+    // `--effort` is fixed at spawn, so without this the selector could only
+    // apply to the NEXT session. Mirrors handleModelChange: PTY first, so a
+    // failed switch leaves the persisted value untouched.
+    if (isClaudeCliTerminalSession(provider) && cliSessionCommitted) {
+      try {
+        await window.electronAPI.terminal.setClaudeCliEffort(sessionId, level);
+      } catch (error) {
+        console.error('[SessionTranscript] Failed to switch CLI effort:', error);
+        return;
+      }
+    }
     await updateSessionMetadataField(sessionId, 'effortLevel', level, null, updateSessionStore);
     setAgentModeSettings({ defaultEffortLevel: level });
     posthog?.capture('ai_effort_level_changed', {
       effort_level: level,
       previous_level: previousLevel,
     });
-  }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog]);
+  }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog, provider, cliSessionCommitted]);
 
   const handleThinkingModeChange = useCallback(async (mode: ThinkingMode) => {
     const previousMode = thinkingMode;
@@ -2711,7 +2724,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         currentProvider={provider ?? null}
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
-        showEffortLevel={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showEffortLevel}
+        showEffortLevel={showEffortLevel}
         thinkingMode={thinkingMode}
         onThinkingModeChange={handleThinkingModeChange}
         showThinkingToggle={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showThinkingToggle}

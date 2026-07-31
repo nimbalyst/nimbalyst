@@ -1096,6 +1096,7 @@ interface ElectronAPI {
     isClaudeCliInstalled: () => Promise<boolean>;
     submitClaudeCliPrompt: (payload: { sessionId: string; workspacePath: string; prompt: string; attachments?: unknown[]; documentContext?: unknown }) => Promise<{ success: boolean }>;
     setClaudeCliModel: (sessionId: string, model: string) => Promise<{ success: boolean; cliArg: string }>;
+    setClaudeCliEffort: (sessionId: string, effortLevel: string) => Promise<{ success: boolean; level: string }>;
     interruptClaudeCli: (sessionId: string) => Promise<{ success: boolean; resolvedAfter?: 'first-interrupt' | 'second-interrupt' | 'sigint' | 'unresolved' }>;
     isActive: (terminalId: string) => Promise<boolean>;
     write: (terminalId: string, data: string) => Promise<void>;
