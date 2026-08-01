@@ -119,7 +119,10 @@ async function handleGetSessionSummary(
   const sessionId = targetSessionId || currentSessionId;
 
   const session = await AISessionsRepository.get(sessionId);
-  if (!session) {
+  // Workspace binding: a session belonging to another workspace is reported as
+  // not-found rather than leaked (cross-workspace reads go through their own
+  // explicitly-bound surfaces, never this default-bound one).
+  if (!session || session.workspacePath !== workspaceId) {
     return `Error: Session ${sessionId} not found`;
   }
 
@@ -574,7 +577,9 @@ async function handleScheduleWakeup(args: {
   const { sessionId, workspaceId, delaySeconds, prompt, reason } = args;
 
   const session = await AISessionsRepository.get(sessionId);
-  if (!session) {
+  // Workspace binding: scheduling a wakeup is a mutation — never allow it
+  // against a session bound to a different workspace.
+  if (!session || session.workspacePath !== workspaceId) {
     return `Error: Session ${sessionId} not found`;
   }
 
@@ -925,6 +930,17 @@ export async function dispatchSessionContextTool(
         if (tags !== undefined && !Array.isArray(tags)) {
           return {
             content: [{ type: "text", text: "Error: tags must be an array of strings" }],
+            isError: true,
+          };
+        }
+
+        // Workspace binding: this is a WRITE against an arbitrary sessionId —
+        // verify the target exists and belongs to the caller's workspace before
+        // mutating (previously any workspace could update any session's board).
+        const boardTarget = await AISessionsRepository.get(sessionId);
+        if (!boardTarget || boardTarget.workspacePath !== workspaceId) {
+          return {
+            content: [{ type: "text", text: `Error: Session ${sessionId} not found` }],
             isError: true,
           };
         }
