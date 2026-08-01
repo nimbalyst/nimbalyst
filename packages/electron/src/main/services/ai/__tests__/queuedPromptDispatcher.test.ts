@@ -152,7 +152,7 @@ describe('queuedPromptDispatcher', () => {
       fail: vi.fn(async () => {}),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new Map<string, symbol>();
 
     // The original window is destroyed (renderer died/reloaded mid-stream).
     const destroyedWindow = {
@@ -178,7 +178,7 @@ describe('queuedPromptDispatcher', () => {
       logError: vi.fn(),
       logInfo: vi.fn(),
       onPromptClaimed: () => {},
-      processingSet,
+      processingLeases: processingSet,
       queueStore,
       sendMessageHandler,
       resolveLiveWindow,
@@ -222,7 +222,7 @@ describe('queuedPromptDispatcher', () => {
       fail: vi.fn(async () => {}),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new Map<string, symbol>();
 
     const destroyedWindow = {
       isDestroyed: () => true,
@@ -236,7 +236,7 @@ describe('queuedPromptDispatcher', () => {
       logError: vi.fn(),
       logInfo: vi.fn(),
       onPromptClaimed: () => {},
-      processingSet,
+      processingLeases: processingSet,
       queueStore,
       sendMessageHandler,
       resolveLiveWindow: vi.fn(() => null),
