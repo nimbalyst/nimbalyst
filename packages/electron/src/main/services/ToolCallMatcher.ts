@@ -942,10 +942,30 @@ class ToolCallMatcherImpl {
       }
       const sessionFiles = [...sessionFilesByKey.values()];
 
-      // 3. Load tool call windows from raw ai_agent_messages
-      const windows = await getRawToolCallWindows(sessionId, workspacePath);
+      // Early-out before the raw-message scan: a session with no edited files
+      // can never produce a match regardless of window contents.
+      if (sessionFiles.length === 0) return 0;
 
-      if (windows.length === 0 || sessionFiles.length === 0) return 0;
+      // 3. Load tool call windows from raw ai_agent_messages, bounded to the
+      // range scoreMatch's TIME_CUTOFF_MS could ever match against. Any row
+      // outside [min(file ts) - TIME_CUTOFF_MS, max(file ts) + TIME_CUTOFF_MS]
+      // is discarded by scoreMatch's hard time-cutoff anyway, so this bound is
+      // output-equivalent to the unbounded scan, not an approximation. Uses
+      // min/max across the WHOLE sessionFiles batch (not per-file) since one
+      // call matches many files at once.
+      let minFileTs = Infinity;
+      let maxFileTs = -Infinity;
+      for (const file of sessionFiles) {
+        const ts = ensureNumber(file.timestamp_ms);
+        if (ts < minFileTs) minFileTs = ts;
+        if (ts > maxFileTs) maxFileTs = ts;
+      }
+      const windows = await getRawToolCallWindows(sessionId, workspacePath, {
+        afterDate: new Date(minFileTs - TIME_CUTOFF_MS),
+        beforeDate: new Date(maxFileTs + TIME_CUTOFF_MS),
+      });
+
+      if (windows.length === 0) return 0;
 
       // 4. Deduplicate windows by toolCallItemId.
       // When both item.started and item.completed exist for the same tool call,
