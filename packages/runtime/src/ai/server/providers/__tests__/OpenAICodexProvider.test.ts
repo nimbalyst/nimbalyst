@@ -260,6 +260,38 @@ describe('OpenAICodexProvider', () => {
     );
   });
 
+  it.each([
+    ['sol', 'gpt-5.6-sol'],
+    ['terra', 'gpt-5.6-terra'],
+    ['luna', 'gpt-5.6-luna'],
+    ['openai-codex:sol', 'gpt-5.6-sol'],
+  ])('normalizes shorthand alias %s to %s (NIM-428)', (shorthand, canonicalModelId) => {
+    expect(OpenAICodexProvider.normalizeModelSelection(shorthand)).toBe(
+      `openai-codex:${canonicalModelId}`
+    );
+  });
+
+  it('passes through an already-supported model unchanged (normalized form)', () => {
+    expect(OpenAICodexProvider.normalizeModelSelection('gpt-5.4-mini')).toBe(
+      'openai-codex:gpt-5.4-mini'
+    );
+    expect(OpenAICodexProvider.normalizeModelSelection('openai-codex:gpt-5.6-sol')).toBe(
+      'openai-codex:gpt-5.6-sol'
+    );
+  });
+
+  it('rejects an unsupported Codex model alias instead of passing it through (NIM-393)', () => {
+    expect(() => OpenAICodexProvider.normalizeModelSelection('gpt-9000-nonexistent')).toThrow(
+      /Unsupported Codex model alias/
+    );
+  });
+
+  it('normalizeModelSelections drops unsupported entries instead of throwing', () => {
+    expect(
+      OpenAICodexProvider.normalizeModelSelections(['gpt-5.4-mini', 'gpt-9000-nonexistent', 'sol'])
+    ).toEqual(['openai-codex:gpt-5.4-mini', 'openai-codex:gpt-5.6-sol']);
+  });
+
   it('uses SDK-provided model discovery when available', async () => {
     let codexConstructorOptions: Record<string, unknown> | undefined;
     const listModels = vi.fn(async () => ({

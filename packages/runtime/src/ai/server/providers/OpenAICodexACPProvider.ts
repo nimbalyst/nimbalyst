@@ -17,6 +17,7 @@
 
 import path from 'path';
 import { BaseAgentProvider } from './BaseAgentProvider';
+import { OpenAICodexProvider } from './OpenAICodexProvider';
 import { buildUserMessageAddition } from './documentContextUtils';
 import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 import { DEFAULT_MODELS } from '../../modelConstants';
@@ -64,24 +65,6 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
     { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 400000, maxTokens: 128000 },
     { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 400000, maxTokens: 128000 },
   ];
-  // Mirrors OpenAICodexProvider.MODEL_REPLACEMENTS so legacy aliases resolve to a
-  // live model over the ACP transport too (previously only the SDK transport
-  // normalized these, so ACP sessions using a retired alias hit a dead model).
-  private static readonly MODEL_REPLACEMENTS = new Map<string, string>([
-    ['gpt-5.6', 'gpt-5.6-sol'],
-    ['gpt-5', 'gpt-5.6-terra'],
-    ['gpt-5-codex', 'gpt-5.4'],
-    ['gpt-5.4-codex', 'gpt-5.4'],
-    ['gpt-5-codex-mini', 'gpt-5.4-mini'],
-    ['gpt-5.2-codex-mini', 'gpt-5.4-mini'],
-    ['gpt-5.2-codex-max', 'gpt-5.6-sol'],
-    ['gpt-5-codex-max', 'gpt-5.6-sol'],
-    ['gpt-5.1-codex', 'gpt-5.4'],
-    ['gpt-5.3-codex-mini', 'gpt-5.4-mini'],
-    ['gpt-5.3-codex-max', 'gpt-5.6-sol'],
-    ['codex-mini-latest', 'gpt-5.4-mini'],
-  ]);
-
   private readonly protocol: CodexACPProtocol;
   private readonly permissionService: ToolPermissionService;
   private readonly mcpConfigService: McpConfigService;
@@ -547,7 +530,12 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
     if (!normalized || normalized === 'default' || normalized === 'cli') {
       return 'gpt-5.6-sol';
     }
-    return OpenAICodexACPProvider.MODEL_REPLACEMENTS.get(normalized) || resolved;
+    // NIM-393/NIM-428: delegate to the single shared alias/shorthand resolver
+    // (no duplicate replacement table) -- an unsupported model throws here,
+    // rejecting it before the ACP session is created rather than dispatching
+    // a garbage model id to the child.
+    const combined = OpenAICodexProvider.normalizeModelSelection(resolved);
+    return combined.replace(/^openai-codex:/, '');
   }
 
   private appendAttachmentHints(message: string, attachments?: ChatAttachment[]): string {
