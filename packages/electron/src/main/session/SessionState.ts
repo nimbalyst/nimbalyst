@@ -26,7 +26,10 @@ export async function saveSessionState() {
             continue;
         }
 
-        const bounds = window.getBounds();
+        const bounds = {
+            ...window.getBounds(),
+            isMaximized: window.isMaximized(),
+        };
         const focusOrder = windowFocusOrder.get(windowId) || 0;
         const devToolsOpen = windowDevToolsState.get(windowId) || false;
         const sessionWindow: any = {

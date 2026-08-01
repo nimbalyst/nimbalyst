@@ -169,7 +169,7 @@ export function createWindow(
     isOpeningFile: boolean = false,
     isWorkspaceMode: boolean = false,
     workspacePath: string | null = null,
-    savedBounds?: { x: number; y: number; width: number; height: number },
+    savedBounds?: { x: number; y: number; width: number; height: number; isMaximized?: boolean },
     options?: CreateWindowOptions
 ): BrowserWindow {
     const startTime = Date.now();

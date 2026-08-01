@@ -64,6 +64,7 @@ export interface SessionWindow {
         y: number;
         width: number;
         height: number;
+        isMaximized?: boolean;
     };
     focusOrder?: number; // Track window focus order (higher = more recently focused)
     devToolsOpen?: boolean; // Track if developer tools are open
