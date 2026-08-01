@@ -574,6 +574,63 @@ async function handleGetWorkstreamEditedFiles(
   }
 }
 
+async function handleGetSessionVisibility(
+  targetSessionId: string | undefined,
+  currentSessionId: string,
+  workspaceId: string
+): Promise<string> {
+  const sessionId = targetSessionId || currentSessionId;
+
+  const session = await AISessionsRepository.get(sessionId);
+  // Workspace binding: a session belonging to another workspace is reported as
+  // not-found rather than leaked, matching get_session_summary.
+  if (!session || session.workspacePath !== workspaceId) {
+    return `Error: Session ${sessionId} not found`;
+  }
+
+  return JSON.stringify(
+    {
+      sessionId,
+      title: session.title || "Untitled",
+      pinned: session.isPinned === true,
+    },
+    null,
+    2
+  );
+}
+
+async function handleSetSessionVisibility(
+  sessionId: string,
+  pinned: boolean,
+  workspaceId: string
+): Promise<string> {
+  // Workspace binding: this is a WRITE against an arbitrary sessionId — verify
+  // the target exists and belongs to the resolved workspace before mutating.
+  // Bound to the caller's own workspace unless targetWorkspacePath opts in.
+  // This authorization boundary mirrors update_session_board and must never be
+  // weakened to make the tool easier to call.
+  const target = await AISessionsRepository.get(sessionId);
+  if (!target || target.workspacePath !== workspaceId) {
+    return `Error: Session ${sessionId} not found`;
+  }
+
+  await AISessionsRepository.updateMetadata(sessionId, { isPinned: pinned } as any);
+
+  // Notify renderer windows so the sessions list reflects the change without
+  // waiting for the next sync cycle, matching update_session_board.
+  const { BrowserWindow } = await import("electron");
+  BrowserWindow.getAllWindows().forEach((window) => {
+    if (!window.isDestroyed()) {
+      window.webContents.send("sessions:session-updated", sessionId, {
+        isPinned: pinned,
+      });
+    }
+  });
+
+  const title = target.title || sessionId;
+  return `Updated "${title}": pinned=${pinned}`;
+}
+
 async function handleScheduleWakeup(args: {
   sessionId: string;
   workspaceId: string;
@@ -752,6 +809,45 @@ export const SESSION_CONTEXT_TOOL_SCHEMAS = [
     },
   },
   {
+    name: "session_get_visibility",
+    description:
+      "Get a session's visibility state (currently: whether it is pinned to the top of the sessions list). Workspace-scoped: a session outside the caller's (or opted-in target) workspace is reported as not found. If no sessionId is provided, reports the current session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description:
+            "ID of the session to inspect. If omitted, inspects the current session. Use list_recent_sessions to find session IDs.",
+        },
+        targetWorkspacePath: TARGET_WORKSPACE_PATH_SCHEMA,
+      },
+      required: [],
+    },
+  },
+  {
+    name: "session_set_visibility",
+    description:
+      "Set a session's visibility state (currently: pin/unpin it in the sessions list). Workspace-scoped: refuses to mutate a session outside the caller's (or opted-in target) workspace — this authorization boundary is never bypassed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description:
+            "ID of the session to update. Use list_recent_sessions to find session IDs.",
+        },
+        pinned: {
+          type: "boolean",
+          description:
+            "Whether the session should be pinned to the top of the sessions list.",
+        },
+        targetWorkspacePath: TARGET_WORKSPACE_PATH_SCHEMA,
+      },
+      required: ["sessionId", "pinned"],
+    },
+  },
+  {
     name: "update_session_board",
     description:
       "Update a session's kanban board metadata (phase and/or tags). Phase controls which column the session appears in on the Sessions Board. Tags are free-form strings for categorization. Either field can be provided independently.",
@@ -908,6 +1004,44 @@ export async function dispatchSessionContextTool(
           prompt: prompt.trim(),
           reason: reason.trim(),
         });
+        return {
+          content: [{ type: "text", text: result }],
+          isError: result.startsWith("Error:"),
+        };
+      }
+
+      case "session_get_visibility": {
+        const targetWorkspaceId = resolveTargetWorkspaceBinding(workspaceId, args);
+        const result = await handleGetSessionVisibility(
+          args?.sessionId as string | undefined,
+          aiSessionId,
+          targetWorkspaceId
+        );
+        return {
+          content: [{ type: "text", text: result }],
+          isError: result.startsWith("Error:"),
+        };
+      }
+
+      case "session_set_visibility": {
+        const sessionId = args?.sessionId as string;
+        const pinned = args?.pinned as boolean | undefined;
+
+        if (!sessionId) {
+          return {
+            content: [{ type: "text", text: "Error: sessionId is required" }],
+            isError: true,
+          };
+        }
+        if (typeof pinned !== "boolean") {
+          return {
+            content: [{ type: "text", text: "Error: pinned is required and must be a boolean" }],
+            isError: true,
+          };
+        }
+
+        const targetWorkspaceId = resolveTargetWorkspaceBinding(workspaceId, args);
+        const result = await handleSetSessionVisibility(sessionId, pinned, targetWorkspaceId);
         return {
           content: [{ type: "text", text: result }],
           isError: result.startsWith("Error:"),
