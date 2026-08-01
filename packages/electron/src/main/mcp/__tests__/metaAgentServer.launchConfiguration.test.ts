@@ -31,6 +31,7 @@ describe('meta-agent launch configuration schemas', () => {
       listQueuedPrompts: vi.fn().mockResolvedValue('[]'),
       sendPrompt: vi.fn().mockResolvedValue('{}'),
       sendPromptNow: vi.fn().mockResolvedValue('{}'),
+      compactSession: vi.fn().mockResolvedValue('{}'),
       notifyUser: vi.fn().mockResolvedValue('{}'),
       respondToPrompt: vi.fn().mockResolvedValue('{}'),
       listSpawnedSessions: vi.fn().mockResolvedValue('[]'),
