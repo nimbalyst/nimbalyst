@@ -1603,7 +1603,14 @@ export class MetaAgentService {
     ];
 
     if (result.originalPrompt) {
-      lines.push(`Original task: ${result.originalPrompt}`);
+      // Cap the echo -- a long parent task prompt must not blow up the
+      // notification unbounded. Matches extractLastAgentResponse's preview
+      // cap (500 chars + ellipsis) used for the sibling "Last response" line.
+      const ORIGINAL_PROMPT_PREVIEW_LENGTH = 500;
+      const promptPreview = result.originalPrompt.length > ORIGINAL_PROMPT_PREVIEW_LENGTH
+        ? `${result.originalPrompt.slice(0, ORIGINAL_PROMPT_PREVIEW_LENGTH)}...`
+        : result.originalPrompt;
+      lines.push(`Original task: ${promptPreview}`);
     }
     if (result.recentMessages.length > 0) {
       lines.push('Recent messages:');
