@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Empty workstreams now remain explicit containers instead of exposing another session's transcript or becoming draggable sessions.
 - Orchestrator sessions can launch isolated worktree agents from their source project into another loaded project and retain status, result, queue, prompt, and reply control.
 - An active content search no longer gets silently reset to zero results by unrelated session activity elsewhere in the workspace.
+- Windows shows the correct app icon in the taskbar and window chrome, checking the packaged `.ico` and current logo asset instead of only a `icon.png` name that no longer matches the packaged asset.
 
 ### Removed
 <!-- Removed features go here -->
