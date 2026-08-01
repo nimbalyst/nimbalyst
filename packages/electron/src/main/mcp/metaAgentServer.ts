@@ -13,6 +13,7 @@
  */
 
 import { resolveProjectPath } from "../utils/workspaceDetection";
+import { resolveTargetWorkspaceBinding } from "./targetWorkspaceBinding";
 import {
   SESSION_LAUNCH_EFFORT_LEVELS,
   SESSION_LAUNCH_THINKING_MODES,
@@ -380,6 +381,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
           type: "string",
           description: "The session ID to inspect.",
         },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional explicit workspace path for a session in another project. If omitted, this call remains bound to the caller's workspace.",
+        },
       },
       required: ["sessionId"],
     },
@@ -394,6 +400,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
         sessionId: {
           type: "string",
           description: "The session ID to inspect.",
+        },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional explicit workspace path for a session in another project. If omitted, this call remains bound to the caller's workspace.",
         },
         includeFullResponse: {
           type: "boolean",
@@ -443,6 +454,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
         prompt: {
           type: "string",
           description: "The follow-up prompt to send.",
+        },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional explicit workspace path for the target session. If omitted, this call remains bound to the caller's workspace.",
         },
       },
       required: ["sessionId", "prompt"],
@@ -530,6 +546,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
         sessionId: {
           type: "string",
           description: "The child session waiting for input.",
+        },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional explicit workspace path for the target session. If omitted, this call remains bound to the caller's workspace.",
         },
         promptId: {
           type: "string",
@@ -643,13 +664,13 @@ export async function dispatchMetaAgentTool(
     case "get_session_status":
       return toolFns.getSessionStatus(
         aiSessionId,
-        effectiveWorkspaceId,
+        resolveTargetWorkspaceBinding(effectiveWorkspaceId, args),
         (args?.sessionId as string) ?? ""
       );
     case "get_session_result":
       return toolFns.getSessionResult(
         aiSessionId,
-        effectiveWorkspaceId,
+        resolveTargetWorkspaceBinding(effectiveWorkspaceId, args),
         (args?.sessionId as string) ?? "",
         { includeFullResponse: args?.includeFullResponse !== false }
       );
@@ -666,7 +687,7 @@ export async function dispatchMetaAgentTool(
     case "send_prompt":
       return toolFns.sendPrompt(
         aiSessionId,
-        effectiveWorkspaceId,
+        resolveTargetWorkspaceBinding(effectiveWorkspaceId, args),
         (args?.sessionId as string) ?? "",
         (args?.prompt as string) ?? ""
       );
@@ -679,7 +700,11 @@ export async function dispatchMetaAgentTool(
     case "notify_user":
       return toolFns.notifyUser(aiSessionId, effectiveWorkspaceId, (args ?? {}) as NotifyUserArgs);
     case "respond_to_prompt":
-      return toolFns.respondToPrompt(aiSessionId, effectiveWorkspaceId, (args ?? {}) as RespondToPromptArgs);
+      return toolFns.respondToPrompt(
+        aiSessionId,
+        resolveTargetWorkspaceBinding(effectiveWorkspaceId, args),
+        (args ?? {}) as RespondToPromptArgs
+      );
     case "list_spawned_sessions":
       return toolFns.listSpawnedSessions(aiSessionId, effectiveWorkspaceId);
     default:

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Orchestrator sessions can explicitly opt in to reading or updating a session in another already-loaded project via `targetWorkspacePath`, while every session-context and meta-agent tool stays bound to the caller's own workspace by default.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

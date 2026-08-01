@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'path';
 
 // The three default-bound tools guarded here resolve arbitrary sessionIds.
 // Without the workspace-binding check, a caller in workspace B could read
@@ -21,8 +22,10 @@ vi.mock('@nimbalyst/runtime', async (importOriginal) => {
 
 import { dispatchSessionContextTool } from '../sessionContextServer';
 
-const OWN_WS = '/workspaces/own';
-const FOREIGN_WS = '/workspaces/foreign';
+// Run through path.normalize so equality checks match resolveTargetWorkspaceBinding's
+// own normalization on every OS (Windows converts '/' to '\', POSIX is a no-op).
+const OWN_WS = path.normalize('/workspaces/own');
+const FOREIGN_WS = path.normalize('/workspaces/foreign');
 
 function foreignSession() {
   return {
