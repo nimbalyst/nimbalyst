@@ -251,6 +251,7 @@ interface ElectronAPI {
   getThemeSync: () => string;
   getResolvedThemeSync: () => string;
   getAppVersion: () => Promise<string>;
+  getBuildInfo: () => Promise<{ version: string; commitHash: string; buildDate: string; isOfficialBuild: boolean }>;
   setTheme: (theme: string) => Promise<void>;
 
   // File operations

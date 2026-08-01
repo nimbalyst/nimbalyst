@@ -46,6 +46,7 @@ import { logger } from '../utils/logger';
 import { getSettingsService, isSettingKey } from '../services/SettingsService';
 import { SessionNamingService } from '../services/SessionNamingService';
 import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
+import { getBuildInfo } from '../utils/buildInfo';
 import { SoundNotificationService } from '../services/SoundNotificationService';
 import { autoUpdaterService } from '../services/autoUpdater';
 import type { OnboardingState } from '../utils/store';
@@ -331,6 +332,12 @@ export function registerSettingsHandlers() {
     safeHandle('get-app-version', () => {
         const { app } = require('electron');
         return app.getVersion();
+    });
+
+    // Get build-identity info (version, commit hash, build date, official-build
+    // flag) for the About window's build-identity display (NIM-413).
+    safeHandle('get-build-info', () => {
+        return getBuildInfo(app.getVersion());
     });
 
     // AI Chat state has been moved to unified workspace state
