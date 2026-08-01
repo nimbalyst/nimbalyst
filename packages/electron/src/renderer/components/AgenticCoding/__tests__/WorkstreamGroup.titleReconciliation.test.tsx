@@ -9,12 +9,19 @@ vi.mock('@nimbalyst/runtime', async () => {
   return {
     MaterialSymbol: () => null,
     ProviderIcon: () => null,
+    TrackerReferenceChip: () => null,
+    TrackerReferencePicker: () => null,
+    navigateToTrackerReference: vi.fn(),
+    useResolvedTrackerReference: () => null,
     copyToClipboard: vi.fn(),
     sessionRefMapAtom: atom(new Map()),
   };
 });
 vi.mock('../SessionContextMenu', () => ({ SessionContextMenu: () => null }));
 vi.mock('../SessionRelativeTime', () => ({ SessionRelativeTime: () => null }));
+vi.mock('posthog-js/react', () => ({
+  usePostHog: () => undefined,
+}));
 
 import { WorkstreamGroup } from '../WorkstreamGroup';
 import {
