@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Claude Agent brain profiles now preserve user additions, overrides, and disables when built-in models are updated.
 - Orchestrator sessions can explicitly opt in to reading or updating a session in another already-loaded project via `targetWorkspacePath`, while every session-context and meta-agent tool stays bound to the caller's own workspace by default.
 - Agent sessions can compact a target session's conversation directly via a new `compact_session` tool, reporting whether compaction actually ran instead of relying on a literal `/compact` prompt.
 
