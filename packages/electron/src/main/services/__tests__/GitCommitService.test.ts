@@ -8,9 +8,20 @@ import {
   createGitCommitProposalResponse,
   executeGitCommit,
 } from '../GitCommitService';
-import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
+import { assertGitSandbox, FIXTURE_AUTHOR, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 const execFileAsync = promisify(execFile);
+
+// A plausible real contributor identity, deliberately NOT on the
+// scripts/check-push-authors.mjs / GitAuthorIdentityGuard denylist (mirrors
+// VALID_AUTHOR in scripts/__tests__/check-push-authors.test.mjs). Commits made
+// through `executeGitCommit` -- the function under test -- must now resolve to
+// a non-fixture identity to succeed at all, so this suite's scratch repos can
+// no longer default to FIXTURE_AUTHOR the way they did before NIM-431. Raw
+// setup/seed commits below still go through gitSandboxEnv's full isolation
+// (stripped GIT_*, pinned ceiling dirs, nulled global/system config), which is
+// this suite's primary defense against a sandbox escape regardless of author.
+const VALID_AUTHOR = { name: 'Ada Contributor', email: 'ada@nimbalyst.dev' } as const;
 
 let tmpRoot: string;
 // os.tmpdir(), never the working checkout. This suite used to scratch inside
@@ -52,8 +63,8 @@ async function gitBytes(args: string[], cwd: string): Promise<Buffer> {
 /** `git init` + a sandbox assertion, so no test can commit outside tmpRoot. */
 async function initScratchRepo(cwd: string): Promise<void> {
   await git(['init', '-q'], cwd);
-  await git(['config', 'user.email', 'test@example.com'], cwd);
-  await git(['config', 'user.name', 'Test User'], cwd);
+  await git(['config', 'user.email', VALID_AUTHOR.email], cwd);
+  await git(['config', 'user.name', VALID_AUTHOR.name], cwd);
   await git(['config', 'commit.gpgsign', 'false'], cwd);
   assertGitSandbox(cwd, testTempRoot);
 }
@@ -358,6 +369,56 @@ describe('GitCommitService', () => {
     } finally {
       await fs.rm(lockPath, { force: true });
     }
+  });
+
+  it('commits using the resolved (non-fixture) author identity', async () => {
+    await initScratchRepo(tmpRoot);
+    await fs.writeFile(path.join(tmpRoot, 'a.txt'), 'hello\n', 'utf8');
+
+    const result = await executeGitCommit(tmpRoot, 'commit as a real identity', ['a.txt']);
+
+    expect(result.success).toBe(true);
+    expect(await gitOutput(['log', '-1', '--format=%an <%ae>'], tmpRoot))
+      .toBe(`${VALID_AUTHOR.name} <${VALID_AUTHOR.email}>\n`);
+  });
+
+  it('rejects a commit proposal when the repo-local git identity is a test fixture (NIM-431)', async () => {
+    await initScratchRepo(tmpRoot);
+    await fs.writeFile(path.join(tmpRoot, 'already-staged.txt'), 'keep\n', 'utf8');
+    await git(['add', 'already-staged.txt'], tmpRoot);
+    await git(['config', 'user.name', FIXTURE_AUTHOR.name], tmpRoot);
+    await git(['config', 'user.email', FIXTURE_AUTHOR.email], tmpRoot);
+    await fs.writeFile(path.join(tmpRoot, 'a.txt'), 'hello\n', 'utf8');
+
+    const result = await executeGitCommit(tmpRoot, 'must not commit as a fixture identity', ['a.txt']);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(FIXTURE_AUTHOR.name);
+    expect(result.error).toContain(FIXTURE_AUTHOR.email);
+    // Rejected before any staging mutation, same guarantee as the path-validation
+    // rejections above.
+    expect(await gitOutput(['diff', '--cached', '--name-only'], tmpRoot)).toBe('already-staged.txt\n');
+  });
+
+  it('rejects a commit proposal when only GIT_AUTHOR_* env vars carry a fixture identity (NIM-431)', async () => {
+    await initScratchRepo(tmpRoot);
+    await fs.writeFile(path.join(tmpRoot, 'a.txt'), 'hello\n', 'utf8');
+
+    // Repo-local config still resolves to VALID_AUTHOR; only the env vars are
+    // the fixture. `git config user.name` alone would miss this -- GIT_AUTHOR_*
+    // outranks config (testSupport/gitTestSandbox.ts rule #2) -- which is why
+    // the guard resolves identity via `git var GIT_AUTHOR_IDENT` instead.
+    const result = await executeGitCommit(tmpRoot, 'must not commit under an env-only fixture identity', ['a.txt'], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: FIXTURE_AUTHOR.name,
+        GIT_AUTHOR_EMAIL: FIXTURE_AUTHOR.email,
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(FIXTURE_AUTHOR.name);
+    expect(result.error).toContain(FIXTURE_AUTHOR.email);
   });
 
   it('maps failed commit execution to an error proposal response', () => {
