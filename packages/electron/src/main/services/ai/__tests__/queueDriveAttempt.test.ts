@@ -77,7 +77,7 @@ describe('runQueueDriveAttempt', () => {
     expect(await run(deps)).toEqual({ kind: 'failed', reason: 'workspace-missing' });
     expect(deps.failAllPending).toHaveBeenCalledExactlyOnceWith(
       's1',
-      'Project folder is no longer available at /ws',
+      'Queued prompt delivery failed: workspace is unavailable',
     );
   });
 

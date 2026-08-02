@@ -8,6 +8,7 @@ function createDeps(overrides: DepOverrides = {}) {
   return {
     listSessionIdsWithPending: vi.fn(async () => [] as string[]),
     getWorkspacePath: vi.fn(async () => '/ws' as string | null | undefined),
+    failAllPending: vi.fn(async () => 0),
     logInfo: vi.fn(),
     logWarn: vi.fn(),
     ...overrides,
@@ -44,7 +45,7 @@ describe('driveStrandedQueuesOnBoot', () => {
     expect(deps.logInfo).not.toHaveBeenCalled();
   });
 
-  it('skips a session with no workspace path instead of guessing a window', async () => {
+  it('fails every pending row once when a session has no workspace mapping', async () => {
     const deps = createDeps({
       listSessionIdsWithPending: vi.fn(async () => ['orphan', 'ok']),
       getWorkspacePath: vi.fn(async (sessionId: string) => (sessionId === 'ok' ? '/ws' : null)),
@@ -52,6 +53,49 @@ describe('driveStrandedQueuesOnBoot', () => {
 
     expect(await driveStrandedQueuesOnBoot(deps)).toBe(1);
     expect(deps.requestDrive).toHaveBeenCalledExactlyOnceWith('ok', '/ws');
+    expect(deps.failAllPending).toHaveBeenCalledExactlyOnceWith(
+      'orphan',
+      'Queued prompt delivery failed: workspace mapping unavailable',
+    );
     expect(deps.logWarn).toHaveBeenCalledOnce();
+  });
+
+  it('continues to a valid session when an earlier workspace lookup rejects', async () => {
+    const deps = createDeps({
+      listSessionIdsWithPending: vi.fn(async () => ['broken', 'ok']),
+      getWorkspacePath: vi.fn(async (sessionId: string) => {
+        if (sessionId === 'broken') {
+          throw new Error('workspace /private prompt text credential provider output');
+        }
+        return '/ws';
+      }),
+    });
+
+    expect(await driveStrandedQueuesOnBoot(deps)).toBe(1);
+    expect(deps.requestDrive).toHaveBeenCalledExactlyOnceWith('ok', '/ws');
+    expect(deps.failAllPending).not.toHaveBeenCalled();
+    expect(deps.logWarn).toHaveBeenCalledExactlyOnceWith(
+      '[Main] Boot recovery: failed to recover one session; continuing',
+    );
+  });
+
+  it('continues to a valid session when failing an unmapped session rejects', async () => {
+    const deps = createDeps({
+      listSessionIdsWithPending: vi.fn(async () => ['unmapped', 'ok']),
+      getWorkspacePath: vi.fn(async (sessionId: string) => (sessionId === 'ok' ? '/ws' : null)),
+      failAllPending: vi.fn(async () => {
+        throw new Error('workspace /private prompt text credential provider output');
+      }),
+    });
+
+    expect(await driveStrandedQueuesOnBoot(deps)).toBe(1);
+    expect(deps.failAllPending).toHaveBeenCalledExactlyOnceWith(
+      'unmapped',
+      'Queued prompt delivery failed: workspace mapping unavailable',
+    );
+    expect(deps.requestDrive).toHaveBeenCalledExactlyOnceWith('ok', '/ws');
+    expect(deps.logWarn).toHaveBeenCalledExactlyOnceWith(
+      '[Main] Boot recovery: failed to recover one session; continuing',
+    );
   });
 });

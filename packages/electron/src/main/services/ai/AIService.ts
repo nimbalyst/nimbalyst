@@ -137,7 +137,7 @@ import {
   type DriveOutcome,
   type DriveReason,
 } from './QueueDriveService';
-import { createWorkspaceWindowResolver } from './resolveWorkspaceWindow';
+import { createWorkspaceWindowResolver, waitForWorkspaceWindowLoad } from './resolveWorkspaceWindow';
 import { runQueueDriveAttempt } from './queueDriveAttempt';
 import { onWorkspaceWindowAvailable } from '../../window/workspaceWindowAvailability';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
@@ -320,10 +320,7 @@ export class AIService {
     isDestroyed: (window) => window.isDestroyed(),
     workspaceExists: (workspacePath) => fs.existsSync(workspacePath),
     createWindow: (workspacePath) => createWindow(false, true, workspacePath),
-    waitForLoad: (window) =>
-      new Promise<void>((resolve) => {
-        window.webContents.once('did-finish-load', () => resolve());
-      }),
+    waitForLoad: (window) => waitForWorkspaceWindowLoad(window),
     isQuitting: () => isAppQuitting(),
     now: () => Date.now(),
     logInfo: (message) => logger.main.info(message),

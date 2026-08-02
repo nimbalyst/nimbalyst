@@ -58,7 +58,7 @@ export async function runQueueDriveAttempt<W>(
   if (resolved.kind === 'terminal') {
     const failed = await deps.failAllPending(
       sessionId,
-      `Project folder is no longer available at ${workspacePath}`,
+      'Queued prompt delivery failed: workspace is unavailable',
     );
     deps.logWarn(
       `[AIService] queue drive (${reason}): workspace missing for session ${sessionId}; failed ${failed} pending prompt(s)`,
