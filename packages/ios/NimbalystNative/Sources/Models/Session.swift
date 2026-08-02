@@ -39,6 +39,8 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
     public var hasQueuedPrompts: Bool
     public var contextTokens: Int?
     public var contextWindow: Int?
+    /// Complete encrypted-sync context-meter state, persisted as JSON.
+    public var contextMeterStateJson: String?
     public var createdAt: Int
     public var updatedAt: Int
     public var lastSyncedSeq: Int
@@ -55,6 +57,14 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
             return nil
         }
         return min(100, Int(Double(tokens) / Double(window) * 100))
+    }
+
+    var contextMeterState: ContextMeterStateV1? {
+        guard let json = contextMeterStateJson,
+              let data = json.data(using: .utf8),
+              let state = try? JSONDecoder().decode(ContextMeterStateV1.self, from: data),
+              state.isValid else { return nil }
+        return state
     }
 
     /// Decoded tags array from JSON string
@@ -98,6 +108,7 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
         hasQueuedPrompts: Bool = false,
         contextTokens: Int? = nil,
         contextWindow: Int? = nil,
+        contextMeterStateJson: String? = nil,
         createdAt: Int = Int(Date().timeIntervalSince1970 * 1000),
         updatedAt: Int = Int(Date().timeIntervalSince1970 * 1000),
         lastSyncedSeq: Int = 0,
@@ -130,6 +141,7 @@ public struct Session: Codable, Identifiable, Hashable, Sendable {
         self.hasQueuedPrompts = hasQueuedPrompts
         self.contextTokens = contextTokens
         self.contextWindow = contextWindow
+        self.contextMeterStateJson = contextMeterStateJson
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.lastSyncedSeq = lastSyncedSeq
@@ -150,7 +162,7 @@ extension Session: FetchableRecord, PersistableRecord {
         case provider, model, mode, sessionType, parentSessionId, agentRole, createdBySessionId, phase, tagsJson, worktreeId
         case isArchived, isPinned, branchedFromSessionId, branchPointMessageId, branchedAt
         case isExecuting, hasQueuedPrompts
-        case contextTokens, contextWindow
+        case contextTokens, contextWindow, contextMeterStateJson
         case createdAt, updatedAt, lastSyncedSeq
         case lastReadAt, lastMessageAt, draftInput, draftUpdatedAt
     }

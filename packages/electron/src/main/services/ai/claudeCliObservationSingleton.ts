@@ -26,44 +26,54 @@
  * `claude-cli:submit-prompt` IPC).
  */
 
-import { ClaudeCliProxyObservation } from './claudeCliObservation/claudeCliProxyObservation';
-import { buildAssistantRawContent } from './claudeCliObservation/claudeCliTranscriptBridge';
-import { AgentMessagesRepository } from '@nimbalyst/runtime';
-import { broadcastMessageLogged as notifyMessageLogged } from './claudeCliUserPromptLog';
-import { logClaudeCliToolResults, loadSeenToolResultIds } from './claudeCliToolResultLog';
-import { getSeenToolResultIds, clearSeenToolResultIds } from './claudeCliToolResultSeen';
+import { ClaudeCliProxyObservation } from "./claudeCliObservation/claudeCliProxyObservation";
+import type { ProxyRequestInfo } from "./claudeCliObservation/claudeApiProxy";
+import { buildAssistantRawContent } from "./claudeCliObservation/claudeCliTranscriptBridge";
+import { AgentMessagesRepository } from "@nimbalyst/runtime";
+import { broadcastMessageLogged as notifyMessageLogged } from "./claudeCliUserPromptLog";
+import {
+  logClaudeCliToolResults,
+  loadSeenToolResultIds,
+} from "./claudeCliToolResultLog";
+import {
+  getSeenToolResultIds,
+  clearSeenToolResultIds,
+} from "./claudeCliToolResultSeen";
 import {
   clearClaudeCliObserved1mSupport,
   logClaudeCliContextUsage,
   noteClaudeCliObserved1mSupport,
-} from './claudeCliContextUsage';
-import { classifyClaudeCliUpstreamError } from './claudeCliErrorClassifier';
-import { createClaudeCliErrorSurfacePolicy } from './claudeCliErrorSurfacePolicy';
-import { logClaudeCliUpstreamError } from './claudeCliErrorLog';
-import { extractToolResults } from './claudeCliObservation/claudeApiRequestParser';
+} from "./claudeCliContextUsage";
+import { classifyClaudeCliUpstreamError } from "./claudeCliErrorClassifier";
+import { createClaudeCliErrorSurfacePolicy } from "./claudeCliErrorSurfacePolicy";
+import { logClaudeCliUpstreamError } from "./claudeCliErrorLog";
+import { extractToolResults } from "./claudeCliObservation/claudeApiRequestParser";
 import {
   isSubAgentTurnInFlight,
   noteAssistantTaskCalls,
   noteToolResultsCompleteTasks,
   clearSubAgentTracking,
-} from './claudeCliSubAgentTracker';
-import { trackClaudeCliFileEdits } from './claudeCliFileTracking';
-import { sessionFileTracker } from '../SessionFileTracker';
-import { findWindowByWorkspace } from '../../window/WindowManager';
-import { extractAssistantText, buildTurnNotificationBody } from './claudeCliTurnNotification';
-import { buildClaudeCliResponseEvent } from './claudeCliResponseAnalytics';
+} from "./claudeCliSubAgentTracker";
+import { trackClaudeCliFileEdits } from "./claudeCliFileTracking";
+import { sessionFileTracker } from "../SessionFileTracker";
+import { findWindowByWorkspace } from "../../window/WindowManager";
+import {
+  extractAssistantText,
+  buildTurnNotificationBody,
+} from "./claudeCliTurnNotification";
+import { buildClaudeCliResponseEvent } from "./claudeCliResponseAnalytics";
 import {
   recordClaudeCliTurnMessage,
   takeClaudeCliTurnSummary,
   clearClaudeCliTurnSummary,
-} from './claudeCliTurnSummary';
-import { AnalyticsService } from '../analytics/AnalyticsService';
-import { notificationService } from '../NotificationService';
-import { SoundNotificationService } from '../SoundNotificationService';
-import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
-import { AISessionsRepository } from '@nimbalyst/runtime';
-import { getClaudeCodeApiUpstreamUrl } from '../../utils/store';
-import type { AssembledAssistantMessage } from './claudeCliObservation/claudeApiMessageAssembler';
+} from "./claudeCliTurnSummary";
+import { AnalyticsService } from "../analytics/AnalyticsService";
+import { notificationService } from "../NotificationService";
+import { SoundNotificationService } from "../SoundNotificationService";
+import { getSyncProvider, isDesktopTrulyAway } from "../SyncManager";
+import { AISessionsRepository } from "@nimbalyst/runtime";
+import { getClaudeCodeApiUpstreamUrl } from "../../utils/store";
+import type { AssembledAssistantMessage } from "./claudeCliObservation/claudeApiMessageAssembler";
 
 /**
  * Fire the completion sound + "Response Ready" OS notification (+ mobile push when
@@ -73,13 +83,13 @@ import type { AssembledAssistantMessage } from './claudeCliObservation/claudeApi
 async function notifyClaudeCliTurnComplete(
   sessionId: string,
   workspacePath: string,
-  text: string,
+  text: string
 ): Promise<void> {
   try {
     SoundNotificationService.getInstance().playCompletionSound(workspacePath);
 
     const body = buildTurnNotificationBody(text);
-    let title = 'claude-code-cli';
+    let title = "claude-code-cli";
     try {
       const session = await AISessionsRepository.get(sessionId);
       title = session?.title || session?.provider || title;
@@ -92,7 +102,7 @@ async function notifyClaudeCliTurnComplete(
       body,
       sessionId,
       workspacePath,
-      provider: 'claude-code-cli',
+      provider: "claude-code-cli",
     });
 
     // Mobile push only when the user has truly left the machine (screen
@@ -102,8 +112,78 @@ async function notifyClaudeCliTurnComplete(
       getSyncProvider()?.requestMobilePush?.(sessionId, title, body);
     }
   } catch (err) {
-    console.warn('[ClaudeCliObservation] Failed to fire turn-complete notification:', err);
+    console.warn(
+      "[ClaudeCliObservation] Failed to fire turn-complete notification:",
+      err
+    );
   }
+}
+
+interface ClaudeCliAssistantObservationDeps {
+  isSubAgentTurn: (sessionId: string) => boolean;
+  persistTurn: typeof persistAssistantTurn;
+  noteTaskCalls: typeof noteAssistantTaskCalls;
+  logContextUsage: typeof logClaudeCliContextUsage;
+  recordTurnSummary: typeof recordClaudeCliTurnMessage;
+}
+
+const defaultAssistantObservationDeps: ClaudeCliAssistantObservationDeps = {
+  isSubAgentTurn: isSubAgentTurnInFlight,
+  persistTurn: persistAssistantTurn,
+  noteTaskCalls: noteAssistantTaskCalls,
+  logContextUsage: logClaudeCliContextUsage,
+  recordTurnSummary: recordClaudeCliTurnMessage,
+};
+
+/**
+ * Single production seam for an assembled CLI assistant message. Task-child
+ * turns may be retained as hidden transcript rows, but they never mutate the
+ * parent session's context meter or completion summary.
+ */
+export function handleClaudeCliAssistantObservation(
+  input: {
+    sessionId: string;
+    workspacePath: string;
+    message: AssembledAssistantMessage;
+    errorSurfacePolicy: ReturnType<typeof createClaudeCliErrorSurfacePolicy>;
+  },
+  deps: ClaudeCliAssistantObservationDeps = defaultAssistantObservationDeps
+): void {
+  const { sessionId, workspacePath, message } = input;
+  const isSubAgentTurn = deps.isSubAgentTurn(sessionId);
+  input.errorSurfacePolicy.noteAssistantMessage(!isSubAgentTurn);
+  void deps.persistTurn(sessionId, workspacePath, message, isSubAgentTurn);
+  deps.noteTaskCalls(sessionId, message);
+  if (isSubAgentTurn) return;
+
+  void deps.logContextUsage({ sessionId, usage: message.usage });
+  const toolNames = message.content
+    .filter(
+      (block): block is Extract<typeof block, { type: "tool_use" }> =>
+        block.type === "tool_use"
+    )
+    .map((block) => block.name);
+  deps.recordTurnSummary(sessionId, {
+    text: extractAssistantText(message),
+    toolNames,
+  });
+}
+
+/**
+ * Record live CLI denominator evidence only for the authoritative lead request.
+ * Same-session Task traffic may use the same model family, so model-family
+ * matching alone cannot protect the lead's last observed window.
+ */
+export function handleClaudeCliRequestObservation(
+  sessionId: string,
+  body: Record<string, unknown>,
+  info: ProxyRequestInfo
+): void {
+  if (isSubAgentTurnInFlight(sessionId)) return;
+  noteClaudeCliObserved1mSupport(sessionId, {
+    model: body.model,
+    supports1m: info.context1m,
+  });
 }
 
 /**
@@ -113,14 +193,24 @@ async function notifyClaudeCliTurnComplete(
  * unlike a proxy `end_turn`, accounts for in-process `Task` sub-agents. No-op when
  * there's no observed summary (terminal-only mode / a turn that produced nothing).
  */
-export function fireClaudeCliTurnCompletion(sessionId: string, workspacePath: string): void {
+export function fireClaudeCliTurnCompletion(
+  sessionId: string,
+  workspacePath: string
+): void {
   const summary = takeClaudeCliTurnSummary(sessionId);
   if (!summary) return;
-  void notifyClaudeCliTurnComplete(sessionId, workspacePath, summary.lastAssistantText);
+  void notifyClaudeCliTurnComplete(
+    sessionId,
+    workspacePath,
+    summary.lastAssistantText
+  );
   try {
     AnalyticsService.getInstance().sendEvent(
-      'ai_response_received',
-      buildClaudeCliResponseEvent({ toolNames: summary.toolNames, finalText: summary.lastAssistantText }),
+      "ai_response_received",
+      buildClaudeCliResponseEvent({
+        toolNames: summary.toolNames,
+        finalText: summary.lastAssistantText,
+      })
     );
   } catch {
     // analytics is best-effort
@@ -131,13 +221,13 @@ async function persistAssistantTurn(
   sessionId: string,
   workspacePath: string,
   msg: AssembledAssistantMessage,
-  hidden: boolean,
+  hidden: boolean
 ): Promise<void> {
   try {
     await AgentMessagesRepository.create({
       sessionId,
-      source: 'claude-code',
-      direction: 'output',
+      source: "claude-code",
+      direction: "output",
       // Sub-agent (`Task`) turns are persisted but HIDDEN so they don't pollute
       // the visible transcript (the B3 wire has no parent_tool_use_id to filter
       // on — see claudeCliSubAgentTracker). File-edit attribution below still runs
@@ -148,7 +238,10 @@ async function persistAssistantTurn(
     });
     notifyMessageLogged(sessionId, workspacePath);
   } catch (err) {
-    console.warn('[ClaudeCliObservation] Failed to persist assistant turn:', err);
+    console.warn(
+      "[ClaudeCliObservation] Failed to persist assistant turn:",
+      err
+    );
   }
 
   // Attribute file edits/reads so the FilesEditedSidebar, context-graph edges,
@@ -168,11 +261,11 @@ async function persistAssistantTurn(
           input,
           null,
           toolUseId,
-          window,
+          window
         ),
     });
   } catch (err) {
-    console.warn('[ClaudeCliObservation] Failed to track file edits:', err);
+    console.warn("[ClaudeCliObservation] Failed to track file edits:", err);
   }
 }
 
@@ -214,36 +307,14 @@ export async function startClaudeCliProxyObservation(opts: {
   const observation = new ClaudeCliProxyObservation({
     sessionId,
     upstreamUrl: apiUpstreamUrl,
-    onAssistantMessage: (msg) => {
-      // Is this turn a `Task` sub-agent's? (A Task was in flight BEFORE this
-      // message.) The parent message that CARRIES the Task call is itself still
-      // a visible parent turn — we note its Task calls only after this check.
-      const isSubAgentTurn = isSubAgentTurnInFlight(sessionId);
-      // A produced turn means the session is unblocked: allow the next failure
-      // episode to surface, and (for visible turns) mark that startup is past so
-      // a mid-session rate-limit/overload can surface.
-      errorSurfacePolicy.noteAssistantMessage(!isSubAgentTurn);
-      void persistAssistantTurn(sessionId, workspacePath, msg, isSubAgentTurn);
-      noteAssistantTaskCalls(sessionId, msg);
-      // Refresh the context-window fill indicator from this turn's usage (Slice E).
-      void logClaudeCliContextUsage({ sessionId, usage: msg.usage });
-      // Accumulate the turn summary (text + tool names) for the completion
-      // notification — VISIBLE (parent) turns only, so a sub-agent's text/tools
-      // don't surface in the "Response Ready" body. The side effects fire from the
-      // launcher's PID `idle` transition (the whole-turn boundary), NOT per message.
-      if (!isSubAgentTurn) {
-        const toolNames = msg.content
-          .filter((b): b is Extract<typeof b, { type: 'tool_use' }> => b.type === 'tool_use')
-          .map((b) => b.name);
-        recordClaudeCliTurnMessage(sessionId, { text: extractAssistantText(msg), toolNames });
-      }
-    },
+    onAssistantMessage: (message) =>
+      handleClaudeCliAssistantObservation({
+        sessionId,
+        workspacePath,
+        message,
+        errorSurfacePolicy,
+      }),
     onRequestBody: (body, info) => {
-      // The CLI decides per account + model whether to request the 1M window, and
-      // says so in the outbound `anthropic-beta` header. That's the only live
-      // context-window signal on this path (the SSE response carries none), so
-      // record it to replace the static per-variant guess (NIM-2170).
-      noteClaudeCliObserved1mSupport(sessionId, { model: body.model, supports1m: info.context1m });
       // The tee'd SSE only carries the assistant's tool_use calls; the matching
       // tool_results ride in the next request body's trailing user message.
       const results = extractToolResults(body);
@@ -254,32 +325,60 @@ export async function startClaudeCliProxyObservation(opts: {
         // the window open and are NOT logged (they'd orphan against hidden rows);
         // the parent's Task result closes it and IS logged (attaches to the
         // visible parent Task tool_use).
-        noteToolResultsCompleteTasks(sessionId, results.map((r) => r.toolUseId));
+        noteToolResultsCompleteTasks(
+          sessionId,
+          results.map((r) => r.toolUseId)
+        );
         if (!isSubAgentTurnInFlight(sessionId)) {
-          void logClaudeCliToolResults({ sessionId, workspacePath, results, seen: seenToolResultIds });
+          void logClaudeCliToolResults({
+            sessionId,
+            workspacePath,
+            results,
+            seen: seenToolResultIds,
+          });
         }
       }
+      // The CLI decides per account + model whether to request the 1M window, and
+      // says so in the outbound `anthropic-beta` header. Record it only after
+      // Task completion markers have been applied, so child requests cannot
+      // overwrite same-family lead authority while the resuming parent can.
+      handleClaudeCliRequestObservation(sessionId, body, info);
     },
     onError: (err) => {
-      console.warn('[ClaudeCliObservation] proxy error:', err.message);
+      console.warn("[ClaudeCliObservation] proxy error:", err.message);
     },
     onRateLimit: ({ statusCode, retryAfter }) => {
       // The SDK path surfaces 429/529 in-stream; the CLI's own TUI shows it too,
       // but the user may be looking at the rich transcript, so raise an OS
       // notification (self-guards on focus/settings).
-      console.warn(`[ClaudeCliObservation] upstream rate-limit ${statusCode} for ${sessionId}`, retryAfter ?? '');
+      console.warn(
+        `[ClaudeCliObservation] upstream rate-limit ${statusCode} for ${sessionId}`,
+        retryAfter ?? ""
+      );
       const body =
         statusCode === 529
-          ? 'Anthropic is overloaded. Claude will retry shortly.'
-          : `Rate limited by Anthropic${retryAfter ? ` (retry after ${retryAfter}s)` : ''}.`;
+          ? "Anthropic is overloaded. Claude will retry shortly."
+          : `Rate limited by Anthropic${
+              retryAfter ? ` (retry after ${retryAfter}s)` : ""
+            }.`;
       void notificationService
-        .showNotification({ title: 'Claude CLI -- paused', body, sessionId, workspacePath, provider: 'claude-code-cli' })
+        .showNotification({
+          title: "Claude CLI -- paused",
+          body,
+          sessionId,
+          workspacePath,
+          provider: "claude-code-cli",
+        })
         .catch(() => {});
     },
     onUpstreamError: ({ statusCode, body, retryAfter }) => {
       // Render a failed turn IN the rich transcript so a rate-limited / failed
       // turn is a visible "paused"/"failed" state, not a silent hang (NIM-808).
-      const failure = classifyClaudeCliUpstreamError({ statusCode, body, retryAfter });
+      const failure = classifyClaudeCliUpstreamError({
+        statusCode,
+        body,
+        retryAfter,
+      });
       if (!failure) return;
 
       if (!errorSurfacePolicy.shouldSurface(failure)) {
@@ -294,7 +393,9 @@ export async function startClaudeCliProxyObservation(opts: {
   });
 
   const { baseUrl } = await observation.start();
-  console.log(`[ClaudeCliObservation] proxy started for ${sessionId} at ${baseUrl}`);
+  console.log(
+    `[ClaudeCliObservation] proxy started for ${sessionId} at ${baseUrl}`
+  );
   return {
     baseUrl,
     stop: () => {

@@ -43,6 +43,9 @@ import {
 
 const OLLAMA_UPSTREAM_ENDPOINT = "https://ollama.com/v1";
 const LOCAL_PROXY_ENDPOINT = "http://127.0.0.1:4002";
+const DEFAULT_PROXY_CONTEXT_WINDOW_SEED_TOKENS = 128_000;
+const DEEPSEEK_PRO_CONTEXT_WINDOW_SEED_TOKENS = 1_000_000;
+const CLAUDEX_CONTEXT_WINDOW_SEED_TOKENS = 372_000;
 export const LOCAL_PROXY_CREDENTIAL_REF =
   REVIEWED_PROVIDER_CREDENTIAL_REFERENCES[0];
 export const CLAUDEX_INGRESS_CREDENTIAL_REF =
@@ -82,6 +85,11 @@ function createOllamaCatalogEntry(options: {
   modelAlias: string;
   family: string;
 }): ProviderCatalogEntry {
+  const contextWindowSeedTokens = options.providerModelId.includes(
+    "deepseek-v4-pro"
+  )
+    ? DEEPSEEK_PRO_CONTEXT_WINDOW_SEED_TOKENS
+    : DEFAULT_PROXY_CONTEXT_WINDOW_SEED_TOKENS;
   return {
     id: options.id,
     provider: "ollama",
@@ -97,6 +105,7 @@ function createOllamaCatalogEntry(options: {
       providerModelId: options.providerModelId,
       upstreamModel: options.upstreamModel,
       version: options.providerModelId,
+      contextWindowSeedTokens,
     },
     capabilities: {
       mainSession: true,
@@ -121,6 +130,10 @@ function createOllamaCatalogEntry(options: {
         upstreamEndpoint: OLLAMA_UPSTREAM_ENDPOINT,
         credentialRef: LOCAL_PROXY_CREDENTIAL_REF,
         modelAlias: options.modelAlias,
+        contextTelemetry: {
+          adapterId: "claude-agent-sdk-parent-v1",
+          windowPolicy: "runtime-then-model-seed",
+        },
       },
     ],
     controls: {},
@@ -139,6 +152,7 @@ function createReviewedRouteEntry(options: {
   modelAlias: string;
   endpoint: string;
   credentialRef: string;
+  contextWindowSeedTokens: number;
   controls?: ProviderCatalogEntry["controls"];
 }): ProviderCatalogEntry {
   return {
@@ -155,6 +169,7 @@ function createReviewedRouteEntry(options: {
       persistedIdNamespace: options.persistedIdNamespace,
       providerModelId: options.providerModelId,
       version: options.providerModelId,
+      contextWindowSeedTokens: options.contextWindowSeedTokens,
     },
     capabilities: {
       mainSession: true,
@@ -178,6 +193,10 @@ function createReviewedRouteEntry(options: {
         endpoint: options.endpoint,
         credentialRef: options.credentialRef,
         modelAlias: options.modelAlias,
+        contextTelemetry: {
+          adapterId: "claude-agent-sdk-parent-v1",
+          windowPolicy: "runtime-then-model-seed",
+        },
       },
     ],
     controls: options.controls ?? {},
@@ -335,6 +354,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     modelAlias: "gpt-5.6-sol",
     endpoint: "http://127.0.0.1:38117",
     credentialRef: CLAUDEX_INGRESS_CREDENTIAL_REF,
+    contextWindowSeedTokens: CLAUDEX_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createEffortControl("claude-agent-anthropic"),
   }),
   createReviewedRouteEntry({
@@ -346,6 +366,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     modelAlias: "gpt-5.6-terra",
     endpoint: "http://127.0.0.1:38117",
     credentialRef: CLAUDEX_INGRESS_CREDENTIAL_REF,
+    contextWindowSeedTokens: CLAUDEX_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createEffortControl("claude-agent-anthropic"),
   }),
   createReviewedRouteEntry({
@@ -357,6 +378,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     modelAlias: "gpt-5.6-luna",
     endpoint: "http://127.0.0.1:38117",
     credentialRef: CLAUDEX_INGRESS_CREDENTIAL_REF,
+    contextWindowSeedTokens: CLAUDEX_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createEffortControl("claude-agent-anthropic"),
   }),
   createReviewedRouteEntry({
@@ -368,6 +390,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     modelAlias: "deepseek-v4-pro[1m]",
     endpoint: "https://api.deepseek.com/anthropic",
     credentialRef: DEEPSEEK_API_CREDENTIAL_REF,
+    contextWindowSeedTokens: DEEPSEEK_PRO_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createDeepSeekControls("claude-agent-anthropic"),
   }),
   createReviewedRouteEntry({
@@ -379,6 +402,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     modelAlias: "deepseek-v4-flash",
     endpoint: "https://api.deepseek.com/anthropic",
     credentialRef: DEEPSEEK_API_CREDENTIAL_REF,
+    contextWindowSeedTokens: DEFAULT_PROXY_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createDeepSeekControls("claude-agent-anthropic"),
   }),
   createReviewedRouteEntry({
@@ -390,6 +414,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     modelAlias: "deepseek/deepseek-v4-pro",
     endpoint: "https://openrouter.ai/api",
     credentialRef: OPENROUTER_API_CREDENTIAL_REF,
+    contextWindowSeedTokens: DEEPSEEK_PRO_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createDeepSeekControls("claude-agent-anthropic"),
   }),
   createReviewedRouteEntry({
@@ -401,6 +426,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     modelAlias: "deepseek/deepseek-v4-flash",
     endpoint: "https://openrouter.ai/api",
     credentialRef: OPENROUTER_API_CREDENTIAL_REF,
+    contextWindowSeedTokens: DEFAULT_PROXY_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createDeepSeekControls("claude-agent-anthropic"),
   }),
 ];

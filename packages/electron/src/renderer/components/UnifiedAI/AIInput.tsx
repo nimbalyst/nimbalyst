@@ -4,7 +4,7 @@ import { GenericTypeahead, TypeaheadOption } from '../Typeahead/GenericTypeahead
 import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type SlashTypeaheadScope, TriggerMatch } from '../Typeahead/typeaheadUtils';
 import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
 import { readClipboard, encodeMarkdownLinkPath, type ChatAttachment } from '@nimbalyst/runtime';
-import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
+import type { ContextMeterStateV1, TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel, ThinkingMode } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
 import { ModeTag, AIMode } from './ModeTag';
@@ -108,6 +108,7 @@ interface AIInputProps {
       contextWindow: number;
       categories?: TokenUsageCategory[];
     };
+    contextMeterState?: ContextMeterStateV1;
   };
   provider?: string; // Provider ID to determine if we should show token usage
 
@@ -1439,7 +1440,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               totalTokens={tokenUsage?.totalTokens || 0}
               contextWindow={tokenUsage?.contextWindow || 0}
               categories={tokenUsage?.categories}
-              currentContext={tokenUsage?.currentContext}
+              contextMeterState={tokenUsage?.contextMeterState}
             />
           </div>
         )}

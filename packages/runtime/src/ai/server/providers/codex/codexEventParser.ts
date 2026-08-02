@@ -148,13 +148,15 @@ function getContextSnapshotFromTokenCountPayload(
   }
 
   const lastTokenUsage = info.last_token_usage as Record<string, unknown> | undefined;
-  const usage = getUsageFromRecord(lastTokenUsage) ?? getUsageFromTokenCountPayload(payload);
-  if (!usage) return undefined;
+  const currentUsage = lastTokenUsage
+    ? getUsageFromRecord(lastTokenUsage)
+    : getUsageFromRecord(info);
+  if (!currentUsage) return undefined;
 
-  const contextFillTokens =
-    typeof usage.input_tokens === 'number' && usage.input_tokens > 0
-      ? usage.input_tokens
-      : usage.total_tokens;
+  // Only the current observation's input numerator is context fill. Output,
+  // total_token_usage, and any synthesized total are cumulative/derived and
+  // must never be promoted to current context.
+  const contextFillTokens = currentUsage.input_tokens;
 
   if (!Number.isFinite(contextFillTokens) || contextFillTokens <= 0) {
     return undefined;

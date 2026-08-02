@@ -38,6 +38,37 @@ export interface RawProtocolSession {
   [key: string]: unknown;
 }
 
+/** Versioned transport shape consumed by the runtime context-meter reducer. */
+export interface ContextObservationV1 {
+  schemaVersion: 1;
+  fillTokens: number;
+  runtimeWindowTokens?: number;
+  adapterId:
+    | 'claude-agent-sdk-parent-v1'
+    | 'codex-sdk-token-count-v1'
+    | 'codex-app-server-thread-usage-v1';
+  windowPolicy: 'runtime-required' | 'runtime-then-model-seed';
+  contextWindowSeedTokens?: number;
+  numeratorSemantics: 'current-lead-context';
+  identity: {
+    nimbalystSessionId: string;
+    providerId: string;
+    persistedModelId: string;
+    providerModelId?: string;
+    catalogEntryId?: string;
+    interfaceId?: string;
+    upstreamThreadId: string;
+    producerRole: 'lead';
+  };
+  order: {
+    processInstanceId: string;
+    lifecycleGeneration: number;
+    sequence: number;
+    turnId?: string;
+    observedAtMs: number;
+  };
+}
+
 /**
  * Structured result from tool execution
  */
@@ -206,6 +237,9 @@ export interface ProtocolEvent {
 
   /** Maximum context window for the active model */
   contextWindow?: number;
+
+  /** Identity/order-bound current-context observation. Never cumulative usage. */
+  contextObservation?: ContextObservationV1;
 
   /** Additional metadata */
   metadata?: Record<string, unknown>;

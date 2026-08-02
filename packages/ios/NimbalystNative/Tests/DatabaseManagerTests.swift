@@ -41,6 +41,26 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(sessions[0].provider, "claude")
     }
 
+    func testSessionPersistsCompleteContextMeterState() throws {
+        let db = try DatabaseManager()
+        try db.upsertProject(Project(id: "/p", name: "p"))
+        let stateJson = """
+        {"schemaVersion":1,"confidence":"unavailable","reason":"thread-reset"}
+        """
+        try db.upsertSession(Session(
+            id: "context-session",
+            projectId: "/p",
+            contextMeterStateJson: stateJson,
+            createdAt: 1,
+            updatedAt: 1
+        ))
+
+        let loaded = try db.session(byId: "context-session")
+        XCTAssertEqual(loaded?.contextMeterStateJson, stateJson)
+        XCTAssertEqual(loaded?.contextMeterState?.confidence, .unavailable)
+        XCTAssertEqual(loaded?.contextMeterState?.reason, "thread-reset")
+    }
+
     func testMessageAppendAndQuery() throws {
         let db = try DatabaseManager()
 

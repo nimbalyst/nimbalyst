@@ -10,6 +10,17 @@ import {
   serializeNormalizedProviderCatalog,
   type ProviderCatalogEntry,
 } from "../providerCatalog";
+import { MAX_CONTEXT_WINDOW_SEED_TOKENS } from "../../../../contextMeter";
+import {
+  BUILT_IN_PROVIDER_CATALOG,
+  CLAUDEX_LUNA_ENTRY_ID,
+  CLAUDEX_SOL_ENTRY_ID,
+  CLAUDEX_TERRA_ENTRY_ID,
+  DEEPSEEK_V4_FLASH_OFFICIAL_ENTRY_ID,
+  DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID,
+  DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID,
+  DEEPSEEK_V4_PRO_OPENROUTER_ENTRY_ID,
+} from "../providerCatalogDefaults";
 
 function makeEntry(
   id: string,
@@ -27,6 +38,7 @@ function makeEntry(
       providerModelId: `${id}:cloud`,
       upstreamModel: `openai/${id}:cloud`,
       version: "1",
+      contextWindowSeedTokens: 128_000,
     },
     capabilities: {
       mainSession: true,
@@ -51,6 +63,10 @@ function makeEntry(
         upstreamEndpoint: "https://ollama.com/v1",
         credentialRef: "nimbalyst.local-proxy",
         modelAlias: "claude-sonnet-4-5-20250929",
+        contextTelemetry: {
+          adapterId: "claude-agent-sdk-parent-v1",
+          windowPolicy: "runtime-then-model-seed",
+        },
       },
     ],
     controls: {},
@@ -64,6 +80,95 @@ function makePatch(id: string) {
 }
 
 describe("provider catalog schema and merge", () => {
+  it("pins reviewed per-model seeds and per-interface telemetry for every admitted route", () => {
+    const byId = new Map(
+      BUILT_IN_PROVIDER_CATALOG.map((entry) => [entry.id, entry])
+    );
+    const expectedSeeds = new Map<string, number>([
+      [CLAUDEX_SOL_ENTRY_ID, 372_000],
+      [CLAUDEX_TERRA_ENTRY_ID, 372_000],
+      [CLAUDEX_LUNA_ENTRY_ID, 372_000],
+      [DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID, 1_000_000],
+      [DEEPSEEK_V4_FLASH_OFFICIAL_ENTRY_ID, 128_000],
+      [DEEPSEEK_V4_PRO_OPENROUTER_ENTRY_ID, 1_000_000],
+      [DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID, 128_000],
+    ]);
+
+    for (const [id, seed] of expectedSeeds) {
+      const entry = byId.get(id);
+      expect(entry?.model.contextWindowSeedTokens, id).toBe(seed);
+      expect(entry?.interfaces[0].contextTelemetry, id).toEqual({
+        adapterId: "claude-agent-sdk-parent-v1",
+        windowPolicy: "runtime-then-model-seed",
+      });
+    }
+
+    for (const providerModelId of [
+      "deepseek-v4-pro:cloud",
+      "deepseek-v4-flash:cloud",
+      "glm-5.2:cloud",
+    ]) {
+      const entry = BUILT_IN_PROVIDER_CATALOG.find(
+        (candidate) => candidate.model.providerModelId === providerModelId
+      );
+      expect(entry?.model.contextWindowSeedTokens, providerModelId).toBe(
+        providerModelId.includes("deepseek-v4-pro") ? 1_000_000 : 128_000
+      );
+      expect(entry?.interfaces[0].contextTelemetry, providerModelId).toEqual({
+        adapterId: "claude-agent-sdk-parent-v1",
+        windowPolicy: "runtime-then-model-seed",
+      });
+    }
+  });
+
+  it.each([
+    ["zero seed", { model: { contextWindowSeedTokens: 0 } }],
+    [
+      "over-bound seed",
+      {
+        model: { contextWindowSeedTokens: MAX_CONTEXT_WINDOW_SEED_TOKENS + 1 },
+      },
+    ],
+    [
+      "unknown telemetry adapter",
+      {
+        interfaces: [
+          {
+            ...makeEntry("bad-adapter").interfaces[0],
+            contextTelemetry: {
+              adapterId: "runtime-jsonpath" as never,
+              windowPolicy: "runtime-then-model-seed" as const,
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "unknown window policy",
+      {
+        interfaces: [
+          {
+            ...makeEntry("bad-policy").interfaces[0],
+            contextTelemetry: {
+              adapterId: "claude-agent-sdk-parent-v1" as const,
+              windowPolicy: "catalog-is-exact" as never,
+            },
+          },
+        ],
+      },
+    ],
+  ])("rejects unsafe inert context configuration: %s", (_label, patch) => {
+    const entry = makeEntry("bad-context");
+    const resolution = resolveProviderCatalog([entry], {
+      schemaVersion: PROVIDER_CATALOG_SCHEMA_VERSION,
+      entries: [{ id: entry.id, patch }],
+    });
+    expect(resolution.entries).toEqual([]);
+    expect(resolution.errors[0]?.code).toMatch(
+      /invalid-entry|adapter-required/
+    );
+  });
+
   it("merges overrides, disables, additions, and newly shipped defaults by stable id", () => {
     const firstDefault = makeEntry("first");
     const disabledDefault = makeEntry("disabled");
@@ -757,6 +862,39 @@ describe("provider catalog schema and merge", () => {
     expect(() => {
       (snapshot as { displayName: string }).displayName = "Mutation attempt";
     }).toThrow();
+  });
+
+  it("freezes seed and telemetry for an active route while a new resolution sees overlay changes", () => {
+    const base = makeEntry("meter-route");
+    const firstResolution = resolveProviderCatalog([base], undefined);
+    const active = resolveProviderCatalogRouteSnapshot(
+      firstResolution,
+      base.id
+    );
+    const secondResolution = resolveProviderCatalog([base], {
+      schemaVersion: PROVIDER_CATALOG_SCHEMA_VERSION,
+      entries: [
+        {
+          id: base.id,
+          patch: { model: { contextWindowSeedTokens: 256_000 } },
+        },
+      ],
+    });
+    const nextSession = resolveProviderCatalogRouteSnapshot(
+      secondResolution,
+      base.id
+    );
+
+    expect(active.entry.model.contextWindowSeedTokens).toBe(128_000);
+    expect(active.entry.interfaces[0].contextTelemetry).toEqual({
+      adapterId: "claude-agent-sdk-parent-v1",
+      windowPolicy: "runtime-then-model-seed",
+    });
+    expect(nextSession.entry.model.contextWindowSeedTokens).toBe(256_000);
+    expect(Object.isFrozen(active.entry.model)).toBe(true);
+    expect(Object.isFrozen(active.entry.interfaces[0].contextTelemetry)).toBe(
+      true
+    );
   });
 
   it("exports deterministic normalized objects and JSON", () => {

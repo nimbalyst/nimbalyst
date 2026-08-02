@@ -231,6 +231,18 @@ describe('ClaudeCodeTranscriptAdapter', () => {
       expect(items!.find(i => i.kind === 'session_id')).toBeUndefined();
     });
 
+    it('does NOT emit context usage from a sub-agent assistant chunk', () => {
+      const items = adapter.processChunk({
+        type: 'assistant',
+        parent_tool_use_id: 'tool-task-1',
+        message: {
+          usage: { input_tokens: 9_000, cache_read_input_tokens: 1_000 },
+          content: [],
+        },
+      });
+      expect(items!.find(i => i.kind === 'usage')).toBeUndefined();
+    });
+
     it('does NOT emit session_id from a result chunk', () => {
       // Result chunks may carry the sub-agent's session_id when a sub-agent
       // finishes. Only the system init frame is authoritative for the lead.

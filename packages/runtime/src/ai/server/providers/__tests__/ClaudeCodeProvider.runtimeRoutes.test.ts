@@ -33,6 +33,30 @@ function runtimeRoutes(provider: ClaudeCodeProvider) {
   ).runtimeRoutes;
 }
 
+function contextObservation(
+  provider: ClaudeCodeProvider,
+  sessionId: string,
+  fillTokens: number,
+  runtimeWindowTokens?: number
+) {
+  const internals = provider as unknown as {
+    sessions: {
+      captureSessionId: (sessionId: string, upstreamId: string) => void;
+    };
+    createLeadContextObservation: (
+      sessionId: string,
+      fillTokens: number,
+      runtimeWindowTokens?: number
+    ) => unknown;
+  };
+  internals.sessions.captureSessionId(sessionId, "claude-thread-1");
+  return internals.createLeadContextObservation(
+    sessionId,
+    fillTokens,
+    runtimeWindowTokens
+  );
+}
+
 function reverseJsonObjectKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(reverseJsonObjectKeys);
   if (typeof value !== "object" || value === null) return value;
@@ -54,6 +78,77 @@ afterEach(() => {
 });
 
 describe("ClaudeCodeProvider runtime route preflight", () => {
+  it("code-binds native Claude telemetry without a custom catalog route", async () => {
+    const provider = new ClaudeCodeProvider();
+    await provider.initialize({ model: "claude-code:haiku" });
+
+    expect(runtimeRoutes(provider)).toBeUndefined();
+    expect(
+      contextObservation(provider, "native-session", 42_000, 200_000)
+    ).toMatchObject({
+      schemaVersion: 1,
+      fillTokens: 42_000,
+      runtimeWindowTokens: 200_000,
+      adapterId: "claude-agent-sdk-parent-v1",
+      windowPolicy: "runtime-then-model-seed",
+      contextWindowSeedTokens: 200_000,
+      identity: {
+        nimbalystSessionId: "native-session",
+        providerId: "claude-code",
+        persistedModelId: "claude-code:haiku",
+        providerModelId: "haiku",
+        interfaceId: "claude-agent-sdk-native",
+        upstreamThreadId: "claude-thread-1",
+        producerRole: "lead",
+      },
+    });
+  });
+
+  it("freezes lead context telemetry to the selected catalog route", async () => {
+    ClaudeCodeDeps.setProviderCredentialResolver(() => TEST_CREDENTIAL);
+    const provider = new ClaudeCodeProvider();
+    await provider.initialize({ model: "claude-code:claudex-sol" });
+
+    expect(
+      contextObservation(provider, "session-context", 42_000)
+    ).toMatchObject({
+      schemaVersion: 1,
+      fillTokens: 42_000,
+      adapterId: "claude-agent-sdk-parent-v1",
+      windowPolicy: "runtime-then-model-seed",
+      contextWindowSeedTokens: 372_000,
+      numeratorSemantics: "current-lead-context",
+      identity: {
+        nimbalystSessionId: "session-context",
+        persistedModelId: "claude-code:claudex-sol",
+        catalogEntryId: CLAUDEX_SOL_ENTRY_ID,
+        interfaceId: runtimeRoutes(provider).main.selectedInterface.id,
+        upstreamThreadId: "claude-thread-1",
+        producerRole: "lead",
+      },
+      order: { lifecycleGeneration: 0, sequence: 1 },
+    });
+
+    expect(
+      contextObservation(provider, "session-context", 43_000, 400_000)
+    ).toMatchObject({
+      runtimeWindowTokens: 400_000,
+      order: { lifecycleGeneration: 0, sequence: 2 },
+    });
+
+    (
+      provider as unknown as {
+        advanceContextMeterGeneration: (sessionId: string) => void;
+      }
+    ).advanceContextMeterGeneration("session-context");
+    expect(
+      contextObservation(provider, "session-context", 9_000, 400_000)
+    ).toMatchObject({
+      fillTokens: 9_000,
+      order: { lifecycleGeneration: 1, sequence: 2 },
+    });
+  });
+
   it("rejects a revoked credential before attachment, controller, hook, persistence, queue, or process mutation", async () => {
     ClaudeCodeDeps.setProviderCredentialResolver(() => TEST_CREDENTIAL);
     const provider = new ClaudeCodeProvider();

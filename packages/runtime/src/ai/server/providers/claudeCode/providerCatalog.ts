@@ -4,6 +4,14 @@
  * validates and snapshots reviewed route descriptions but never launches one.
  */
 
+import {
+  isContextTelemetryAdapterId,
+  isContextWindowPolicy,
+  isValidContextWindowSeedTokens,
+  type ContextTelemetryAdapterId,
+  type ContextWindowPolicy,
+} from "../../../contextMeter";
+
 export const PROVIDER_CATALOG_SCHEMA_VERSION = 2 as const;
 
 export type ProviderCatalogConsumer =
@@ -57,6 +65,7 @@ export interface ProviderCatalogModel {
   providerModelId: string;
   upstreamModel?: string;
   version: string;
+  contextWindowSeedTokens?: number;
 }
 
 export interface ProviderCatalogOrderedIdentity {
@@ -75,6 +84,10 @@ export interface ProviderCatalogInterface {
   upstreamEndpoint?: string;
   credentialRef: string;
   modelAlias: string;
+  contextTelemetry?: Readonly<{
+    adapterId: ContextTelemetryAdapterId;
+    windowPolicy: ContextWindowPolicy;
+  }>;
 }
 
 export interface ProviderCatalogEntry {
@@ -191,6 +204,7 @@ const MODEL_KEYS = new Set([
   "providerModelId",
   "upstreamModel",
   "version",
+  "contextWindowSeedTokens",
 ]);
 const CAPABILITY_KEYS = new Set([
   "mainSession",
@@ -210,7 +224,9 @@ const INTERFACE_KEYS = new Set([
   "upstreamEndpoint",
   "credentialRef",
   "modelAlias",
+  "contextTelemetry",
 ]);
+const CONTEXT_TELEMETRY_KEYS = new Set(["adapterId", "windowPolicy"]);
 const CONTROL_KEYS = new Set([
   "persistenceKey",
   "allowedValues",
@@ -784,6 +800,19 @@ function validateInterface(
       entryId
     );
   }
+  if (
+    value.contextTelemetry !== undefined &&
+    (!isRecord(value.contextTelemetry) ||
+      !hasOnlyKeys(value.contextTelemetry, CONTEXT_TELEMETRY_KEYS) ||
+      !isContextTelemetryAdapterId(value.contextTelemetry.adapterId) ||
+      !isContextWindowPolicy(value.contextTelemetry.windowPolicy))
+  ) {
+    return makeError(
+      "adapter-required",
+      `${entryId} interface ${value.id} has unsupported context telemetry configuration.`,
+      entryId
+    );
+  }
   const endpointError = validateEndpoint(
     value.endpoint,
     entryId,
@@ -865,7 +894,9 @@ export function validateProviderCatalogEntry(
     !isNonEmptyString(candidate.model.providerModelId) ||
     !isNonEmptyString(candidate.model.version) ||
     (candidate.model.upstreamModel !== undefined &&
-      !isNonEmptyString(candidate.model.upstreamModel))
+      !isNonEmptyString(candidate.model.upstreamModel)) ||
+    (candidate.model.contextWindowSeedTokens !== undefined &&
+      !isValidContextWindowSeedTokens(candidate.model.contextWindowSeedTokens))
   ) {
     return makeError(
       "invalid-entry",
@@ -989,6 +1020,9 @@ function normalizeEntry(entry: ProviderCatalogEntry): ProviderCatalogEntry {
         ? {}
         : { upstreamModel: entry.model.upstreamModel }),
       version: entry.model.version,
+      ...(entry.model.contextWindowSeedTokens === undefined
+        ? {}
+        : { contextWindowSeedTokens: entry.model.contextWindowSeedTokens }),
     },
     capabilities: {
       mainSession: entry.capabilities.mainSession,
@@ -1012,6 +1046,14 @@ function normalizeEntry(entry: ProviderCatalogEntry): ProviderCatalogEntry {
           : { upstreamEndpoint: catalogInterface.upstreamEndpoint }),
         credentialRef: catalogInterface.credentialRef,
         modelAlias: catalogInterface.modelAlias,
+        ...(catalogInterface.contextTelemetry === undefined
+          ? {}
+          : {
+              contextTelemetry: {
+                adapterId: catalogInterface.contextTelemetry.adapterId,
+                windowPolicy: catalogInterface.contextTelemetry.windowPolicy,
+              },
+            }),
       })),
     controls: normalizedControls,
   };

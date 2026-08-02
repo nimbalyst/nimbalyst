@@ -19,6 +19,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
@@ -406,5 +408,40 @@ class SyncCollabIntegrationTest {
             }
             return null
         }
+    }
+}
+
+/** Local apply regressions; unlike the live collab harness these never need credentials. */
+class ContextMeterSyncApplyTest {
+    @Test
+    fun `full resync and metadata broadcast clear obsolete numeric context`() {
+        val unavailable = ContextMeterStateV1(
+            schemaVersion = 1,
+            confidence = "unavailable",
+            reason = "thread-reset",
+        )
+        val metadata = ClientMetadata(
+            currentContext = ContextInfo(42_000, 200_000),
+            contextMeterState = unavailable,
+        )
+
+        val fullResync = resolveContextMeterMetadata(
+            metadata,
+            null,
+            42_000,
+            200_000,
+        )
+        val broadcast = resolveContextMeterMetadata(
+            metadata,
+            fullResync.stateJson,
+            42_000,
+            200_000,
+        )
+
+        assertNull(fullResync.tokens)
+        assertNull(fullResync.window)
+        assertNull(broadcast.tokens)
+        assertNull(broadcast.window)
+        assertEquals(fullResync.stateJson, broadcast.stateJson)
     }
 }

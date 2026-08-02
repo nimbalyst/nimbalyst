@@ -37,6 +37,7 @@ function makeDefault(id: string): ProviderCatalogEntry {
       providerModelId: `${id}:cloud`,
       upstreamModel: `openai/${id}:cloud`,
       version: "1",
+      contextWindowSeedTokens: 128_000,
     },
     capabilities: {
       mainSession: true,
@@ -61,6 +62,10 @@ function makeDefault(id: string): ProviderCatalogEntry {
         upstreamEndpoint: "https://ollama.com/v1",
         credentialRef: "nimbalyst.local-proxy",
         modelAlias: "claude-sonnet-4-5-20250929",
+        contextTelemetry: {
+          adapterId: "claude-agent-sdk-parent-v1",
+          windowPolicy: "runtime-then-model-seed",
+        },
       },
     ],
     controls: {},
@@ -122,6 +127,7 @@ describe("provider catalog legacy migration and loading", () => {
     const directory = makeDirectory();
     const migrationDefaults = [makeDefault("kept"), makeDefault("removed")];
     const upgradedKept = makeDefault("kept");
+    upgradedKept.model.contextWindowSeedTokens = 256_000;
     upgradedKept.controls = {
       effort: {
         persistenceKey: "brain.effort",
@@ -199,6 +205,12 @@ describe("provider catalog legacy migration and loading", () => {
         ],
       },
     });
+    expect(first.resolution.entries[0].model.contextWindowSeedTokens).toBe(
+      128_000
+    );
+    expect(second.resolution.entries[0].model.contextWindowSeedTokens).toBe(
+      256_000
+    );
     expect(second.resolution.disabledIds).toEqual(["removed"]);
   });
 

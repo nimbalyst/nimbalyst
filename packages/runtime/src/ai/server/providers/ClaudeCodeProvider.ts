@@ -4,6 +4,7 @@
  */
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { randomUUID } from 'crypto';
 
 // Query interface not properly exported by SDK, so we define it inline
 interface Query extends AsyncGenerator<SDKMessage, void> {
@@ -46,7 +47,13 @@ import {
   CLAUDE_CODE_VARIANTS_WITH_1M,
   CLAUDE_CODE_SAFE_FALLBACK_MODEL,
   baseContextWindowForVariant,
+  resolveClaudeCodeParentContextWindow,
 } from '../../modelConstants';
+import type {
+  ContextObservationV1,
+  ContextTelemetryAdapterId,
+  ContextWindowPolicy,
+} from '../../contextMeter';
 import { PROVIDER_CATALOG_RESOLUTION, resolveClaudeCodeBackendForConfig } from './claudeCode/customBackends';
 import type { ProviderCatalogResolution } from './claudeCode/providerCatalog';
 import {
@@ -234,6 +241,18 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   private markMessagesAsHidden: boolean = false; // Flag to mark next messages as hidden
   private helperMethod: 'native' | 'custom' = 'native';
   private runtimeRoutes: Readonly<ClaudeAgentRuntimeRouteBundle> | undefined;
+  private contextTelemetryRoute: Readonly<{
+    catalogEntryId?: string;
+    persistedModelId: string;
+    providerModelId: string;
+    interfaceId: string;
+    adapterId: ContextTelemetryAdapterId;
+    windowPolicy: ContextWindowPolicy;
+    contextWindowSeedTokens?: number;
+  }> | undefined;
+  private readonly contextMeterProcessInstanceId = randomUUID();
+  private readonly contextMeterGenerations = new Map<string, number>();
+  private readonly contextMeterSequences = new Map<string, number>();
   private readonly loggedRuntimeRouteReceipts = new Set<string>();
 
   // Lead query reference for interruptWithMessage support
@@ -547,6 +566,55 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       deepSeekResolvedConfig,
       credentialPresence
     );
+    const mainRoute = this.runtimeRoutes?.main;
+    const telemetryEntry = mainRoute
+      ? catalogResolution.entries.find(
+          (entry) => entry.id === mainRoute.model.catalogEntryId,
+        )
+      : undefined;
+    const telemetryInterface = telemetryEntry?.interfaces.find(
+      (catalogInterface) => catalogInterface.id === mainRoute?.selectedInterface.id,
+    );
+    this.contextTelemetryRoute =
+      mainRoute && telemetryEntry && telemetryInterface?.contextTelemetry
+        ? Object.freeze({
+            catalogEntryId: telemetryEntry.id,
+            persistedModelId: telemetryEntry.model.persistedId,
+            providerModelId: telemetryEntry.model.providerModelId,
+            interfaceId: telemetryInterface.id,
+            adapterId: telemetryInterface.contextTelemetry.adapterId,
+            windowPolicy: telemetryInterface.contextTelemetry.windowPolicy,
+            ...(telemetryEntry.model.contextWindowSeedTokens === undefined
+              ? {}
+              : {
+                  contextWindowSeedTokens:
+                    telemetryEntry.model.contextWindowSeedTokens,
+                }),
+          })
+        : (() => {
+            const persistedModelId =
+              deepSeekResolvedConfig.model ?? CLAUDE_CODE_SAFE_FALLBACK_MODEL;
+            const parsed = ModelIdentifier.tryParse(persistedModelId);
+            if (parsed?.provider !== 'claude-code') return undefined;
+            const baseVariant = parsed.baseVariant;
+            if (!(CLAUDE_CODE_VARIANTS as readonly string[]).includes(baseVariant)) {
+              return undefined;
+            }
+            return Object.freeze({
+              persistedModelId,
+              providerModelId: resolveClaudeCodeModelVariant(
+                persistedModelId,
+                CLAUDE_CODE_SAFE_FALLBACK_MODEL,
+              ),
+              interfaceId: 'claude-agent-sdk-native',
+              adapterId: 'claude-agent-sdk-parent-v1' as const,
+              windowPolicy: 'runtime-then-model-seed' as const,
+              contextWindowSeedTokens:
+                parsed.model.toLowerCase().endsWith('-1m')
+                  ? 1_000_000
+                  : baseContextWindowForVariant(baseVariant as typeof CLAUDE_CODE_VARIANTS[number]),
+            });
+          })();
     // Validate persisted custom routes at initialization as well as at spawn.
     // Unknown profiles must never degrade to an ordinary Anthropic session.
     // Mutually exclusive with the DeepSeek profile above (a session's model is
@@ -577,6 +645,61 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
    */
   public setHiddenMode(hidden: boolean): void {
     this.markMessagesAsHidden = hidden;
+  }
+
+  private createLeadContextObservation(
+    sessionId: string | undefined,
+    fillTokens: number,
+    runtimeWindowTokens?: number,
+  ): ContextObservationV1 | undefined {
+    if (!sessionId || !Number.isSafeInteger(fillTokens) || fillTokens < 0) {
+      return undefined;
+    }
+    const route = this.contextTelemetryRoute;
+    const upstreamThreadId = this.sessions.getSessionId(sessionId);
+    if (!route || !upstreamThreadId) return undefined;
+
+    const lifecycleGeneration = this.contextMeterGenerations.get(sessionId) ?? 0;
+    const sequence = (this.contextMeterSequences.get(sessionId) ?? 0) + 1;
+    this.contextMeterSequences.set(sessionId, sequence);
+    return {
+      schemaVersion: 1,
+      fillTokens,
+      ...(runtimeWindowTokens === undefined ? {} : { runtimeWindowTokens }),
+      adapterId: route.adapterId,
+      windowPolicy: route.windowPolicy,
+      ...(route.contextWindowSeedTokens === undefined
+        ? {}
+        : { contextWindowSeedTokens: route.contextWindowSeedTokens }),
+      numeratorSemantics: 'current-lead-context',
+      identity: {
+        nimbalystSessionId: sessionId,
+        providerId: 'claude-code',
+        persistedModelId: route.persistedModelId,
+        providerModelId: route.providerModelId,
+        ...(route.catalogEntryId === undefined ? {} : { catalogEntryId: route.catalogEntryId }),
+        interfaceId: route.interfaceId,
+        upstreamThreadId,
+        producerRole: 'lead',
+      },
+      order: {
+        processInstanceId: this.contextMeterProcessInstanceId,
+        lifecycleGeneration,
+        sequence,
+        observedAtMs: Date.now(),
+      },
+    };
+  }
+
+  private advanceContextMeterGeneration(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    this.contextMeterGenerations.set(
+      sessionId,
+      (this.contextMeterGenerations.get(sessionId) ?? 0) + 1,
+    );
+    // Sequence 1 is reserved for the compact-boundary lifecycle transition;
+    // the first post-compaction observation is therefore sequence 2.
+    this.contextMeterSequences.set(sessionId, 1);
   }
 
   private resolveModelVariant(): string {
@@ -1306,7 +1429,15 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                     + (item.usage?.cache_read_input_tokens || 0)
                     + (item.usage?.cache_creation_input_tokens || 0);
                   if (stepContextTokens > 0) {
-                    yield { type: 'context_usage', contextFillTokens: stepContextTokens };
+                    const contextObservation = this.createLeadContextObservation(
+                      sessionId,
+                      stepContextTokens,
+                    );
+                    yield {
+                      type: 'context_usage',
+                      contextFillTokens: stepContextTokens,
+                      ...(contextObservation ? { contextObservation } : {}),
+                    };
                   }
                 }
                 if (item.modelUsage) modelUsageData = item.modelUsage;
@@ -1495,6 +1626,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
               case 'system_compact':
                 receivedCompactBoundary = true;
                 lastAssistantUsage = undefined;
+                this.advanceContextMeterGeneration(sessionId);
                 yield { type: 'text', content: `Conversation compacted (was ${item.preTokens} tokens)` };
                 break;
 
@@ -1609,6 +1741,17 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                 + (lastAssistantUsage.cache_read_input_tokens || 0)
                 + (lastAssistantUsage.cache_creation_input_tokens || 0)
               : undefined;
+            const parentContextWindow = resolveClaudeCodeParentContextWindow(
+              this.config.model,
+              modelUsageData,
+            );
+            const contextObservation = lastMessageContextTokens === undefined
+              ? undefined
+              : this.createLeadContextObservation(
+                  sessionId,
+                  lastMessageContextTokens,
+                  parentContextWindow,
+                );
 
             transcriptAdapter?.turnEnded(usageData, modelUsageData);
 
@@ -1637,6 +1780,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
               } : {}),
               ...(modelUsageData ? { modelUsage: modelUsageData } : {}),
               ...(lastMessageContextTokens !== undefined ? { contextFillTokens: lastMessageContextTokens } : {}),
+              ...(contextObservation ? { contextObservation } : {}),
               ...(receivedCompactBoundary ? { contextCompacted: true } : {})
             };
             completeEmitted = true;
@@ -1860,6 +2004,17 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             + (lastAssistantUsage.cache_read_input_tokens || 0)
             + (lastAssistantUsage.cache_creation_input_tokens || 0)
           : undefined;
+        const parentContextWindow = resolveClaudeCodeParentContextWindow(
+          this.config.model,
+          modelUsageData,
+        );
+        const contextObservation = lastMessageContextTokens === undefined
+          ? undefined
+          : this.createLeadContextObservation(
+              sessionId,
+              lastMessageContextTokens,
+              parentContextWindow,
+            );
 
         // Canonical transcript: turn ended with usage
         transcriptAdapter?.turnEnded(usageData, modelUsageData);
@@ -1883,6 +2038,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           ...(modelUsageData ? { modelUsage: modelUsageData } : {}),
           // Context fill from last assistant message (for context window display)
           ...(lastMessageContextTokens !== undefined ? { contextFillTokens: lastMessageContextTokens } : {}),
+          ...(contextObservation ? { contextObservation } : {}),
           // Signal that compaction happened so AIService clears stale currentContext
           ...(receivedCompactBoundary ? { contextCompacted: true } : {})
         };
