@@ -93,7 +93,7 @@ interface CreateChildSessionArgs {
   toolScope?: SessionLaunchToolScope;
   effortLevel?: EffortLevel;
   thinkingMode?: ThinkingMode;
-  /** Explicit Ollama Claude-Agent backend profile id (see customBackends.ts). */
+  /** Explicit reviewed Claude-Agent catalog backend/profile id. */
   claudeCodeBackend?: string;
 }
 
@@ -101,7 +101,8 @@ interface CreateChildSessionArgs {
  * Public MCP response projection of a resolved backend -- deliberately more
  * stable/abstracted than the internal registry shape (ClaudeCodeBackend) so a
  * future non-LiteLLM transport doesn't have to change the public shape. Drops
- * internal-only fields (upstreamBaseUrl, authToken) and renames the
+ * internal-only route/credential fields (upstreamBaseUrl, baseUrl, authToken)
+ * and renames the
  * Claude-facing alias to downstreamAlias, which reads clearer from the
  * caller's point of view than the internal "claudeModelAlias".
  */
@@ -109,11 +110,10 @@ interface PublicClaudeCodeBackend {
   id: string;
   persistedModel: string;
   transportProfile: 'litellm';
-  provider: 'ollama';
+  provider: ClaudeCodeBackend['provider'];
   model: string;
   upstreamModel: string;
   downstreamAlias: string;
-  baseUrl: string;
 }
 
 function toPublicClaudeCodeBackend(backend: ClaudeCodeBackend): PublicClaudeCodeBackend {
@@ -125,7 +125,6 @@ function toPublicClaudeCodeBackend(backend: ClaudeCodeBackend): PublicClaudeCode
     model: backend.model,
     upstreamModel: backend.upstreamModel,
     downstreamAlias: backend.claudeModelAlias,
-    baseUrl: backend.baseUrl,
   };
 }
 
@@ -169,8 +168,8 @@ interface ResolvedChildModel {
   normalizedModel: string;
   providerSource: SessionLaunchValueSource;
   modelSource: SessionLaunchValueSource;
-  /** Present only for a claude-code child routed through a non-Anthropic
-   *  (currently Ollama) backend. Absent means an ordinary Anthropic session. */
+  /** Present only for a claude-code child routed through a reviewed
+   *  non-Anthropic catalog backend. Absent means an ordinary Anthropic session. */
   claudeCodeBackend?: ClaudeCodeBackend;
 }
 
@@ -267,9 +266,9 @@ async function resolveChildSessionModelAndProvider(
     finalModelSource = 'requested';
   }
 
-  // Only consult backend resolution when there is an actual Ollama signal
-  // (an explicit backend id, or a canonical model that already carries the
-  // ollama-* identity). The overwhelming majority of child sessions are
+  // Only consult backend resolution when there is an explicit catalog profile
+  // or a canonical model that already carries the legacy ollama-* identity.
+  // The overwhelming majority of child sessions are
   // ordinary Anthropic/openai-codex/extension-agent spawns with neither, and
   // skipping the call for them keeps this path a no-op dependency for those
   // sessions -- matching every other call site in this file, which resolves
@@ -331,7 +330,7 @@ interface SpawnSessionArgs {
   toolScope?: SessionLaunchToolScope;
   effortLevel?: EffortLevel;
   thinkingMode?: ThinkingMode;
-  /** Explicit Ollama Claude-Agent backend profile id (see customBackends.ts). */
+  /** Explicit reviewed Claude-Agent catalog backend/profile id. */
   claudeCodeBackend?: string;
   /**
    * Records explicit inheritance intent in launch provenance. The current
