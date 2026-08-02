@@ -7,6 +7,51 @@ import {
 } from '../claudeCliSubmit';
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
 
+const productionMocks = vi.hoisted(() => ({
+  handlers: new Map<string, (...args: any[]) => unknown>(),
+  loadSession: vi.fn(),
+  writeToTerminal: vi.fn(),
+  logUserPrompt: vi.fn(async () => undefined),
+  sendEvent: vi.fn(),
+  reveal: vi.fn(),
+}));
+
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
+  AISessionsRepository: { get: productionMocks.loadSession },
+}));
+
+vi.mock('../../TerminalSessionManager', () => ({
+  getTerminalSessionManager: () => ({
+    writeToTerminal: productionMocks.writeToTerminal,
+  }),
+}));
+
+vi.mock('../claudeCliUserPromptLog', () => ({
+  logClaudeCliUserPrompt: productionMocks.logUserPrompt,
+}));
+
+vi.mock('../claudeCliRevealTerminal', () => ({
+  broadcastClaudeCliRevealTerminal: productionMocks.reveal,
+}));
+
+vi.mock('../../analytics/AnalyticsService', () => ({
+  AnalyticsService: {
+    getInstance: () => ({ sendEvent: productionMocks.sendEvent }),
+  },
+}));
+
+vi.mock('../../../utils/ipcRegistry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../utils/ipcRegistry')>()),
+  safeHandle: vi.fn((channel: string, handler: (...args: any[]) => unknown) => {
+    productionMocks.handlers.set(channel, handler);
+  }),
+}));
+
+vi.mock('../claudeCliLauncherSingleton', () => ({
+  ensureClaudeCliSession: vi.fn(),
+  isClaudeCliInstalled: vi.fn(),
+}));
+
 /** Bracketed-paste markers the composed path wraps its payload in. */
 const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
@@ -308,4 +353,61 @@ describe('submitClaudeCliPrompt', () => {
       expect(large.delays[0]).toBeGreaterThan(small.delays[0]);
     });
   });
+});
+
+describe('registered claude-cli:submit-prompt recovery boundary', () => {
+  it(
+    'keeps every production side effect at zero for fail-closed states, then submits exactly once after recovery',
+    async () => {
+      productionMocks.handlers.clear();
+      productionMocks.loadSession.mockReset();
+      productionMocks.writeToTerminal.mockClear();
+      productionMocks.logUserPrompt.mockClear();
+      productionMocks.sendEvent.mockClear();
+      productionMocks.reveal.mockClear();
+
+      const { registerTerminalHandlers } = await import('../../../ipc/TerminalHandlers');
+      registerTerminalHandlers();
+      const handler = productionMocks.handlers.get('claude-cli:submit-prompt');
+      expect(handler).toBeTypeOf('function');
+      const payload = {
+        sessionId: 'production-session',
+        workspacePath: '/workspace',
+        prompt: 'once',
+      };
+
+      const blockedStates: unknown[] = [
+        null,
+        { metadata: '{not-json' },
+        { metadata: [] },
+        { metadata: { modelChangeReconciliation: 'malformed' } },
+        { metadata: { modelChangeReconciliation: { status: 'pending' } } },
+      ];
+      for (const state of blockedStates) {
+        productionMocks.loadSession.mockResolvedValueOnce(state);
+        await expect(handler!({}, payload)).rejects.toThrow(
+          'Session model recovery is pending',
+        );
+      }
+      productionMocks.loadSession.mockRejectedValueOnce(new Error('session store unavailable'));
+      await expect(handler!({}, payload)).rejects.toThrow(
+        'Session model recovery is pending',
+      );
+
+      expect(productionMocks.writeToTerminal).not.toHaveBeenCalled();
+      expect(productionMocks.logUserPrompt).not.toHaveBeenCalled();
+      expect(productionMocks.sendEvent).not.toHaveBeenCalled();
+      expect(productionMocks.reveal).not.toHaveBeenCalled();
+
+      productionMocks.loadSession.mockResolvedValueOnce({
+        metadata: { modelChangeReconciliation: null },
+      });
+      await expect(handler!({}, payload)).resolves.toEqual({ success: true });
+      expect(productionMocks.writeToTerminal).toHaveBeenCalledTimes(2);
+      expect(productionMocks.logUserPrompt).toHaveBeenCalledTimes(1);
+      expect(productionMocks.sendEvent).toHaveBeenCalledTimes(1);
+      expect(productionMocks.reveal).toHaveBeenCalledTimes(1);
+    },
+    20_000,
+  );
 });

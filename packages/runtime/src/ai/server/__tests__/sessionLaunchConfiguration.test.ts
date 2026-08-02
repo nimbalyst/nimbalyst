@@ -74,6 +74,37 @@ describe('session launch reasoning configuration', () => {
     })).toThrow('thinkingMode is not supported');
   });
 
+  it('accepts catalog-defined DeepSeek controls and rejects cross-model effort', () => {
+    expect(resolveSessionReasoningConfiguration({
+      provider: 'claude-code',
+      model: 'claude-code:deepseek-v4-pro',
+      effortLevel: 'max',
+      thinkingMode: 'disabled',
+      appDefaultEffortLevel: 'low',
+    })).toMatchObject({
+      effortLevel: 'max',
+      thinkingMode: 'disabled',
+      effortLevelSource: 'requested',
+      thinkingModeSource: 'requested',
+    });
+
+    expect(() => resolveSessionReasoningConfiguration({
+      provider: 'claude-code',
+      model: 'claude-code:deepseek-v4-pro',
+      effortLevel: 'low',
+      appDefaultEffortLevel: 'high',
+    })).toThrow('Supported values: high, max');
+  });
+
+  it('rejects unsupported thinking for Claudex', () => {
+    expect(() => resolveSessionReasoningConfiguration({
+      provider: 'claude-code',
+      model: 'claude-code:claudex-sol',
+      thinkingMode: 'disabled',
+      appDefaultEffortLevel: 'high',
+    })).toThrow('thinkingMode is not supported');
+  });
+
   it('validates tool scopes instead of silently treating unknown values as full', () => {
     expect(parseSessionLaunchToolScope(undefined)).toBe('full');
     expect(parseSessionLaunchToolScope('write')).toBe('write');

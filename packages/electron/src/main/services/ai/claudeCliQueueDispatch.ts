@@ -17,6 +17,8 @@
  * Dependency-injected so it unit-tests without node-pty / a live launcher.
  */
 
+import type { SessionPromptDispatchPreflight } from './queuedPromptDispatcher';
+
 export interface ClaudeCliQueueDispatchInput {
   sessionId: string;
   workspacePath: string;
@@ -27,6 +29,7 @@ export interface ClaudeCliQueueDispatchInput {
 }
 
 export interface ClaudeCliQueueDispatchDeps {
+  preflight: SessionPromptDispatchPreflight;
   isTerminalActive(sessionId: string): boolean;
   ensureSession(input: {
     sessionId: string;
@@ -53,6 +56,13 @@ export async function dispatchQueuedPromptToClaudeCli(
   input: ClaudeCliQueueDispatchInput
 ): Promise<boolean> {
   const { sessionId, workspacePath } = input;
+
+  if (!(await deps.preflight(sessionId))) {
+    deps.logInfo(
+      `[ClaudeCliQueueDispatch] durable model reconciliation blocks CLI dispatch for ${sessionId}`
+    );
+    return false;
+  }
 
   if (!deps.isTerminalActive(sessionId)) {
     const result = await deps.ensureSession({

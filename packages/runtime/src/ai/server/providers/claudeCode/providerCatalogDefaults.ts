@@ -84,6 +84,7 @@ function createOllamaCatalogEntry(options: {
   upstreamModel: string;
   modelAlias: string;
   family: string;
+  displayName: string;
 }): ProviderCatalogEntry {
   const contextWindowSeedTokens = options.providerModelId.includes(
     "deepseek-v4-pro"
@@ -93,12 +94,13 @@ function createOllamaCatalogEntry(options: {
   return {
     id: options.id,
     provider: "ollama",
+    providerDisplayName: "Ollama Cloud",
     harness: { id: "claude-agent", order: 10 },
     family: {
       id: options.family,
       order: FAMILY_ORDER[options.family] ?? 1_000,
     },
-    displayName: options.providerModelId,
+    displayName: options.displayName,
     model: {
       persistedId: options.persistedId,
       persistedIdNamespace: "claude-code:ollama-",
@@ -154,16 +156,19 @@ function createReviewedRouteEntry(options: {
   credentialRef: string;
   contextWindowSeedTokens: number;
   controls?: ProviderCatalogEntry["controls"];
+  displayName: string;
+  providerDisplayName: string;
 }): ProviderCatalogEntry {
   return {
     id: options.id,
     provider: options.provider,
+    providerDisplayName: options.providerDisplayName,
     harness: { id: "claude-agent", order: 10 },
     family: {
       id: options.provider === "openai" ? "codex" : "deepseek",
       order: options.provider === "openai" ? 70 : 20,
     },
-    displayName: options.providerModelId,
+    displayName: options.displayName,
     model: {
       persistedId: options.persistedId,
       persistedIdNamespace: options.persistedIdNamespace,
@@ -209,6 +214,9 @@ function createEffortControl(
   return {
     effort: {
       persistenceKey: "effort-level",
+      displayLabel: "Effort",
+      helpText: "Controls how much reasoning effort this model may use.",
+      valueLabels: { '"high"': "High", '"max"': "Max" },
       allowedValues: ["high", "max"],
       defaultValue: "high",
       mappings: [
@@ -232,6 +240,9 @@ function createDeepSeekControls(
     ...createEffortControl(interfaceId),
     thinking: {
       persistenceKey: "thinking-mode",
+      displayLabel: "Thinking",
+      helpText: "Turns the model's reviewed thinking mode on or off.",
+      valueLabels: { '"enabled"': "On", '"disabled"': "Off" },
       allowedValues: ["enabled", "disabled"],
       defaultValue: "enabled",
       mappings: [
@@ -256,6 +267,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/glm-5.2:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS,
     family: "glm",
+    displayName: "GLM 5.2",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_VARIANT,
@@ -264,6 +276,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/gpt-oss:20b-cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_SDK_ALIAS,
     family: "gpt",
+    displayName: "GPT-OSS 20B",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_VARIANT,
@@ -272,6 +285,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/nemotron-3-nano:30b-cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_SDK_ALIAS,
     family: "nemotron",
+    displayName: "Nemotron 3 Nano 30B",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_VARIANT,
@@ -280,6 +294,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/deepseek-v4-flash:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_SDK_ALIAS,
     family: "deepseek",
+    displayName: "DeepSeek v4 Flash",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_VARIANT,
@@ -288,6 +303,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/qwen3.5:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_SDK_ALIAS,
     family: "qwen",
+    displayName: "Qwen 3.5",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_VARIANT,
@@ -296,6 +312,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/nemotron-3-super:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_SDK_ALIAS,
     family: "nemotron",
+    displayName: "Nemotron 3 Super",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_VARIANT,
@@ -304,6 +321,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/glm-5.1:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_SDK_ALIAS,
     family: "glm",
+    displayName: "GLM 5.1",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_VARIANT,
@@ -312,6 +330,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/minimax-m2.7:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_SDK_ALIAS,
     family: "minimax",
+    displayName: "MiniMax M2.7",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_VARIANT,
@@ -320,6 +339,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/kimi-k2.6:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_SDK_ALIAS,
     family: "kimi",
+    displayName: "Kimi 2.6",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_VARIANT,
@@ -328,6 +348,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/kimi-k2.7-code:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_SDK_ALIAS,
     family: "kimi",
+    displayName: "Kimi 2.7 Code",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_VARIANT,
@@ -336,6 +357,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/minimax-m3:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_SDK_ALIAS,
     family: "minimax",
+    displayName: "MiniMax M3",
   }),
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_VARIANT,
@@ -344,6 +366,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/deepseek-v4-pro:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_SDK_ALIAS,
     family: "deepseek",
+    displayName: "DeepSeek v4 Pro",
   }),
   createReviewedRouteEntry({
     id: CLAUDEX_SOL_ENTRY_ID,
@@ -356,6 +379,8 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     credentialRef: CLAUDEX_INGRESS_CREDENTIAL_REF,
     contextWindowSeedTokens: CLAUDEX_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createEffortControl("claude-agent-anthropic"),
+    displayName: "Sol",
+    providerDisplayName: "Claudex",
   }),
   createReviewedRouteEntry({
     id: CLAUDEX_TERRA_ENTRY_ID,
@@ -368,6 +393,8 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     credentialRef: CLAUDEX_INGRESS_CREDENTIAL_REF,
     contextWindowSeedTokens: CLAUDEX_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createEffortControl("claude-agent-anthropic"),
+    displayName: "Terra",
+    providerDisplayName: "Claudex",
   }),
   createReviewedRouteEntry({
     id: CLAUDEX_LUNA_ENTRY_ID,
@@ -380,6 +407,8 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     credentialRef: CLAUDEX_INGRESS_CREDENTIAL_REF,
     contextWindowSeedTokens: CLAUDEX_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createEffortControl("claude-agent-anthropic"),
+    displayName: "Luna",
+    providerDisplayName: "Claudex",
   }),
   createReviewedRouteEntry({
     id: DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID,
@@ -392,6 +421,8 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     credentialRef: DEEPSEEK_API_CREDENTIAL_REF,
     contextWindowSeedTokens: DEEPSEEK_PRO_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createDeepSeekControls("claude-agent-anthropic"),
+    displayName: "DeepSeek v4 Pro",
+    providerDisplayName: "DeepSeek API",
   }),
   createReviewedRouteEntry({
     id: DEEPSEEK_V4_FLASH_OFFICIAL_ENTRY_ID,
@@ -404,6 +435,8 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     credentialRef: DEEPSEEK_API_CREDENTIAL_REF,
     contextWindowSeedTokens: DEFAULT_PROXY_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createDeepSeekControls("claude-agent-anthropic"),
+    displayName: "DeepSeek v4 Flash",
+    providerDisplayName: "DeepSeek API",
   }),
   createReviewedRouteEntry({
     id: DEEPSEEK_V4_PRO_OPENROUTER_ENTRY_ID,
@@ -416,6 +449,8 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     credentialRef: OPENROUTER_API_CREDENTIAL_REF,
     contextWindowSeedTokens: DEEPSEEK_PRO_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createDeepSeekControls("claude-agent-anthropic"),
+    displayName: "DeepSeek v4 Pro",
+    providerDisplayName: "OpenRouter",
   }),
   createReviewedRouteEntry({
     id: DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID,
@@ -428,5 +463,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     credentialRef: OPENROUTER_API_CREDENTIAL_REF,
     contextWindowSeedTokens: DEFAULT_PROXY_CONTEXT_WINDOW_SEED_TOKENS,
     controls: createDeepSeekControls("claude-agent-anthropic"),
+    displayName: "DeepSeek v4 Flash",
+    providerDisplayName: "OpenRouter",
   }),
 ];

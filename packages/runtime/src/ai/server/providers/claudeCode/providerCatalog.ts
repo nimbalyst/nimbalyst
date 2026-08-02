@@ -41,6 +41,12 @@ export interface ProviderCatalogControlMapping {
 
 export interface ProviderCatalogControl {
   persistenceKey: string;
+  /** Safe renderer-owned label for the generic catalog control surface. */
+  displayLabel?: string;
+  /** Safe accessible help text; never contains route or credential material. */
+  helpText?: string;
+  /** Optional user-facing labels keyed by the JSON form of each allowed value. */
+  valueLabels?: Readonly<Record<string, string>>;
   allowedValues: readonly ProviderCatalogControlValue[];
   defaultValue: ProviderCatalogControlValue;
   mappings: readonly ProviderCatalogControlMapping[];
@@ -93,6 +99,8 @@ export interface ProviderCatalogInterface {
 export interface ProviderCatalogEntry {
   id: string;
   provider: string;
+  /** Safe user-facing provider qualifier, for example "Ollama Cloud". */
+  providerDisplayName?: string;
   harness: ProviderCatalogOrderedIdentity;
   family: ProviderCatalogOrderedIdentity;
   displayName: string;
@@ -188,6 +196,7 @@ export interface NormalizedProviderCatalog {
 const ENTRY_KEYS = new Set([
   "id",
   "provider",
+  "providerDisplayName",
   "harness",
   "family",
   "displayName",
@@ -229,6 +238,9 @@ const INTERFACE_KEYS = new Set([
 const CONTEXT_TELEMETRY_KEYS = new Set(["adapterId", "windowPolicy"]);
 const CONTROL_KEYS = new Set([
   "persistenceKey",
+  "displayLabel",
+  "helpText",
+  "valueLabels",
   "allowedValues",
   "defaultValue",
   "mappings",
@@ -602,6 +614,20 @@ function validateControls(
     const persistenceKey = control.persistenceKey;
     const mappings = control.mappings;
     if (
+      (control.displayLabel !== undefined &&
+        !isNonEmptyString(control.displayLabel)) ||
+      (control.helpText !== undefined && !isNonEmptyString(control.helpText)) ||
+      (control.valueLabels !== undefined &&
+        (!isRecord(control.valueLabels) ||
+          !Object.values(control.valueLabels).every(isNonEmptyString)))
+    ) {
+      return makeError(
+        "invalid-controls",
+        `${id} control ${controlId} has invalid presentation metadata.`,
+        id
+      );
+    }
+    if (
       !isNonEmptyString(persistenceKey) ||
       !PERSISTENCE_KEY_PATTERN.test(persistenceKey) ||
       persistenceKeys.has(persistenceKey)
@@ -643,6 +669,19 @@ function validateControls(
       return makeError(
         "invalid-controls",
         `${id} control ${controlId} default must be one of its allowed values.`,
+        id
+      );
+    }
+    if (
+      control.valueLabels !== undefined &&
+      Object.keys(control.valueLabels).some(
+        (key) =>
+          !allowedValues.some((candidate) => JSON.stringify(candidate) === key)
+      )
+    ) {
+      return makeError(
+        "invalid-controls",
+        `${id} control ${controlId} labels an unsupported value.`,
         id
       );
     }
@@ -871,7 +910,9 @@ export function validateProviderCatalogEntry(
     !isStableId(candidate.provider) ||
     !isOrderedIdentity(candidate.harness) ||
     !isOrderedIdentity(candidate.family) ||
-    !isNonEmptyString(candidate.displayName)
+    !isNonEmptyString(candidate.displayName) ||
+    (candidate.providerDisplayName !== undefined &&
+      !isNonEmptyString(candidate.providerDisplayName))
   ) {
     return makeError(
       "invalid-entry",
@@ -987,6 +1028,15 @@ function normalizeEntry(entry: ProviderCatalogEntry): ProviderCatalogEntry {
         controlId,
         {
           persistenceKey: control.persistenceKey,
+          ...(control.displayLabel === undefined
+            ? {}
+            : { displayLabel: control.displayLabel }),
+          ...(control.helpText === undefined
+            ? {}
+            : { helpText: control.helpText }),
+          ...(control.valueLabels === undefined
+            ? {}
+            : { valueLabels: { ...control.valueLabels } }),
           allowedValues: [...control.allowedValues],
           defaultValue: control.defaultValue,
           mappings: [...control.mappings]
@@ -1009,6 +1059,9 @@ function normalizeEntry(entry: ProviderCatalogEntry): ProviderCatalogEntry {
   return {
     id: entry.id,
     provider: entry.provider,
+    ...(entry.providerDisplayName === undefined
+      ? {}
+      : { providerDisplayName: entry.providerDisplayName }),
     harness: { id: entry.harness.id, order: entry.harness.order },
     family: { id: entry.family.id, order: entry.family.order },
     displayName: entry.displayName,

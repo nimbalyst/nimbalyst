@@ -8,10 +8,10 @@ import type { ContextMeterStateV1, TokenUsageCategory } from '@nimbalyst/runtime
 import type { EffortLevel, ThinkingMode } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
 import { ModeTag, AIMode } from './ModeTag';
-import { ModelSelector } from './ModelSelector';
+import { ModelSelector, type PickerModel } from './ModelSelector';
 import { EffortLevelSelector } from './EffortLevelSelector';
 import { ThinkingModeSelector } from './ThinkingModeSelector';
-import { isDeepSeekClaudeAgentModel } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
+import { CatalogControlSelector } from './CatalogControlSelector';
 import { registerPendingVoiceCommandSetter } from './VoiceModeButton.tsx';
 import { PendingVoiceCommand } from './PendingVoiceCommand';
 import { pendingVoiceCommandAtom, voiceActiveSessionIdAtom, type PendingVoiceCommand as PendingVoiceCommandType } from '../../store/atoms/voiceModeState';
@@ -75,7 +75,11 @@ interface AIInputProps {
 
   // Model selection support
   currentModel?: string;
-  onModelChange?: (modelId: string) => void;
+  onModelChange?: (
+    modelId: string,
+    model?: PickerModel,
+  ) => void | Promise<boolean | void>;
+  onCurrentModelResolved?: (model: PickerModel | null) => void;
   sessionHasMessages?: boolean;  // Whether current session has any messages
   currentProvider?: string | null;  // Current session provider
   /**
@@ -171,6 +175,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     onModeChange,
     currentModel,
     onModelChange,
+    onCurrentModelResolved,
     sessionHasMessages,
     currentProvider,
     readOnlyModel = false,
@@ -201,6 +206,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     const [dragActive, setDragActive] = useState(false);
     const [isFocused, setIsFocused] = useState(false);
     const [modelPickerOpenRequest, setModelPickerOpenRequest] = useState(0);
+    const [resolvedPickerModel, setResolvedPickerModel] = useState<PickerModel | null>(null);
 
     // Command pills: caret position (to suppress the token being typed) and the
     // inspect popover opened when a pill is clicked.
@@ -925,7 +931,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
       }
 
       // Handle Escape to cancel (only if typeahead is not open)
-      if (e.key === 'Escape' && isLoading && onCancel) {
+      if (e.key === 'Escape' && isLoading && onCancel && !disabled) {
         e.preventDefault();
         onCancel();
         return;
@@ -1324,6 +1330,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
       cmdWorkspacePath: string,
       codingAgentPrompt?: { prepend?: string; append?: string }
     ) => {
+      if (disabled) return;
       try {
         await window.electronAPI.invoke(
           'ai:createQueuedPrompt',
@@ -1338,7 +1345,13 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
       } catch (error) {
         console.error('[AIInput] Failed to submit pending voice command:', error);
       }
-    }, []);
+    }, [disabled]);
+
+    const catalogControls = resolvedPickerModel?.catalog?.controls ?? [];
+    const handleCurrentModelResolved = useCallback((model: PickerModel | null) => {
+      setResolvedPickerModel(model);
+      onCurrentModelResolved?.(model);
+    }, [onCurrentModelResolved]);
 
     return (
       <div className={`ai-chat-input flex flex-col gap-1.5 px-3 py-1.5 border-t border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] shrink-0 relative ${isMemoryMode ? 'memory-mode' : ''}`}>
@@ -1386,16 +1399,25 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
             alignItems: 'center',
             gap: '8px',
           }}>
-{onModeChange && provider === 'claude-code' && mode && <ModeTag mode={mode} onModeChange={onModeChange} />}
+{onModeChange && provider === 'claude-code' && mode && (
+  <ModeTag
+    mode={mode}
+    onModeChange={onModeChange}
+    disabled={reasoningControlsDisabled}
+    disabledTitle={reasoningControlsDisabledTitle}
+  />
+)}
 
             {(onModelChange || (readOnlyModel && currentModel)) && (
               <span style={{ display: 'inline-flex' }}>
                 <ModelSelector
                   currentModel={currentModel || ''}
-                  onModelChange={(modelId) => {
-                    onModelChange?.(modelId);
+                  onModelChange={(modelId, model) => {
+                    const result = onModelChange?.(modelId, model);
                     textareaRef.current?.focus();
+                    return result;
                   }}
+                  onCurrentModelResolved={handleCurrentModelResolved}
                   sessionHasMessages={sessionHasMessages}
                   currentProvider={currentProvider}
                   readOnly={!onModelChange && readOnlyModel}
@@ -1405,16 +1427,36 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
                 />
               </span>
             )}
-            {showEffortLevel && onEffortLevelChange && effortLevel && (
+            {catalogControls.map(control => {
+              const isEffort = control.persistenceKey === 'effort-level';
+              const isThinking = control.persistenceKey === 'thinking-mode';
+              const value = isEffort ? effortLevel : isThinking ? thinkingMode : control.defaultValue;
+              const onValueChange = isEffort && onEffortLevelChange
+                ? (next: unknown) => onEffortLevelChange(next as EffortLevel)
+                : isThinking && onThinkingModeChange
+                  ? (next: unknown) => onThinkingModeChange(next as ThinkingMode)
+                  : null;
+              if (!onValueChange) return null;
+              return (
+                <CatalogControlSelector
+                  key={control.persistenceKey}
+                  control={control}
+                  value={value}
+                  onValueChange={onValueChange}
+                  disabled={reasoningControlsDisabled}
+                  disabledTitle={reasoningControlsDisabledTitle}
+                />
+              );
+            })}
+            {!resolvedPickerModel?.catalog && showEffortLevel && onEffortLevelChange && effortLevel && (
               <EffortLevelSelector
                 level={effortLevel}
                 onLevelChange={onEffortLevelChange}
-                allowedLevels={isDeepSeekClaudeAgentModel(currentModel) ? ['high', 'max'] : undefined}
                 disabled={reasoningControlsDisabled}
                 disabledTitle={reasoningControlsDisabledTitle}
               />
             )}
-            {showThinkingToggle && onThinkingModeChange && thinkingMode && (
+            {!resolvedPickerModel?.catalog && showThinkingToggle && onThinkingModeChange && thinkingMode && (
               <ThinkingModeSelector
                 mode={thinkingMode}
                 onModeChange={onThinkingModeChange}
@@ -1524,12 +1566,14 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
           ) : isLoading ? (
             onCancel && (
               <button
-                className="ai-chat-cancel-button w-9 h-9 flex items-center justify-center bg-red-600 border-none rounded-md text-white cursor-pointer transition-all duration-200 animate-pulse hover:bg-red-700 hover:scale-105 hover:animate-none"
+                className="ai-chat-cancel-button w-9 h-9 flex items-center justify-center bg-red-600 border-none rounded-md text-white cursor-pointer transition-all duration-200 animate-pulse hover:enabled:bg-red-700 hover:enabled:scale-105 hover:enabled:animate-none disabled:opacity-40 disabled:cursor-not-allowed"
                 onClick={() => {
                   console.log('[AIInput] Cancel button clicked, onCancel:', !!onCancel);
                   onCancel();
                 }}
-                title="Cancel request (Esc)"
+                disabled={disabled}
+                aria-disabled={disabled}
+                title={disabled ? "Unavailable while model recovery completes" : "Cancel request (Esc)"}
                 aria-label="Cancel request"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">

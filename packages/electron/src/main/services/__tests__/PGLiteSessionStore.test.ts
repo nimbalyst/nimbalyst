@@ -433,3 +433,78 @@ describe('PGLiteSessionStore atomic provider route metadata', () => {
     }
   });
 });
+
+describe('PGLiteSessionStore atomic model reconciliation', () => {
+  it('keeps the durable marker when the model write fails and clears it only with a successful retry', async () => {
+    const db = new PGlite();
+    try {
+      await db.exec(`
+        CREATE TABLE ai_sessions (
+          id TEXT PRIMARY KEY,
+          model TEXT CHECK (model <> 'model-write-failure'),
+          metadata JSONB DEFAULT '{}'
+        );
+        INSERT INTO ai_sessions (id, model, metadata)
+        VALUES (
+          'reconciliation-session',
+          'B',
+          '{"effortLevel":"max","modelChangeReconciliation":{"status":"pending","previousModel":"A"}}'::jsonb
+        );
+      `);
+      const store = createPGLiteSessionStore(db as any);
+
+      await expect(
+        store.updateMetadata('reconciliation-session', {
+          model: 'model-write-failure',
+          metadata: {
+            effortLevel: 'low',
+            modelChangeReconciliation: null,
+          },
+        }),
+      ).rejects.toThrow();
+
+      const failed = await db.query<{
+        model: string;
+        metadata: Record<string, unknown>;
+      }>(
+        'SELECT model, metadata FROM ai_sessions WHERE id = $1',
+        ['reconciliation-session'],
+      );
+      expect(failed.rows[0]).toMatchObject({
+        model: 'B',
+        metadata: {
+          effortLevel: 'max',
+          modelChangeReconciliation: {
+            status: 'pending',
+            previousModel: 'A',
+          },
+        },
+      });
+
+      await store.updateMetadata('reconciliation-session', {
+        model: 'A',
+        metadata: {
+          effortLevel: 'low',
+          modelChangeReconciliation: null,
+        },
+      });
+
+      const recovered = await db.query<{
+        model: string;
+        metadata: Record<string, unknown>;
+      }>(
+        'SELECT model, metadata FROM ai_sessions WHERE id = $1',
+        ['reconciliation-session'],
+      );
+      expect(recovered.rows[0]).toMatchObject({
+        model: 'A',
+        metadata: {
+          effortLevel: 'low',
+          modelChangeReconciliation: null,
+        },
+      });
+    } finally {
+      await db.close();
+    }
+  });
+});

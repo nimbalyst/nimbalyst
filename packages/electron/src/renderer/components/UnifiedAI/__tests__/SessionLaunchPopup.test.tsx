@@ -27,6 +27,34 @@ vi.mock('../AIInput', () => ({
           value={props.value}
           onChange={(event) => props.onChange(event.target.value)}
         />
+        {props.onModelChange && (
+          <button
+            type="button"
+            onClick={() => props.onModelChange('claude-code:claudex-sol', {
+              id: 'claude-code:claudex-sol',
+              name: 'Claude Agent - Sol (Claudex)',
+              provider: 'claude-code',
+              catalog: {
+                entryId: 'claudex-sol',
+                family: 'codex',
+                version: 'gpt-5.6-sol',
+                capabilities: { mainSession: true, subagent: true, consultation: true, tools: true, vision: false },
+                controls: [{
+                  id: 'effort',
+                  persistenceKey: 'effort-level',
+                  displayLabel: 'Effort',
+                  helpText: 'Reasoning effort.',
+                  allowedValues: ['high', 'max'],
+                  defaultValue: 'high',
+                  valueLabels: { '"high"': 'High', '"max"': 'Max' },
+                }],
+                availability: { selectable: true, code: 'launchable' },
+              },
+            })}
+          >
+            Choose Catalog Model
+          </button>
+        )}
         <button type="button" onClick={() => props.onSend(props.value)}>Start Session</button>
       </div>
     );
@@ -194,6 +222,37 @@ describe('SessionLaunchPopup', () => {
     });
     const createCall = invoke.mock.calls.find(([channel]) => channel === 'sessions:create');
     expect(createCall?.[1].session.metadata).toMatchObject({ thinkingMode: 'disabled' });
+  });
+
+  it('heals cross-model controls before creating a catalog session', async () => {
+    const testStore = createStore();
+    testStore.set(activeWorkspacePathAtom, '/workspace');
+    initWorkstreamState('/workspace');
+    testStore.set(agentModeSettingsAtom, {
+      defaultModel: 'claude-code:sonnet',
+      defaultEffortLevel: 'low',
+      defaultThinkingMode: 'disabled',
+    });
+    render(
+      <Provider store={testStore}>
+        <SessionLaunchPopup workspacePath="/workspace" />
+      </Provider>,
+    );
+
+    act(() => testStore.set(sessionLaunchPopupRequestAtom, 1));
+    const input = await screen.findByTestId('session-launch-popup-input');
+    fireEvent.change(input, { target: { value: 'Use the catalog route' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Choose Catalog Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start Session' }));
+
+    await waitFor(() => {
+      expect(invoke.mock.calls.some(([channel]) => channel === 'sessions:create')).toBe(true);
+    });
+    const createCall = invoke.mock.calls.find(([channel]) => channel === 'sessions:create');
+    expect(createCall?.[1].session).toMatchObject({
+      model: 'claude-code:claudex-sol',
+      metadata: { effortLevel: 'high', thinkingMode: null },
+    });
   });
 
   it('moves the popup by dragging its title bar and closes from the title bar', async () => {

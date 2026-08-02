@@ -382,6 +382,8 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
   const mergeMetadataAtomically = async (
     sessionId: string,
     incoming: Record<string, unknown>,
+    columnUpdates: readonly string[] = [],
+    columnValues: readonly unknown[] = [sessionId],
   ): Promise<void> => {
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const { rows } = await db.query<{ metadata: unknown }>(
@@ -414,13 +416,19 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           : typeof rawMetadata === 'string'
             ? rawMetadata
             : JSON.stringify(rawMetadata);
+      const expectedIndex = columnValues.length + 1;
+      const mergedIndex = expectedIndex + 1;
+      const setClauses = [
+        ...columnUpdates,
+        `metadata = $${mergedIndex}::jsonb`,
+      ];
       const updated = await db.query(
         `UPDATE ai_sessions
-         SET metadata = $3::jsonb
+         SET ${setClauses.join(', ')}
          WHERE id = $1
-           AND ((metadata IS NULL AND $2::jsonb IS NULL) OR metadata = $2::jsonb)
+           AND ((metadata IS NULL AND $${expectedIndex}::jsonb IS NULL) OR metadata = $${expectedIndex}::jsonb)
          RETURNING metadata`,
-        [sessionId, expected, JSON.stringify(merged)],
+        [...columnValues, expected, JSON.stringify(merged)],
       );
       if (updated.rows.length > 0) return;
     }
@@ -525,6 +533,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       }
       const updates: string[] = [];
       const values: any[] = [sessionId];
+      let incomingMetadata: Record<string, unknown> | undefined;
 
       const pushUpdate = (clause: string, value: any) => {
         updates.push(`${clause} $${values.length + 1}`);
@@ -568,7 +577,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             `[PGLiteSessionStore] updateMetadata refused non-object metadata for session ${sessionId}: type=${typeof incoming}, isArray=${Array.isArray(incoming)}`,
           );
         } else {
-          await mergeMetadataAtomically(sessionId, incoming);
+          incomingMetadata = incoming;
         }
       }
       if ((metadata as any).hasBeenNamed !== undefined) pushUpdate('has_been_named =', (metadata as any).hasBeenNamed);
@@ -582,19 +591,29 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       if (metadata.canonicalLastTransformedAt !== undefined) pushUpdate('canonical_last_transformed_at =', metadata.canonicalLastTransformedAt);
       if (metadata.canonicalLastRawMessageId !== undefined) pushUpdate('canonical_last_raw_message_id =', metadata.canonicalLastRawMessageId);
 
-      // NOTE: We intentionally do NOT update updated_at here. The updated_at timestamp
-      // should only change when messages are added (via PGLiteAgentMessagesStore.create),
-      // so that session history sorting accurately reflects the last message time.
-      if (!updates.length) {
-        // Nothing to update - no-op
-        return;
+      // Model/column fields and JSON metadata must share the same CAS UPDATE.
+      // In particular, reconciliation must never clear its durable marker in
+      // one committed statement and then fail the model-column rollback in a
+      // second statement.
+      if (incomingMetadata) {
+        await mergeMetadataAtomically(
+          sessionId,
+          incomingMetadata,
+          updates,
+          values,
+        );
+      } else {
+        // NOTE: We intentionally do NOT update updated_at here. The updated_at
+        // timestamp should only change when messages are added (via
+        // PGLiteAgentMessagesStore.create), so session history sorting reflects
+        // the last message time.
+        if (!updates.length) return;
+        const setClause = updates.join(', ');
+        await db.query(
+          `UPDATE ai_sessions SET ${setClause} WHERE id=$1`,
+          values
+        );
       }
-
-      const setClause = updates.join(', ');
-      await db.query(
-        `UPDATE ai_sessions SET ${setClause} WHERE id=$1`,
-        values
-      );
 
       // GitHub #925 / NIM-1831: a workstream is archived (or restored) as a unit.
       // Cascade the is_archived flag to direct children (linked by

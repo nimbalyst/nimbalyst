@@ -23,6 +23,12 @@ import {
 } from '@nimbalyst/runtime/ai/modelConstants';
 import { CLAUDE_CODE_VARIANTS, ModelIdentifier, isClaudeCodeFamily } from '@nimbalyst/runtime/ai/server/types';
 import { isDeepSeekClaudeAgentModel } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
+import type { ProviderCatalogControlValue } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalog';
+import {
+  EFFORT_LEVELS,
+  type EffortLevel,
+  type ThinkingMode,
+} from '@nimbalyst/runtime/ai/server/effortLevels';
 
 export {
   type EffortLevel,
@@ -290,4 +296,39 @@ export function supportsThinkingToggle(modelId?: string): boolean {
   const variant = extractClaudeCodeVariant(modelId);
   if (!variant) return false;
   return variant.startsWith('opus') || variant.startsWith('sonnet');
+}
+
+export interface CatalogReasoningControlDefinition {
+  persistenceKey: string;
+  allowedValues: readonly ProviderCatalogControlValue[];
+  defaultValue: ProviderCatalogControlValue;
+}
+
+function catalogControlValue(
+  controls: readonly CatalogReasoningControlDefinition[],
+  persistenceKey: string,
+  storedValue: unknown,
+): ProviderCatalogControlValue | null {
+  const control = controls.find(candidate => candidate.persistenceKey === persistenceKey);
+  if (!control) return null;
+  return control.allowedValues.some(candidate => Object.is(candidate, storedValue))
+    ? storedValue as ProviderCatalogControlValue
+    : control.defaultValue;
+}
+
+/** Resolve only the existing session metadata keys from generic catalog definitions. */
+export function resolveCatalogReasoningValues(
+  controls: readonly CatalogReasoningControlDefinition[],
+  stored: Readonly<{ effortLevel?: unknown; thinkingMode?: unknown }>,
+): Readonly<{ effortLevel: EffortLevel | null; thinkingMode: ThinkingMode | null }> {
+  const effort = catalogControlValue(controls, 'effort-level', stored.effortLevel);
+  const thinking = catalogControlValue(controls, 'thinking-mode', stored.thinkingMode);
+  return {
+    effortLevel: typeof effort === 'string' && EFFORT_LEVELS.some(({ key }) => key === effort)
+      ? effort as EffortLevel
+      : null,
+    thinkingMode: thinking === 'enabled' || thinking === 'disabled'
+      ? thinking
+      : null,
+  };
 }

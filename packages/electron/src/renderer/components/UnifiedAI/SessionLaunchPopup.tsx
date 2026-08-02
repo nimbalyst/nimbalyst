@@ -14,6 +14,8 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { AIInput, type AIInputRef } from './AIInput';
+import type { PickerModel } from './ModelSelector';
+import { isCatalogPersistedModelId } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalog';
 import { expandSessionMentions } from './sessionMentions';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { createNewSessionActionAtom } from '../../store/actions/sessionHistoryActions';
@@ -32,6 +34,7 @@ import {
 import { sessionRegistryAtom } from '../../store/atoms/sessions';
 import {
   resolveThinkingMode,
+  resolveCatalogReasoningValues,
   supportsEffortLevel,
   supportsThinkingToggle,
   type EffortLevel,
@@ -127,6 +130,7 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdSessionId, setCreatedSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [resolvedPickerModel, setResolvedPickerModel] = useState<PickerModel | null>(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<AIInputRef>(null);
@@ -136,8 +140,17 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
   const selectedModel = draft.model ?? defaultModel;
   const parsedModel = selectedModel ? ModelIdentifier.tryParse(selectedModel) : null;
   const provider = parsedModel?.provider ?? 'claude-code';
-  const effortLevel = draft.effortLevel ?? defaultEffortLevel;
-  const thinkingMode = resolveThinkingMode(draft.thinkingMode, defaultThinkingMode);
+  const selectedCatalogModel = resolvedPickerModel?.id === selectedModel && resolvedPickerModel.catalog
+    ? resolvedPickerModel
+    : null;
+  const catalogReasoning = selectedCatalogModel?.catalog
+    ? resolveCatalogReasoningValues(selectedCatalogModel.catalog.controls, {
+        effortLevel: draft.effortLevel ?? defaultEffortLevel,
+        thinkingMode: resolveThinkingMode(draft.thinkingMode, defaultThinkingMode),
+      })
+    : null;
+  const effortLevel = catalogReasoning ? catalogReasoning.effortLevel : draft.effortLevel ?? defaultEffortLevel;
+  const thinkingMode = catalogReasoning ? catalogReasoning.thinkingMode : resolveThinkingMode(draft.thinkingMode, defaultThinkingMode);
 
   const virtualReference = useMemo<VirtualElement>(() => ({
     getBoundingClientRect: () => DOMRect.fromRect({
@@ -265,10 +278,25 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
     }));
   }, [setDraft]);
 
-  const handleModelChange = useCallback((model: string) => {
-    setDraft((current) => ({ ...current, model }));
-    setAgentModeSettings({ defaultModel: model });
-  }, [setDraft, setAgentModeSettings]);
+  const handleModelChange = useCallback((model: string, pickerModel?: PickerModel) => {
+    setResolvedPickerModel(pickerModel ?? null);
+    const resolved = pickerModel?.catalog
+      ? resolveCatalogReasoningValues(pickerModel.catalog.controls, {
+          effortLevel: draft.effortLevel ?? defaultEffortLevel,
+          thinkingMode: resolveThinkingMode(draft.thinkingMode, defaultThinkingMode),
+        })
+      : null;
+    setDraft((current) => ({
+      ...current,
+      model,
+      ...(resolved ? resolved : {}),
+    }));
+    setAgentModeSettings({
+      defaultModel: model,
+      ...(resolved?.effortLevel ? { defaultEffortLevel: resolved.effortLevel } : {}),
+      ...(resolved?.thinkingMode ? { defaultThinkingMode: resolved.thinkingMode } : {}),
+    });
+  }, [setDraft, setAgentModeSettings, draft.effortLevel, draft.thinkingMode, defaultEffortLevel, defaultThinkingMode]);
 
   const handleEffortLevelChange = useCallback((nextEffort: EffortLevel) => {
     setDraft((current) => ({ ...current, effortLevel: nextEffort }));
@@ -283,6 +311,14 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
   const handleSend = useCallback(async () => {
     let prompt = draft.value.trim();
     if (!prompt || !workspacePath || !draft.pendingSessionId || !selectedModel || isSubmitting) return;
+    if (isCatalogPersistedModelId(selectedModel) && !selectedCatalogModel) {
+      setError('Wait for the provider catalog to finish loading before starting this session.');
+      return;
+    }
+    if (selectedCatalogModel?.catalog?.availability.selectable === false) {
+      setError(selectedCatalogModel.catalog.availability.reason || 'This catalog model is unavailable.');
+      return;
+    }
 
     let launchMode = draft.mode;
     const planCommand = prompt.match(/^\/plan(?:\s|$)/);
@@ -327,6 +363,7 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
       });
 
       setDraft(createEmptySessionLaunchDraft());
+      setResolvedPickerModel(null);
       setCreatedSessionId(null);
       setOpen(false);
 
@@ -350,6 +387,7 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
     effortLevel,
     isSubmitting,
     provider,
+    selectedCatalogModel,
     selectedModel,
     sessionRegistry,
     setDraft,
@@ -416,14 +454,15 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
           onModeChange={(mode) => setDraft((current) => ({ ...current, mode }))}
           currentModel={selectedModel}
           onModelChange={createdSessionId ? undefined : handleModelChange}
+          onCurrentModelResolved={setResolvedPickerModel}
           readOnlyModel={Boolean(createdSessionId)}
           readOnlyModelTitle="This session was already created; retry to submit the prompt"
           sessionHasMessages={false}
           currentProvider={provider}
-          effortLevel={effortLevel}
+          effortLevel={effortLevel ?? undefined}
           onEffortLevelChange={handleEffortLevelChange}
           showEffortLevel={supportsEffortLevel(selectedModel)}
-          thinkingMode={thinkingMode}
+          thinkingMode={thinkingMode ?? undefined}
           onThinkingModeChange={handleThinkingModeChange}
           showThinkingToggle={developerMode && supportsThinkingToggle(selectedModel)}
           provider={provider}
