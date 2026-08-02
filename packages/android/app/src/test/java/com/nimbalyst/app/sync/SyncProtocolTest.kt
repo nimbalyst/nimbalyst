@@ -1,6 +1,7 @@
 package com.nimbalyst.app.sync
 
 import com.google.gson.Gson
+import com.google.gson.GsonBuilder
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -22,12 +23,13 @@ import org.junit.Test
  * literal values.
  *
  * The app uses a bare `Gson()` (see SyncManager.kt: `private val gson = Gson()`).
- * [ClientMetadata.contextMeterState] carries its key-presence adapter on the reflected field, so
- * the same bare `Gson()` here exercises the exact decrypted-metadata configuration the app ships.
+ * [ClientMetadata] carries its key-presence adapter on the type itself, so the same bare `Gson()`
+ * here exercises the exact decrypted-metadata configuration the app ships.
  */
 class SyncProtocolTest {
 
     private val gson = Gson()
+    private val nullPreservingGson = GsonBuilder().serializeNulls().create()
 
     // ---------------------------------------------------------------------
     // Helpers
@@ -478,8 +480,13 @@ class SyncProtocolTest {
                 "${candidate.label} fixture must contain explicit null",
                 hasExplicitNull(candidate.json, candidate.path),
             )
-            val encrypted = crypto.encrypt(gson.toJson(candidate.json))
+            val encrypted = crypto.encrypt(nullPreservingGson.toJson(candidate.json))
             val decrypted = crypto.decrypt(encrypted.encrypted, encrypted.iv)
+            val decryptedJson = JsonParser.parseString(decrypted).asJsonObject
+            assertTrue(
+                "${candidate.label} decrypted fixture must retain explicit null",
+                hasExplicitNull(decryptedJson, candidate.path),
+            )
             val decoded = runCatching {
                 gson.fromJson(decrypted, ClientMetadata::class.java)
             }.getOrNull()

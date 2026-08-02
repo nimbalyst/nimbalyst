@@ -306,9 +306,9 @@ data class ContextMeterStateV1(
     }
 }
 
+@JsonAdapter(ClientMetadataDeserializer::class)
 data class ClientMetadata(
     val currentContext: ContextInfo? = null,
-    @field:JsonAdapter(ContextMeterStateV1Deserializer::class)
     val contextMeterState: ContextMeterStateV1? = null,
     val hasPendingPrompt: Boolean? = null,
     val phase: String? = null,
@@ -318,74 +318,108 @@ data class ClientMetadata(
 )
 
 /**
- * Enforces key-presence semantics at the reflected [ClientMetadata.contextMeterState] field.
- * Bare Gson reaches this adapter while reflecting the nullable Kotlin property, keeping the
- * key-presence check on the same field path used by the production decrypted metadata boundary.
+ * Gson normally maps an omitted nullable field and an explicit JSON null to the same Kotlin null.
+ * The canonical TypeScript context-meter validator only permits these wire optionals when omitted,
+ * so inspect the raw object before constructing [ClientMetadata]. The app's existing bare `Gson()`
+ * automatically uses this adapter at the real decrypted metadata boundary via [JsonAdapter].
  */
-class ContextMeterStateV1Deserializer : JsonDeserializer<ContextMeterStateV1> {
+class ClientMetadataDeserializer : JsonDeserializer<ClientMetadata> {
     override fun deserialize(
         json: JsonElement,
         typeOfT: Type,
         context: JsonDeserializationContext,
-    ): ContextMeterStateV1 {
-        validateContextMeterStateKeyPresence(json)
-        return context.deserialize(json, ContextMeterStateV1::class.java)
-    }
-}
-
-private fun validateContextMeterStateKeyPresence(stateElement: JsonElement) {
-    if (stateElement.isJsonNull || !stateElement.isJsonObject) return
-    val state = stateElement.asJsonObject
-    state.rejectExplicitNull("provenance", "contextMeterState.provenance")
-    val provenanceElement = state.get("provenance") ?: return
-    if (!provenanceElement.isJsonObject) return
-    val provenance = provenanceElement.asJsonObject
-    provenance.rejectExplicitNull(
-        "runtimeWindowTokens",
-        "contextMeterState.provenance.runtimeWindowTokens",
-    )
-    provenance.rejectExplicitNull(
-        "contextWindowSeedTokens",
-        "contextMeterState.provenance.contextWindowSeedTokens",
-    )
-    provenance.rejectExplicitNull(
-        "lastFreshObservationAtMs",
-        "contextMeterState.provenance.lastFreshObservationAtMs",
-    )
-    provenance.rejectExplicitNull(
-        "invalidationReason",
-        "contextMeterState.provenance.invalidationReason",
-    )
-
-    val identityElement = provenance.get("identity")
-    if (identityElement != null && identityElement.isJsonObject) {
-        val identity = identityElement.asJsonObject
-        identity.rejectExplicitNull(
-            "providerModelId",
-            "contextMeterState.provenance.identity.providerModelId",
-        )
-        identity.rejectExplicitNull(
-            "catalogEntryId",
-            "contextMeterState.provenance.identity.catalogEntryId",
-        )
-        identity.rejectExplicitNull(
-            "interfaceId",
-            "contextMeterState.provenance.identity.interfaceId",
+    ): ClientMetadata {
+        if (!json.isJsonObject) throw JsonParseException("Client metadata must be an object")
+        val root = json.asJsonObject
+        validateContextMeterKeyPresence(root)
+        return ClientMetadata(
+            currentContext = root.decodeOptional("currentContext", ContextInfo::class.java, context),
+            contextMeterState = root.decodeOptional(
+                "contextMeterState",
+                ContextMeterStateV1::class.java,
+                context,
+            ),
+            hasPendingPrompt = root.decodeOptional(
+                "hasPendingPrompt",
+                Boolean::class.javaObjectType,
+                context,
+            ),
+            phase = root.decodeOptional("phase", String::class.java, context),
+            tags = root.decodeOptional("tags", Array<String>::class.java, context)?.toList(),
+            draftInput = root.decodeOptional("draftInput", String::class.java, context),
+            draftUpdatedAt = root.decodeOptional(
+                "draftUpdatedAt",
+                Long::class.javaObjectType,
+                context,
+            ),
         )
     }
 
-    val orderElement = provenance.get("order")
-    if (orderElement != null && orderElement.isJsonObject) {
-        orderElement.asJsonObject.rejectExplicitNull(
-            "turnId",
-            "contextMeterState.provenance.order.turnId",
+    private fun validateContextMeterKeyPresence(root: JsonObject) {
+        val stateElement = root.get("contextMeterState") ?: return
+        if (stateElement.isJsonNull || !stateElement.isJsonObject) return
+        val state = stateElement.asJsonObject
+        state.rejectExplicitNull("provenance", "contextMeterState.provenance")
+        val provenanceElement = state.get("provenance") ?: return
+        if (!provenanceElement.isJsonObject) return
+        val provenance = provenanceElement.asJsonObject
+        provenance.rejectExplicitNull(
+            "runtimeWindowTokens",
+            "contextMeterState.provenance.runtimeWindowTokens",
         )
-    }
-}
+        provenance.rejectExplicitNull(
+            "contextWindowSeedTokens",
+            "contextMeterState.provenance.contextWindowSeedTokens",
+        )
+        provenance.rejectExplicitNull(
+            "lastFreshObservationAtMs",
+            "contextMeterState.provenance.lastFreshObservationAtMs",
+        )
+        provenance.rejectExplicitNull(
+            "invalidationReason",
+            "contextMeterState.provenance.invalidationReason",
+        )
 
-private fun JsonObject.rejectExplicitNull(key: String, path: String) {
-    if (has(key) && get(key).isJsonNull) {
-        throw JsonParseException("$path must be omitted, not null")
+        val identityElement = provenance.get("identity")
+        if (identityElement != null && identityElement.isJsonObject) {
+            val identity = identityElement.asJsonObject
+            identity.rejectExplicitNull(
+                "providerModelId",
+                "contextMeterState.provenance.identity.providerModelId",
+            )
+            identity.rejectExplicitNull(
+                "catalogEntryId",
+                "contextMeterState.provenance.identity.catalogEntryId",
+            )
+            identity.rejectExplicitNull(
+                "interfaceId",
+                "contextMeterState.provenance.identity.interfaceId",
+            )
+        }
+
+        val orderElement = provenance.get("order")
+        if (orderElement != null && orderElement.isJsonObject) {
+            orderElement.asJsonObject.rejectExplicitNull(
+                "turnId",
+                "contextMeterState.provenance.order.turnId",
+            )
+        }
+    }
+
+    private fun JsonObject.rejectExplicitNull(key: String, path: String) {
+        if (has(key) && get(key).isJsonNull) {
+            throw JsonParseException("$path must be omitted, not null")
+        }
+    }
+
+    private fun <T> JsonObject.decodeOptional(
+        key: String,
+        type: Class<T>,
+        context: JsonDeserializationContext,
+    ): T? {
+        val element = get(key) ?: return null
+        if (element.isJsonNull) return null
+        return context.deserialize(element, type)
     }
 }
 
