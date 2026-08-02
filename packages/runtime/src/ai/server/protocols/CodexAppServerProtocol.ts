@@ -61,10 +61,11 @@ import type {
   ItemPermissionsRequestApprovalParams,
   ItemStartedNotification,
   McpElicitationResponse,
+  ThreadTokenUsageUpdatedNotification,
   ThreadResumeResponse,
   ThreadStartParams,
   ThreadStartResponse,
-  TokenUsage,
+  TokenUsageBreakdown,
   TurnCompletedNotification,
   TurnInterruptParams,
   TurnStartParams,
@@ -131,6 +132,13 @@ interface AppServerSessionRaw {
   cleanupStarted: boolean;
 }
 
+interface AppServerContextPair {
+  threadId: string;
+  turnId: string;
+  fillTokens: number;
+  runtimeWindowTokens: number;
+}
+
 function previewForLog(value: string | undefined, max = 300): string | undefined {
   if (!value) return value;
   return value.length > max ? `${value.slice(0, max)}...` : value;
@@ -188,12 +196,21 @@ function summarizeNotificationParams(
 
 export class CodexAppServerProtocol implements AgentProtocol {
   readonly platform = 'codex-app-server';
+  private readonly contextProcessInstanceId =
+    `codex-app-server-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  private readonly contextSequences = new Map<string, number>();
 
   private apiKey: string;
   private readonly resolveCodexPathOverride: () => string | undefined;
   private readonly host: CodexAppServerHostBindings;
   private readonly clientInfo: { name: string; version: string };
   private readonly terminateProcessTree: (child: ChildProcessWithoutNullStreams) => void;
+
+  private nextContextSequence(identityKey: string): number {
+    const next = (this.contextSequences.get(identityKey) ?? 0) + 1;
+    this.contextSequences.set(identityKey, next);
+    return next;
+  }
 
   constructor(options: CodexAppServerProtocolOptions = {}) {
     this.apiKey = options.apiKey ?? '';
@@ -299,13 +316,61 @@ export class CodexAppServerProtocol implements AgentProtocol {
     };
 
     let usage: { input_tokens: number; output_tokens: number; total_tokens: number } | undefined;
+    let contextObservation: ProtocolEvent['contextObservation'];
+    let turnStartResultId: string | null = null;
+    let pendingContextPair: AppServerContextPair | undefined;
     let fullText = '';
 
     const unsubscribers: Array<() => void> = [];
 
+    const acceptContextPair = (pair: AppServerContextPair) => {
+      if (pair.threadId !== raw.threadId) return;
+      if (!turnStartResultId) {
+        pendingContextPair = pair;
+        return;
+      }
+      if (pair.turnId !== turnStartResultId) return;
+      const model = raw.options.model;
+      if (!message.sessionId || !model) return;
+      const contextSequence = this.nextContextSequence(
+        `${message.sessionId}\u0000${pair.threadId}\u0000${model}`,
+      );
+      contextObservation = {
+        schemaVersion: 1,
+        fillTokens: pair.fillTokens,
+        runtimeWindowTokens: pair.runtimeWindowTokens,
+        adapterId: 'codex-app-server-thread-usage-v1',
+        windowPolicy: 'runtime-required',
+        numeratorSemantics: 'current-lead-context',
+        identity: {
+          nimbalystSessionId: message.sessionId,
+          providerId: 'openai-codex',
+          persistedModelId: `openai-codex:${model}`,
+          providerModelId: model,
+          upstreamThreadId: pair.threadId,
+          producerRole: 'lead',
+        },
+        order: {
+          processInstanceId: this.contextProcessInstanceId,
+          lifecycleGeneration: 0,
+          sequence: contextSequence,
+          turnId: pair.turnId,
+          observedAtMs: Date.now(),
+        },
+      };
+    };
+
     const onNotification = (method: string, params: unknown) => {
       try {
-        this.dispatchNotification(method, params, push, raw, (delta) => { fullText += delta; }, (u) => { usage = u; });
+        this.dispatchNotification(
+          method,
+          params,
+          push,
+          raw,
+          (delta) => { fullText += delta; },
+          (u) => { usage = u; },
+          acceptContextPair,
+        );
       } catch (err) {
         push({ kind: 'fail', error: err instanceof Error ? err : new Error(String(err)) });
       }
@@ -352,7 +417,6 @@ export class CodexAppServerProtocol implements AgentProtocol {
 
     // Start the turn. Errors from the request itself are surfaced as fail.
     const turnInput = await this.buildInput(message);
-    let turnStartResultId: string | null = null;
     try {
       const turnStart = await raw.client.request<{ turn?: { id?: string } }>('turn/start', {
         threadId: raw.threadId,
@@ -360,6 +424,11 @@ export class CodexAppServerProtocol implements AgentProtocol {
       } as TurnStartParams);
       turnStartResultId = turnStart?.turn?.id ?? null;
       raw.activeTurnId = turnStartResultId;
+      if (pendingContextPair) {
+        const pair = pendingContextPair;
+        pendingContextPair = undefined;
+        acceptContextPair(pair);
+      }
     } catch (err) {
       const baseMsg = err instanceof Error ? err.message : String(err);
       yield {
@@ -397,6 +466,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
             type: 'complete',
             content: fullText,
             usage: usage ?? { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            ...(contextObservation ? { contextObservation } : {}),
           };
           return;
         }
@@ -673,6 +743,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     raw: AppServerSessionRaw,
     appendText: (delta: string) => void,
     setUsage: (u: { input_tokens: number; output_tokens: number; total_tokens: number }) => void,
+    setContextPair: (pair: AppServerContextPair) => void,
   ): void {
     const params = paramsUnknown as Record<string, unknown> | undefined;
     const summary = summarizeNotificationParams(method, paramsUnknown);
@@ -718,9 +789,11 @@ export class CodexAppServerProtocol implements AgentProtocol {
         return;
       }
       case 'thread/tokenUsage/updated': {
-        const usage = params?.usage as TokenUsage | undefined;
-        const normalized = normalizeUsage(usage);
+        const notification = params as unknown as ThreadTokenUsageUpdatedNotification;
+        const normalized = normalizeUsage(notification?.tokenUsage?.total);
         if (normalized) setUsage(normalized);
+        const pair = normalizeContextPair(notification, raw);
+        if (pair) setContextPair(pair);
         return;
       }
       case 'turn/completed': {
@@ -1119,11 +1192,41 @@ function appendStderrTail(msg: string, raw: { stderrTail: string[] }): string {
   return tail ? `${msg}\nstderr tail: ${tail}` : msg;
 }
 
-function normalizeUsage(u: TokenUsage | undefined): { input_tokens: number; output_tokens: number; total_tokens: number } | undefined {
+function normalizeUsage(u: TokenUsageBreakdown | undefined): { input_tokens: number; output_tokens: number; total_tokens: number } | undefined {
   if (!u) return undefined;
   const input = u.input_tokens ?? u.inputTokens ?? 0;
   const output = u.output_tokens ?? u.outputTokens ?? 0;
   const total = u.total_tokens ?? u.totalTokens ?? input + output;
   if (input === 0 && output === 0 && total === 0) return undefined;
   return { input_tokens: input, output_tokens: output, total_tokens: total };
+}
+
+function normalizeContextPair(
+  notification: ThreadTokenUsageUpdatedNotification | undefined,
+  raw: AppServerSessionRaw,
+): AppServerContextPair | undefined {
+  if (
+    !notification ||
+    notification.threadId !== raw.threadId ||
+    !notification.turnId
+  ) {
+    return undefined;
+  }
+  const fillTokens = notification.tokenUsage?.last?.inputTokens;
+  const runtimeWindowTokens = notification.tokenUsage?.modelContextWindow;
+  if (
+    !Number.isSafeInteger(fillTokens) ||
+    (fillTokens as number) <= 0 ||
+    !Number.isSafeInteger(runtimeWindowTokens) ||
+    (runtimeWindowTokens as number) <= 0 ||
+    (fillTokens as number) > (runtimeWindowTokens as number)
+  ) {
+    return undefined;
+  }
+  return {
+    threadId: notification.threadId,
+    turnId: notification.turnId,
+    fillTokens: fillTokens as number,
+    runtimeWindowTokens: runtimeWindowTokens as number,
+  };
 }

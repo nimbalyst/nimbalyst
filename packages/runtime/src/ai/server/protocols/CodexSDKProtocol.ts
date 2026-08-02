@@ -62,11 +62,21 @@ import { parseCodexEvent } from '../providers/codex/codexEventParser';
 export class CodexSDKProtocol implements AgentProtocol {
   readonly platform = 'codex-sdk';
 
+  private readonly contextProcessInstanceId =
+    `codex-sdk-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  private readonly contextSequences = new Map<string, number>();
+
   private apiKey: string;
   private codexClient: CodexClientLike | null = null;
   private codexClientOptionsKey: string | null = null;
   private readonly loadSdkModule: () => Promise<CodexSdkModuleLike>;
   private readonly resolveCodexPathOverride: () => string | undefined;
+
+  private nextContextSequence(identityKey: string): number {
+    const next = (this.contextSequences.get(identityKey) ?? 0) + 1;
+    this.contextSequences.set(identityKey, next);
+    return next;
+  }
 
   /**
    * @param apiKey - OpenAI API key
@@ -193,6 +203,7 @@ export class CodexSDKProtocol implements AgentProtocol {
     let usage: { input_tokens: number; output_tokens: number; total_tokens: number } | undefined;
     let contextFillTokens: number | undefined;
     let contextWindow: number | undefined;
+    let contextObservation: ProtocolEvent['contextObservation'];
 
     try {
       // Run the thread with streaming
@@ -243,6 +254,34 @@ export class CodexSDKProtocol implements AgentProtocol {
           if (parsedEvent.contextSnapshot) {
             contextFillTokens = parsedEvent.contextSnapshot.contextFillTokens;
             contextWindow = parsedEvent.contextSnapshot.contextWindow;
+            const model = (session.raw?.options as SessionOptions | undefined)?.model;
+            if (message.sessionId && session.id && model) {
+              const contextSequence = this.nextContextSequence(
+                `${message.sessionId}\u0000${session.id}\u0000${model}`,
+              );
+              contextObservation = {
+                schemaVersion: 1,
+                fillTokens: contextFillTokens,
+                runtimeWindowTokens: contextWindow,
+                adapterId: 'codex-sdk-token-count-v1',
+                windowPolicy: 'runtime-required',
+                numeratorSemantics: 'current-lead-context',
+                identity: {
+                  nimbalystSessionId: message.sessionId,
+                  providerId: 'openai-codex',
+                  persistedModelId: `openai-codex:${model}`,
+                  providerModelId: model,
+                  upstreamThreadId: session.id,
+                  producerRole: 'lead',
+                },
+                order: {
+                  processInstanceId: this.contextProcessInstanceId,
+                  lifecycleGeneration: 0,
+                  sequence: contextSequence,
+                  observedAtMs: Date.now(),
+                },
+              };
+            }
           }
 
           // Tool call event
@@ -308,6 +347,7 @@ export class CodexSDKProtocol implements AgentProtocol {
         },
         ...(contextFillTokens !== undefined ? { contextFillTokens } : {}),
         ...(contextWindow !== undefined ? { contextWindow } : {}),
+        ...(contextObservation ? { contextObservation } : {}),
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

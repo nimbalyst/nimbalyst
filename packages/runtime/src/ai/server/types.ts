@@ -15,10 +15,28 @@ import {
 } from '../modelConstants';
 import { isDeepSeekClaudeAgentModel } from './deepSeekClaudeAgent';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
+import type {
+  ContextMeterStateV1,
+  ContextObservationV1,
+  ContextInvalidationReason,
+  ContextMeterIdentityV1,
+} from '../contextMeter';
 export type { ToolDefinition } from '../tools';
 export { ModelIdentifier } from './ModelIdentifier';
 export type { ToolResult } from './protocols/ProtocolInterface';
 export type { TranscriptViewMessage } from './transcript/TranscriptProjector';
+export type {
+  ContextMeterStateV1,
+  ContextObservationV1,
+  ContextInvalidationReason,
+  ContextMeterIdentityV1,
+} from '../contextMeter';
+export {
+  createUnavailableContextMeterStateV1,
+  contextMeterIdentityEquals,
+  hydrateContextMeterStateV1,
+  reduceContextMeterStateV1,
+} from '../contextMeter';
 
 export interface DocumentContext {
   filePath?: string;
@@ -391,6 +409,8 @@ export interface SessionData {
       categories?: TokenUsageCategory[]; // Category breakdown from /context
       rawResponse?: string;   // Raw markdown from /context for display on session reload
     };
+    /** Sole versioned source for the context meter UI. */
+    contextMeterState?: ContextMeterStateV1;
   };
 
   // Additional metadata
@@ -414,6 +434,8 @@ export interface SessionData {
 
 export interface ProviderConfig {
   apiKey?: string;
+  /** Stable project scope for explicit per-workspace provider credentials. */
+  workspacePath?: string;
   model?: string;
   maxTokens?: number;
   temperature?: number;
@@ -523,6 +545,10 @@ export interface StreamChunk {
   contextFillTokens?: number;
   // Model context window for context fill calculations (when provider emits a per-turn snapshot).
   contextWindow?: number;
+  /** Provider observation to be validated by the host reducer. */
+  contextObservation?: ContextObservationV1;
+  /** Already-reduced state for extension providers that host the same reducer. */
+  contextMeterState?: ContextMeterStateV1;
   // Set to true when context was compacted this turn. Signals AIService to clear stale currentContext.
   contextCompacted?: boolean;
   /**

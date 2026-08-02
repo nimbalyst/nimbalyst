@@ -25,10 +25,14 @@ import {
 } from '@nimbalyst/runtime/ai/server';
 import { reconcileClaudeCodeModels } from './claudeCodeModelReconcile';
 import { isModelEnabled } from './modelEnablementFilter';
+import { mergeProviderCatalogPickerModels } from './providerCatalogPicker';
+import { BUILT_IN_PROVIDER_CATALOG } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalogDefaults';
+import { readProviderCatalog } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalogLoader';
+import { getProviderRouteCredentialPresence } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerRouteCredentials';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { resolveEffortLevel, resolveThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveEffortLevel, resolveThinkingMode, supportsThinkingModeForModel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -126,7 +130,10 @@ import {
 import { MessageStreamingHandler } from './MessageStreamingHandler';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
-import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import {
+  preflightSessionPromptDispatch,
+  tryClaimAndDispatchNextQueuedPrompt,
+} from './queuedPromptDispatcher';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
@@ -297,6 +304,9 @@ export class AIService {
     attachments?: any[],
     documentContext?: any
   ): Promise<{ id: string; prompt: string; createdAt: number }> {
+    if (!(await preflightSessionPromptDispatch(sessionId))) {
+      throw new Error('Session model recovery is pending');
+    }
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
     const promptId = `meta-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -327,6 +337,7 @@ export class AIService {
     const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
     const queueStore = getQueuedPromptsStore();
     return drainPendingOrdinaryPromptsOnStartup({
+      preflight: preflightSessionPromptDispatch,
       listPendingOrdinarySessionIds: () =>
         queueStore.listPendingSessionIds({ deliveryClass: 'ordinary' }),
       resolveWorkspacePath: async (sessionId) => {
@@ -355,6 +366,13 @@ export class AIService {
   }> {
     if (!sessionId) {
       throw new Error('Session ID is required to interrupt');
+    }
+
+    // Priority delivery reserves its queue row before interrupting. While
+    // model recovery owns the session, leave that row pending and do not enter
+    // the native interrupt path; recovery will trigger the same queue once.
+    if (!(await preflightSessionPromptDispatch(sessionId))) {
+      return { success: false, error: 'Session model recovery is pending', nativeEntered: false };
     }
 
     const { database } = await import('../../database/PGLiteDatabaseWorker');
@@ -409,6 +427,13 @@ export class AIService {
       }
       try {
         terminalManager.writeToTerminal(sessionId, '\x03');
+        this.queueProcessingLeases.delete(sessionId);
+        try {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+        } catch (sweepError) {
+          logger.main.error('[AIService] CLI interrupt queue sweep failed:', sweepError);
+        }
         logger.main.info(`[AIService] Interrupted claude-code-cli terminal for session ${sessionId}`);
         return { success: true, method: 'terminal-ctrl-c', nativeEntered: true };
       } catch (error) {
@@ -1090,6 +1115,11 @@ export class AIService {
     targetWindow: Electron.BrowserWindow | null,
     source: string,
   ): Promise<boolean> {
+    if (!(await preflightSessionPromptDispatch(sessionId))) {
+      logger.main.info(`[AIService] ${source}: durable model reconciliation blocks queued dispatch for session ${sessionId}`);
+      return false;
+    }
+
     // NIM-834: claude-code-cli sessions have no in-process turn driver — the SDK
     // dispatch below would call the provider's Phase 1 sendMessage stub and mark
     // the prompt failed (broke meta-agent spawns, restart continuations, and
@@ -1102,7 +1132,9 @@ export class AIService {
       dispatchSession = await AISessionsRepository.get(sessionId);
     } catch (lookupError) {
       logger.main.warn(`[AIService] ${source}: provider lookup failed before queued dispatch:`, lookupError);
+      return false;
     }
+    if (!dispatchSession) return false;
     if (dispatchSession?.provider === 'claude-code-cli') {
       return this.dispatchQueuedPromptToClaudeCliSession(sessionId, workspacePath, dispatchSession, source);
     }
@@ -1184,6 +1216,7 @@ export class AIService {
         });
       },
       processingLeases: this.queueProcessingLeases,
+      preflight: preflightSessionPromptDispatch,
       queueStore,
       sendMessageHandler: this.sendMessageHandler,
       sessionId,
@@ -1226,6 +1259,7 @@ export class AIService {
     const terminalManager = getTerminalSessionManager();
     return dispatchQueuedPromptToClaudeCli(
       {
+        preflight: preflightSessionPromptDispatch,
         isTerminalActive: (id) => terminalManager.isTerminalActive(id),
         ensureSession: (input) => ensureClaudeCliSession(input),
         getLiveTurnState: (id) => terminalManager.getClaudeCliLiveTurnState(id),
@@ -1269,6 +1303,9 @@ export class AIService {
     message: string,
     documentContext?: DocumentContext,
   ): Promise<{ content: string; contextCompacted?: boolean }> {
+    if (!(await preflightSessionPromptDispatch(sessionId))) {
+      throw new Error('Session model recovery is pending');
+    }
     if (!this.sendMessageHandler) {
       throw new Error('AI service not initialized');
     }
@@ -1440,6 +1477,14 @@ export class AIService {
                 const session = await AISessionsRepository.get(sessionId);
                 if (!session) {
                   logger.main.warn('[AIService] Session not found for queuedPrompts:', sessionId);
+                  return;
+                }
+
+                // Preserve the newly persisted mobile rows as pending, but do
+                // not open a workspace, notify controls, or dispatch until the
+                // durable model-recovery owner releases this session.
+                if (!(await preflightSessionPromptDispatch(sessionId))) {
+                  logger.main.info(`[AIService] mobile queue dispatch blocked by model recovery for ${sessionId}`);
                   return;
                 }
 
@@ -2425,16 +2470,18 @@ export class AIService {
         }
         // Effort level: explicit session value, else the app-wide default the
         // selector displays (Opus 4.6 adaptive reasoning).
-        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel(), session.model);
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }
-        initConfig.thinkingMode = resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode());
+        if (supportsThinkingModeForModel(session.model)) {
+          initConfig.thinkingMode = resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode());
+        }
       }
 
       // Pass effort level for OpenAI Codex
       if (provider === 'openai-codex') {
-        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel(), session.model);
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }
@@ -2461,9 +2508,23 @@ export class AIService {
       return session;
     });
 
-    // Send message to AI -- delegated to MessageStreamingHandler.
-    // Stored on this.sendMessageHandler so queue processing and other paths can re-invoke it.
-    this.sendMessageHandler = this.streamingHandler.handle;
+    // Send message to AI -- delegated to MessageStreamingHandler only after the
+    // same repository-backed preflight used by every queued/direct rail. This
+    // is the final main-process defense for a stale renderer or non-UI caller.
+    // Stored on this.sendMessageHandler so queue processing and other paths
+    // re-invoke the identical gated production entry point.
+    this.sendMessageHandler = async (event, message, documentContext, sessionId, workspacePath) => {
+      if (!sessionId || !(await preflightSessionPromptDispatch(sessionId))) {
+        throw new Error('Session model recovery is pending');
+      }
+      return this.streamingHandler.handle(
+        event,
+        message,
+        documentContext,
+        sessionId,
+        workspacePath,
+      );
+    };
     safeHandle('ai:sendMessage', this.sendMessageHandler);
 
     // Get session history (full session data with messages - slow)
@@ -2596,60 +2657,6 @@ export class AIService {
       return { success: true };
     });
 
-    // Atomically claim a queued prompt for processing
-    // Returns the prompt data if successfully claimed, null if already claimed by another instance
-    // Uses the new queued_prompts table with proper row-level atomic updates
-    safeHandle('ai:claimQueuedPrompt', async (
-      event,
-      sessionId: string,
-      promptId: string
-    ) => {
-      // Use the new QueuedPromptsStore for atomic claim
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-
-      // Atomic claim - only succeeds if status is still 'pending'
-      const claimed = await queueStore.claim(promptId);
-
-      if (claimed) {
-        logger.main.info(`[AIService] claimQueuedPrompt: claimed ${promptId} for session ${sessionId}`);
-        // Return in the format expected by the renderer
-        return {
-          id: claimed.id,
-          prompt: claimed.prompt,
-          timestamp: claimed.createdAt,
-          attachments: claimed.attachments,
-          documentContext: claimed.documentContext,
-        };
-      }
-
-      logger.main.info(`[AIService] claimQueuedPrompt: prompt ${promptId} not found or already claimed`);
-      return null;
-    });
-
-    // Mark a queued prompt as completed
-    safeHandle('ai:completeQueuedPrompt', async (
-      event,
-      promptId: string
-    ) => {
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-      await queueStore.complete(promptId);
-      logger.main.info(`[AIService] completeQueuedPrompt: ${promptId}`);
-    });
-
-    // Mark a queued prompt as failed
-    safeHandle('ai:failQueuedPrompt', async (
-      event,
-      promptId: string,
-      errorMessage: string
-    ) => {
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-      await queueStore.fail(promptId, errorMessage);
-      logger.main.info(`[AIService] failQueuedPrompt: ${promptId} - ${errorMessage}`);
-    });
-
     // List pending prompts for a session
     safeHandle('ai:listPendingPrompts', async (
       event,
@@ -2675,6 +2682,9 @@ export class AIService {
       attachments?: any[],
       documentContext?: any
     ) => {
+      if (!(await preflightSessionPromptDispatch(sessionId))) {
+        throw new Error('Session model recovery is pending');
+      }
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
 
@@ -2766,16 +2776,47 @@ export class AIService {
       };
     });
 
+    safeHandle('ai:replaceQueuedPrompt', async (
+      event,
+      sessionId: string,
+      promptId: string,
+      prompt: string,
+      attachments?: any[],
+      documentContext?: any,
+    ) => {
+      const { getQueuedPromptsStore } = await import('../RepositoryManager');
+      const replaced = await getQueuedPromptsStore().replacePending({
+        id: promptId,
+        sessionId,
+        prompt,
+        attachments,
+        documentContext,
+      });
+      if (!replaced) return { success: false, error: 'Queued prompt replacement was not admitted' };
+      return {
+        success: true,
+        row: {
+          id: replaced.id,
+          prompt: replaced.prompt,
+          timestamp: replaced.createdAt,
+          attachments: replaced.attachments,
+          documentContext: replaced.documentContext,
+        },
+      };
+    });
+
     // Delete a queued prompt (for user cancellation)
     safeHandle('ai:deleteQueuedPrompt', async (
       event,
-      promptId: string
+      sessionId: string,
+      promptId: string,
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-      await queueStore.delete(promptId);
-      logger.main.info(`[AIService] deleteQueuedPrompt: deleted ${promptId}`);
-      return { success: true };
+      const deleted = await getQueuedPromptsStore().deletePending(promptId, sessionId);
+      if (deleted) logger.main.info(`[AIService] deleteQueuedPrompt: deleted ${promptId}`);
+      return deleted
+        ? { success: true }
+        : { success: false, error: 'Queued prompt deletion was not admitted' };
     });
 
     // Trigger queue processing for a session (e.g., when voice command queued while AI is idle)
@@ -3249,6 +3290,10 @@ export class AIService {
         throw new Error('Session ID is required to cancel request');
       }
 
+      if (!(await preflightSessionPromptDispatch(sessionId))) {
+        return { success: false, error: 'Session model recovery is pending' };
+      }
+
       // Use repository directly - we just need session metadata (provider type),
       // not the full session load with messages
       const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
@@ -3266,6 +3311,13 @@ export class AIService {
         }
 
         terminalManager.writeToTerminal(sessionId, '\x03');
+        this.queueProcessingLeases.delete(sessionId);
+        try {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+        } catch (sweepError) {
+          logger.main.error('[AIService] CLI cancel queue sweep failed:', sweepError);
+        }
         this.analytics.sendEvent('ai_stream_interrupted', {
           provider: 'claude-code-cli',
           chunksReceived: chunksReceived || 0,
@@ -3921,7 +3973,26 @@ export class AIService {
         ...apiKeys,
         lmstudio_url: providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234'
       };
-      const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledProviderSet);
+      let allModels = await ModelRegistry.getAllModels(modelsConfig, enabledProviderSet);
+
+      if (enabledProviders['claude-code'].enabled) {
+        const catalog = readProviderCatalog(BUILT_IN_PROVIDER_CATALOG).resolution;
+        const credentialRefs = [...new Set(
+          [...catalog.entries, ...BUILT_IN_PROVIDER_CATALOG]
+            .flatMap(entry => entry.interfaces)
+            .filter(catalogInterface => catalogInterface.consumers.includes('claude-agent-main'))
+            .map(catalogInterface => catalogInterface.credentialRef),
+        )];
+        const credentialPresence = getProviderRouteCredentialPresence(credentialRefs, {
+          apiKey: apiKeys['deepseek'],
+        });
+        allModels = mergeProviderCatalogPickerModels(
+          allModels,
+          catalog,
+          BUILT_IN_PROVIDER_CATALOG,
+          credentialRef => credentialPresence[credentialRef] === true,
+        );
+      }
 
       // const claudeCodeModels = allModels.filter(m => m.provider === 'claude-code');
       // console.log('[AIService] ai:getModels - claude-code models from registry:',
@@ -3979,7 +4050,8 @@ export class AIService {
           id: m.id,
           display_name: m.name,
           provider: m.provider,
-          maxTokens: m.maxTokens
+          maxTokens: m.maxTokens,
+          ...((m as any).catalog ? { catalog: (m as any).catalog } : {}),
         })),
         grouped,  // This now contains only enabled models
         providers: enabledProviders,

@@ -300,6 +300,12 @@ public final class DatabaseManager: @unchecked Sendable {
             try db.create(index: "idx_sessions_created_by", on: "sessions", columns: ["createdBySessionId"])
         }
 
+        migrator.registerMigration("v14_context_meter_state") { db in
+            try db.alter(table: "sessions") { t in
+                t.add(column: "contextMeterStateJson", .text)
+            }
+        }
+
         try migrator.migrate(writer)
     }
 

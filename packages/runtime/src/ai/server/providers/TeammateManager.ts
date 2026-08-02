@@ -15,6 +15,10 @@ import path from 'path';
 import fsp from 'fs/promises';
 import os from 'os';
 import { resolveClaudeConfigDir } from './claudeCode/claudeConfigDir';
+import {
+  serializeProviderRuntimeRouteReceipt,
+  type ProviderRuntimeRouteReceipt,
+} from './claudeCode/runtimeRouteResolver';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -105,6 +109,8 @@ export interface ManagedChildLaunchOptions extends PackagedBuildOptions {
   /** When present, task input cannot override the qualified backend model. */
   exactModel?: string;
   backendId?: string;
+  routeReceipt?: Readonly<ProviderRuntimeRouteReceipt>;
+  thinking?: Readonly<{ type: string }>;
 }
 
 export const MANAGED_CHILD_ROUTE_RECEIPT_PREFIX =
@@ -183,9 +189,9 @@ export class TeammateManager {
     const route = this.managedChildLaunchOptions;
     if (!route?.backendId) return;
     const baseUrl = route.env.ANTHROPIC_BASE_URL;
-    if (!sessionId || !route.exactModel || baseUrl !== 'http://127.0.0.1:4002') {
+    if (!sessionId || !route.exactModel || !baseUrl) {
       throw new Error(
-        '[MANAGED-TEAMMATE] Qualified native Agent result is missing exact LiteLLM route identity'
+        '[MANAGED-TEAMMATE] Qualified native Agent result is missing exact route identity'
       );
     }
     const resultText = collectNativeChildResultText(toolResult);
@@ -197,6 +203,23 @@ export class TeammateManager {
     }
     const requestedName =
       typeof toolArguments?.name === 'string' ? toolArguments.name : undefined;
+    if (route.routeReceipt) {
+      const serialized = serializeProviderRuntimeRouteReceipt(route.routeReceipt);
+      console.log(`${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${serialized}`);
+      this.deps.logNonBlocking(
+        sessionId,
+        'claude-code',
+        'output',
+        serialized,
+        {
+          messageType: 'native_claude_code_agent_child_route',
+          nativeChildAgentId: agentId,
+          nativeChildAgentName: requestedName || 'native-agent',
+          launchKind: 'spawn',
+        },
+      );
+      return;
+    }
     const routeReceipt = {
       schemaVersion: 1,
       event: 'native_claude_code_agent_child_launch',
@@ -1522,6 +1545,9 @@ export class TeammateManager {
 
     const options: any = {
       model: effectiveModel,
+      ...(managedChildOptions?.thinking && {
+        thinking: managedChildOptions.thinking,
+      }),
       maxTurns: 20,
       permissionMode: 'default',
       persistSession: true,
@@ -1572,20 +1598,26 @@ export class TeammateManager {
           '[MANAGED-TEAMMATE] Qualified child route is missing manager session, exact model, or base URL'
         );
       }
-      const routeReceipt = {
-        schemaVersion: 1,
-        event: 'native_claude_code_agent_child_launch',
-        managerSessionId: sessionId,
-        backendId: managedChildOptions.backendId,
-        childModelAlias: effectiveModel,
-        baseUrl,
-        nativeChildAgentId: agentId,
-        nativeChildAgentName: name,
-        launchKind: resumeSessionId ? 'resume' : 'spawn',
-      };
-      console.log(
-        `${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${JSON.stringify(routeReceipt)}`
-      );
+      if (managedChildOptions.routeReceipt) {
+        console.log(
+          `${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${serializeProviderRuntimeRouteReceipt(managedChildOptions.routeReceipt)}`
+        );
+      } else {
+        const routeReceipt = {
+          schemaVersion: 1,
+          event: 'native_claude_code_agent_child_launch',
+          managerSessionId: sessionId,
+          backendId: managedChildOptions.backendId,
+          childModelAlias: effectiveModel,
+          baseUrl,
+          nativeChildAgentId: agentId,
+          nativeChildAgentName: name,
+          launchKind: resumeSessionId ? 'resume' : 'spawn',
+        };
+        console.log(
+          `${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${JSON.stringify(routeReceipt)}`
+        );
+      }
     }
 
     if (resumeSessionId) {

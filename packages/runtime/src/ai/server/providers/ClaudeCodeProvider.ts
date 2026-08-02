@@ -4,6 +4,7 @@
  */
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { randomUUID } from 'crypto';
 
 // Query interface not properly exported by SDK, so we define it inline
 interface Query extends AsyncGenerator<SDKMessage, void> {
@@ -46,8 +47,28 @@ import {
   CLAUDE_CODE_VARIANTS_WITH_1M,
   CLAUDE_CODE_SAFE_FALLBACK_MODEL,
   baseContextWindowForVariant,
+  resolveClaudeCodeParentContextWindow,
 } from '../../modelConstants';
-import { resolveClaudeCodeBackendForConfig } from './claudeCode/customBackends';
+import type {
+  ContextObservationV1,
+  ContextTelemetryAdapterId,
+  ContextWindowPolicy,
+} from '../../contextMeter';
+import { PROVIDER_CATALOG_RESOLUTION, resolveClaudeCodeBackendForConfig } from './claudeCode/customBackends';
+import type { ProviderCatalogResolution } from './claudeCode/providerCatalog';
+import {
+  getProviderRouteCredentialPresence,
+  preflightProviderRuntimeCredentials,
+  type ConfirmedProviderRuntimeCredentials,
+} from './claudeCode/providerRouteCredentials';
+import { persistProviderRuntimeRouteSnapshot } from './claudeCode/providerRuntimeRoutePersistence';
+import {
+  ProviderRuntimeRouteError,
+  resolveClaudeAgentRuntimeRoutes,
+  serializeProviderRuntimeRouteReceipt,
+  type ClaudeAgentRuntimeRouteBundle,
+  type ProviderRuntimeSessionSnapshot,
+} from './claudeCode/runtimeRouteResolver';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
 import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
@@ -219,6 +240,20 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   private markMessagesAsHidden: boolean = false; // Flag to mark next messages as hidden
   private helperMethod: 'native' | 'custom' = 'native';
+  private runtimeRoutes: Readonly<ClaudeAgentRuntimeRouteBundle> | undefined;
+  private contextTelemetryRoute: Readonly<{
+    catalogEntryId?: string;
+    persistedModelId: string;
+    providerModelId: string;
+    interfaceId: string;
+    adapterId: ContextTelemetryAdapterId;
+    windowPolicy: ContextWindowPolicy;
+    contextWindowSeedTokens?: number;
+  }> | undefined;
+  private readonly contextMeterProcessInstanceId = randomUUID();
+  private readonly contextMeterGenerations = new Map<string, number>();
+  private readonly contextMeterSequences = new Map<string, number>();
+  private readonly loggedRuntimeRouteReceipts = new Set<string>();
 
   // Lead query reference for interruptWithMessage support
   private leadQuery: Query | null = null;
@@ -496,6 +531,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   public static setClaudeSettingsPatternChecker(checker: ((workspacePath: string, pattern: string) => Promise<boolean>) | null): void { ClaudeCodeDeps.setClaudeSettingsPatternChecker(checker); }
   public static setTrustChecker(checker: ((workspacePath: string) => { trusted: boolean; mode: 'ask' | 'allow-all' | 'bypass-all' | null; allowAllUsesClassifier?: boolean }) | null): void { BaseAgentProvider.setTrustChecker(checker); }
   public static setExtensionFileTypesLoader(loader: (() => Set<string>) | null): void { ClaudeCodeDeps.setExtensionFileTypesLoader(loader); }
+  public static setProviderCredentialResolver(loader: ((credentialRef: string, context?: Readonly<{ workspacePath?: string }>) => string | undefined) | null): void { ClaudeCodeDeps.setProviderCredentialResolver(loader); }
+  public static setProviderCatalogResolutionLoader(loader: (() => ProviderCatalogResolution) | null): void { ClaudeCodeDeps.setProviderCatalogResolutionLoader(loader); }
 
   private static scheduleWakeupHandler: ((request: ScheduleWakeupRequest) => Promise<void>) | null = null;
   public static setScheduleWakeupHandler(handler: ((request: ScheduleWakeupRequest) => Promise<void>) | null): void {
@@ -510,6 +547,74 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // }, null, 2));
 
     const deepSeekResolvedConfig = applyDeepSeekClaudeAgentProfile(config);
+    const catalogResolution =
+      ClaudeCodeDeps.providerCatalogResolutionLoader?.() ??
+      PROVIDER_CATALOG_RESOLUTION;
+    const catalogEntry = catalogResolution.entries.find(
+      (entry) =>
+        entry.id === deepSeekResolvedConfig.claudeCodeBackend ||
+        entry.model.persistedId === deepSeekResolvedConfig.model
+    );
+    const credentialPresence = getProviderRouteCredentialPresence(
+      catalogEntry?.interfaces.map((catalogInterface) =>
+        catalogInterface.credentialRef
+      ) ?? [],
+      deepSeekResolvedConfig
+    );
+    this.runtimeRoutes = resolveClaudeAgentRuntimeRoutes(
+      catalogResolution,
+      deepSeekResolvedConfig,
+      credentialPresence
+    );
+    const mainRoute = this.runtimeRoutes?.main;
+    const telemetryEntry = mainRoute
+      ? catalogResolution.entries.find(
+          (entry) => entry.id === mainRoute.model.catalogEntryId,
+        )
+      : undefined;
+    const telemetryInterface = telemetryEntry?.interfaces.find(
+      (catalogInterface) => catalogInterface.id === mainRoute?.selectedInterface.id,
+    );
+    this.contextTelemetryRoute =
+      mainRoute && telemetryEntry && telemetryInterface?.contextTelemetry
+        ? Object.freeze({
+            catalogEntryId: telemetryEntry.id,
+            persistedModelId: telemetryEntry.model.persistedId,
+            providerModelId: telemetryEntry.model.providerModelId,
+            interfaceId: telemetryInterface.id,
+            adapterId: telemetryInterface.contextTelemetry.adapterId,
+            windowPolicy: telemetryInterface.contextTelemetry.windowPolicy,
+            ...(telemetryEntry.model.contextWindowSeedTokens === undefined
+              ? {}
+              : {
+                  contextWindowSeedTokens:
+                    telemetryEntry.model.contextWindowSeedTokens,
+                }),
+          })
+        : (() => {
+            const persistedModelId =
+              deepSeekResolvedConfig.model ?? CLAUDE_CODE_SAFE_FALLBACK_MODEL;
+            const parsed = ModelIdentifier.tryParse(persistedModelId);
+            if (parsed?.provider !== 'claude-code') return undefined;
+            const baseVariant = parsed.baseVariant;
+            if (!(CLAUDE_CODE_VARIANTS as readonly string[]).includes(baseVariant)) {
+              return undefined;
+            }
+            return Object.freeze({
+              persistedModelId,
+              providerModelId: resolveClaudeCodeModelVariant(
+                persistedModelId,
+                CLAUDE_CODE_SAFE_FALLBACK_MODEL,
+              ),
+              interfaceId: 'claude-agent-sdk-native',
+              adapterId: 'claude-agent-sdk-parent-v1' as const,
+              windowPolicy: 'runtime-then-model-seed' as const,
+              contextWindowSeedTokens:
+                parsed.model.toLowerCase().endsWith('-1m')
+                  ? 1_000_000
+                  : baseContextWindowForVariant(baseVariant as typeof CLAUDE_CODE_VARIANTS[number]),
+            });
+          })();
     // Validate persisted custom routes at initialization as well as at spawn.
     // Unknown profiles must never degrade to an ordinary Anthropic session.
     // Mutually exclusive with the DeepSeek profile above (a session's model is
@@ -517,10 +622,18 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // composing the two resolvers is safe: this one is a no-op pass-through
     // for a DeepSeek-resolved config since its model/claudeCodeBackend won't
     // match any Ollama backend id.
-    const backend = resolveClaudeCodeBackendForConfig(deepSeekResolvedConfig);
-    this.config = backend
-      ? { ...deepSeekResolvedConfig, claudeCodeBackend: backend.id, model: backend.persistedModel }
-      : deepSeekResolvedConfig;
+    if (this.runtimeRoutes) {
+      this.config = {
+        ...deepSeekResolvedConfig,
+        claudeCodeBackend: this.runtimeRoutes.main.model.catalogEntryId,
+        model: this.runtimeRoutes.main.model.persistedId,
+      };
+    } else {
+      const backend = resolveClaudeCodeBackendForConfig(deepSeekResolvedConfig);
+      this.config = backend
+        ? { ...deepSeekResolvedConfig, claudeCodeBackend: backend.id, model: backend.persistedModel }
+        : deepSeekResolvedConfig;
+    }
 
     // Claude Code manages its own authentication - do not require or use API key
   }
@@ -532,6 +645,61 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
    */
   public setHiddenMode(hidden: boolean): void {
     this.markMessagesAsHidden = hidden;
+  }
+
+  private createLeadContextObservation(
+    sessionId: string | undefined,
+    fillTokens: number,
+    runtimeWindowTokens?: number,
+  ): ContextObservationV1 | undefined {
+    if (!sessionId || !Number.isSafeInteger(fillTokens) || fillTokens < 0) {
+      return undefined;
+    }
+    const route = this.contextTelemetryRoute;
+    const upstreamThreadId = this.sessions.getSessionId(sessionId);
+    if (!route || !upstreamThreadId) return undefined;
+
+    const lifecycleGeneration = this.contextMeterGenerations.get(sessionId) ?? 0;
+    const sequence = (this.contextMeterSequences.get(sessionId) ?? 0) + 1;
+    this.contextMeterSequences.set(sessionId, sequence);
+    return {
+      schemaVersion: 1,
+      fillTokens,
+      ...(runtimeWindowTokens === undefined ? {} : { runtimeWindowTokens }),
+      adapterId: route.adapterId,
+      windowPolicy: route.windowPolicy,
+      ...(route.contextWindowSeedTokens === undefined
+        ? {}
+        : { contextWindowSeedTokens: route.contextWindowSeedTokens }),
+      numeratorSemantics: 'current-lead-context',
+      identity: {
+        nimbalystSessionId: sessionId,
+        providerId: 'claude-code',
+        persistedModelId: route.persistedModelId,
+        providerModelId: route.providerModelId,
+        ...(route.catalogEntryId === undefined ? {} : { catalogEntryId: route.catalogEntryId }),
+        interfaceId: route.interfaceId,
+        upstreamThreadId,
+        producerRole: 'lead',
+      },
+      order: {
+        processInstanceId: this.contextMeterProcessInstanceId,
+        lifecycleGeneration,
+        sequence,
+        observedAtMs: Date.now(),
+      },
+    };
+  }
+
+  private advanceContextMeterGeneration(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    this.contextMeterGenerations.set(
+      sessionId,
+      (this.contextMeterGenerations.get(sessionId) ?? 0) + 1,
+    );
+    // Sequence 1 is reserved for the compact-boundary lifecycle transition;
+    // the first post-compaction observation is therefore sequence 2.
+    this.contextMeterSequences.set(sessionId, 1);
   }
 
   private resolveModelVariant(): string {
@@ -554,6 +722,37 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     attachments?: any[]
   ): AsyncIterableIterator<StreamChunk> {
     const startTime = Date.now();
+    let mainRouteSnapshot:
+      | Readonly<ProviderRuntimeSessionSnapshot>
+      | undefined;
+    let subagentRouteSnapshot:
+      | Readonly<ProviderRuntimeSessionSnapshot>
+      | undefined;
+    let routeCredentials:
+      | Readonly<ConfirmedProviderRuntimeCredentials>
+      | undefined;
+    if (this.runtimeRoutes) {
+      if (!sessionId) {
+        throw new ProviderRuntimeRouteError(
+          'immutable-session-route',
+          `Provider route ${this.runtimeRoutes.main.model.catalogEntryId} requires a stable session id before launch.`,
+          this.runtimeRoutes.main.model.catalogEntryId
+        );
+      }
+      // Credential availability and interface compatibility are the first
+      // per-turn gate. No attachment, controller, hook, queue, metadata, or
+      // process mutation may occur before this succeeds.
+      routeCredentials = preflightProviderRuntimeCredentials(
+        this.runtimeRoutes,
+        this.config
+      );
+      const durableRoutes = await persistProviderRuntimeRouteSnapshot(
+        sessionId,
+        this.runtimeRoutes
+      );
+      mainRouteSnapshot = durableRoutes.main;
+      subagentRouteSnapshot = durableRoutes.subagent;
+    }
 
     // CRITICAL: Capture hidden mode flag at START and reset immediately
     // This prevents race conditions when concurrent sendMessage calls overlap
@@ -725,6 +924,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           sessions: this.sessions,
           config: this.config,
           abortController: this.abortController!,
+          mainRouteSnapshot,
+          subagentRouteSnapshot,
+          mainRouteCredential: routeCredentials?.main,
+          subagentRouteCredential: routeCredentials?.subagent,
         },
         {
           message,
@@ -746,6 +949,25 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       this.helperMethod = sdkResult.helperMethod;
       this.promptController = promptController;
       spawnDiagContext = { binaryPath: options.pathToClaudeCodeExecutable, cwd: options.cwd };
+
+      if (
+        sessionId &&
+        mainRouteSnapshot &&
+        !this.loggedRuntimeRouteReceipts.has(sessionId)
+      ) {
+        const serializedRouteReceipt = serializeProviderRuntimeRouteReceipt(
+          mainRouteSnapshot.receipt
+        );
+        console.info(`[PROVIDER-RUNTIME-ROUTE] ${serializedRouteReceipt}`);
+        await this.logAgentMessage(
+          sessionId,
+          'claude-code',
+          'output',
+          serializedRouteReceipt,
+          { messageType: 'provider_runtime_route' }
+        );
+        this.loggedRuntimeRouteReceipts.add(sessionId);
+      }
 
       // Meta-agent: the profile-specific MCP map was frozen by buildSdkOptions
       // through getMcpServersSnapshot; only native-tool restrictions remain here.
@@ -1207,7 +1429,15 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                     + (item.usage?.cache_read_input_tokens || 0)
                     + (item.usage?.cache_creation_input_tokens || 0);
                   if (stepContextTokens > 0) {
-                    yield { type: 'context_usage', contextFillTokens: stepContextTokens };
+                    const contextObservation = this.createLeadContextObservation(
+                      sessionId,
+                      stepContextTokens,
+                    );
+                    yield {
+                      type: 'context_usage',
+                      contextFillTokens: stepContextTokens,
+                      ...(contextObservation ? { contextObservation } : {}),
+                    };
                   }
                 }
                 if (item.modelUsage) modelUsageData = item.modelUsage;
@@ -1396,6 +1626,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
               case 'system_compact':
                 receivedCompactBoundary = true;
                 lastAssistantUsage = undefined;
+                this.advanceContextMeterGeneration(sessionId);
                 yield { type: 'text', content: `Conversation compacted (was ${item.preTokens} tokens)` };
                 break;
 
@@ -1510,6 +1741,17 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                 + (lastAssistantUsage.cache_read_input_tokens || 0)
                 + (lastAssistantUsage.cache_creation_input_tokens || 0)
               : undefined;
+            const parentContextWindow = resolveClaudeCodeParentContextWindow(
+              this.config.model,
+              modelUsageData,
+            );
+            const contextObservation = lastMessageContextTokens === undefined
+              ? undefined
+              : this.createLeadContextObservation(
+                  sessionId,
+                  lastMessageContextTokens,
+                  parentContextWindow,
+                );
 
             transcriptAdapter?.turnEnded(usageData, modelUsageData);
 
@@ -1538,6 +1780,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
               } : {}),
               ...(modelUsageData ? { modelUsage: modelUsageData } : {}),
               ...(lastMessageContextTokens !== undefined ? { contextFillTokens: lastMessageContextTokens } : {}),
+              ...(contextObservation ? { contextObservation } : {}),
               ...(receivedCompactBoundary ? { contextCompacted: true } : {})
             };
             completeEmitted = true;
@@ -1761,6 +2004,17 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             + (lastAssistantUsage.cache_read_input_tokens || 0)
             + (lastAssistantUsage.cache_creation_input_tokens || 0)
           : undefined;
+        const parentContextWindow = resolveClaudeCodeParentContextWindow(
+          this.config.model,
+          modelUsageData,
+        );
+        const contextObservation = lastMessageContextTokens === undefined
+          ? undefined
+          : this.createLeadContextObservation(
+              sessionId,
+              lastMessageContextTokens,
+              parentContextWindow,
+            );
 
         // Canonical transcript: turn ended with usage
         transcriptAdapter?.turnEnded(usageData, modelUsageData);
@@ -1784,6 +2038,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           ...(modelUsageData ? { modelUsage: modelUsageData } : {}),
           // Context fill from last assistant message (for context window display)
           ...(lastMessageContextTokens !== undefined ? { contextFillTokens: lastMessageContextTokens } : {}),
+          ...(contextObservation ? { contextObservation } : {}),
           // Signal that compaction happened so AIService clears stale currentContext
           ...(receivedCompactBoundary ? { contextCompacted: true } : {})
         };

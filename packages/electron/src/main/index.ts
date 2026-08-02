@@ -213,6 +213,9 @@ import { pathToFileURL } from 'url';
 import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
 import { installWindowOpenGuard } from './window/windowOpenGuard';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
+import { createProviderRouteCredentialResolver } from './services/ai/providerRouteCredentialResolver';
+import { BUILT_IN_PROVIDER_CATALOG } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalogDefaults';
+import { readProviderCatalog } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalogLoader';
 
 // Register before any startup path can create a partition session. Browsed web
 // content stays microphone-denied even after Voice Mode receives an OS grant.
@@ -1694,6 +1697,12 @@ runIfSingleInstanceLifecycleOwner(singleInstanceLifecycle, () => {
         }
         return enabledServers;
     });
+    ClaudeCodeProvider.setProviderCredentialResolver(
+        createProviderRouteCredentialResolver()
+    );
+    ClaudeCodeProvider.setProviderCatalogResolutionLoader(
+        () => readProviderCatalog(BUILT_IN_PROVIDER_CATALOG).resolution
+    );
     OpenAICodexProvider.setMCPConfigLoader(async (workspacePath?: string) => {
         if (!mcpConfigService) {
             throw new Error('MCP config service not initialized');

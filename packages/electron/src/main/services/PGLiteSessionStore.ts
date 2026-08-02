@@ -335,6 +335,108 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
     }
   };
 
+  const installMetadataValueIfAbsent = async (
+    sessionId: string,
+    key: string,
+    value: unknown,
+  ): Promise<unknown> => {
+    await ensureReady();
+    if (!key) throw new Error('Metadata install key is required');
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const { rows } = await db.query<{ metadata: unknown }>(
+        'SELECT metadata FROM ai_sessions WHERE id = $1',
+        [sessionId],
+      );
+      if (rows.length === 0) {
+        throw new Error(`Session ${sessionId} does not exist`);
+      }
+      const rawMetadata = rows[0]?.metadata;
+      const current = normalizeJsonObject(rawMetadata);
+      if (Object.prototype.hasOwnProperty.call(current, key)) {
+        return current[key];
+      }
+      const expected =
+        rawMetadata === null || rawMetadata === undefined
+          ? null
+          : typeof rawMetadata === 'string'
+            ? rawMetadata
+            : JSON.stringify(rawMetadata);
+      const next = JSON.stringify({ ...current, [key]: value });
+      const installed = await db.query<{ metadata: unknown }>(
+        `UPDATE ai_sessions
+         SET metadata = $3::jsonb
+         WHERE id = $1
+           AND ((metadata IS NULL AND $2::jsonb IS NULL) OR metadata = $2::jsonb)
+         RETURNING metadata`,
+        [sessionId, expected, next],
+      );
+      if (installed.rows.length > 0) {
+        return normalizeJsonObject(installed.rows[0]?.metadata)[key];
+      }
+    }
+    throw new Error(
+      `Session ${sessionId} metadata remained contended during atomic install`,
+    );
+  };
+
+  const mergeMetadataAtomically = async (
+    sessionId: string,
+    incoming: Record<string, unknown>,
+    columnUpdates: readonly string[] = [],
+    columnValues: readonly unknown[] = [sessionId],
+  ): Promise<void> => {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const { rows } = await db.query<{ metadata: unknown }>(
+        'SELECT metadata FROM ai_sessions WHERE id = $1',
+        [sessionId],
+      );
+      if (rows.length === 0) {
+        throw new Error(`Session ${sessionId} does not exist`);
+      }
+      const rawMetadata = rows[0]?.metadata;
+      const existingMetadata = normalizeJsonObject(rawMetadata);
+      const normalizedIncoming = normalizeSessionPhaseMetadataUpdate(incoming);
+      const merged: Record<string, any> = {
+        ...existingMetadata,
+        ...normalizedIncoming,
+      };
+      const incomingPhase = normalizedIncoming.phase;
+      if (typeof incomingPhase === 'string') {
+        const transition = computeSessionPhaseTransition(
+          existingMetadata as Record<string, any>,
+          incomingPhase,
+          null,
+          Date.now(),
+        );
+        if (transition.changed) merged.activity = transition.metadata.activity;
+      }
+      const expected =
+        rawMetadata === null || rawMetadata === undefined
+          ? null
+          : typeof rawMetadata === 'string'
+            ? rawMetadata
+            : JSON.stringify(rawMetadata);
+      const expectedIndex = columnValues.length + 1;
+      const mergedIndex = expectedIndex + 1;
+      const setClauses = [
+        ...columnUpdates,
+        `metadata = $${mergedIndex}::jsonb`,
+      ];
+      const updated = await db.query(
+        `UPDATE ai_sessions
+         SET ${setClauses.join(', ')}
+         WHERE id = $1
+           AND ((metadata IS NULL AND $${expectedIndex}::jsonb IS NULL) OR metadata = $${expectedIndex}::jsonb)
+         RETURNING metadata`,
+        [...columnValues, expected, JSON.stringify(merged)],
+      );
+      if (updated.rows.length > 0) return;
+    }
+    throw new Error(
+      `Session ${sessionId} metadata remained contended during atomic merge`,
+    );
+  };
+
   return {
     async ensureReady(): Promise<void> {
       await ensureReady();
@@ -424,8 +526,14 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
 
     async updateMetadata(sessionId: string, metadata: UpdateSessionMetadataPayload): Promise<void> {
       await ensureReady();
+      if (metadata.installMetadataValueIfAbsent) {
+        const { key, value } = metadata.installMetadataValueIfAbsent;
+        await installMetadataValueIfAbsent(sessionId, key, value);
+        return;
+      }
       const updates: string[] = [];
       const values: any[] = [sessionId];
+      let incomingMetadata: Record<string, unknown> | undefined;
 
       const pushUpdate = (clause: string, value: any) => {
         updates.push(`${clause} $${values.length + 1}`);
@@ -469,32 +577,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             `[PGLiteSessionStore] updateMetadata refused non-object metadata for session ${sessionId}: type=${typeof incoming}, isArray=${Array.isArray(incoming)}`,
           );
         } else {
-          const normalizedIncoming = normalizeSessionPhaseMetadataUpdate(incoming);
-          const { rows } = await db.query<{ metadata: unknown }>(
-            `SELECT metadata FROM ai_sessions WHERE id = $1`,
-            [sessionId],
-          );
-          const existingMetadata = normalizeJsonObject(rows[0]?.metadata);
-          const merged: Record<string, any> = { ...existingMetadata, ...normalizedIncoming };
-          // Record workflow-phase transitions into metadata.activity[] so the
-          // session's lifecycle history is self-contained and renderable on the
-          // project-graph timeline (see session/sessionPhaseTransition.ts). This
-          // is the single chokepoint for every phase change -- the
-          // update_session_meta MCP tool and the kanban UI both land here. Only
-          // the workflow `phase` is tracked; operational status flips too often
-          // for the bounded log.
-          const incomingPhase = normalizedIncoming.phase;
-          if (typeof incomingPhase === 'string') {
-            const transition = computeSessionPhaseTransition(
-              existingMetadata as Record<string, any>,
-              incomingPhase,
-              null,
-              Date.now(),
-            );
-            if (transition.changed) merged.activity = transition.metadata.activity;
-          }
-          updates.push(`metadata = $${values.length + 1}`);
-          values.push(JSON.stringify(merged));
+          incomingMetadata = incoming;
         }
       }
       if ((metadata as any).hasBeenNamed !== undefined) pushUpdate('has_been_named =', (metadata as any).hasBeenNamed);
@@ -508,19 +591,29 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       if (metadata.canonicalLastTransformedAt !== undefined) pushUpdate('canonical_last_transformed_at =', metadata.canonicalLastTransformedAt);
       if (metadata.canonicalLastRawMessageId !== undefined) pushUpdate('canonical_last_raw_message_id =', metadata.canonicalLastRawMessageId);
 
-      // NOTE: We intentionally do NOT update updated_at here. The updated_at timestamp
-      // should only change when messages are added (via PGLiteAgentMessagesStore.create),
-      // so that session history sorting accurately reflects the last message time.
-      if (!updates.length) {
-        // Nothing to update - no-op
-        return;
+      // Model/column fields and JSON metadata must share the same CAS UPDATE.
+      // In particular, reconciliation must never clear its durable marker in
+      // one committed statement and then fail the model-column rollback in a
+      // second statement.
+      if (incomingMetadata) {
+        await mergeMetadataAtomically(
+          sessionId,
+          incomingMetadata,
+          updates,
+          values,
+        );
+      } else {
+        // NOTE: We intentionally do NOT update updated_at here. The updated_at
+        // timestamp should only change when messages are added (via
+        // PGLiteAgentMessagesStore.create), so session history sorting reflects
+        // the last message time.
+        if (!updates.length) return;
+        const setClause = updates.join(', ');
+        await db.query(
+          `UPDATE ai_sessions SET ${setClause} WHERE id=$1`,
+          values
+        );
       }
-
-      const setClause = updates.join(', ');
-      await db.query(
-        `UPDATE ai_sessions SET ${setClause} WHERE id=$1`,
-        values
-      );
 
       // GitHub #925 / NIM-1831: a workstream is archived (or restored) as a unit.
       // Cascade the is_archived flag to direct children (linked by
@@ -535,6 +628,8 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         );
       }
     },
+
+    installMetadataValueIfAbsent,
 
     async get(sessionId: string): Promise<ChatSession | null> {
       await ensureReady();

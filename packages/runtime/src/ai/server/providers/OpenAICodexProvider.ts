@@ -91,6 +91,25 @@ const PERSISTED_APP_SERVER_NOTIFICATION_METHODS = new Set([
   'error',
 ]);
 
+/** Preserve the protocol's paired context observation without reinterpreting usage. */
+export function projectCodexCompleteEvent(event: ProtocolEvent): StreamChunk {
+  return {
+    type: 'complete',
+    content: event.content,
+    isComplete: true,
+    usage: event.usage,
+    ...(event.contextFillTokens !== undefined
+      ? { contextFillTokens: event.contextFillTokens }
+      : {}),
+    ...(event.contextWindow !== undefined
+      ? { contextWindow: event.contextWindow }
+      : {}),
+    ...(event.contextObservation
+      ? { contextObservation: event.contextObservation }
+      : {}),
+  };
+}
+
 export class OpenAICodexProvider extends BaseAgentProvider {
   static readonly DEFAULT_MODEL = DEFAULT_MODELS['openai-codex'];
   private static readonly APP_SERVER_IDLE_TIMEOUT_MS = 60_000;
@@ -1353,14 +1372,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
               break;
 
             case 'complete':
-              yield {
-                type: 'complete',
-                content: item.event.content,
-                isComplete: true,
-                usage: item.event.usage,
-                ...(item.event.contextFillTokens !== undefined ? { contextFillTokens: item.event.contextFillTokens } : {}),
-                ...(item.event.contextWindow !== undefined ? { contextWindow: item.event.contextWindow } : {}),
-              };
+              yield projectCodexCompleteEvent(item.event);
               break;
 
             case 'error':

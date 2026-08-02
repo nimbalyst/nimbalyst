@@ -1,4 +1,7 @@
+import type { SessionPromptDispatchPreflight } from './queuedPromptDispatcher';
+
 export interface StartupQueuedPromptDrainDependencies {
+  preflight: SessionPromptDispatchPreflight;
   listPendingOrdinarySessionIds(): Promise<string[]>;
   resolveWorkspacePath(sessionId: string): Promise<string | null>;
   triggerProcessing(sessionId: string, workspacePath: string): Promise<boolean>;
@@ -14,6 +17,10 @@ export async function drainPendingOrdinaryPromptsOnStartup(
 
   for (const sessionId of sessionIds) {
     try {
+      if (!(await deps.preflight(sessionId))) {
+        skipped++;
+        continue;
+      }
       const workspacePath = await deps.resolveWorkspacePath(sessionId);
       if (!workspacePath) {
         skipped++;

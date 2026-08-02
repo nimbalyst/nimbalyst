@@ -1,9 +1,14 @@
 package com.nimbalyst.app.sync
 
 import com.google.gson.Gson
+import com.google.gson.GsonBuilder
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.nimbalyst.app.crypto.CryptoManager
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -17,14 +22,14 @@ import org.junit.Test
  * trip, and the tagged-union `type` discriminators carry their expected
  * literal values.
  *
- * The app uses a bare `Gson()` (see SyncManager.kt: `private val gson = Gson()`),
- * with no custom GsonBuilder, no FieldNamingPolicy, and no @SerializedName
- * annotations anywhere in SyncProtocol.kt. We therefore use the same bare
- * `Gson()` here so the test exercises the exact configuration the app ships.
+ * The app uses a bare `Gson()` (see SyncManager.kt: `private val gson = Gson()`).
+ * [ClientMetadata] carries its key-presence adapter on the type itself, so the same bare `Gson()`
+ * here exercises the exact decrypted-metadata configuration the app ships.
  */
 class SyncProtocolTest {
 
     private val gson = Gson()
+    private val nullPreservingGson = GsonBuilder().serializeNulls().create()
 
     // ---------------------------------------------------------------------
     // Helpers
@@ -263,6 +268,11 @@ class SyncProtocolTest {
     fun `ClientMetadata round-trip with all fields populated`() {
         val msg = ClientMetadata(
             currentContext = ContextInfo(tokens = 100, contextWindow = 200000),
+            contextMeterState = ContextMeterStateV1(
+                schemaVersion = 1,
+                confidence = "unavailable",
+                reason = "thread-reset",
+            ),
             hasPendingPrompt = true,
             phase = "implementing",
             tags = listOf("android", "sync"),
@@ -270,13 +280,289 @@ class SyncProtocolTest {
             draftUpdatedAt = 1_700_000_000_000L
         )
         val restored = assertRoundTrip(msg)
-        assertEquals(100, restored.currentContext?.tokens)
+        assertEquals(100L, restored.currentContext?.tokens)
         assertKeys(
             msg,
-            "currentContext", "hasPendingPrompt", "phase", "tags", "draftInput",
+            "currentContext", "contextMeterState", "hasPendingPrompt", "phase", "tags", "draftInput",
             "draftUpdatedAt"
         )
     }
+
+    @Test
+    fun `versioned context meter state controls compatibility display fields`() {
+        val available = ContextMeterStateV1(
+            schemaVersion = 1,
+            confidence = "exact",
+            fillTokens = 42_000,
+            effectiveWindowTokens = 200_000,
+            provenance = sampleContextMeterProvenance(),
+        )
+        assertEquals(
+            ResolvedContextMeterMetadata(gson.toJson(available), 42_000, 200_000),
+            resolveContextMeterMetadata(
+                ClientMetadata(
+                    currentContext = ContextInfo(999_999, 1_000_000),
+                    contextMeterState = available,
+                ),
+                null,
+                null,
+                null,
+            ),
+        )
+
+        val unavailable = ContextMeterStateV1(
+            schemaVersion = 1,
+            confidence = "unavailable",
+            reason = "thread-reset",
+            provenance = sampleContextMeterProvenance(),
+        )
+        val cleared = resolveContextMeterMetadata(
+            ClientMetadata(
+                currentContext = ContextInfo(42_000, 200_000),
+                contextMeterState = unavailable,
+            ),
+            gson.toJson(available),
+            42_000,
+            200_000,
+        )
+        assertEquals(null, cleared.tokens)
+        assertEquals(null, cleared.window)
+        assertEquals(
+            "unavailable",
+            gson.fromJson(cleared.stateJson, ContextMeterStateV1::class.java).confidence,
+        )
+    }
+
+    @Test
+    fun `context meter validator rejects impossible and inconsistent states`() {
+        val provenance = sampleContextMeterProvenance()
+        val valid = ContextMeterStateV1(
+            schemaVersion = 1,
+            confidence = "exact",
+            fillTokens = 42_000,
+            effectiveWindowTokens = 200_000,
+            provenance = provenance,
+        )
+        assertTrue(valid.isValid())
+
+        val invalidStates = listOf(
+            valid.copy(fillTokens = 200_001),
+            valid.copy(
+                provenance = provenance.copy(
+                    order = provenance.order.copy(observedAtMs = 9_007_199_254_740_992L),
+                ),
+            ),
+            valid.copy(
+                provenance = provenance.copy(
+                    identity = provenance.identity.copy(providerModelId = " "),
+                ),
+            ),
+            valid.copy(
+                provenance = provenance.copy(
+                    contextWindowSeedTokens = 2_000_001,
+                    invalidationReason = "not-a-reason",
+                ),
+            ),
+            valid.copy(
+                provenance = provenance.copy(
+                    denominatorSource = "none",
+                    runtimeWindowTokens = null,
+                ),
+            ),
+            valid.copy(
+                confidence = "estimated",
+                provenance = provenance.copy(denominatorSource = "runtime-observation"),
+            ),
+        )
+
+        invalidStates.forEach { assertFalse(it.isValid()) }
+        assertFalse(
+            ContextMeterStateV1(
+                schemaVersion = 1,
+                confidence = "unavailable",
+                reason = "thread-reset",
+                provenance = provenance.copy(
+                    order = provenance.order.copy(turnId = " "),
+                ),
+            ).isValid(),
+        )
+    }
+
+    @Test
+    fun `invalid incoming context meter state preserves trusted state and numeric mirrors`() {
+        val trusted = ContextMeterStateV1(
+            schemaVersion = 1,
+            confidence = "exact",
+            fillTokens = 42_000,
+            effectiveWindowTokens = 200_000,
+            provenance = sampleContextMeterProvenance(),
+        )
+        val invalid = trusted.copy(fillTokens = 250_000)
+        val trustedJson = gson.toJson(trusted)
+
+        assertEquals(
+            ResolvedContextMeterMetadata(trustedJson, 42_000, 200_000),
+            resolveContextMeterMetadata(
+                ClientMetadata(
+                    currentContext = ContextInfo(999_999, 1_000_000),
+                    contextMeterState = invalid,
+                ),
+                trustedJson,
+                42_000,
+                200_000,
+            ),
+        )
+    }
+
+    @Test
+    fun `encrypted explicit-null context meter optionals preserve trusted state and mirrors`() {
+        val trusted = ContextMeterStateV1(
+            schemaVersion = 1,
+            confidence = "exact",
+            fillTokens = 42_000,
+            effectiveWindowTokens = 200_000,
+            provenance = sampleContextMeterProvenance(),
+        )
+        val trustedJson = gson.toJson(trusted)
+        val base = JsonParser.parseString(
+            gson.toJson(
+                ClientMetadata(
+                    currentContext = ContextInfo(99_999, 300_000),
+                    contextMeterState = ContextMeterStateV1(
+                        schemaVersion = 1,
+                        confidence = "exact",
+                        fillTokens = 99_999,
+                        effectiveWindowTokens = 300_000,
+                        provenance = sampleContextMeterProvenance(
+                            runtimeWindowTokens = 300_000,
+                        ),
+                    ),
+                ),
+            ),
+        ).asJsonObject
+        val explicitNullPaths = listOf(
+            "identity.providerModelId" to
+                listOf("contextMeterState", "provenance", "identity", "providerModelId"),
+            "identity.catalogEntryId" to
+                listOf("contextMeterState", "provenance", "identity", "catalogEntryId"),
+            "identity.interfaceId" to
+                listOf("contextMeterState", "provenance", "identity", "interfaceId"),
+            "order.turnId" to
+                listOf("contextMeterState", "provenance", "order", "turnId"),
+            "provenance.runtimeWindowTokens" to
+                listOf("contextMeterState", "provenance", "runtimeWindowTokens"),
+            "provenance.contextWindowSeedTokens" to
+                listOf("contextMeterState", "provenance", "contextWindowSeedTokens"),
+            "provenance.lastFreshObservationAtMs" to
+                listOf("contextMeterState", "provenance", "lastFreshObservationAtMs"),
+            "provenance.invalidationReason" to
+                listOf("contextMeterState", "provenance", "invalidationReason"),
+        )
+        val candidates = explicitNullPaths.map { (label, path) ->
+            ExplicitNullCandidate(
+                label = label,
+                path = path,
+                json = base.deepCopy().also { setExplicitNull(it, path) },
+            )
+        }.toMutableList()
+        candidates += ExplicitNullCandidate(
+            label = "unavailable.provenance",
+            path = listOf("contextMeterState", "provenance"),
+            json = JsonParser.parseString(
+                """{"contextMeterState":{"schemaVersion":1,"confidence":"unavailable","reason":"thread-reset","provenance":null}}""",
+            ).asJsonObject,
+        )
+        val crypto = CryptoManager.fromSeed("context-meter-test-seed", "context-meter-test-user")
+        val expected = ResolvedContextMeterMetadata(trustedJson, 42_000, 200_000)
+
+        candidates.forEach { candidate ->
+            assertTrue(
+                "${candidate.label} fixture must contain explicit null",
+                hasExplicitNull(candidate.json, candidate.path),
+            )
+            val encrypted = crypto.encrypt(nullPreservingGson.toJson(candidate.json))
+            val decrypted = crypto.decrypt(encrypted.encrypted, encrypted.iv)
+            val decryptedJson = JsonParser.parseString(decrypted).asJsonObject
+            assertTrue(
+                "${candidate.label} decrypted fixture must retain explicit null",
+                hasExplicitNull(decryptedJson, candidate.path),
+            )
+            val decoded = runCatching {
+                gson.fromJson(decrypted, ClientMetadata::class.java)
+            }.getOrNull()
+            assertNull("${candidate.label} must be rejected", decoded)
+            assertEquals(
+                "${candidate.label} must preserve trusted state and mirrors",
+                expected,
+                resolveContextMeterMetadata(decoded, trustedJson, 42_000, 200_000),
+            )
+        }
+    }
+
+    @Test
+    fun `encrypted canonical safe integers above Int max decode and resolve without narrowing`() {
+        val raw = """
+            {
+              "currentContext":{"tokens":3000000000,"contextWindow":4000000000},
+              "contextMeterState":{
+                "schemaVersion":1,"confidence":"exact",
+                "fillTokens":3000000000,"effectiveWindowTokens":4000000000,
+                "provenance":{
+                  "identity":{
+                    "nimbalystSessionId":"session-1","providerId":"openai-codex",
+                    "persistedModelId":"openai-codex:gpt-5.4","upstreamThreadId":"thread-1",
+                    "producerRole":"lead"
+                  },
+                  "order":{
+                    "processInstanceId":"process-1","lifecycleGeneration":3000000000,
+                    "sequence":3000000001,"observedAtMs":1000
+                  },
+                  "adapterId":"codex-app-server-thread-usage-v1","windowPolicy":"runtime-required",
+                  "numeratorSource":"runtime-observation","denominatorSource":"runtime-observation",
+                  "runtimeWindowTokens":4000000000,"acceptedAtMs":1000
+                }
+              }
+            }
+        """.trimIndent()
+        val crypto = CryptoManager.fromSeed("context-meter-test-seed", "context-meter-test-user")
+        val encrypted = crypto.encrypt(raw)
+        val metadata = gson.fromJson(
+            crypto.decrypt(encrypted.encrypted, encrypted.iv),
+            ClientMetadata::class.java,
+        )
+
+        assertTrue(metadata.contextMeterState?.isValid() == true)
+        assertEquals(3_000_000_000L, metadata.contextMeterState?.fillTokens)
+        assertEquals(4_000_000_000L, metadata.contextMeterState?.effectiveWindowTokens)
+        assertEquals(3_000_000_000L, metadata.contextMeterState?.provenance?.order?.lifecycleGeneration)
+        assertEquals(3_000_000_001L, metadata.contextMeterState?.provenance?.order?.sequence)
+        val resolved = resolveContextMeterMetadata(metadata, null, null, null)
+        assertEquals(3_000_000_000L, resolved.tokens)
+        assertEquals(4_000_000_000L, resolved.window)
+    }
+
+    private fun setExplicitNull(root: JsonObject, path: List<String>) {
+        var current = root
+        path.dropLast(1).forEach { key -> current = current.getAsJsonObject(key) }
+        current.add(path.last(), JsonNull.INSTANCE)
+    }
+
+    private fun hasExplicitNull(root: JsonObject, path: List<String>): Boolean {
+        var current: JsonObject = root
+        path.dropLast(1).forEach { key ->
+            val next = current.get(key)
+            if (next == null || !next.isJsonObject) return false
+            current = next.asJsonObject
+        }
+        val value = current.get(path.last())
+        return value != null && value.isJsonNull
+    }
+
+    private data class ExplicitNullCandidate(
+        val label: String,
+        val path: List<String>,
+        val json: JsonObject,
+    )
 
     @Test
     fun `ContextInfo round-trip and keys`() {
@@ -663,5 +949,30 @@ class SyncProtocolTest {
         projectIdIv = "aXY=",
         encryptedClientMetadata = "ZW5jTWV0YQ==",
         clientMetadataIv = "aXYy"
+    )
+
+    private fun sampleContextMeterProvenance(
+        runtimeWindowTokens: Long = 200_000,
+    ) = ContextMeterProvenanceV1(
+        identity = ContextMeterIdentityV1(
+            nimbalystSessionId = "session-1",
+            providerId = "openai-codex",
+            persistedModelId = "openai-codex:gpt-5.4",
+            upstreamThreadId = "thread-1",
+            producerRole = "lead",
+        ),
+        order = ContextMeterOrderV1(
+            processInstanceId = "process-1",
+            lifecycleGeneration = 1,
+            sequence = 2,
+            observedAtMs = 1_000,
+        ),
+        adapterId = "codex-app-server-thread-usage-v1",
+        windowPolicy = "runtime-required",
+        numeratorSource = "runtime-observation",
+        denominatorSource = "runtime-observation",
+        runtimeWindowTokens = runtimeWindowTokens,
+        acceptedAtMs = 1_000,
+        lastFreshObservationAtMs = 1_000,
     )
 }

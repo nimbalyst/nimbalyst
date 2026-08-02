@@ -1,6 +1,13 @@
 package com.nimbalyst.app.sync
 
+import com.google.gson.Gson
+import com.google.gson.JsonDeserializationContext
+import com.google.gson.JsonDeserializer
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
+import com.google.gson.JsonParseException
+import com.google.gson.annotations.JsonAdapter
+import java.lang.reflect.Type
 
 data class ServerMessageEnvelope(
     val type: String
@@ -153,8 +160,156 @@ data class ServerSessionEntry(
     val lastReadAt: Long? = null,
 )
 
+data class ContextInfo(
+    val tokens: Long,
+    val contextWindow: Long,
+)
+
+data class ContextMeterIdentityV1(
+    val nimbalystSessionId: String,
+    val providerId: String,
+    val persistedModelId: String,
+    val providerModelId: String? = null,
+    val catalogEntryId: String? = null,
+    val interfaceId: String? = null,
+    val upstreamThreadId: String,
+    val producerRole: String,
+)
+
+data class ContextMeterOrderV1(
+    val processInstanceId: String,
+    val lifecycleGeneration: Long,
+    val sequence: Long,
+    val turnId: String? = null,
+    val observedAtMs: Long,
+)
+
+data class ContextMeterProvenanceV1(
+    val identity: ContextMeterIdentityV1,
+    val order: ContextMeterOrderV1,
+    val adapterId: String,
+    val windowPolicy: String,
+    val numeratorSource: String,
+    val denominatorSource: String,
+    val runtimeWindowTokens: Long? = null,
+    val contextWindowSeedTokens: Long? = null,
+    val acceptedAtMs: Long,
+    val lastFreshObservationAtMs: Long? = null,
+    val invalidationReason: String? = null,
+)
+
+data class ContextMeterStateV1(
+    val schemaVersion: Int,
+    val confidence: String,
+    val fillTokens: Long? = null,
+    val effectiveWindowTokens: Long? = null,
+    val reason: String? = null,
+    val provenance: ContextMeterProvenanceV1? = null,
+) {
+    fun isValid(): Boolean = runCatching {
+        if (schemaVersion != 1 || confidence !in VALID_CONFIDENCE) return@runCatching false
+        if (confidence == "unavailable") {
+            return@runCatching reason != null && reason in UNAVAILABLE_REASONS &&
+                (provenance == null || isValidProvenance(provenance))
+        }
+        val p = provenance ?: return@runCatching false
+        val fill = fillTokens ?: return@runCatching false
+        val window = effectiveWindowTokens ?: return@runCatching false
+        if (fill !in 0L..MAX_SAFE_INTEGER || window !in 1L..MAX_SAFE_INTEGER || fill > window ||
+            !isValidProvenance(p) || p.denominatorSource == "none"
+        ) {
+            return@runCatching false
+        }
+        if (confidence == "estimated") {
+            return@runCatching p.denominatorSource == "immutable-model-seed" &&
+                p.contextWindowSeedTokens == window
+        }
+        if (p.denominatorSource == "immutable-model-seed") {
+            return@runCatching confidence == "stale" && p.contextWindowSeedTokens == window
+        }
+        p.runtimeWindowTokens == window
+    }.getOrDefault(false)
+
+    companion object {
+        private const val MAX_SAFE_INTEGER = 9_007_199_254_740_991L
+        private const val MAX_CONTEXT_WINDOW_SEED_TOKENS = 2_000_000L
+
+        private fun String?.isValidOptionalIdentityField(): Boolean =
+            this == null || this.isNotBlank()
+
+        private fun isValidProvenance(provenance: ContextMeterProvenanceV1): Boolean =
+            provenance.run {
+                identity.producerRole == "lead" &&
+                    identity.nimbalystSessionId.isNotBlank() &&
+                    identity.providerId.isNotBlank() &&
+                    identity.persistedModelId.isNotBlank() &&
+                    identity.providerModelId.isValidOptionalIdentityField() &&
+                    identity.catalogEntryId.isValidOptionalIdentityField() &&
+                    identity.interfaceId.isValidOptionalIdentityField() &&
+                    identity.upstreamThreadId.isNotBlank() &&
+                    order.processInstanceId.isNotBlank() &&
+                    order.lifecycleGeneration in 0L..MAX_SAFE_INTEGER &&
+                    order.sequence in 1L..MAX_SAFE_INTEGER &&
+                    order.turnId.isValidOptionalIdentityField() &&
+                    order.observedAtMs in 0L..MAX_SAFE_INTEGER &&
+                    adapterId in ADAPTER_IDS &&
+                    windowPolicy in WINDOW_POLICIES &&
+                    numeratorSource == "runtime-observation" &&
+                    denominatorSource in DENOMINATOR_SOURCES &&
+                    (runtimeWindowTokens == null ||
+                        runtimeWindowTokens in 1L..MAX_SAFE_INTEGER) &&
+                    (contextWindowSeedTokens == null ||
+                        contextWindowSeedTokens in 1L..MAX_CONTEXT_WINDOW_SEED_TOKENS) &&
+                    acceptedAtMs in 0L..MAX_SAFE_INTEGER &&
+                    (lastFreshObservationAtMs == null ||
+                        lastFreshObservationAtMs in 0L..MAX_SAFE_INTEGER) &&
+                    (invalidationReason == null || invalidationReason in INVALIDATION_REASONS)
+            }
+
+        private val VALID_CONFIDENCE = setOf("exact", "estimated", "stale", "unavailable")
+        private val ADAPTER_IDS = setOf(
+            "claude-agent-sdk-parent-v1",
+            "codex-sdk-token-count-v1",
+            "codex-app-server-thread-usage-v1",
+        )
+        private val WINDOW_POLICIES = setOf("runtime-required", "runtime-then-model-seed")
+        private val DENOMINATOR_SOURCES = setOf(
+            "runtime-observation",
+            "prior-runtime-observation",
+            "immutable-model-seed",
+            "none",
+        )
+        private val INVALIDATION_REASONS = setOf(
+            "compacted",
+            "thread-reset",
+            "model-changed",
+            "route-changed",
+            "interface-changed",
+            "restart-mismatch",
+        )
+        private val UNAVAILABLE_REASONS = setOf(
+            "no-observation",
+            "adapter-unavailable",
+            "runtime-window-required",
+            "seed-conflict",
+            "malformed-observation",
+            "identity-invalidated",
+            "legacy-unverifiable",
+            "turn-missing-observation",
+            "compacted",
+            "thread-reset",
+            "model-changed",
+            "route-changed",
+            "interface-changed",
+            "restart-mismatch",
+        )
+    }
+}
+
+@JsonAdapter(ClientMetadataDeserializer::class)
 data class ClientMetadata(
     val currentContext: ContextInfo? = null,
+    val contextMeterState: ContextMeterStateV1? = null,
     val hasPendingPrompt: Boolean? = null,
     val phase: String? = null,
     val tags: List<String>? = null,
@@ -162,10 +317,144 @@ data class ClientMetadata(
     val draftUpdatedAt: Long? = null,
 )
 
-data class ContextInfo(
-    val tokens: Int,
-    val contextWindow: Int,
+/**
+ * Gson normally maps an omitted nullable field and an explicit JSON null to the same Kotlin null.
+ * The canonical TypeScript context-meter validator only permits these wire optionals when omitted,
+ * so inspect the raw object before constructing [ClientMetadata]. The app's existing bare `Gson()`
+ * automatically uses this adapter at the real decrypted metadata boundary via [JsonAdapter].
+ */
+class ClientMetadataDeserializer : JsonDeserializer<ClientMetadata> {
+    override fun deserialize(
+        json: JsonElement,
+        typeOfT: Type,
+        context: JsonDeserializationContext,
+    ): ClientMetadata {
+        if (!json.isJsonObject) throw JsonParseException("Client metadata must be an object")
+        val root = json.asJsonObject
+        validateContextMeterKeyPresence(root)
+        return ClientMetadata(
+            currentContext = root.decodeOptional("currentContext", ContextInfo::class.java, context),
+            contextMeterState = root.decodeOptional(
+                "contextMeterState",
+                ContextMeterStateV1::class.java,
+                context,
+            ),
+            hasPendingPrompt = root.decodeOptional(
+                "hasPendingPrompt",
+                Boolean::class.javaObjectType,
+                context,
+            ),
+            phase = root.decodeOptional("phase", String::class.java, context),
+            tags = root.decodeOptional("tags", Array<String>::class.java, context)?.toList(),
+            draftInput = root.decodeOptional("draftInput", String::class.java, context),
+            draftUpdatedAt = root.decodeOptional(
+                "draftUpdatedAt",
+                Long::class.javaObjectType,
+                context,
+            ),
+        )
+    }
+
+    private fun validateContextMeterKeyPresence(root: JsonObject) {
+        val stateElement = root.get("contextMeterState") ?: return
+        if (stateElement.isJsonNull || !stateElement.isJsonObject) return
+        val state = stateElement.asJsonObject
+        state.rejectExplicitNull("provenance", "contextMeterState.provenance")
+        val provenanceElement = state.get("provenance") ?: return
+        if (!provenanceElement.isJsonObject) return
+        val provenance = provenanceElement.asJsonObject
+        provenance.rejectExplicitNull(
+            "runtimeWindowTokens",
+            "contextMeterState.provenance.runtimeWindowTokens",
+        )
+        provenance.rejectExplicitNull(
+            "contextWindowSeedTokens",
+            "contextMeterState.provenance.contextWindowSeedTokens",
+        )
+        provenance.rejectExplicitNull(
+            "lastFreshObservationAtMs",
+            "contextMeterState.provenance.lastFreshObservationAtMs",
+        )
+        provenance.rejectExplicitNull(
+            "invalidationReason",
+            "contextMeterState.provenance.invalidationReason",
+        )
+
+        val identityElement = provenance.get("identity")
+        if (identityElement != null && identityElement.isJsonObject) {
+            val identity = identityElement.asJsonObject
+            identity.rejectExplicitNull(
+                "providerModelId",
+                "contextMeterState.provenance.identity.providerModelId",
+            )
+            identity.rejectExplicitNull(
+                "catalogEntryId",
+                "contextMeterState.provenance.identity.catalogEntryId",
+            )
+            identity.rejectExplicitNull(
+                "interfaceId",
+                "contextMeterState.provenance.identity.interfaceId",
+            )
+        }
+
+        val orderElement = provenance.get("order")
+        if (orderElement != null && orderElement.isJsonObject) {
+            orderElement.asJsonObject.rejectExplicitNull(
+                "turnId",
+                "contextMeterState.provenance.order.turnId",
+            )
+        }
+    }
+
+    private fun JsonObject.rejectExplicitNull(key: String, path: String) {
+        if (has(key) && get(key).isJsonNull) {
+            throw JsonParseException("$path must be omitted, not null")
+        }
+    }
+
+    private fun <T> JsonObject.decodeOptional(
+        key: String,
+        type: Class<T>,
+        context: JsonDeserializationContext,
+    ): T? {
+        val element = get(key) ?: return null
+        if (element.isJsonNull) return null
+        return context.deserialize(element, type)
+    }
+}
+
+data class ResolvedContextMeterMetadata(
+    val stateJson: String?,
+    val tokens: Long?,
+    val window: Long?,
 )
+
+fun resolveContextMeterMetadata(
+    metadata: ClientMetadata?,
+    existingStateJson: String?,
+    existingTokens: Long?,
+    existingWindow: Long?,
+): ResolvedContextMeterMetadata {
+    val state = metadata?.contextMeterState
+    if (state != null) {
+        if (!state.isValid()) {
+            return ResolvedContextMeterMetadata(existingStateJson, existingTokens, existingWindow)
+        }
+        val stateJson = Gson().toJson(state)
+        if (state.confidence == "unavailable") {
+            return ResolvedContextMeterMetadata(stateJson, null, null)
+        }
+        return ResolvedContextMeterMetadata(stateJson, state.fillTokens, state.effectiveWindowTokens)
+    }
+    if (existingStateJson != null) {
+        return ResolvedContextMeterMetadata(existingStateJson, existingTokens, existingWindow)
+    }
+    return ResolvedContextMeterMetadata(
+        null,
+        metadata?.currentContext?.tokens ?: existingTokens,
+        metadata?.currentContext?.contextWindow ?: existingWindow,
+    )
+}
 
 data class IndexBroadcast(
     val type: String,

@@ -5,6 +5,10 @@
  * Levels: low, medium, high (default), xhigh, max
  */
 
+import { isCatalogPersistedModelId } from './providers/claudeCode/providerCatalog';
+import { BUILT_IN_PROVIDER_CATALOG } from './providers/claudeCode/providerCatalogDefaults';
+import { readProviderCatalog } from './providers/claudeCode/providerCatalogLoader';
+
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ThinkingMode = 'enabled' | 'disabled';
 
@@ -34,6 +38,14 @@ function normalizedModelId(modelId: string | undefined | null): string {
   return (modelId ?? '').toLowerCase().replace(/-1m$/, '').replace(/\[1m\]$/, '');
 }
 
+function catalogControlsForModel(modelId: string | undefined | null) {
+  const id = normalizedModelId(modelId);
+  if (!isCatalogPersistedModelId(id)) return undefined;
+  return readProviderCatalog(BUILT_IN_PROVIDER_CATALOG).resolution.entries.find(
+    entry => entry.model.persistedId === id,
+  )?.controls;
+}
+
 /**
  * Return only the effort values the selected model accepts.
  *
@@ -46,6 +58,17 @@ export function supportedEffortLevelsForModel(
   modelId: string | undefined | null
 ): { key: EffortLevel; label: string }[] {
   const id = normalizedModelId(modelId);
+  const catalogControls = catalogControlsForModel(id);
+  if (isCatalogPersistedModelId(id)) {
+    const effort = catalogControls
+      ? Object.values(catalogControls).find(control => control.persistenceKey === 'effort-level')
+      : undefined;
+    if (!effort) return [];
+    return effort.allowedValues.flatMap(value => {
+      const definition = EFFORT_LEVELS.find(level => level.key === value);
+      return definition ? [{ ...definition }] : [];
+    });
+  }
   if (id.startsWith('claude-code-cli:') || id.startsWith('openai-codex-acp:')) return [];
   if (id.startsWith('claude-code:')) {
     if (id.includes('haiku')) return [];
@@ -66,6 +89,12 @@ export function supportsThinkingModeForModel(
   modelId: string | undefined | null
 ): boolean {
   const id = normalizedModelId(modelId);
+  const catalogControls = catalogControlsForModel(id);
+  if (isCatalogPersistedModelId(id)) {
+    return Boolean(catalogControls && Object.values(catalogControls).some(
+      control => control.persistenceKey === 'thinking-mode',
+    ));
+  }
   if (!id.startsWith('claude-code:')) return false;
   const variant = id.slice('claude-code:'.length);
   return variant.startsWith('opus') || variant.startsWith('sonnet');

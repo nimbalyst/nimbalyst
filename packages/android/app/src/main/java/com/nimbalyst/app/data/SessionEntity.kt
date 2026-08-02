@@ -4,6 +4,8 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.google.gson.Gson
+import com.nimbalyst.app.sync.ContextMeterStateV1
 
 @Entity(
     tableName = "sessions",
@@ -38,8 +40,9 @@ data class SessionEntity(
     val branchedAt: Long? = null,
     val isExecuting: Boolean = false,
     val hasQueuedPrompts: Boolean = false,
-    val contextTokens: Int? = null,
-    val contextWindow: Int? = null,
+    val contextTokens: Long? = null,
+    val contextWindow: Long? = null,
+    val contextMeterStateJson: String? = null,
     val createdAt: Long,
     val updatedAt: Long,
     val lastSyncedSeq: Int = 0,
@@ -47,5 +50,12 @@ data class SessionEntity(
     val lastMessageAt: Long? = null,
     val draftInput: String? = null,
     val draftUpdatedAt: Long? = null,
-)
+) {
+    fun contextMeterState(): ContextMeterStateV1? {
+        val json = contextMeterStateJson ?: return null
+        return runCatching { Gson().fromJson(json, ContextMeterStateV1::class.java) }
+            .getOrNull()
+            ?.takeIf { it.isValid() }
+    }
+}
 

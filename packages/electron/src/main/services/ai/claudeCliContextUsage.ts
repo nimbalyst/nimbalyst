@@ -17,21 +17,27 @@
  * BrowserWindow.
  */
 
-import { BrowserWindow } from 'electron';
+import { BrowserWindow } from "electron";
+import { randomUUID } from "crypto";
 import {
   AISessionsRepository,
   CLAUDE_CODE_NATIVE_1M_VARIANTS,
   claudeCodeFamilyKeyword,
   normalizeClaudeCodeVariant,
-} from '@nimbalyst/runtime';
-import { SessionManager } from '@nimbalyst/runtime/ai/server';
-import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
-import type { AssembledUsage } from './claudeCliObservation/claudeApiMessageAssembler';
+} from "@nimbalyst/runtime";
+import {
+  createUnavailableContextMeterStateV1,
+  reduceContextMeterStateV1,
+  SessionManager,
+} from "@nimbalyst/runtime/ai/server";
+import type { SessionData } from "@nimbalyst/runtime/ai/server/types";
+import type { AssembledUsage } from "./claudeCliObservation/claudeApiMessageAssembler";
 
-type TokenUsage = NonNullable<SessionData['tokenUsage']>;
+type TokenUsage = NonNullable<SessionData["tokenUsage"]>;
 
 const CLI_DEFAULT_CONTEXT_WINDOW = 200_000;
 const CLI_1M_CONTEXT_WINDOW = 1_000_000;
+const CLI_CONTEXT_PROCESS_INSTANCE_ID = randomUUID();
 
 /**
  * Observed 1M entitlement per session, keyed by model FAMILY (`opus`/`sonnet`/…).
@@ -42,11 +48,11 @@ const CLI_1M_CONTEXT_WINDOW = 1_000_000;
  */
 const observed1mBySession = new Map<string, Map<string, boolean>>();
 
-const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'] as const;
+const MODEL_FAMILIES = ["fable", "opus", "sonnet", "haiku"] as const;
 
 /** Family keyword of a full Anthropic model id (`claude-opus-5-…` → `opus`). */
 function familyOfApiModel(model: unknown): string | undefined {
-  if (typeof model !== 'string') return undefined;
+  if (typeof model !== "string") return undefined;
   const lower = model.toLowerCase();
   return MODEL_FAMILIES.find((family) => lower.includes(family));
 }
@@ -54,7 +60,7 @@ function familyOfApiModel(model: unknown): string | undefined {
 /** Record whether the CLI asked for 1M on an observed `/v1/messages` request. */
 export function noteClaudeCliObserved1mSupport(
   sessionId: string,
-  input: { model?: unknown; supports1m: boolean },
+  input: { model?: unknown; supports1m: boolean }
 ): void {
   const family = familyOfApiModel(input.model);
   if (!family) return;
@@ -71,7 +77,10 @@ export function clearClaudeCliObserved1mSupport(sessionId: string): void {
   observed1mBySession.delete(sessionId);
 }
 
-function observed1mForSession(sessionId: string, sessionModel: string | undefined): boolean | undefined {
+function observed1mForSession(
+  sessionId: string,
+  sessionModel: string | undefined
+): boolean | undefined {
   const family = claudeCodeFamilyKeyword(sessionModel);
   if (!family) return undefined;
   return observed1mBySession.get(sessionId)?.get(family);
@@ -91,19 +100,29 @@ function observed1mForSession(sessionId: string, sessionModel: string | undefine
  *      (measured on CLI 2.1.220 — NIM-2170).
  *   2. The per-variant seed below, used until the first observed request.
  */
-export function contextWindowForCliModel(model: string | undefined, observed1m?: boolean): number {
+export function contextWindowForCliModel(
+  model: string | undefined,
+  observed1m?: boolean
+): number {
   if (observed1m !== undefined) {
     return observed1m ? CLI_1M_CONTEXT_WINDOW : CLI_DEFAULT_CONTEXT_WINDOW;
   }
   if (!model) return CLI_DEFAULT_CONTEXT_WINDOW;
   // Explicit `-1m` selection is always 1M.
-  if (model.toLowerCase().includes('-1m')) return CLI_1M_CONTEXT_WINDOW;
+  if (model.toLowerCase().includes("-1m")) return CLI_1M_CONTEXT_WINDOW;
   // Current-gen variants run 1M at their base row too. Use the EXACT variant
   // (not the family) so legacy `opus-4-6`/`opus-4-7`/`sonnet-4-6` — which share
   // the opus/sonnet family — are not mistaken for the current-gen 1M variants.
-  const modelPart = model.includes(':') ? model.slice(model.indexOf(':') + 1) : model;
-  const variant = normalizeClaudeCodeVariant(modelPart.toLowerCase().replace(/-1m$/, ''));
-  if (variant && (CLAUDE_CODE_NATIVE_1M_VARIANTS as readonly string[]).includes(variant)) {
+  const modelPart = model.includes(":")
+    ? model.slice(model.indexOf(":") + 1)
+    : model;
+  const variant = normalizeClaudeCodeVariant(
+    modelPart.toLowerCase().replace(/-1m$/, "")
+  );
+  if (
+    variant &&
+    (CLAUDE_CODE_NATIVE_1M_VARIANTS as readonly string[]).includes(variant)
+  ) {
     return CLI_1M_CONTEXT_WINDOW;
   }
   return CLI_DEFAULT_CONTEXT_WINDOW;
@@ -132,12 +151,20 @@ export function buildClaudeCliTokenUsage(
   prev: TokenUsage | undefined,
   usage: AssembledUsage,
   contextWindow: number,
+  identity?: {
+    sessionId: string;
+    model?: string;
+    upstreamThreadId?: string;
+    observedAtMs?: number;
+    /** True only when the outbound CLI request supplied live 1M-beta evidence. */
+    runtimeWindowObserved?: boolean;
+  }
 ): TokenUsage {
   const base = prev ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   const fillTokens = computeContextFillTokens(usage);
   const inputTokens = (base.inputTokens || 0) + (usage.inputTokens || 0);
   const outputTokens = (base.outputTokens || 0) + (usage.outputTokens || 0);
-  return {
+  const tokenUsage: TokenUsage = {
     ...base,
     inputTokens,
     outputTokens,
@@ -150,12 +177,101 @@ export function buildClaudeCliTokenUsage(
       contextWindow,
     },
   };
+  if (!identity) return tokenUsage;
+
+  const persistedModelId = identity.model || "claude-code-cli:opus";
+  const priorState = base.contextMeterState;
+  const priorProvenance = priorState?.provenance;
+  const generation = priorProvenance?.order.lifecycleGeneration ?? 0;
+  const sameProcess =
+    priorProvenance?.order.processInstanceId ===
+    CLI_CONTEXT_PROCESS_INSTANCE_ID;
+  const currentState =
+    priorState && !sameProcess && priorState.confidence !== "unavailable"
+      ? { ...priorState, confidence: "stale" as const }
+      : priorState ?? createUnavailableContextMeterStateV1("no-observation");
+  tokenUsage.contextMeterState = reduceContextMeterStateV1(currentState, {
+    type: "observation",
+    observation: {
+      schemaVersion: 1,
+      fillTokens,
+      ...(identity.runtimeWindowObserved
+        ? { runtimeWindowTokens: contextWindow }
+        : {}),
+      adapterId: "claude-agent-sdk-parent-v1",
+      windowPolicy: "runtime-then-model-seed",
+      contextWindowSeedTokens: contextWindow,
+      numeratorSemantics: "current-lead-context",
+      identity: {
+        nimbalystSessionId: identity.sessionId,
+        providerId: "claude-code-cli",
+        persistedModelId,
+        providerModelId:
+          normalizeClaudeCodeVariant(
+            persistedModelId
+              .slice(persistedModelId.indexOf(":") + 1)
+              .replace(/-1m$/i, "")
+          ) ?? persistedModelId,
+        interfaceId: "claude-cli-native",
+        upstreamThreadId: identity.upstreamThreadId || identity.sessionId,
+        producerRole: "lead",
+      },
+      order: {
+        processInstanceId: CLI_CONTEXT_PROCESS_INSTANCE_ID,
+        lifecycleGeneration: generation,
+        sequence: sameProcess ? (priorProvenance?.order.sequence ?? 0) + 1 : 1,
+        observedAtMs: identity.observedAtMs ?? Date.now(),
+      },
+    },
+  });
+  return tokenUsage;
 }
 
 export interface LogClaudeCliContextUsageDeps {
-  loadSession: (sessionId: string) => Promise<{ model?: string; tokenUsage?: TokenUsage } | null>;
-  updateTokenUsage: (sessionId: string, tokenUsage: TokenUsage) => Promise<void>;
+  loadSession: (sessionId: string) => Promise<{
+    model?: string;
+    providerSessionId?: string;
+    tokenUsage?: TokenUsage;
+  } | null>;
+  updateTokenUsage: (
+    sessionId: string,
+    tokenUsage: TokenUsage
+  ) => Promise<void>;
   notifyTokenUsage: (sessionId: string, tokenUsage: TokenUsage) => void;
+}
+
+type ClaudeCliRepositorySession = Pick<
+  SessionData,
+  "model" | "providerSessionId" | "tokenUsage" | "metadata"
+>;
+
+/**
+ * Adapt the raw SessionStore/AISessionsRepository shape to the CLI meter.
+ * PGLite persists token usage inside `metadata.tokenUsage`; SessionManager
+ * promotes that value only when it hydrates a full SessionData instance.
+ */
+export function createClaudeCliContextUsageDeps(input: {
+  loadRepositorySession: (
+    sessionId: string
+  ) => Promise<ClaudeCliRepositorySession | null>;
+  updateTokenUsage: LogClaudeCliContextUsageDeps["updateTokenUsage"];
+  notifyTokenUsage: LogClaudeCliContextUsageDeps["notifyTokenUsage"];
+}): LogClaudeCliContextUsageDeps {
+  return {
+    loadSession: async (sessionId) => {
+      const session = await input.loadRepositorySession(sessionId);
+      if (!session) return null;
+      return {
+        model: session.model,
+        providerSessionId: session.providerSessionId,
+        tokenUsage:
+          session.tokenUsage ??
+          (session.metadata?.tokenUsage as TokenUsage | undefined),
+      };
+    },
+    updateTokenUsage: input.updateTokenUsage,
+    notifyTokenUsage: input.notifyTokenUsage,
+  };
 }
 
 let sessionManager: SessionManager | null = null;
@@ -168,20 +284,21 @@ function getSessionManager(): SessionManager {
 function broadcastTokenUsage(sessionId: string, tokenUsage: TokenUsage): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) {
-      window.webContents.send('ai:tokenUsageUpdated', { sessionId, tokenUsage });
+      window.webContents.send("ai:tokenUsageUpdated", {
+        sessionId,
+        tokenUsage,
+      });
     }
   }
 }
 
-const productionDeps: LogClaudeCliContextUsageDeps = {
-  loadSession: async (sessionId) => {
-    const session = await AISessionsRepository.get(sessionId);
-    return session ? { model: session.model, tokenUsage: session.tokenUsage } : null;
-  },
-  updateTokenUsage: (sessionId, tokenUsage) =>
-    getSessionManager().updateSessionTokenUsage(sessionId, tokenUsage),
-  notifyTokenUsage: broadcastTokenUsage,
-};
+const productionDeps: LogClaudeCliContextUsageDeps =
+  createClaudeCliContextUsageDeps({
+    loadRepositorySession: (sessionId) => AISessionsRepository.get(sessionId),
+    updateTokenUsage: (sessionId, tokenUsage) =>
+      getSessionManager().updateSessionTokenUsage(sessionId, tokenUsage),
+    notifyTokenUsage: broadcastTokenUsage,
+  });
 
 /**
  * Persist + broadcast the context-fill snapshot for one assembled assistant turn.
@@ -190,21 +307,32 @@ const productionDeps: LogClaudeCliContextUsageDeps = {
  */
 export async function logClaudeCliContextUsage(
   input: { sessionId: string; usage: AssembledUsage },
-  deps: LogClaudeCliContextUsageDeps = productionDeps,
+  deps: LogClaudeCliContextUsageDeps = productionDeps
 ): Promise<void> {
   const fillTokens = computeContextFillTokens(input.usage);
   if (fillTokens <= 0) return;
 
   try {
     const session = await deps.loadSession(input.sessionId);
-    const contextWindow = contextWindowForCliModel(
-      session?.model,
-      observed1mForSession(input.sessionId, session?.model),
+    const observed1m = observed1mForSession(input.sessionId, session?.model);
+    const contextWindow = contextWindowForCliModel(session?.model, observed1m);
+    const tokenUsage = buildClaudeCliTokenUsage(
+      session?.tokenUsage,
+      input.usage,
+      contextWindow,
+      {
+        sessionId: input.sessionId,
+        model: session?.model,
+        upstreamThreadId: session?.providerSessionId,
+        runtimeWindowObserved: observed1m !== undefined,
+      }
     );
-    const tokenUsage = buildClaudeCliTokenUsage(session?.tokenUsage, input.usage, contextWindow);
     await deps.updateTokenUsage(input.sessionId, tokenUsage);
     deps.notifyTokenUsage(input.sessionId, tokenUsage);
   } catch (err) {
-    console.warn('[ClaudeCliContextUsage] Failed to update context usage:', err);
+    console.warn(
+      "[ClaudeCliContextUsage] Failed to update context usage:",
+      err
+    );
   }
 }

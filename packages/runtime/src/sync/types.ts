@@ -6,6 +6,7 @@
  */
 
 import type { AgentMessage } from '../ai/server/types';
+import type { ContextMeterStateV1 } from '../ai/contextMeter';
 import type { SyncedReadReceipt } from '../readReceipts/readReceipts';
 
 export interface SyncConfig {
@@ -493,6 +494,8 @@ export interface SyncedSessionMetadata {
     tokens: number;         // Current tokens in context window
     contextWindow: number;  // Max context window size
   };
+  /** Versioned confidence/provenance state; cumulative totals are never inferred. */
+  contextMeterState?: ContextMeterStateV1;
   /** Whether there are pending interactive prompts (permissions, questions, plan approvals, git commits) */
   hasPendingPrompt?: boolean;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
@@ -553,6 +556,8 @@ export interface SessionIndexEntry {
     tokens: number;         // Current tokens in context window
     contextWindow: number;  // Max context window size
   };
+  /** Versioned confidence/provenance state for mobile rendering. */
+  contextMeterState?: ContextMeterStateV1;
   /** Unix timestamp ms when this session was last read by any device */
   lastReadAt?: number;
 }

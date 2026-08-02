@@ -14,4 +14,21 @@ describe('spawn_session project-targeting schema (NIM-408)', () => {
     expect(JSON.stringify(properties.targetWorkspacePath)).toContain('isolated');
     expect(JSON.stringify(properties.targetWorkspacePath)).toContain('useWorktree');
   });
+
+  it.each(['create_session', 'spawn_session'])(
+    'describes %s claudeCodeBackend as a reviewed catalog profile',
+    toolName => {
+      const tool = META_AGENT_TOOL_DEFS.find(candidate => candidate.name === toolName);
+      const backend = tool?.inputSchema.properties?.claudeCodeBackend as
+        | { description?: string }
+        | undefined;
+
+      expect(backend?.description).toContain(
+        'reviewed Claude-Agent catalog backend/profile id',
+      );
+      expect(backend?.description).toContain('mismatched model/provider');
+      expect(backend?.description).toContain('never credentials or endpoints');
+      expect(backend?.description).not.toContain('Ollama Claude-Agent backend');
+    },
+  );
 });

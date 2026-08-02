@@ -6,58 +6,29 @@
  * provider settings, and an unknown persisted profile is an error rather than
  * a request to use the default Anthropic route.
  *
- * Backend list is JSON-driven (2026-07-30, Yogev-directed): the list below is
- * a fallback seed baked into the app so it never breaks if the external file
- * is missing or malformed. On every load, an optional user-editable override
- * at userData/ollama-backends.json is preferred if present and valid -- this
- * is what lets a new Ollama model be added, changed, or removed without a
- * Nimbalyst code change or rebuild. No secret ever lives in this file: every
- * entry's authToken is the same fixed, non-secret local-proxy placeholder
- * that tools/Ollala/nimbalyst-brainswap/litellm-ollama.yaml also expects --
- * the real OLLAMA_API_KEY stays in .env, read only by the LiteLLM proxy
- * process, never by Nimbalyst.
+ * Backend routes are adapted from the versioned provider-neutral catalog.
+ * Code defaults merge with a user overlay by stable id, and the legacy
+ * ollama-backends.json whole-file format migrates without becoming the source
+ * of truth. Catalog data contains credential references only; this adapter
+ * resolves the one existing non-secret local-proxy reference for compatibility.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
+import { CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_VARIANT } from "../../../modelConstants";
 import {
-  CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_VARIANT,
-  CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_MODEL,
-  CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_SDK_ALIAS,
-  CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_VARIANT,
-} from '../../../modelConstants';
+  isCatalogPersistedModelId,
+  type ProviderCatalogEntry,
+  type ProviderCatalogResolution,
+} from "./providerCatalog";
+import {
+  BUILT_IN_PROVIDER_CATALOG,
+  LOCAL_PROXY_CREDENTIAL_REF,
+} from "./providerCatalogDefaults";
+import { loadProviderCatalog } from "./providerCatalogLoader";
+import { LOCAL_PROXY_AUTH_TOKEN } from "./providerRouteCredentials";
+import {
+  ProviderRuntimeRouteError,
+  type ProviderRuntimeLaunchPlan,
+} from "./runtimeRouteResolver";
 
 export const OLLAMA_GLM_5_2_CLOUD_BACKEND_ID =
   CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_VARIANT;
@@ -65,7 +36,7 @@ export const OLLAMA_GLM_5_2_CLOUD_BACKEND_ID =
 export interface ClaudeCodeBackend {
   id: string;
   persistedModel: string;
-  provider: 'ollama';
+  provider: string;
   model: string;
   upstreamModel: string;
   upstreamBaseUrl: string;
@@ -79,221 +50,106 @@ export interface ClaudeCodeBackend {
   claudeModelAlias: string;
 }
 
-const SEED_BACKENDS: readonly ClaudeCodeBackend[] = [
-  {
-    id: OLLAMA_GLM_5_2_CLOUD_BACKEND_ID,
-    persistedModel: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'glm-5.2:cloud',
-    upstreamModel: 'openai/glm-5.2:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'gpt-oss:20b-cloud',
-    upstreamModel: 'openai/gpt-oss:20b-cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'nemotron-3-nano:30b-cloud',
-    upstreamModel: 'openai/nemotron-3-nano:30b-cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'deepseek-v4-flash:cloud',
-    upstreamModel: 'openai/deepseek-v4-flash:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'qwen3.5:cloud',
-    upstreamModel: 'openai/qwen3.5:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'nemotron-3-super:cloud',
-    upstreamModel: 'openai/nemotron-3-super:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'glm-5.1:cloud',
-    upstreamModel: 'openai/glm-5.1:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'minimax-m2.7:cloud',
-    upstreamModel: 'openai/minimax-m2.7:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'kimi-k2.6:cloud',
-    upstreamModel: 'openai/kimi-k2.6:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'kimi-k2.7-code:cloud',
-    upstreamModel: 'openai/kimi-k2.7-code:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'minimax-m3:cloud',
-    upstreamModel: 'openai/minimax-m3:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_SDK_ALIAS,
-  },
-  {
-    id: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_VARIANT,
-    persistedModel: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_MODEL,
-    provider: 'ollama',
-    model: 'deepseek-v4-pro:cloud',
-    upstreamModel: 'openai/deepseek-v4-pro:cloud',
-    upstreamBaseUrl: 'https://ollama.com/v1',
-    baseUrl: 'http://127.0.0.1:4002',
-    authToken: 'sk-nim-local-proxy',
-    claudeModelAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_SDK_ALIAS,
-  },
-];
+export const PROVIDER_CATALOG_LOAD = loadProviderCatalog(
+  BUILT_IN_PROVIDER_CATALOG
+);
+export const PROVIDER_CATALOG_RESOLUTION = PROVIDER_CATALOG_LOAD.resolution;
 
-function isValidBackend(candidate: unknown): candidate is ClaudeCodeBackend {
-  if (typeof candidate !== 'object' || candidate === null) return false;
-  const c = candidate as Record<string, unknown>;
-  return (
-    typeof c.id === 'string' && c.id.length > 0 &&
-    typeof c.persistedModel === 'string' && c.persistedModel.length > 0 &&
-    c.provider === 'ollama' &&
-    typeof c.model === 'string' && c.model.length > 0 &&
-    typeof c.upstreamModel === 'string' && c.upstreamModel.length > 0 &&
-    typeof c.upstreamBaseUrl === 'string' && c.upstreamBaseUrl.length > 0 &&
-    typeof c.baseUrl === 'string' && c.baseUrl.length > 0 &&
-    typeof c.authToken === 'string' && c.authToken.length > 0 &&
-    typeof c.claudeModelAlias === 'string' && c.claudeModelAlias.length > 0
+function toClaudeCodeBackend(
+  entry: ProviderCatalogEntry
+): ClaudeCodeBackend | undefined {
+  const catalogInterface = entry.interfaces.find(
+    (candidate) =>
+      candidate.consumers.includes("claude-agent-main") &&
+      candidate.kind === "http" &&
+      candidate.protocol === "anthropic-messages" &&
+      candidate.transportProfile === "anthropic-compatible-proxy"
+  );
+  if (
+    !catalogInterface ||
+    !catalogInterface.upstreamEndpoint ||
+    catalogInterface.credentialRef !== LOCAL_PROXY_CREDENTIAL_REF ||
+    !entry.model.upstreamModel
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    id: entry.id,
+    persistedModel: entry.model.persistedId,
+    provider: entry.provider,
+    model: entry.model.providerModelId,
+    upstreamModel: entry.model.upstreamModel,
+    upstreamBaseUrl: catalogInterface.upstreamEndpoint,
+    baseUrl: catalogInterface.endpoint,
+    authToken: LOCAL_PROXY_AUTH_TOKEN,
+    claudeModelAlias: catalogInterface.modelAlias,
+  });
+}
+
+/** Existing Claude Agent route view derived from the normalized catalog. */
+export function projectClaudeCodeBackends(
+  resolution: ProviderCatalogResolution
+): readonly ClaudeCodeBackend[] {
+  if (resolution.fatalErrors.length > 0) return Object.freeze([]);
+  const blockedIds = new Set(
+    resolution.errors.flatMap((error) => (error.id ? [error.id] : []))
+  );
+  return Object.freeze(
+    resolution.entries.flatMap((entry) => {
+      if (blockedIds.has(entry.id)) return [];
+      const backend = toClaudeCodeBackend(entry);
+      return backend ? [backend] : [];
+    })
   );
 }
 
-/**
- * userData/ollama-backends.json -- same directory electron-store already
- * resolves ai-settings.json into (verified: %APPDATA%/@nimbalyst/electron on
- * Windows). Resolved via process.env.APPDATA directly rather than Electron's
- * app.getPath('userData') so this module stays a plain, Electron-free data
- * module -- it is unit-tested with plain vitest today and must stay that way.
- */
-function getOverrideFilePath(): string | undefined {
-  const appData = process.env.APPDATA;
-  if (!appData) return undefined;
-  return path.join(appData, '@nimbalyst', 'electron', 'ollama-backends.json');
+export const CLAUDE_CODE_BACKENDS: readonly ClaudeCodeBackend[] =
+  projectClaudeCodeBackends(PROVIDER_CATALOG_RESOLUTION);
+
+function fatalCatalogError(
+  resolution: ProviderCatalogResolution
+): Error | undefined {
+  const catalogError = resolution.fatalErrors[0];
+  return catalogError
+    ? new Error(`Provider catalog unavailable: ${catalogError.message}`)
+    : undefined;
 }
 
-function loadOverrideBackends(): readonly ClaudeCodeBackend[] | undefined {
-  const filePath = getOverrideFilePath();
-  if (!filePath) return undefined;
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      console.warn(`[customBackends] ${filePath} is not a non-empty array; using seed backends.`);
-      return undefined;
-    }
-    if (!parsed.every(isValidBackend)) {
-      console.warn(`[customBackends] ${filePath} has an entry missing a required field; using seed backends.`);
-      return undefined;
-    }
-    return parsed as ClaudeCodeBackend[];
-  } catch (err) {
-    // ENOENT (file doesn't exist yet) is the expected first-run case, handled
-    // silently by the bootstrap step below. Anything else is worth a warning.
-    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-      console.warn(`[customBackends] Failed to read ${filePath}: ${(err as Error).message}. Using seed backends.`);
-    }
-    return undefined;
+export function resolveClaudeCodeBackendInCatalog(
+  resolution: ProviderCatalogResolution,
+  backends: readonly ClaudeCodeBackend[],
+  backendId: string | undefined | null
+): ClaudeCodeBackend | undefined {
+  if (!backendId) return undefined;
+  const fatalError = fatalCatalogError(resolution);
+  if (fatalError) throw fatalError;
+  const catalogError = resolution.errors.find(
+    (candidate) => candidate.id === backendId
+  );
+  if (catalogError) {
+    throw new Error(
+      `Invalid provider catalog entry ${backendId}: ${catalogError.message}`
+    );
   }
-}
-
-/** Best-effort: seed the override file on first run so it exists as an editable file. Never throws. */
-function bootstrapOverrideFile(): void {
-  const filePath = getOverrideFilePath();
-  if (!filePath) return;
-  try {
-    if (fs.existsSync(filePath)) return;
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(SEED_BACKENDS, null, 2) + '\n', 'utf-8');
-  } catch {
-    // Non-fatal: read-only environment, missing permissions, etc. The app
-    // still works off the in-memory seed either way.
+  if (resolution.disabledIds.includes(backendId)) {
+    throw new Error(
+      `Provider catalog entry ${backendId} is disabled by the user overlay.`
+    );
   }
+  const catalogEntry = resolution.entries.find(
+    (candidate) => candidate.id === backendId
+  );
+  if (!catalogEntry) {
+    throw new Error(`Unsupported Claude Code backend profile: ${backendId}`);
+  }
+  const backend = backends.find((candidate) => candidate.id === backendId);
+  if (!backend) {
+    throw new Error(
+      `Provider catalog entry ${backendId} is valid but adapter required for Claude Agent launch.`
+    );
+  }
+  return backend;
 }
-
-const loadedOverride = loadOverrideBackends();
-if (!loadedOverride) {
-  bootstrapOverrideFile();
-}
-
-/**
- * The effective backend list for this process. Prefers a valid userData
- * override; falls back to the baked-in seed. Adding, removing, or changing a
- * model going forward means editing the override JSON file directly -- no
- * Nimbalyst code change or rebuild required. See the module doc comment.
- */
-export const CLAUDE_CODE_BACKENDS: readonly ClaudeCodeBackend[] = loadedOverride ?? SEED_BACKENDS;
 
 /**
  * Resolve a persisted backend id.
@@ -305,15 +161,11 @@ export const CLAUDE_CODE_BACKENDS: readonly ClaudeCodeBackend[] = loadedOverride
 export function resolveClaudeCodeBackend(
   backendId: string | undefined | null
 ): ClaudeCodeBackend | undefined {
-  if (!backendId) {
-    return undefined;
-  }
-
-  const backend = CLAUDE_CODE_BACKENDS.find((candidate) => candidate.id === backendId);
-  if (!backend) {
-    throw new Error(`Unsupported Claude Code backend profile: ${backendId}`);
-  }
-  return backend;
+  return resolveClaudeCodeBackendInCatalog(
+    PROVIDER_CATALOG_RESOLUTION,
+    CLAUDE_CODE_BACKENDS,
+    backendId
+  );
 }
 
 /**
@@ -323,17 +175,66 @@ export function resolveClaudeCodeBackend(
 export function resolveClaudeCodeBackendFromModel(
   model: string | undefined | null
 ): ClaudeCodeBackend | undefined {
-  if (!model) {
-    return undefined;
-  }
-  const backend = CLAUDE_CODE_BACKENDS.find(
-    (candidate) => candidate.persistedModel === model
+  return resolveClaudeCodeBackendFromModelInCatalog(
+    PROVIDER_CATALOG_RESOLUTION,
+    CLAUDE_CODE_BACKENDS,
+    model
   );
-  if (backend) {
-    return backend;
+}
+
+export function resolveClaudeCodeBackendFromModelInCatalog(
+  resolution: ProviderCatalogResolution,
+  backends: readonly ClaudeCodeBackend[],
+  model: string | undefined | null
+): ClaudeCodeBackend | undefined {
+  if (!model) return undefined;
+  const catalogEntry = resolution.entries.find(
+    (candidate) => candidate.model.persistedId === model
+  );
+  if (catalogEntry) {
+    const fatalError = fatalCatalogError(resolution);
+    if (fatalError) throw fatalError;
+    const backend = backends.find(
+      (candidate) => candidate.id === catalogEntry.id
+    );
+    if (!backend) {
+      // Valid general catalog identities are consumed by the shared runtime
+      // resolver. Only the legacy Ollama projection needs a ClaudeCodeBackend.
+      return undefined;
+    }
+    return resolveClaudeCodeBackendInCatalog(
+      resolution,
+      backends,
+      catalogEntry.id
+    );
   }
-  if (model.startsWith('claude-code:ollama-')) {
-    throw new Error(`Unsupported Claude Code Ollama model identity: ${model}`);
+  const builtIn = BUILT_IN_PROVIDER_CATALOG.find(
+    (candidate) => candidate.model.persistedId === model
+  );
+  if (builtIn) {
+    const currentEntry = resolution.entries.find(
+      (candidate) => candidate.id === builtIn.id
+    );
+    if (!currentEntry) {
+      return resolveClaudeCodeBackendInCatalog(
+        resolution,
+        backends,
+        builtIn.id
+      );
+    }
+    if (currentEntry.model.persistedId !== model) {
+      throw new Error(
+        `Persisted Claude Code model identity is no longer owned by its built-in catalog entry: ${model}`
+      );
+    }
+    return resolveClaudeCodeBackendInCatalog(resolution, backends, builtIn.id);
+  }
+  if (isCatalogPersistedModelId(model)) {
+    const fatalError = fatalCatalogError(resolution);
+    if (fatalError) throw fatalError;
+    throw new Error(
+      `Unsupported catalog-owned Claude Code model identity: ${model}`
+    );
   }
   return undefined;
 }
@@ -344,7 +245,11 @@ export function resolveClaudeCodeBackendForConfig(config: {
 }): ClaudeCodeBackend | undefined {
   const modelBackend = resolveClaudeCodeBackendFromModel(config.model);
   const configuredBackend = resolveClaudeCodeBackend(config.claudeCodeBackend);
-  if (modelBackend && configuredBackend && modelBackend.id !== configuredBackend.id) {
+  if (
+    modelBackend &&
+    configuredBackend &&
+    modelBackend.id !== configuredBackend.id
+  ) {
     throw new Error(
       `Claude Code backend ${configuredBackend.id} does not match persisted model ${config.model}`
     );
@@ -363,122 +268,159 @@ export function resolveClaudeCodeBackendForConfig(config: {
  * from the per-spawn environment; process.env is never mutated.
  */
 export const CLAUDE_CODE_AMBIENT_ROUTE_ENV_KEYS = [
+  // Primary route, authentication, and generic provider credentials.
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "OPENAI_API_KEY",
+
   // Alternate sockets, gateways, relays, and generic HTTP proxying.
-  'ANTHROPIC_UNIX_SOCKET',
-  'CLAUDE_CODE_API_BASE_URL',
-  'AGENT_PROXY_URL',
-  'AGENT_PROXY_AUTH_TOKEN',
-  'CCR_AGENT_PROXY_ENABLED',
-  'CCR_AGENT_PROXY_INCLUDE_HOSTS',
-  'CCR_AGENT_PROXY_RELAY_MODE',
-  'CLAUDE_CODE_PROXY_RESOLVES_HOSTS',
-  'CLAUDE_CODE_SIMULATE_PROXY_USAGE',
-  'CLAUDE_CODE_AGENT_PROXY_GIT_CONFIG',
-  'CLAUDE_CODE_AGENT_PROXY_GH_SHIM',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'all_proxy',
-  'NO_PROXY',
-  'no_proxy',
+  "ANTHROPIC_UNIX_SOCKET",
+  "CLAUDE_CODE_API_BASE_URL",
+  "AGENT_PROXY_URL",
+  "AGENT_PROXY_AUTH_TOKEN",
+  "CCR_AGENT_PROXY_ENABLED",
+  "CCR_AGENT_PROXY_INCLUDE_HOSTS",
+  "CCR_AGENT_PROXY_RELAY_MODE",
+  "CLAUDE_CODE_PROXY_RESOLVES_HOSTS",
+  "CLAUDE_CODE_SIMULATE_PROXY_USAGE",
+  "CLAUDE_CODE_AGENT_PROXY_GIT_CONFIG",
+  "CLAUDE_CODE_AGENT_PROXY_GH_SHIM",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "NO_PROXY",
+  "no_proxy",
 
   // Provider selectors and provider-specific credentials.
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_FOUNDRY',
-  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
-  'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
-  'CLAUDE_CODE_USE_MANTLE',
-  'CLAUDE_CODE_USE_GATEWAY',
-  'ANTHROPIC_FOUNDRY_RESOURCE',
-  'ANTHROPIC_VERTEX_PROJECT_ID',
-  'ANTHROPIC_AWS_API_KEY',
-  'ANTHROPIC_AWS_WORKSPACE_ID',
-  'ANTHROPIC_GOOGLE_CLOUD_PROJECT',
-  'ANTHROPIC_GOOGLE_CLOUD_LOCATION',
-  'ANTHROPIC_GOOGLE_CLOUD_WORKSPACE_ID',
-  'ANTHROPIC_BEDROCK_SERVICE_TIER',
-  'ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION',
-  'CLOUD_ML_REGION',
-  '_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL',
-  'ANTHROPIC_BEDROCK_BASE_URL',
-  'ANTHROPIC_VERTEX_BASE_URL',
-  'ANTHROPIC_FOUNDRY_BASE_URL',
-  'ANTHROPIC_AWS_BASE_URL',
-  'ANTHROPIC_GOOGLE_CLOUD_BASE_URL',
-  'ANTHROPIC_BEDROCK_MANTLE_BASE_URL',
-  'CLAUDE_CODE_ARTIFACTS_API_BASE_URL',
-  'ANTHROPIC_FOUNDRY_API_KEY',
-  'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'AWS_PROFILE',
-  'AWS_REGION',
-  'AWS_DEFAULT_REGION',
-  'AWS_WEB_IDENTITY_TOKEN_FILE',
-  'AWS_BEARER_TOKEN_BEDROCK',
-  'AWS_SHARED_CREDENTIALS_FILE',
-  'AWS_CONFIG_FILE',
-  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
-  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
-  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
-  'AWS_EC2_METADATA_SERVICE_ENDPOINT',
-  'AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE',
-  'GOOGLE_APPLICATION_CREDENTIALS',
-  'GOOGLE_CLOUD_PROJECT',
-  'GOOGLE_CLOUD_QUOTA_PROJECT',
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+  "CLAUDE_CODE_USE_MANTLE",
+  "CLAUDE_CODE_USE_GATEWAY",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  "ANTHROPIC_AWS_API_KEY",
+  "ANTHROPIC_AWS_WORKSPACE_ID",
+  "ANTHROPIC_GOOGLE_CLOUD_PROJECT",
+  "ANTHROPIC_GOOGLE_CLOUD_LOCATION",
+  "ANTHROPIC_GOOGLE_CLOUD_WORKSPACE_ID",
+  "ANTHROPIC_BEDROCK_SERVICE_TIER",
+  "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+  "CLOUD_ML_REGION",
+  "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "ANTHROPIC_VERTEX_BASE_URL",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_AWS_BASE_URL",
+  "ANTHROPIC_GOOGLE_CLOUD_BASE_URL",
+  "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+  "CLAUDE_CODE_ARTIFACTS_API_BASE_URL",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_PROFILE",
+  "AWS_REGION",
+  "AWS_DEFAULT_REGION",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  "AWS_CONFIG_FILE",
+  "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+  "AWS_EC2_METADATA_SERVICE_ENDPOINT",
+  "AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_QUOTA_PROJECT",
 
   // OAuth, host-managed authentication, descriptor/file auth, and identity
   // controls recognized by the pinned SDK/CLI.
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
-  'CLAUDE_CODE_OAUTH_CLIENT_ID',
-  'CLAUDE_CODE_OAUTH_SCOPES',
-  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
-  'CLAUDE_CODE_SESSION_ACCESS_TOKEN',
-  'CLAUDE_CODE_HOST_CREDS_FILE',
-  'CLAUDE_CODE_HOST_AUTH_ENV_VAR',
-  'CLAUDE_CODE_HFI_BEARER_TOKEN',
-  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR',
-  'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
-  'CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH',
-  'CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH',
-  'CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER',
-  'CLAUDE_CODE_CUSTOM_OAUTH_URL',
-  'CLAUDE_CODE_DESIGN_OAUTH_CLIENT_ID',
-  'CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR',
-  'CLAUDE_BRIDGE_OAUTH_TOKEN',
-  'CLAUDE_BG_SOCKET_TOKENS_PATH',
-  'ANTHROPIC_CONFIG_DIR',
-  'ANTHROPIC_CUSTOM_HEADERS',
-  'ANTHROPIC_IDENTITY_TOKEN',
-  'ANTHROPIC_IDENTITY_TOKEN_FILE',
-  'ANTHROPIC_PROFILE',
-  'ANTHROPIC_SCOPE',
-  'ANTHROPIC_ORGANIZATION_ID',
-  'ANTHROPIC_SERVICE_ACCOUNT_ID',
-  'ANTHROPIC_WORKSPACE_ID',
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+  "CLAUDE_CODE_OAUTH_CLIENT_ID",
+  "CLAUDE_CODE_OAUTH_SCOPES",
+  "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+  "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+  "CLAUDE_CODE_HOST_CREDS_FILE",
+  "CLAUDE_CODE_HOST_AUTH_ENV_VAR",
+  "CLAUDE_CODE_HFI_BEARER_TOKEN",
+  "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+  "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+  "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH",
+  "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+  "CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER",
+  "CLAUDE_CODE_CUSTOM_OAUTH_URL",
+  "CLAUDE_CODE_DESIGN_OAUTH_CLIENT_ID",
+  "CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR",
+  "CLAUDE_BRIDGE_OAUTH_TOKEN",
+  "CLAUDE_BG_SOCKET_TOKENS_PATH",
+  "ANTHROPIC_CONFIG_DIR",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "ANTHROPIC_IDENTITY_TOKEN",
+  "ANTHROPIC_IDENTITY_TOKEN_FILE",
+  "ANTHROPIC_PROFILE",
+  "ANTHROPIC_SCOPE",
+  "ANTHROPIC_ORGANIZATION_ID",
+  "ANTHROPIC_SERVICE_ACCOUNT_ID",
+  "ANTHROPIC_WORKSPACE_ID",
 
   // Manager, classifier, fallback, and native-child model selectors. The
   // accepted route re-adds the required selectors with one exact alias.
-  'ANTHROPIC_MODEL',
-  'ANTHROPIC_SMALL_FAST_MODEL',
-  'ANTHROPIC_DEFAULT_FABLE_MODEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'ANTHROPIC_CUSTOM_MODEL_OPTION',
-  'CLAUDE_CODE_BG_CLASSIFIER_MODEL',
-  'CLAUDE_CODE_AUTO_MODE_MODEL',
-  'CLAUDE_CONTEXT_COLLAPSE_MODEL',
-  'CLAUDE_CODE_SUBAGENT_MODEL',
-  'FALLBACK_FOR_ALL_PRIMARY_MODELS',
-  'CLAUDE_CODE_NO_MODEL_FALLBACK',
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION",
+  "CLAUDE_CODE_BG_CLASSIFIER_MODEL",
+  "CLAUDE_CODE_AUTO_MODE_MODEL",
+  "CLAUDE_CONTEXT_COLLAPSE_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+  "FALLBACK_FOR_ALL_PRIMARY_MODELS",
+  "CLAUDE_CODE_NO_MODEL_FALLBACK",
 ] as const;
+
+const CANONICAL_AMBIENT_ROUTE_ENV_KEYS = new Set<string>(
+  CLAUDE_CODE_AMBIENT_ROUTE_ENV_KEYS.map((key) => key.toUpperCase())
+);
+
+/**
+ * Return a copy with the named keys removed using Windows environment-key
+ * semantics. JavaScript object keys remain case-sensitive on Windows even
+ * though the child process environment does not, so exact-property deletion
+ * is insufficient for inherited mixed-case selectors.
+ */
+export function omitEnvironmentKeysCaseInsensitive(
+  source: Readonly<Record<string, string | undefined>>,
+  deniedKeys: readonly string[]
+): Record<string, string | undefined> {
+  const denied = new Set(deniedKeys.map((key) => key.toUpperCase()));
+  return Object.fromEntries(
+    Object.entries(source).filter(([key]) => !denied.has(key.toUpperCase()))
+  );
+}
+
+/** Remove every ambient route selector using case-insensitive key matching. */
+export function scrubAmbientProviderRouteEnv(
+  env: Record<string, string | undefined>
+): void {
+  for (const key of Object.keys(env)) {
+    if (CANONICAL_AMBIENT_ROUTE_ENV_KEYS.has(key.toUpperCase())) {
+      delete env[key];
+    }
+  }
+}
 
 /**
  * Overlay one backend profile onto a per-spawn environment.
@@ -494,11 +436,7 @@ export function applyClaudeCodeBackendEnv(
   // ANTHROPIC_API_KEY signals first-party API-key auth to the native binary and
   // can shadow gateway routing. It must be absent, even when configured in
   // Nimbalyst settings.
-  delete env.ANTHROPIC_API_KEY;
-  delete env.ANTHROPIC_AUTH_TOKEN;
-  for (const key of CLAUDE_CODE_AMBIENT_ROUTE_ENV_KEYS) {
-    delete env[key];
-  }
+  scrubAmbientProviderRouteEnv(env);
 
   env.ANTHROPIC_BASE_URL = backend.baseUrl;
   env.ANTHROPIC_AUTH_TOKEN = backend.authToken;
@@ -513,6 +451,52 @@ export function applyClaudeCodeBackendEnv(
   env.CLAUDE_CODE_AUTO_MODE_MODEL = backend.claudeModelAlias;
   env.CLAUDE_CONTEXT_COLLAPSE_MODEL = backend.claudeModelAlias;
   env.CLAUDE_CODE_SUBAGENT_MODEL = backend.claudeModelAlias;
-  env.CLAUDE_CODE_NO_MODEL_FALLBACK = '1';
-  env.NO_PROXY = '127.0.0.1,localhost';
+  env.CLAUDE_CODE_NO_MODEL_FALLBACK = "1";
+  env.NO_PROXY = "127.0.0.1,localhost";
+}
+
+/** Apply one already-confirmed immutable route at the final spawn boundary. */
+export function applyProviderRuntimeLaunchPlanEnv(
+  env: Record<string, string | undefined>,
+  plan: ProviderRuntimeLaunchPlan,
+  credential: string
+): void {
+  if (!credential) {
+    throw new ProviderRuntimeRouteError(
+      "credential-unavailable",
+      `Provider route ${plan.model.catalogEntryId} credential is unavailable before launch.`
+    );
+  }
+  scrubAmbientProviderRouteEnv(env);
+
+  const modelAlias = plan.selectedInterface.modelAlias;
+  env.ANTHROPIC_BASE_URL = plan.selectedInterface.endpoint;
+  env.ANTHROPIC_AUTH_TOKEN = credential;
+  env.ANTHROPIC_DEFAULT_OPUS_MODEL = modelAlias;
+  env.ANTHROPIC_DEFAULT_SONNET_MODEL = modelAlias;
+  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = modelAlias;
+  env.ANTHROPIC_DEFAULT_FABLE_MODEL = modelAlias;
+  env.ANTHROPIC_SMALL_FAST_MODEL = modelAlias;
+  env.ANTHROPIC_MODEL = modelAlias;
+  env.ANTHROPIC_CUSTOM_MODEL_OPTION = modelAlias;
+  env.CLAUDE_CODE_BG_CLASSIFIER_MODEL = modelAlias;
+  env.CLAUDE_CODE_AUTO_MODE_MODEL = modelAlias;
+  env.CLAUDE_CONTEXT_COLLAPSE_MODEL = modelAlias;
+  env.CLAUDE_CODE_SUBAGENT_MODEL = modelAlias;
+  env.CLAUDE_CODE_NO_MODEL_FALLBACK = "1";
+
+  for (const mapping of plan.resolvedControls) {
+    if (mapping.target === "launch.effort-level") {
+      env.CLAUDE_CODE_EFFORT_LEVEL = String(mapping.value);
+    }
+  }
+
+  const endpoint = new URL(plan.selectedInterface.endpoint);
+  if (
+    endpoint.hostname === "127.0.0.1" ||
+    endpoint.hostname === "localhost" ||
+    endpoint.hostname === "[::1]"
+  ) {
+    env.NO_PROXY = "127.0.0.1,localhost";
+  }
 }

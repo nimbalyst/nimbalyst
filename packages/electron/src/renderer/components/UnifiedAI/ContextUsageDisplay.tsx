@@ -1,6 +1,9 @@
 import React, { useId, useMemo, useState, useRef, useCallback, useEffect } from 'react';
 import { useSetAtom } from 'jotai';
-import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
+import type {
+  ContextMeterStateV1,
+  TokenUsageCategory,
+} from '@nimbalyst/runtime/ai/server/types';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { getHelpContent } from '../../help';
 import { openSettingsCommandAtom } from '../../store';
@@ -14,19 +17,15 @@ const CATEGORY_COLORS = [
   '#EC4899',
   '#8B5CF6'
 ];
+const NO_CONTEXT_CATEGORIES: TokenUsageCategory[] = [];
 
 interface ContextUsageDisplayProps {
   inputTokens: number;       // Cumulative input tokens (for tooltip breakdown)
   outputTokens: number;      // Cumulative output tokens (for tooltip breakdown)
-  totalTokens: number;       // Cumulative total tokens (fallback if no currentContext)
-  contextWindow: number;     // Context window size (legacy, use currentContext)
-  categories?: TokenUsageCategory[];  // Categories (legacy, use currentContext)
-  // Current context snapshot for Claude Code (from /context command)
-  currentContext?: {
-    tokens: number;          // Current tokens in context window
-    contextWindow: number;   // Max context window size
-    categories?: TokenUsageCategory[];
-  };
+  totalTokens: number;       // Cumulative total tokens (tooltip only)
+  contextWindow: number;     // Legacy persisted field; never drives meter
+  categories?: TokenUsageCategory[];
+  contextMeterState?: ContextMeterStateV1;
 }
 
 interface FormattedCategory extends TokenUsageCategory {
@@ -38,10 +37,8 @@ interface FormattedCategory extends TokenUsageCategory {
 /**
  * ContextUsageDisplay shows token usage for AI sessions
  *
- * Display formats:
- * - With context window: "110k/200k Tokens (55%)" - shows percentage usage
- * - Without context window: "15k Tokens" - just shows cumulative total
- * - No data yet: "--"
+ * The compact meter is driven only by ContextMeterStateV1. Cumulative session
+ * totals remain available in the click panel but never become context fill.
  */
 export function ContextUsageDisplay({
   inputTokens,
@@ -49,17 +46,20 @@ export function ContextUsageDisplay({
   totalTokens,
   contextWindow,
   categories,
-  currentContext
+  contextMeterState,
 }: ContextUsageDisplayProps) {
-  // For context window display, prefer currentContext (from /context command)
-  // Fall back to legacy fields for backward compatibility
-  const displayTokens = currentContext?.tokens ?? totalTokens;
-  const displayContextWindow = currentContext?.contextWindow ?? contextWindow;
-  const displayCategories = currentContext?.categories ?? categories;
-
-  // Check what data we have
-  const hasTokenData = displayTokens > 0 || totalTokens > 0;
-  const hasContextWindow = displayContextWindow > 0;
+  // Legacy contextWindow/categories stay in the prop shape while persisted
+  // sessions migrate, but they are deliberately not meter inputs.
+  void contextWindow;
+  void categories;
+  const displayCategories = NO_CONTEXT_CATEGORIES;
+  const availableState = contextMeterState?.confidence !== 'unavailable'
+    ? contextMeterState
+    : undefined;
+  const displayTokens = availableState?.fillTokens ?? 0;
+  const displayContextWindow = availableState?.effectiveWindowTokens ?? 0;
+  const hasContextState = availableState !== undefined;
+  const hasCumulativeData = inputTokens > 0 || outputTokens > 0 || totalTokens > 0;
   const [tooltipVisible, setTooltipVisible] = useState(false);
   const [helpExpanded, setHelpExpanded] = useState(false);
   const [toolBaselineTokens, setToolBaselineTokens] = useState<number | null>(null);
@@ -69,7 +69,12 @@ export function ContextUsageDisplay({
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // Calculate percentage used (only meaningful with context window)
-  const percentage = hasContextWindow ? Math.round((displayTokens / displayContextWindow) * 100) : 0;
+  const percentage = hasContextState
+    ? Math.round((displayTokens / displayContextWindow) * 100)
+    : 0;
+  const remainingTokens = hasContextState
+    ? Math.max(displayContextWindow - displayTokens, 0)
+    : undefined;
 
   // Format numbers with k suffix for thousands
   const formatTokensShort = (tokens: number): string => {
@@ -117,7 +122,7 @@ export function ContextUsageDisplay({
     return usedCategories.reduce((sum, cat) => sum + cat.width, 0);
   }, [usedCategories]);
 
-  const enableTooltip = hasTokenData && (formattedCategories.length > 0 || inputTokens > 0 || outputTokens > 0);
+  const enableTooltip = hasCumulativeData || hasContextState || formattedCategories.length > 0;
   const shouldShowTooltip = tooltipVisible && enableTooltip;
 
   // Click-to-open: the meter is shaped like a button (model/thinking/action
@@ -186,26 +191,27 @@ export function ContextUsageDisplay({
   }, [tooltipVisible]);
 
   const getUsageClass = (): string => {
-    if (!hasTokenData) return 'usage-normal';
-    if (hasContextWindow && percentage >= 90) return 'usage-critical';
-    if (hasContextWindow && percentage >= 80) return 'usage-warning';
+    if (!hasContextState) return 'usage-normal';
+    if (percentage >= 90) return 'usage-critical';
+    if (percentage >= 80) return 'usage-warning';
     return 'usage-normal';
   };
 
   // Build display text
   const getDisplayText = (): string => {
-    if (!hasTokenData) return '--';
-    if (hasContextWindow) {
-      return `${formatTokensShort(displayTokens)}/${formatTokensShort(displayContextWindow)} (${percentage}%)`;
-    }
-    return `${formatTokensShort(displayTokens)} tokens`;
+    if (!hasContextState) return 'Unavailable';
+    const value = `${formatTokensShort(displayTokens)}/${formatTokensShort(displayContextWindow)} (${percentage}%)`;
+    if (availableState.confidence === 'estimated') return `~${value} estimated`;
+    if (availableState.confidence === 'stale') return `${value} stale`;
+    return value;
   };
 
-  const label = hasTokenData
-    ? hasContextWindow
-      ? `Context usage ${formatTokensShort(displayTokens)} of ${formatTokensShort(displayContextWindow)} tokens (${percentage}%)`
-      : `Token usage: ${formatTokensShort(displayTokens)} total tokens`
-    : 'Token usage data not available yet';
+  const unavailableReason = contextMeterState?.confidence === 'unavailable'
+    ? contextMeterState.reason.replace(/-/g, ' ')
+    : 'no trusted provider observation';
+  const label = hasContextState
+    ? `Context usage ${formatTokensShort(displayTokens)} of ${formatTokensShort(displayContextWindow)} tokens (${percentage}%), ${formatTokensShort(remainingTokens ?? 0)} remaining, ${availableState.confidence}`
+    : `Context usage unavailable: ${unavailableReason}`;
 
   // Usage level styling
   const usageClass = getUsageClass();
@@ -224,7 +230,7 @@ export function ContextUsageDisplay({
     <div
       ref={rootRef}
       className={`context-usage-display ${usageClass} relative inline-flex items-center py-0.5 px-2 rounded-md text-[11px] font-medium whitespace-nowrap bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] ml-auto ${enableTooltip ? 'cursor-pointer' : 'cursor-default'} gap-1 focus:outline-2 focus:outline-[var(--nim-primary)] focus:outline-offset-2 max-[400px]:hidden ${usageStyles[usageClass as keyof typeof usageStyles]}`}
-      tabIndex={hasTokenData ? 0 : -1}
+      tabIndex={enableTooltip ? 0 : -1}
       aria-label={label}
       aria-describedby={shouldShowTooltip ? tooltipId : undefined}
       aria-expanded={enableTooltip ? shouldShowTooltip : undefined}
@@ -243,7 +249,7 @@ export function ContextUsageDisplay({
         >
           <div className="tooltip-header flex justify-between items-center text-xs mb-2 text-[var(--nim-text-muted)]">
             <div className="tooltip-header-left flex items-center gap-1.5">
-              <span>{hasContextWindow ? 'Context Breakdown' : 'Token Usage'}</span>
+              <span>{hasContextState ? 'Context Breakdown' : 'Context unavailable'}</span>
               {helpContent && (
                 <button
                   className="tooltip-help-button inline-flex items-center justify-center w-[18px] h-[18px] p-0 border-none rounded-full bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-faint)] cursor-pointer transition-all duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text-muted)]"
@@ -258,12 +264,24 @@ export function ContextUsageDisplay({
                 </button>
               )}
             </div>
-            {hasContextWindow && (
+            {hasContextState && (
               <span className="tooltip-total font-semibold text-[var(--nim-text)]">
                 {formatTokensShort(displayTokens)} / {formatTokensShort(displayContextWindow)}
               </span>
             )}
           </div>
+
+          {!hasContextState && (
+            <div className="text-[11px] text-[var(--nim-text-muted)] pb-2 border-b border-[var(--nim-border)] mb-2">
+              {unavailableReason}
+            </div>
+          )}
+
+          {hasContextState && (
+            <div className="text-[11px] text-[var(--nim-text-muted)] pb-2 border-b border-[var(--nim-border)] mb-2">
+              {formatTokensShort(remainingTokens ?? 0)} tokens remaining · {availableState.confidence}
+            </div>
+          )}
 
           {/* Expandable help section */}
           {helpExpanded && helpContent && (
@@ -282,11 +300,9 @@ export function ContextUsageDisplay({
               76k "Total" under a 12k window fill). */}
           {(inputTokens > 0 || outputTokens > 0) && (
             <div className="tooltip-io-breakdown flex flex-col gap-1 py-2 border-b border-[var(--nim-border)] mb-2">
-              {hasContextWindow && (
-                <div className="tooltip-io-heading text-[11px] font-semibold text-[var(--nim-text-muted)]">
-                  Session totals (cumulative)
-                </div>
-              )}
+              <div className="tooltip-io-heading text-[11px] font-semibold text-[var(--nim-text-muted)]">
+                Session totals (cumulative)
+              </div>
               <div className="tooltip-io-row flex justify-between text-[11px]">
                 <span className="tooltip-io-label text-[var(--nim-text-muted)]">Input:</span>
                 <span className="tooltip-io-value text-[var(--nim-text)] tabular-nums">{inputTokens.toLocaleString()}</span>
@@ -303,7 +319,7 @@ export function ContextUsageDisplay({
           )}
 
           {/* Category bar (only for Claude Code with context data) */}
-          {hasContextWindow && formattedCategories.length > 0 && (
+          {hasContextState && formattedCategories.length > 0 && (
             <>
               <div className="tooltip-bar relative h-2.5 rounded-full overflow-hidden bg-[var(--nim-bg-tertiary)] border border-[var(--nim-border)] mb-2.5">
                 <div className="tooltip-bar-fill flex h-full rounded-full" style={{ width: `${usedPercentage}%` }}>

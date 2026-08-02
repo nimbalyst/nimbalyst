@@ -108,6 +108,16 @@ export const sessionProcessingAtom = atomFamily((_sessionId: string) =>
   atom(false)
 );
 
+export type SessionModelReconciliationGate =
+  | { status: 'idle' }
+  | { status: 'recovering'; message: string }
+  | { status: 'required'; message: string };
+
+/** Session-owned safety gate retained across transcript view remounts. */
+export const sessionModelReconciliationGateAtom = atomFamily(
+  (_sessionId: string) => atom<SessionModelReconciliationGate>({ status: 'idle' }),
+);
+
 /**
  * Per-session unread state.
  * Set when new messages arrive while session is not active.
@@ -644,6 +654,20 @@ export interface OpenSession {
  */
 export const sessionStoreAtom = atomFamily((_sessionId: string) =>
   atom<SessionData | null>(null)
+);
+
+/** Narrow subscription to the durable recovery marker loaded with a session. */
+export const sessionModelReconciliationMarkerAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const metadata = get(sessionStoreAtom(sessionId))?.metadata;
+    if (metadata === null || metadata === undefined) {
+      return null;
+    }
+    // Preserve malformed loaded metadata as a non-null raw marker so the
+    // reconciliation owner fails closed and presents the bounded repair gate.
+    if (typeof metadata !== 'object' || Array.isArray(metadata)) return metadata;
+    return (metadata as Record<string, unknown>).modelChangeReconciliation ?? null;
+  }),
 );
 
 /**

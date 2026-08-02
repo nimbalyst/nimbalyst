@@ -55,6 +55,48 @@ describe('parseCodexEvent token_count parsing', () => {
     });
   });
 
+  it('never constructs current context from cumulative total_token_usage', () => {
+    const parsed = parseCodexEvent({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          model_context_window: 200000,
+          total_token_usage: {
+            input_tokens: 180000,
+            output_tokens: 20000,
+            total_tokens: 200000,
+          },
+        },
+      },
+    });
+    const usageEvent = parsed.find((event) => event.usage || event.contextSnapshot);
+    expect(usageEvent?.usage).toEqual({
+      input_tokens: 180000,
+      output_tokens: 20000,
+      total_tokens: 200000,
+    });
+    expect(usageEvent?.contextSnapshot).toBeUndefined();
+  });
+
+  it.each([
+    ['missing window', undefined],
+    ['zero window', 0],
+    ['negative window', -1],
+    ['infinite window', Number.POSITIVE_INFINITY],
+  ])('rejects a %s from the paired context snapshot', (_label, model_context_window) => {
+    const parsed = parseCodexEvent({
+      type: 'token_count',
+      info: {
+        input_tokens: 12,
+        output_tokens: 3,
+        total_tokens: 15,
+        model_context_window,
+      },
+    });
+    expect(parsed.find((event) => event.contextSnapshot)).toBeUndefined();
+  });
+
   it('normalizes command_execution items into a Bash-like tool call shape', () => {
     const parsed = parseCodexEvent({
       type: 'item.completed',

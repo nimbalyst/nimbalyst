@@ -10,8 +10,47 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { OpenAICodexProvider } from '../OpenAICodexProvider';
+import {
+  OpenAICodexProvider,
+  projectCodexCompleteEvent,
+} from '../OpenAICodexProvider';
 import { BaseAgentProvider } from '../BaseAgentProvider';
+
+describe('OpenAICodexProvider context observation projection', () => {
+  it('forwards the paired protocol observation unchanged on completion', () => {
+    const contextObservation = {
+      schemaVersion: 1 as const,
+      fillTokens: 12_000,
+      runtimeWindowTokens: 200_000,
+      adapterId: 'codex-app-server-thread-usage-v1' as const,
+      windowPolicy: 'runtime-required' as const,
+      numeratorSemantics: 'current-lead-context' as const,
+      identity: {
+        nimbalystSessionId: 'session-1',
+        providerId: 'openai-codex',
+        persistedModelId: 'openai-codex:gpt-5.4',
+        upstreamThreadId: 'thread-1',
+        producerRole: 'lead' as const,
+      },
+      order: {
+        processInstanceId: 'process-1',
+        lifecycleGeneration: 0,
+        sequence: 1,
+        turnId: 'turn-1',
+        observedAtMs: 1,
+      },
+    };
+
+    const chunk = projectCodexCompleteEvent({
+      type: 'complete',
+      usage: { input_tokens: 99_000, output_tokens: 1_000, total_tokens: 100_000 },
+      contextObservation,
+    });
+
+    expect(chunk.contextObservation).toBe(contextObservation);
+    expect(chunk.contextObservation?.fillTokens).toBe(12_000);
+  });
+});
 
 describe('OpenAICodexProvider.maybeBuildAppServerFileChangeSnapshots', () => {
   let workspace: string;

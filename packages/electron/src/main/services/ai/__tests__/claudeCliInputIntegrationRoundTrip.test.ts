@@ -28,7 +28,7 @@
  *      stuck executing) and flush returns false.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { projectRawMessagesToViewMessages } from '@nimbalyst/runtime/ai/server/transcript';
 import type { RawMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
@@ -101,7 +101,7 @@ function makePipeline() {
 
 /**
  * Minimal in-memory queued-prompt store matching QueuedPromptStoreLike's
- * relevant subset (listPending / claim / complete / fail). `claim` is atomic:
+ * relevant token-fenced subset. `claim` is atomic:
  * it only returns + marks a prompt if it is still `pending`.
  */
 function makeQueueStore(
@@ -113,6 +113,7 @@ function makeQueueStore(
     attachments: s.attachments ?? null,
     status: 'pending' as 'pending' | 'executing' | 'completed' | 'failed',
     errorMessage: undefined as string | undefined,
+    claimToken: undefined as string | undefined,
   }));
 
   const find = (id: string) => items.find((i) => i.id === id);
@@ -125,18 +126,22 @@ function makeQueueStore(
       const item = find(promptId);
       if (!item || item.status !== 'pending') return null;
       item.status = 'executing';
-      return { id: item.id, prompt: item.prompt, attachments: item.attachments };
+      item.claimToken = `token-${item.id}`;
+      return { id: item.id, prompt: item.prompt, attachments: item.attachments, claimToken: item.claimToken };
     },
-    complete: async (promptId: string): Promise<void> => {
+    beginDispatch: async () => ({ outcome: 'settled' as const }),
+    completeAfterDispatch: async (promptId: string) => {
       const item = find(promptId);
       if (item) item.status = 'completed';
+      return { outcome: 'settled' as const };
     },
-    fail: async (promptId: string, errorMessage: string): Promise<void> => {
+    failAfterDispatch: async (promptId: string, errorMessage: string) => {
       const item = find(promptId);
       if (item) {
         item.status = 'failed';
         item.errorMessage = errorMessage;
       }
+      return { outcome: 'settled' as const };
     },
   };
 }
@@ -263,10 +268,12 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
     ]);
 
     const deps = {
+      preflight: vi.fn(async () => true),
       listPending: store.listPending,
       claim: store.claim,
-      complete: store.complete,
-      fail: store.fail,
+      beginDispatch: store.beginDispatch,
+      completeAfterDispatch: store.completeAfterDispatch,
+      failAfterDispatch: store.failAfterDispatch,
       submit: pipe.submit,
     };
 
@@ -319,10 +326,12 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
     const flushed = await flushNextClaudeCliQueuedPrompt(
       { sessionId: SESSION_ID, workspacePath: WORKSPACE },
       {
+        preflight: vi.fn(async () => true),
         listPending: store.listPending,
         claim: store.claim,
-        complete: store.complete,
-        fail: store.fail,
+        beginDispatch: store.beginDispatch,
+        completeAfterDispatch: store.completeAfterDispatch,
+        failAfterDispatch: store.failAfterDispatch,
         submit: async () => {
           throw new Error('pty exploded');
         },

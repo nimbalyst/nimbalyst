@@ -1,4 +1,5 @@
 import {
+  isCatalogPersistedModelId,
   resolveClaudeCodeBackendFromModel,
   type ClaudeCodeBackend,
 } from '@nimbalyst/runtime/ai/server';
@@ -6,12 +7,14 @@ import {
 export interface PersistedClaudeCodeRouteRow {
   model?: string | null;
   metadata?: unknown;
+  workspacePath?: string;
 }
 
 export interface ResolvedClaudeCodeSessionRoute {
   model: string | undefined;
   metadata: Record<string, unknown> | undefined;
   backend: ClaudeCodeBackend | undefined;
+  workspacePath: string | undefined;
 }
 
 /**
@@ -25,31 +28,51 @@ export async function resolveClaudeCodeSessionRoute(
   loadPersisted: () => Promise<PersistedClaudeCodeRouteRow | null>
 ): Promise<ResolvedClaudeCodeSessionRoute> {
   const snapshotBackend = resolveClaudeCodeBackendFromModel(snapshotModel);
+  const snapshotCatalogModel = snapshotModel
+    ? isCatalogPersistedModelId(snapshotModel)
+    : false;
   let fresh: PersistedClaudeCodeRouteRow | null;
   try {
     fresh = await loadPersisted();
   } catch (error) {
-    if (snapshotBackend) {
+    if (snapshotCatalogModel) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(
-        `Ollama Claude Code session ${sessionId} cannot refresh its persisted model identity: ${reason}`
+        `Catalog-routed Claude Code session ${sessionId} cannot refresh its persisted model identity: ${reason}`
       );
     }
-    return { model: snapshotModel, metadata: snapshotMetadata, backend: undefined };
+    return {
+      model: snapshotModel,
+      metadata: snapshotMetadata,
+      backend: undefined,
+      workspacePath: undefined,
+    };
   }
 
   if (!fresh) {
-    if (snapshotBackend) {
-      throw new Error(`Ollama Claude Code session ${sessionId} has no persisted session row`);
+    if (snapshotCatalogModel) {
+      throw new Error(
+        `Catalog-routed Claude Code session ${sessionId} has no persisted session row`
+      );
     }
-    return { model: snapshotModel, metadata: snapshotMetadata, backend: undefined };
+    return {
+      model: snapshotModel,
+      metadata: snapshotMetadata,
+      backend: undefined,
+      workspacePath: undefined,
+    };
   }
 
   const model = fresh.model || undefined;
   const backend = resolveClaudeCodeBackendFromModel(model);
-  if (snapshotBackend && backend?.persistedModel !== snapshotBackend.persistedModel) {
+  if (
+    snapshotCatalogModel &&
+    (model !== snapshotModel ||
+      (snapshotBackend &&
+        backend?.persistedModel !== snapshotBackend.persistedModel))
+  ) {
     throw new Error(
-      `Ollama Claude Code session ${sessionId} persisted model identity changed or was lost`
+      `Catalog-routed Claude Code session ${sessionId} persisted model identity changed or was lost`
     );
   }
 
@@ -57,5 +80,6 @@ export async function resolveClaudeCodeSessionRoute(
     model,
     metadata: fresh.metadata as Record<string, unknown> | undefined,
     backend,
+    workspacePath: fresh.workspacePath,
   };
 }

@@ -14,11 +14,19 @@ import { logClaudeCliUserPrompt } from './claudeCliUserPromptLog';
 import { submitClaudeCliPrompt, type SubmitClaudeCliPromptInput } from './claudeCliSubmit';
 import { detectInteractiveCliCommand } from './claudeCliInteractiveCommands';
 import { broadcastClaudeCliRevealTerminal } from './claudeCliRevealTerminal';
+import { preflightSessionPromptDispatch } from './queuedPromptDispatcher';
 
 /** Submit a CLI prompt using the real terminal/log/analytics deps. */
 export async function submitClaudeCliPromptProduction(
   input: SubmitClaudeCliPromptInput,
 ): Promise<{ submitted: boolean }> {
+  // This public primitive is callable independently of queue dispatch. Gate at
+  // the last boundary before terminal lookup/write, transcript logging,
+  // analytics, delay, or renderer reveal so every side effect stays at zero.
+  if (!(await preflightSessionPromptDispatch(input.sessionId))) {
+    throw new Error('Session model recovery is pending');
+  }
+
   const manager = getTerminalSessionManager();
   const result = await submitClaudeCliPrompt(input, {
     writeToTerminal: (sessionId: string, data: string) => manager.writeToTerminal(sessionId, data),

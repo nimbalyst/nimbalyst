@@ -286,6 +286,8 @@ class NimbalystDaoTest {
             tagsJson = """["android","sync"]""",
             contextTokens = 100,
             contextWindow = 200000,
+            contextMeterStateJson =
+                """{"schemaVersion":1,"confidence":"unavailable","reason":"thread-reset"}""",
             draftInput = "draft",
             draftUpdatedAt = 1_700_000_111_000L
         )
@@ -293,6 +295,48 @@ class NimbalystDaoTest {
 
         val loaded = sessionDao.getById("s1")
         assertEquals(original, loaded)
+        assertEquals("unavailable", loaded?.contextMeterState()?.confidence)
+        assertEquals("thread-reset", loaded?.contextMeterState()?.reason)
+    }
+
+    @Test
+    fun `session context meter values above Int max persist without truncation`() = runTest {
+        projectDao.upsertAll(listOf(project(id = "/p/a")))
+        val stateJson = """
+            {
+              "schemaVersion":1,"confidence":"exact",
+              "fillTokens":3000000000,"effectiveWindowTokens":4000000000,
+              "provenance":{
+                "identity":{
+                  "nimbalystSessionId":"s-large","providerId":"openai-codex",
+                  "persistedModelId":"openai-codex:gpt-5.4","upstreamThreadId":"thread-1",
+                  "producerRole":"lead"
+                },
+                "order":{
+                  "processInstanceId":"process-1","lifecycleGeneration":3000000000,
+                  "sequence":3000000001,"observedAtMs":1000
+                },
+                "adapterId":"codex-app-server-thread-usage-v1","windowPolicy":"runtime-required",
+                "numeratorSource":"runtime-observation","denominatorSource":"runtime-observation",
+                "runtimeWindowTokens":4000000000,"acceptedAtMs":1000
+              }
+            }
+        """.trimIndent()
+        sessionDao.upsertAll(
+            listOf(
+                session(id = "s-large", projectId = "/p/a").copy(
+                    contextTokens = 3_000_000_000L,
+                    contextWindow = 4_000_000_000L,
+                    contextMeterStateJson = stateJson,
+                ),
+            ),
+        )
+
+        val loaded = sessionDao.getById("s-large")
+        assertEquals(3_000_000_000L, loaded?.contextTokens)
+        assertEquals(4_000_000_000L, loaded?.contextWindow)
+        assertEquals(3_000_000_000L, loaded?.contextMeterState()?.fillTokens)
+        assertEquals(4_000_000_000L, loaded?.contextMeterState()?.effectiveWindowTokens)
     }
 
     @Test

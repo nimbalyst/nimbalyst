@@ -10,6 +10,7 @@ describe('startupQueuedPromptDrain', () => {
     const triggerProcessing = vi.fn(async () => true);
 
     await expect(drainPendingOrdinaryPromptsOnStartup({
+      preflight: vi.fn(async () => true),
       listPendingOrdinarySessionIds,
       resolveWorkspacePath,
       triggerProcessing,
@@ -30,6 +31,7 @@ describe('startupQueuedPromptDrain', () => {
       .mockRejectedValueOnce(error);
 
     await expect(drainPendingOrdinaryPromptsOnStartup({
+      preflight: vi.fn(async () => true),
       listPendingOrdinarySessionIds: async () => ['session-a', 'session-b', 'session-c'],
       resolveWorkspacePath: async (sessionId) =>
         sessionId === 'session-c' ? null : `D:\\${sessionId}`,
@@ -38,5 +40,21 @@ describe('startupQueuedPromptDrain', () => {
     })).resolves.toEqual({ discovered: 3, triggered: 0, skipped: 3 });
 
     expect(logError).toHaveBeenCalledWith('session-b', error);
+  });
+
+  it('does not resolve a workspace or trigger a blocked session', async () => {
+    const resolveWorkspacePath = vi.fn(async () => 'D:\\repo');
+    const triggerProcessing = vi.fn(async () => true);
+
+    await expect(drainPendingOrdinaryPromptsOnStartup({
+      preflight: vi.fn(async () => false),
+      listPendingOrdinarySessionIds: async () => ['session-a'],
+      resolveWorkspacePath,
+      triggerProcessing,
+      logError: vi.fn(),
+    })).resolves.toEqual({ discovered: 1, triggered: 0, skipped: 1 });
+
+    expect(resolveWorkspacePath).not.toHaveBeenCalled();
+    expect(triggerProcessing).not.toHaveBeenCalled();
   });
 });

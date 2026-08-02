@@ -1684,6 +1684,9 @@ class PGLiteWorker {
           document_context JSONB,
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
           claimed_at TIMESTAMPTZ,
+          claim_token TEXT,
+          dispatch_started_at TIMESTAMPTZ,
+          settlement_provenance TEXT,
           completed_at TIMESTAMPTZ,
           error_message TEXT,
           delivery_class TEXT NOT NULL DEFAULT 'ordinary'
@@ -1718,6 +1721,9 @@ class PGLiteWorker {
         ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_target_generation TEXT;
         ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_reservation_owner TEXT;
         ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_receipt JSONB;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS claim_token TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS dispatch_started_at TIMESTAMPTZ;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS settlement_provenance TEXT;
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_prompts_control_idempotency
           ON queued_prompts(session_id, idempotency_key)

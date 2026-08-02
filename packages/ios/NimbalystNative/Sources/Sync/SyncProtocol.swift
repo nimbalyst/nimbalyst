@@ -98,10 +98,401 @@ struct ContextInfo: Codable {
     let contextWindow: Int
 }
 
+enum ContextMeterConfidence: String, Codable {
+    case exact, estimated, stale, unavailable
+}
+
+private extension KeyedDecodingContainer {
+    func decodeOptionalRejectingExplicitNull<T: Decodable>(
+        _ type: T.Type,
+        forKey key: Key
+    ) throws -> T? {
+        guard contains(key) else { return nil }
+        if try decodeNil(forKey: key) {
+            throw DecodingError.valueNotFound(
+                type,
+                .init(
+                    codingPath: codingPath + [key],
+                    debugDescription: "Optional context-meter fields must be omitted, not null"
+                )
+            )
+        }
+        return try decode(type, forKey: key)
+    }
+}
+
+struct ContextMeterIdentityV1: Codable, Equatable {
+    let nimbalystSessionId: String
+    let providerId: String
+    let persistedModelId: String
+    let providerModelId: String?
+    let catalogEntryId: String?
+    let interfaceId: String?
+    let upstreamThreadId: String
+    let producerRole: String
+
+    private enum CodingKeys: String, CodingKey {
+        case nimbalystSessionId, providerId, persistedModelId
+        case providerModelId, catalogEntryId, interfaceId
+        case upstreamThreadId, producerRole
+    }
+
+    init(
+        nimbalystSessionId: String,
+        providerId: String,
+        persistedModelId: String,
+        providerModelId: String?,
+        catalogEntryId: String?,
+        interfaceId: String?,
+        upstreamThreadId: String,
+        producerRole: String
+    ) {
+        self.nimbalystSessionId = nimbalystSessionId
+        self.providerId = providerId
+        self.persistedModelId = persistedModelId
+        self.providerModelId = providerModelId
+        self.catalogEntryId = catalogEntryId
+        self.interfaceId = interfaceId
+        self.upstreamThreadId = upstreamThreadId
+        self.producerRole = producerRole
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        nimbalystSessionId = try values.decode(String.self, forKey: .nimbalystSessionId)
+        providerId = try values.decode(String.self, forKey: .providerId)
+        persistedModelId = try values.decode(String.self, forKey: .persistedModelId)
+        providerModelId = try values.decodeOptionalRejectingExplicitNull(
+            String.self,
+            forKey: .providerModelId
+        )
+        catalogEntryId = try values.decodeOptionalRejectingExplicitNull(
+            String.self,
+            forKey: .catalogEntryId
+        )
+        interfaceId = try values.decodeOptionalRejectingExplicitNull(
+            String.self,
+            forKey: .interfaceId
+        )
+        upstreamThreadId = try values.decode(String.self, forKey: .upstreamThreadId)
+        producerRole = try values.decode(String.self, forKey: .producerRole)
+    }
+}
+
+struct ContextMeterOrderV1: Codable, Equatable {
+    let processInstanceId: String
+    let lifecycleGeneration: Int
+    let sequence: Int
+    let turnId: String?
+    let observedAtMs: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case processInstanceId, lifecycleGeneration, sequence, turnId, observedAtMs
+    }
+
+    init(
+        processInstanceId: String,
+        lifecycleGeneration: Int,
+        sequence: Int,
+        turnId: String?,
+        observedAtMs: Int
+    ) {
+        self.processInstanceId = processInstanceId
+        self.lifecycleGeneration = lifecycleGeneration
+        self.sequence = sequence
+        self.turnId = turnId
+        self.observedAtMs = observedAtMs
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        processInstanceId = try values.decode(String.self, forKey: .processInstanceId)
+        lifecycleGeneration = try values.decode(Int.self, forKey: .lifecycleGeneration)
+        sequence = try values.decode(Int.self, forKey: .sequence)
+        turnId = try values.decodeOptionalRejectingExplicitNull(String.self, forKey: .turnId)
+        observedAtMs = try values.decode(Int.self, forKey: .observedAtMs)
+    }
+}
+
+struct ContextMeterProvenanceV1: Codable, Equatable {
+    let identity: ContextMeterIdentityV1
+    let order: ContextMeterOrderV1
+    let adapterId: String
+    let windowPolicy: String
+    let numeratorSource: String
+    let denominatorSource: String
+    let runtimeWindowTokens: Int?
+    let contextWindowSeedTokens: Int?
+    let acceptedAtMs: Int
+    let lastFreshObservationAtMs: Int?
+    let invalidationReason: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case identity, order, adapterId, windowPolicy, numeratorSource, denominatorSource
+        case runtimeWindowTokens, contextWindowSeedTokens, acceptedAtMs
+        case lastFreshObservationAtMs, invalidationReason
+    }
+
+    init(
+        identity: ContextMeterIdentityV1,
+        order: ContextMeterOrderV1,
+        adapterId: String,
+        windowPolicy: String,
+        numeratorSource: String,
+        denominatorSource: String,
+        runtimeWindowTokens: Int?,
+        contextWindowSeedTokens: Int?,
+        acceptedAtMs: Int,
+        lastFreshObservationAtMs: Int?,
+        invalidationReason: String?
+    ) {
+        self.identity = identity
+        self.order = order
+        self.adapterId = adapterId
+        self.windowPolicy = windowPolicy
+        self.numeratorSource = numeratorSource
+        self.denominatorSource = denominatorSource
+        self.runtimeWindowTokens = runtimeWindowTokens
+        self.contextWindowSeedTokens = contextWindowSeedTokens
+        self.acceptedAtMs = acceptedAtMs
+        self.lastFreshObservationAtMs = lastFreshObservationAtMs
+        self.invalidationReason = invalidationReason
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        identity = try values.decode(ContextMeterIdentityV1.self, forKey: .identity)
+        order = try values.decode(ContextMeterOrderV1.self, forKey: .order)
+        adapterId = try values.decode(String.self, forKey: .adapterId)
+        windowPolicy = try values.decode(String.self, forKey: .windowPolicy)
+        numeratorSource = try values.decode(String.self, forKey: .numeratorSource)
+        denominatorSource = try values.decode(String.self, forKey: .denominatorSource)
+        runtimeWindowTokens = try values.decodeOptionalRejectingExplicitNull(
+            Int.self,
+            forKey: .runtimeWindowTokens
+        )
+        contextWindowSeedTokens = try values.decodeOptionalRejectingExplicitNull(
+            Int.self,
+            forKey: .contextWindowSeedTokens
+        )
+        acceptedAtMs = try values.decode(Int.self, forKey: .acceptedAtMs)
+        lastFreshObservationAtMs = try values.decodeOptionalRejectingExplicitNull(
+            Int.self,
+            forKey: .lastFreshObservationAtMs
+        )
+        invalidationReason = try values.decodeOptionalRejectingExplicitNull(
+            String.self,
+            forKey: .invalidationReason
+        )
+    }
+}
+
+struct ContextMeterStateV1: Codable, Equatable {
+    let schemaVersion: Int
+    let confidence: ContextMeterConfidence
+    let fillTokens: Int?
+    let effectiveWindowTokens: Int?
+    let reason: String?
+    let provenance: ContextMeterProvenanceV1?
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, confidence, fillTokens, effectiveWindowTokens, reason, provenance
+    }
+
+    init(
+        schemaVersion: Int,
+        confidence: ContextMeterConfidence,
+        fillTokens: Int?,
+        effectiveWindowTokens: Int?,
+        reason: String?,
+        provenance: ContextMeterProvenanceV1?
+    ) {
+        self.schemaVersion = schemaVersion
+        self.confidence = confidence
+        self.fillTokens = fillTokens
+        self.effectiveWindowTokens = effectiveWindowTokens
+        self.reason = reason
+        self.provenance = provenance
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        confidence = try values.decode(ContextMeterConfidence.self, forKey: .confidence)
+        fillTokens = try values.decodeIfPresent(Int.self, forKey: .fillTokens)
+        effectiveWindowTokens = try values.decodeIfPresent(Int.self, forKey: .effectiveWindowTokens)
+        reason = try values.decodeIfPresent(String.self, forKey: .reason)
+        provenance = try values.decodeOptionalRejectingExplicitNull(
+            ContextMeterProvenanceV1.self,
+            forKey: .provenance
+        )
+    }
+
+    var isValid: Bool {
+        guard schemaVersion == 1 else { return false }
+        if confidence == .unavailable {
+            guard let reason, Self.unavailableReasons.contains(reason) else { return false }
+            guard let provenance else { return true }
+            return Self.isValidProvenance(provenance)
+        }
+        guard let fillTokens, Self.isSafeNonNegativeInteger(fillTokens),
+              let effectiveWindowTokens, Self.isSafePositiveInteger(effectiveWindowTokens),
+              fillTokens <= effectiveWindowTokens,
+              let provenance, Self.isValidProvenance(provenance),
+              provenance.denominatorSource != "none" else { return false }
+        if confidence == .estimated {
+            return provenance.denominatorSource == "immutable-model-seed"
+                && provenance.contextWindowSeedTokens == effectiveWindowTokens
+        }
+        if provenance.denominatorSource == "immutable-model-seed" {
+            return confidence == .stale
+                && provenance.contextWindowSeedTokens == effectiveWindowTokens
+        }
+        return provenance.runtimeWindowTokens == effectiveWindowTokens
+    }
+
+    private static let maxSafeInteger = 9_007_199_254_740_991
+    private static let maxContextWindowSeedTokens = 2_000_000
+
+    private static func isNonEmpty(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func isValidOptionalIdentityField(_ value: String?) -> Bool {
+        guard let value else { return true }
+        return isNonEmpty(value)
+    }
+
+    private static func isSafeNonNegativeInteger(_ value: Int) -> Bool {
+        value >= 0 && value <= maxSafeInteger
+    }
+
+    private static func isSafePositiveInteger(_ value: Int) -> Bool {
+        value > 0 && value <= maxSafeInteger
+    }
+
+    private static func isValidOptionalPositiveInteger(_ value: Int?) -> Bool {
+        guard let value else { return true }
+        return isSafePositiveInteger(value)
+    }
+
+    private static func isValidOptionalSeed(_ value: Int?) -> Bool {
+        guard let value else { return true }
+        return isSafePositiveInteger(value) && value <= maxContextWindowSeedTokens
+    }
+
+    private static func isValidOptionalNonNegativeInteger(_ value: Int?) -> Bool {
+        guard let value else { return true }
+        return isSafeNonNegativeInteger(value)
+    }
+
+    private static func isValidOptionalInvalidationReason(_ value: String?) -> Bool {
+        guard let value else { return true }
+        return invalidationReasons.contains(value)
+    }
+
+    private static func isValidProvenance(_ provenance: ContextMeterProvenanceV1) -> Bool {
+        let identity = provenance.identity
+        let order = provenance.order
+        return identity.producerRole == "lead"
+            && isNonEmpty(identity.nimbalystSessionId)
+            && isNonEmpty(identity.providerId)
+            && isNonEmpty(identity.persistedModelId)
+            && isValidOptionalIdentityField(identity.providerModelId)
+            && isValidOptionalIdentityField(identity.catalogEntryId)
+            && isValidOptionalIdentityField(identity.interfaceId)
+            && isNonEmpty(identity.upstreamThreadId)
+            && isNonEmpty(order.processInstanceId)
+            && isSafeNonNegativeInteger(order.lifecycleGeneration)
+            && isSafePositiveInteger(order.sequence)
+            && isValidOptionalIdentityField(order.turnId)
+            && isSafeNonNegativeInteger(order.observedAtMs)
+            && adapterIds.contains(provenance.adapterId)
+            && windowPolicies.contains(provenance.windowPolicy)
+            && provenance.numeratorSource == "runtime-observation"
+            && denominatorSources.contains(provenance.denominatorSource)
+            && isValidOptionalPositiveInteger(provenance.runtimeWindowTokens)
+            && isValidOptionalSeed(provenance.contextWindowSeedTokens)
+            && isSafeNonNegativeInteger(provenance.acceptedAtMs)
+            && isValidOptionalNonNegativeInteger(provenance.lastFreshObservationAtMs)
+            && isValidOptionalInvalidationReason(provenance.invalidationReason)
+    }
+
+    private static let adapterIds: Set<String> = [
+        "claude-agent-sdk-parent-v1",
+        "codex-sdk-token-count-v1",
+        "codex-app-server-thread-usage-v1"
+    ]
+    private static let windowPolicies: Set<String> = [
+        "runtime-required", "runtime-then-model-seed"
+    ]
+    private static let denominatorSources: Set<String> = [
+        "runtime-observation", "prior-runtime-observation",
+        "immutable-model-seed", "none"
+    ]
+    private static let invalidationReasons: Set<String> = [
+        "compacted", "thread-reset", "model-changed", "route-changed",
+        "interface-changed", "restart-mismatch"
+    ]
+    private static let unavailableReasons: Set<String> = [
+        "no-observation", "adapter-unavailable", "runtime-window-required",
+        "seed-conflict", "malformed-observation", "identity-invalidated",
+        "legacy-unverifiable", "turn-missing-observation", "compacted",
+        "thread-reset", "model-changed", "route-changed", "interface-changed",
+        "restart-mismatch"
+    ]
+}
+
+struct ResolvedContextMeterMetadata: Equatable {
+    let stateJson: String?
+    let tokens: Int?
+    let window: Int?
+}
+
+func resolveContextMeterMetadata(
+    _ metadata: ClientMetadata?,
+    existingStateJson: String?,
+    existingTokens: Int?,
+    existingWindow: Int?
+) -> ResolvedContextMeterMetadata {
+    if let state = metadata?.contextMeterState {
+        guard state.isValid,
+              let data = try? JSONEncoder().encode(state),
+              let stateJson = String(data: data, encoding: .utf8) else {
+            return .init(
+                stateJson: existingStateJson,
+                tokens: existingTokens,
+                window: existingWindow
+            )
+        }
+        if state.confidence == .unavailable {
+            return .init(stateJson: stateJson, tokens: nil, window: nil)
+        }
+        return .init(
+            stateJson: stateJson,
+            tokens: state.fillTokens,
+            window: state.effectiveWindowTokens
+        )
+    }
+    if existingStateJson != nil {
+        return .init(
+            stateJson: existingStateJson,
+            tokens: existingTokens,
+            window: existingWindow
+        )
+    }
+    return .init(
+        stateJson: nil,
+        tokens: metadata?.currentContext?.tokens ?? existingTokens,
+        window: metadata?.currentContext?.contextWindow ?? existingWindow
+    )
+}
+
 /// Decrypted client metadata blob - opaque to server, only clients read it.
 /// Add new display-only fields here without touching the server.
 struct ClientMetadata: Codable {
     let currentContext: ContextInfo?
+    let contextMeterState: ContextMeterStateV1?
     let hasPendingPrompt: Bool?
     /// Kanban phase: backlog, planning, implementing, validating, complete
     let phase: String?

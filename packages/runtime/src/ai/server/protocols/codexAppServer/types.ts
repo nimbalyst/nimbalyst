@@ -1,6 +1,6 @@
 // TypeScript types for the codex app-server JSON-RPC v2 protocol.
 //
-// Derived from `codex app-server generate-json-schema` against codex 0.130.0.
+// Qualified against the packaged codex 0.144.1 generated primary schema.
 // Only the subset we actually consume is typed. Frozen reference schemas live
 // at `design/agents/codex-app-server-schemas/v2/`; regenerate after any codex
 // upgrade and compare with this file.
@@ -184,7 +184,8 @@ export interface TurnCompletedNotification {
     completedAtMs?: number;
     durationMs?: number;
   };
-  usage?: TokenUsage;
+  /** Older app-server variants may include a cumulative completion snapshot. */
+  usage?: TokenUsageBreakdown;
 }
 
 export interface TurnFailedNotification {
@@ -198,10 +199,11 @@ export interface TurnFailedNotification {
 
 export interface ThreadTokenUsageUpdatedNotification {
   threadId: string;
-  usage: TokenUsage;
+  turnId: string;
+  tokenUsage: TokenUsage;
 }
 
-export interface TokenUsage {
+export interface TokenUsageBreakdown {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
@@ -210,6 +212,13 @@ export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+}
+
+/** codex 0.144.1 thread/tokenUsage/updated wire payload. */
+export interface TokenUsage {
+  last: TokenUsageBreakdown;
+  total: TokenUsageBreakdown;
+  modelContextWindow?: number | null;
 }
 
 // ---- Item notifications ----

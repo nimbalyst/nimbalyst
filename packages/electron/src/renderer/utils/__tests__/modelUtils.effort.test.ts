@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { supportsEffortLevel } from '../modelUtils';
+import { resolveCatalogReasoningValues, supportsEffortLevel } from '../modelUtils';
 
 describe('supportsEffortLevel', () => {
   it.each([
@@ -30,5 +30,30 @@ describe('supportsEffortLevel', () => {
     'claude:claude-fable-5',
   ])('does not expose effort for unsupported models: %s', (modelId) => {
     expect(supportsEffortLevel(modelId)).toBe(false);
+  });
+});
+
+describe('resolveCatalogReasoningValues', () => {
+  const controls = [
+    { persistenceKey: 'effort-level', allowedValues: ['high', 'max'], defaultValue: 'high' },
+    { persistenceKey: 'thinking-mode', allowedValues: ['enabled', 'disabled'], defaultValue: 'enabled' },
+  ] as const;
+
+  it('preserves allowed stored values and heals invalid cross-model values to catalog defaults', () => {
+    expect(resolveCatalogReasoningValues(controls, { effortLevel: 'max', thinkingMode: 'disabled' })).toEqual({
+      effortLevel: 'max',
+      thinkingMode: 'disabled',
+    });
+    expect(resolveCatalogReasoningValues(controls, { effortLevel: 'low', thinkingMode: 'unsupported' })).toEqual({
+      effortLevel: 'high',
+      thinkingMode: 'enabled',
+    });
+  });
+
+  it('returns null for controls the selected catalog entry does not support', () => {
+    expect(resolveCatalogReasoningValues([], { effortLevel: 'max', thinkingMode: 'disabled' })).toEqual({
+      effortLevel: null,
+      thinkingMode: null,
+    });
   });
 });

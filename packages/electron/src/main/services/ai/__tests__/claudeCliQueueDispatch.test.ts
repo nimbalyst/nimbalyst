@@ -10,6 +10,7 @@ import type { ClaudeCliQueueDispatchDeps } from '../claudeCliQueueDispatch';
 
 function makeDeps(overrides: Partial<ClaudeCliQueueDispatchDeps> = {}): ClaudeCliQueueDispatchDeps {
   return {
+    preflight: vi.fn(async () => true),
     isTerminalActive: vi.fn(() => false),
     ensureSession: vi.fn(async () => ({ success: true })),
     getLiveTurnState: vi.fn(async () => null),
@@ -98,6 +99,23 @@ describe('dispatchQueuedPromptToClaudeCli (NIM-834)', () => {
     const handled = await dispatchQueuedPromptToClaudeCli(deps, { sessionId: 's-1', workspacePath: '/ws' });
 
     expect(handled).toBe(false);
+    expect(deps.flushNext).not.toHaveBeenCalled();
+  });
+
+  it('does not launch or flush while durable model recovery is pending', async () => {
+    const deps = makeDeps({
+      preflight: vi.fn(async () => false),
+      isTerminalActive: vi.fn(() => true),
+      getSnapshotStatus: vi.fn(() => 'idle'),
+    });
+
+    await expect(dispatchQueuedPromptToClaudeCli(deps, {
+      sessionId: 's-blocked',
+      workspacePath: '/ws',
+    })).resolves.toBe(false);
+
+    expect(deps.isTerminalActive).not.toHaveBeenCalled();
+    expect(deps.ensureSession).not.toHaveBeenCalled();
     expect(deps.flushNext).not.toHaveBeenCalled();
   });
 });

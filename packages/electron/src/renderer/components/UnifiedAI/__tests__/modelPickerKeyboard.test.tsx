@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider, createStore } from 'jotai';
 import { ModelSelector } from '../ModelSelector';
-import { isOpenModelPickerShortcut } from '../AIInput';
-import { advancedSettingsAtom } from '../../../store/atoms/appSettings';
+import { AIInput, isOpenModelPickerShortcut } from '../AIInput';
+import { advancedSettingsAtom, aiProviderSettingsAtom } from '../../../store/atoms/appSettings';
+
+const runtimeTypeMocks = vi.hoisted(() => ({
+  shouldBlockStartedSessionProviderSwitch: vi.fn(
+    (_current?: unknown, _target?: unknown, _hasMessages?: unknown) => false,
+  ),
+}));
 
 vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
   ...await importOriginal<typeof import('@nimbalyst/runtime')>(),
@@ -13,14 +19,21 @@ vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
   getProviderIcon: () => null,
 }));
 
-vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
+vi.mock('@nimbalyst/runtime/ai/server/types', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@nimbalyst/runtime/ai/server/types')>(),
   isAgentProvider: () => false,
-  shouldBlockStartedSessionProviderSwitch: () => false,
+  shouldBlockStartedSessionProviderSwitch: runtimeTypeMocks.shouldBlockStartedSessionProviderSwitch,
 }));
 
 vi.mock('../../../help', () => ({
   HelpTooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  getHelpContent: () => ({ title: '', body: '' }),
 }));
+
+beforeEach(() => {
+  runtimeTypeMocks.shouldBlockStartedSessionProviderSwitch.mockReset();
+  runtimeTypeMocks.shouldBlockStartedSessionProviderSwitch.mockReturnValue(false);
+});
 
 afterEach(() => cleanup());
 
@@ -33,9 +46,36 @@ function renderModelSelector(ui: React.ReactElement, showDirectChatProviders = f
   const rendered = render(<Provider store={testStore}>{ui}</Provider>);
   return {
     ...rendered,
+    testStore,
     rerender: (nextUi: React.ReactElement) => rendered.rerender(
       <Provider store={testStore}>{nextUi}</Provider>,
     ),
+  };
+}
+
+function catalogModel(
+  id: string,
+  name: string,
+  availability: { selectable: boolean; code: string; reason?: string },
+) {
+  return {
+    id,
+    name,
+    provider: 'claude-code',
+    catalog: {
+      entryId: id,
+      family: 'test-family',
+      version: 'test-version',
+      capabilities: {
+        mainSession: true,
+        subagent: true,
+        consultation: true,
+        tools: true,
+        vision: false,
+      },
+      controls: [],
+      availability,
+    },
   };
 }
 
@@ -91,7 +131,7 @@ describe('AI model picker keyboard controls', () => {
     expect(document.activeElement).toBe(sonnet);
 
     fireEvent.keyDown(sonnet, { key: 'Enter' });
-    expect(onModelChange).toHaveBeenCalledWith('claude:sonnet');
+    expect(onModelChange).toHaveBeenCalledWith('claude:sonnet', expect.objectContaining({ id: 'claude:sonnet' }));
 
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     view.rerender(
@@ -195,7 +235,8 @@ describe('AI model picker keyboard controls', () => {
     expect(document.activeElement).toBe(fable);
 
     fireEvent.keyDown(fable, { key: 'Enter' });
-    expect(onModelChange).toHaveBeenCalledWith('agents:fable');
+    expect(onModelChange).toHaveBeenCalledWith('agents:fable', expect.objectContaining({ id: 'agents:fable' }));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
 
     view.rerender(
       <ModelSelector currentModel="agents:fable" onModelChange={onModelChange} openRequest={2} />,
@@ -216,10 +257,308 @@ describe('AI model picker keyboard controls', () => {
       expect(document.activeElement).toBe(sol);
 
       fireEvent.keyDown(sol, { key: 'Enter' });
-      expect(onModelChange).toHaveBeenCalledWith('agents:gpt-5.6-sol');
+      expect(onModelChange).toHaveBeenCalledWith('agents:gpt-5.6-sol', expect.objectContaining({ id: 'agents:gpt-5.6-sol' }));
+      await act(async () => {});
+      expect(screen.queryByRole('menu')).toBeNull();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('keeps mounted AIInput controls on the committed model through failure, then moves after commit', async () => {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        aiGetModels: vi.fn().mockResolvedValue({
+          success: true,
+          grouped: {
+            'claude-code': [
+              {
+                ...catalogModel('claude-code:model-a', 'Model A', { selectable: true, code: 'available' }),
+                catalog: {
+                  ...catalogModel('claude-code:model-a', 'Model A', { selectable: true, code: 'available' }).catalog,
+                  controls: [{
+                    id: 'effort-a',
+                    persistenceKey: 'effort-level',
+                    displayLabel: 'A effort',
+                    helpText: 'Committed A control',
+                    allowedValues: ['high', 'max'],
+                    defaultValue: 'high',
+                    valueLabels: { '"high"': 'High', '"max"': 'Max' },
+                  }],
+                },
+              },
+              {
+                ...catalogModel('claude-code:model-b', 'Model B', { selectable: true, code: 'available' }),
+                catalog: {
+                  ...catalogModel('claude-code:model-b', 'Model B', { selectable: true, code: 'available' }).catalog,
+                  controls: [{
+                    id: 'thinking-b',
+                    persistenceKey: 'thinking-mode',
+                    displayLabel: 'B thinking',
+                    helpText: 'Committed B control',
+                    allowedValues: ['enabled', 'disabled'],
+                    defaultValue: 'enabled',
+                    valueLabels: { '"enabled"': 'On', '"disabled"': 'Off' },
+                  }],
+                },
+              },
+            ],
+          },
+        }),
+        invoke: vi.fn(),
+      },
+    });
+    const onModelChange = vi.fn().mockResolvedValue(false);
+    const testStore = createStore();
+    const input = (currentModel: string) => (
+      <Provider store={testStore}>
+        <AIInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          currentModel={currentModel}
+          currentProvider="claude-code"
+          provider="claude-code"
+          effortLevel="high"
+          thinkingMode="enabled"
+          onEffortLevelChange={() => {}}
+          onThinkingModeChange={() => {}}
+          onModelChange={onModelChange}
+        />
+      </Provider>
+    );
+    const view = render(input('claude-code:model-a'));
+
+    fireEvent.click(screen.getByTestId('model-picker'));
+    expect(
+      (await screen.findByTestId('catalog-control-effort-level')).getAttribute('aria-label'),
+    ).toBe('A effort: High');
+    fireEvent.click(screen.getByRole('button', { name: 'Model B' }));
+
+    await waitFor(() => expect(onModelChange).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.getByTestId('catalog-control-effort-level')).toBeTruthy();
+    expect(screen.queryByTestId('catalog-control-thinking-mode')).toBeNull();
+
+    onModelChange.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Model B' }));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    expect(screen.getByTestId('catalog-control-effort-level')).toBeTruthy();
+
+    view.rerender(input('claude-code:model-b'));
+    await waitFor(() => expect(screen.getByTestId('catalog-control-thinking-mode')).toBeTruthy());
+    expect(screen.queryByTestId('catalog-control-effort-level')).toBeNull();
+  });
+
+  it('keeps unavailable catalog rows inspectable but out of selection and keyboard navigation', async () => {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        aiGetModels: vi.fn().mockResolvedValue({
+          success: true,
+          grouped: {
+            'claude-code': [
+              { id: 'claude-code:opus', name: 'Claude Agent - Opus', provider: 'claude-code' },
+              {
+                id: 'claude-code:claudex-sol',
+                name: 'Claude Agent - Sol (Claudex)',
+                provider: 'claude-code',
+                catalog: {
+                  entryId: 'claudex-sol',
+                  family: 'codex',
+                  version: 'gpt-5.6-sol',
+                  capabilities: { mainSession: true, subagent: true, consultation: true, tools: true, vision: false },
+                  controls: [],
+                  availability: {
+                    selectable: false,
+                    code: 'missing-credential',
+                    reason: 'The required provider credential is unavailable.',
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      },
+    });
+    const onModelChange = vi.fn();
+    renderModelSelector(
+      <ModelSelector currentModel="claude-code:opus" onModelChange={onModelChange} />,
+    );
+
+    fireEvent.click(screen.getByTestId('model-picker'));
+    const unavailable = await screen.findByRole('button', {
+      name: 'Claude Agent - Sol (Claudex). The required provider credential is unavailable.',
+    });
+    expect(unavailable.getAttribute('aria-disabled')).toBe('true');
+    expect(unavailable.getAttribute('tabindex')).toBe('-1');
+    unavailable.focus();
+    fireEvent.keyDown(unavailable, { key: 'Enter' });
+    fireEvent.keyDown(unavailable, { key: ' ' });
+    fireEvent.click(unavailable);
+    expect(onModelChange).not.toHaveBeenCalled();
+  });
+
+  it('ignores an older model-list response and loading completion after settings refresh', async () => {
+    let resolveOlder!: (value: unknown) => void;
+    let resolveNewer!: (value: unknown) => void;
+    const older = new Promise(resolve => { resolveOlder = resolve; });
+    const newer = new Promise(resolve => { resolveNewer = resolve; });
+    const aiGetModels = vi.fn()
+      .mockReturnValueOnce(older)
+      .mockReturnValueOnce(newer);
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: { aiGetModels },
+    });
+    const view = renderModelSelector(
+      <ModelSelector currentModel="claude-code:fresh" onModelChange={() => {}} />,
+      true,
+    );
+
+    fireEvent.click(screen.getByTestId('model-picker'));
+    await waitFor(() => expect(aiGetModels).toHaveBeenCalledTimes(1));
+    act(() => {
+      const settings = view.testStore.get(aiProviderSettingsAtom);
+      view.testStore.set(aiProviderSettingsAtom, {
+        ...settings,
+        providers: { ...settings.providers },
+      });
+    });
+    await waitFor(() => expect(aiGetModels).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      resolveNewer({
+        success: true,
+        grouped: {
+          'claude-code': [catalogModel('claude-code:fresh', 'Fresh', {
+            selectable: false,
+            code: 'missing-credential',
+            reason: 'New catalog unavailable.',
+          })],
+        },
+      });
+      await newer;
+    });
+    const fresh = await screen.findByRole('button', {
+      name: 'Fresh. New catalog unavailable.',
+    });
+    expect(fresh.getAttribute('aria-disabled')).toBe('true');
+
+    await act(async () => {
+      resolveOlder({
+        success: true,
+        grouped: { claude: [{ id: 'claude:stale', name: 'Stale', provider: 'claude' }] },
+      });
+      await older;
+    });
+    expect(screen.getByRole('button', {
+      name: 'Fresh. New catalog unavailable.',
+    }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.queryByRole('button', { name: 'Stale' })).toBeNull();
+    expect(screen.queryByText('Loading models...')).toBeNull();
+  });
+
+  it('ignores an older model-list rejection and error/loading side effects after settings refresh', async () => {
+    let rejectOlder!: (error: Error) => void;
+    let resolveNewer!: (value: unknown) => void;
+    const older = new Promise((_resolve, reject) => { rejectOlder = reject; });
+    const newer = new Promise(resolve => { resolveNewer = resolve; });
+    const aiGetModels = vi.fn()
+      .mockReturnValueOnce(older)
+      .mockReturnValueOnce(newer);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: { aiGetModels },
+    });
+    const view = renderModelSelector(
+      <ModelSelector currentModel="claude-code:fresh" onModelChange={() => {}} />,
+      true,
+    );
+
+    fireEvent.click(screen.getByTestId('model-picker'));
+    await waitFor(() => expect(aiGetModels).toHaveBeenCalledTimes(1));
+    act(() => {
+      const settings = view.testStore.get(aiProviderSettingsAtom);
+      view.testStore.set(aiProviderSettingsAtom, {
+        ...settings,
+        providers: { ...settings.providers },
+      });
+    });
+    await waitFor(() => expect(aiGetModels).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      resolveNewer({
+        success: true,
+        grouped: {
+          'claude-code': [catalogModel('claude-code:fresh', 'Fresh', {
+            selectable: false,
+            code: 'missing-credential',
+            reason: 'New catalog unavailable.',
+          })],
+        },
+      });
+      await newer;
+    });
+    expect((await screen.findByRole('button', {
+      name: 'Fresh. New catalog unavailable.',
+    })).getAttribute('aria-disabled')).toBe('true');
+
+    await act(async () => {
+      rejectOlder(new Error('stale request failed'));
+      await expect(older).rejects.toThrow('stale request failed');
+    });
+    expect(screen.getByRole('button', {
+      name: 'Fresh. New catalog unavailable.',
+    }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.queryByText('Loading models...')).toBeNull();
+    expect(consoleError).not.toHaveBeenCalledWith(
+      'Failed to load models:',
+      expect.anything(),
+    );
+    consoleError.mockRestore();
+  });
+
+  it('blocks programmatic Enter and Space activation for started-session provider guards', async () => {
+    runtimeTypeMocks.shouldBlockStartedSessionProviderSwitch.mockImplementation(
+      (_current, target, hasMessages) => Boolean(hasMessages && target === 'openai'),
+    );
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        aiGetModels: vi.fn().mockResolvedValue({
+          success: true,
+          grouped: {
+            claude: [{ id: 'claude:haiku', name: 'Haiku', provider: 'claude' }],
+            openai: [{ id: 'openai:gpt-5', name: 'GPT-5', provider: 'openai' }],
+          },
+        }),
+      },
+    });
+    const onModelChange = vi.fn();
+    renderModelSelector(
+      <ModelSelector
+        currentModel="claude:haiku"
+        currentProvider="claude"
+        sessionHasMessages
+        onModelChange={onModelChange}
+      />,
+      true,
+    );
+
+    fireEvent.click(screen.getByTestId('model-picker'));
+    const guarded = await screen.findByRole('button', {
+      name: 'GPT-5. Start a new session to switch providers after the session has started',
+    });
+    expect(guarded.getAttribute('aria-disabled')).toBe('true');
+    expect(guarded.getAttribute('tabindex')).toBe('-1');
+    guarded.focus();
+    fireEvent.keyDown(guarded, { key: 'Enter' });
+    fireEvent.keyDown(guarded, { key: ' ' });
+    fireEvent.click(guarded);
+    expect(onModelChange).not.toHaveBeenCalled();
   });
 });
 

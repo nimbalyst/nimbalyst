@@ -9,11 +9,30 @@ describe('Claude Code persisted session routing', () => {
       'session-1',
       OLLAMA_MODEL,
       undefined,
-      async () => ({ model: OLLAMA_MODEL })
+      async () => ({ model: OLLAMA_MODEL, workspacePath: 'D:/workspace' })
     );
 
     expect(result.model).toBe(OLLAMA_MODEL);
     expect(result.backend?.id).toBe('ollama-glm-5-2-cloud');
+    expect(result.workspacePath).toBe('D:/workspace');
+  });
+
+  it.each([
+    'claude-code:claudex-sol',
+    'claude-code:openrouter-deepseek-v4-flash',
+  ])('passes valid general catalog identity %s to the runtime resolver', async (model) => {
+    const result = await resolveClaudeCodeSessionRoute(
+      'session-general',
+      model,
+      undefined,
+      async () => ({ model, workspacePath: 'D:/workspace' }),
+    );
+
+    expect(result).toMatchObject({
+      model,
+      backend: undefined,
+      workspacePath: 'D:/workspace',
+    });
   });
 
   it('fails closed when an Ollama session persistence read fails', async () => {
@@ -49,7 +68,7 @@ describe('Claude Code persisted session routing', () => {
       OLLAMA_MODEL,
       undefined,
       async () => ({ model: 'claude-code:ollama-similar' })
-    )).rejects.toThrow('Unsupported Claude Code Ollama model identity');
+    )).rejects.toThrow('Unsupported catalog-owned Claude Code model identity');
   });
 
   it('preserves the ordinary-session fallback when persistence is unavailable', async () => {
@@ -64,6 +83,7 @@ describe('Claude Code persisted session routing', () => {
       model: 'claude-code:opus',
       metadata: { effortLevel: 'high' },
       backend: undefined,
+      workspacePath: undefined,
     });
   });
 });

@@ -281,8 +281,10 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
       model: 'glm-5.2:cloud',
       upstreamModel: 'openai/glm-5.2:cloud',
       downstreamAlias: 'claude-sonnet-4-5-20250929',
-      baseUrl: 'http://127.0.0.1:4002',
     });
+    expect(result.claudeCodeBackend).not.toHaveProperty('baseUrl');
+    expect(result.claudeCodeBackend).not.toHaveProperty('upstreamBaseUrl');
+    expect(result.claudeCodeBackend).not.toHaveProperty('authToken');
   });
 
   it('derives and persists the backend from the canonical model without a backend argument', async () => {
