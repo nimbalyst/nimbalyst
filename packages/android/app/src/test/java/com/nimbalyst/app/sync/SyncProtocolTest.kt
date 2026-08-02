@@ -22,8 +22,8 @@ import org.junit.Test
  * literal values.
  *
  * The app uses a bare `Gson()` (see SyncManager.kt: `private val gson = Gson()`).
- * [ClientMetadata] carries its key-presence adapter on the type itself, so the same bare
- * `Gson()` here exercises the exact decrypted-metadata configuration the app ships.
+ * [ClientMetadata.contextMeterState] carries its key-presence adapter on the reflected field, so
+ * the same bare `Gson()` here exercises the exact decrypted-metadata configuration the app ships.
  */
 class SyncProtocolTest {
 
@@ -439,32 +439,53 @@ class SyncProtocolTest {
             ),
         ).asJsonObject
         val explicitNullPaths = listOf(
-            listOf("contextMeterState", "provenance", "identity", "providerModelId"),
-            listOf("contextMeterState", "provenance", "identity", "catalogEntryId"),
-            listOf("contextMeterState", "provenance", "identity", "interfaceId"),
-            listOf("contextMeterState", "provenance", "order", "turnId"),
-            listOf("contextMeterState", "provenance", "runtimeWindowTokens"),
-            listOf("contextMeterState", "provenance", "contextWindowSeedTokens"),
-            listOf("contextMeterState", "provenance", "lastFreshObservationAtMs"),
-            listOf("contextMeterState", "provenance", "invalidationReason"),
+            "identity.providerModelId" to
+                listOf("contextMeterState", "provenance", "identity", "providerModelId"),
+            "identity.catalogEntryId" to
+                listOf("contextMeterState", "provenance", "identity", "catalogEntryId"),
+            "identity.interfaceId" to
+                listOf("contextMeterState", "provenance", "identity", "interfaceId"),
+            "order.turnId" to
+                listOf("contextMeterState", "provenance", "order", "turnId"),
+            "provenance.runtimeWindowTokens" to
+                listOf("contextMeterState", "provenance", "runtimeWindowTokens"),
+            "provenance.contextWindowSeedTokens" to
+                listOf("contextMeterState", "provenance", "contextWindowSeedTokens"),
+            "provenance.lastFreshObservationAtMs" to
+                listOf("contextMeterState", "provenance", "lastFreshObservationAtMs"),
+            "provenance.invalidationReason" to
+                listOf("contextMeterState", "provenance", "invalidationReason"),
         )
-        val candidates = explicitNullPaths.map { path ->
-            base.deepCopy().also { setExplicitNull(it, path) }
+        val candidates = explicitNullPaths.map { (label, path) ->
+            ExplicitNullCandidate(
+                label = label,
+                path = path,
+                json = base.deepCopy().also { setExplicitNull(it, path) },
+            )
         }.toMutableList()
-        candidates += JsonParser.parseString(
-            """{"contextMeterState":{"schemaVersion":1,"confidence":"unavailable","reason":"thread-reset","provenance":null}}""",
-        ).asJsonObject
+        candidates += ExplicitNullCandidate(
+            label = "unavailable.provenance",
+            path = listOf("contextMeterState", "provenance"),
+            json = JsonParser.parseString(
+                """{"contextMeterState":{"schemaVersion":1,"confidence":"unavailable","reason":"thread-reset","provenance":null}}""",
+            ).asJsonObject,
+        )
         val crypto = CryptoManager.fromSeed("context-meter-test-seed", "context-meter-test-user")
         val expected = ResolvedContextMeterMetadata(trustedJson, 42_000, 200_000)
 
         candidates.forEach { candidate ->
-            val encrypted = crypto.encrypt(gson.toJson(candidate))
+            assertTrue(
+                "${candidate.label} fixture must contain explicit null",
+                hasExplicitNull(candidate.json, candidate.path),
+            )
+            val encrypted = crypto.encrypt(gson.toJson(candidate.json))
             val decrypted = crypto.decrypt(encrypted.encrypted, encrypted.iv)
             val decoded = runCatching {
                 gson.fromJson(decrypted, ClientMetadata::class.java)
             }.getOrNull()
-            assertNull(decoded)
+            assertNull("${candidate.label} must be rejected", decoded)
             assertEquals(
+                "${candidate.label} must preserve trusted state and mirrors",
                 expected,
                 resolveContextMeterMetadata(decoded, trustedJson, 42_000, 200_000),
             )
@@ -518,6 +539,23 @@ class SyncProtocolTest {
         path.dropLast(1).forEach { key -> current = current.getAsJsonObject(key) }
         current.add(path.last(), JsonNull.INSTANCE)
     }
+
+    private fun hasExplicitNull(root: JsonObject, path: List<String>): Boolean {
+        var current: JsonObject = root
+        path.dropLast(1).forEach { key ->
+            val next = current.get(key)
+            if (next == null || !next.isJsonObject) return false
+            current = next.asJsonObject
+        }
+        val value = current.get(path.last())
+        return value != null && value.isJsonNull
+    }
+
+    private data class ExplicitNullCandidate(
+        val label: String,
+        val path: List<String>,
+        val json: JsonObject,
+    )
 
     @Test
     fun `ContextInfo round-trip and keys`() {
