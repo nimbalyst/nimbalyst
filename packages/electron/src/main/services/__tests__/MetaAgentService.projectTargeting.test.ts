@@ -15,6 +15,9 @@ const {
   recordPriorityInterruptReceiptMock,
   getQueuedPromptMock,
   setMetaAgentToolFnsMock,
+  resolveClaudeCodeBackendMock,
+  resolveClaudeCodeBackendForConfigMock,
+  preflightOllamaClaudeCodeBackendMock,
 } = vi.hoisted(() => ({
   hasLiveWindowForWorkspaceMock: vi.fn(),
   createWorktreeMock: vi.fn(),
@@ -30,6 +33,9 @@ const {
   recordPriorityInterruptReceiptMock: vi.fn(),
   getQueuedPromptMock: vi.fn(),
   setMetaAgentToolFnsMock: vi.fn(),
+  resolveClaudeCodeBackendMock: vi.fn(),
+  resolveClaudeCodeBackendForConfigMock: vi.fn(),
+  preflightOllamaClaudeCodeBackendMock: vi.fn(),
 }));
 
 vi.mock('@nimbalyst/runtime', () => ({
@@ -51,6 +57,12 @@ vi.mock('@nimbalyst/runtime/ai/server', () => ({
   SessionManager: class {
     async initialize() {}
   },
+  resolveClaudeCodeBackend: resolveClaudeCodeBackendMock,
+  resolveClaudeCodeBackendForConfig: resolveClaudeCodeBackendForConfigMock,
+}));
+
+vi.mock('../ai/OllamaClaudeCodePreflight', () => ({
+  preflightOllamaClaudeCodeBackend: preflightOllamaClaudeCodeBackendMock,
 }));
 
 vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
@@ -208,6 +220,9 @@ describe('MetaAgentService project-targeted session routing (NIM-408)', () => {
     );
     getQueuedPromptMock.mockReset().mockResolvedValue(priorityRow);
     setMetaAgentToolFnsMock.mockReset();
+    resolveClaudeCodeBackendMock.mockReset();
+    resolveClaudeCodeBackendForConfigMock.mockReset();
+    preflightOllamaClaudeCodeBackendMock.mockReset().mockResolvedValue(undefined);
     vi.mocked(AISessionsRepository.get).mockReset();
     vi.mocked(AISessionsRepository.create).mockReset();
     vi.mocked(AISessionsRepository.updateMetadata).mockReset();
@@ -619,6 +634,70 @@ describe('MetaAgentService project-targeted session routing (NIM-408)', () => {
         launchConfiguration,
       }),
     ]);
+  });
+
+  it('projects an exact non-Ollama catalog provider without route or credential material', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = {};
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(caller as any);
+    const reviewedBackend = {
+      id: 'claudex-sol',
+      persistedModel: 'claude-code:claudex-sol',
+      provider: 'claudex',
+      model: 'gpt-5.6-sol',
+      upstreamModel: 'gpt-5.6-sol',
+      upstreamBaseUrl: 'http://127.0.0.1:38116/v1',
+      baseUrl: 'http://127.0.0.1:38116/v1',
+      authToken: 'synthetic-test-only-token',
+      claudeModelAlias: 'gpt-5.6-sol',
+    };
+    resolveClaudeCodeBackendMock.mockReturnValue(reviewedBackend);
+    resolveClaudeCodeBackendForConfigMock.mockReturnValue(reviewedBackend);
+
+    const result = await (service as any).createChildSessionInternal(
+      'caller',
+      '/project-a',
+      {
+        provider: 'claude-code',
+        claudeCodeBackend: 'claudex-sol',
+      },
+    );
+
+    expect(result.claudeCodeBackend).toMatchObject({
+      id: 'claudex-sol',
+      persistedModel: 'claude-code:claudex-sol',
+      provider: 'claudex',
+      model: 'gpt-5.6-sol',
+      upstreamModel: 'gpt-5.6-sol',
+      downstreamAlias: 'gpt-5.6-sol',
+    });
+    expect(result.claudeCodeBackend).not.toHaveProperty('baseUrl');
+    expect(result.claudeCodeBackend).not.toHaveProperty('upstreamBaseUrl');
+    expect(result.claudeCodeBackend).not.toHaveProperty('authToken');
+    expect(preflightOllamaClaudeCodeBackendMock).toHaveBeenCalledWith(reviewedBackend);
+  });
+
+  it('preserves fail-closed model/backend mismatch before session mutation', async () => {
+    const service = MetaAgentService.getInstance();
+    (service as any).aiService = {};
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(caller as any);
+    resolveClaudeCodeBackendMock.mockReturnValue({
+      id: 'claudex-sol',
+      persistedModel: 'claude-code:claudex-sol',
+    });
+    resolveClaudeCodeBackendForConfigMock.mockImplementation(() => {
+      throw new Error('Claude Code backend claudex-sol does not match persisted model');
+    });
+
+    await expect(
+      (service as any).createChildSessionInternal('caller', '/project-a', {
+        provider: 'claude-code',
+        model: 'claude-code:claudex-terra',
+        claudeCodeBackend: 'claudex-sol',
+      }),
+    ).rejects.toThrow('does not match persisted model');
+    expect(vi.mocked(AISessionsRepository.create)).not.toHaveBeenCalled();
+    expect(preflightOllamaClaudeCodeBackendMock).not.toHaveBeenCalled();
   });
 
   it('exposes creation and supervision through the injected MCP tool route', async () => {
