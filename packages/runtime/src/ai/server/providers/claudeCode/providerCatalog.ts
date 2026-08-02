@@ -288,6 +288,9 @@ const CATALOG_PERSISTED_ID_NAMESPACES = new Set([
 ]);
 export const REVIEWED_PROVIDER_CREDENTIAL_REFERENCES = [
   "nimbalyst.local-proxy",
+  "workspace.claudex-ingress",
+  "workspace.deepseek-api",
+  "workspace.openrouter-api",
 ] as const;
 const REVIEWED_CREDENTIAL_REFERENCES = new Set<string>(
   REVIEWED_PROVIDER_CREDENTIAL_REFERENCES
@@ -295,7 +298,7 @@ const REVIEWED_CREDENTIAL_REFERENCES = new Set<string>(
 const SECRET_LIKE_CREDENTIAL_REFERENCE_PATTERN =
   /^(?:api|auth|bearer|key|password|pk|secret|sk|token)[._-]/;
 const REVIEWED_ANTHROPIC_PROXY_BASE_PATH_PATTERN =
-  /^\/(?:(?:(?:anthropic|api|openai)\/)?v[0-9]+\/?)?$/;
+  /^\/(?:(?:anthropic|api|openai)(?:\/v[0-9]+)?|v[0-9]+)?\/?$/;
 
 export function isCatalogPersistedModelId(model: string): boolean {
   return [...CATALOG_PERSISTED_ID_NAMESPACES].some((namespace) =>

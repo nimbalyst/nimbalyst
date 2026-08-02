@@ -414,6 +414,8 @@ export interface SessionData {
 
 export interface ProviderConfig {
   apiKey?: string;
+  /** Stable project scope for explicit per-workspace provider credentials. */
+  workspacePath?: string;
   model?: string;
   maxTokens?: number;
   temperature?: number;

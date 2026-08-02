@@ -45,6 +45,21 @@ const OLLAMA_UPSTREAM_ENDPOINT = "https://ollama.com/v1";
 const LOCAL_PROXY_ENDPOINT = "http://127.0.0.1:4002";
 export const LOCAL_PROXY_CREDENTIAL_REF =
   REVIEWED_PROVIDER_CREDENTIAL_REFERENCES[0];
+export const CLAUDEX_INGRESS_CREDENTIAL_REF =
+  REVIEWED_PROVIDER_CREDENTIAL_REFERENCES[1];
+export const DEEPSEEK_API_CREDENTIAL_REF =
+  REVIEWED_PROVIDER_CREDENTIAL_REFERENCES[2];
+export const OPENROUTER_API_CREDENTIAL_REF =
+  REVIEWED_PROVIDER_CREDENTIAL_REFERENCES[3];
+
+export const CLAUDEX_SOL_ENTRY_ID = "claudex-sol";
+export const CLAUDEX_TERRA_ENTRY_ID = "claudex-terra";
+export const CLAUDEX_LUNA_ENTRY_ID = "claudex-luna";
+export const DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID = "deepseek-v4-pro-official";
+export const DEEPSEEK_V4_FLASH_OFFICIAL_ENTRY_ID = "deepseek-v4-flash-official";
+export const DEEPSEEK_V4_PRO_OPENROUTER_ENTRY_ID = "deepseek-v4-pro-openrouter";
+export const DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID =
+  "deepseek-v4-flash-openrouter";
 
 const FAMILY_ORDER: Readonly<Record<string, number>> = {
   native: 10,
@@ -109,6 +124,108 @@ function createOllamaCatalogEntry(options: {
       },
     ],
     controls: {},
+  };
+}
+
+function createReviewedRouteEntry(options: {
+  id: string;
+  provider: "deepseek" | "openai" | "openrouter";
+  persistedId: string;
+  persistedIdNamespace:
+    | "claude-code:claudex-"
+    | "claude-code:deepseek-"
+    | "claude-code:openrouter-";
+  providerModelId: string;
+  modelAlias: string;
+  endpoint: string;
+  credentialRef: string;
+  controls?: ProviderCatalogEntry["controls"];
+}): ProviderCatalogEntry {
+  return {
+    id: options.id,
+    provider: options.provider,
+    harness: { id: "claude-agent", order: 10 },
+    family: {
+      id: options.provider === "openai" ? "codex" : "deepseek",
+      order: options.provider === "openai" ? 70 : 20,
+    },
+    displayName: options.providerModelId,
+    model: {
+      persistedId: options.persistedId,
+      persistedIdNamespace: options.persistedIdNamespace,
+      providerModelId: options.providerModelId,
+      version: options.providerModelId,
+    },
+    capabilities: {
+      mainSession: true,
+      subagent: true,
+      consultation: true,
+      tools: true,
+      vision: false,
+    },
+    interfaces: [
+      {
+        id: "claude-agent-anthropic",
+        kind: "http",
+        consumers: [
+          "claude-agent-main",
+          "claude-agent-subagent",
+          "consultation",
+        ],
+        protocol: "anthropic-messages",
+        transportProfile: "anthropic-compatible-proxy",
+        authProfile: "credential-reference",
+        endpoint: options.endpoint,
+        credentialRef: options.credentialRef,
+        modelAlias: options.modelAlias,
+      },
+    ],
+    controls: options.controls ?? {},
+  };
+}
+
+function createEffortControl(
+  interfaceId: string
+): ProviderCatalogEntry["controls"] {
+  return {
+    effort: {
+      persistenceKey: "effort-level",
+      allowedValues: ["high", "max"],
+      defaultValue: "high",
+      mappings: [
+        {
+          interfaceId,
+          target: "launch.effort-level",
+          values: [
+            { storedValue: "high", resolvedValue: "high" },
+            { storedValue: "max", resolvedValue: "max" },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+function createDeepSeekControls(
+  interfaceId: string
+): ProviderCatalogEntry["controls"] {
+  return {
+    ...createEffortControl(interfaceId),
+    thinking: {
+      persistenceKey: "thinking-mode",
+      allowedValues: ["enabled", "disabled"],
+      defaultValue: "enabled",
+      mappings: [
+        {
+          interfaceId,
+          target: "launch.thinking-mode",
+          values: [
+            { storedValue: "enabled", resolvedValue: "enabled" },
+            { storedValue: "disabled", resolvedValue: "disabled" },
+          ],
+        },
+      ],
+    },
   };
 }
 
@@ -208,5 +325,82 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     upstreamModel: "openai/deepseek-v4-pro:cloud",
     modelAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_SDK_ALIAS,
     family: "deepseek",
+  }),
+  createReviewedRouteEntry({
+    id: CLAUDEX_SOL_ENTRY_ID,
+    provider: "openai",
+    persistedId: "claude-code:claudex-sol",
+    persistedIdNamespace: "claude-code:claudex-",
+    providerModelId: "gpt-5.6-sol",
+    modelAlias: "gpt-5.6-sol",
+    endpoint: "http://127.0.0.1:38117",
+    credentialRef: CLAUDEX_INGRESS_CREDENTIAL_REF,
+    controls: createEffortControl("claude-agent-anthropic"),
+  }),
+  createReviewedRouteEntry({
+    id: CLAUDEX_TERRA_ENTRY_ID,
+    provider: "openai",
+    persistedId: "claude-code:claudex-terra",
+    persistedIdNamespace: "claude-code:claudex-",
+    providerModelId: "gpt-5.6-terra",
+    modelAlias: "gpt-5.6-terra",
+    endpoint: "http://127.0.0.1:38117",
+    credentialRef: CLAUDEX_INGRESS_CREDENTIAL_REF,
+    controls: createEffortControl("claude-agent-anthropic"),
+  }),
+  createReviewedRouteEntry({
+    id: CLAUDEX_LUNA_ENTRY_ID,
+    provider: "openai",
+    persistedId: "claude-code:claudex-luna",
+    persistedIdNamespace: "claude-code:claudex-",
+    providerModelId: "gpt-5.6-luna",
+    modelAlias: "gpt-5.6-luna",
+    endpoint: "http://127.0.0.1:38117",
+    credentialRef: CLAUDEX_INGRESS_CREDENTIAL_REF,
+    controls: createEffortControl("claude-agent-anthropic"),
+  }),
+  createReviewedRouteEntry({
+    id: DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID,
+    provider: "deepseek",
+    persistedId: "claude-code:deepseek-v4-pro",
+    persistedIdNamespace: "claude-code:deepseek-",
+    providerModelId: "deepseek-v4-pro",
+    modelAlias: "deepseek-v4-pro[1m]",
+    endpoint: "https://api.deepseek.com/anthropic",
+    credentialRef: DEEPSEEK_API_CREDENTIAL_REF,
+    controls: createDeepSeekControls("claude-agent-anthropic"),
+  }),
+  createReviewedRouteEntry({
+    id: DEEPSEEK_V4_FLASH_OFFICIAL_ENTRY_ID,
+    provider: "deepseek",
+    persistedId: "claude-code:deepseek-v4-flash",
+    persistedIdNamespace: "claude-code:deepseek-",
+    providerModelId: "deepseek-v4-flash",
+    modelAlias: "deepseek-v4-flash",
+    endpoint: "https://api.deepseek.com/anthropic",
+    credentialRef: DEEPSEEK_API_CREDENTIAL_REF,
+    controls: createDeepSeekControls("claude-agent-anthropic"),
+  }),
+  createReviewedRouteEntry({
+    id: DEEPSEEK_V4_PRO_OPENROUTER_ENTRY_ID,
+    provider: "openrouter",
+    persistedId: "claude-code:openrouter-deepseek-v4-pro",
+    persistedIdNamespace: "claude-code:openrouter-",
+    providerModelId: "deepseek/deepseek-v4-pro",
+    modelAlias: "deepseek/deepseek-v4-pro",
+    endpoint: "https://openrouter.ai/api",
+    credentialRef: OPENROUTER_API_CREDENTIAL_REF,
+    controls: createDeepSeekControls("claude-agent-anthropic"),
+  }),
+  createReviewedRouteEntry({
+    id: DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID,
+    provider: "openrouter",
+    persistedId: "claude-code:openrouter-deepseek-v4-flash",
+    persistedIdNamespace: "claude-code:openrouter-",
+    providerModelId: "deepseek/deepseek-v4-flash",
+    modelAlias: "deepseek/deepseek-v4-flash",
+    endpoint: "https://openrouter.ai/api",
+    credentialRef: OPENROUTER_API_CREDENTIAL_REF,
+    controls: createDeepSeekControls("claude-agent-anthropic"),
   }),
 ];

@@ -377,6 +377,59 @@ function parseJson(
   }
 }
 
+/** Read the current overlay without performing legacy migration writes. */
+export function readProviderCatalogFromDirectory(
+  directory: string,
+  defaults: readonly ProviderCatalogEntry[]
+): LoadedProviderCatalog {
+  const overlayPath = path.join(directory, PROVIDER_CATALOG_OVERLAY_FILE);
+  const legacyPath = path.join(directory, LEGACY_OLLAMA_BACKENDS_FILE);
+  const legacyExists = fs.existsSync(legacyPath);
+  if (!fs.existsSync(overlayPath)) {
+    return {
+      resolution: resolveProviderCatalog(defaults, undefined),
+      migration: {
+        performed: false,
+        sourcePreserved: legacyExists,
+        legacyPath,
+        overlayPath,
+      },
+    };
+  }
+  let raw: string;
+  try {
+    raw = fs.readFileSync(overlayPath, "utf-8");
+  } catch {
+    const readError = error(
+      "invalid-overlay",
+      "Provider catalog overlay could not be read and was not applied."
+    );
+    return {
+      resolution: resolveProviderCatalog(defaults, undefined, [readError]),
+      migration: {
+        performed: false,
+        sourcePreserved: legacyExists,
+        legacyPath,
+        overlayPath,
+      },
+    };
+  }
+  const parsed = parseJson(raw, PROVIDER_CATALOG_OVERLAY_FILE);
+  return {
+    resolution: resolveProviderCatalog(
+      defaults,
+      parsed.value,
+      parsed.error ? [parsed.error] : []
+    ),
+    migration: {
+      performed: false,
+      sourcePreserved: legacyExists,
+      legacyPath,
+      overlayPath,
+    },
+  };
+}
+
 export function loadProviderCatalogFromDirectory(
   directory: string,
   defaults: readonly ProviderCatalogEntry[]
@@ -386,38 +439,7 @@ export function loadProviderCatalogFromDirectory(
   const legacyExists = fs.existsSync(legacyPath);
 
   if (fs.existsSync(overlayPath)) {
-    let raw: string;
-    try {
-      raw = fs.readFileSync(overlayPath, "utf-8");
-    } catch {
-      const readError = error(
-        "invalid-overlay",
-        "Provider catalog overlay could not be read and was not applied."
-      );
-      return {
-        resolution: resolveProviderCatalog(defaults, undefined, [readError]),
-        migration: {
-          performed: false,
-          sourcePreserved: legacyExists,
-          legacyPath,
-          overlayPath,
-        },
-      };
-    }
-    const parsed = parseJson(raw, PROVIDER_CATALOG_OVERLAY_FILE);
-    return {
-      resolution: resolveProviderCatalog(
-        defaults,
-        parsed.value,
-        parsed.error ? [parsed.error] : []
-      ),
-      migration: {
-        performed: false,
-        sourcePreserved: legacyExists,
-        legacyPath,
-        overlayPath,
-      },
-    };
+    return readProviderCatalogFromDirectory(directory, defaults);
   }
 
   if (!legacyExists) {
@@ -509,6 +531,23 @@ export function loadProviderCatalog(
     };
   }
   return loadProviderCatalogFromDirectory(
+    path.join(appData, "@nimbalyst", "electron"),
+    defaults
+  );
+}
+
+/** Read the current production overlay on every call without migration I/O. */
+export function readProviderCatalog(
+  defaults: readonly ProviderCatalogEntry[]
+): LoadedProviderCatalog {
+  const appData = process.env.APPDATA;
+  if (!appData || process.env.VITEST) {
+    return {
+      resolution: resolveProviderCatalog(defaults, undefined),
+      migration: { performed: false, sourcePreserved: false },
+    };
+  }
+  return readProviderCatalogFromDirectory(
     path.join(appData, "@nimbalyst", "electron"),
     defaults
   );

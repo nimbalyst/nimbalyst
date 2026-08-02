@@ -47,7 +47,21 @@ import {
   CLAUDE_CODE_SAFE_FALLBACK_MODEL,
   baseContextWindowForVariant,
 } from '../../modelConstants';
-import { resolveClaudeCodeBackendForConfig } from './claudeCode/customBackends';
+import { PROVIDER_CATALOG_RESOLUTION, resolveClaudeCodeBackendForConfig } from './claudeCode/customBackends';
+import type { ProviderCatalogResolution } from './claudeCode/providerCatalog';
+import {
+  getProviderRouteCredentialPresence,
+  preflightProviderRuntimeCredentials,
+  type ConfirmedProviderRuntimeCredentials,
+} from './claudeCode/providerRouteCredentials';
+import { persistProviderRuntimeRouteSnapshot } from './claudeCode/providerRuntimeRoutePersistence';
+import {
+  ProviderRuntimeRouteError,
+  resolveClaudeAgentRuntimeRoutes,
+  serializeProviderRuntimeRouteReceipt,
+  type ClaudeAgentRuntimeRouteBundle,
+  type ProviderRuntimeSessionSnapshot,
+} from './claudeCode/runtimeRouteResolver';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
 import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
@@ -219,6 +233,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   private markMessagesAsHidden: boolean = false; // Flag to mark next messages as hidden
   private helperMethod: 'native' | 'custom' = 'native';
+  private runtimeRoutes: Readonly<ClaudeAgentRuntimeRouteBundle> | undefined;
+  private readonly loggedRuntimeRouteReceipts = new Set<string>();
 
   // Lead query reference for interruptWithMessage support
   private leadQuery: Query | null = null;
@@ -496,6 +512,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   public static setClaudeSettingsPatternChecker(checker: ((workspacePath: string, pattern: string) => Promise<boolean>) | null): void { ClaudeCodeDeps.setClaudeSettingsPatternChecker(checker); }
   public static setTrustChecker(checker: ((workspacePath: string) => { trusted: boolean; mode: 'ask' | 'allow-all' | 'bypass-all' | null; allowAllUsesClassifier?: boolean }) | null): void { BaseAgentProvider.setTrustChecker(checker); }
   public static setExtensionFileTypesLoader(loader: (() => Set<string>) | null): void { ClaudeCodeDeps.setExtensionFileTypesLoader(loader); }
+  public static setProviderCredentialResolver(loader: ((credentialRef: string, context?: Readonly<{ workspacePath?: string }>) => string | undefined) | null): void { ClaudeCodeDeps.setProviderCredentialResolver(loader); }
+  public static setProviderCatalogResolutionLoader(loader: (() => ProviderCatalogResolution) | null): void { ClaudeCodeDeps.setProviderCatalogResolutionLoader(loader); }
 
   private static scheduleWakeupHandler: ((request: ScheduleWakeupRequest) => Promise<void>) | null = null;
   public static setScheduleWakeupHandler(handler: ((request: ScheduleWakeupRequest) => Promise<void>) | null): void {
@@ -510,6 +528,25 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // }, null, 2));
 
     const deepSeekResolvedConfig = applyDeepSeekClaudeAgentProfile(config);
+    const catalogResolution =
+      ClaudeCodeDeps.providerCatalogResolutionLoader?.() ??
+      PROVIDER_CATALOG_RESOLUTION;
+    const catalogEntry = catalogResolution.entries.find(
+      (entry) =>
+        entry.id === deepSeekResolvedConfig.claudeCodeBackend ||
+        entry.model.persistedId === deepSeekResolvedConfig.model
+    );
+    const credentialPresence = getProviderRouteCredentialPresence(
+      catalogEntry?.interfaces.map((catalogInterface) =>
+        catalogInterface.credentialRef
+      ) ?? [],
+      deepSeekResolvedConfig
+    );
+    this.runtimeRoutes = resolveClaudeAgentRuntimeRoutes(
+      catalogResolution,
+      deepSeekResolvedConfig,
+      credentialPresence
+    );
     // Validate persisted custom routes at initialization as well as at spawn.
     // Unknown profiles must never degrade to an ordinary Anthropic session.
     // Mutually exclusive with the DeepSeek profile above (a session's model is
@@ -517,10 +554,18 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // composing the two resolvers is safe: this one is a no-op pass-through
     // for a DeepSeek-resolved config since its model/claudeCodeBackend won't
     // match any Ollama backend id.
-    const backend = resolveClaudeCodeBackendForConfig(deepSeekResolvedConfig);
-    this.config = backend
-      ? { ...deepSeekResolvedConfig, claudeCodeBackend: backend.id, model: backend.persistedModel }
-      : deepSeekResolvedConfig;
+    if (this.runtimeRoutes) {
+      this.config = {
+        ...deepSeekResolvedConfig,
+        claudeCodeBackend: this.runtimeRoutes.main.model.catalogEntryId,
+        model: this.runtimeRoutes.main.model.persistedId,
+      };
+    } else {
+      const backend = resolveClaudeCodeBackendForConfig(deepSeekResolvedConfig);
+      this.config = backend
+        ? { ...deepSeekResolvedConfig, claudeCodeBackend: backend.id, model: backend.persistedModel }
+        : deepSeekResolvedConfig;
+    }
 
     // Claude Code manages its own authentication - do not require or use API key
   }
@@ -554,6 +599,37 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     attachments?: any[]
   ): AsyncIterableIterator<StreamChunk> {
     const startTime = Date.now();
+    let mainRouteSnapshot:
+      | Readonly<ProviderRuntimeSessionSnapshot>
+      | undefined;
+    let subagentRouteSnapshot:
+      | Readonly<ProviderRuntimeSessionSnapshot>
+      | undefined;
+    let routeCredentials:
+      | Readonly<ConfirmedProviderRuntimeCredentials>
+      | undefined;
+    if (this.runtimeRoutes) {
+      if (!sessionId) {
+        throw new ProviderRuntimeRouteError(
+          'immutable-session-route',
+          `Provider route ${this.runtimeRoutes.main.model.catalogEntryId} requires a stable session id before launch.`,
+          this.runtimeRoutes.main.model.catalogEntryId
+        );
+      }
+      // Credential availability and interface compatibility are the first
+      // per-turn gate. No attachment, controller, hook, queue, metadata, or
+      // process mutation may occur before this succeeds.
+      routeCredentials = preflightProviderRuntimeCredentials(
+        this.runtimeRoutes,
+        this.config
+      );
+      const durableRoutes = await persistProviderRuntimeRouteSnapshot(
+        sessionId,
+        this.runtimeRoutes
+      );
+      mainRouteSnapshot = durableRoutes.main;
+      subagentRouteSnapshot = durableRoutes.subagent;
+    }
 
     // CRITICAL: Capture hidden mode flag at START and reset immediately
     // This prevents race conditions when concurrent sendMessage calls overlap
@@ -725,6 +801,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           sessions: this.sessions,
           config: this.config,
           abortController: this.abortController!,
+          mainRouteSnapshot,
+          subagentRouteSnapshot,
+          mainRouteCredential: routeCredentials?.main,
+          subagentRouteCredential: routeCredentials?.subagent,
         },
         {
           message,
@@ -746,6 +826,25 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       this.helperMethod = sdkResult.helperMethod;
       this.promptController = promptController;
       spawnDiagContext = { binaryPath: options.pathToClaudeCodeExecutable, cwd: options.cwd };
+
+      if (
+        sessionId &&
+        mainRouteSnapshot &&
+        !this.loggedRuntimeRouteReceipts.has(sessionId)
+      ) {
+        const serializedRouteReceipt = serializeProviderRuntimeRouteReceipt(
+          mainRouteSnapshot.receipt
+        );
+        console.info(`[PROVIDER-RUNTIME-ROUTE] ${serializedRouteReceipt}`);
+        await this.logAgentMessage(
+          sessionId,
+          'claude-code',
+          'output',
+          serializedRouteReceipt,
+          { messageType: 'provider_runtime_route' }
+        );
+        this.loggedRuntimeRouteReceipts.add(sessionId);
+      }
 
       // Meta-agent: the profile-specific MCP map was frozen by buildSdkOptions
       // through getMcpServersSnapshot; only native-tool restrictions remain here.

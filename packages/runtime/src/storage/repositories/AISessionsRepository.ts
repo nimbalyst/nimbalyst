@@ -46,6 +46,27 @@ export const AISessionsRepository = {
     await requireStore().updateMetadata(sessionId, metadata);
   },
 
+  async installMetadataValueIfAbsent(
+    sessionId: string,
+    key: string,
+    value: unknown
+  ): Promise<unknown> {
+    const store = requireStore();
+    if (store.installMetadataValueIfAbsent) {
+      return await store.installMetadataValueIfAbsent(sessionId, key, value);
+    }
+    // Session-store decorators delegate updateMetadata to their atomic base
+    // store. Readback is safe because the install operation rejects overwrite.
+    await store.updateMetadata(sessionId, {
+      installMetadataValueIfAbsent: { key, value },
+    });
+    const session = await store.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} disappeared after metadata install`);
+    }
+    return session.metadata?.[key];
+  },
+
   async get(sessionId: string): Promise<SessionData | null> {
     return await requireStore().get(sessionId);
   },

@@ -77,6 +77,7 @@ export async function buildClaudeCodeRuntimeConfigForTurn(
     ? undefined
     : resolveEffortLevel(metadata?.effortLevel, getDefaultEffortLevel());
   const config: ProviderConfig = {
+    workspacePath: route.workspacePath ?? session.workspacePath,
     maxTokens: (session.providerConfig as any)?.maxTokens,
     temperature: (session.providerConfig as any)?.temperature,
     ...(!backend && apiKey ? { apiKey } : {}),
