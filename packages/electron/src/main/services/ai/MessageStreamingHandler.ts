@@ -156,7 +156,7 @@ interface AIServiceInternal {
   sendMessageHandler: SendMessageHandler | null;
   processingQueuedPromptIds: Set<string>;
   matchDebounceTimers: Map<string, ReturnType<typeof setTimeout>>;
-  sessionsProcessingQueue: Set<string>;
+  hasActiveQueueLease(sessionId: string): boolean;
   documentContextService: DocumentContextService;
   hooklessWatcher: HooklessAgentFileWatcher;
 
@@ -1153,7 +1153,7 @@ export class MessageStreamingHandler {
         return;
       }
       // A queued/continuation turn may already be taking over; let it own the end.
-      if (this.svc.sessionsProcessingQueue.has(data.sessionId)) return;
+      if (this.svc.hasActiveQueueLease(data.sessionId)) return;
 
       logger.main.info(`[AIService] Sub-agent drain settled for session ${data.sessionId}, ending deferred session`);
       await stateManager.endSession(data.sessionId);
@@ -2234,7 +2234,7 @@ export class MessageStreamingHandler {
             if (
               isExtensionAgentSession
               && session?.id
-              && !this.svc.sessionsProcessingQueue.has(session.id)
+              && !this.svc.hasActiveQueueLease(session.id)
             ) {
               try {
                 await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
@@ -2631,7 +2631,7 @@ export class MessageStreamingHandler {
             const willResume = session.provider === 'claude-code'
               && typeof (provider as any).willResumeAfterCompletion === 'function'
               && (provider as any).willResumeAfterCompletion();
-            const queuedChainAlreadyActive = this.svc.sessionsProcessingQueue.has(session.id);
+            const queuedChainAlreadyActive = this.svc.hasActiveQueueLease(session.id);
             let queuedContinuationScheduled = false;
             if (!hasTeammates && !willResume && !queuedChainAlreadyActive) {
               queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
@@ -2808,7 +2808,7 @@ export class MessageStreamingHandler {
         sawComplete: sawCompleteChunk,
         providerError,
         alreadySettled: settledOnErrorChunk,
-        queuedChainActive: this.svc.sessionsProcessingQueue.has(session.id),
+        queuedChainActive: this.svc.hasActiveQueueLease(session.id),
       })) {
         logger.main.warn(
           `[AIService] Provider stream for ${session.id} ended on an error chunk without completing -- settling session`
@@ -2846,7 +2846,7 @@ export class MessageStreamingHandler {
       }
 
       // Clear executing and pending prompt flags for mobile sync
-      if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+      if (syncProvider && !this.svc.hasActiveQueueLease(session.id)) {
         syncProvider.pushChange(session.id, {
           type: 'metadata_updated',
           metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
@@ -2913,7 +2913,7 @@ export class MessageStreamingHandler {
         const willResumeOnError = session.provider === 'claude-code'
           && typeof (provider as any).willResumeAfterCompletion === 'function'
           && (provider as any).willResumeAfterCompletion();
-        const queuedChainAlreadyActiveOnError = this.svc.sessionsProcessingQueue.has(session.id);
+        const queuedChainAlreadyActiveOnError = this.svc.hasActiveQueueLease(session.id);
         let queuedContinuationScheduledOnError = false;
         if (!hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
           queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
@@ -2940,7 +2940,7 @@ export class MessageStreamingHandler {
         }
 
         // Clear executing and pending prompt flags for mobile sync on error
-        if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+        if (syncProvider && !this.svc.hasActiveQueueLease(session.id)) {
           syncProvider.pushChange(session.id, {
             type: 'metadata_updated',
             metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },

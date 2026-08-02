@@ -91,6 +91,8 @@ describe('runMigrations', () => {
     fs.writeFileSync(path.join(tmp, '0027_tool_usage_backfill_state.sql'), '-- noop\n');
     fs.writeFileSync(path.join(tmp, '0028_tracker_shared_saved_views.sql'), '-- noop\n');
     fs.writeFileSync(path.join(tmp, '0029_tracker_personal_snooze.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0030_queued_prompt_priority_control.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0031_queued_prompt_dispatch_fencing.sql'), '-- noop\n');
 
     const db = new FakeDb();
     // Hack: inject our own migration list via reflection-equivalent. Re-using
@@ -104,13 +106,13 @@ describe('runMigrations', () => {
     // a stand-in implementation; for now, test the file-backed path with the
     // bundled migrations.
     const result = runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
-    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
+    expect(result.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
     expect(result.skipped).toEqual([]);
 
     // Second invocation: nothing to apply, all skipped.
     const result2 = runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(result2.applied).toEqual([]);
-    expect(result2.skipped).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
+    expect(result2.skipped).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
     // Anti-flake: unused locals lint silencer.
     void customs;
@@ -233,6 +235,8 @@ describe('runMigrations', () => {
       path.join(tmp, '0029_tracker_personal_snooze.sql'),
       '-- noop\n',
     );
+    fs.writeFileSync(path.join(tmp, '0030_queued_prompt_priority_control.sql'), '-- noop\n');
+    fs.writeFileSync(path.join(tmp, '0031_queued_prompt_dispatch_fencing.sql'), '-- noop\n');
     const db = new FakeDb();
     runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(db.execs.some((s) => s.includes('CREATE TABLE foo'))).toBe(true);

@@ -13,6 +13,7 @@ import { BrowserWindow } from 'electron';
 import { getQueuedPromptsStore } from '../RepositoryManager';
 import { submitClaudeCliPromptProduction } from './claudeCliSubmitSingleton';
 import { flushNextClaudeCliQueuedPrompt } from './claudeCliQueueFlush';
+import { preflightSessionPromptDispatch } from './queuedPromptDispatcher';
 
 /** Per-session guard so two close `idle` events can't double-flush. */
 const flushInFlight = new Set<string>();
@@ -32,10 +33,15 @@ export async function flushNextClaudeCliQueuedPromptForSession(
     return await flushNextClaudeCliQueuedPrompt(
       { sessionId, workspacePath },
       {
+        preflight: preflightSessionPromptDispatch,
         listPending: (s) => store.listPending(s),
-        claim: (id) => store.claim(id),
-        complete: (id) => store.complete(id),
-        fail: (id, m) => store.fail(id, m),
+        claim: (id, expectedSessionId) => store.claim(id, expectedSessionId),
+        beginDispatch: (id, expectedSessionId, claimToken) =>
+          store.beginDispatch(id, expectedSessionId, claimToken),
+        completeAfterDispatch: (id, expectedSessionId, claimToken) =>
+          store.completeAfterDispatch(id, expectedSessionId, claimToken),
+        failAfterDispatch: (id, message, expectedSessionId, claimToken) =>
+          store.failAfterDispatch(id, message, expectedSessionId, claimToken),
         submit: (i) => submitClaudeCliPromptProduction(i),
         // The flush runs from the PID-idle transition with no originating IPC
         // event, so there is no single target window; broadcasting is safe

@@ -93,7 +93,7 @@ import { applyRemoteTrackerPersonalState } from '../../ipc/TrackerPersonalStateH
 import { normalizeCodexProviderConfig, omitModelsField, stripTransientProviderFields } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/workspaceDetection';
 import { inferWorktreePathFromFilePath, inferWorktreePathFromCommand } from './worktreeInference';
-import { SessionFilesRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository, SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -131,7 +131,7 @@ import {
 } from './askUserQuestionFallbackResolution';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
-import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import { preflightSessionPromptDispatch, tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
 import {
   QueueDriveService,
   type DriveOutcome,
@@ -193,7 +193,10 @@ export class AIService {
   // Track sessions currently processing a queued prompt to prevent concurrent execution.
   // Without this, the completion handler and triggerQueueProcessing IPC can race,
   // each claiming a different prompt and sending both to the AI concurrently.
-  private sessionsProcessingQueue = new Set<string>();
+  // A lease, rather than a per-session flag: a stale interrupted turn must not
+  // clear or drain a newer priority control dispatch.
+  private queueProcessingLeases = new Map<string, symbol>();
+  private priorityQueueHandoffLeases = new Map<string, symbol>();
 
   // Track mobile session creation requests to prevent duplicate processing
   // (can happen if the same request is delivered multiple times)
@@ -426,7 +429,7 @@ export class AIService {
     return runQueueDriveAttempt<Electron.BrowserWindow>(
       {
         listPendingIds: async (id) => (await queueStore.listPending(id)).map((row) => row.id),
-        isChainActive: (id) => this.sessionsProcessingQueue.has(id),
+        isChainActive: (id) => this.queueProcessingLeases.has(id),
         isSessionBusy: (id) => {
           const liveState = getSessionStateManager().getSessionState(id);
           return !!liveState && (liveState.status === 'running' || liveState.isStreaming);
@@ -449,6 +452,84 @@ export class AIService {
   ): Promise<boolean> {
     const outcome = await this.driveQueuedPrompts(sessionId, workspacePath, reason);
     return outcome.kind === 'dispatched';
+  }
+
+  public hasActiveQueueLease(sessionId: string): boolean {
+    return this.queueProcessingLeases.has(sessionId);
+  }
+
+  private installPriorityQueueHandoff(sessionId: string): void {
+    const handoffLease = Symbol(`priority-handoff:${sessionId}`);
+    this.priorityQueueHandoffLeases.set(sessionId, handoffLease);
+    this.queueProcessingLeases.set(sessionId, handoffLease);
+  }
+
+  public releasePriorityQueueHandoffForDelivery(sessionId: string): void {
+    const handoffLease = this.priorityQueueHandoffLeases.get(sessionId);
+    this.priorityQueueHandoffLeases.delete(sessionId);
+    if (handoffLease && this.queueProcessingLeases.get(sessionId) === handoffLease) {
+      this.queueProcessingLeases.delete(sessionId);
+    }
+  }
+
+  /**
+   * Priority delivery's narrowly-scoped interrupt rail. It deliberately does
+   * not run cancel/stop recovery or queue draining: the durable control row
+   * is released only through its normal claim/settlement callbacks.
+   */
+  public async interruptCurrentTurnForPriorityDelivery(
+    sessionId: string,
+    expectedGeneration: string,
+  ): Promise<{ success: boolean; method?: string; error?: string; nativeEntered?: boolean }> {
+    if (!(await preflightSessionPromptDispatch(sessionId))) {
+      return { success: false, error: 'Session dispatch preflight rejected' };
+    }
+
+    const { database } = await import('../../database/PGLiteDatabaseWorker');
+    const readTarget = async () => {
+      const { rows } = await database.query<any>(
+        `SELECT provider, status, last_activity, updated_at FROM ai_sessions WHERE id = $1 LIMIT 1`,
+        [sessionId],
+      );
+      const row = rows[0];
+      const millis = (value: any) => value instanceof Date ? value.getTime() : value ? new Date(value).getTime() : null;
+      return row
+        ? { provider: row.provider as string, generation: `${row.status}:${millis(row.last_activity) ?? 'none'}:${millis(row.updated_at) ?? 'none'}` }
+        : null;
+    };
+
+    let nativeEntered = false;
+    try {
+      const target = await readTarget();
+      if (!target) return { success: false, error: 'Session not found' };
+      if (target.generation !== expectedGeneration) return { success: false, error: 'stale lifecycle generation' };
+
+      if (target.provider === 'claude-code-cli') {
+        const immediatelyBeforeEntry = await readTarget();
+        if (!immediatelyBeforeEntry || immediatelyBeforeEntry.generation !== expectedGeneration) {
+          return { success: false, error: 'stale lifecycle generation' };
+        }
+        const terminalManager = getTerminalSessionManager();
+        if (!terminalManager.isTerminalActive(sessionId)) return { success: false, error: 'No active terminal for session' };
+        nativeEntered = true;
+        terminalManager.writeToTerminal(sessionId, '\x03');
+        this.installPriorityQueueHandoff(sessionId);
+        return { success: true, method: 'terminal-ctrl-c', nativeEntered: true };
+      }
+
+      const provider = ProviderFactory.getProvider(target.provider as AIProviderType, sessionId);
+      if (!provider) return { success: false, error: 'No active provider for session' };
+      const immediatelyBeforeEntry = await readTarget();
+      if (!immediatelyBeforeEntry || immediatelyBeforeEntry.generation !== expectedGeneration) {
+        return { success: false, error: 'stale lifecycle generation' };
+      }
+      nativeEntered = true;
+      const result = await provider.interruptCurrentTurn();
+      this.installPriorityQueueHandoff(sessionId);
+      return { success: true, method: result.method, nativeEntered: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Interrupt failed', nativeEntered };
+    }
   }
 
   public async respondToInteractivePrompt(params: {
@@ -940,7 +1021,8 @@ export class AIService {
           promptId,
         });
       },
-      processingSet: this.sessionsProcessingQueue,
+      processingLeases: this.queueProcessingLeases,
+      preflight: preflightSessionPromptDispatch,
       queueStore,
       sendMessageHandler: this.sendMessageHandler,
       sessionId,
@@ -2312,9 +2394,20 @@ export class AIService {
       const queueStore = getQueuedPromptsStore();
 
       // Atomic claim - only succeeds if status is still 'pending'
-      const claimed = await queueStore.claim(promptId);
+      const claimed = await queueStore.claim(promptId, sessionId);
 
       if (claimed) {
+        if (!claimed.claimToken) {
+          throw new Error(`Queued prompt ${promptId} was claimed without an ownership token`);
+        }
+        const begun = await queueStore.beginDispatch(promptId, sessionId, claimed.claimToken);
+        if (begun.outcome !== 'settled' && begun.outcome !== 'idempotent_same_claim') {
+          const release = await queueStore.releaseClaim(promptId, sessionId, claimed.claimToken);
+          if (release.outcome !== 'settled' && release.outcome !== 'idempotent_same_claim') {
+            logger.main.error(`[AIService] claimQueuedPrompt: failed to release rejected claim ${promptId} (${release.outcome})`);
+          }
+          throw new Error(`Queued prompt dispatch intent rejected: ${begun.outcome}`);
+        }
         logger.main.info(`[AIService] claimQueuedPrompt: claimed ${promptId} for session ${sessionId}`);
         // Return in the format expected by the renderer
         return {
@@ -2323,6 +2416,7 @@ export class AIService {
           timestamp: claimed.createdAt,
           attachments: claimed.attachments,
           documentContext: claimed.documentContext,
+          claimToken: claimed.claimToken,
         };
       }
 
@@ -2333,23 +2427,33 @@ export class AIService {
     // Mark a queued prompt as completed
     safeHandle('ai:completeQueuedPrompt', async (
       event,
-      promptId: string
+      sessionId: string,
+      promptId: string,
+      claimToken: string,
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
-      await queueStore.complete(promptId);
+      const settlement = await queueStore.completeAfterDispatch(promptId, sessionId, claimToken);
+      if (settlement.outcome !== 'settled' && settlement.outcome !== 'idempotent_same_claim') {
+        throw new Error(`Queued prompt completion rejected: ${settlement.outcome}`);
+      }
       logger.main.info(`[AIService] completeQueuedPrompt: ${promptId}`);
     });
 
     // Mark a queued prompt as failed
     safeHandle('ai:failQueuedPrompt', async (
       event,
+      sessionId: string,
       promptId: string,
-      errorMessage: string
+      errorMessage: string,
+      claimToken: string,
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
-      await queueStore.fail(promptId, errorMessage);
+      const settlement = await queueStore.failAfterDispatch(promptId, errorMessage, sessionId, claimToken);
+      if (settlement.outcome !== 'settled' && settlement.outcome !== 'idempotent_same_claim') {
+        throw new Error(`Queued prompt failure settlement rejected: ${settlement.outcome}`);
+      }
       logger.main.info(`[AIService] failQueuedPrompt: ${promptId} - ${errorMessage}`);
     });
 
@@ -3044,7 +3148,7 @@ export class AIService {
         // marked completed instead of rolled back, so the queue trigger
         // that follows the abort doesn't immediately re-claim and re-send
         // the same input (NIM-615).
-        this.sessionsProcessingQueue.delete(sessionId);
+        this.queueProcessingLeases.delete(sessionId);
         try {
           const { getQueuedPromptsStore } = await import('../RepositoryManager');
           const queueStore = getQueuedPromptsStore();
@@ -3112,7 +3216,7 @@ export class AIService {
         return { success: false, error: 'No active provider for session' };
       }
 
-      this.sessionsProcessingQueue.delete(sessionId);
+      this.queueProcessingLeases.delete(sessionId);
       try {
         const { getQueuedPromptsStore } = await import('../RepositoryManager');
         const queueStore = getQueuedPromptsStore();

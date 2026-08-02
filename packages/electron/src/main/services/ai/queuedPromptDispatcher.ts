@@ -1,18 +1,60 @@
 import type { DocumentContext } from '@nimbalyst/runtime/ai/server/types';
+import type { QueueSettlementResult } from '../PGLiteQueuedPromptsStore';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+export type SessionPromptDispatchPreflight = (sessionId: string) => Promise<boolean>;
+
+interface SessionWithDispatchMetadata {
+  metadata?: unknown;
+}
+
+export function createSessionPromptDispatchPreflight(
+  loadSession: (sessionId: string) => Promise<SessionWithDispatchMetadata | null>,
+): SessionPromptDispatchPreflight {
+  return async (sessionId: string): Promise<boolean> => {
+    try {
+      const session = await loadSession(sessionId);
+      if (!session) return false;
+
+      let metadata = session.metadata;
+      if (metadata === null || metadata === undefined) return true;
+      if (typeof metadata === 'string') {
+        try {
+          metadata = JSON.parse(metadata) as unknown;
+        } catch {
+          return false;
+        }
+      }
+      if (typeof metadata !== 'object' || Array.isArray(metadata)) return false;
+      return (metadata as Record<string, unknown>).modelChangeReconciliation == null;
+    } catch {
+      return false;
+    }
+  };
+}
+
+export const preflightSessionPromptDispatch = createSessionPromptDispatchPreflight(
+  (sessionId) => AISessionsRepository.get(sessionId),
+);
 
 export interface ClaimedQueuedPrompt {
   id: string;
   prompt: string;
+  claimToken?: string;
   attachments?: unknown[] | null;
   documentContext?: DocumentContext | null;
 }
 
 export interface QueuedPromptStoreLike {
   listPending(sessionId: string): Promise<ClaimedQueuedPrompt[]>;
-  claim(promptId: string): Promise<ClaimedQueuedPrompt | null>;
-  complete(promptId: string): Promise<void>;
-  fail(promptId: string, errorMessage: string): Promise<void>;
+  claim(promptId: string, expectedSessionId: string): Promise<ClaimedQueuedPrompt | null>;
+  beginDispatch(promptId: string, expectedSessionId: string, claimToken: string): Promise<QueueSettlementResult>;
+  releaseClaim(promptId: string, expectedSessionId: string, claimToken: string): Promise<QueueSettlementResult>;
+  completeAfterDispatch(promptId: string, expectedSessionId: string, claimToken: string): Promise<QueueSettlementResult>;
+  failAfterDispatch(promptId: string, errorMessage: string, expectedSessionId: string, claimToken: string): Promise<QueueSettlementResult>;
 }
+
+const settlementAccepted = (result: QueueSettlementResult) =>
+  result.outcome === 'settled' || result.outcome === 'idempotent_same_claim';
 
 interface DispatchClaimedQueuedPromptOptions {
   claimed: ClaimedQueuedPrompt;
@@ -26,7 +68,7 @@ interface DispatchClaimedQueuedPromptOptions {
   onAfterSettled?: () => Promise<void>;
   onChainSettled?: (payload: { sessionId: string; workspacePath: string; source: string }) => Promise<void>;
   onPromptClaimed: (payload: { sessionId: string; promptId: string }) => void;
-  processingSet: Set<string>;
+  processingLeases: Map<string, symbol>;
   queueStore: QueuedPromptStoreLike;
   sendMessageHandler: (
     event: Electron.IpcMainInvokeEvent,
@@ -52,7 +94,7 @@ export async function dispatchClaimedQueuedPrompt(
     onAfterSettled,
     onChainSettled,
     onPromptClaimed,
-    processingSet,
+    processingLeases,
     queueStore,
     sendMessageHandler,
     sessionId,
@@ -62,16 +104,29 @@ export async function dispatchClaimedQueuedPrompt(
     workspacePath,
   } = options;
 
-  processingSet.add(sessionId);
+  const dispatchLease = Symbol(`queued-prompt:${sessionId}:${claimed.id}`);
+  const claimToken = claimed.claimToken;
+  if (!claimToken) {
+    throw new Error(`Queued prompt ${claimed.id} was claimed without an ownership token`);
+  }
+  processingLeases.set(sessionId, dispatchLease);
 
   try {
     await startSession({ sessionId, workspacePath });
   } catch (error) {
-    processingSet.delete(sessionId);
+    const release = await queueStore.releaseClaim(claimed.id, sessionId, claimToken);
+    if (!settlementAccepted(release)) {
+      logError(`[AIService] Failed to release pre-dispatch claim ${claimed.id} (${release.outcome})`, error);
+    }
+    if (processingLeases.get(sessionId) === dispatchLease) processingLeases.delete(sessionId);
     throw error;
   }
 
-  onPromptClaimed({ sessionId, promptId: claimed.id });
+  try {
+    onPromptClaimed({ sessionId, promptId: claimed.id });
+  } catch (notificationError) {
+    logError(`[AIService] Failed to notify renderer of claimed prompt ${claimed.id}:`, notificationError);
+  }
 
   const docContext = {
     ...(claimed.documentContext || {}),
@@ -80,22 +135,41 @@ export async function dispatchClaimedQueuedPrompt(
   } as DocumentContext;
 
   setImmediate(async () => {
+    let dispatchStarted = false;
+    let compatibleSettlement = false;
     try {
+      if (processingLeases.get(sessionId) !== dispatchLease) return;
+      const begin = await queueStore.beginDispatch(claimed.id, sessionId, claimToken);
+      if (!settlementAccepted(begin)) {
+        logError(`[AIService] Dispatch intent rejected for queued prompt ${claimed.id} (${begin.outcome})`, new Error(begin.outcome));
+        return;
+      }
+      dispatchStarted = true;
+      if (processingLeases.get(sessionId) !== dispatchLease) return;
       const mockEvent = {
         sender: targetWindow.webContents,
         senderFrame: targetWindow.webContents.mainFrame,
       } as Electron.IpcMainInvokeEvent;
 
       await sendMessageHandler(mockEvent, claimed.prompt, docContext, sessionId, workspacePath);
-      await queueStore.complete(claimed.id);
+      const completion = await queueStore.completeAfterDispatch(claimed.id, sessionId, claimToken);
+      compatibleSettlement = settlementAccepted(completion);
+      if (!compatibleSettlement) {
+        logError(`[AIService] Completion rejected for queued prompt ${claimed.id} (${completion.outcome})`, new Error(completion.outcome));
+      }
     } catch (queueError) {
       logError(`[AIService] Failed to process queued prompt ${claimed.id}:`, queueError);
-      await queueStore.fail(
-        claimed.id,
-        queueError instanceof Error ? queueError.message : 'Unknown error',
-      );
+      const settlement = dispatchStarted
+        ? await queueStore.failAfterDispatch(claimed.id, queueError instanceof Error ? queueError.message : 'Unknown error', sessionId, claimToken)
+        : await queueStore.releaseClaim(claimed.id, sessionId, claimToken);
+      compatibleSettlement = settlementAccepted(settlement);
+      if (!compatibleSettlement) {
+        logError(`[AIService] Failure settlement rejected for queued prompt ${claimed.id} (${settlement.outcome})`, queueError);
+      }
     } finally {
-      processingSet.delete(sessionId);
+      if (processingLeases.get(sessionId) !== dispatchLease) return;
+      processingLeases.delete(sessionId);
+      if (!compatibleSettlement) return;
       try {
         await continueQueuedPromptChain(
           sessionId,
@@ -110,7 +184,7 @@ export async function dispatchClaimedQueuedPrompt(
       // The inner sendMessage's completion handler deferred endSession because
       // processingSet still contained this session (we hadn't reached this
       // delete yet), so nobody has marked the session idle. Do it now.
-      if (!processingSet.has(sessionId) && onChainSettled) {
+      if (!processingLeases.has(sessionId) && onChainSettled) {
         try {
           await onChainSettled({ sessionId, workspacePath, source });
         } catch (settledErr) {
@@ -135,7 +209,8 @@ interface TryClaimAndDispatchNextQueuedPromptOptions {
   onAfterSettled?: DispatchClaimedQueuedPromptOptions['onAfterSettled'];
   onChainSettled?: DispatchClaimedQueuedPromptOptions['onChainSettled'];
   onPromptClaimed: DispatchClaimedQueuedPromptOptions['onPromptClaimed'];
-  processingSet: Set<string>;
+  processingLeases: Map<string, symbol>;
+  preflight: SessionPromptDispatchPreflight;
   queueStore: QueuedPromptStoreLike;
   sendMessageHandler: DispatchClaimedQueuedPromptOptions['sendMessageHandler'] | null;
   sessionId: string;
@@ -156,7 +231,8 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     onAfterSettled,
     onChainSettled,
     onPromptClaimed,
-    processingSet,
+    processingLeases,
+    preflight,
     queueStore,
     sendMessageHandler,
     sessionId,
@@ -177,8 +253,13 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     return false;
   }
 
-  if (processingSet.has(sessionId)) {
+  if (processingLeases.has(sessionId)) {
     logInfo(`[AIService] ${source}: session ${sessionId} already processing a queued prompt, skipping`);
+    return false;
+  }
+
+  if (!(await preflight(sessionId))) {
+    logInfo(`[AIService] ${source}: session admission preflight rejected ${sessionId}`);
     return false;
   }
 
@@ -191,14 +272,18 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
   const nextPrompt = pendingPrompts[0];
   logInfo(`[AIService] ${source}: processing prompt ${nextPrompt.id} for session ${sessionId}`);
 
-  const claimed = await queueStore.claim(nextPrompt.id);
+  const claimed = await queueStore.claim(nextPrompt.id, sessionId);
   if (!claimed) {
     logInfo(`[AIService] ${source}: prompt ${nextPrompt.id} already claimed`);
     return false;
   }
 
   if (!sendMessageHandler) {
-    await queueStore.fail(claimed.id, 'sendMessageHandler not initialized');
+    if (!claimed.claimToken) throw new Error(`Queued prompt ${claimed.id} was claimed without an ownership token`);
+    const release = await queueStore.releaseClaim(claimed.id, sessionId, claimed.claimToken);
+    if (!settlementAccepted(release)) {
+      logError(`[AIService] Failed to release uninitialized-handler claim ${claimed.id} (${release.outcome})`, new Error(release.outcome));
+    }
     logError('[AIService] Failed to process queued prompt because sendMessageHandler is not initialized', new Error('sendMessageHandler not initialized'));
     return false;
   }
@@ -210,7 +295,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     onAfterSettled,
     onChainSettled,
     onPromptClaimed,
-    processingSet,
+    processingLeases,
     queueStore,
     sendMessageHandler,
     sessionId,

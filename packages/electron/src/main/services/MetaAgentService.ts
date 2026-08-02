@@ -20,6 +20,12 @@ import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 import type { NotificationOptions, NotificationResult } from './NotificationService';
 import { composeNotificationTitle } from '../../shared/notificationTitle';
+import {
+  createPriorityPromptDeliveryService,
+  createPriorityTargetGeneration,
+  type PriorityControlPrompt,
+  type PriorityTargetState,
+} from './PriorityPromptDeliveryService';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -123,6 +129,14 @@ interface NotifyUserArgs {
   urgency?: 'normal' | 'critical' | 'low';
 }
 
+interface SendPromptNowArgs {
+  sessionId: string;
+  prompt: string;
+  idempotencyKey?: string;
+  controlOperation?: string;
+  interruptWaitingForInput?: boolean;
+}
+
 type ShowNotificationWithResult = (
   options: NotificationOptions
 ) => Promise<NotificationResult>;
@@ -210,6 +224,8 @@ export class MetaAgentService {
           this.listQueuedPromptsJson(targetSessionId, workspaceId, options),
         sendPrompt: (metaSessionId, workspaceId, targetSessionId, prompt) =>
           this.sendPromptToSession(metaSessionId, targetSessionId, workspaceId, prompt),
+        sendPromptNow: (metaSessionId, workspaceId, args) =>
+          this.sendPromptNowToSession(metaSessionId, workspaceId, args),
         notifyUser: (callerSessionId, workspaceId, args) =>
           this.notifyUserJson(callerSessionId, workspaceId, args),
         respondToPrompt: (_metaSessionId, workspaceId, args) =>
@@ -901,6 +917,14 @@ export class MetaAgentService {
       prompts: prompts.map((prompt) => ({
         id: prompt.id,
         status: prompt.status,
+        deliveryClass: prompt.deliveryClass,
+        priorityRank: prompt.priorityRank,
+        deliveryReady: prompt.deliveryReady,
+        claimTokenPresent: Boolean(prompt.claimToken),
+        dispatchStartedAt: prompt.dispatchStartedAt ?? null,
+        settlementProvenance: prompt.settlementProvenance ?? null,
+        interruptTargetGeneration: prompt.interruptTargetGeneration ?? null,
+        interruptReceipt: prompt.interruptReceipt ?? null,
         createdAt: prompt.createdAt,
         claimedAt: prompt.claimedAt ?? null,
         completedAt: prompt.completedAt ?? null,
@@ -977,6 +1001,68 @@ export class MetaAgentService {
       statusBeforeQueue: status,
       processingTriggered,
     }, null, 2);
+  }
+
+  private async getPriorityTargetState(sessionId: string, workspaceId: string): Promise<PriorityTargetState> {
+    const row = await this.getSessionStatusRow(sessionId, workspaceId);
+    if (!row) {
+      return { status: 'missing', generation: createPriorityTargetGeneration('missing', null, null), lastActivity: null, updatedAt: null };
+    }
+    const status = (['idle', 'running', 'waiting_for_input', 'error', 'interrupted'].includes(row.status)
+      ? row.status
+      : 'error') as PriorityTargetState['status'];
+    const lastActivity = toMillis(row.last_activity);
+    const updatedAt = toMillis(row.updated_at);
+    return { status, generation: createPriorityTargetGeneration(status, lastActivity, updatedAt), lastActivity, updatedAt };
+  }
+
+  private async sendPromptNowToSession(
+    callerSessionId: string,
+    workspaceId: string,
+    args: SendPromptNowArgs,
+  ): Promise<string> {
+    if (!this.aiService) throw new Error('AI service not initialized');
+    const sessionId = args.sessionId?.trim();
+    const prompt = args.prompt?.trim();
+    if (!sessionId) throw new Error('sessionId is required');
+    if (!prompt) throw new Error('prompt is required');
+    const session = await AISessionsRepository.get(sessionId);
+    if (!session || session.workspacePath !== workspaceId) throw new Error(`Session ${sessionId} not found`);
+
+    const { getQueuedPromptsStore } = await import('./RepositoryManager');
+    const queueStore = getQueuedPromptsStore();
+    const priorityService = createPriorityPromptDeliveryService({
+      createControlPrompt: async (input) => {
+        const created = await queueStore.createPriorityControlPrompt(input);
+        return { row: created.row as unknown as PriorityControlPrompt, replayed: created.replayed };
+      },
+      getTargetState: (targetSessionId, targetWorkspaceId) => this.getPriorityTargetState(targetSessionId, targetWorkspaceId),
+      hasStructuredPendingPrompt: async (targetSessionId) => (await this.getPendingInteractivePrompt(targetSessionId)) !== null,
+      reserveInterrupt: async (input) => {
+        const reserved = await queueStore.reservePriorityInterrupt(input);
+        return { row: reserved.row as unknown as PriorityControlPrompt, reserved: reserved.reserved };
+      },
+      recordInterruptReceipt: async (input) =>
+        await queueStore.recordPriorityInterruptReceipt(input) as unknown as PriorityControlPrompt,
+      interruptCurrentTurn: (targetSessionId, expectedState) =>
+        this.aiService!.interruptCurrentTurnForPriorityDelivery(targetSessionId, expectedState.generation),
+      triggerProcessing: (targetSessionId, targetWorkspaceId) => {
+        this.aiService!.releasePriorityQueueHandoffForDelivery(targetSessionId);
+        return this.aiService!.triggerQueuedPromptProcessingForSession(targetSessionId, targetWorkspaceId, 'meta-agent');
+      },
+      getControlPrompt: async (promptId) =>
+        await queueStore.get(promptId) as unknown as PriorityControlPrompt | null,
+    });
+    const receipt = await priorityService.deliver({
+      sessionId,
+      workspacePath: session.worktreePath || session.workspacePath || workspaceId,
+      prompt,
+      idempotencyKey: args.idempotencyKey?.trim() || `send_prompt_now:${callerSessionId}:${randomUUID()}`,
+      producer: `send_prompt_now:${callerSessionId}`,
+      controlOperation: args.controlOperation?.trim() || 'agent_priority_prompt',
+      interruptWaitingForInput: args.interruptWaitingForInput === true,
+    });
+    return JSON.stringify(receipt, null, 2);
   }
 
   private async notifyUserJson(
