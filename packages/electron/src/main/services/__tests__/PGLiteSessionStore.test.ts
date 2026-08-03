@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PGlite } from '@electric-sql/pglite';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   createPGLiteSessionStore,
   getAllSessionsForSync,
@@ -302,6 +306,43 @@ describe('PGLiteSessionStore JSON-column read normalization', () => {
 });
 
 describe('PGLiteSessionStore.updateMetadata defense-in-depth', () => {
+  it('skips the durable metadata UPDATE when the canonical merged value is unchanged', async () => {
+    const persistedMetadata = {
+      tokenUsage: {
+        currentContext: { contextWindow: 200_000, tokens: 8 },
+        totalTokens: 16,
+        outputTokens: 4,
+        inputTokens: 12,
+      },
+    };
+    const incomingMetadata = {
+      tokenUsage: {
+        inputTokens: 12,
+        outputTokens: 4,
+        totalTokens: 16,
+        currentContext: { tokens: 8, contextWindow: 200_000 },
+      },
+    };
+    const calls: string[] = [];
+    const db = {
+      query: vi.fn(async (sql: string) => {
+        calls.push(sql);
+        if (/^SELECT metadata FROM ai_sessions/i.test(sql.trim())) {
+          return { rows: [{ metadata: persistedMetadata }] };
+        }
+        if (/^UPDATE ai_sessions/i.test(sql.trim())) {
+          return { rows: [{ metadata: incomingMetadata }] };
+        }
+        throw new Error(`Unexpected no-op metadata query: ${sql}`);
+      }),
+    };
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('s1', { metadata: incomingMetadata });
+
+    expect(calls.filter((sql) => /^UPDATE ai_sessions/i.test(sql.trim()))).toHaveLength(0);
+  });
+
   it('refuses to merge when metadata.metadata is a string and warns', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const db = {
@@ -331,6 +372,63 @@ describe('PGLiteSessionStore.updateMetadata defense-in-depth', () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it('keeps the physical session relation stable across 10,000 identical metadata updates', async () => {
+    const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-session-growth-'));
+    const db = new PGlite({ dataDir: path.join(isolatedRoot, 'pglite-db') });
+    try {
+      const persistedMetadata = {
+        tokenUsage: {
+          currentContext: { contextWindow: 200_000, tokens: 8 },
+          totalTokens: 16,
+          outputTokens: 4,
+          inputTokens: 12,
+        },
+      };
+      const equivalentUpdate = {
+        tokenUsage: {
+          inputTokens: 12,
+          outputTokens: 4,
+          totalTokens: 16,
+          currentContext: { tokens: 8, contextWindow: 200_000 },
+        },
+      };
+      await db.exec(`
+        CREATE TABLE ai_sessions (
+          id TEXT PRIMARY KEY,
+          metadata JSONB DEFAULT '{}'
+        );
+      `);
+      await db.query(
+        'INSERT INTO ai_sessions (id, metadata) VALUES ($1, $2::jsonb)',
+        ['growth-session', JSON.stringify(persistedMetadata)],
+      );
+      const relationBytes = async (): Promise<number> => {
+        const { rows } = await db.query<{ bytes: string | number }>(
+          "SELECT pg_total_relation_size('ai_sessions') AS bytes",
+        );
+        return Number(rows[0]?.bytes) || 0;
+      };
+      const beforeBytes = await relationBytes();
+      const store = createPGLiteSessionStore(db as any);
+
+      for (let update = 0; update < 10_000; update += 1) {
+        await store.updateMetadata('growth-session', { metadata: equivalentUpdate });
+      }
+
+      const afterBytes = await relationBytes();
+      expect(beforeBytes).toBeGreaterThan(0);
+      expect(afterBytes).toBe(beforeBytes);
+      const { rows } = await db.query<{ metadata: Record<string, unknown> }>(
+        'SELECT metadata FROM ai_sessions WHERE id = $1',
+        ['growth-session'],
+      );
+      expect(rows[0]?.metadata).toEqual(persistedMetadata);
+    } finally {
+      await db.close();
+      fs.rmSync(isolatedRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 describe('PGLiteSessionStore.updateMetadata nullable column clears', () => {
