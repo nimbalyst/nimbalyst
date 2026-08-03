@@ -15,6 +15,7 @@
 export interface BootQueueRecoveryDeps {
   listSessionIdsWithPending(): Promise<string[]>;
   getWorkspacePath(sessionId: string): Promise<string | null | undefined>;
+  failAllPending(sessionId: string, errorMessage: string): Promise<number>;
   requestDrive(sessionId: string, workspacePath: string): void;
   logInfo(message: string): void;
   logWarn(message: string): void;
@@ -29,15 +30,27 @@ export async function driveStrandedQueuesOnBoot(deps: BootQueueRecoveryDeps): Pr
 
   let driven = 0;
   for (const sessionId of sessionIds) {
-    const workspacePath = await deps.getWorkspacePath(sessionId);
-    if (!workspacePath) {
-      // Routing needs a workspace; without one there is no window to deliver
-      // into and no honest way to pick a fallback.
-      deps.logWarn(`[Main] Boot recovery: session ${sessionId} has no workspacePath; skipping`);
-      continue;
+    try {
+      const workspacePath = await deps.getWorkspacePath(sessionId);
+      if (!workspacePath) {
+        // Routing needs a workspace; without one there is no window to deliver
+        // into and no honest way to pick a fallback. Fail atomically rather
+        // than silently leaving the rows pending forever.
+        await deps.failAllPending(
+          sessionId,
+          'Queued prompt delivery failed: workspace mapping unavailable',
+        );
+        deps.logWarn('[Main] Boot recovery: failed pending prompts for unmapped session');
+        continue;
+      }
+      deps.requestDrive(sessionId, workspacePath);
+      driven += 1;
+    } catch {
+      // One malformed or unavailable session must not prevent later pending
+      // rows from reaching their valid workspace driver. Do not expose the
+      // workspace, prompt, provider output, or raw exception in this warning.
+      deps.logWarn('[Main] Boot recovery: failed to recover one session; continuing');
     }
-    deps.requestDrive(sessionId, workspacePath);
-    driven += 1;
   }
 
   return driven;

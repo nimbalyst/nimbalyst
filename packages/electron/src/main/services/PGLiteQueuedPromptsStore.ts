@@ -7,6 +7,42 @@
 
 import { toMillis } from '../utils/timestampUtils';
 import type { PromptProvenance } from '@nimbalyst/runtime/ai/server/types';
+import { randomUUID } from 'crypto';
+import {
+  createQueuedPromptTruth,
+  payloadReceiptsMatch,
+  queueTruthMismatchError,
+  receiptQueuedPromptPayload,
+  type QueuedPromptPayloadReceipt,
+} from './ai/queuedPromptTruth';
+
+export type QueueSettlementOutcome =
+  | 'settled'
+  | 'idempotent_same_claim'
+  | 'stale_owner'
+  | 'recovery_blocked'
+  | 'terminal_conflict';
+
+export interface QueueSettlementResult {
+  outcome: QueueSettlementOutcome;
+  row?: QueuedPrompt;
+}
+
+/** Exact terminal boundary observed by the non-CLI streaming handler. */
+export interface QueueTerminalReceipt {
+  lifecycle: 'completed' | 'failed';
+  terminalAt: number;
+  eventSequence: number;
+}
+
+export interface QueueSweepResult {
+  completed: number;
+  failed: number;
+  rolledBack: number;
+  completedIds: string[];
+  failedIds: string[];
+  rolledBackIds: string[];
+}
 
 export interface QueuedPrompt {
   id: string;
@@ -24,14 +60,54 @@ export interface QueuedPrompt {
   };
   createdAt: number;  // epoch ms
   claimedAt?: number; // epoch ms
+  claimToken?: string;
+  dispatchStartedAt?: number;
+  settlementProvenance?: string;
   completedAt?: number; // epoch ms
   errorMessage?: string;
+  deliveryClass: 'ordinary' | 'control';
+  priorityRank: number;
+  deliveryReady: boolean;
+  producer?: string;
+  idempotencyKey?: string;
+  requestDigest?: string;
+  controlOperation?: string;
+  interruptTargetGeneration?: string;
+  interruptReservationOwner?: string;
+  interruptReceipt?: QueuedPromptInterruptReceipt;
+  clientSubmissionId?: string;
+  sourceSessionId?: string;
+  sourceRoomId?: string;
+  submissionSequence?: number;
+  payloadReceipt?: QueuedPromptPayloadReceipt;
+  claimTrigger?: string;
+  claimTriggeredAt?: number;
+  turnId?: string;
+  providerInputMessageId?: string;
+  providerOutputMessageId?: string;
+  streamEventSequence?: number;
+  terminalStatus?: 'streaming' | 'completed' | 'failed';
+  terminalAt?: number;
+}
+
+export interface QueuedPromptInterruptReceipt {
+  generation: string;
+  attempted: boolean;
+  success: boolean;
+  method: string | null;
+  error: string | null;
+  nativeEntered: boolean;
+  recordedAt: number;
 }
 
 export interface CreateQueuedPromptInput {
   id: string;
   sessionId: string;
   prompt: string;
+  /** Stable client identity; legacy callers may omit it and retain `id`. */
+  clientSubmissionId?: string;
+  sourceRoomId?: string;
+  producer?: string;
   attachments?: any[];
   documentContext?: {
     filePath?: string;
@@ -43,9 +119,25 @@ export interface CreateQueuedPromptInput {
   };
 }
 
+export interface CreatePriorityControlQueuedPromptInput {
+  id: string;
+  sessionId: string;
+  prompt: string;
+  producer: string;
+  idempotencyKey: string;
+  requestDigest: string;
+  controlOperation: string;
+}
+
 export interface QueuedPromptsStore {
   /** Create a new queued prompt */
   create(input: CreateQueuedPromptInput): Promise<QueuedPrompt>;
+
+  /** Create or replay an idempotent high-priority control prompt. */
+  createPriorityControlPrompt(input: CreatePriorityControlQueuedPromptInput): Promise<{
+    row: QueuedPrompt;
+    replayed: boolean;
+  }>;
 
   /** Get a specific queued prompt by ID */
   get(id: string): Promise<QueuedPrompt | null>;
@@ -56,36 +148,62 @@ export interface QueuedPromptsStore {
   /** List pending prompts for a session (ready to execute) */
   listPending(sessionId: string): Promise<QueuedPrompt[]>;
 
-  /**
-   * Distinct session ids that currently have at least one `pending` row.
-   * Boot recovery uses this to re-drive every stranded queue: the boot sweep
-   * buckets `executing` rows back to `pending` and, before this existed,
-   * nothing ever claimed them (#962).
-   */
+  /** Discover pending work after a process restart without changing row state. */
+  listPendingSessionIds(options?: { deliveryClass?: 'ordinary' | 'control' }): Promise<string[]>;
+
+  /** Current-upstream queue-driver compatibility alias. */
   listSessionIdsWithPending(): Promise<string[]>;
 
-  /**
-   * Mark every pending row for a session failed. Used when delivery is
-   * terminally impossible (the project folder is gone), where deferring
-   * forever would leave the prompt silently stuck.
-   * Returns the number of rows failed.
-   */
+  /** Terminally fail every pending row when its workspace can no longer be delivered. */
   failAllPendingForSession(sessionId: string, errorMessage: string): Promise<number>;
+
+  /** Atomically reserve the one native interrupt allowed for a control row. */
+  reservePriorityInterrupt(input: {
+    promptId: string;
+    generation: string;
+    owner: string;
+  }): Promise<{ row: QueuedPrompt; reserved: boolean }>;
+
+  /** Persist the native interrupt result before queue processing is triggered. */
+  recordPriorityInterruptReceipt(input: {
+    promptId: string;
+    generation: string;
+    receipt: QueuedPromptInterruptReceipt;
+  }): Promise<QueuedPrompt>;
 
   /**
    * Atomically claim a pending prompt for execution.
    * Returns the prompt if successfully claimed, null if already claimed or not found.
    * This is the key atomic operation that prevents duplicate execution.
    */
-  claim(id: string): Promise<QueuedPrompt | null>;
+  claim(id: string, expectedSessionId?: string, claimTrigger?: string): Promise<QueuedPrompt | null>;
 
-  /** Mark a prompt as completed */
-  complete(id: string): Promise<void>;
+  /** Atomically mark an admitted prompt as completed for its owning session. */
+  /** Persist dispatch intent immediately before the provider/PTY boundary. */
+  beginDispatch(id: string, expectedSessionId: string, claimToken: string): Promise<QueueSettlementResult>;
 
-  /** Mark a prompt as failed with an error message */
-  fail(id: string, errorMessage: string): Promise<void>;
+  /** Release an exact claim that failed before dispatch intent was persisted. */
+  releaseClaim(id: string, expectedSessionId: string, claimToken: string): Promise<QueueSettlementResult>;
 
-  /** Delete a queued prompt */
+  /** Complete only the exact claim that owns the external dispatch. */
+  completeAfterDispatch(id: string, expectedSessionId: string, claimToken: string, terminal?: QueueTerminalReceipt): Promise<QueueSettlementResult>;
+
+  /** Fail only the exact claim that owns the external dispatch. */
+  failAfterDispatch(
+    id: string,
+    errorMessage: string,
+    expectedSessionId: string,
+    claimToken: string,
+    terminal?: QueueTerminalReceipt,
+  ): Promise<QueueSettlementResult>;
+
+  /** Atomically replace the contents of an admitted pending prompt. */
+  replacePending(input: CreateQueuedPromptInput): Promise<QueuedPrompt | null>;
+
+  /** Delete only an admitted pending prompt owned by the expected session. */
+  deletePending(id: string, expectedSessionId: string): Promise<boolean>;
+
+  /** Current-upstream explicit row deletion compatibility. */
   delete(id: string): Promise<void>;
 
   /**
@@ -125,7 +243,7 @@ export interface QueuedPromptsStore {
    *
    * Returns the count of rows in each bucket.
    */
-  sweepExecutingOnBoot(): Promise<{ completed: number; failed: number; rolledBack: number }>;
+  sweepExecutingOnBoot(): Promise<QueueSweepResult>;
 
   /**
    * Delivery-aware single-session variant of the boot sweep. Used by
@@ -140,7 +258,7 @@ export interface QueuedPromptsStore {
    * silently answered); roll back only rows that never made it to the
    * conversation.
    */
-  sweepExecutingForSession(sessionId: string): Promise<{ completed: number; failed: number; rolledBack: number }>;
+  sweepExecutingForSession(sessionId: string): Promise<QueueSweepResult>;
 
   /** Delete all completed/failed prompts older than a certain age */
   cleanup(olderThanMs: number): Promise<number>;
@@ -152,14 +270,14 @@ type PGliteLike = {
 
 type EnsureReadyFn = () => Promise<void>;
 
-/**
- * error_message written by the sweep passes for prompts that were
- * delivered (input row logged) but got no agent output before the turn
- * died (app quit / provider interrupt). Deliberately phrased so a user
- * reading the row knows the recovery action.
- */
-const SWEEP_UNANSWERED_ERROR =
+export const SWEEP_UNANSWERED_ERROR =
   'Prompt was delivered but the turn was interrupted before a response was recorded. Send it again to retry.';
+
+const PROVENANCE_DISPATCH_STARTED = 'dispatch_started';
+const PROVENANCE_DISPATCH_COMPLETED = 'dispatch_completed';
+const PROVENANCE_DISPATCH_FAILED = 'dispatch_failed';
+const PROVENANCE_SWEEP_INTERRUPT = 'sweep_interrupt';
+const PROVENANCE_SWEEP_BOOT = 'sweep_boot';
 
 function rowToQueuedPrompt(row: any): QueuedPrompt {
   // Parse JSONB fields
@@ -181,6 +299,15 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     }
   }
 
+  let interruptReceipt = row.interrupt_receipt;
+  if (typeof interruptReceipt === 'string') {
+    try {
+      interruptReceipt = JSON.parse(interruptReceipt);
+    } catch {
+      interruptReceipt = undefined;
+    }
+  }
+
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -190,8 +317,36 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     documentContext,
     createdAt: toMillis(row.created_at)!,
     claimedAt: toMillis(row.claimed_at) ?? undefined,
+    claimToken: row.claim_token || undefined,
+    dispatchStartedAt: toMillis(row.dispatch_started_at) ?? undefined,
+    settlementProvenance: row.settlement_provenance || undefined,
     completedAt: toMillis(row.completed_at) ?? undefined,
     errorMessage: row.error_message || undefined,
+    deliveryClass: row.delivery_class === 'control' ? 'control' : 'ordinary',
+    priorityRank: Number(row.priority_rank ?? 0),
+    deliveryReady: row.delivery_ready !== false && row.delivery_ready !== 0,
+    producer: row.producer || undefined,
+    idempotencyKey: row.idempotency_key || undefined,
+    requestDigest: row.request_digest || undefined,
+    controlOperation: row.control_operation || undefined,
+    interruptTargetGeneration: row.interrupt_target_generation || undefined,
+    interruptReservationOwner: row.interrupt_reservation_owner || undefined,
+    interruptReceipt: interruptReceipt || undefined,
+    clientSubmissionId: row.client_submission_id || undefined,
+    sourceSessionId: row.source_session_id || row.session_id,
+    sourceRoomId: row.source_room_id || row.session_id,
+    submissionSequence: row.submission_sequence == null ? undefined : Number(row.submission_sequence),
+    payloadReceipt: row.payload_utf8_bytes == null || row.payload_unicode_scalars == null || !row.payload_sha256 || row.payload_sha256 === 'legacy-unverified'
+      ? undefined
+      : { utf8Bytes: Number(row.payload_utf8_bytes), unicodeScalars: Number(row.payload_unicode_scalars), sha256: row.payload_sha256 },
+    claimTrigger: row.claim_trigger || undefined,
+    claimTriggeredAt: toMillis(row.claim_triggered_at) ?? undefined,
+    turnId: row.turn_id || undefined,
+    providerInputMessageId: row.provider_input_message_id || undefined,
+    providerOutputMessageId: row.provider_output_message_id || undefined,
+    streamEventSequence: row.stream_event_sequence == null ? undefined : Number(row.stream_event_sequence),
+    terminalStatus: row.terminal_status || undefined,
+    terminalAt: toMillis(row.terminal_at) ?? undefined,
   };
 }
 
@@ -199,19 +354,186 @@ export function createPGLiteQueuedPromptsStore(
   db: PGliteLike,
   ensureDbReady?: EnsureReadyFn
 ): QueuedPromptsStore {
+  let dialectPromise: Promise<'pglite' | 'sqlite'> | null = null;
   const ensureReady = async () => {
     if (ensureDbReady) {
       await ensureDbReady();
     }
   };
 
+  const getDialect = (): Promise<'pglite' | 'sqlite'> => {
+    if (!dialectPromise) {
+      const probePromise = (async () => {
+        try {
+          const probe = await db.query<{ kind: string }>(
+            `SELECT jsonb_typeof('{}'::jsonb) AS kind`,
+          );
+          if (probe.rows[0]?.kind === 'object') return 'pglite';
+        } catch (pgliteError) {
+          try {
+            const probe = await db.query<{ valid: number | boolean }>(
+              `SELECT json_valid('{}') AS valid`,
+            );
+            if (probe.rows[0]?.valid === 1 || probe.rows[0]?.valid === true) return 'sqlite';
+          } catch {
+            // Preserve the first backend/readability failure. No queue state
+            // has changed, so callers fail closed without an ambiguous claim.
+            throw pgliteError;
+          }
+        }
+        throw new Error('Unable to determine queued-prompts database dialect');
+      })();
+      dialectPromise = probePromise;
+      void probePromise.catch(() => {
+        // A transient database outage must fail this claim closed without
+        // poisoning the store singleton forever. A later recovery gets a new
+        // read-only dialect probe before retrying the atomic UPDATE.
+        if (dialectPromise === probePromise) dialectPromise = null;
+      });
+    }
+    return dialectPromise;
+  };
+
+  const getMetadataReadyClause = async (): Promise<string> => {
+    const dialect = await getDialect();
+    return dialect === 'sqlite'
+      ? `(
+           s.metadata IS NULL
+           OR CASE
+                WHEN json_valid(s.metadata) = 1 THEN
+                  json_type(s.metadata) = 'object'
+                  AND (
+                    json_type(s.metadata, '$.modelChangeReconciliation') IS NULL
+                    OR json_type(s.metadata, '$.modelChangeReconciliation') = 'null'
+                  )
+                ELSE FALSE
+              END
+         )`
+      : `(
+           s.metadata IS NULL
+           OR (
+             jsonb_typeof(s.metadata) = 'object'
+             AND (
+               s.metadata->'modelChangeReconciliation' IS NULL
+               OR s.metadata->'modelChangeReconciliation' = 'null'::jsonb
+             )
+           )
+         )`;
+  };
+
+  const classifyMutationMiss = async (
+    id: string,
+    expectedSessionId: string,
+    claimToken: string,
+    isIdempotent: (row: QueuedPrompt) => boolean,
+  ): Promise<QueueSettlementResult> => {
+    const metadataReadyClause = await getMetadataReadyClause();
+    const { rows } = await db.query<any>(
+      `SELECT q.*,
+              EXISTS (
+                SELECT 1
+                FROM ai_sessions s
+                WHERE s.id = q.session_id
+                  AND ${metadataReadyClause}
+              ) AS metadata_ready
+       FROM queued_prompts q
+       WHERE q.id = $1
+       LIMIT 1`,
+      [id],
+    );
+    const raw = rows[0];
+    if (!raw || raw.session_id !== expectedSessionId || raw.claim_token !== claimToken) {
+      return { outcome: 'stale_owner' };
+    }
+    const row = rowToQueuedPrompt(raw);
+    if (raw.metadata_ready === false || raw.metadata_ready === 0) {
+      return { outcome: 'recovery_blocked', row };
+    }
+    if (isIdempotent(row)) {
+      return { outcome: 'idempotent_same_claim', row };
+    }
+    return { outcome: 'terminal_conflict', row };
+  };
+
+  const sweepExecuting = async (
+    sessionId: string | null,
+    provenance: typeof PROVENANCE_SWEEP_INTERRUPT | typeof PROVENANCE_SWEEP_BOOT,
+  ): Promise<QueueSweepResult> => {
+    await ensureReady();
+    const metadataReadyClause = await getMetadataReadyClause();
+    const { rows } = await db.query<{ id: string; status: QueuedPrompt['status'] }>(
+      `UPDATE queued_prompts
+       SET status = CASE WHEN dispatch_started_at IS NULL THEN 'pending' ELSE 'failed' END,
+           claimed_at = CASE WHEN dispatch_started_at IS NULL THEN NULL ELSE claimed_at END,
+           claim_token = CASE WHEN dispatch_started_at IS NULL THEN NULL ELSE claim_token END,
+           completed_at = CASE WHEN dispatch_started_at IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END,
+           error_message = CASE WHEN dispatch_started_at IS NULL THEN NULL ELSE $3 END,
+           settlement_provenance = CASE WHEN dispatch_started_at IS NULL THEN NULL ELSE $2 END
+       WHERE status = 'executing'
+         AND claim_token IS NOT NULL
+         AND ($1::text IS NULL OR session_id = $1::text)
+         AND EXISTS (
+           SELECT 1
+           FROM ai_sessions s
+           WHERE s.id = queued_prompts.session_id
+             AND ${metadataReadyClause}
+         )
+       RETURNING id, status`,
+      [sessionId, provenance, SWEEP_UNANSWERED_ERROR],
+    );
+    const failedIds = rows.filter((row) => row.status === 'failed').map((row) => row.id);
+    const rolledBackIds = rows.filter((row) => row.status === 'pending').map((row) => row.id);
+    return {
+      completed: 0,
+      failed: failedIds.length,
+      rolledBack: rolledBackIds.length,
+      completedIds: [],
+      failedIds,
+      rolledBackIds,
+    };
+  };
+
   return {
     async create(input: CreateQueuedPromptInput): Promise<QueuedPrompt> {
       await ensureReady();
+      const metadataReadyClause = await getMetadataReadyClause();
+      const truth = createQueuedPromptTruth({
+        queueRowId: input.id,
+        clientSubmissionId: input.clientSubmissionId,
+        sourceSessionId: input.sessionId,
+        sourceRoomId: input.sourceRoomId,
+        producer: input.producer ?? input.documentContext?.promptProvenance?.origin ?? 'unknown',
+        payload: input.prompt,
+      });
+
+      // This UPSERT is the sole allocator for a source session. It remains
+      // atomic under concurrent distinct submissions; a same-ID replay may
+      // consume a harmless gap but never creates another row.
+      const allocation = await db.query<{ submission_sequence: number }>(
+        `INSERT INTO queued_prompt_source_sequences (source_session_id, next_sequence)
+         VALUES ($1, 2)
+         ON CONFLICT (source_session_id)
+         DO UPDATE SET next_sequence = queued_prompt_source_sequences.next_sequence + 1
+         RETURNING next_sequence - 1 AS submission_sequence`,
+        [input.sessionId],
+      );
+      const submissionSequence = Number(allocation.rows[0]?.submission_sequence);
+      if (!Number.isSafeInteger(submissionSequence) || submissionSequence < 1) {
+        throw new Error('Unable to allocate queued prompt sequence');
+      }
 
       const { rows } = await db.query<any>(
-        `INSERT INTO queued_prompts (id, session_id, prompt, attachments, document_context)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO queued_prompts (
+           id, session_id, prompt, attachments, document_context, producer,
+           client_submission_id, source_session_id, source_room_id, submission_sequence,
+           payload_utf8_bytes, payload_unicode_scalars, payload_sha256
+         )
+         SELECT $1, $2, $3, $4, $5, $6, $7, $2, $8,
+           $9,
+           $10, $11, $12
+         FROM ai_sessions s
+         WHERE s.id = $2
+           AND ${metadataReadyClause}
          RETURNING *`,
         [
           input.id,
@@ -219,15 +541,74 @@ export function createPGLiteQueuedPromptsStore(
           input.prompt,
           input.attachments ? JSON.stringify(input.attachments) : null,
           input.documentContext ? JSON.stringify(input.documentContext) : null,
+          truth.producer,
+          truth.clientSubmissionId,
+          truth.sourceRoomId,
+          submissionSequence,
+          truth.payload.utf8Bytes,
+          truth.payload.unicodeScalars,
+          truth.payload.sha256,
         ]
       );
 
       if (rows.length === 0) {
-        throw new Error('Failed to create queued prompt');
+        const existing = await db.query<any>(
+          `SELECT * FROM queued_prompts WHERE client_submission_id = $1 LIMIT 1`,
+          [truth.clientSubmissionId],
+        );
+        const row = existing.rows[0] ? rowToQueuedPrompt(existing.rows[0]) : null;
+        if (!row) throw new Error('Queued prompt creation was not admitted');
+        if (row.payloadReceipt && !payloadReceiptsMatch(input.prompt, row.payloadReceipt)) throw queueTruthMismatchError();
+        return row;
       }
 
       console.log(`[QueuedPromptsStore] Created prompt ${input.id} for session ${input.sessionId}`);
       return rowToQueuedPrompt(rows[0]);
+    },
+
+    async createPriorityControlPrompt(
+      input: CreatePriorityControlQueuedPromptInput
+    ): Promise<{ row: QueuedPrompt; replayed: boolean }> {
+      await ensureReady();
+
+      const { rows } = await db.query<any>(
+        `INSERT INTO queued_prompts (
+           id, session_id, prompt, delivery_class, priority_rank, delivery_ready, producer,
+           idempotency_key, request_digest, control_operation
+         )
+         VALUES ($1, $2, $3, 'control', 100, FALSE, $4, $5, $6, $7)
+         ON CONFLICT (session_id, idempotency_key)
+           WHERE idempotency_key IS NOT NULL
+         DO NOTHING
+         RETURNING *`,
+        [
+          input.id,
+          input.sessionId,
+          input.prompt,
+          input.producer,
+          input.idempotencyKey,
+          input.requestDigest,
+          input.controlOperation,
+        ]
+      );
+
+      if (rows.length > 0) {
+        return { row: rowToQueuedPrompt(rows[0]), replayed: false };
+      }
+
+      const existing = await db.query<any>(
+        `SELECT * FROM queued_prompts
+         WHERE session_id = $1 AND idempotency_key = $2
+         LIMIT 1`,
+        [input.sessionId, input.idempotencyKey]
+      );
+      if (existing.rows.length === 0) {
+        throw new Error('Failed to create or replay priority control prompt');
+      }
+      if (existing.rows[0].request_digest !== input.requestDigest) {
+        throw new Error('idempotency_conflict: key was already used for a different request');
+      }
+      return { row: rowToQueuedPrompt(existing.rows[0]), replayed: true };
     },
 
     async get(id: string): Promise<QueuedPrompt | null> {
@@ -253,7 +634,7 @@ export function createPGLiteQueuedPromptsStore(
       if (!includeCompleted) {
         query += ` AND status NOT IN ('completed', 'failed')`;
       }
-      query += ` ORDER BY created_at ASC`;
+      query += ` ORDER BY priority_rank DESC, created_at ASC, id ASC`;
 
       const { rows } = await db.query<any>(query, [sessionId]);
       return rows.map(rowToQueuedPrompt);
@@ -264,8 +645,8 @@ export function createPGLiteQueuedPromptsStore(
 
       const { rows } = await db.query<any>(
         `SELECT * FROM queued_prompts
-         WHERE session_id = $1 AND status = 'pending'
-         ORDER BY created_at ASC`,
+         WHERE session_id = $1 AND status = 'pending' AND delivery_ready = TRUE
+         ORDER BY priority_rank DESC, created_at ASC, id ASC`,
         [sessionId]
       );
 
@@ -274,45 +655,212 @@ export function createPGLiteQueuedPromptsStore(
 
     async listSessionIdsWithPending(): Promise<string[]> {
       await ensureReady();
-
       const { rows } = await db.query<{ session_id: string }>(
-        `SELECT DISTINCT session_id FROM queued_prompts WHERE status = 'pending'`
+        `SELECT DISTINCT session_id FROM queued_prompts WHERE status = 'pending'`,
       );
-
       return rows.map((row) => row.session_id);
     },
 
     async failAllPendingForSession(sessionId: string, errorMessage: string): Promise<number> {
       await ensureReady();
-
-      const { rows } = await db.query<any>(
+      const { rows } = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $2
          WHERE session_id = $1 AND status = 'pending'
          RETURNING id`,
-        [sessionId, errorMessage]
+        [sessionId, errorMessage],
       );
-
-      if (rows.length > 0) {
-        console.log(
-          `[QueuedPromptsStore] Marked ${rows.length} pending prompt(s) for session ${sessionId} as failed: ${errorMessage}`
-        );
-      }
-
       return rows.length;
     },
 
-    async claim(id: string): Promise<QueuedPrompt | null> {
+    async listPendingSessionIds(
+      options?: { deliveryClass?: 'ordinary' | 'control' }
+    ): Promise<string[]> {
       await ensureReady();
 
-      // ATOMIC: Only update if status is still 'pending'
-      // This is the key operation that prevents duplicate execution
+      const deliveryClass = options?.deliveryClass;
+      const { rows } = await db.query<{ session_id: string }>(
+        `SELECT session_id
+         FROM queued_prompts
+         WHERE status = 'pending' AND delivery_ready = TRUE
+           AND ($1 IS NULL OR delivery_class = $1)
+         GROUP BY session_id
+         ORDER BY MIN(created_at) ASC, session_id ASC`,
+        [deliveryClass ?? null]
+      );
+      return rows.map((row) => row.session_id);
+    },
+
+    async reservePriorityInterrupt(input): Promise<{ row: QueuedPrompt; reserved: boolean }> {
+      await ensureReady();
+
+      let rows: any[] = [];
+      try {
+        const result = await db.query<any>(
+          `UPDATE queued_prompts AS target
+           SET interrupt_target_generation = $2,
+               interrupt_reservation_owner = $3
+           WHERE target.id = $1
+             AND target.delivery_class = 'control'
+             AND target.interrupt_receipt IS NULL
+             AND target.interrupt_reservation_owner IS NULL
+             AND NOT EXISTS (
+               SELECT 1
+               FROM queued_prompts AS incumbent
+               WHERE incumbent.session_id = target.session_id
+                 AND incumbent.interrupt_target_generation = $2
+                 AND incumbent.id <> target.id
+             )
+           RETURNING *`,
+          [input.promptId, input.generation, input.owner]
+        );
+        rows = result.rows;
+      } catch (error) {
+        const code = (error as { code?: string })?.code;
+        const message = error instanceof Error ? error.message : String(error);
+        if (code !== '23505' && code !== 'SQLITE_CONSTRAINT_UNIQUE' && !/unique|duplicate/i.test(message)) {
+          throw error;
+        }
+        // A concurrent row won the unique (session,generation) fence.
+      }
+      if (rows.length > 0) {
+        return { row: rowToQueuedPrompt(rows[0]), reserved: true };
+      }
+
+      await db.query<any>(
+        `UPDATE queued_prompts AS target
+         SET interrupt_reservation_owner = incumbent.interrupt_reservation_owner,
+             interrupt_receipt = incumbent.interrupt_receipt,
+             delivery_ready = CASE
+               WHEN incumbent.interrupt_receipt IS NULL THEN target.delivery_ready
+               ELSE incumbent.delivery_ready
+             END
+         FROM queued_prompts AS incumbent
+         WHERE target.id = $1
+           AND target.delivery_class = 'control'
+           AND target.interrupt_target_generation IS NULL
+           AND target.interrupt_reservation_owner IS NULL
+           AND target.interrupt_receipt IS NULL
+           AND incumbent.session_id = target.session_id
+           AND incumbent.interrupt_target_generation = $2
+           AND incumbent.interrupt_reservation_owner IS NOT NULL
+           AND incumbent.id <> target.id`,
+        [input.promptId, input.generation]
+      );
+
+      const existing = await db.query<any>(
+        `SELECT * FROM queued_prompts WHERE id = $1 LIMIT 1`,
+        [input.promptId]
+      );
+      if (existing.rows.length === 0) {
+        throw new Error(`Priority control prompt ${input.promptId} not found`);
+      }
+      return { row: rowToQueuedPrompt(existing.rows[0]), reserved: false };
+    },
+
+    async recordPriorityInterruptReceipt(input): Promise<QueuedPrompt> {
+      await ensureReady();
+
+      const reservation = await db.query<any>(
+        `SELECT * FROM queued_prompts
+         WHERE id = $1
+           AND interrupt_target_generation = $2
+         LIMIT 1`,
+        [input.promptId, input.generation]
+      );
+      if (reservation.rows.length === 0) {
+        throw new Error('Failed to record priority interrupt receipt');
+      }
+      const reservedRow = rowToQueuedPrompt(reservation.rows[0]);
+      if (reservedRow.interruptReceipt) {
+        return reservedRow;
+      }
+      if (!reservedRow.interruptReservationOwner) {
+        throw new Error('Failed to record priority interrupt receipt');
+      }
+
       const { rows } = await db.query<any>(
         `UPDATE queued_prompts
-         SET status = 'executing', claimed_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND status = 'pending'
+         SET interrupt_receipt = $3,
+             delivery_ready = $4
+         WHERE session_id = $5
+           AND interrupt_reservation_owner = $6
+           AND interrupt_receipt IS NULL
+           AND (
+             (id = $1 AND interrupt_target_generation = $2)
+             OR (id <> $1 AND interrupt_target_generation IS NULL)
+           )
          RETURNING *`,
-        [id]
+        [
+          input.promptId,
+          input.generation,
+          JSON.stringify(input.receipt),
+          input.receipt.success,
+          reservedRow.sessionId,
+          reservedRow.interruptReservationOwner,
+        ]
+      );
+      const winner = rows.find((row) => row.id === input.promptId);
+      if (winner) {
+        return rowToQueuedPrompt(winner);
+      }
+      const existing = await db.query<any>(
+        `SELECT * FROM queued_prompts WHERE id = $1 LIMIT 1`,
+        [input.promptId]
+      );
+      if (existing.rows.length === 0) {
+        throw new Error(`Priority control prompt ${input.promptId} not found`);
+      }
+      const row = rowToQueuedPrompt(existing.rows[0]);
+      if (
+        row.interruptTargetGeneration !== input.generation
+        || !row.interruptReceipt
+      ) {
+        throw new Error('Failed to record priority interrupt receipt');
+      }
+      return row;
+    },
+
+    async claim(id: string, expectedSessionId?: string, claimTrigger = 'queue_driver'): Promise<QueuedPrompt | null> {
+      await ensureReady();
+
+      const metadataReadyClause = await getMetadataReadyClause();
+      const claimToken = randomUUID();
+
+      // One UPDATE owns both queue reservation and durable recovery admission.
+      // The authoritative session comes from the row itself; expectedSessionId
+      // additionally prevents a public caller from claiming another session's
+      // row. A missing/unreadable session, malformed metadata, pending marker,
+      // lost delivery readiness, or concurrent claimant leaves the row pending.
+      const { rows } = await db.query<any>(
+        `UPDATE queued_prompts
+         SET status = 'executing',
+             claimed_at = CURRENT_TIMESTAMP,
+             claim_token = $3,
+             dispatch_started_at = NULL,
+             settlement_provenance = NULL,
+             completed_at = NULL,
+             error_message = NULL,
+             claim_trigger = $4,
+             claim_triggered_at = CURRENT_TIMESTAMP,
+             turn_id = 'turn:' || id || ':' || $3,
+             provider_input_message_id = 'input:' || id || ':' || $3,
+             provider_output_message_id = 'output:' || id || ':' || $3,
+             stream_event_sequence = 0,
+             terminal_status = 'streaming',
+             terminal_at = NULL
+         WHERE id = $1
+           AND status = 'pending'
+           AND delivery_ready = TRUE
+           AND ($2::text IS NULL OR session_id = $2::text)
+           AND EXISTS (
+             SELECT 1
+             FROM ai_sessions s
+             WHERE s.id = queued_prompts.session_id
+               AND ${metadataReadyClause}
+           )
+         RETURNING *`,
+        [id, expectedSessionId ?? null, claimToken, claimTrigger]
       );
 
       if (rows.length === 0) {
@@ -324,274 +872,271 @@ export function createPGLiteQueuedPromptsStore(
       return rowToQueuedPrompt(rows[0]);
     },
 
-    async complete(id: string): Promise<void> {
+    async beginDispatch(
+      id: string,
+      expectedSessionId: string,
+      claimToken: string,
+    ): Promise<QueueSettlementResult> {
       await ensureReady();
-
-      // error_message = NULL: a turn that resolves normally after a sweep
-      // provisionally failed the row (buffered output landing late) must
-      // not keep the stale sweep error alongside status 'completed'.
-      await db.query(
+      const metadataReadyClause = await getMetadataReadyClause();
+      const { rows } = await db.query<any>(
         `UPDATE queued_prompts
-         SET status = 'completed', completed_at = CURRENT_TIMESTAMP, error_message = NULL
-         WHERE id = $1`,
-        [id]
+         SET dispatch_started_at = CURRENT_TIMESTAMP,
+             settlement_provenance = $4
+         WHERE id = $1
+           AND session_id = $2::text
+           AND claim_token = $3
+           AND status = 'executing'
+           AND dispatch_started_at IS NULL
+           AND EXISTS (
+             SELECT 1 FROM ai_sessions s
+             WHERE s.id = queued_prompts.session_id
+               AND ${metadataReadyClause}
+           )
+         RETURNING *`,
+        [id, expectedSessionId, claimToken, PROVENANCE_DISPATCH_STARTED],
       );
-
-      // console.log(`[QueuedPromptsStore] Marked prompt ${id} as completed`);
+      if (rows.length > 0) return { outcome: 'settled', row: rowToQueuedPrompt(rows[0]) };
+      return classifyMutationMiss(
+        id,
+        expectedSessionId,
+        claimToken,
+        (row) => row.status === 'executing' && row.dispatchStartedAt !== undefined,
+      );
     },
 
-    async fail(id: string, errorMessage: string): Promise<void> {
+    async releaseClaim(
+      id: string,
+      expectedSessionId: string,
+      claimToken: string,
+    ): Promise<QueueSettlementResult> {
       await ensureReady();
-
-      await db.query(
+      const metadataReadyClause = await getMetadataReadyClause();
+      const { rows } = await db.query<any>(
         `UPDATE queued_prompts
-         SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $2
-         WHERE id = $1`,
-        [id, errorMessage]
+         SET status = 'pending',
+             claimed_at = NULL,
+             claim_token = NULL,
+             dispatch_started_at = NULL,
+             settlement_provenance = NULL,
+             completed_at = NULL,
+             error_message = NULL
+         WHERE id = $1
+           AND session_id = $2::text
+           AND claim_token = $3
+           AND status = 'executing'
+           AND dispatch_started_at IS NULL
+           AND EXISTS (
+             SELECT 1 FROM ai_sessions s
+             WHERE s.id = queued_prompts.session_id
+               AND ${metadataReadyClause}
+           )
+         RETURNING *`,
+        [id, expectedSessionId, claimToken],
       );
+      if (rows.length > 0) return { outcome: 'settled', row: rowToQueuedPrompt(rows[0]) };
+      return classifyMutationMiss(id, expectedSessionId, claimToken, () => false);
+    },
 
-      console.log(`[QueuedPromptsStore] Marked prompt ${id} as failed: ${errorMessage}`);
+    async completeAfterDispatch(
+      id: string,
+      expectedSessionId: string,
+      claimToken: string,
+      terminal?: QueueTerminalReceipt,
+    ): Promise<QueueSettlementResult> {
+      await ensureReady();
+      const dialect = await getDialect();
+      const metadataReadyClause = await getMetadataReadyClause();
+      const terminalTimeSql = dialect === 'pglite'
+        ? 'COALESCE($7::timestamptz, CURRENT_TIMESTAMP)'
+        : 'COALESCE($7, CURRENT_TIMESTAMP)';
+      const terminalSequenceSql = dialect === 'pglite'
+        ? `CASE WHEN $8::integer IS NULL THEN stream_event_sequence + 1
+                WHEN stream_event_sequence >= $8::integer THEN stream_event_sequence
+                ELSE $8::integer END`
+        : `CASE WHEN $8 IS NULL THEN stream_event_sequence + 1
+                WHEN stream_event_sequence >= $8 THEN stream_event_sequence
+                ELSE $8 END`;
+      const { rows } = await db.query<any>(
+        `UPDATE queued_prompts
+         SET status = 'completed',
+             completed_at = ${terminalTimeSql},
+             error_message = NULL,
+             settlement_provenance = $4,
+             terminal_status = 'completed',
+             terminal_at = ${terminalTimeSql},
+             stream_event_sequence = ${terminalSequenceSql}
+         WHERE id = $1
+           AND session_id = $2::text
+           AND claim_token = $3
+           AND dispatch_started_at IS NOT NULL
+           AND (
+             status = 'executing'
+             OR (
+               status = 'failed'
+               AND settlement_provenance IN ($5, $6)
+             )
+           )
+           AND EXISTS (
+             SELECT 1 FROM ai_sessions s
+             WHERE s.id = queued_prompts.session_id
+               AND ${metadataReadyClause}
+           )
+         RETURNING *`,
+        [
+          id,
+          expectedSessionId,
+          claimToken,
+          PROVENANCE_DISPATCH_COMPLETED,
+          PROVENANCE_SWEEP_INTERRUPT,
+          PROVENANCE_SWEEP_BOOT,
+          terminal ? new Date(terminal.terminalAt).toISOString() : null,
+          terminal?.eventSequence ?? null,
+        ],
+      );
+      if (rows.length > 0) return { outcome: 'settled', row: rowToQueuedPrompt(rows[0]) };
+      return classifyMutationMiss(
+        id,
+        expectedSessionId,
+        claimToken,
+        (row) => row.status === 'completed' && row.settlementProvenance === PROVENANCE_DISPATCH_COMPLETED,
+      );
+    },
+
+    async failAfterDispatch(
+      id: string,
+      errorMessage: string,
+      expectedSessionId: string,
+      claimToken: string,
+      terminal?: QueueTerminalReceipt,
+    ): Promise<QueueSettlementResult> {
+      await ensureReady();
+      const dialect = await getDialect();
+      const metadataReadyClause = await getMetadataReadyClause();
+      const terminalTimeSql = dialect === 'pglite'
+        ? 'COALESCE($6::timestamptz, CURRENT_TIMESTAMP)'
+        : 'COALESCE($6, CURRENT_TIMESTAMP)';
+      const terminalSequenceSql = dialect === 'pglite'
+        ? `CASE WHEN $7::integer IS NULL THEN stream_event_sequence + 1
+                WHEN stream_event_sequence >= $7::integer THEN stream_event_sequence
+                ELSE $7::integer END`
+        : `CASE WHEN $7 IS NULL THEN stream_event_sequence + 1
+                WHEN stream_event_sequence >= $7 THEN stream_event_sequence
+                ELSE $7 END`;
+      const { rows } = await db.query<any>(
+        `UPDATE queued_prompts
+         SET status = 'failed',
+             completed_at = ${terminalTimeSql},
+             error_message = $4,
+             settlement_provenance = $5,
+             terminal_status = 'failed',
+             terminal_at = ${terminalTimeSql},
+             stream_event_sequence = ${terminalSequenceSql}
+         WHERE id = $1
+           AND session_id = $2::text
+           AND claim_token = $3
+           AND status = 'executing'
+           AND dispatch_started_at IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM ai_sessions s
+             WHERE s.id = queued_prompts.session_id
+               AND ${metadataReadyClause}
+           )
+         RETURNING *`,
+        [
+          id,
+          expectedSessionId,
+          claimToken,
+          errorMessage,
+          PROVENANCE_DISPATCH_FAILED,
+          terminal ? new Date(terminal.terminalAt).toISOString() : null,
+          terminal?.eventSequence ?? null,
+        ],
+      );
+      if (rows.length > 0) return { outcome: 'settled', row: rowToQueuedPrompt(rows[0]) };
+      return classifyMutationMiss(
+        id,
+        expectedSessionId,
+        claimToken,
+        (row) => row.status === 'failed' && row.settlementProvenance === PROVENANCE_DISPATCH_FAILED,
+      );
+    },
+
+    async replacePending(input: CreateQueuedPromptInput): Promise<QueuedPrompt | null> {
+      await ensureReady();
+      const metadataReadyClause = await getMetadataReadyClause();
+      const receipt = receiptQueuedPromptPayload(input.prompt);
+      const { rows } = await db.query<any>(
+        `UPDATE queued_prompts
+         SET prompt = $3,
+             attachments = $4,
+             document_context = $5,
+             payload_utf8_bytes = $6,
+             payload_unicode_scalars = $7,
+             payload_sha256 = $8
+         WHERE id = $1
+           AND session_id = $2::text
+           AND status = 'pending'
+           AND EXISTS (
+             SELECT 1 FROM ai_sessions s
+             WHERE s.id = queued_prompts.session_id
+               AND ${metadataReadyClause}
+           )
+         RETURNING *`,
+        [
+          input.id,
+          input.sessionId,
+          input.prompt,
+          input.attachments !== undefined ? JSON.stringify(input.attachments) : null,
+          input.documentContext !== undefined ? JSON.stringify(input.documentContext) : null,
+          receipt.utf8Bytes,
+          receipt.unicodeScalars,
+          receipt.sha256,
+        ],
+      );
+      return rows.length > 0 ? rowToQueuedPrompt(rows[0]) : null;
+    },
+
+    async deletePending(id: string, expectedSessionId: string): Promise<boolean> {
+      await ensureReady();
+      const metadataReadyClause = await getMetadataReadyClause();
+      const { rows } = await db.query<{ id: string }>(
+        `DELETE FROM queued_prompts
+         WHERE id = $1
+           AND session_id = $2::text
+           AND status = 'pending'
+           AND EXISTS (
+             SELECT 1 FROM ai_sessions s
+             WHERE s.id = queued_prompts.session_id
+               AND ${metadataReadyClause}
+           )
+         RETURNING id`,
+        [id, expectedSessionId],
+      );
+      return rows.length > 0;
     },
 
     async delete(id: string): Promise<void> {
       await ensureReady();
-
-      await db.query(
-        `DELETE FROM queued_prompts WHERE id = $1`,
-        [id]
-      );
-
-      console.log(`[QueuedPromptsStore] Deleted prompt ${id}`);
+      await db.query(`DELETE FROM queued_prompts WHERE id = $1`, [id]);
     },
 
     async rollbackExecuting(sessionId: string): Promise<number> {
-      await ensureReady();
-
-      const { rows } = await db.query<{ id: string }>(
-        `UPDATE queued_prompts
-         SET status = 'pending', claimed_at = NULL
-         WHERE session_id = $1 AND status = 'executing'
-         RETURNING id`,
-        [sessionId]
-      );
-
-      if (rows.length > 0) {
-        console.log(`[QueuedPromptsStore] Rolled back ${rows.length} executing prompt(s) for session ${sessionId}`);
-      }
-      return rows.length;
+      const result = await sweepExecuting(sessionId, PROVENANCE_SWEEP_INTERRUPT);
+      return result.rolledBack;
     },
 
     async rollbackAllExecuting(): Promise<number> {
-      await ensureReady();
-
-      const { rows } = await db.query<{ id: string }>(
-        `UPDATE queued_prompts
-         SET status = 'pending', claimed_at = NULL
-         WHERE status = 'executing'
-         RETURNING id`
-      );
-
-      if (rows.length > 0) {
-        console.log(`[QueuedPromptsStore] Boot sweep: rolled back ${rows.length} executing prompt(s) across all sessions`);
-      }
-      return rows.length;
+      const result = await sweepExecuting(null, PROVENANCE_SWEEP_BOOT);
+      return result.rolledBack;
     },
 
-    async sweepExecutingOnBoot(): Promise<{ completed: number; failed: number; rolledBack: number }> {
-      await ensureReady();
-
-      // Pass 1: rows whose user message was already logged to
-      // ai_agent_messages AND that have agent output after the claim --
-      // the prompt was delivered and the agent responded (or was paused
-      // on an interactive prompt, which also persists as an output row)
-      // when the app quit. Mark completed so the next session activation
-      // doesn't re-claim and re-send the original prompt.
-      //
-      // Three branches join in this update:
-      //
-      // (a) `executing` rows whose input arrived after `claimed_at` AND
-      //     that have at least one output row after `claimed_at` --
-      //     "delivered then answered/paused". The input row alone does
-      //     NOT prove the agent ever responded: a provider SIGTERM'd at
-      //     quit leaves the input logged and nothing else, and marking
-      //     that completed makes the session look silently answered
-      //     (#783). Those rows fall through to pass 2 instead.
-      // (b) `pending` rows whose prompt text appears in a later input
-      //     for the same session -- leftover corruption from older
-      //     builds that ran the blanket `rollbackAllExecuting` sweep on
-      //     boot. POSITION > 0 implies the text is already in the
-      //     conversation, so the row must not be re-delivered.
-      // (c) `pending` rows older than 24h -- abandoned. Catches the
-      //     long-tail of (b) where the content match misses because
-      //     JSON escaping (newlines, quotes, pasted attachments)
-      //     differs between the queued prompt and the logged input. A
-      //     legitimately-queued prompt is processed within seconds of
-      //     creation; a row sitting >24h pending is effectively
-      //     abandoned regardless of whether it was technically
-      //     delivered.
-      const completedResult = await db.query<{ id: string }>(
-        `UPDATE queued_prompts
-         SET status = 'completed', completed_at = CURRENT_TIMESTAMP
-         WHERE (
-           (status = 'executing' AND claimed_at IS NOT NULL
-            AND EXISTS (
-              SELECT 1 FROM ai_agent_messages m
-              WHERE m.session_id = queued_prompts.session_id
-                AND m.direction = 'input'
-                AND m.created_at >= queued_prompts.claimed_at
-            )
-            AND EXISTS (
-              SELECT 1 FROM ai_agent_messages m
-              WHERE m.session_id = queued_prompts.session_id
-                AND m.direction = 'output'
-                AND m.created_at >= queued_prompts.claimed_at
-            ))
-           OR
-           (status = 'pending'
-            AND EXISTS (
-              SELECT 1 FROM ai_agent_messages m
-              WHERE m.session_id = queued_prompts.session_id
-                AND m.direction = 'input'
-                AND m.created_at >= queued_prompts.created_at
-                AND POSITION(queued_prompts.prompt IN m.content) > 0
-            ))
-           OR
-           (status = 'pending'
-            AND created_at < NOW() - INTERVAL '1 day')
-         )
-         RETURNING id`
-      );
-
-      // Pass 2: still-executing rows whose input WAS delivered but that
-      // have no output evidence. The turn died between delivery and any
-      // response. Mark failed with a visible error, NOT completed (silent
-      // fake success, #783) and NOT pending (a re-claim would re-send the
-      // delivered input, regressing NIM-615). The NOT EXISTS makes this
-      // pass independently correct rather than relying on pass 1 having
-      // consumed the answered rows first (an output row committed between
-      // the two statements must not produce a failed-but-answered row).
-      const failedResult = await db.query<{ id: string }>(
-        `UPDATE queued_prompts
-         SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $1
-         WHERE status = 'executing' AND claimed_at IS NOT NULL
-           AND EXISTS (
-             SELECT 1 FROM ai_agent_messages m
-             WHERE m.session_id = queued_prompts.session_id
-               AND m.direction = 'input'
-               AND m.created_at >= queued_prompts.claimed_at
-           )
-           AND NOT EXISTS (
-             SELECT 1 FROM ai_agent_messages m
-             WHERE m.session_id = queued_prompts.session_id
-               AND m.direction = 'output'
-               AND m.created_at >= queued_prompts.claimed_at
-           )
-         RETURNING id`,
-        [SWEEP_UNANSWERED_ERROR]
-      );
-
-      // Pass 3: anything still executing crashed before its input was
-      // ever logged. Roll back to pending so it can be retried.
-      const rolledBackResult = await db.query<{ id: string }>(
-        `UPDATE queued_prompts
-         SET status = 'pending', claimed_at = NULL
-         WHERE status = 'executing'
-         RETURNING id`
-      );
-
-      const completed = completedResult.rows.length;
-      const failed = failedResult.rows.length;
-      const rolledBack = rolledBackResult.rows.length;
-
-      if (completed > 0 || failed > 0 || rolledBack > 0) {
-        console.log(
-          `[QueuedPromptsStore] Boot sweep: marked ${completed} answered prompt(s) completed, ${failed} delivered-but-unanswered prompt(s) failed, rolled back ${rolledBack} undelivered prompt(s)`
-        );
-      }
-
-      return { completed, failed, rolledBack };
+    async sweepExecutingOnBoot(): Promise<QueueSweepResult> {
+      return sweepExecuting(null, PROVENANCE_SWEEP_BOOT);
     },
 
-    async sweepExecutingForSession(sessionId: string): Promise<{ completed: number; failed: number; rolledBack: number }> {
-      await ensureReady();
-
-      // Pass 1: same delivery + output-evidence check as
-      // sweepExecutingOnBoot, but scoped to a single session. Used on
-      // cancel/interrupt to avoid the immediate re-claim that follows
-      // when an already-delivered prompt is rolled back to pending.
-      const completedResult = await db.query<{ id: string }>(
-        `UPDATE queued_prompts
-         SET status = 'completed', completed_at = CURRENT_TIMESTAMP
-         WHERE status = 'executing'
-           AND session_id = $1
-           AND claimed_at IS NOT NULL
-           AND EXISTS (
-             SELECT 1 FROM ai_agent_messages m
-             WHERE m.session_id = queued_prompts.session_id
-               AND m.direction = 'input'
-               AND m.created_at >= queued_prompts.claimed_at
-           )
-           AND EXISTS (
-             SELECT 1 FROM ai_agent_messages m
-             WHERE m.session_id = queued_prompts.session_id
-               AND m.direction = 'output'
-               AND m.created_at >= queued_prompts.claimed_at
-           )
-         RETURNING id`,
-        [sessionId]
-      );
-
-      // Pass 2: delivered but no output before the interrupt -- the
-      // exact #790 shape ("why did you stop?" was claimed, never
-      // answered, and the interrupt sweep marked it completed). Fail it
-      // visibly instead; never roll back to pending (re-claim would
-      // re-send the delivered input, NIM-615). NOT EXISTS keeps this
-      // pass independently correct if an output row commits between the
-      // two statements; and if the turn later resolves normally anyway,
-      // complete() overwrites the provisional failed and clears the error.
-      const failedResult = await db.query<{ id: string }>(
-        `UPDATE queued_prompts
-         SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $2
-         WHERE status = 'executing'
-           AND session_id = $1
-           AND claimed_at IS NOT NULL
-           AND EXISTS (
-             SELECT 1 FROM ai_agent_messages m
-             WHERE m.session_id = queued_prompts.session_id
-               AND m.direction = 'input'
-               AND m.created_at >= queued_prompts.claimed_at
-           )
-           AND NOT EXISTS (
-             SELECT 1 FROM ai_agent_messages m
-             WHERE m.session_id = queued_prompts.session_id
-               AND m.direction = 'output'
-               AND m.created_at >= queued_prompts.claimed_at
-           )
-         RETURNING id`,
-        [sessionId, SWEEP_UNANSWERED_ERROR]
-      );
-
-      // Pass 3: roll back anything still executing for this session that
-      // never made it to the conversation.
-      const rolledBackResult = await db.query<{ id: string }>(
-        `UPDATE queued_prompts
-         SET status = 'pending', claimed_at = NULL
-         WHERE status = 'executing' AND session_id = $1
-         RETURNING id`,
-        [sessionId]
-      );
-
-      const completed = completedResult.rows.length;
-      const failed = failedResult.rows.length;
-      const rolledBack = rolledBackResult.rows.length;
-
-      if (completed > 0 || failed > 0 || rolledBack > 0) {
-        console.log(
-          `[QueuedPromptsStore] Session sweep (${sessionId}): marked ${completed} answered prompt(s) completed, ${failed} delivered-but-unanswered prompt(s) failed, rolled back ${rolledBack} undelivered prompt(s)`
-        );
-      }
-
-      return { completed, failed, rolledBack };
+    async sweepExecutingForSession(sessionId: string): Promise<QueueSweepResult> {
+      return sweepExecuting(sessionId, PROVENANCE_SWEEP_INTERRUPT);
     },
 
     async cleanup(olderThanMs: number): Promise<number> {

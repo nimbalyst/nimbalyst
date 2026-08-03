@@ -26,6 +26,7 @@ import type { TodoItem } from '@nimbalyst/runtime/ui/AgentTranscript/types';
 import { isToolLikeMessage } from '@nimbalyst/runtime/ui/AgentTranscript/utils/messageTypeHelpers';
 import { AIInput, AIInputRef } from './AIInput';
 import { PromptQueueList } from './PromptQueueList';
+import { projectQueuedPrompts } from './queuedPromptProjection';
 import { TranscriptEmbeddedFileCard } from './TranscriptEmbeddedFileCard';
 import { getDiffPeekSizeForInteractiveWidgetHost } from './interactiveWidgetHostProxy';
 import { customEditorRegistry } from '../CustomEditors/registry';
@@ -50,27 +51,17 @@ import { expandSessionMentions } from './sessionMentions';
 import { diffTreeGroupByDirectoryAtom, setDiffTreeGroupByDirectoryAtom } from '../../store/atoms/projectState';
 import { openSettingsCommandAtom } from '../../store/atoms/settingsNavigation';
 import {
-  sessionDraftInputAtom,
-  sessionDraftHydratedAtom,
-  sessionDraftAttachmentsAtom,
-  sessionStoreAtom,
   sessionLoadedAtom,
-  sessionMessagesAtom,
-  sessionProviderAtom,
   sessionTokenUsageAtom,
   sessionStatusAtom,
   sessionCurrentTeammatesAtom,
   sessionCurrentTodosAtom,
-  sessionWorktreePathAtom,
-  sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
   sessionThinkingModeRawAtom,
-  sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,
   sessionArchivedAtom,
   sessionProcessingAtom,
-  sessionHasPendingInteractivePromptAtom,
   sessionWorktreeIdAtom,
   sessionPhaseAtom,
   sessionRegistryAtom,
@@ -94,7 +85,19 @@ import {
   clearSessionError,
   loadInitialQueuedPrompts,
 } from '../../store';
-import { streamCompletionSignalAtom } from '../../store/atoms/sessionTranscript';
+import {
+  sessionDraftInputAtom,
+  sessionDraftHydratedAtom,
+  sessionDraftAttachmentsAtom,
+  sessionStoreAtom,
+  sessionMessagesAtom,
+  sessionProviderAtom,
+  sessionWorktreePathAtom,
+  sessionDocumentContextAtom,
+  sessionLoadingAtom,
+  sessionHasPendingInteractivePromptAtom,
+} from '../../store/atoms/sessions';
+import { streamCompletionSignalAtom, type QueuedPrompt } from '../../store/atoms/sessionTranscript';
 import { canPersistSessionDraft, convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import {
@@ -118,6 +121,31 @@ import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPee
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
 import { sessionFileEditsAtom } from '../../store/atoms/sessionFiles';
 import { SESSION_PHASE_COLUMNS, setSessionPhaseAtom, type SessionPhase } from '../../store/atoms/sessionKanban';
+
+function isSessionDataValue(value: unknown): value is SessionData {
+  return typeof value === 'object' && value !== null;
+}
+
+function readSessionData(sessionId: string): SessionData | null {
+  const value = store.get(sessionStoreAtom(sessionId));
+  return isSessionDataValue(value) ? value : null;
+}
+
+function isChatAttachmentValue(value: unknown): value is ChatAttachment {
+  return typeof value === 'object' && value !== null &&
+    typeof (value as { id?: unknown }).id === 'string' &&
+    typeof (value as { filename?: unknown }).filename === 'string';
+}
+
+function readDraftAttachments(sessionId: string): ChatAttachment[] {
+  const value = store.get(sessionDraftAttachmentsAtom(sessionId));
+  return Array.isArray(value) ? value.filter(isChatAttachmentValue) : [];
+}
+
+function readDraftInput(sessionId: string): string {
+  const value = store.get(sessionDraftInputAtom(sessionId));
+  return typeof value === 'string' ? value : '';
+}
 
 /**
  * Detect a metadata value that's the artifact of `{...stringValue, ...}` -
@@ -302,7 +330,7 @@ async function updateSessionMetadataField<T>(
 ): Promise<void> {
   try {
     // Update local store FIRST (before async IPC) to ensure immediate availability
-    const currentSessionData = store.get(sessionStoreAtom(sessionId));
+    const currentSessionData = readSessionData(sessionId);
 
     if (currentSessionData) {
       const newMetadata = {
@@ -468,7 +496,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   const sessionData = useMemo(() => {
     if (!hasSessionData) return null;
-    const snapshot = store.get(sessionStoreAtom(sessionId));
+    const snapshot = readSessionData(sessionId);
     // Guard against corrupted metadata: some legacy rows have a metadata
     // value that's the result of `{...stringValue, ...}`, producing an
     // object with millions of numeric-string keys (each char of the
@@ -675,7 +703,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const cliTerminalHydratedRef = useRef<string | null>(null);
   useEffect(() => {
     if (cliTerminalHydratedRef.current === sessionId) return;
-    const meta = store.get(sessionStoreAtom(sessionId))?.metadata as
+    const meta = readSessionData(sessionId)?.metadata as
       | Record<string, unknown>
       | undefined;
     if (!meta) return; // session data not loaded yet; retry on next render
@@ -743,7 +771,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     // Keep the in-memory session store's metadata in sync so a remount's
     // hydration doesn't restore a stale collapsed state.
     const isNowCollapsed = !store.get(cliTerminalExpandedAtom(sessionId));
-    const currentSessionData = store.get(sessionStoreAtom(sessionId));
+    const currentSessionData = readSessionData(sessionId);
     if (currentSessionData) {
       updateSessionStore({
         sessionId,
@@ -1051,11 +1079,11 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // Handlers
   // ============================================================
   const handleAttachmentAdd = useCallback((attachment: ChatAttachment) => {
-    setDraftAttachments(prev => [...prev, attachment]);
+    setDraftAttachments((prev: ChatAttachment[]) => [...prev, attachment]);
   }, [setDraftAttachments]);
 
   const handleAttachmentRemove = useCallback((attachmentId: string) => {
-    setDraftAttachments(prev => prev.filter(a => a.id !== attachmentId));
+    setDraftAttachments((prev: ChatAttachment[]) => prev.filter((a: ChatAttachment) => a.id !== attachmentId));
   }, [setDraftAttachments]);
 
   const handleQueue = useCallback(async (message: string) => {
@@ -1063,47 +1091,57 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     setIsQueueing(true);
 
     try {
+      const clientSubmissionId = crypto.randomUUID();
       // Get fresh document context at queue time (reads from disk)
       const effectiveContext = await getEffectiveDocumentContext();
       const serializableContext = serializeDocumentContext(effectiveContext);
 
       // Read attachments imperatively — we don't subscribe to keep typing
       // from re-rendering the entire transcript.
-      const currentAttachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+      const currentAttachments = readDraftAttachments(sessionId);
 
-      // If there's already a pending queued prompt, append to it instead of
-      // creating a separate entry. This bundles multiple queued messages into
-      // one prompt, matching how Claude Code handles stacked queries.
-      const lastQueued = queuedPrompts[queuedPrompts.length - 1];
-      let combinedPrompt = message.trim();
-      let combinedAttachments = currentAttachments;
-
-      if (lastQueued) {
-        // Delete the existing queued prompt so we can replace it
-        await window.electronAPI.invoke('ai:deleteQueuedPrompt', lastQueued.id);
-        combinedPrompt = lastQueued.prompt + '\n\n' + message.trim();
-        // Merge attachments from both prompts
-        combinedAttachments = [...(lastQueued.attachments || []), ...currentAttachments];
-      }
+      // The bubble exists before IPC acknowledgement. If the response is
+      // lost, a retry of this ID converges to the already durable row.
+      const optimisticTimestamp = Date.now();
+      setQueuedPrompts((prev: QueuedPrompt[]) => projectQueuedPrompts(sessionId, prev, [{
+        id: `optimistic-${clientSubmissionId}`,
+        clientSubmissionId,
+        sourceSessionId: sessionId,
+        status: 'awaiting_ack',
+        prompt: message,
+        timestamp: optimisticTimestamp,
+        documentContext: serializableContext,
+        attachments: currentAttachments,
+      }]));
 
       const result = await window.electronAPI.invoke(
         'ai:createQueuedPrompt',
         sessionId,
-        combinedPrompt,
-        combinedAttachments,
-        serializableContext
-      ) as { id: string; prompt: string; timestamp: number };
+        message,
+        currentAttachments,
+        serializableContext,
+        clientSubmissionId,
+      ) as {
+        id: string;
+        clientSubmissionId?: string;
+        submissionSequence?: number;
+        sourceSessionId?: string;
+        prompt: string;
+        timestamp: number;
+      };
 
-      setQueuedPrompts(prev => {
-        // Remove the old queued prompt (if we merged into it) and add the new combined one
-        const filtered = lastQueued ? prev.filter(p => p.id !== lastQueued.id) : prev;
-        return [...filtered, {
+      setQueuedPrompts((prev: QueuedPrompt[]) => {
+        return projectQueuedPrompts(sessionId, prev, [{
           id: result.id,
-          prompt: combinedPrompt,
+          clientSubmissionId: result.clientSubmissionId,
+          submissionSequence: result.submissionSequence,
+          sourceSessionId: result.sourceSessionId,
+          status: 'pending',
+          prompt: result.prompt,
           timestamp: result.timestamp,
           documentContext: serializableContext,
-          attachments: combinedAttachments
-        }];
+          attachments: currentAttachments
+        }]);
       });
 
       setLastSubmitAt(Date.now());
@@ -1115,12 +1153,12 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     } finally {
       setIsQueueing(false);
     }
-  }, [sessionId, getEffectiveDocumentContext, setDraftInput, setDraftAttachments, setLastSubmitAt, isQueueing, queuedPrompts, clearAIInputHistory]);
+  }, [sessionId, getEffectiveDocumentContext, setDraftInput, setDraftAttachments, setLastSubmitAt, isQueueing, clearAIInputHistory]);
 
   const handleSend = useCallback(async () => {
     // Read draft state imperatively — we deliberately don't subscribe to
     // these atoms in SessionTranscript (see SessionAIInput).
-    const currentDraftInput = store.get(sessionDraftInputAtom(sessionId)) ?? '';
+    const currentDraftInput = readDraftInput(sessionId);
     if (!currentDraftInput.trim() || !sessionData) return;
 
     // claude-code-cli (subscription, NIM-806): the genuine `claude` CLI runs in
@@ -1148,7 +1186,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         handleQueue(cliMessage);
         return;
       }
-      const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+      const attachments = readDraftAttachments(sessionId);
       setDraftInput('');
       setDraftAttachments([]);
       clearAIInputHistory(sessionId);
@@ -1186,7 +1224,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     }
 
     let message = currentDraftInput.trim();
-    const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+    const attachments = readDraftAttachments(sessionId);
 
     // Intercept /plan command - strip it and switch to planning mode
     // Match "/plan" only when followed by whitespace or end of string (not "/planning" or "/planify")
@@ -1460,25 +1498,11 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const handleCancelQueuedPrompt = useCallback(async (id: string) => {
     try {
       await window.electronAPI.invoke('ai:deleteQueuedPrompt', id);
-      setQueuedPrompts(prev => prev.filter(p => p.id !== id));
+      setQueuedPrompts((prev: QueuedPrompt[]) => prev.filter((p: QueuedPrompt) => p.id !== id));
     } catch (error) {
       console.error('[SessionTranscript] Failed to cancel queued prompt:', error);
     }
   }, []);
-
-  const handleEditQueuedPrompt = useCallback(async (id: string, prompt: string) => {
-    try {
-      await window.electronAPI.invoke('ai:deleteQueuedPrompt', id);
-      setQueuedPrompts(prev => prev.filter(p => p.id !== id));
-      // Append to any existing draft so editing multiple queued items doesn't
-      // clobber prior text; matches how handleQueue bundles consecutive
-      // queued prompts with a blank-line separator.
-      setDraftInput(prev => prev.trim().length > 0 ? `${prev}\n\n${prompt}` : prompt);
-      inputRef.current?.focus();
-    } catch (error) {
-      console.error('[SessionTranscript] Failed to edit queued prompt:', error);
-    }
-  }, [setDraftInput]);
 
   const handleSendNowQueuedPrompt = useCallback(async (_id: string, _prompt: string) => {
     try {
@@ -2203,7 +2227,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     const { timestamp } = scrollToMessage;
 
     // Find the user message whose timestamp matches the prompt's createdAt.
-    const targetIdx = messages.findIndex(msg =>
+    const targetIdx = messages.findIndex((msg: TranscriptViewMessage) =>
       msg.type === 'user_message' && Math.abs((msg.createdAt?.getTime() || 0) - timestamp) < 1000
     );
 
@@ -2606,7 +2630,6 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       <PromptQueueList
         queue={queuedPrompts}
         onCancel={handleCancelQueuedPrompt}
-        onEdit={handleEditQueuedPrompt}
         onSendNow={isLoading && !isClaudeCliTerminalSession(provider) ? handleSendNowQueuedPrompt : undefined}
       />
 

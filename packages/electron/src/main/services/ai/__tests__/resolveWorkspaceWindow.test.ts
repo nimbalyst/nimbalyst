@@ -1,8 +1,11 @@
 // @vitest-environment node
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import {
   AUTO_OPEN_COOLDOWN_MS,
+  WORKSPACE_WINDOW_LOAD_TIMEOUT_MS,
   createWorkspaceWindowResolver,
+  waitForWorkspaceWindowLoad,
   type WorkspaceWindowResolverDeps,
 } from '../resolveWorkspaceWindow';
 
@@ -54,6 +57,34 @@ function createHarness(overrides: Partial<WorkspaceWindowResolverDeps<FakeWindow
   };
 }
 
+function createLoadHarness() {
+  const window = new EventEmitter() as EventEmitter & { destroyed: boolean; isDestroyed(): boolean };
+  const webContents = new EventEmitter() as EventEmitter & {
+    destroyed: boolean;
+    isDestroyed(): boolean;
+  };
+  window.destroyed = false;
+  window.isDestroyed = () => window.destroyed;
+  webContents.destroyed = false;
+  webContents.isDestroyed = () => webContents.destroyed;
+  Object.assign(window, { webContents });
+
+  const timerCalls: Array<{ fn: () => void; ms: number; handle: number }> = [];
+  const clearedHandles: unknown[] = [];
+  const timers = {
+    setTimeout: (fn: () => void, ms: number) => {
+      const handle = timerCalls.length + 1;
+      timerCalls.push({ fn, ms, handle });
+      return handle;
+    },
+    clearTimeout: (handle: unknown) => {
+      clearedHandles.push(handle);
+    },
+  };
+
+  return { window, webContents, timers, timerCalls, clearedHandles };
+}
+
 describe('resolveWorkspaceWindow', () => {
   it('uses the live window without opening anything', async () => {
     const harness = createHarness();
@@ -92,6 +123,35 @@ describe('resolveWorkspaceWindow', () => {
     expect(a.kind === 'window' && b.kind === 'window' && a.window.id).toBe(
       b.kind === 'window' ? b.window.id : -1,
     );
+  });
+
+  it('joins an opening window before applying a concurrent caller auto-open policy', async () => {
+    const harness = createHarness();
+
+    const first = harness.resolver.resolve('/ws');
+    const second = harness.resolver.resolve('/ws', { allowAutoOpen: false });
+
+    expect(harness.createWindow).toHaveBeenCalledTimes(1);
+    harness.finishLoad();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(a.kind === 'window' && a.opened).toBe(true);
+    expect(b.kind === 'window' && b.opened).toBe(true);
+  });
+
+  it('preserves an existing live window even when the workspace folder is unavailable', async () => {
+    const existing = { id: 7, destroyed: false };
+    const harness = createHarness({
+      findWindow: vi.fn(() => existing),
+      workspaceExists: vi.fn(() => false),
+    });
+
+    await expect(harness.resolver.resolve('/ws')).resolves.toEqual({
+      kind: 'window',
+      window: existing,
+      opened: false,
+    });
+    expect(harness.createWindow).not.toHaveBeenCalled();
   });
 
   it('defers instead of re-opening while the auto-open cooldown is active', async () => {
@@ -137,5 +197,49 @@ describe('resolveWorkspaceWindow', () => {
       reason: 'workspace-missing',
     });
     expect(harness.createWindow).not.toHaveBeenCalled();
+  });
+
+  it('settles the production load waiter on a successful load and removes all resources', async () => {
+    const harness = createLoadHarness();
+    const pending = waitForWorkspaceWindowLoad(harness.window as never, harness.timers);
+
+    expect(harness.timerCalls).toHaveLength(1);
+    expect(harness.timerCalls[0].ms).toBe(WORKSPACE_WINDOW_LOAD_TIMEOUT_MS);
+    harness.webContents.emit('did-finish-load');
+    await expect(pending).resolves.toBeUndefined();
+
+    expect(harness.clearedHandles).toEqual([1]);
+    expect(harness.webContents.eventNames()).toHaveLength(0);
+    expect(harness.window.eventNames()).toHaveLength(0);
+  });
+
+  it.each([
+    ['failed load', 'webContents', 'did-fail-load'],
+    ['renderer loss', 'webContents', 'render-process-gone'],
+    ['renderer destruction', 'webContents', 'destroyed'],
+    ['window close', 'window', 'close'],
+    ['window destruction', 'window', 'closed'],
+  ])('settles and cleans up when there is %s', async (_label, target, event) => {
+    const harness = createLoadHarness();
+    const pending = waitForWorkspaceWindowLoad(harness.window as never, harness.timers);
+
+    (target === 'window' ? harness.window : harness.webContents).emit(event);
+    await expect(pending).rejects.toThrow();
+
+    expect(harness.clearedHandles).toEqual([1]);
+    expect(harness.webContents.eventNames()).toHaveLength(0);
+    expect(harness.window.eventNames()).toHaveLength(0);
+  });
+
+  it('settles and cleans up when the production load bound expires', async () => {
+    const harness = createLoadHarness();
+    const pending = waitForWorkspaceWindowLoad(harness.window as never, harness.timers);
+
+    harness.timerCalls[0].fn();
+    await expect(pending).rejects.toThrow('Workspace window load timed out');
+
+    expect(harness.clearedHandles).toEqual([1]);
+    expect(harness.webContents.eventNames()).toHaveLength(0);
+    expect(harness.window.eventNames()).toHaveLength(0);
   });
 });

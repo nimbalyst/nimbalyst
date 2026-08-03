@@ -39,6 +39,10 @@ export const sessionErrorAtom = atomFamily((_sessionId: string) =>
  */
 export interface QueuedPrompt {
   id: string;
+  clientSubmissionId?: string;
+  submissionSequence?: number;
+  sourceSessionId?: string;
+  status?: 'awaiting_ack' | 'pending' | 'executing' | 'completed' | 'failed';
   prompt: string;
   timestamp: number;
   documentContext?: any;
