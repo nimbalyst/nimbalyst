@@ -340,8 +340,35 @@ async function initializeProductionSeam() {
       control_operation TEXT,
       interrupt_target_generation TEXT,
       interrupt_reservation_owner TEXT,
-      interrupt_receipt JSONB
+      interrupt_receipt JSONB,
+      client_submission_id TEXT UNIQUE,
+      source_session_id TEXT,
+      source_room_id TEXT,
+      submission_sequence INTEGER,
+      payload_utf8_bytes INTEGER,
+      payload_unicode_scalars INTEGER,
+      payload_sha256 TEXT,
+      claim_trigger TEXT,
+      claim_triggered_at TIMESTAMPTZ,
+      turn_id TEXT,
+      provider_input_message_id TEXT,
+      provider_output_message_id TEXT,
+      stream_event_sequence INTEGER NOT NULL DEFAULT 0,
+      terminal_status TEXT,
+      terminal_at TIMESTAMPTZ
     );
+    CREATE TABLE queued_prompt_source_sequences (
+      source_session_id TEXT PRIMARY KEY,
+      next_sequence INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_queued_prompts_source_sequence
+      ON queued_prompts(source_session_id, submission_sequence);
+    CREATE UNIQUE INDEX idx_queued_prompts_interrupt_generation_owner
+      ON queued_prompts(session_id, interrupt_target_generation)
+      WHERE delivery_class = 'control' AND interrupt_target_generation IS NOT NULL;
+    CREATE UNIQUE INDEX idx_queued_prompts_control_idempotency
+      ON queued_prompts(session_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
     CREATE TABLE ai_agent_messages (
       id BIGSERIAL PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -589,6 +616,7 @@ describe("SessionTranscript mounted production model-recovery seam", () => {
   it("mounts the actual transcript, owner, AIInput, and queue controls and visibly disables the full mutation surface", async () => {
     seedSession("blocked", marker, { processing: true });
     seedSession("other", null);
+    const durableQueueBefore = store.get(sessionQueuedPromptsAtom("blocked"));
 
     render(
       <>
@@ -625,19 +653,48 @@ describe("SessionTranscript mounted production model-recovery seam", () => {
     ).toBe(true);
     expect(screen.queryByTestId("real-cli-terminal-strip")).toBeNull();
 
-    fireEvent.click(blockedButtons[0]);
-    fireEvent.keyDown(blockedInput, { key: "Enter", code: "Enter" });
-    expect(invoke).not.toHaveBeenCalledWith(
-      "ai:deleteQueuedPrompt",
-      "blocked",
-      "blocked-queued"
-    );
-    expect(invoke).not.toHaveBeenCalledWith(
+    const mutationChannels = new Set([
       "ai:sendMessage",
-      expect.anything(),
-      expect.anything(),
-      "blocked",
-      "/workspace"
+      "ai:createQueuedPrompt",
+      "ai:deleteQueuedPrompt",
+      "ai:cancelRequest",
+      "sessions:update-metadata",
+    ]);
+    const mutationCallsBefore = invoke.mock.calls.filter(([channel]) =>
+      mutationChannels.has(channel)
+    );
+
+    await act(async () => {
+      Array.from(blockedButtons).forEach((button) => fireEvent.click(button));
+      fireEvent.keyDown(blockedInput, { key: "Enter", code: "Enter" });
+
+      const blockedCancel = document.querySelector(
+        'button[aria-label="Cancel request"]'
+      ) as HTMLButtonElement;
+      expect(blockedCancel.disabled).toBe(true);
+      fireEvent.click(blockedCancel);
+      fireEvent.keyDown(blockedInput, { key: "Escape", code: "Escape" });
+      blockedCancel.disabled = false;
+      fireEvent.click(blockedCancel);
+      blockedCancel.disabled = true;
+
+      const modelPicker = document.querySelector(
+        '[data-testid="model-picker"]'
+      ) as HTMLElement;
+      expect(modelPicker.tagName).toBe("SPAN");
+      fireEvent.click(modelPicker);
+      await Promise.resolve();
+    });
+
+    expect(
+      invoke.mock.calls.filter(([channel]) => mutationChannels.has(channel))
+    ).toEqual(mutationCallsBefore);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(store.get(sessionQueuedPromptsAtom("blocked"))).toEqual(
+      durableQueueBefore
+    );
+    expect(queues[0]?.querySelector(".prompt-queue-text")?.textContent).toBe(
+      "keep pending"
     );
   });
 

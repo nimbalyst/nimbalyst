@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { projectQueuedPrompts } from '../queuedPromptProjection';
 
 describe('queued prompt projection', () => {
@@ -13,7 +12,7 @@ describe('queued prompt projection', () => {
     expect(result).toEqual([]);
   });
 
-  it('keeps reconciliation-blocked controls inert without corrupting durable projection truth', () => {
+  it('preserves durable pending projection truth for the source session', () => {
     const projection = projectQueuedPrompts('source-a', [], [{
       id: 'durable',
       clientSubmissionId: 'submission-a',
@@ -24,13 +23,6 @@ describe('queued prompt projection', () => {
       status: 'pending',
     }]);
 
-    const transcriptSource = readFileSync(
-      new URL('../SessionTranscript.tsx', import.meta.url),
-      'utf8',
-    );
-    expect(transcriptSource).toContain('isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)');
-    expect(transcriptSource).toContain('onModelChange={modelReconciliationBlocked ? undefined : handleModelChange}');
-    expect(transcriptSource).toContain('disabled={modelReconciliationBlocked}');
     expect(projection).toMatchObject([{ id: 'durable', prompt: 'preserved', status: 'pending' }]);
   });
 });
