@@ -534,13 +534,8 @@ export function ensureExtensionSDKDocsTrusted(docsPath: string): void {
  * - Sibling worktrees (unless opted out — see includeSiblingWorktrees)
  *
  * @param workspacePath - The current workspace path
- * @param options.includeSiblingWorktrees - default true. The Claude Code
- *   loader passes false: the Claude CLI discovers `.claude/commands` skills in
- *   every additional directory, so with N sibling worktrees every project
- *   skill appears N+1 times in the system prompt (~7K tokens of duplicates per
- *   session in a many-worktree repo). Codex keeps true — its workspace-write
- *   sandbox blocks sibling-worktree edits without `--add-dir`, and it loads no
- *   skills from those directories.
+ * @param options.includeSiblingWorktrees - default true. Providers with no
+ *   cross-worktree sandbox requirement may opt out.
  * @returns Array of additional directory paths the agent should have access to
  */
 export function getAdditionalDirectoriesForWorkspace(
@@ -584,27 +579,140 @@ export function getAdditionalDirectoriesForWorkspace(
   return Array.from(additionalDirs);
 }
 
+function canonicalCatalogPathIdentity(targetPath: string): string {
+  const isWindowsPath = /^[A-Za-z]:[\\/]/.test(targetPath) || /^[\\/]{2}/.test(targetPath);
+  const pathApi = isWindowsPath ? path.win32 : path;
+  const resolved = pathApi.resolve(targetPath);
+  const root = pathApi.parse(resolved).root;
+  const withoutTrailingSeparators = resolved.length > root.length
+    ? resolved.replace(/[\\/]+$/, '')
+    : resolved;
+  const separatorNormalized = withoutTrailingSeparators.replace(/\\/g, '/');
+
+  // Windows path identity is case-insensitive even when a fixture is executed
+  // on a non-Windows host. POSIX paths retain case sensitivity.
+  return isWindowsPath ? separatorNormalized.toLowerCase() : separatorNormalized;
+}
+
+function resolveCatalogProjectPath(targetPath: string): string {
+  // Real git-metadata-based resolution (resolveProjectPath -> resolveWorktreeIdentity)
+  // is authoritative whenever the path actually exists on this filesystem -- it
+  // recognizes a registered worktree at ANY location, not just the lexical
+  // `<project>_worktrees/<name>` convention (e.g. this machine's real worktrees at
+  // D:/nimbalyst-worktrees, D:/claude-worktrees). The lexical regex below is a
+  // fallback ONLY for a synthetic Windows-style path string that cannot be checked
+  // on this host (a POSIX-hosted unit test simulating a Windows path).
+  if (fs.existsSync(targetPath)) {
+    return resolveProjectPath(targetPath);
+  }
+
+  const isWindowsPath = /^[A-Za-z]:[\\/]/.test(targetPath) || /^[\\/]{2}/.test(targetPath);
+  if (!isWindowsPath) {
+    return resolveProjectPath(targetPath);
+  }
+
+  const normalized = path.win32.normalize(targetPath).replace(/[\\/]+$/, '');
+  const worktreeMatch = normalized.match(/^(.+)_worktrees[\\/].+$/i);
+  return worktreeMatch ? worktreeMatch[1] : normalized;
+}
+
 /**
- * List full filesystem paths of every sibling worktree directory for a
- * project, following Nimbalyst's `<project>_worktrees/<name>` convention.
- * Returns an empty list if the worktrees directory does not exist or cannot
- * be read. Sync so it can be used from the synchronous additionalDirectories
- * loader contract.
+ * Remove Claude additional-directory scopes that point at another checkout of
+ * the current project. The Claude binary discovers project commands
+ * and skills from every additional directory, so a worktree cwd plus its parent
+ * checkout contributes the identical catalog twice. Compare canonical project
+ * provenance rather than command display names: unrelated directories (and
+ * plugin/provider-native catalogs, which use separate SDK options) remain.
+ */
+export function filterClaudeCatalogDuplicateDirectories(
+  workspacePath: string,
+  additionalDirectories: string[],
+): string[] {
+  const workspaceProjectIdentity = canonicalCatalogPathIdentity(resolveCatalogProjectPath(workspacePath));
+  const seenDirectoryIdentities = new Set<string>();
+
+  return additionalDirectories.filter((directory) => {
+    if (!directory) {
+      return false;
+    }
+
+    const directoryIdentity = canonicalCatalogPathIdentity(directory);
+    if (seenDirectoryIdentities.has(directoryIdentity)) {
+      return false;
+    }
+    seenDirectoryIdentities.add(directoryIdentity);
+
+    const directoryProjectIdentity = canonicalCatalogPathIdentity(resolveCatalogProjectPath(directory));
+    return directoryProjectIdentity !== workspaceProjectIdentity;
+  });
+}
+
+/**
+ * Additional directories safe to pass to Claude without re-importing the
+ * current project's workflow catalog. Codex keeps the broader writable-root
+ * list because its sandbox needs parent/sibling checkout access and does not
+ * use this Claude-specific discovery boundary.
+ */
+export function getClaudeAdditionalDirectoriesForWorkspace(workspacePath: string): string[] {
+  return filterClaudeCatalogDuplicateDirectories(
+    workspacePath,
+    getAdditionalDirectoriesForWorkspace(workspacePath, { includeSiblingWorktrees: false }),
+  );
+}
+
+/**
+ * List every verified linked worktree registered by this project, regardless
+ * of where its checkout lives on disk. Git records each linked worktree under
+ * `<project>/.git/worktrees/<name>/gitdir`; each registration is then checked
+ * again through resolveWorktreeIdentity so malformed, stale, forged, or
+ * submodule-like metadata fails closed.
+ *
+ * This deliberately replaces the old `<project>_worktrees/<name>` directory
+ * convention. A valid worktree may live elsewhere (for example on a dedicated
+ * D: worktree volume), while an arbitrary directory inside a conventionally
+ * named folder must never receive sibling-worktree access just from its name.
+ * The function remains synchronous because the provider loader is synchronous.
  */
 function listSiblingWorktreePaths(projectPath: string): string[] {
   if (!projectPath) {
     return [];
   }
-  const projectName = path.basename(projectPath);
-  const worktreesDir = path.resolve(projectPath, '..', `${projectName}_worktrees`);
-  if (!fs.existsSync(worktreesDir)) {
+  let canonicalProjectPath: string;
+  try {
+    canonicalProjectPath = fs.realpathSync.native(projectPath);
+  } catch {
     return [];
   }
+
+  const registrationsDir = path.join(canonicalProjectPath, '.git', 'worktrees');
+  if (!fs.existsSync(registrationsDir)) return [];
+
   try {
-    const entries = fs.readdirSync(worktreesDir, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(worktreesDir, entry.name));
+    const siblingPaths = new Set<string>();
+    const registrations = fs.readdirSync(registrationsDir, { withFileTypes: true });
+    for (const registration of registrations) {
+      if (!registration.isDirectory()) continue;
+
+      try {
+        const gitdirPointer = fs.readFileSync(
+          path.join(registrationsDir, registration.name, 'gitdir'),
+          'utf8',
+        ).trim();
+        if (!gitdirPointer) continue;
+
+        const gitFilePath = path.isAbsolute(gitdirPointer)
+          ? gitdirPointer
+          : path.resolve(path.join(registrationsDir, registration.name), gitdirPointer);
+        const candidatePath = fs.realpathSync.native(path.dirname(gitFilePath));
+        const candidateIdentity = resolveWorktreeIdentity(candidatePath);
+        if (candidateIdentity.isWorktree && candidateIdentity.parentRoot === canonicalProjectPath) {
+          siblingPaths.add(candidateIdentity.canonical);
+        }
+      } catch {
+        // One stale registration must not hide the rest or expand access.
+      }
+    }
+    return Array.from(siblingPaths);
   } catch {
     return [];
   }

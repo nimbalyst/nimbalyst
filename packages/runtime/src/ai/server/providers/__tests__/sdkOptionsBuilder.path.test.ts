@@ -12,6 +12,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 vi.mock('electron', () => ({
   app: {
@@ -30,6 +33,7 @@ vi.mock('../../../../electron/claudeCodeEnvironment', () => ({
 
 import { buildSdkOptions } from '../claudeCode/sdkOptionsBuilder';
 import { ClaudeCodeDeps } from '../claudeCode/dependencyInjection';
+import { getClaudeAdditionalDirectoriesForWorkspace } from '../../../../../../electron/src/main/utils/workspaceDetection';
 
 function makeDeps(overrides: Partial<Parameters<typeof buildSdkOptions>[0]> = {}) {
   return {
@@ -112,5 +116,50 @@ describe('buildSdkOptions PATH overlay (NIM-376)', () => {
     const { options } = await buildSdkOptions(makeDeps(), makeParams());
 
     expect(options.env.PATH).toBe('/usr/bin:/bin');
+  });
+});
+
+describe('buildSdkOptions Claude workflow catalog scopes (NIM-254)', () => {
+  let tmpRoot: string;
+  let projectPath: string;
+  let worktreePath: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-sdk-catalog-scopes-'));
+    projectPath = path.join(tmpRoot, 'project');
+    worktreePath = path.join(tmpRoot, 'project_worktrees', 'fresh-worktree');
+    fs.mkdirSync(projectPath, { recursive: true });
+    fs.mkdirSync(worktreePath, { recursive: true });
+    ClaudeCodeDeps.setAdditionalDirectoriesLoader(getClaudeAdditionalDirectoriesForWorkspace);
+    ClaudeCodeDeps.setExtensionPluginsLoader(async () => [
+      { type: 'local', path: path.join(tmpRoot, 'plugin-a') },
+      { type: 'local', path: path.join(tmpRoot, 'plugin-b') },
+    ]);
+    ClaudeCodeDeps.setClaudeCodeSettingsLoader(async () => ({
+      projectCommandsEnabled: true,
+      userCommandsEnabled: true,
+    }));
+  });
+
+  afterEach(() => {
+    ClaudeCodeDeps.setAdditionalDirectoriesLoader(null);
+    ClaudeCodeDeps.setExtensionPluginsLoader(null);
+    ClaudeCodeDeps.setClaudeCodeSettingsLoader(null);
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('passes one project discovery scope for both main and worktree sessions without hiding plugins', async () => {
+    const main = await buildSdkOptions(makeDeps(), makeParams({ workspacePath: projectPath }));
+    const worktree = await buildSdkOptions(makeDeps(), makeParams({ workspacePath: worktreePath }));
+
+    expect(main.options.cwd).toBe(projectPath);
+    expect(main.options.additionalDirectories).toBeUndefined();
+    expect(worktree.options.cwd).toBe(worktreePath);
+    expect(worktree.options.additionalDirectories).toBeUndefined();
+    expect(worktree.options.settingSources).toEqual(['local', 'user', 'project']);
+    expect(worktree.options.plugins).toEqual([
+      { type: 'local', path: path.join(tmpRoot, 'plugin-a') },
+      { type: 'local', path: path.join(tmpRoot, 'plugin-b') },
+    ]);
   });
 });
