@@ -107,6 +107,22 @@ describe('PGLiteQueuedPromptsStore SQLite parity', () => {
     ).resolves.toMatchObject({ outcome: 'idempotent_same_claim' });
   });
 
+  it('terminalizes a failed stale-generation interrupt while preserving its durable receipt for audit', async () => {
+    const store = createPGLiteQueuedPromptsStore(createSQLiteStoreAdapter(database));
+    await store.createPriorityControlPrompt({
+      id: 'stale-control', sessionId: 'session-1', prompt: 'priority', producer: 'test',
+      idempotencyKey: 'stale-control-key', requestDigest: 'stale-control-digest', controlOperation: 'operator_directive',
+    });
+    await store.reservePriorityInterrupt({ promptId: 'stale-control', generation: 'running:old', owner: 'owner-1' });
+    const receipt = { generation: 'running:old', attempted: false, success: false, method: null, error: 'stale lifecycle generation', nativeEntered: false, recordedAt: 40 };
+    await expect(store.recordPriorityInterruptReceipt({ promptId: 'stale-control', generation: 'running:old', receipt })).resolves.toMatchObject({
+      status: 'failed', deliveryReady: false, errorMessage: 'stale lifecycle generation', interruptReceipt: receipt,
+    });
+    await expect(store.listForSession('session-1')).resolves.not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'stale-control' })]));
+    await expect(store.listForSession('session-1', { includeCompleted: true })).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'stale-control', status: 'failed', interruptReceipt: receipt })]));
+    await expect(store.recordPriorityInterruptReceipt({ promptId: 'stale-control', generation: 'running:old', receipt })).resolves.toMatchObject({ status: 'failed', interruptReceipt: receipt });
+  });
+
   it('matches PGLite recovery, wrong-owner, ordinary-failure, and CRUD behavior', async () => {
     const store = createPGLiteQueuedPromptsStore(createSQLiteStoreAdapter(database));
     await expect(

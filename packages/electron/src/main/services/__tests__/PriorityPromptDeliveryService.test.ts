@@ -266,4 +266,50 @@ describe('PriorityPromptDeliveryService', () => {
     expect(result.action).toBe('interrupt_receipt_replayed');
     expect(result.interrupt).toMatchObject({ attempted: true, success: true });
   });
+
+  it('keeps a replayed failed stale interrupt receipt non-actionable', async () => {
+    const receipt: PriorityInterruptReceipt = {
+      generation: 'running:10:20',
+      attempted: true,
+      success: false,
+      method: 'not-entered',
+      error: 'stale lifecycle generation',
+      nativeEntered: false,
+      recordedAt: 30,
+    };
+    createControlPrompt.mockResolvedValue({
+      row: controlRow({
+        status: 'failed',
+        deliveryReady: false,
+        interruptTargetGeneration: receipt.generation,
+        interruptReceipt: receipt,
+      }),
+      replayed: true,
+    });
+
+    const result = await createService().deliver({
+      sessionId: SESSION_ID,
+      workspacePath: WORKSPACE,
+      prompt: 'Act now',
+      idempotencyKey: 'directive-stale-1',
+      producer: 'send_prompt_now:caller',
+      controlOperation: 'operator_directive',
+      interruptWaitingForInput: false,
+    });
+
+    expect(reserveInterrupt).not.toHaveBeenCalled();
+    expect(interruptCurrentTurn).not.toHaveBeenCalled();
+    expect(triggerProcessing).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      action: 'interrupt_receipt_replayed',
+      processingTriggerCalled: false,
+      processingTriggerAccepted: false,
+      interrupt: {
+        attempted: true,
+        success: false,
+        error: 'stale lifecycle generation',
+        nativeEntered: false,
+      },
+    });
+  });
 });
