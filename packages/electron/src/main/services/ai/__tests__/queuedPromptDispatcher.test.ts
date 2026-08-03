@@ -201,7 +201,7 @@ describe('queuedPromptDispatcher token owner', () => {
     vi.mocked(store.claim).mockResolvedValue(null);
     const options = optionsFor(store);
     await expect(tryClaimAndDispatchNextQueuedPrompt(options)).resolves.toBe(false);
-    expect(store.claim).toHaveBeenCalledWith('race', 'session-1');
+    expect(store.claim).toHaveBeenCalledWith('race', 'session-1', 'test queue');
     expect(store.beginDispatch).not.toHaveBeenCalled();
   });
 });

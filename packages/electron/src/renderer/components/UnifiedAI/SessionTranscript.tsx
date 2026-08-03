@@ -34,6 +34,7 @@ import {
 } from './latestModelChangeCoordinator';
 import { useSessionModelReconciliationOwner } from './useSessionModelReconciliationOwner';
 import { PromptQueueList } from './PromptQueueList';
+import { projectQueuedPrompts } from './queuedPromptProjection';
 import { TranscriptEmbeddedFileCard } from './TranscriptEmbeddedFileCard';
 import { getDiffPeekSizeForInteractiveWidgetHost } from './interactiveWidgetHostProxy';
 import { customEditorRegistry } from '../CustomEditors/registry';
@@ -100,7 +101,7 @@ import {
   clearSessionError,
   loadInitialQueuedPrompts,
 } from '../../store';
-import { streamCompletionSignalAtom } from '../../store/atoms/sessionTranscript';
+import { streamCompletionSignalAtom, type QueuedPrompt } from '../../store/atoms/sessionTranscript';
 import { canPersistSessionDraft, convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import {
@@ -125,6 +126,36 @@ import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPee
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
 import { sessionFileEditsAtom } from '../../store/atoms/sessionFiles';
 import { SESSION_PHASE_COLUMNS, setSessionPhaseAtom, type SessionPhase } from '../../store/atoms/sessionKanban';
+
+function isSessionDataValue(value: unknown): value is SessionData {
+  return typeof value === 'object' && value !== null;
+}
+
+function readSessionData(sessionId: string): SessionData | null {
+  const value = store.get(sessionStoreAtom(sessionId));
+  return isSessionDataValue(value) ? value : null;
+}
+
+function isChatAttachmentValue(value: unknown): value is ChatAttachment {
+  return typeof value === 'object' && value !== null &&
+    typeof (value as { id?: unknown }).id === 'string' &&
+    typeof (value as { filename?: unknown }).filename === 'string';
+}
+
+function readDraftAttachments(sessionId: string): ChatAttachment[] {
+  const value = store.get(sessionDraftAttachmentsAtom(sessionId));
+  return Array.isArray(value) ? value.filter(isChatAttachmentValue) : [];
+}
+
+function readDraftInput(sessionId: string): string {
+  const value = store.get(sessionDraftInputAtom(sessionId));
+  return typeof value === 'string' ? value : '';
+}
+
+/** The reconciliation owner is the single authority for queue/control mutation. */
+export function isQueueMutationBlockedByModelReconciliation(blocked: boolean): boolean {
+  return blocked;
+}
 
 /**
  * Detect a metadata value that's the artifact of `{...stringValue, ...}` -
@@ -309,7 +340,7 @@ async function updateSessionMetadataField<T>(
 ): Promise<void> {
   try {
     // Update local store FIRST (before async IPC) to ensure immediate availability
-    const currentSessionData = store.get(sessionStoreAtom(sessionId));
+    const currentSessionData = readSessionData(sessionId);
 
     if (currentSessionData) {
       const newMetadata = {
@@ -475,7 +506,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   const sessionData = useMemo(() => {
     if (!hasSessionData) return null;
-    const snapshot = store.get(sessionStoreAtom(sessionId));
+    const snapshot = readSessionData(sessionId);
     // Guard against corrupted metadata: some legacy rows have a metadata
     // value that's the result of `{...stringValue, ...}`, producing an
     // object with millions of numeric-string keys (each char of the
@@ -683,7 +714,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const cliTerminalHydratedRef = useRef<string | null>(null);
   useEffect(() => {
     if (cliTerminalHydratedRef.current === sessionId) return;
-    const meta = store.get(sessionStoreAtom(sessionId))?.metadata as
+    const meta = readSessionData(sessionId)?.metadata as
       | Record<string, unknown>
       | undefined;
     if (!meta) return; // session data not loaded yet; retry on next render
@@ -751,7 +782,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     // Keep the in-memory session store's metadata in sync so a remount's
     // hydration doesn't restore a stale collapsed state.
     const isNowCollapsed = !store.get(cliTerminalExpandedAtom(sessionId));
-    const currentSessionData = store.get(sessionStoreAtom(sessionId));
+    const currentSessionData = readSessionData(sessionId);
     if (currentSessionData) {
       updateSessionStore({
         sessionId,
@@ -1112,15 +1143,15 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // Handlers
   // ============================================================
   const handleAttachmentAdd = useCallback((attachment: ChatAttachment) => {
-    setDraftAttachments(prev => [...prev, attachment]);
+    setDraftAttachments((prev: ChatAttachment[]) => [...prev, attachment]);
   }, [setDraftAttachments]);
 
   const handleAttachmentRemove = useCallback((attachmentId: string) => {
-    setDraftAttachments(prev => prev.filter(a => a.id !== attachmentId));
+    setDraftAttachments((prev: ChatAttachment[]) => prev.filter((a: ChatAttachment) => a.id !== attachmentId));
   }, [setDraftAttachments]);
 
   const handleQueue = useCallback(async (message: string) => {
-    if (!message.trim() || isQueueing || modelReconciliationBlocked) return;
+    if (!message.trim() || isQueueing || isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     setIsQueueing(true);
 
     try {
@@ -1128,61 +1159,42 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       const effectiveContext = await getEffectiveDocumentContext();
       const serializableContext = serializeDocumentContext(effectiveContext);
 
-      // Read attachments imperatively — we don't subscribe to keep typing
-      // from re-rendering the entire transcript.
-      const currentAttachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+      // A stable optimistic row lets an acknowledgement-lost retry converge
+      // on the durable queue identity without weakening reconciliation guards.
+      const currentAttachments = readDraftAttachments(sessionId);
+      const clientSubmissionId = crypto.randomUUID();
+      const optimisticTimestamp = Date.now();
+      setQueuedPrompts((prev: QueuedPrompt[]) => projectQueuedPrompts(sessionId, prev, [{
+        id: `optimistic-${clientSubmissionId}`,
+        clientSubmissionId,
+        sourceSessionId: sessionId,
+        status: 'awaiting_ack',
+        prompt: message,
+        timestamp: optimisticTimestamp,
+        documentContext: serializableContext,
+        attachments: currentAttachments,
+      }]));
 
-      // If there's already a pending queued prompt, append to it instead of
-      // creating a separate entry. This bundles multiple queued messages into
-      // one prompt, matching how Claude Code handles stacked queries.
-      const lastQueued = queuedPrompts[queuedPrompts.length - 1];
-      let combinedPrompt = message.trim();
-      let combinedAttachments = currentAttachments;
-      let combinedContext = serializableContext;
-      type QueueRowResult = { id: string; prompt: string; timestamp: number; attachments?: ChatAttachment[]; documentContext?: SerializableDocumentContext };
-      let result: QueueRowResult;
+      const result = await window.electronAPI.invoke(
+        'ai:createQueuedPrompt',
+        sessionId,
+        message,
+        currentAttachments,
+        serializableContext,
+        clientSubmissionId,
+      ) as { id: string; clientSubmissionId?: string; submissionSequence?: number; sourceSessionId?: string; prompt: string; timestamp: number };
 
-      if (lastQueued) {
-        combinedPrompt = lastQueued.prompt + '\n\n' + message.trim();
-        combinedAttachments = [...(lastQueued.attachments || []), ...currentAttachments];
-        combinedContext = {
-          ...(lastQueued.documentContext || {}),
-          ...(serializableContext || {}),
-        };
-        const replacement = await window.electronAPI.invoke(
-          'ai:replaceQueuedPrompt',
-          sessionId,
-          lastQueued.id,
-          combinedPrompt,
-          combinedAttachments,
-          combinedContext,
-        ) as { success: boolean; row?: QueueRowResult };
-        if (!replacement.success || !replacement.row) {
-          const fresh = await window.electronAPI.invoke('ai:listPendingPrompts', sessionId) as typeof queuedPrompts;
-          setQueuedPrompts(fresh);
-          return;
-        }
-        result = replacement.row;
-      } else {
-        result = await window.electronAPI.invoke(
-          'ai:createQueuedPrompt',
-          sessionId,
-          combinedPrompt,
-          combinedAttachments,
-          combinedContext,
-        ) as QueueRowResult;
-      }
-
-      setQueuedPrompts(prev => {
-        const filtered = lastQueued ? prev.filter(p => p.id !== lastQueued.id) : prev;
-        return [...filtered, {
-          id: result.id,
-          prompt: result.prompt,
-          timestamp: result.timestamp,
-          documentContext: result.documentContext ?? combinedContext,
-          attachments: result.attachments ?? combinedAttachments
-        }];
-      });
+      setQueuedPrompts((prev: QueuedPrompt[]) => projectQueuedPrompts(sessionId, prev, [{
+        id: result.id,
+        clientSubmissionId: result.clientSubmissionId,
+        submissionSequence: result.submissionSequence,
+        sourceSessionId: result.sourceSessionId,
+        status: 'pending',
+        prompt: result.prompt,
+        timestamp: result.timestamp,
+        documentContext: serializableContext,
+        attachments: currentAttachments,
+      }]));
 
       setLastSubmitAt(Date.now());
       setDraftInput('');
@@ -1193,10 +1205,10 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     } finally {
       setIsQueueing(false);
     }
-  }, [sessionId, getEffectiveDocumentContext, setDraftInput, setDraftAttachments, setLastSubmitAt, isQueueing, modelReconciliationBlocked, queuedPrompts, clearAIInputHistory]);
+  }, [sessionId, getEffectiveDocumentContext, setDraftInput, setDraftAttachments, setLastSubmitAt, isQueueing, modelReconciliationBlocked, clearAIInputHistory]);
 
   const handleSend = useCallback(async () => {
-    if (modelReconciliationBlocked) return;
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     // Read draft state imperatively — we deliberately don't subscribe to
     // these atoms in SessionTranscript (see SessionAIInput).
     const currentDraftInput = store.get(sessionDraftInputAtom(sessionId)) ?? '';
@@ -1227,7 +1239,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         handleQueue(cliMessage);
         return;
       }
-      const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+      const attachments = readDraftAttachments(sessionId);
       setDraftInput('');
       setDraftAttachments([]);
       clearAIInputHistory(sessionId);
@@ -1265,7 +1277,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     }
 
     let message = currentDraftInput.trim();
-    const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+    const attachments = readDraftAttachments(sessionId);
 
     // Intercept /plan command - strip it and switch to planning mode
     // Match "/plan" only when followed by whitespace or end of string (not "/planning" or "/planify")
@@ -1449,7 +1461,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   );
 
   const handleCancel = useCallback(async () => {
-    if (modelReconciliationBlocked) return;
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
 
     try {
       if (isClaudeCliTerminalSession(provider)) {
@@ -1545,7 +1557,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, [sessionId, navigateHistory]);
 
   const handleCancelQueuedPrompt = useCallback(async (id: string) => {
-    if (modelReconciliationBlocked) return;
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     try {
       const result = await window.electronAPI.invoke(
         'ai:deleteQueuedPrompt',
@@ -1636,7 +1648,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, [sessionId, setAiMode, modelReconciliationBlocked]);
 
   const handleModelChange = useCallback(async (modelId: string, pickerModel?: PickerModel) => {
-    if (modelReconciliationBlocked) return false;
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return false;
     const mutation = {
       modelId,
       previousModel: currentModel,
@@ -1665,7 +1677,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, [modelReconciliationBlocked, currentModel, sessionId, rawEffortLevel, rawThinkingMode, effortLevel, thinkingMode, createModelChangeHooks, requireModelReconciliation]);
 
   const handleEffortLevelChange = useCallback(async (level: EffortLevel) => {
-    if (modelReconciliationBlocked) return;
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     const previousLevel = effortLevel;
     await updateSessionMetadataField(sessionId, 'effortLevel', level, null, updateSessionStore);
     setAgentModeSettings({ defaultEffortLevel: level });
@@ -1676,7 +1688,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog, modelReconciliationBlocked]);
 
   const handleThinkingModeChange = useCallback(async (mode: ThinkingMode) => {
-    if (modelReconciliationBlocked) return;
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     const previousMode = thinkingMode;
     await updateSessionMetadataField(sessionId, 'thinkingMode', mode, null, updateSessionStore);
     // Sticky across sessions: without this the selector reset to "Extended: On"
@@ -2282,7 +2294,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     const { timestamp } = scrollToMessage;
 
     // Find the user message whose timestamp matches the prompt's createdAt.
-    const targetIdx = messages.findIndex(msg =>
+    const targetIdx = messages.findIndex((msg: TranscriptViewMessage) =>
       msg.type === 'user_message' && Math.abs((msg.createdAt?.getTime() || 0) - timestamp) < 1000
     );
 

@@ -1,4 +1,5 @@
 import type { DocumentContext } from '@nimbalyst/runtime/ai/server/types';
+import { payloadReceiptsMatch, queueTruthMismatchError, type QueuedPromptPayloadReceipt } from './queuedPromptTruth';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import type { QueueSettlementResult } from '../PGLiteQueuedPromptsStore';
 
@@ -50,24 +51,32 @@ export interface ClaimedQueuedPrompt {
   claimToken?: string;
   attachments?: unknown[] | null;
   documentContext?: DocumentContext | null;
+  payloadReceipt?: QueuedPromptPayloadReceipt;
+  clientSubmissionId?: string;
+  sourceSessionId?: string;
+  sourceRoomId?: string;
+  submissionSequence?: number;
+  producer?: string;
+  claimTrigger?: string;
+  claimTriggeredAt?: number;
+  turnId?: string;
+  providerInputMessageId?: string;
+  providerOutputMessageId?: string;
 }
 
 export interface QueuedPromptStoreLike {
   listPending(sessionId: string): Promise<ClaimedQueuedPrompt[]>;
-  claim(promptId: string, expectedSessionId: string): Promise<ClaimedQueuedPrompt | null>;
+  claim(promptId: string, expectedSessionId: string, claimTrigger?: string): Promise<ClaimedQueuedPrompt | null>;
   beginDispatch(promptId: string, expectedSessionId: string, claimToken: string): Promise<QueueSettlementResult>;
   releaseClaim(promptId: string, expectedSessionId: string, claimToken: string): Promise<QueueSettlementResult>;
-  completeAfterDispatch(
-    promptId: string,
-    expectedSessionId: string,
-    claimToken: string,
-  ): Promise<QueueSettlementResult>;
-  failAfterDispatch(
-    promptId: string,
-    errorMessage: string,
-    expectedSessionId: string,
-    claimToken: string,
-  ): Promise<QueueSettlementResult>;
+  completeAfterDispatch(promptId: string, expectedSessionId: string, claimToken: string, terminal?: QueuedPromptTerminalReceipt): Promise<QueueSettlementResult>;
+  failAfterDispatch(promptId: string, errorMessage: string, expectedSessionId: string, claimToken: string, terminal?: QueuedPromptTerminalReceipt): Promise<QueueSettlementResult>;
+}
+
+export interface QueuedPromptTerminalReceipt {
+  lifecycle: 'completed' | 'failed';
+  terminalAt: number;
+  eventSequence: number;
 }
 
 const settlementAccepted = (result: QueueSettlementResult): boolean =>
@@ -93,7 +102,7 @@ interface DispatchClaimedQueuedPromptOptions {
     documentContext?: DocumentContext,
     sessionId?: string,
     workspacePath?: string,
-  ) => Promise<{ content: string }>;
+  ) => Promise<{ content: string; queuedPromptTerminal?: QueuedPromptTerminalReceipt }>;
   sessionId: string;
   source: string;
   startSession: (options: { sessionId: string; workspacePath: string }) => Promise<void>;
@@ -154,6 +163,24 @@ export async function dispatchClaimedQueuedPrompt(
     ...(claimed.documentContext || {}),
     queuedPromptId: claimed.id,
     attachments: claimed.attachments,
+    // This travels with the persisted input message. It binds the source and
+    // terminal-output identities without using timestamps, prompt text, or
+    // array position as a proxy.
+    queuedPromptTruth: {
+      clientSubmissionId: claimed.clientSubmissionId ?? claimed.id,
+      queueRowId: claimed.id,
+      sourceSessionId: claimed.sourceSessionId ?? sessionId,
+      sourceRoomId: claimed.sourceRoomId ?? sessionId,
+      submissionSequence: claimed.submissionSequence,
+      producer: claimed.producer,
+      claimTrigger: claimed.claimTrigger,
+      claimTriggeredAt: claimed.claimTriggeredAt,
+      turnId: claimed.turnId,
+      providerInputMessageId: claimed.providerInputMessageId,
+      providerOutputMessageId: claimed.providerOutputMessageId,
+      payloadReceipt: claimed.payloadReceipt,
+      lifecycle: 'streaming' as const,
+    },
   } as DocumentContext;
 
   setImmediate(async () => {
@@ -161,6 +188,9 @@ export async function dispatchClaimedQueuedPrompt(
     let compatibleSettlement = false;
     try {
       if (processingLeases.get(sessionId) !== dispatchLease) return;
+      if (claimed.payloadReceipt && !payloadReceiptsMatch(claimed.prompt, claimed.payloadReceipt)) {
+        throw queueTruthMismatchError();
+      }
       const begin = await queueStore.beginDispatch(claimed.id, sessionId, claimToken);
       if (!settlementAccepted(begin)) {
         logError(
@@ -177,8 +207,18 @@ export async function dispatchClaimedQueuedPrompt(
         senderFrame: targetWindow.webContents.mainFrame,
       } as Electron.IpcMainInvokeEvent;
 
-      await sendMessageHandler(mockEvent, claimed.prompt, docContext, sessionId, workspacePath);
-      const completion = await queueStore.completeAfterDispatch(claimed.id, sessionId, claimToken);
+      const result = await sendMessageHandler(mockEvent, claimed.prompt, docContext, sessionId, workspacePath);
+      const completion = result.queuedPromptTerminal?.lifecycle === 'failed'
+        ? await queueStore.failAfterDispatch(
+            claimed.id,
+            'Provider returned a terminal error',
+            sessionId,
+            claimToken,
+            result.queuedPromptTerminal,
+          )
+        : result.queuedPromptTerminal
+          ? await queueStore.completeAfterDispatch(claimed.id, sessionId, claimToken, result.queuedPromptTerminal)
+          : await queueStore.completeAfterDispatch(claimed.id, sessionId, claimToken);
       compatibleSettlement = settlementAccepted(completion);
       if (!compatibleSettlement) {
         logError(
@@ -188,13 +228,22 @@ export async function dispatchClaimedQueuedPrompt(
       }
     } catch (queueError) {
       logError(`[AIService] Failed to process queued prompt ${claimed.id}:`, queueError);
+      const terminal = (queueError as Error & { queuedPromptTerminal?: QueuedPromptTerminalReceipt }).queuedPromptTerminal;
       const settlement = dispatchStarted
-        ? await queueStore.failAfterDispatch(
-            claimed.id,
-            queueError instanceof Error ? queueError.message : 'Unknown error',
-            sessionId,
-            claimToken,
-          )
+        ? terminal
+          ? await queueStore.failAfterDispatch(
+              claimed.id,
+              queueError instanceof Error ? queueError.message : 'Unknown error',
+              sessionId,
+              claimToken,
+              terminal,
+            )
+          : await queueStore.failAfterDispatch(
+              claimed.id,
+              queueError instanceof Error ? queueError.message : 'Unknown error',
+              sessionId,
+              claimToken,
+            )
         : await queueStore.releaseClaim(claimed.id, sessionId, claimToken);
       compatibleSettlement = settlementAccepted(settlement);
       if (!compatibleSettlement) {
@@ -315,10 +364,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
   const nextPrompt = pendingPrompts[0];
   logInfo(`[AIService] ${source}: processing prompt ${nextPrompt.id} for session ${sessionId}`);
 
-  // The store performs recovery admission and queue reservation in one UPDATE.
-  // This is the final dispatch boundary: a marker installed after listPending
-  // cannot race between a repository preflight and row ownership.
-  const claimed = await queueStore.claim(nextPrompt.id, sessionId);
+  const claimed = await queueStore.claim(nextPrompt.id, sessionId, source);
   if (!claimed) {
     logInfo(`[AIService] ${source}: prompt ${nextPrompt.id} already claimed`);
     return false;

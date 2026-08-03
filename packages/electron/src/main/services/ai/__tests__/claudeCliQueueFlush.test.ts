@@ -1,11 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { QueueSettlementResult } from '../../PGLiteQueuedPromptsStore';
 import { flushNextClaudeCliQueuedPrompt, type FlushQueuedPrompt } from '../claudeCliQueueFlush';
+import { receiptQueuedPromptPayload } from '../queuedPromptTruth';
 
 const settled: QueueSettlementResult = { outcome: 'settled' };
 
 function harness(pending: FlushQueuedPrompt[]) {
-  const claimed = pending.map((row) => ({ ...row, claimToken: `token-${row.id}` }));
+  const claimed = pending.map((row) => ({
+    ...row,
+    claimToken: `token-${row.id}`,
+    clientSubmissionId: row.clientSubmissionId ?? `client-${row.id}`,
+    sourceSessionId: row.sourceSessionId ?? 's1',
+    sourceRoomId: row.sourceRoomId ?? 'room-1',
+    submissionSequence: row.submissionSequence ?? 1,
+    producer: row.producer ?? 'composer',
+    claimTrigger: row.claimTrigger ?? 'claude_cli_idle_flush',
+    claimTriggeredAt: row.claimTriggeredAt ?? 1,
+    turnId: row.turnId ?? `turn-${row.id}`,
+    providerInputMessageId: row.providerInputMessageId ?? `input-${row.id}`,
+    providerOutputMessageId: row.providerOutputMessageId ?? `output-${row.id}`,
+    payloadReceipt: row.payloadReceipt ?? receiptQueuedPromptPayload(row.prompt ?? ''),
+  }));
   const deps = {
     preflight: vi.fn(async () => true),
     listPending: vi.fn(async () => pending),
@@ -14,23 +29,32 @@ function harness(pending: FlushQueuedPrompt[]) {
     completeAfterDispatch: vi.fn(async () => settled),
     failAfterDispatch: vi.fn(async () => settled),
     submit: vi.fn(async () => ({ submitted: true })),
+    registerQueuedTurn: vi.fn(() => true),
+    clearQueuedTurnRegistration: vi.fn(),
+    publishSnapshot: vi.fn(async () => undefined),
     notifyClaimed: vi.fn(),
   };
   return deps;
 }
 
 describe('flushNextClaudeCliQueuedPrompt', () => {
-  it('begins before submit and settles the exact token', async () => {
+  it('registers exact truth before submit and defers settlement to observed idle', async () => {
     const deps = harness([{ id: 'q1', prompt: 'first', attachments: [{ filepath: '/tmp/a.png' }] }]);
     const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, deps);
     expect(result).toBe(true);
-    expect(deps.claim).toHaveBeenCalledWith('q1', 's1');
+    expect(deps.claim).toHaveBeenCalledWith('q1', 's1', 'claude_cli_idle_flush');
     expect(deps.beginDispatch).toHaveBeenCalledWith('q1', 's1', 'token-q1');
     expect(deps.submit).toHaveBeenCalledWith({
       sessionId: 's1', workspacePath: '/w', prompt: 'first',
       attachments: [{ filepath: '/tmp/a.png' }], documentContext: undefined,
     });
-    expect(deps.completeAfterDispatch).toHaveBeenCalledWith('q1', 's1', 'token-q1');
+    expect(deps.registerQueuedTurn).toHaveBeenCalledWith(expect.objectContaining({
+      queueRowId: 'q1', claimToken: 'token-q1', clientSubmissionId: 'client-q1',
+      turnId: 'turn-q1', providerOutputMessageId: 'output-q1',
+    }));
+    expect(deps.claim).toHaveBeenCalledWith('q1', 's1', 'claude_cli_idle_flush');
+    expect(deps.publishSnapshot).toHaveBeenCalledWith('s1');
+    expect(deps.completeAfterDispatch).not.toHaveBeenCalled();
     expect(deps.failAfterDispatch).not.toHaveBeenCalled();
   });
 
@@ -41,7 +65,7 @@ describe('flushNextClaudeCliQueuedPrompt', () => {
       flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, deps),
     ).resolves.toBe(true);
     expect(deps.submit).toHaveBeenCalledTimes(1);
-    expect(deps.completeAfterDispatch).toHaveBeenCalledTimes(1);
+    expect(deps.completeAfterDispatch).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -87,7 +111,7 @@ describe('flushNextClaudeCliQueuedPrompt', () => {
     expect(deps.failAfterDispatch).toHaveBeenCalledWith('q1', 'pty gone', 's1', 'token-q1');
   });
 
-  it('surfaces begin, completion, and failure settlement conflicts', async () => {
+  it('surfaces begin, registration, and failure settlement conflicts', async () => {
     const begin = harness([{ id: 'begin', prompt: 'first' }]);
     begin.beginDispatch.mockResolvedValue({ outcome: 'stale_owner' });
     await expect(
@@ -96,10 +120,11 @@ describe('flushNextClaudeCliQueuedPrompt', () => {
     expect(begin.submit).not.toHaveBeenCalled();
 
     const complete = harness([{ id: 'complete', prompt: 'first' }]);
-    complete.completeAfterDispatch.mockResolvedValue({ outcome: 'terminal_conflict' });
+    complete.registerQueuedTurn.mockReturnValue(false);
     await expect(
       flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, complete),
-    ).rejects.toThrow(/completion was rejected: terminal_conflict/);
+    ).resolves.toBe(false);
+    expect(complete.submit).not.toHaveBeenCalled();
 
     const failure = harness([{ id: 'failure', prompt: 'first' }]);
     failure.submit.mockRejectedValue(new Error('pty gone'));
