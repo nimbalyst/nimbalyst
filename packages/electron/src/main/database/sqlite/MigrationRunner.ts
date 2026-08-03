@@ -196,6 +196,11 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'queued_prompt_dispatch_fencing',
       sqlFile: path.join(schemaDir, '0031_queued_prompt_dispatch_fencing.sql'),
     },
+    {
+      version: 32,
+      name: 'queued_prompt_truth_provenance',
+      sqlFile: path.join(schemaDir, '0032_queued_prompt_truth_provenance.sql'),
+    },
   ];
 }
 

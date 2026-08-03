@@ -1244,6 +1244,19 @@ export class MetaAgentService {
       includeCompleted: options.includeCompleted === true,
       prompts: prompts.map((prompt) => ({
         id: prompt.id,
+        clientSubmissionId: prompt.clientSubmissionId ?? prompt.id,
+        sourceSessionId: prompt.sourceSessionId ?? prompt.sessionId,
+        sourceRoomId: prompt.sourceRoomId ?? prompt.sessionId,
+        submissionSequence: prompt.submissionSequence ?? null,
+        producer: prompt.producer ?? null,
+        payloadReceipt: prompt.payloadReceipt ?? null,
+        claimTrigger: prompt.claimTrigger ?? null,
+        claimTriggeredAt: prompt.claimTriggeredAt ?? null,
+        turnId: prompt.turnId ?? null,
+        providerInputMessageId: prompt.providerInputMessageId ?? null,
+        providerOutputMessageId: prompt.providerOutputMessageId ?? null,
+        terminalStatus: prompt.terminalStatus ?? null,
+        terminalAt: prompt.terminalAt ?? null,
         status: prompt.status,
         createdAt: prompt.createdAt,
         claimedAt: prompt.claimedAt ?? null,
@@ -1252,7 +1265,6 @@ export class MetaAgentService {
         deliveryClass: prompt.deliveryClass,
         priorityRank: prompt.priorityRank,
         deliveryReady: prompt.deliveryReady,
-        producer: prompt.producer ?? null,
         idempotencyKey: prompt.idempotencyKey ?? null,
         controlOperation: prompt.controlOperation ?? null,
         interruptTargetGeneration: prompt.interruptTargetGeneration ?? null,
@@ -1284,7 +1296,13 @@ export class MetaAgentService {
       sessionId
     );
 
-    const normalizedPrompt = prompt.trim();
+    // Whitespace validation above is not payload normalization.
+    const normalizedPrompt = prompt;
+    const promptProvenance = {
+      actor: 'agent',
+      origin: 'session-orchestration',
+      originSessionId: callerSessionId,
+    };
     const shouldBypassExecution = this.shouldBypassChildAgentExecutionForTests();
     const statusRow = await this.getSessionStatusRow(sessionId, session.workspacePath);
     const statusBeforeQueue = (statusRow?.status || 'idle') as SessionStatusValue;
@@ -1301,7 +1319,12 @@ export class MetaAgentService {
       }, null, 2);
     }
 
-    const queued = await this.aiService.queuePromptForSession(sessionId, normalizedPrompt);
+    const queued = await this.aiService.queuePromptForSession(
+      sessionId,
+      normalizedPrompt,
+      undefined,
+      { promptProvenance },
+    );
     const status = (statusRow?.status || 'idle') as SessionStatusValue;
     const processingTriggered = status === 'idle' || status === 'interrupted' || status === 'error';
 

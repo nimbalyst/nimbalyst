@@ -178,6 +178,15 @@ describe('submitClaudeCliPrompt', () => {
     expect(h.sendAnalytics).not.toHaveBeenCalled();
   });
 
+  it('keeps provider entry non-terminal when post-write prompt logging fails', async () => {
+    const h = harness();
+    h.logUserPrompt.mockRejectedValueOnce(new Error('disk unavailable'));
+    await expect(submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: 'already entered' }, h.deps))
+      .resolves.toEqual({ submitted: true });
+    expect(h.writes).toHaveLength(2);
+    expect(h.sendAnalytics).toHaveBeenCalledTimes(1);
+  });
+
   /**
    * NIM-819: the claude TUI only opens its slash/memory mode when / or # is
    * the FIRST interactive keystroke on an empty prompt — a bulk-pasted line is

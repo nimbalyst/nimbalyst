@@ -35,13 +35,17 @@ export async function flushNextClaudeCliQueuedPromptForSession(
       {
         preflight: preflightSessionPromptDispatch,
         listPending: (s) => store.listPending(s),
-        claim: (id, expectedSessionId) => store.claim(id, expectedSessionId),
+        claim: (id, expectedSessionId, claimTrigger) => store.claim(id, expectedSessionId, claimTrigger),
         beginDispatch: (id, expectedSessionId, claimToken) =>
           store.beginDispatch(id, expectedSessionId, claimToken),
         completeAfterDispatch: (id, expectedSessionId, claimToken) =>
           store.completeAfterDispatch(id, expectedSessionId, claimToken),
         failAfterDispatch: (id, message, expectedSessionId, claimToken) =>
           store.failAfterDispatch(id, message, expectedSessionId, claimToken),
+        publishSnapshot: async (claimedSessionId) => {
+          const { publishQueuedPromptSnapshotForSession } = await import('./AIService');
+          await publishQueuedPromptSnapshotForSession(claimedSessionId, store);
+        },
         submit: (i) => submitClaudeCliPromptProduction(i),
         // The flush runs from the PID-idle transition with no originating IPC
         // event, so there is no single target window; broadcasting is safe

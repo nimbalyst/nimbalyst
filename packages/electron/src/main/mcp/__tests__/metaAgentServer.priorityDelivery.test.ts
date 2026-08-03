@@ -13,11 +13,14 @@ import {
 
 describe('send_prompt_now MCP parity', () => {
   const sendPromptNow = vi.fn();
+  const listQueuedPrompts = vi.fn();
 
   beforeEach(() => {
     sendPromptNow.mockReset();
     sendPromptNow.mockResolvedValue('{"ok":true}');
-    setMetaAgentToolFns({ sendPromptNow } as any);
+    listQueuedPrompts.mockReset();
+    listQueuedPrompts.mockResolvedValue('{"queuedPrompts":[]}');
+    setMetaAgentToolFns({ sendPromptNow, listQueuedPrompts } as any);
   });
 
   it('appears exactly once on both surfaces with explicit waiting authority', () => {
@@ -63,6 +66,36 @@ describe('send_prompt_now MCP parity', () => {
       'caller-session',
       'D:\\repo',
       args,
+    );
+  });
+
+  it('keeps queue audit visibility opt-in through the list binding', async () => {
+    await expect(dispatchMetaAgentTool(
+      'mcp__nimbalyst-host__list_queued_prompts',
+      'caller-session',
+      'D:\\repo',
+      { sessionId: 'target-session' },
+    )).resolves.toBe('{"queuedPrompts":[]}');
+
+    expect(listQueuedPrompts).toHaveBeenLastCalledWith(
+      'caller-session',
+      'D:\\repo',
+      'target-session',
+      { includeCompleted: false, includePromptText: false },
+    );
+
+    await expect(dispatchMetaAgentTool(
+      'mcp__nimbalyst-host__list_queued_prompts',
+      'caller-session',
+      'D:\\repo',
+      { sessionId: 'target-session', includeCompleted: true },
+    )).resolves.toBe('{"queuedPrompts":[]}');
+
+    expect(listQueuedPrompts).toHaveBeenLastCalledWith(
+      'caller-session',
+      'D:\\repo',
+      'target-session',
+      { includeCompleted: true, includePromptText: false },
     );
   });
 });

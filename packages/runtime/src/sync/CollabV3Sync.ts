@@ -80,6 +80,22 @@ interface EncryptedQueuedPrompt {
   /** IV for prompt decryption (base64) */
   iv: string;
   timestamp: number;
+  clientSubmissionId?: string;
+  sourceSessionId?: string;
+  sourceRoomId?: string;
+  submissionSequence?: number;
+  producer?: string;
+  payloadUtf8Bytes?: number;
+  payloadUnicodeScalars?: number;
+  payloadSha256?: string;
+  claimTrigger?: string;
+  claimTriggeredAt?: number;
+  turnId?: string;
+  providerInputMessageId?: string;
+  providerOutputMessageId?: string;
+  streamEventSequence?: number;
+  terminalStatus?: 'streaming' | 'completed' | 'failed';
+  terminalAt?: number;
   /** Encrypted image attachments from mobile (each independently encrypted) */
   encryptedAttachments?: WireEncryptedAttachment[];
 }
@@ -104,6 +120,22 @@ interface PlaintextQueuedPrompt {
   id: string;
   prompt: string;
   timestamp: number;
+  clientSubmissionId?: string;
+  sourceSessionId?: string;
+  sourceRoomId?: string;
+  submissionSequence?: number;
+  producer?: string;
+  payloadUtf8Bytes?: number;
+  payloadUnicodeScalars?: number;
+  payloadSha256?: string;
+  claimTrigger?: string;
+  claimTriggeredAt?: number;
+  turnId?: string;
+  providerInputMessageId?: string;
+  providerOutputMessageId?: string;
+  streamEventSequence?: number;
+  terminalStatus?: 'streaming' | 'completed' | 'failed';
+  terminalAt?: number;
   /** Decrypted image attachments from mobile */
   attachments?: EncryptedAttachment[];
 }
@@ -612,6 +644,22 @@ async function encryptQueuedPrompts(
         encryptedPrompt: encrypted,
         iv,
         timestamp: prompt.timestamp,
+        clientSubmissionId: prompt.clientSubmissionId,
+        sourceSessionId: prompt.sourceSessionId,
+        sourceRoomId: prompt.sourceRoomId,
+        submissionSequence: prompt.submissionSequence,
+        producer: prompt.producer,
+        payloadUtf8Bytes: prompt.payloadUtf8Bytes,
+        payloadUnicodeScalars: prompt.payloadUnicodeScalars,
+        payloadSha256: prompt.payloadSha256,
+        claimTrigger: prompt.claimTrigger,
+        claimTriggeredAt: prompt.claimTriggeredAt,
+        turnId: prompt.turnId,
+        providerInputMessageId: prompt.providerInputMessageId,
+        providerOutputMessageId: prompt.providerOutputMessageId,
+        streamEventSequence: prompt.streamEventSequence,
+        terminalStatus: prompt.terminalStatus,
+        terminalAt: prompt.terminalAt,
       };
     })
   );
@@ -636,6 +684,22 @@ async function decryptQueuedPrompts(
         id: prompt.id,
         prompt: decryptedPrompt,
         timestamp: prompt.timestamp,
+        clientSubmissionId: prompt.clientSubmissionId,
+        sourceSessionId: prompt.sourceSessionId,
+        sourceRoomId: prompt.sourceRoomId,
+        submissionSequence: prompt.submissionSequence,
+        producer: prompt.producer,
+        payloadUtf8Bytes: prompt.payloadUtf8Bytes,
+        payloadUnicodeScalars: prompt.payloadUnicodeScalars,
+        payloadSha256: prompt.payloadSha256,
+        claimTrigger: prompt.claimTrigger,
+        claimTriggeredAt: prompt.claimTriggeredAt,
+        turnId: prompt.turnId,
+        providerInputMessageId: prompt.providerInputMessageId,
+        providerOutputMessageId: prompt.providerOutputMessageId,
+        streamEventSequence: prompt.streamEventSequence,
+        terminalStatus: prompt.terminalStatus,
+        terminalAt: prompt.terminalAt,
       };
       // Pass through encrypted attachments (desktop decrypts them when processing)
       if (

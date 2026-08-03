@@ -165,6 +165,48 @@ function scheduleMobileSettingsSync(): void {
   }, 500);
 }
 
+/**
+ * Replicate the durable queue lifecycle snapshot after a CLI-only transition.
+ * The PGLite store remains authoritative; sync merely publishes its current
+ * per-session projection for reconnecting renderers.
+ */
+export async function publishQueuedPromptSnapshotForSession(
+  sessionId: string,
+  queueStore?: { listForSession: (id: string, options: { includeCompleted: boolean }) => Promise<any[]> },
+): Promise<void> {
+  const syncProvider = getSyncProvider();
+  if (!syncProvider) return;
+
+  const store = queueStore ?? (await import('../RepositoryManager')).getQueuedPromptsStore();
+  const rows = await store.listForSession(sessionId, { includeCompleted: true });
+  syncProvider.pushChange(sessionId, {
+    type: 'metadata_updated',
+    metadata: {
+      queuedPrompts: rows.map((row) => ({
+        id: row.id,
+        clientSubmissionId: row.clientSubmissionId ?? row.id,
+        sourceSessionId: row.sourceSessionId ?? row.sessionId,
+        sourceRoomId: row.sourceRoomId ?? row.sessionId,
+        submissionSequence: row.submissionSequence,
+        producer: row.producer,
+        payloadUtf8Bytes: row.payloadReceipt?.utf8Bytes,
+        payloadUnicodeScalars: row.payloadReceipt?.unicodeScalars,
+        payloadSha256: row.payloadReceipt?.sha256,
+        claimTrigger: row.claimTrigger,
+        claimTriggeredAt: row.claimTriggeredAt,
+        turnId: row.turnId,
+        providerInputMessageId: row.providerInputMessageId,
+        providerOutputMessageId: row.providerOutputMessageId,
+        streamEventSequence: row.streamEventSequence,
+        terminalStatus: row.terminalStatus,
+        terminalAt: row.terminalAt,
+        prompt: row.prompt,
+        timestamp: row.createdAt,
+      })),
+    },
+  });
+}
+
 export class AIService {
   private sessionManager: SessionManager;
   private settingsStore: Store<Record<string, unknown>> | null = null;
@@ -342,7 +384,17 @@ export class AIService {
         queueStore.listPendingSessionIds({ deliveryClass: 'ordinary' }),
       resolveWorkspacePath: async (sessionId) => {
         const session = await AISessionsRepository.get(sessionId);
-        return session?.worktreePath || session?.workspacePath || null;
+        const workspacePath = session?.worktreePath || session?.workspacePath || null;
+        if (workspacePath) return workspacePath;
+        try {
+          await queueStore.failAllPendingForSession(
+            sessionId,
+            'Queued prompt delivery failed: workspace mapping unavailable',
+          );
+        } catch {
+          logger.main.warn('[AIService] startup queue drain could not terminally fail an unmapped session');
+        }
+        return null;
       },
       triggerProcessing: (sessionId, workspacePath) =>
         this.triggerQueuedPromptProcessingForSession(sessionId, workspacePath),
