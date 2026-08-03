@@ -38,7 +38,22 @@ async function createDatabase(): Promise<PGlite> {
       control_operation TEXT,
       interrupt_target_generation TEXT,
       interrupt_reservation_owner TEXT,
-      interrupt_receipt JSONB
+      interrupt_receipt JSONB,
+      client_submission_id TEXT UNIQUE,
+      source_session_id TEXT,
+      source_room_id TEXT,
+      submission_sequence INTEGER,
+      payload_utf8_bytes INTEGER,
+      payload_unicode_scalars INTEGER,
+      payload_sha256 TEXT,
+      claim_trigger TEXT,
+      claim_triggered_at TIMESTAMPTZ,
+      turn_id TEXT,
+      provider_input_message_id TEXT,
+      provider_output_message_id TEXT,
+      stream_event_sequence INTEGER NOT NULL DEFAULT 0,
+      terminal_status TEXT,
+      terminal_at TIMESTAMPTZ
     );
     CREATE TABLE ai_agent_messages (
       id BIGSERIAL PRIMARY KEY,
@@ -47,6 +62,10 @@ async function createDatabase(): Promise<PGlite> {
       source TEXT NOT NULL,
       direction TEXT NOT NULL,
       content TEXT NOT NULL
+    );
+    CREATE TABLE queued_prompt_source_sequences (
+      source_session_id TEXT PRIMARY KEY,
+      next_sequence INTEGER NOT NULL
     );
     CREATE UNIQUE INDEX idx_queued_prompts_interrupt_generation_owner
       ON queued_prompts(session_id, interrupt_target_generation)
@@ -222,6 +241,22 @@ describe('PGLiteQueuedPromptsStore dispatch fencing', () => {
     await expect(
       store.completeAfterDispatch('started', 'session-a', started!.claimToken!),
     ).resolves.toMatchObject({ outcome: 'settled' });
+  });
+
+  it('persists the non-CLI handler terminal boundary without minting a second time or sequence', async () => {
+    const db = await createDatabase();
+    const store = createPGLiteQueuedPromptsStore(db as any);
+    await store.create({ id: 'bound-terminal', sessionId: 'session-a', prompt: 'bound' });
+    const claim = await store.claim('bound-terminal', 'session-a');
+    await store.beginDispatch('bound-terminal', 'session-a', claim!.claimToken!);
+
+    const terminalAt = Date.parse('2026-08-03T00:02:00.000Z');
+    await expect(store.completeAfterDispatch('bound-terminal', 'session-a', claim!.claimToken!, {
+      lifecycle: 'completed', terminalAt, eventSequence: 9,
+    })).resolves.toMatchObject({ outcome: 'settled' });
+    await expect(store.get('bound-terminal')).resolves.toMatchObject({
+      status: 'completed', terminalStatus: 'completed', terminalAt, streamEventSequence: 9,
+    });
   });
 
   it('atomically admits create, pending replacement, and expected-session delete', async () => {

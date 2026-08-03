@@ -8,6 +8,10 @@ interface QueuedPromptAttachment {
 
 export interface QueuedPrompt {
   id: string;
+  clientSubmissionId?: string;
+  submissionSequence?: number;
+  sourceSessionId?: string;
+  status?: 'awaiting_ack' | 'pending' | 'executing' | 'completed' | 'failed';
   prompt: string;
   timestamp: number;
   attachments?: QueuedPromptAttachment[];
@@ -69,11 +73,6 @@ export function PromptQueueList({ queue, onCancel, onEdit, onSendNow }: PromptQu
           <div key={item.id} className="prompt-queue-item flex items-center gap-2 px-2 py-1.5 bg-nim-tertiary border border-nim rounded text-[13px]">
             <span className="prompt-queue-number shrink-0 w-[18px] h-[18px] flex items-center justify-center bg-nim-tertiary rounded-full text-[11px] font-medium text-nim-muted">{index + 1}</span>
             <span className="prompt-queue-text flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-nim-primary" title={item.prompt}>{item.prompt}</span>
-            {item.prompt.includes('\n') && (
-              <span className="prompt-queue-lines shrink-0 text-[10px] text-nim-muted bg-nim-secondary rounded px-1 py-0.5" title={`${item.prompt.split('\n\n').length} messages bundled`}>
-                +{item.prompt.split('\n\n').length - 1} more
-              </span>
-            )}
             {item.attachments && item.attachments.length > 0 && (
               <AttachmentIndicator attachments={item.attachments} />
             )}

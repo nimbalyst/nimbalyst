@@ -90,7 +90,9 @@ export async function submitClaudeCliPrompt(
   input: SubmitClaudeCliPromptInput,
   deps: SubmitClaudeCliPromptDeps,
 ): Promise<{ submitted: boolean }> {
-  const prompt = (input.prompt ?? '').trim();
+  // Validation may inspect trim(), but the logical payload itself must remain
+  // byte-for-byte unchanged through the queue and provider boundary.
+  const prompt = input.prompt ?? '';
   const attachments = input.attachments ?? [];
 
   // NIM-819: the claude TUI only opens its slash-command/memory mode when
@@ -134,7 +136,7 @@ export async function submitClaudeCliPrompt(
       attachments,
       documentContext: input.documentContext,
     });
-    if (!ptyText) {
+    if (!prompt.trim() && attachments.length === 0) {
       return { submitted: false };
     }
 
@@ -151,13 +153,19 @@ export async function submitClaudeCliPrompt(
 
   // Log the CLEAN typed prompt (+ attachment chips), NOT the path-augmented PTY
   // line. Best-effort: the CLI turn already started.
-  await deps.logUserPrompt({
-    sessionId: input.sessionId,
-    workspacePath: input.workspacePath,
-    prompt,
-    attachments,
-    promptProvenance: input.documentContext?.promptProvenance,
-  });
+  try {
+    await deps.logUserPrompt({
+      sessionId: input.sessionId,
+      workspacePath: input.workspacePath,
+      prompt,
+      attachments,
+      promptProvenance: input.documentContext?.promptProvenance,
+    });
+  } catch (error) {
+    // Provider entry already happened. Do not report a false terminal failure
+    // to the queue; observed CLI output still owns the durable settlement.
+    console.warn('[ClaudeCliSubmit] Failed to persist submitted user prompt:', error);
+  }
 
   deps.sendAnalytics({
     messageLength: prompt.length,

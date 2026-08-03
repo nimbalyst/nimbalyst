@@ -916,6 +916,19 @@ export class MetaAgentService {
       includeCompleted: options.includeCompleted === true,
       prompts: prompts.map((prompt) => ({
         id: prompt.id,
+        clientSubmissionId: prompt.clientSubmissionId ?? prompt.id,
+        sourceSessionId: prompt.sourceSessionId ?? prompt.sessionId,
+        sourceRoomId: prompt.sourceRoomId ?? prompt.sessionId,
+        submissionSequence: prompt.submissionSequence ?? null,
+        producer: prompt.producer ?? null,
+        payloadReceipt: prompt.payloadReceipt ?? null,
+        claimTrigger: prompt.claimTrigger ?? null,
+        claimTriggeredAt: prompt.claimTriggeredAt ?? null,
+        turnId: prompt.turnId ?? null,
+        providerInputMessageId: prompt.providerInputMessageId ?? null,
+        providerOutputMessageId: prompt.providerOutputMessageId ?? null,
+        terminalStatus: prompt.terminalStatus ?? null,
+        terminalAt: prompt.terminalAt ?? null,
         status: prompt.status,
         deliveryClass: prompt.deliveryClass,
         priorityRank: prompt.priorityRank,
@@ -955,7 +968,8 @@ export class MetaAgentService {
       throw new Error(`Session ${sessionId} not found`);
     }
 
-    const normalizedPrompt = prompt.trim();
+    // Whitespace validation above is not payload normalization.
+    const normalizedPrompt = prompt;
     const shouldBypassExecution = this.shouldBypassChildAgentExecutionForTests();
     const statusRow = await this.getSessionStatusRow(sessionId, workspaceId);
     const statusBeforeQueue = (statusRow?.status || 'idle') as SessionStatusValue;

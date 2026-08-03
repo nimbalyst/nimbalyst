@@ -48,6 +48,8 @@ import {
 // MCP imports removed - no longer using MCP HTTP server
 import { ToolExecutor, toolRegistry, BUILT_IN_TOOLS } from './tools';
 import { initMobileSessionControlHandler } from './MobileSessionControlHandler';
+import type { QueuedPromptsStore } from '../PGLiteQueuedPromptsStore';
+import { payloadReceiptsMatch } from './queuedPromptTruth';
 import { handleMobileVoiceToolCall } from '../voice/mobileVoiceToolHandler';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { getTerminalSessionManager } from '../TerminalSessionManager';
@@ -163,6 +165,48 @@ function scheduleMobileSettingsSync(): void {
       syncSettingsToMobile(apiKeys['openai']);
     }).catch(() => { /* sync manager may not be available */ });
   }, 500);
+}
+
+/**
+ * Publish the authoritative durable queue projection after any lifecycle
+ * mutation, including CLI-only claim/terminal transitions that do not flow
+ * through an AIService IPC handler.
+ */
+export async function publishQueuedPromptSnapshotForSession(
+  sessionId: string,
+  queueStore?: QueuedPromptsStore,
+): Promise<void> {
+  const syncProvider = getSyncProvider();
+  if (!syncProvider) return;
+
+  const store = queueStore ?? (await import('../RepositoryManager')).getQueuedPromptsStore();
+  const rows = await store.listForSession(sessionId, { includeCompleted: true });
+  syncProvider.pushChange(sessionId, {
+    type: 'metadata_updated',
+    metadata: {
+      queuedPrompts: rows.map((row) => ({
+        id: row.id,
+        clientSubmissionId: row.clientSubmissionId ?? row.id,
+        sourceSessionId: row.sourceSessionId ?? row.sessionId,
+        sourceRoomId: row.sourceRoomId ?? row.sessionId,
+        submissionSequence: row.submissionSequence,
+        producer: row.producer,
+        payloadUtf8Bytes: row.payloadReceipt?.utf8Bytes,
+        payloadUnicodeScalars: row.payloadReceipt?.unicodeScalars,
+        payloadSha256: row.payloadReceipt?.sha256,
+        claimTrigger: row.claimTrigger,
+        claimTriggeredAt: row.claimTriggeredAt,
+        turnId: row.turnId,
+        providerInputMessageId: row.providerInputMessageId,
+        providerOutputMessageId: row.providerOutputMessageId,
+        streamEventSequence: row.streamEventSequence,
+        terminalStatus: row.terminalStatus,
+        terminalAt: row.terminalAt,
+        prompt: row.prompt,
+        timestamp: row.createdAt,
+      })),
+    },
+  });
 }
 
 export class AIService {
@@ -304,10 +348,26 @@ export class AIService {
       id: promptId,
       sessionId,
       prompt,
+      clientSubmissionId: promptId,
+      producer: 'meta-agent',
       attachments,
       documentContext: queuedDocumentContext,
     });
+    await this.publishQueuedPromptSnapshot(sessionId, queueStore);
     return { id: created.id, prompt: created.prompt, createdAt: created.createdAt };
+  }
+
+  /**
+   * Publish the bounded durable queue projection after a lifecycle mutation.
+   * The encrypted sync transport is a replica, never a queue authority: every
+   * entry comes from the store's current full lifecycle snapshot so echoes are
+   * idempotent and terminals cannot be mistaken for fresh mobile input.
+   */
+  private async publishQueuedPromptSnapshot(
+    sessionId: string,
+    queueStore?: QueuedPromptsStore,
+  ): Promise<void> {
+    await publishQueuedPromptSnapshotForSession(sessionId, queueStore);
   }
 
   /**
@@ -1195,6 +1255,12 @@ export class AIService {
 
                 let newPromptsCount = 0;
                 for (const prompt of entry.queuedPrompts) {
+                  const supplied = prompt as any;
+                  // A sync echo carrying terminal truth is a snapshot, never
+                  // fresh executable mobile input.
+                  if (supplied.terminalStatus === 'completed' || supplied.terminalStatus === 'failed') {
+                    continue;
+                  }
                   // Skip prompts that were created locally (echoed back via Y.js sync)
                   // Local prompts have IDs starting with 'local-'
                   if (prompt.id.startsWith('local-')) {
@@ -1202,10 +1268,43 @@ export class AIService {
                     continue;
                   }
 
+                  const suppliedReceipt = (
+                    supplied.payloadUtf8Bytes === undefined &&
+                    supplied.payloadUnicodeScalars === undefined &&
+                    supplied.payloadSha256 === undefined
+                  ) ? undefined : {
+                    utf8Bytes: supplied.payloadUtf8Bytes,
+                    unicodeScalars: supplied.payloadUnicodeScalars,
+                    sha256: supplied.payloadSha256,
+                  };
+                  const receiptIsComplete = suppliedReceipt === undefined || (
+                    Number.isSafeInteger(suppliedReceipt.utf8Bytes) &&
+                    Number.isSafeInteger(suppliedReceipt.unicodeScalars) &&
+                    typeof suppliedReceipt.sha256 === 'string'
+                  );
+                  if (
+                    !receiptIsComplete ||
+                    (suppliedReceipt && !payloadReceiptsMatch(prompt.prompt, suppliedReceipt)) ||
+                    (supplied.sourceSessionId !== undefined && supplied.sourceSessionId !== sessionId)
+                  ) {
+                    logger.main.warn('[AIService] Rejected conflicting mobile queued prompt truth:', prompt.id);
+                    continue;
+                  }
+
                   // Check if prompt already exists
                   const existing = await queueStore.get(prompt.id);
                   if (existing) {
-                    // logger.main.info(`[AIService] Prompt ${prompt.id} already exists, skipping`);
+                    const conflict =
+                      existing.prompt !== prompt.prompt ||
+                      (supplied.clientSubmissionId !== undefined && existing.clientSubmissionId !== supplied.clientSubmissionId) ||
+                      (supplied.sourceSessionId !== undefined && existing.sourceSessionId !== supplied.sourceSessionId) ||
+                      (supplied.sourceRoomId !== undefined && existing.sourceRoomId !== supplied.sourceRoomId) ||
+                      (supplied.submissionSequence !== undefined && existing.submissionSequence !== supplied.submissionSequence) ||
+                      (supplied.producer !== undefined && existing.producer !== supplied.producer) ||
+                      (existing.payloadReceipt !== undefined && !payloadReceiptsMatch(prompt.prompt, existing.payloadReceipt));
+                    if (conflict) {
+                      logger.main.warn('[AIService] Rejected mobile queued prompt echo with conflicting truth:', prompt.id);
+                    }
                     continue;
                   }
 
@@ -1214,6 +1313,9 @@ export class AIService {
                     id: prompt.id,
                     sessionId,
                     prompt: prompt.prompt,
+                    clientSubmissionId: supplied.clientSubmissionId ?? prompt.id,
+                    sourceRoomId: supplied.sourceRoomId,
+                    producer: supplied.producer ?? 'mobile',
                     attachments: prompt.attachments,
                     documentContext: {
                       promptProvenance: {
@@ -1230,6 +1332,8 @@ export class AIService {
                   // logger.main.info('[AIService] No new prompts to process, all already exist');
                   return;
                 }
+
+                await this.publishQueuedPromptSnapshot(sessionId, queueStore);
 
                 logger.main.info(`[AIService] Inserted ${newPromptsCount} new prompts into queued_prompts table`);
 
@@ -2405,6 +2509,7 @@ export class AIService {
           }
           throw new Error(`Queued prompt dispatch intent rejected: ${begun.outcome}`);
         }
+        await this.publishQueuedPromptSnapshot(sessionId, queueStore);
         logger.main.info(`[AIService] claimQueuedPrompt: claimed ${promptId} for session ${sessionId}`);
         // Return in the format expected by the renderer
         return {
@@ -2434,6 +2539,7 @@ export class AIService {
       if (settlement.outcome !== 'settled' && settlement.outcome !== 'idempotent_same_claim') {
         throw new Error(`Queued prompt completion rejected: ${settlement.outcome}`);
       }
+      await this.publishQueuedPromptSnapshot(sessionId, queueStore);
       logger.main.info(`[AIService] completeQueuedPrompt: ${promptId}`);
     });
 
@@ -2451,6 +2557,7 @@ export class AIService {
       if (settlement.outcome !== 'settled' && settlement.outcome !== 'idempotent_same_claim') {
         throw new Error(`Queued prompt failure settlement rejected: ${settlement.outcome}`);
       }
+      await this.publishQueuedPromptSnapshot(sessionId, queueStore);
       logger.main.info(`[AIService] failQueuedPrompt: ${promptId} - ${errorMessage}`);
     });
 
@@ -2461,9 +2568,15 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
-      const pending = await queueStore.listPending(sessionId);
+      // This is a bounded authoritative lifecycle snapshot, not merely a
+      // pending-list: renderer reconciliation must observe terminal rows.
+      const pending = await queueStore.listForSession(sessionId, { includeCompleted: true });
       return pending.map(p => ({
         id: p.id,
+        clientSubmissionId: p.clientSubmissionId,
+        submissionSequence: p.submissionSequence,
+        sourceSessionId: p.sourceSessionId,
+        status: p.status,
         prompt: p.prompt,
         timestamp: p.createdAt,
         attachments: p.attachments,
@@ -2477,14 +2590,18 @@ export class AIService {
       sessionId: string,
       prompt: string,
       attachments?: any[],
-      documentContext?: any
+      documentContext?: any,
+      clientSubmissionId?: string
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
 
       // Generate a unique ID with 'local-' prefix to identify locally-created prompts
       // This prevents the mobile sync handler from re-broadcasting these prompts
-      const promptId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      // Renderer retries reuse this client identity after an accepted-but-lost
+      // IPC acknowledgement. Direct/legacy callers retain the safe fallback.
+      const stableSubmissionId = clientSubmissionId || `local-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const promptId = stableSubmissionId.startsWith('local-') ? stableSubmissionId : `local-${stableSubmissionId}`;
       const queuedDocumentContext = {
         ...(documentContext ?? {}),
         promptProvenance: {
@@ -2499,9 +2616,13 @@ export class AIService {
         id: promptId,
         sessionId,
         prompt,
+        clientSubmissionId: stableSubmissionId,
+        producer: 'composer',
         attachments,
         documentContext: queuedDocumentContext,
       });
+
+      await this.publishQueuedPromptSnapshot(sessionId, queueStore);
 
       logger.main.info(`[AIService] createQueuedPrompt: created ${promptId} for session ${sessionId}`);
 
@@ -2572,6 +2693,9 @@ export class AIService {
 
       return {
         id: created.id,
+        clientSubmissionId: created.clientSubmissionId,
+        submissionSequence: created.submissionSequence,
+        sourceSessionId: created.sourceSessionId,
         prompt: created.prompt,
         timestamp: created.createdAt,
         attachments: created.attachments,
