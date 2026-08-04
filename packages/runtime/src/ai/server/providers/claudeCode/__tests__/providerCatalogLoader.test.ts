@@ -4,7 +4,9 @@ import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   PROVIDER_CATALOG_SCHEMA_VERSION,
+  resolveProviderCatalogRouteSnapshot,
   resolveProviderCatalogSnapshot,
+  type ProviderCatalogControlTarget,
   type ProviderCatalogEntry,
 } from "../providerCatalog";
 import {
@@ -13,6 +15,10 @@ import {
   loadProviderCatalogFromDirectory,
   migrateLegacyOllamaBackends,
 } from "../providerCatalogLoader";
+import {
+  createProviderRuntimeSessionSnapshot,
+  resolveMainClaudeAgentLaunchPlan,
+} from "../runtimeRouteResolver";
 
 const tempDirectories: string[] = [];
 
@@ -86,6 +92,39 @@ function makeLegacy(id: string) {
   };
 }
 
+const ORDERED_CONTROL_TARGETS: readonly ProviderCatalogControlTarget[] = [
+  "launch.context-window",
+  "launch.effort-level",
+  "interface.model-profile",
+  "interface.reasoning-mode",
+  "launch.thinking-mode",
+];
+
+function makeOrderedControls(count: number) {
+  return Object.fromEntries(
+    Array.from({ length: count }, (_, index) => [
+      `control-${index}`,
+      {
+        persistenceKey: `fixture.control-${index}`,
+        order: count - index,
+        width: (["compact", "standard", "wide"] as const)[index % 3],
+        displayLabel: `Control ${index}`,
+        helpText: `Fixture control ${index}.`,
+        valueLabels: { '"default"': `Default ${index}` },
+        allowedValues: ["default"],
+        defaultValue: "default",
+        mappings: [
+          {
+            interfaceId: "claude-agent-proxy",
+            target: ORDERED_CONTROL_TARGETS[index],
+            values: [{ storedValue: "default", resolvedValue: "default" }],
+          },
+        ],
+      },
+    ])
+  );
+}
+
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -93,6 +132,189 @@ afterEach(() => {
 });
 
 describe("provider catalog legacy migration and loading", () => {
+  it("loads a JSON-only three-mode control including an explicit omit mapping", () => {
+    const directory = makeDirectory();
+    const base = makeDefault("deepseek-json-fixture");
+    fs.writeFileSync(
+      path.join(directory, PROVIDER_CATALOG_OVERLAY_FILE),
+      JSON.stringify(
+        {
+          schemaVersion: PROVIDER_CATALOG_SCHEMA_VERSION,
+          entries: [
+            {
+              id: base.id,
+              patch: {
+                controls: {
+                  reasoning: {
+                    persistenceKey: "reasoning-mode",
+                    order: 0,
+                    width: "standard",
+                    displayLabel: "Thinking effort",
+                    helpText: "Reviewed profile.",
+                    valueLabels: {
+                      '"non-think"': "None",
+                      '"think-high"': "High",
+                      '"think-max"': "Max",
+                    },
+                    allowedValues: ["non-think", "think-high", "think-max"],
+                    defaultValue: "think-high",
+                    mappings: [
+                      {
+                        interfaceId: "claude-agent-proxy",
+                        target: "request.thinking.type",
+                        values: [
+                          {
+                            storedValue: "non-think",
+                            resolvedValue: "disabled",
+                          },
+                          {
+                            storedValue: "think-high",
+                            resolvedValue: "enabled",
+                          },
+                          {
+                            storedValue: "think-max",
+                            resolvedValue: "enabled",
+                          },
+                        ],
+                      },
+                      {
+                        interfaceId: "claude-agent-proxy",
+                        target: "request.output-config.effort",
+                        values: [
+                          { storedValue: "non-think", operation: "omit" },
+                          { storedValue: "think-high", resolvedValue: "high" },
+                          { storedValue: "think-max", resolvedValue: "max" },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      "utf-8"
+    );
+
+    const loaded = loadProviderCatalogFromDirectory(directory, [base]);
+    const snapshot = resolveProviderCatalogRouteSnapshot(
+      loaded.resolution,
+      base.id,
+      { "reasoning-mode": "non-think" }
+    );
+    expect(snapshot.entry.controls.reasoning.allowedValues).toEqual([
+      "non-think",
+      "think-high",
+      "think-max",
+    ]);
+    expect(snapshot.mappings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          target: "request.thinking.type",
+          value: "disabled",
+        }),
+        expect.objectContaining({
+          target: "request.output-config.effort",
+          operation: "omit",
+        }),
+      ])
+    );
+    const runtimeSnapshot = createProviderRuntimeSessionSnapshot(
+      resolveMainClaudeAgentLaunchPlan(loaded.resolution, {
+        catalogEntryId: base.id,
+        persistedModelId: base.model.persistedId,
+        persistedControls: { "reasoning-mode": "non-think" },
+        credentialReferences: { "nimbalyst.local-proxy": true },
+      })
+    );
+    expect(runtimeSnapshot.receipt.requested.controls).toEqual({
+      reasoning: "non-think",
+    });
+    expect(runtimeSnapshot.receipt.resolvedControls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          target: "request.thinking.type",
+          operation: "set",
+          value: "disabled",
+        }),
+        expect.objectContaining({
+          target: "request.output-config.effort",
+          operation: "omit",
+        }),
+      ])
+    );
+  });
+
+  it.each([0, 3, 4])(
+    "loads a JSON-only fixture with %i ordered model controls",
+    (count) => {
+      const directory = makeDirectory();
+      const base = makeDefault(`ordered-${count}`);
+      fs.writeFileSync(
+        path.join(directory, PROVIDER_CATALOG_OVERLAY_FILE),
+        JSON.stringify({
+          schemaVersion: PROVIDER_CATALOG_SCHEMA_VERSION,
+          entries: [
+            { id: base.id, patch: { controls: makeOrderedControls(count) } },
+          ],
+        }),
+        "utf-8"
+      );
+
+      const loaded = loadProviderCatalogFromDirectory(directory, [base]);
+      expect(loaded.resolution.errors).toEqual([]);
+      const snapshot = resolveProviderCatalogSnapshot(
+        loaded.resolution,
+        base.id
+      );
+      expect(
+        Object.values(snapshot.controls).map((control) => ({
+          order: control.order,
+          label: control.displayLabel,
+          width: control.width,
+          values: control.allowedValues,
+          defaultValue: control.defaultValue,
+        }))
+      ).toEqual(
+        Array.from({ length: count }, (_, offset) => {
+          const index = count - offset - 1;
+          return {
+            order: offset + 1,
+            label: `Control ${index}`,
+            width: (["compact", "standard", "wide"] as const)[index % 3],
+            values: ["default"],
+            defaultValue: "default",
+          };
+        })
+      );
+    }
+  );
+
+  it("fails a JSON-only fifth model control with a clear catalog error", () => {
+    const directory = makeDirectory();
+    const base = makeDefault("ordered-five");
+    fs.writeFileSync(
+      path.join(directory, PROVIDER_CATALOG_OVERLAY_FILE),
+      JSON.stringify({
+        schemaVersion: PROVIDER_CATALOG_SCHEMA_VERSION,
+        entries: [{ id: base.id, patch: { controls: makeOrderedControls(5) } }],
+      }),
+      "utf-8"
+    );
+
+    const loaded = loadProviderCatalogFromDirectory(directory, [base]);
+    expect(loaded.resolution.entries).toEqual([]);
+    expect(loaded.resolution.errors).toEqual([
+      expect.objectContaining({
+        code: "invalid-controls",
+        message: expect.stringContaining("at most four model-owned controls"),
+      }),
+    ]);
+  });
+
   it("preserves valid legacy additions and overrides while recording removed defaults as disables", () => {
     const defaults = [makeDefault("kept"), makeDefault("removed")];
     const migration = migrateLegacyOllamaBackends(
@@ -131,6 +353,13 @@ describe("provider catalog legacy migration and loading", () => {
     upgradedKept.controls = {
       effort: {
         persistenceKey: "brain.effort",
+        order: 0,
+        width: "standard",
+        applicability: {
+          launch: true,
+          restart: true,
+          midSession: true,
+        },
         allowedValues: ["low", "high"],
         defaultValue: "high",
         mappings: [
@@ -191,6 +420,13 @@ describe("provider catalog legacy migration and loading", () => {
     expect(second.resolution.entries[0].controls).toEqual({
       effort: {
         persistenceKey: "brain.effort",
+        order: 0,
+        width: "standard",
+        applicability: {
+          launch: true,
+          restart: true,
+          midSession: true,
+        },
         allowedValues: ["low", "high"],
         defaultValue: "high",
         mappings: [

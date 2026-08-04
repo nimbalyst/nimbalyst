@@ -9,6 +9,7 @@ import { sessionLaunchPopupRequestAtom } from '../../../store/atoms/appCommands'
 import { selectedWorkstreamAtom } from '../../../store/atoms/sessions';
 import { initWorkstreamState } from '../../../store/atoms/workstreamState';
 import { windowModeAtom } from '../../../store/atoms/windowMode';
+import { sessionLaunchDraftAtom } from '../../../store/atoms/sessionLaunchPopup';
 import { SessionLaunchPopup, launchSessionPrompt } from '../SessionLaunchPopup';
 
 vi.mock('../AIInput', () => ({
@@ -30,29 +31,41 @@ vi.mock('../AIInput', () => ({
         {props.onModelChange && (
           <button
             type="button"
-            onClick={() => props.onModelChange('claude-code:claudex-sol', {
-              id: 'claude-code:claudex-sol',
-              name: 'Claude Agent - Sol (Claudex)',
+            onClick={() => props.onModelChange('claude-code:deepseek-v4-pro', {
+              id: 'claude-code:deepseek-v4-pro',
+              name: 'DeepSeek V4 Pro',
               provider: 'claude-code',
               catalog: {
-                entryId: 'claudex-sol',
-                family: 'codex',
-                version: 'gpt-5.6-sol',
+                entryId: 'deepseek-v4-pro-official',
+                family: 'deepseek',
+                version: 'deepseek-v4-pro',
                 capabilities: { mainSession: true, subagent: true, consultation: true, tools: true, vision: false },
                 controls: [{
-                  id: 'effort',
-                  persistenceKey: 'effort-level',
-                  displayLabel: 'Effort',
-                  helpText: 'Reasoning effort.',
-                  allowedValues: ['high', 'max'],
-                  defaultValue: 'high',
-                  valueLabels: { '"high"': 'High', '"max"': 'Max' },
+                  id: 'reasoning',
+                  persistenceKey: 'reasoning-mode',
+                  displayLabel: 'Reasoning',
+                  helpText: 'DeepSeek reasoning profile.',
+                  allowedValues: ['non-think', 'think-high', 'think-max'],
+                  defaultValue: 'think-high',
+                  valueLabels: {
+                    '"non-think"': 'Non-think',
+                    '"think-high"': 'Think High',
+                    '"think-max"': 'Think Max',
+                  },
                 }],
                 availability: { selectable: true, code: 'launchable' },
               },
             })}
           >
             Choose Catalog Model
+          </button>
+        )}
+        {props.onCatalogControlValueChange && (
+          <button
+            type="button"
+            onClick={() => props.onCatalogControlValueChange('reasoning-mode', 'think-max')}
+          >
+            Choose Think Max
           </button>
         )}
         <button type="button" onClick={() => props.onSend(props.value)}>Start Session</button>
@@ -224,7 +237,7 @@ describe('SessionLaunchPopup', () => {
     expect(createCall?.[1].session.metadata).toMatchObject({ thinkingMode: 'disabled' });
   });
 
-  it('heals cross-model controls before creating a catalog session', async () => {
+  it('defaults an absent generic control and persists an explicit catalog selection', async () => {
     const testStore = createStore();
     testStore.set(activeWorkspacePathAtom, '/workspace');
     initWorkstreamState('/workspace');
@@ -243,6 +256,7 @@ describe('SessionLaunchPopup', () => {
     const input = await screen.findByTestId('session-launch-popup-input');
     fireEvent.change(input, { target: { value: 'Use the catalog route' } });
     fireEvent.click(screen.getByRole('button', { name: 'Choose Catalog Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose Think Max' }));
     fireEvent.click(screen.getByRole('button', { name: 'Start Session' }));
 
     await waitFor(() => {
@@ -250,8 +264,50 @@ describe('SessionLaunchPopup', () => {
     });
     const createCall = invoke.mock.calls.find(([channel]) => channel === 'sessions:create');
     expect(createCall?.[1].session).toMatchObject({
-      model: 'claude-code:claudex-sol',
-      metadata: { effortLevel: 'high', thinkingMode: null },
+      model: 'claude-code:deepseek-v4-pro',
+      metadata: {
+        effortLevel: null,
+        thinkingMode: null,
+        catalogControlValues: { 'reasoning-mode': 'think-max' },
+      },
+    });
+  });
+
+  it('preserves present invalid and unknown catalog values instead of healing them during launch', async () => {
+    const testStore = createStore();
+    testStore.set(activeWorkspacePathAtom, '/workspace');
+    initWorkstreamState('/workspace');
+    testStore.set(agentModeSettingsAtom, {
+      defaultModel: 'claude-code:sonnet',
+      defaultEffortLevel: 'low',
+      defaultThinkingMode: 'disabled',
+    });
+    render(
+      <Provider store={testStore}>
+        <SessionLaunchPopup workspacePath="/workspace" />
+      </Provider>,
+    );
+
+    act(() => testStore.set(sessionLaunchPopupRequestAtom, 1));
+    const input = await screen.findByTestId('session-launch-popup-input');
+    fireEvent.change(input, { target: { value: 'Reject the stale profile' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Choose Catalog Model' }));
+    act(() => testStore.set(sessionLaunchDraftAtom('/workspace'), (current) => ({
+      ...current,
+      catalogControlValues: {
+        'reasoning-mode': 'stale-profile',
+        'unexpected-control': 'value',
+      },
+    })));
+    fireEvent.click(screen.getByRole('button', { name: 'Start Session' }));
+
+    await waitFor(() => {
+      expect(invoke.mock.calls.some(([channel]) => channel === 'sessions:create')).toBe(true);
+    });
+    const createCall = invoke.mock.calls.find(([channel]) => channel === 'sessions:create');
+    expect(createCall?.[1].session.metadata.catalogControlValues).toEqual({
+      'reasoning-mode': 'stale-profile',
+      'unexpected-control': 'value',
     });
   });
 

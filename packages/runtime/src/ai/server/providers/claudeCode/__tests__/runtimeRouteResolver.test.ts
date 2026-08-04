@@ -23,6 +23,7 @@ import {
   DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID,
   DEEPSEEK_V4_PRO_OPENROUTER_ENTRY_ID,
   LOCAL_PROXY_CREDENTIAL_REF,
+  OLLAMA_DEEPSEEK_V4_FLASH_0731_ENTRY_ID,
   OPENROUTER_API_CREDENTIAL_REF,
 } from "../providerCatalogDefaults";
 import {
@@ -189,6 +190,58 @@ describe("provider runtime route resolution", () => {
         (plan) => !plan.fallbackUsed
       )
     ).toBe(true);
+  });
+
+  it("keeps the account-proven Ollama Flash 0731 identity unavailable until its adapter is qualified", () => {
+    const error = captureRouteError(() =>
+      resolvePlan(OLLAMA_DEEPSEEK_V4_FLASH_0731_ENTRY_ID)
+    );
+    expect(error.code).toBe("adapter-required");
+    expect(error.message).toContain("catalog candidate");
+  });
+
+  it("enforces catalog control applicability at restored-turn resolution", () => {
+    const base = entry(DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID);
+    const restricted: ProviderCatalogEntry = {
+      ...base,
+      id: "deepseek-restart-restricted",
+      model: {
+        ...base.model,
+        persistedId: "claude-code:deepseek-restart-restricted",
+      },
+      controls: {
+        reasoning: {
+          ...base.controls.reasoning,
+          applicability: { launch: true, restart: false, midSession: true },
+        },
+      },
+    };
+    const restrictedResolution = resolveProviderCatalog(
+      [restricted],
+      undefined
+    );
+    const request = {
+      catalogEntryId: restricted.id,
+      persistedModelId: restricted.model.persistedId,
+      consumer: "claude-agent-main" as const,
+      persistedControls: { "reasoning-mode": "think-high" },
+      credentialReferences,
+    };
+
+    expect(
+      resolveProviderRuntimeLaunchPlan(restrictedResolution, {
+        ...request,
+        controlContext: "launch",
+      }).requested.controls
+    ).toEqual({ reasoning: "think-high" });
+    const restartError = captureRouteError(() =>
+      resolveProviderRuntimeLaunchPlan(restrictedResolution, {
+        ...request,
+        controlContext: "restart",
+      })
+    );
+    expect(restartError.code).toBe("invalid-controls");
+    expect(restartError.message).toContain("unavailable during restart");
   });
 
   it("maps Claudex Sol, Terra, and Luna identities and persisted effort", () => {
@@ -417,13 +470,17 @@ describe("provider runtime route resolution", () => {
     });
   });
 
-  it.each(["enabled", "disabled"] as const)(
-    "passes resolved thinking=%s into the actual managed-child query options",
-    async (thinkingMode) => {
+  it.each([
+    ["non-think", "disabled"],
+    ["think-high", "enabled"],
+    ["think-max", "enabled"],
+  ] as const)(
+    "passes reasoning profile %s as resolved thinking=%s into managed-child query options",
+    async (reasoningMode, thinkingMode) => {
       const plan = resolvePlan(
         DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID,
         "claude-subagent",
-        { "thinking-mode": thinkingMode }
+        { "reasoning-mode": reasoningMode }
       );
       const env: Record<string, string | undefined> = {};
       applyProviderRuntimeLaunchPlanEnv(env, plan, "confirmed-test-value");
@@ -519,7 +576,7 @@ describe("provider runtime route resolution", () => {
     const request = {
       catalogEntryId: catalogEntry.id,
       persistedModelId: catalogEntry.model.persistedId,
-      persistedControls: { "effort-level": "high" },
+      persistedControls: {},
       credentialReferences,
     };
     const plans = [

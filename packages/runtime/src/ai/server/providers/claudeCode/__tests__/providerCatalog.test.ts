@@ -20,6 +20,7 @@ import {
   DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID,
   DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID,
   DEEPSEEK_V4_PRO_OPENROUTER_ENTRY_ID,
+  OLLAMA_DEEPSEEK_V4_FLASH_0731_ENTRY_ID,
 } from "../providerCatalogDefaults";
 
 function makeEntry(
@@ -119,6 +120,67 @@ describe("provider catalog schema and merge", () => {
         windowPolicy: "runtime-then-model-seed",
       });
     }
+  });
+
+  it("keeps DeepSeek reasoning controls provider-scoped instead of inheriting unverified routes", () => {
+    const byId = new Map(
+      BUILT_IN_PROVIDER_CATALOG.map((entry) => [entry.id, entry])
+    );
+    const official = byId.get(DEEPSEEK_V4_PRO_OFFICIAL_ENTRY_ID)!;
+    expect(official.controls.reasoning).toMatchObject({
+      persistenceKey: "reasoning-mode",
+      allowedValues: ["non-think", "think-high", "think-max"],
+      defaultValue: "think-high",
+    });
+    expect(byId.get(DEEPSEEK_V4_PRO_OPENROUTER_ENTRY_ID)?.controls).toEqual({});
+    expect(
+      BUILT_IN_PROVIDER_CATALOG.find(
+        (entry) => entry.model.providerModelId === "deepseek-v4-pro:cloud"
+      )?.controls
+    ).toEqual({});
+  });
+
+  it("admits the dated Ollama Flash 0731 identity without inheriting preview metadata or controls", () => {
+    const resolution = resolveProviderCatalog(
+      BUILT_IN_PROVIDER_CATALOG,
+      undefined
+    );
+    const dated = resolveProviderCatalogSnapshot(
+      resolution,
+      OLLAMA_DEEPSEEK_V4_FLASH_0731_ENTRY_ID
+    );
+    const preview = BUILT_IN_PROVIDER_CATALOG.find(
+      (entry) => entry.model.providerModelId === "deepseek-v4-flash:cloud"
+    );
+
+    expect(dated).toMatchObject({
+      id: OLLAMA_DEEPSEEK_V4_FLASH_0731_ENTRY_ID,
+      provider: "ollama",
+      displayName: "DeepSeek V4 Flash 0731",
+      admission: {
+        state: "high-runner-candidate",
+        reasonCode: "proxy-alias-unqualified",
+      },
+      model: {
+        persistedId: "claude-code:ollama-deepseek-v4-flash-0731",
+        providerModelId: "deepseek-v4-flash:0731",
+        version: "deepseek-v4-flash:0731",
+      },
+      controls: {},
+      capabilities: {
+        mainSession: false,
+        subagent: false,
+        consultation: false,
+        tools: false,
+        vision: false,
+      },
+      interfaces: [],
+    });
+    expect(dated.model.contextWindowSeedTokens).toBeUndefined();
+    expect(dated.model.persistedId).not.toBe(preview?.model.persistedId);
+    expect(dated.model.providerModelId).not.toBe(
+      preview?.model.providerModelId
+    );
   });
 
   it.each([
@@ -683,6 +745,7 @@ describe("provider catalog schema and merge", () => {
         persistenceKey: "brain.effort",
         interfaceId: "claude-agent-proxy",
         target: "launch.effort-level",
+        operation: "set",
         value: "max",
       },
     ]);
@@ -701,6 +764,77 @@ describe("provider catalog schema and merge", () => {
       })
     ).toThrow("unsupported persisted value");
   });
+
+  it("resolves an explicit reviewed omit without inventing a sentinel value", () => {
+    const entry = makeEntry("controlled-omit", {
+      controls: {
+        reasoning: {
+          persistenceKey: "reasoning-mode",
+          allowedValues: ["non-think", "think-high"],
+          defaultValue: "think-high",
+          mappings: [
+            {
+              interfaceId: "claude-agent-proxy",
+              target: "request.output-config.effort",
+              values: [
+                { storedValue: "non-think", operation: "omit" },
+                { storedValue: "think-high", resolvedValue: "high" },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    const resolution = resolveProviderCatalog([entry], undefined);
+
+    expect(
+      resolveProviderCatalogRouteSnapshot(resolution, entry.id, {
+        "reasoning-mode": "non-think",
+      }).mappings
+    ).toEqual([
+      expect.objectContaining({
+        target: "request.output-config.effort",
+        operation: "omit",
+      }),
+    ]);
+  });
+
+  it.each([
+    { storedValue: "on" },
+    { storedValue: "on", resolvedValue: "high", operation: "omit" },
+    { storedValue: "on", operation: "drop" },
+  ])(
+    "rejects ambiguous or unsupported mapping operations: %j",
+    (mappedValue) => {
+      const entry = makeEntry("bad-mapping-operation");
+      const resolution = resolveProviderCatalog([entry], {
+        schemaVersion: PROVIDER_CATALOG_SCHEMA_VERSION,
+        entries: [
+          {
+            id: entry.id,
+            patch: {
+              controls: {
+                reasoning: {
+                  persistenceKey: "reasoning-mode",
+                  allowedValues: ["on"],
+                  defaultValue: "on",
+                  mappings: [
+                    {
+                      interfaceId: "claude-agent-proxy",
+                      target: "request.output-config.effort",
+                      values: [mappedValue as never],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      });
+      expect(resolution.entries).toEqual([]);
+      expect(resolution.errors).toMatchObject([{ code: "invalid-controls" }]);
+    }
+  );
 
   it("rejects unreviewed control mapping targets", () => {
     const entry = makeEntry("bad-control-target");
@@ -735,43 +869,80 @@ describe("provider catalog schema and merge", () => {
     ]);
   });
 
-  it("rejects duplicate interface-target ownership across controls", () => {
-    const entry = makeEntry("duplicate-control-target");
-    const mapping = (resolvedValue: string) => ({
-      interfaceId: "claude-agent-proxy" as const,
-      target: "launch.effort-level" as const,
-      values: [{ storedValue: "on", resolvedValue }],
-    });
-    const resolution = resolveProviderCatalog([entry], {
-      schemaVersion: PROVIDER_CATALOG_SCHEMA_VERSION,
-      entries: [
-        {
-          id: entry.id,
-          patch: {
-            controls: {
-              first: {
-                persistenceKey: "brain.first",
-                allowedValues: ["on"],
-                defaultValue: "on",
-                mappings: [mapping("low")],
-              },
-              second: {
-                persistenceKey: "brain.second",
-                allowedValues: ["on"],
-                defaultValue: "on",
-                mappings: [mapping("max")],
+  it.each([
+    [
+      "effort set/set",
+      "launch.effort-level",
+      "request.output-config.effort",
+      "low",
+      { storedValue: "on", resolvedValue: "max" },
+    ],
+    [
+      "effort set/omit",
+      "launch.effort-level",
+      "request.output-config.effort",
+      "low",
+      { storedValue: "on", operation: "omit" },
+    ],
+    [
+      "thinking set/set",
+      "launch.thinking-mode",
+      "request.thinking.type",
+      "disabled",
+      { storedValue: "on", resolvedValue: "enabled" },
+    ],
+  ] as const)(
+    "rejects canonical alias ownership collisions (%s)",
+    (_label, firstTarget, secondTarget, firstResolvedValue, secondValue) => {
+      const entry = makeEntry("duplicate-control-target");
+      const resolution = resolveProviderCatalog([entry], {
+        schemaVersion: PROVIDER_CATALOG_SCHEMA_VERSION,
+        entries: [
+          {
+            id: entry.id,
+            patch: {
+              controls: {
+                first: {
+                  persistenceKey: "brain.first",
+                  allowedValues: ["on"],
+                  defaultValue: "on",
+                  mappings: [
+                    {
+                      interfaceId: "claude-agent-proxy",
+                      target: firstTarget,
+                      values: [
+                        {
+                          storedValue: "on",
+                          resolvedValue: firstResolvedValue,
+                        },
+                      ],
+                    },
+                  ],
+                },
+                second: {
+                  persistenceKey: "brain.second",
+                  allowedValues: ["on"],
+                  defaultValue: "on",
+                  mappings: [
+                    {
+                      interfaceId: "claude-agent-proxy",
+                      target: secondTarget,
+                      values: [secondValue],
+                    },
+                  ],
+                },
               },
             },
           },
-        },
-      ],
-    });
+        ],
+      });
 
-    expect(resolution.entries).toEqual([]);
-    expect(resolution.errors).toMatchObject([
-      { scope: "entry", id: entry.id, code: "invalid-controls" },
-    ]);
-  });
+      expect(resolution.entries).toEqual([]);
+      expect(resolution.errors).toMatchObject([
+        { scope: "entry", id: entry.id, code: "invalid-controls" },
+      ]);
+    }
+  );
 
   it("encodes canonical harness, family, model, and provider leaf order", () => {
     const families = [

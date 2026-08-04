@@ -351,6 +351,151 @@ describe('AI model picker keyboard controls', () => {
     expect(screen.queryByTestId('catalog-control-effort-level')).toBeNull();
   });
 
+  it('renders and updates an arbitrary catalog reasoning control without hard-coded keys', async () => {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        aiGetModels: vi.fn().mockResolvedValue({
+          success: true,
+          grouped: {
+            'claude-code': [{
+              ...catalogModel('claude-code:deepseek-v4-pro', 'DeepSeek V4 Pro', {
+                selectable: true,
+                code: 'launchable',
+              }),
+              catalog: {
+                ...catalogModel('claude-code:deepseek-v4-pro', 'DeepSeek V4 Pro', {
+                  selectable: true,
+                  code: 'launchable',
+                }).catalog,
+                controls: [{
+                  id: 'reasoning',
+                  persistenceKey: 'reasoning-mode',
+                  displayLabel: 'Reasoning',
+                  helpText: 'DeepSeek reasoning profile.',
+                  allowedValues: ['non-think', 'think-high', 'think-max'],
+                  defaultValue: 'think-high',
+                  valueLabels: {
+                    '"non-think"': 'Non-think',
+                    '"think-high"': 'Think High',
+                    '"think-max"': 'Think Max',
+                  },
+                }],
+              },
+            }],
+          },
+        }),
+      },
+    });
+    const onCatalogControlValueChange = vi.fn();
+    const testStore = createStore();
+    render(
+      <Provider store={testStore}>
+        <AIInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          currentModel="claude-code:deepseek-v4-pro"
+          currentProvider="claude-code"
+          provider="claude-code"
+          onModelChange={() => {}}
+          catalogControlValues={{ 'reasoning-mode': 'invalid-persisted-value' }}
+          onCatalogControlValueChange={onCatalogControlValueChange}
+        />
+      </Provider>,
+    );
+
+    const trigger = await screen.findByTestId('catalog-control-reasoning-mode');
+    expect(trigger.getAttribute('aria-label')).toBe('Reasoning: Unavailable');
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole('option', { name: 'Think Max' }));
+    expect(onCatalogControlValueChange).toHaveBeenCalledWith('reasoning-mode', 'think-max');
+  });
+
+  it('renders four model-owned pills in projected order with declared widths', async () => {
+    const controls = [
+      ['temperature-shape', 'Temperature shape', 'wide'],
+      ['thinking-depth', 'Thinking depth', 'compact'],
+      ['tool-policy', 'Tool policy', 'standard'],
+      ['answer-style', 'Answer style', 'compact'],
+    ].map(([persistenceKey, displayLabel, width], order) => ({
+      id: `control-${order}`,
+      persistenceKey,
+      order,
+      width,
+      displayLabel,
+      helpText: `${displayLabel} help.`,
+      allowedValues: ['default'],
+      defaultValue: 'default',
+      valueLabels: { '"default"': 'Default' },
+      applicability: { launch: order !== 2, restart: true, midSession: true },
+    }));
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        aiGetModels: vi.fn().mockResolvedValue({
+          success: true,
+          grouped: {
+            'claude-code': [{
+              ...catalogModel('claude-code:deepseek-v4-pro', 'Four Controls', {
+                selectable: true,
+                code: 'launchable',
+              }),
+              catalog: {
+                ...catalogModel('claude-code:deepseek-v4-pro', 'Four Controls', {
+                  selectable: true,
+                  code: 'launchable',
+                }).catalog,
+                controls,
+              },
+            }],
+          },
+        }),
+        invoke: vi.fn().mockResolvedValue({
+          actions: [],
+          diagnostics: [],
+          filePath: null,
+          fileExists: false,
+        }),
+      },
+    });
+    const testStore = createStore();
+    render(
+      <Provider store={testStore}>
+        <AIInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          currentModel="claude-code:deepseek-v4-pro"
+          currentProvider="claude-code"
+          provider="claude-code"
+          workspacePath="/workspace"
+          catalogControlContext="launch"
+          onModelChange={() => {}}
+          onCatalogControlValueChange={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByTestId('catalog-control-temperature-shape');
+    const projected = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-component="CatalogControlSelector"]'),
+    ).map(node => ({
+      key: node.dataset.controlKey,
+      width: node.dataset.controlWidth,
+    }));
+    expect(projected).toEqual([
+      { key: 'temperature-shape', width: 'wide' },
+      { key: 'thinking-depth', width: 'compact' },
+      { key: 'tool-policy', width: 'standard' },
+      { key: 'answer-style', width: 'compact' },
+    ]);
+    expect(screen.getByTestId('action-prompts-dropdown')).toBeTruthy();
+    expect((screen.getByTestId('catalog-control-tool-policy') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('catalog-control-temperature-shape') as HTMLButtonElement).disabled).toBe(false);
+    expect(document.querySelector('[data-component="CatalogControlSelector"] [data-testid="action-prompts-dropdown"]')).toBeNull();
+  });
+
   it('keeps unavailable catalog rows inspectable but out of selection and keyboard navigation', async () => {
     Object.defineProperty(window, 'electronAPI', {
       configurable: true,

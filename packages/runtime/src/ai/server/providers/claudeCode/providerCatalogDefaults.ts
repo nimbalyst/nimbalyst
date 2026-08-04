@@ -63,6 +63,8 @@ export const DEEPSEEK_V4_FLASH_OFFICIAL_ENTRY_ID = "deepseek-v4-flash-official";
 export const DEEPSEEK_V4_PRO_OPENROUTER_ENTRY_ID = "deepseek-v4-pro-openrouter";
 export const DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID =
   "deepseek-v4-flash-openrouter";
+export const OLLAMA_DEEPSEEK_V4_FLASH_0731_ENTRY_ID =
+  "ollama-deepseek-v4-flash-0731";
 
 const FAMILY_ORDER: Readonly<Record<string, number>> = {
   native: 10,
@@ -85,12 +87,18 @@ function createOllamaCatalogEntry(options: {
   modelAlias: string;
   family: string;
   displayName: string;
+  /** null keeps an unqualified model's context cap explicitly unknown. */
+  contextWindowSeedTokens?: number | null;
 }): ProviderCatalogEntry {
-  const contextWindowSeedTokens = options.providerModelId.includes(
+  const inferredContextWindowSeedTokens = options.providerModelId.includes(
     "deepseek-v4-pro"
   )
     ? DEEPSEEK_PRO_CONTEXT_WINDOW_SEED_TOKENS
     : DEFAULT_PROXY_CONTEXT_WINDOW_SEED_TOKENS;
+  const contextWindowSeedTokens =
+    options.contextWindowSeedTokens === null
+      ? undefined
+      : options.contextWindowSeedTokens ?? inferredContextWindowSeedTokens;
   return {
     id: options.id,
     provider: "ollama",
@@ -107,7 +115,9 @@ function createOllamaCatalogEntry(options: {
       providerModelId: options.providerModelId,
       upstreamModel: options.upstreamModel,
       version: options.providerModelId,
-      contextWindowSeedTokens,
+      ...(contextWindowSeedTokens === undefined
+        ? {}
+        : { contextWindowSeedTokens }),
     },
     capabilities: {
       mainSession: true,
@@ -214,6 +224,8 @@ function createEffortControl(
   return {
     effort: {
       persistenceKey: "effort-level",
+      order: 0,
+      width: "compact",
       displayLabel: "Effort",
       helpText: "Controls how much reasoning effort this model may use.",
       valueLabels: { '"high"': "High", '"max"': "Max" },
@@ -233,25 +245,40 @@ function createEffortControl(
   };
 }
 
-function createDeepSeekControls(
+function createDeepSeekOfficialControls(
   interfaceId: string
 ): ProviderCatalogEntry["controls"] {
   return {
-    ...createEffortControl(interfaceId),
-    thinking: {
-      persistenceKey: "thinking-mode",
-      displayLabel: "Thinking",
-      helpText: "Turns the model's reviewed thinking mode on or off.",
-      valueLabels: { '"enabled"': "On", '"disabled"': "Off" },
-      allowedValues: ["enabled", "disabled"],
-      defaultValue: "enabled",
+    reasoning: {
+      persistenceKey: "reasoning-mode",
+      order: 0,
+      width: "standard",
+      displayLabel: "Thinking effort",
+      helpText: "Select the reviewed DeepSeek reasoning profile.",
+      valueLabels: {
+        '"non-think"': "None",
+        '"think-high"': "High",
+        '"think-max"': "Max",
+      },
+      allowedValues: ["non-think", "think-high", "think-max"],
+      defaultValue: "think-high",
       mappings: [
         {
           interfaceId,
-          target: "launch.thinking-mode",
+          target: "request.thinking.type",
           values: [
-            { storedValue: "enabled", resolvedValue: "enabled" },
-            { storedValue: "disabled", resolvedValue: "disabled" },
+            { storedValue: "non-think", resolvedValue: "disabled" },
+            { storedValue: "think-high", resolvedValue: "enabled" },
+            { storedValue: "think-max", resolvedValue: "enabled" },
+          ],
+        },
+        {
+          interfaceId,
+          target: "request.output-config.effort",
+          values: [
+            { storedValue: "non-think", operation: "omit" },
+            { storedValue: "think-high", resolvedValue: "high" },
+            { storedValue: "think-max", resolvedValue: "max" },
           ],
         },
       ],
@@ -287,6 +314,34 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     family: "nemotron",
     displayName: "Nemotron 3 Nano 30B",
   }),
+  {
+    id: OLLAMA_DEEPSEEK_V4_FLASH_0731_ENTRY_ID,
+    provider: "ollama",
+    providerDisplayName: "Ollama Cloud",
+    harness: { id: "claude-agent", order: 10 },
+    family: { id: "deepseek", order: FAMILY_ORDER.deepseek },
+    displayName: "DeepSeek V4 Flash 0731",
+    admission: {
+      state: "high-runner-candidate",
+      reasonCode: "proxy-alias-unqualified",
+    },
+    model: {
+      persistedId: "claude-code:ollama-deepseek-v4-flash-0731",
+      persistedIdNamespace: "claude-code:ollama-",
+      providerModelId: "deepseek-v4-flash:0731",
+      upstreamModel: "openai/deepseek-v4-flash:0731",
+      version: "deepseek-v4-flash:0731",
+    },
+    capabilities: {
+      mainSession: false,
+      subagent: false,
+      consultation: false,
+      tools: false,
+      vision: false,
+    },
+    interfaces: [],
+    controls: {},
+  },
   createOllamaCatalogEntry({
     id: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_VARIANT,
     persistedId: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_MODEL,
@@ -420,7 +475,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     endpoint: "https://api.deepseek.com/anthropic",
     credentialRef: DEEPSEEK_API_CREDENTIAL_REF,
     contextWindowSeedTokens: DEEPSEEK_PRO_CONTEXT_WINDOW_SEED_TOKENS,
-    controls: createDeepSeekControls("claude-agent-anthropic"),
+    controls: createDeepSeekOfficialControls("claude-agent-anthropic"),
     displayName: "DeepSeek v4 Pro",
     providerDisplayName: "DeepSeek API",
   }),
@@ -434,7 +489,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     endpoint: "https://api.deepseek.com/anthropic",
     credentialRef: DEEPSEEK_API_CREDENTIAL_REF,
     contextWindowSeedTokens: DEFAULT_PROXY_CONTEXT_WINDOW_SEED_TOKENS,
-    controls: createDeepSeekControls("claude-agent-anthropic"),
+    controls: createDeepSeekOfficialControls("claude-agent-anthropic"),
     displayName: "DeepSeek v4 Flash",
     providerDisplayName: "DeepSeek API",
   }),
@@ -448,7 +503,9 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     endpoint: "https://openrouter.ai/api",
     credentialRef: OPENROUTER_API_CREDENTIAL_REF,
     contextWindowSeedTokens: DEEPSEEK_PRO_CONTEXT_WINDOW_SEED_TOKENS,
-    controls: createDeepSeekControls("claude-agent-anthropic"),
+    // OpenRouter's exact reasoning transport contract is not established by
+    // the admitted provider evidence. Do not inherit the first-party mapping.
+    controls: {},
     displayName: "DeepSeek v4 Pro",
     providerDisplayName: "OpenRouter",
   }),
@@ -462,7 +519,7 @@ export const BUILT_IN_PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     endpoint: "https://openrouter.ai/api",
     credentialRef: OPENROUTER_API_CREDENTIAL_REF,
     contextWindowSeedTokens: DEFAULT_PROXY_CONTEXT_WINDOW_SEED_TOKENS,
-    controls: createDeepSeekControls("claude-agent-anthropic"),
+    controls: {},
     displayName: "DeepSeek v4 Flash",
     providerDisplayName: "OpenRouter",
   }),

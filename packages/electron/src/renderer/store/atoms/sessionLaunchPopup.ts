@@ -11,6 +11,7 @@ export interface SessionLaunchDraft {
   effortLevel: EffortLevel | null;
   /** null means "use the app-wide default" (GitHub #1034). */
   thinkingMode: ThinkingMode | null;
+  catalogControlValues: Readonly<Record<string, unknown>>;
   pendingSessionId: string | null;
 }
 
@@ -22,6 +23,7 @@ export function createEmptySessionLaunchDraft(): SessionLaunchDraft {
     mode: 'agent',
     effortLevel: null,
     thinkingMode: null,
+    catalogControlValues: {},
     pendingSessionId: null,
   };
 }

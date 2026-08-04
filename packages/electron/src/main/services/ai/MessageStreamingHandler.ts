@@ -49,6 +49,7 @@ import { AISessionsRepository, resolveClaudeCodeParentContextWindow } from '@nim
 import { toolRegistry } from './tools';
 import { resolveExtensionAgentRef } from './providerResolution';
 import { createQueuedStreamTruthBinder } from './queuedPromptTruth';
+import { resolveClaudeCodeCatalogControlContext } from './ClaudeCodeTurnLifecycle';
 import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
 
 /**
@@ -894,6 +895,7 @@ export class MessageStreamingHandler {
       }
 
       const reinitEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+      const reinitCatalogControlValues = (session.metadata as any)?.catalogControlValues;
       const reinitConfig: any = {
         apiKey,
         maxTokens: (session.providerConfig as any)?.maxTokens,
@@ -901,6 +903,11 @@ export class MessageStreamingHandler {
         // Effort level: explicit session value, else the app-wide default the
         // selector displays (Opus 4.6 adaptive reasoning).
         ...(reinitEffortLevel && { effortLevel: reinitEffortLevel }),
+        ...(reinitCatalogControlValues
+          && typeof reinitCatalogControlValues === 'object'
+          && !Array.isArray(reinitCatalogControlValues)
+          ? { catalogControlValues: reinitCatalogControlValues }
+          : {}),
         ...(isProviderClaudeCode ? {
           thinkingMode: resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode()),
         } : {}),
@@ -1550,6 +1557,7 @@ export class MessageStreamingHandler {
       if (isClaudeCode) {
         // Refresh provider config every turn so auth/key changes in settings apply immediately.
         const refreshedConfig = await this.svc.buildClaudeCodeRuntimeConfig(session, effectiveWorkspacePath);
+        refreshedConfig.catalogControlContext = resolveClaudeCodeCatalogControlContext(provider, session);
         await provider.initialize(refreshedConfig);
 
         //   messageLength: message.length,

@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Added a `Claude agent - DeepSeek` model with High/Max effort and reasoning controls.
+- Added up to four ordered, provider-scoped catalog controls per model, including DeepSeek Thinking effort (None/High/Max), fail-closed request mappings, and the distinct Ollama DeepSeek V4 Flash 0731 route.
 
 - Fixed delayed queued prompts after a long-running session's original window closes or reloads.
 

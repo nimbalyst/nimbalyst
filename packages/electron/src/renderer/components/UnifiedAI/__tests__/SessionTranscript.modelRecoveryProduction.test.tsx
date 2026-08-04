@@ -660,9 +660,21 @@ describe("SessionTranscript mounted production model-recovery seam", () => {
       "ai:cancelRequest",
       "sessions:update-metadata",
     ]);
-    const mutationCallsBefore = invoke.mock.calls.filter(([channel]) =>
-      mutationChannels.has(channel)
-    );
+    const surfaceMutationCalls = () =>
+      invoke.mock.calls.filter(([channel, , updates]) => {
+        if (!mutationChannels.has(channel)) return false;
+        if (channel !== "sessions:update-metadata") return true;
+        const metadata = (updates as { metadata?: Record<string, unknown> })
+          ?.metadata;
+        return (
+          !metadata ||
+          !Object.prototype.hasOwnProperty.call(
+            metadata,
+            "modelChangeReconciliation"
+          )
+        );
+      });
+    const mutationCallsBefore = surfaceMutationCalls();
 
     await act(async () => {
       Array.from(blockedButtons).forEach((button) => fireEvent.click(button));
@@ -686,9 +698,7 @@ describe("SessionTranscript mounted production model-recovery seam", () => {
       await Promise.resolve();
     });
 
-    expect(
-      invoke.mock.calls.filter(([channel]) => mutationChannels.has(channel))
-    ).toEqual(mutationCallsBefore);
+    expect(surfaceMutationCalls()).toEqual(mutationCallsBefore);
     expect(screen.queryByRole("menu")).toBeNull();
     expect(store.get(sessionQueuedPromptsAtom("blocked"))).toEqual(
       durableQueueBefore
@@ -988,6 +998,14 @@ describe("SessionTranscript mounted production model-recovery seam", () => {
       provider: "claude-code",
       queue: false,
     });
+    const otherSeed = store.get(sessionStoreAtom("other-production"))!;
+    store.set(sessionStoreAtom("other-production"), {
+      ...otherSeed,
+      metadata: {
+        ...(otherSeed.metadata as Record<string, unknown>),
+        catalogControlValues: { "unexpected-control": "value" },
+      },
+    } as never);
 
     let allowRecovery = false;
     let releaseDelayed!: () => void;
@@ -1369,6 +1387,18 @@ describe("SessionTranscript mounted production model-recovery seam", () => {
         (button) => button.textContent === "Max"
       )!
     );
+    await waitFor(() => {
+      const write = successfulMetadataWrites
+        .filter(({ sessionId }) => sessionId === "other-production")
+        .at(-1);
+      expect(
+        (write?.updates.metadata as Record<string, unknown>)
+          ?.catalogControlValues
+      ).toMatchObject({
+        "unexpected-control": "value",
+        "effort-level": "max",
+      });
+    });
 
     fireEvent.click(otherThinking);
     const thinkingMenu = await screen.findByTestId(

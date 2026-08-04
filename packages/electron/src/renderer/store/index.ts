@@ -128,6 +128,7 @@ export {
   sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
   sessionThinkingModeRawAtom,
+  sessionCatalogControlValuesRawAtom,
   sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,

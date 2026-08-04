@@ -1,4 +1,5 @@
 import {
+  PROVIDER_CATALOG_RESOLUTION,
   resolveClaudeCodeBackend,
   type AIProvider,
 } from '@nimbalyst/runtime/ai/server';
@@ -7,6 +8,7 @@ import {
   type ProviderConfig,
   type SessionData,
 } from '@nimbalyst/runtime/ai/server/types';
+import type { ProviderCatalogControlContext } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalog';
 import {
   resolveEffortLevel,
   resolveThinkingMode,
@@ -45,6 +47,7 @@ type ResumableProvider = AIProvider & {
 export async function buildClaudeCodeRuntimeConfigForTurn(
   session: SessionData,
   apiKey?: string,
+  catalogControlContext: ProviderCatalogControlContext = session.providerSessionId ? 'restart' : 'launch',
 ): Promise<ProviderConfig> {
   const snapshotModel = session.model || session.providerConfig?.model;
   const route = await resolveClaudeCodeSessionRoute(
@@ -73,6 +76,32 @@ export async function buildClaudeCodeRuntimeConfigForTurn(
     }
   }
 
+  const catalogEntry = PROVIDER_CATALOG_RESOLUTION.entries.find(
+    (entry) => entry.model.persistedId === runtimeModel,
+  );
+  const persistedControlKeys = new Set(
+    catalogEntry ? Object.values(catalogEntry.controls).map((control) => control.persistenceKey) : [],
+  );
+  const storedCatalogControlValues = metadata?.catalogControlValues
+    && typeof metadata.catalogControlValues === 'object'
+    && !Array.isArray(metadata.catalogControlValues)
+      ? metadata.catalogControlValues as Readonly<Record<string, unknown>>
+      : {};
+  const catalogControlValues: Readonly<Record<string, unknown>> | undefined = catalogEntry
+    ? {
+        ...storedCatalogControlValues,
+        ...(!Object.prototype.hasOwnProperty.call(storedCatalogControlValues, 'effort-level')
+          && persistedControlKeys.has('effort-level')
+          && metadata?.effortLevel != null
+          ? { 'effort-level': metadata.effortLevel }
+          : {}),
+        ...(!Object.prototype.hasOwnProperty.call(storedCatalogControlValues, 'thinking-mode')
+          && persistedControlKeys.has('thinking-mode')
+          && metadata?.thinkingMode != null
+          ? { 'thinking-mode': metadata.thinkingMode }
+          : {}),
+      }
+    : undefined;
   const effortLevel = backend
     ? undefined
     : resolveEffortLevel(metadata?.effortLevel, getDefaultEffortLevel());
@@ -82,6 +111,8 @@ export async function buildClaudeCodeRuntimeConfigForTurn(
     temperature: (session.providerConfig as any)?.temperature,
     ...(!backend && apiKey ? { apiKey } : {}),
     ...(effortLevel && { effortLevel }),
+    ...(catalogControlValues ? { catalogControlValues } : {}),
+    catalogControlContext,
     ...(!backend
       ? { thinkingMode: resolveThinkingMode(metadata?.thinkingMode, getDefaultThinkingMode()) }
       : { claudeCodeBackend: backend.id }),
@@ -111,9 +142,11 @@ export async function buildClaudeCodeRuntimeConfigForTurn(
 export async function prepareClaudeCodeProviderTurn(
   provider: AIProvider,
   session: SessionData,
-  buildRuntimeConfig: () => Promise<ProviderConfig>,
+  buildRuntimeConfig: (context: ProviderCatalogControlContext) => Promise<ProviderConfig>,
 ): Promise<ProviderConfig> {
-  const config = await buildRuntimeConfig();
+  const catalogControlContext = resolveClaudeCodeCatalogControlContext(provider, session);
+  const config = await buildRuntimeConfig(catalogControlContext);
+  config.catalogControlContext = catalogControlContext;
   await provider.initialize(config);
 
   if (session.providerSessionId) {
@@ -140,4 +173,14 @@ export async function prepareClaudeCodeProviderTurn(
   }
 
   return config;
+}
+
+export function resolveClaudeCodeCatalogControlContext(
+  provider: AIProvider,
+  session: SessionData,
+): ProviderCatalogControlContext {
+  if (!session.providerSessionId) return 'launch';
+  const restored = (provider as ResumableProvider).getProviderSessionData?.(session.id);
+  const restoredId = restored?.providerSessionId ?? restored?.claudeSessionId;
+  return restoredId === session.providerSessionId ? 'midSession' : 'restart';
 }

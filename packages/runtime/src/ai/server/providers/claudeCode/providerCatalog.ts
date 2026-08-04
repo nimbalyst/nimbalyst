@@ -20,17 +20,30 @@ export type ProviderCatalogConsumer =
   | "consultation";
 
 export type ProviderCatalogControlValue = string | number | boolean;
+export type ProviderCatalogControlWidth = "compact" | "standard" | "wide";
+
+export interface ProviderCatalogControlApplicability {
+  launch: boolean;
+  restart: boolean;
+  midSession: boolean;
+}
+
+export type ProviderCatalogControlContext =
+  keyof ProviderCatalogControlApplicability;
 
 export type ProviderCatalogControlTarget =
   | "launch.context-window"
   | "launch.effort-level"
   | "launch.thinking-mode"
   | "interface.model-profile"
-  | "interface.reasoning-mode";
+  | "interface.reasoning-mode"
+  | "request.thinking.type"
+  | "request.output-config.effort";
 
 export interface ProviderCatalogControlMappingValue {
   storedValue: ProviderCatalogControlValue;
-  resolvedValue: ProviderCatalogControlValue;
+  resolvedValue?: ProviderCatalogControlValue;
+  operation?: "omit";
 }
 
 export interface ProviderCatalogControlMapping {
@@ -41,6 +54,12 @@ export interface ProviderCatalogControlMapping {
 
 export interface ProviderCatalogControl {
   persistenceKey: string;
+  /** Declared visual order after the model picker. Defaults to source order. */
+  order?: number;
+  /** Optional model-owned pill width preset. */
+  width?: ProviderCatalogControlWidth;
+  /** Contexts in which the user may change this persisted control. */
+  applicability?: ProviderCatalogControlApplicability;
   /** Safe renderer-owned label for the generic catalog control surface. */
   displayLabel?: string;
   /** Safe accessible help text; never contains route or credential material. */
@@ -58,6 +77,13 @@ export interface ProviderCatalogCapabilities {
   consultation: boolean;
   tools: boolean;
   vision: boolean;
+}
+
+export interface ProviderCatalogAdmission {
+  /** Candidate rows are visible catalog identities but have no launch route. */
+  state: "launchable" | "high-runner-candidate";
+  /** Stable, non-secret qualification reason for a non-launchable candidate. */
+  reasonCode?: string;
 }
 
 export interface ProviderCatalogModel {
@@ -104,6 +130,7 @@ export interface ProviderCatalogEntry {
   harness: ProviderCatalogOrderedIdentity;
   family: ProviderCatalogOrderedIdentity;
   displayName: string;
+  admission?: ProviderCatalogAdmission;
   model: ProviderCatalogModel;
   capabilities: ProviderCatalogCapabilities;
   interfaces: readonly ProviderCatalogInterface[];
@@ -115,6 +142,7 @@ export interface ProviderCatalogEntryPatch {
   harness?: Partial<ProviderCatalogOrderedIdentity>;
   family?: Partial<ProviderCatalogOrderedIdentity>;
   displayName?: string;
+  admission?: ProviderCatalogAdmission;
   model?: Partial<ProviderCatalogModel>;
   capabilities?: Partial<ProviderCatalogCapabilities>;
   interfaces?: readonly ProviderCatalogInterface[];
@@ -179,13 +207,27 @@ export interface ProviderCatalogResolvedControlMapping {
   persistenceKey: string;
   interfaceId: string;
   target: ProviderCatalogControlTarget;
-  value: ProviderCatalogControlValue;
+  value?: ProviderCatalogControlValue;
+  operation: "set" | "omit";
 }
 
 export interface ProviderCatalogRouteSnapshot {
   entry: Readonly<ProviderCatalogEntry>;
   controlValues: Readonly<Record<string, ProviderCatalogControlValue>>;
   mappings: readonly ProviderCatalogResolvedControlMapping[];
+}
+
+function canonicalControlTarget(target: ProviderCatalogControlTarget): string {
+  if (
+    target === "launch.effort-level" ||
+    target === "request.output-config.effort"
+  ) {
+    return "wire.output-config.effort";
+  }
+  if (target === "launch.thinking-mode" || target === "request.thinking.type") {
+    return "wire.thinking.type";
+  }
+  return target;
 }
 
 export interface NormalizedProviderCatalog {
@@ -200,6 +242,7 @@ const ENTRY_KEYS = new Set([
   "harness",
   "family",
   "displayName",
+  "admission",
   "model",
   "capabilities",
   "interfaces",
@@ -207,6 +250,7 @@ const ENTRY_KEYS = new Set([
 ]);
 const PATCH_KEYS = new Set([...ENTRY_KEYS].filter((key) => key !== "id"));
 const ORDERED_IDENTITY_KEYS = new Set(["id", "order"]);
+const ADMISSION_KEYS = new Set(["state", "reasonCode"]);
 const MODEL_KEYS = new Set([
   "persistedId",
   "persistedIdNamespace",
@@ -238,6 +282,9 @@ const INTERFACE_KEYS = new Set([
 const CONTEXT_TELEMETRY_KEYS = new Set(["adapterId", "windowPolicy"]);
 const CONTROL_KEYS = new Set([
   "persistenceKey",
+  "order",
+  "width",
+  "applicability",
   "displayLabel",
   "helpText",
   "valueLabels",
@@ -245,8 +292,18 @@ const CONTROL_KEYS = new Set([
   "defaultValue",
   "mappings",
 ]);
+const CONTROL_APPLICABILITY_KEYS = new Set(["launch", "restart", "midSession"]);
+const CONTROL_WIDTHS = new Set<ProviderCatalogControlWidth>([
+  "compact",
+  "standard",
+  "wide",
+]);
 const CONTROL_MAPPING_KEYS = new Set(["interfaceId", "target", "values"]);
-const CONTROL_MAPPING_VALUE_KEYS = new Set(["storedValue", "resolvedValue"]);
+const CONTROL_MAPPING_VALUE_KEYS = new Set([
+  "storedValue",
+  "resolvedValue",
+  "operation",
+]);
 const OVERLAY_KEYS = new Set(["schemaVersion", "entries", "migration"]);
 const OVERLAY_ENTRY_KEYS = new Set(["id", "disabled", "patch"]);
 const MIGRATION_KEYS = new Set(["source", "sourceSchemaVersion", "errors"]);
@@ -306,6 +363,8 @@ const CONTROL_TARGETS = new Set<ProviderCatalogControlTarget>([
   "launch.thinking-mode",
   "interface.model-profile",
   "interface.reasoning-mode",
+  "request.thinking.type",
+  "request.output-config.effort",
 ]);
 const CATALOG_PERSISTED_ID_NAMESPACES = new Set([
   "claude-code:claudex-",
@@ -595,9 +654,18 @@ function validateControls(
       id
     );
   }
+  const controlEntries = Object.entries(value);
+  if (controlEntries.length > 4) {
+    return makeError(
+      "invalid-controls",
+      `${id} declares ${controlEntries.length} controls; at most four model-owned controls are supported.`,
+      id
+    );
+  }
   const persistenceKeys = new Set<string>();
+  const controlOrders = new Set<number>();
   const ownedMappingTargets = new Set<string>();
-  for (const [controlId, control] of Object.entries(value)) {
+  for (const [sourceIndex, [controlId, control]] of controlEntries.entries()) {
     if (
       !isStableId(controlId) ||
       !isRecord(control) ||
@@ -613,7 +681,21 @@ function validateControls(
     const defaultValue = control.defaultValue;
     const persistenceKey = control.persistenceKey;
     const mappings = control.mappings;
+    const resolvedOrder = control.order ?? sourceIndex;
     if (
+      !Number.isSafeInteger(resolvedOrder) ||
+      (resolvedOrder as number) < 0 ||
+      controlOrders.has(resolvedOrder as number) ||
+      (control.width !== undefined &&
+        !CONTROL_WIDTHS.has(control.width as ProviderCatalogControlWidth)) ||
+      (control.applicability !== undefined &&
+        (!isRecord(control.applicability) ||
+          !hasOnlyKeys(control.applicability, CONTROL_APPLICABILITY_KEYS) ||
+          !["launch", "restart", "midSession"].every(
+            (key) =>
+              typeof (control.applicability as Record<string, unknown>)[key] ===
+              "boolean"
+          ))) ||
       (control.displayLabel !== undefined &&
         !isNonEmptyString(control.displayLabel)) ||
       (control.helpText !== undefined && !isNonEmptyString(control.helpText)) ||
@@ -627,6 +709,7 @@ function validateControls(
         id
       );
     }
+    controlOrders.add(resolvedOrder as number);
     if (
       !isNonEmptyString(persistenceKey) ||
       !PERSISTENCE_KEY_PATTERN.test(persistenceKey) ||
@@ -708,7 +791,9 @@ function validateControls(
           id
         );
       }
-      const mappingTarget = `${mapping.interfaceId}:${mapping.target}`;
+      const mappingTarget = `${mapping.interfaceId}:${canonicalControlTarget(
+        mapping.target as ProviderCatalogControlTarget
+      )}`;
       if (ownedMappingTargets.has(mappingTarget)) {
         return makeError(
           "invalid-controls",
@@ -723,7 +808,12 @@ function validateControls(
           !isRecord(mappedValue) ||
           !hasOnlyKeys(mappedValue, CONTROL_MAPPING_VALUE_KEYS) ||
           !isControlValue(mappedValue.storedValue) ||
-          !isControlValue(mappedValue.resolvedValue) ||
+          !(
+            (isControlValue(mappedValue.resolvedValue) &&
+              mappedValue.operation === undefined) ||
+            (mappedValue.resolvedValue === undefined &&
+              mappedValue.operation === "omit")
+          ) ||
           !allowedValues.some((candidate) =>
             Object.is(candidate, mappedValue.storedValue)
           )
@@ -907,6 +997,23 @@ export function validateProviderCatalogEntry(
   }
   const id = candidate.id;
   if (
+    candidate.admission !== undefined &&
+    (!isRecord(candidate.admission) ||
+      !hasOnlyKeys(candidate.admission, ADMISSION_KEYS) ||
+      (candidate.admission.state !== "launchable" &&
+        candidate.admission.state !== "high-runner-candidate") ||
+      (candidate.admission.state === "high-runner-candidate"
+        ? !isStableId(candidate.admission.reasonCode)
+        : candidate.admission.reasonCode !== undefined))
+  ) {
+    return makeError(
+      "invalid-entry",
+      `${id} has malformed admission metadata.`,
+      id
+    );
+  }
+  const admission = candidate.admission as ProviderCatalogAdmission | undefined;
+  if (
     !isStableId(candidate.provider) ||
     !isOrderedIdentity(candidate.harness) ||
     !isOrderedIdentity(candidate.family) ||
@@ -947,10 +1054,15 @@ export function validateProviderCatalogEntry(
   }
   const capabilitiesError = validateCapabilities(candidate.capabilities, id);
   if (capabilitiesError) return capabilitiesError;
-  if (
-    !Array.isArray(candidate.interfaces) ||
-    candidate.interfaces.length === 0
-  ) {
+  if (!Array.isArray(candidate.interfaces)) {
+    return makeError(
+      "unsupported-interface",
+      `${id} must declare an interface.`,
+      id
+    );
+  }
+  const isCandidate = admission?.state === "high-runner-candidate";
+  if (candidate.interfaces.length === 0 && !isCandidate) {
     return makeError(
       "unsupported-interface",
       `${id} must declare an interface.`,
@@ -1023,11 +1135,27 @@ export function validateProviderCatalogEntry(
 function normalizeEntry(entry: ProviderCatalogEntry): ProviderCatalogEntry {
   const normalizedControls = Object.fromEntries(
     Object.entries(entry.controls)
-      .sort(([left], [right]) => compareStableStrings(left, right))
-      .map(([controlId, control]) => [
+      .map(([controlId, control], sourceIndex) => ({
+        controlId,
+        control,
+        order: control.order ?? sourceIndex,
+      }))
+      .sort(
+        (left, right) =>
+          left.order - right.order ||
+          compareStableStrings(left.controlId, right.controlId)
+      )
+      .map(({ controlId, control, order }) => [
         controlId,
         {
           persistenceKey: control.persistenceKey,
+          order,
+          width: control.width ?? "standard",
+          applicability: control.applicability ?? {
+            launch: true,
+            restart: true,
+            midSession: true,
+          },
           ...(control.displayLabel === undefined
             ? {}
             : { displayLabel: control.displayLabel }),
@@ -1050,7 +1178,9 @@ function normalizeEntry(entry: ProviderCatalogEntry): ProviderCatalogEntry {
               target: mapping.target,
               values: mapping.values.map((value) => ({
                 storedValue: value.storedValue,
-                resolvedValue: value.resolvedValue,
+                ...(value.operation === "omit"
+                  ? { operation: "omit" as const }
+                  : { resolvedValue: value.resolvedValue }),
               })),
             })),
         },
@@ -1065,6 +1195,16 @@ function normalizeEntry(entry: ProviderCatalogEntry): ProviderCatalogEntry {
     harness: { id: entry.harness.id, order: entry.harness.order },
     family: { id: entry.family.id, order: entry.family.order },
     displayName: entry.displayName,
+    ...(entry.admission === undefined
+      ? {}
+      : {
+          admission: {
+            state: entry.admission.state,
+            ...(entry.admission.reasonCode === undefined
+              ? {}
+              : { reasonCode: entry.admission.reasonCode }),
+          },
+        }),
     model: {
       persistedId: entry.model.persistedId,
       persistedIdNamespace: entry.model.persistedIdNamespace,
@@ -1493,7 +1633,7 @@ export function resolveProviderCatalogSnapshot(
 export function resolveProviderCatalogRouteSnapshot(
   resolution: ProviderCatalogResolution,
   id: string,
-  storedControls: Readonly<Record<string, ProviderCatalogControlValue>> = {}
+  storedControls: Readonly<Record<string, unknown>> = {}
 ): Readonly<ProviderCatalogRouteSnapshot> {
   const entry = resolveProviderCatalogSnapshot(resolution, id);
   const controlsByPersistenceKey = new Map(
@@ -1529,7 +1669,7 @@ export function resolveProviderCatalogRouteSnapshot(
         `Provider catalog entry ${id} control ${controlId} received an unsupported persisted value.`
       );
     }
-    controlValues[controlId] = storedValue;
+    controlValues[controlId] = storedValue as ProviderCatalogControlValue;
     for (const mapping of control.mappings) {
       const mappedValue = mapping.values.find((candidate) =>
         Object.is(candidate.storedValue, storedValue)
@@ -1539,7 +1679,9 @@ export function resolveProviderCatalogRouteSnapshot(
           `Provider catalog entry ${id} control ${controlId} has no reviewed mapping for its value.`
         );
       }
-      const resolvedTarget = `${mapping.interfaceId}:${mapping.target}`;
+      const resolvedTarget = `${mapping.interfaceId}:${canonicalControlTarget(
+        mapping.target
+      )}`;
       if (resolvedTargets.has(resolvedTarget)) {
         throw new Error(
           `Provider catalog entry ${id} resolved duplicate ownership for interface target ${resolvedTarget}.`
@@ -1551,7 +1693,9 @@ export function resolveProviderCatalogRouteSnapshot(
         persistenceKey: control.persistenceKey,
         interfaceId: mapping.interfaceId,
         target: mapping.target,
-        value: mappedValue.resolvedValue,
+        ...(mappedValue.operation === "omit"
+          ? { operation: "omit" as const }
+          : { operation: "set" as const, value: mappedValue.resolvedValue }),
       });
     }
   }

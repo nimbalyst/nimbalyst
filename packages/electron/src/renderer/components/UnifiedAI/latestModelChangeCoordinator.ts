@@ -1,5 +1,11 @@
 import type { EffortLevel, ThinkingMode } from "../../utils/modelUtils";
 
+export interface SessionModelControls {
+  effortLevel: unknown;
+  thinkingMode: unknown;
+  catalogControlValues?: Readonly<Record<string, unknown>>;
+}
+
 export interface LatestModelChangeHooks<T> {
   apply: (value: T) => Promise<void>;
   commit: (value: T) => void;
@@ -9,14 +15,13 @@ export interface LatestModelChangeHooks<T> {
 export interface SessionModelChange {
   modelId: string;
   previousModel: string;
-  previousControls: {
-    effortLevel: unknown;
-    thinkingMode: unknown;
-  };
-  catalogControls: Readonly<{
-    effortLevel: EffortLevel | null;
-    thinkingMode: ThinkingMode | null;
-  }> | null;
+  previousControls: SessionModelControls;
+  catalogControls: Readonly<
+    SessionModelControls & {
+      effortLevel: EffortLevel | null;
+      thinkingMode: ThinkingMode | null;
+    }
+  > | null;
 }
 
 interface MutationResult {
@@ -30,15 +35,9 @@ const MODEL_CHANGE_RECONCILIATION_KEY = "modelChangeReconciliation";
 export interface DurableSessionModelChangeReconciliation {
   status: "pending";
   targetModel: string;
-  targetControls: {
-    effortLevel: unknown;
-    thinkingMode: unknown;
-  };
+  targetControls: SessionModelControls;
   previousModel: string;
-  previousControls: {
-    effortLevel: unknown;
-    thinkingMode: unknown;
-  };
+  previousControls: SessionModelControls;
 }
 
 function createDurableReconciliationMarker(
@@ -410,6 +409,7 @@ export function recoverSessionModelChangeTransaction(
     previousModel: marker.previousModel,
     previousControls: marker.previousControls,
     catalogControls: {
+      catalogControlValues: marker.previousControls.catalogControlValues ?? {},
       effortLevel:
         typeof marker.previousControls.effortLevel === "string"
           ? (marker.previousControls.effortLevel as EffortLevel)

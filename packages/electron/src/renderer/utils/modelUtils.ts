@@ -304,30 +304,76 @@ export interface CatalogReasoningControlDefinition {
   defaultValue: ProviderCatalogControlValue;
 }
 
-function catalogControlValue(
+export interface CatalogControlValueResolution {
+  values: Readonly<Record<string, unknown>>;
+  invalidPersistenceKeys: readonly string[];
+}
+
+export function resolveCatalogControlValues(
   controls: readonly CatalogReasoningControlDefinition[],
-  persistenceKey: string,
-  storedValue: unknown,
-): ProviderCatalogControlValue | null {
-  const control = controls.find(candidate => candidate.persistenceKey === persistenceKey);
-  if (!control) return null;
-  return control.allowedValues.some(candidate => Object.is(candidate, storedValue))
-    ? storedValue as ProviderCatalogControlValue
-    : control.defaultValue;
+  stored: Readonly<{
+    catalogControlValues?: unknown;
+    effortLevel?: unknown;
+    thinkingMode?: unknown;
+  }>,
+  options: Readonly<{ discardUnknownPersistenceKeys?: boolean }> = {},
+): CatalogControlValueResolution {
+  const persisted = stored.catalogControlValues
+    && typeof stored.catalogControlValues === 'object'
+    && !Array.isArray(stored.catalogControlValues)
+      ? stored.catalogControlValues as Record<string, unknown>
+      : {};
+  const knownPersistenceKeys = new Set(controls.map(control => control.persistenceKey));
+  const values: Record<string, unknown> = options.discardUnknownPersistenceKeys
+    ? {}
+    : { ...persisted };
+  const invalidPersistenceKeys: string[] = [];
+  if (!options.discardUnknownPersistenceKeys) {
+    invalidPersistenceKeys.push(
+      ...Object.keys(persisted).filter(key => !knownPersistenceKeys.has(key)),
+    );
+  }
+  for (const control of controls) {
+    const hasGeneric = Object.prototype.hasOwnProperty.call(persisted, control.persistenceKey);
+    const hasLegacyEffort = control.persistenceKey === 'effort-level' && stored.effortLevel != null;
+    const hasLegacyThinking = control.persistenceKey === 'thinking-mode' && stored.thinkingMode != null;
+    const candidate = hasGeneric
+      ? persisted[control.persistenceKey]
+      : hasLegacyEffort
+        ? stored.effortLevel
+        : hasLegacyThinking
+          ? stored.thinkingMode
+          : control.defaultValue;
+    if (!control.allowedValues.some(value => Object.is(value, candidate))) {
+      invalidPersistenceKeys.push(control.persistenceKey);
+      values[control.persistenceKey] = candidate;
+      continue;
+    }
+    values[control.persistenceKey] = candidate as ProviderCatalogControlValue;
+  }
+  return { values, invalidPersistenceKeys };
 }
 
 /** Resolve only the existing session metadata keys from generic catalog definitions. */
 export function resolveCatalogReasoningValues(
   controls: readonly CatalogReasoningControlDefinition[],
-  stored: Readonly<{ effortLevel?: unknown; thinkingMode?: unknown }>,
+  stored: Readonly<{
+    catalogControlValues?: unknown;
+    effortLevel?: unknown;
+    thinkingMode?: unknown;
+  }>,
 ): Readonly<{ effortLevel: EffortLevel | null; thinkingMode: ThinkingMode | null }> {
-  const effort = catalogControlValue(controls, 'effort-level', stored.effortLevel);
-  const thinking = catalogControlValue(controls, 'thinking-mode', stored.thinkingMode);
+  const { values, invalidPersistenceKeys } = resolveCatalogControlValues(controls, stored);
+  const effort = values['effort-level'];
+  const thinking = values['thinking-mode'];
   return {
-    effortLevel: typeof effort === 'string' && EFFORT_LEVELS.some(({ key }) => key === effort)
+    effortLevel: !invalidPersistenceKeys.includes('effort-level')
+      && typeof effort === 'string'
+      && EFFORT_LEVELS.some(({ key }) => key === effort)
       ? effort as EffortLevel
       : null,
-    thinkingMode: thinking === 'enabled' || thinking === 'disabled'
+    thinkingMode: !invalidPersistenceKeys.includes('thinking-mode')
+      && (thinking === 'enabled' || thinking === 'disabled')
       ? thinking
       : null,
   };

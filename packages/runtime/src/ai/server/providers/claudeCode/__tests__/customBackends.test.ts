@@ -16,7 +16,10 @@ import {
   PROVIDER_CATALOG_SCHEMA_VERSION,
   resolveProviderCatalog,
 } from "../providerCatalog";
-import { BUILT_IN_PROVIDER_CATALOG } from "../providerCatalogDefaults";
+import {
+  BUILT_IN_PROVIDER_CATALOG,
+  OLLAMA_DEEPSEEK_V4_FLASH_0731_ENTRY_ID,
+} from "../providerCatalogDefaults";
 
 // Independent contract copied from the route/auth/socket/proxy/OAuth/model
 // selectors read by the pinned @anthropic-ai/claude-agent-sdk native CLI.
@@ -246,6 +249,15 @@ describe("Claude Code custom backends", () => {
         )
       ).toBe(identity.sdkAlias);
     }
+
+    expect(() =>
+      resolveClaudeCodeBackend(OLLAMA_DEEPSEEK_V4_FLASH_0731_ENTRY_ID)
+    ).toThrow("adapter required");
+    expect(
+      resolveClaudeCodeBackendFromModel(
+        "claude-code:ollama-deepseek-v4-flash-0731"
+      )
+    ).toBeUndefined();
   });
 
   it("rejects lookalike model identities and backend/model mismatches", () => {

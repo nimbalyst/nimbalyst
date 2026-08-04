@@ -971,6 +971,13 @@ export const sessionThinkingModeRawAtom = atomFamily((sessionId: string) =>
   })
 );
 
+export const sessionCatalogControlValuesRawAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const metadata = get(sessionStoreAtom(sessionId))?.metadata as Record<string, unknown> | undefined;
+    return metadata?.catalogControlValues ?? null;
+  })
+);
+
 // ============================================================
 // Hierarchical session support (workstreams)
 // These atoms enable parent-child session relationships for grouping

@@ -96,7 +96,11 @@ export function projectClaudeCodeBackends(
   );
   return Object.freeze(
     resolution.entries.flatMap((entry) => {
-      if (blockedIds.has(entry.id)) return [];
+      if (
+        blockedIds.has(entry.id) ||
+        entry.admission?.state === "high-runner-candidate"
+      )
+        return [];
       const backend = toClaudeCodeBackend(entry);
       return backend ? [backend] : [];
     })
@@ -389,6 +393,10 @@ export const CLAUDE_CODE_AMBIENT_ROUTE_ENV_KEYS = [
   "CLAUDE_CODE_SUBAGENT_MODEL",
   "FALLBACK_FOR_ALL_PRIMARY_MODELS",
   "CLAUDE_CODE_NO_MODEL_FALLBACK",
+
+  // Generic provider-catalog reasoning controls must never inherit from the
+  // parent harness. Accepted routes re-add an explicitly resolved value.
+  "CLAUDE_CODE_EFFORT_LEVEL",
 ] as const;
 
 const CANONICAL_AMBIENT_ROUTE_ENV_KEYS = new Set<string>(
@@ -487,6 +495,13 @@ export function applyProviderRuntimeLaunchPlanEnv(
 
   for (const mapping of plan.resolvedControls) {
     if (mapping.target === "launch.effort-level") {
+      if (mapping.operation !== "set" || typeof mapping.value !== "string") {
+        throw new ProviderRuntimeRouteError(
+          "invalid-controls",
+          `Provider route ${plan.model.catalogEntryId} has an invalid launch effort mapping.`,
+          plan.model.catalogEntryId
+        );
+      }
       env.CLAUDE_CODE_EFFORT_LEVEL = String(mapping.value);
     }
   }

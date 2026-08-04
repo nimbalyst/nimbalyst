@@ -18,7 +18,38 @@ vi.mock("@nimbalyst/runtime", async (importOriginal) => ({
 afterEach(cleanup);
 
 describe("CatalogControlSelector", () => {
-  it("renders catalog labels/help, heals an invalid value to the default, and emits only allowed values", async () => {
+  it("uses the default only when the persisted value is absent and preserves four-value ordering", async () => {
+    const onValueChange = vi.fn();
+    render(
+      <CatalogControlSelector
+        control={{
+          id: "reasoning",
+          persistenceKey: "reasoning-mode",
+          displayLabel: "Reasoning",
+          helpText: "Controls reasoning mode.",
+          allowedValues: ["none", "high", "max", "ultra"],
+          defaultValue: "high",
+          valueLabels: {
+            '"none"': "None",
+            '"high"': "High",
+            '"max"': "Max",
+            '"ultra"': "Ultra",
+          },
+        }}
+        value={undefined}
+        onValueChange={onValueChange}
+      />
+    );
+
+    const trigger = screen.getByTestId("catalog-control-reasoning-mode");
+    expect(trigger.getAttribute("aria-label")).toBe("Reasoning: High");
+    fireEvent.click(trigger);
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent)
+    ).toEqual(["None", "High", "Max", "Ultra"]);
+  });
+
+  it("renders invalid persistence as unavailable and emits only allowed values", async () => {
     const onValueChange = vi.fn();
     render(
       <CatalogControlSelector
@@ -37,7 +68,7 @@ describe("CatalogControlSelector", () => {
     );
 
     const trigger = screen.getByTestId("catalog-control-effort-level");
-    expect(trigger.getAttribute("aria-label")).toBe("Effort: High");
+    expect(trigger.getAttribute("aria-label")).toBe("Effort: Unavailable");
     expect(trigger.getAttribute("title")).toBe(
       "Controls reviewed reasoning effort."
     );

@@ -48,6 +48,7 @@ describe("provider catalog picker projection", () => {
       "claude-code:deepseek-v4-flash",
       "claude-code:ollama-deepseek-v4-flash-cloud",
       "claude-code:openrouter-deepseek-v4-flash",
+      "claude-code:ollama-deepseek-v4-flash-0731",
       "claude-code:deepseek-v4-pro",
       "claude-code:ollama-deepseek-v4-pro-cloud",
       "claude-code:openrouter-deepseek-v4-pro",
@@ -69,8 +70,53 @@ describe("provider catalog picker projection", () => {
       rows.find(({ id }) => id === "claude-code:deepseek-v4-pro")?.name
     ).toBe("Claude Agent - DeepSeek v4 Pro Thinking (DeepSeek API)");
     expect(
+      rows.find(({ id }) => id === "claude-code:deepseek-v4-pro")?.catalog
+        ?.controls
+    ).toEqual([
+      expect.objectContaining({
+        id: "reasoning",
+        order: 0,
+        width: "standard",
+        displayLabel: "Thinking effort",
+        allowedValues: ["non-think", "think-high", "think-max"],
+        defaultValue: "think-high",
+        valueLabels: {
+          '"non-think"': "None",
+          '"think-high"': "High",
+          '"think-max"': "Max",
+        },
+      }),
+    ]);
+    expect(
       rows.find(({ id }) => id === "claude-code:ollama-qwen3-5-cloud")?.name
     ).toBe("Claude Agent - Qwen 3.5 (Ollama Cloud)");
+    expect(
+      rows.find(({ id }) => id === "claude-code:ollama-deepseek-v4-flash-0731")
+    ).toMatchObject({
+      name: "Claude Agent - DeepSeek V4 Flash 0731 (Ollama Cloud)",
+      catalog: {
+        controls: [],
+        capabilities: {
+          mainSession: false,
+          subagent: false,
+          consultation: false,
+          tools: false,
+          vision: false,
+        },
+        availability: {
+          selectable: false,
+          code: "candidate",
+        },
+      },
+    });
+    expect(
+      rows.find(({ id }) => id === "claude-code:ollama-deepseek-v4-flash-0731")
+        ?.contextWindow
+    ).toBeUndefined();
+    expect(
+      rows.find(({ id }) => id === "claude-code:openrouter-deepseek-v4-pro")
+        ?.catalog?.controls
+    ).toEqual([]);
   });
 
   it("projects one safe row when one logical entry has multiple interfaces", () => {

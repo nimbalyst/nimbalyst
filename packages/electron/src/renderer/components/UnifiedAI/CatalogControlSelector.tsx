@@ -16,6 +16,13 @@ import type { ProviderCatalogControlValue } from "@nimbalyst/runtime/ai/server/p
 export interface CatalogControlDefinition {
   id: string;
   persistenceKey: string;
+  order?: number;
+  width?: "compact" | "standard" | "wide";
+  applicability?: Readonly<{
+    launch: boolean;
+    restart: boolean;
+    midSession: boolean;
+  }>;
   displayLabel: string;
   helpText: string;
   allowedValues: readonly ProviderCatalogControlValue[];
@@ -25,7 +32,7 @@ export interface CatalogControlDefinition {
 
 interface CatalogControlSelectorProps {
   control: CatalogControlDefinition;
-  value: ProviderCatalogControlValue | null | undefined;
+  value: unknown;
   onValueChange: (value: ProviderCatalogControlValue) => void;
   disabled?: boolean;
   disabledTitle?: string;
@@ -52,11 +59,22 @@ export function CatalogControlSelector({
 }: CatalogControlSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const listboxRef = React.useRef<HTMLDivElement>(null);
-  const selectedValue = control.allowedValues.some((candidate) =>
-    Object.is(candidate, value)
-  )
-    ? (value as ProviderCatalogControlValue)
-    : control.defaultValue;
+  const selectedValue =
+    value === undefined
+      ? control.defaultValue
+      : control.allowedValues.some((candidate) => Object.is(candidate, value))
+      ? (value as ProviderCatalogControlValue)
+      : null;
+  const selectedLabel =
+    selectedValue === null
+      ? "Unavailable"
+      : labelForValue(control, selectedValue);
+  const widthClass =
+    control.width === "compact"
+      ? "max-w-[140px]"
+      : control.width === "wide"
+      ? "max-w-[280px]"
+      : "max-w-[200px]";
   const { refs, floatingStyles, context } = useFloating({
     open: isOpen,
     onOpenChange: setIsOpen,
@@ -164,20 +182,18 @@ export function CatalogControlSelector({
       className="catalog-control-selector inline-block"
       data-component="CatalogControlSelector"
       data-control-key={control.persistenceKey}
+      data-control-width={control.width ?? "standard"}
     >
       <button
         ref={refs.setReference}
         type="button"
         data-testid={`catalog-control-${control.persistenceKey}`}
-        className={`catalog-control-selector-button flex items-center gap-1 rounded-xl border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-2 py-[3px] text-[11px] font-medium text-[var(--nim-text-muted)] outline-none transition-all duration-200 ${
+        className={`catalog-control-selector-button ${widthClass} flex items-center gap-1 rounded-xl border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-2 py-[3px] text-[11px] font-medium text-[var(--nim-text-muted)] outline-none transition-all duration-200 ${
           disabled
             ? "cursor-not-allowed opacity-45"
             : "cursor-pointer hover:border-[var(--nim-primary)] hover:bg-[var(--nim-bg-hover)]"
         }`}
-        aria-label={`${control.displayLabel}: ${labelForValue(
-          control,
-          selectedValue
-        )}`}
+        aria-label={`${control.displayLabel}: ${selectedLabel}`}
         aria-description={control.helpText}
         disabled={disabled}
         title={disabled ? disabledTitle : control.helpText}
@@ -195,8 +211,8 @@ export function CatalogControlSelector({
         })}
       >
         <MaterialSymbol icon="psychology" size={12} />
-        <span>
-          {control.displayLabel}: {labelForValue(control, selectedValue)}
+        <span className="truncate">
+          {control.displayLabel}: {selectedLabel}
         </span>
         <MaterialSymbol
           icon="expand_more"

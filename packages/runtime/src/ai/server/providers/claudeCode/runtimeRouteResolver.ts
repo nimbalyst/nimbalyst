@@ -4,6 +4,7 @@ import {
   type ProviderCatalogCapabilities,
   type ProviderCatalogConsumer,
   type ProviderCatalogControlValue,
+  type ProviderCatalogControlContext,
   type ProviderCatalogEntry,
   type ProviderCatalogInterface,
   type ProviderCatalogResolution,
@@ -49,7 +50,8 @@ export interface ProviderRuntimeRouteRequest {
   catalogEntryId: string;
   persistedModelId: string;
   consumer: ProviderRuntimeConsumer;
-  persistedControls?: Readonly<Record<string, ProviderCatalogControlValue>>;
+  persistedControls?: Readonly<Record<string, unknown>>;
+  controlContext?: ProviderCatalogControlContext;
   credentialReferences: Readonly<Record<string, boolean>>;
 }
 
@@ -59,6 +61,7 @@ export interface ProviderRuntimeLaunchPlan {
     catalogEntryId: string;
     persistedModelId: string;
     consumer: ProviderRuntimeConsumer;
+    controlContext: ProviderCatalogControlContext;
     controls: Readonly<Record<string, ProviderCatalogControlValue>>;
   }>;
   harness: Readonly<{ id: string }>;
@@ -324,6 +327,24 @@ export function resolveProviderRuntimeLaunchPlan(
 ): Readonly<ProviderRuntimeLaunchPlan> {
   assertRuntimeConsumer(request.consumer);
   const entry = findEntry(resolution, request);
+  if (entry.admission?.state === "high-runner-candidate") {
+    routeError(
+      "adapter-required",
+      `Provider route ${entry.id} is a catalog candidate and requires a qualified launch adapter.`,
+      entry.id
+    );
+  }
+  const controlContext = request.controlContext ?? "midSession";
+  const unavailableControl = Object.entries(entry.controls).find(
+    ([, control]) => control.applicability?.[controlContext] === false
+  );
+  if (unavailableControl) {
+    routeError(
+      "invalid-controls",
+      `Provider route ${entry.id} control ${unavailableControl[0]} is unavailable during ${controlContext}.`,
+      entry.id
+    );
+  }
   const catalogConsumer =
     CATALOG_CONSUMER_BY_RUNTIME_CONSUMER[request.consumer];
   const matchingInterfaces = entry.interfaces.filter((candidate) =>
@@ -384,6 +405,7 @@ export function resolveProviderRuntimeLaunchPlan(
         catalogEntryId: entry.id,
         persistedModelId: request.persistedModelId,
         consumer: request.consumer,
+        controlContext,
         controls: requestedControls,
       },
       harness: { id: entry.harness.id },
@@ -562,6 +584,8 @@ export function resolveClaudeAgentRuntimeRoutes(
     claudeCodeBackend?: string;
     effortLevel?: string;
     thinkingMode?: string;
+    catalogControlValues?: Readonly<Record<string, unknown>>;
+    catalogControlContext?: ProviderCatalogControlContext;
   },
   credentialReferences: Readonly<Record<string, boolean>>
 ): Readonly<ClaudeAgentRuntimeRouteBundle> | undefined {
@@ -570,13 +594,17 @@ export function resolveClaudeAgentRuntimeRoutes(
   const persistedControlKeys = new Set(
     Object.values(entry.controls).map((control) => control.persistenceKey)
   );
+  const catalogControlValues = config.catalogControlValues ?? {};
   const persistedControls = {
+    ...catalogControlValues,
     ...(config.effortLevel === undefined ||
-    !persistedControlKeys.has("effort-level")
+    !persistedControlKeys.has("effort-level") ||
+    Object.prototype.hasOwnProperty.call(catalogControlValues, "effort-level")
       ? {}
       : { "effort-level": config.effortLevel }),
     ...(config.thinkingMode === undefined ||
-    !persistedControlKeys.has("thinking-mode")
+    !persistedControlKeys.has("thinking-mode") ||
+    Object.prototype.hasOwnProperty.call(catalogControlValues, "thinking-mode")
       ? {}
       : { "thinking-mode": config.thinkingMode }),
   };
@@ -584,6 +612,7 @@ export function resolveClaudeAgentRuntimeRoutes(
     catalogEntryId: entry.id,
     persistedModelId: entry.model.persistedId,
     persistedControls,
+    controlContext: config.catalogControlContext,
     credentialReferences,
   };
   return deepFreeze({

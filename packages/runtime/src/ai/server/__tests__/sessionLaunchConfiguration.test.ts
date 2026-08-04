@@ -74,26 +74,20 @@ describe('session launch reasoning configuration', () => {
     })).toThrow('thinkingMode is not supported');
   });
 
-  it('accepts catalog-defined DeepSeek controls and rejects cross-model effort', () => {
-    expect(resolveSessionReasoningConfiguration({
+  it('rejects legacy fixed columns for a model owned by one generic reasoning control', () => {
+    expect(() => resolveSessionReasoningConfiguration({
       provider: 'claude-code',
       model: 'claude-code:deepseek-v4-pro',
       effortLevel: 'max',
-      thinkingMode: 'disabled',
       appDefaultEffortLevel: 'low',
-    })).toMatchObject({
-      effortLevel: 'max',
-      thinkingMode: 'disabled',
-      effortLevelSource: 'requested',
-      thinkingModeSource: 'requested',
-    });
+    })).toThrow('Supported values: none');
 
     expect(() => resolveSessionReasoningConfiguration({
       provider: 'claude-code',
       model: 'claude-code:deepseek-v4-pro',
-      effortLevel: 'low',
+      thinkingMode: 'disabled',
       appDefaultEffortLevel: 'high',
-    })).toThrow('Supported values: high, max');
+    })).toThrow('thinkingMode is not supported');
   });
 
   it('rejects unsupported thinking for Claudex', () => {

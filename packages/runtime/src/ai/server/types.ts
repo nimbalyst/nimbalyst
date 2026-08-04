@@ -443,6 +443,10 @@ export interface ProviderConfig {
   allowedTools?: string[];  // List of allowed tool names, ['*'] for all tools
   effortLevel?: EffortLevel;  // Effort level for Opus 4.6 adaptive reasoning (low/medium/high/max)
   thinkingMode?: ThinkingMode;  // Extended thinking mode for Claude Agent (enabled/disabled)
+  /** Catalog-owned, provider-neutral persisted controls validated at route resolution. */
+  catalogControlValues?: Readonly<Record<string, unknown>>;
+  /** Turn boundary used to enforce catalog control applicability. */
+  catalogControlContext?: import('./providers/claudeCode/providerCatalog').ProviderCatalogControlContext;
   customBackend?: string;  // Per-session Claude Agent backend selected by a synthetic model profile (DeepSeek)
   /**
    * Claude Code only: exact per-session backend profile. The profile is

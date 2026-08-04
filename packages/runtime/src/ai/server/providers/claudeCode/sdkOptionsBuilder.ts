@@ -21,10 +21,71 @@ import {
 } from './customBackends';
 import {
   ProviderRuntimeRouteError,
+  type ProviderRuntimeLaunchPlan,
   type ProviderRuntimeSessionSnapshot,
 } from './runtimeRouteResolver';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
+
+function consumeProviderRequestControls(
+  plan: ProviderRuntimeLaunchPlan,
+  env: Record<string, string | undefined>,
+): ThinkingMode | undefined {
+  let thinking: ThinkingMode | undefined;
+  for (const mapping of plan.resolvedControls) {
+    switch (mapping.target) {
+      case 'launch.effort-level':
+        // Consumed by applyProviderRuntimeLaunchPlanEnv before this pass.
+        if (mapping.operation !== 'set' || typeof mapping.value !== 'string') {
+          throw new ProviderRuntimeRouteError(
+            'invalid-controls',
+            `Provider route ${plan.model.catalogEntryId} has an invalid launch effort mapping.`,
+            plan.model.catalogEntryId,
+          );
+        }
+        break;
+      case 'launch.thinking-mode':
+      case 'request.thinking.type': {
+        if (
+          mapping.operation !== 'set'
+          || (mapping.value !== 'enabled' && mapping.value !== 'disabled')
+          || thinking !== undefined
+        ) {
+          throw new ProviderRuntimeRouteError(
+            'invalid-controls',
+            `Provider route ${plan.model.catalogEntryId} has an invalid or duplicate thinking mapping.`,
+            plan.model.catalogEntryId,
+          );
+        }
+        thinking = mapping.value;
+        break;
+      }
+      case 'request.output-config.effort':
+        if (mapping.operation === 'omit') {
+          delete env.CLAUDE_CODE_EFFORT_LEVEL;
+        } else if (
+          mapping.operation === 'set'
+          && (mapping.value === 'high' || mapping.value === 'max')
+        ) {
+          env.CLAUDE_CODE_EFFORT_LEVEL = mapping.value;
+        } else {
+          throw new ProviderRuntimeRouteError(
+            'invalid-controls',
+            `Provider route ${plan.model.catalogEntryId} has an invalid output effort mapping.`,
+            plan.model.catalogEntryId,
+          );
+        }
+        break;
+      default:
+        throw new ProviderRuntimeRouteError(
+          'adapter-required',
+          `Provider route ${plan.model.catalogEntryId} has no adapter for control target ${mapping.target}.`,
+          plan.model.catalogEntryId,
+        );
+    }
+  }
+  return thinking;
+}
 
 type SDKUserMessage = {
   type: 'user';
@@ -613,10 +674,8 @@ export async function buildSdkOptions(
       mainRoutePlan,
       mainRouteCredential!
     );
-    const thinking = mainRoutePlan.resolvedControls.find(
-      (mapping) => mapping.target === 'launch.thinking-mode'
-    );
-    if (thinking) options.thinking = { type: thinking.value };
+    const thinking = consumeProviderRequestControls(mainRoutePlan, env);
+    if (thinking) options.thinking = { type: thinking };
   }
 
   if (subagentRoutePlan) {
@@ -636,9 +695,9 @@ export async function buildSdkOptions(
       subagentRouteCredential!
     );
   }
-  const subagentThinking = subagentRoutePlan?.resolvedControls.find(
-    (mapping) => mapping.target === 'launch.thinking-mode'
-  );
+  const subagentThinking = subagentRoutePlan
+    ? consumeProviderRequestControls(subagentRoutePlan, managedChildEnv)
+    : undefined;
   teammateManager.managedChildLaunchOptions = {
     env: managedChildEnv,
     ...(effectivePath && { pathToClaudeCodeExecutable: effectivePath }),
@@ -653,7 +712,7 @@ export async function buildSdkOptions(
       routeReceipt: subagentRouteSnapshot.receipt,
     }),
     ...(subagentThinking && {
-      thinking: { type: subagentThinking.value },
+      thinking: { type: subagentThinking },
     }),
   };
 

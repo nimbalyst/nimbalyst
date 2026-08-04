@@ -111,6 +111,7 @@ describe('Claude Code MessageStreamingHandler turn lifecycle', () => {
     expect(firstConfig).toMatchObject({
       model: PERSISTED_MODEL,
       claudeCodeBackend: 'ollama-glm-5-2-cloud',
+      catalogControlContext: 'launch',
     });
     expect(firstInitialize).toHaveBeenCalledTimes(1);
     expect(AISessionsRepository.get).toHaveBeenCalledTimes(1);
@@ -129,12 +130,13 @@ describe('Claude Code MessageStreamingHandler turn lifecycle', () => {
     const cachedProvider = ProviderFactory.getProvider('claude-code', SESSION_ID);
     expect(cachedProvider).toBe(firstProvider);
 
-    await prepareClaudeCodeProviderTurn(
+    const cachedConfig = await prepareClaudeCodeProviderTurn(
       cachedProvider!,
       cachedSession,
       () => buildClaudeCodeRuntimeConfigForTurn(cachedSession),
     );
 
+    expect(cachedConfig.catalogControlContext).toBe('midSession');
     expect(firstInitialize).toHaveBeenCalledTimes(2);
     expect(AISessionsRepository.get).toHaveBeenCalledTimes(2);
     expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledTimes(2);
@@ -159,6 +161,7 @@ describe('Claude Code MessageStreamingHandler turn lifecycle', () => {
     );
 
     expect(resumeConfig.model).toBe(PERSISTED_MODEL);
+    expect(resumeConfig.catalogControlContext).toBe('restart');
     expect(restoredInitialize).toHaveBeenCalledTimes(1);
     expect(AISessionsRepository.get).toHaveBeenCalledTimes(3);
     expect(preflightOllamaClaudeCodeBackend).toHaveBeenCalledTimes(3);
@@ -166,6 +169,83 @@ describe('Claude Code MessageStreamingHandler turn lifecycle', () => {
       claudeSessionId: PROVIDER_SESSION_ID,
     });
     expect(persistedReadVersion).toBe(3);
+  });
+
+  it('fresh-reads generic catalog controls into the immutable DeepSeek runtime route', async () => {
+    const sessionId = 'deepseek-reasoning-profile-lifecycle-session';
+    const model = 'claude-code:deepseek-v4-pro';
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      id: sessionId,
+      provider: 'claude-code',
+      model,
+      workspacePath: WORKSPACE_PATH,
+      metadata: {
+        catalogControlValues: { 'reasoning-mode': 'think-max' },
+      },
+    } as any);
+
+    const session = {
+      id: sessionId,
+      provider: 'claude-code',
+      model,
+      workspacePath: WORKSPACE_PATH,
+      metadata: {},
+    } as SessionData;
+    const provider = ProviderFactory.createProvider('claude-code', sessionId);
+
+    const config = await prepareClaudeCodeProviderTurn(
+      provider,
+      session,
+      () => buildClaudeCodeRuntimeConfigForTurn(session),
+    );
+
+    expect(config.catalogControlValues).toEqual({ 'reasoning-mode': 'think-max' });
+    const route = (
+      provider as unknown as {
+        runtimeRoutes: Readonly<ClaudeAgentRuntimeRouteBundle>;
+      }
+    ).runtimeRoutes.main;
+    expect(route.requested.controls).toEqual({ reasoning: 'think-max' });
+    expect(route.resolvedControls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: 'request.thinking.type',
+        operation: 'set',
+        value: 'enabled',
+      }),
+      expect.objectContaining({
+        target: 'request.output-config.effort',
+        operation: 'set',
+        value: 'max',
+      }),
+    ]));
+
+    ProviderFactory.destroyProvider(sessionId, 'claude-code');
+  });
+
+  it('preserves a present invalid legacy catalog value and fails before provider launch', async () => {
+    const sessionId = 'claudex-sol-lifecycle-session';
+    const model = 'claude-code:claudex-sol';
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      id: sessionId,
+      provider: 'claude-code',
+      model,
+      workspacePath: WORKSPACE_PATH,
+      metadata: { effortLevel: 'bogus' },
+    } as any);
+    const session = {
+      id: sessionId,
+      provider: 'claude-code',
+      model,
+      workspacePath: WORKSPACE_PATH,
+      metadata: {},
+    } as SessionData;
+    const provider = ProviderFactory.createProvider('claude-code', sessionId);
+
+    await expect(prepareClaudeCodeProviderTurn(
+      provider,
+      session,
+      () => buildClaudeCodeRuntimeConfigForTurn(session),
+    )).rejects.toThrow('unsupported persisted value');
   });
 
   it.each(GENERAL_ROUTE_CASES)(

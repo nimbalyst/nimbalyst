@@ -5,6 +5,7 @@ import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type Slas
 import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
 import { readClipboard, encodeMarkdownLinkPath, type ChatAttachment } from '@nimbalyst/runtime';
 import type { ContextMeterStateV1, TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
+import type { ProviderCatalogControlValue } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalog';
 import type { EffortLevel, ThinkingMode } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
 import { ModeTag, AIMode } from './ModeTag';
@@ -96,6 +97,13 @@ interface AIInputProps {
   showEffortLevel?: boolean;
   thinkingMode?: ThinkingMode;
   onThinkingModeChange?: (mode: ThinkingMode) => void;
+  catalogControlValues?: Readonly<Record<string, unknown>>;
+  catalogLegacyControlValues?: Readonly<Record<string, unknown>>;
+  catalogControlContext?: 'launch' | 'midSession';
+  onCatalogControlValueChange?: (
+    persistenceKey: string,
+    value: ProviderCatalogControlValue,
+  ) => void;
   showThinkingToggle?: boolean;
   reasoningControlsDisabled?: boolean;
   reasoningControlsDisabledTitle?: string;
@@ -185,6 +193,10 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     showEffortLevel,
     thinkingMode,
     onThinkingModeChange,
+    catalogControlValues,
+    catalogLegacyControlValues,
+    catalogControlContext = 'midSession',
+    onCatalogControlValueChange,
     showThinkingToggle,
     reasoningControlsDisabled = false,
     reasoningControlsDisabledTitle,
@@ -1428,14 +1440,36 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               </span>
             )}
             {catalogControls.map(control => {
+              const unavailableInContext = control.applicability?.[
+                catalogControlContext === 'launch' ? 'launch' : 'midSession'
+              ] === false;
               const isEffort = control.persistenceKey === 'effort-level';
               const isThinking = control.persistenceKey === 'thinking-mode';
-              const value = isEffort ? effortLevel : isThinking ? thinkingMode : control.defaultValue;
-              const onValueChange = isEffort && onEffortLevelChange
-                ? (next: unknown) => onEffortLevelChange(next as EffortLevel)
-                : isThinking && onThinkingModeChange
-                  ? (next: unknown) => onThinkingModeChange(next as ThinkingMode)
-                  : null;
+              const hasCatalogValue = Object.prototype.hasOwnProperty.call(
+                catalogControlValues ?? {},
+                control.persistenceKey,
+              );
+              const hasLegacyCatalogValue = Object.prototype.hasOwnProperty.call(
+                catalogLegacyControlValues ?? {},
+                control.persistenceKey,
+              );
+              const value = hasCatalogValue
+                ? catalogControlValues?.[control.persistenceKey]
+                : hasLegacyCatalogValue
+                  ? catalogLegacyControlValues?.[control.persistenceKey]
+                  : isEffort
+                    ? effortLevel
+                    : isThinking
+                      ? thinkingMode
+                      : undefined;
+              const onValueChange = onCatalogControlValueChange
+                ? (next: ProviderCatalogControlValue) =>
+                    onCatalogControlValueChange(control.persistenceKey, next)
+                : isEffort && onEffortLevelChange
+                  ? (next: ProviderCatalogControlValue) => onEffortLevelChange(next as EffortLevel)
+                  : isThinking && onThinkingModeChange
+                    ? (next: ProviderCatalogControlValue) => onThinkingModeChange(next as ThinkingMode)
+                    : null;
               if (!onValueChange) return null;
               return (
                 <CatalogControlSelector
@@ -1443,8 +1477,10 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
                   control={control}
                   value={value}
                   onValueChange={onValueChange}
-                  disabled={reasoningControlsDisabled}
-                  disabledTitle={reasoningControlsDisabledTitle}
+                  disabled={reasoningControlsDisabled || unavailableInContext}
+                  disabledTitle={unavailableInContext
+                    ? `This control is unavailable during ${catalogControlContext === 'launch' ? 'launch' : 'this session'}.`
+                    : reasoningControlsDisabledTitle}
                 />
               );
             })}

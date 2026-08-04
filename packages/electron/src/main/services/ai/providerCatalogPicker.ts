@@ -8,6 +8,7 @@ import type {
 
 export type CatalogPickerAvailabilityCode =
   | "launchable"
+  | "candidate"
   | "disabled"
   | "invalid"
   | "adapter-required"
@@ -16,6 +17,13 @@ export type CatalogPickerAvailabilityCode =
 export interface CatalogPickerControl {
   id: string;
   persistenceKey: string;
+  order?: number;
+  width?: "compact" | "standard" | "wide";
+  applicability?: Readonly<{
+    launch: boolean;
+    restart: boolean;
+    midSession: boolean;
+  }>;
   displayLabel: string;
   helpText: string;
   allowedValues: readonly ProviderCatalogControlValue[];
@@ -84,21 +92,48 @@ function providerLabel(entry: ProviderCatalogEntry): string {
 }
 
 function thinkingSuffix(entry: ProviderCatalogEntry): string {
-  const thinkingControl = Object.values(entry.controls).find(
-    (control) => control.persistenceKey === "thinking-mode"
+  const hasThinkingEnabledByDefault = Object.values(entry.controls).some(
+    (control) =>
+      control.mappings.some((mapping) => {
+        if (
+          mapping.target !== "launch.thinking-mode" &&
+          mapping.target !== "request.thinking.type"
+        ) {
+          return false;
+        }
+        const defaultMapping = mapping.values.find((candidate) =>
+          Object.is(candidate.storedValue, control.defaultValue)
+        );
+        return (
+          defaultMapping?.operation !== "omit" &&
+          defaultMapping?.resolvedValue === "enabled"
+        );
+      })
   );
-  return thinkingControl?.defaultValue === "enabled" ||
-    thinkingControl?.defaultValue === true
-    ? " Thinking"
-    : "";
+  return hasThinkingEnabledByDefault ? " Thinking" : "";
 }
 
 function projectControls(entry: ProviderCatalogEntry): CatalogPickerControl[] {
   return Object.entries(entry.controls)
-    .sort(([left], [right]) => compareText(left, right))
-    .map(([id, control]) => ({
+    .map(([id, control], sourceIndex) => ({
+      id,
+      control,
+      order: control.order ?? sourceIndex,
+    }))
+    .sort(
+      (left, right) =>
+        left.order - right.order || compareText(left.id, right.id)
+    )
+    .map(({ id, control, order }) => ({
       id,
       persistenceKey: control.persistenceKey,
+      order,
+      width: control.width ?? "standard",
+      applicability: control.applicability ?? {
+        launch: true,
+        restart: true,
+        midSession: true,
+      },
       displayLabel:
         control.displayLabel ??
         id.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
@@ -142,6 +177,13 @@ function availabilityForEntry(
       selectable: false,
       code: "invalid",
       reason: "The provider catalog source is invalid and cannot be used.",
+    };
+  }
+  if (entry.admission?.state === "high-runner-candidate") {
+    return {
+      selectable: false,
+      code: "candidate",
+      reason: "This catalog identity is awaiting a qualified launch adapter.",
     };
   }
   if (resolution.disabledIds.includes(entry.id)) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveCatalogReasoningValues, supportsEffortLevel } from '../modelUtils';
+import { resolveCatalogControlValues, resolveCatalogReasoningValues, supportsEffortLevel } from '../modelUtils';
 
 describe('supportsEffortLevel', () => {
   it.each([
@@ -39,14 +39,47 @@ describe('resolveCatalogReasoningValues', () => {
     { persistenceKey: 'thinking-mode', allowedValues: ['enabled', 'disabled'], defaultValue: 'enabled' },
   ] as const;
 
-  it('preserves allowed stored values and heals invalid cross-model values to catalog defaults', () => {
+  it('preserves allowed stored values and never heals a present invalid value', () => {
     expect(resolveCatalogReasoningValues(controls, { effortLevel: 'max', thinkingMode: 'disabled' })).toEqual({
       effortLevel: 'max',
       thinkingMode: 'disabled',
     });
     expect(resolveCatalogReasoningValues(controls, { effortLevel: 'low', thinkingMode: 'unsupported' })).toEqual({
-      effortLevel: 'high',
-      thinkingMode: 'enabled',
+      effortLevel: null,
+      thinkingMode: null,
+    });
+  });
+
+  it('resolves arbitrary ordered catalog keys, defaults only absent keys, and reports present unknowns', () => {
+    const genericControls = [{
+      persistenceKey: 'reasoning-mode',
+      allowedValues: ['non-think', 'think-high', 'think-max', 'think-ultra'],
+      defaultValue: 'think-high',
+    }] as const;
+    expect(resolveCatalogControlValues(genericControls, {})).toEqual({
+      values: { 'reasoning-mode': 'think-high' },
+      invalidPersistenceKeys: [],
+    });
+    expect(resolveCatalogControlValues(genericControls, {
+      catalogControlValues: { 'reasoning-mode': 'unknown' },
+    })).toEqual({
+      values: { 'reasoning-mode': 'unknown' },
+      invalidPersistenceKeys: ['reasoning-mode'],
+    });
+    expect(resolveCatalogControlValues(genericControls, {
+      catalogControlValues: { 'unexpected-control': 'value' },
+    })).toEqual({
+      values: {
+        'unexpected-control': 'value',
+        'reasoning-mode': 'think-high',
+      },
+      invalidPersistenceKeys: ['unexpected-control'],
+    });
+    expect(resolveCatalogControlValues(genericControls, {
+      catalogControlValues: { 'unexpected-control': 'value' },
+    }, { discardUnknownPersistenceKeys: true })).toEqual({
+      values: { 'reasoning-mode': 'think-high' },
+      invalidPersistenceKeys: [],
     });
   });
 
