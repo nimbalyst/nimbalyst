@@ -21,7 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
-- The sessions popover in the gutter is wider, drag-resizable, and gives each session title a full row so long titles are readable.
 
 ### Fixed
 <!-- Bug fixes go here -->
@@ -41,20 +40,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
-## [0.72.1] - 2026-08-04
+## [0.72.2] - 2026-08-04
 
 
 ### Added
 <!-- New features go here -->
+- Organizations can now be created from a released build, not only in development builds.
 - The organization inbox is reachable from any project: a title-bar button badges unread messages, and the account menu gains a Messages entry.
+- Spreadsheets can freeze columns and header rows again, and a selection now spans the frozen edge whether you drag it, select all, or copy it.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
 - Double-clicking a cell in the tracker table now edits it in place; the key, type and date columns still open the item.
 - Inbox rows are shorter and lead with what each delivery points at, with unread and source-type filters and a click that previews instead of navigating away.
+- The sessions popover in the gutter is wider, drag-resizable, and gives each session title a full row so long titles are readable.
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Yes/no questions from the agent now show both answers as pickable buttons and wait for you to choose, instead of a single control that submitted "no" untouched.
+- Team conversations open on the newest message and follow the one you send, while holding your place if you have scrolled up to read.
 - Shared documents and team collaboration connect again after the sync server started rejecting the desktop app's connections.
 - Shared documents retry sync after a sign-in token refresh fails, instead of sitting on a connection that never comes back.
 - Team messages raise a desktop notification, and a direct message is titled after the other person, when more than one account is signed in.
