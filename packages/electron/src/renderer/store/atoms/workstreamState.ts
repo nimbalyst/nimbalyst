@@ -655,7 +655,7 @@ export const setWorktreeActiveSessionAtom = atom(
  */
 export const setWorkstreamActiveChildAtom = atom(
   null,
-  (get, set, { workstreamId, childId }: { workstreamId: string; childId: string }) => {
+  (get, set, { workstreamId, childId }: { workstreamId: string; childId: string | null }) => {
     set(workstreamStateAtom(workstreamId), { activeChildId: childId });
   }
 );
