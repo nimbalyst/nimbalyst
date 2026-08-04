@@ -224,18 +224,6 @@ describe('queuedPromptDispatcher token owner', () => {
 
     expect(onChainSettled).not.toHaveBeenCalled();
   });
-    vi.useFakeTimers();
-    const store = queueStoreFor(claimed());
-    vi.mocked(store.beginDispatch).mockResolvedValue({ outcome: 'stale_owner' });
-    const options = optionsFor(store);
-    await expect(tryClaimAndDispatchNextQueuedPrompt(options)).resolves.toBe(true);
-    await vi.runAllTimersAsync();
-    expect(options.sendMessageHandler).not.toHaveBeenCalled();
-    expect(store.completeAfterDispatch).not.toHaveBeenCalled();
-    expect(store.failAfterDispatch).not.toHaveBeenCalled();
-    expect(options.continueQueuedPromptChain).not.toHaveBeenCalled();
-    expect(options.onChainSettled).not.toHaveBeenCalled();
-  });
 
   it('fails the same begun token on send error and only then continues', async () => {
     vi.useFakeTimers();
