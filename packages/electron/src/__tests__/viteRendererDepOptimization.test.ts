@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Guards the renderer's `optimizeDeps` policy for RevoGrid (NIM-2165).
  *

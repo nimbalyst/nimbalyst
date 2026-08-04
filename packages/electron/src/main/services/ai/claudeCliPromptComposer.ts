@@ -22,6 +22,8 @@
  * full document content — the CLI reads the document itself (Read for file
  * paths, the readCollabDoc MCP tool for collab:// URIs).
  */
+import type { PromptProvenance } from '@nimbalyst/runtime/ai/server/types';
+
 export interface ClaudeCliDocumentContext {
   filePath?: string | null;
   fileType?: string | null;
@@ -31,6 +33,7 @@ export interface ClaudeCliDocumentContext {
    * tolerate both (mirrors DocumentContextService.normalizeTextSelection).
    */
   textSelection?: { text?: string | null } | string | null;
+  promptProvenance?: PromptProvenance;
 }
 
 /** Extract the selection text from either supported textSelection shape. */

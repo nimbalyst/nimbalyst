@@ -57,7 +57,11 @@ export const hydrateTrackerPersonalStateAtom = atom(null, async (_get, set, inpu
         ...current,
         scope: hydration.scope,
         hydrated: true,
-        rowsByItemId: new Map(hydration.rows.map((row) => [row.itemId, row])),
+        rowsByItemId: new Map(
+          hydration.rows
+            .filter((row) => !row.itemId.startsWith('document:'))
+            .map((row) => [row.itemId, row]),
+        ),
       };
     });
   } catch (error) {
@@ -156,6 +160,7 @@ export const recordTrackerOpenedAtom = atom(null, async (get, set, input: { item
 });
 
 export const applyTrackerPersonalStateRowAtom = atom(null, (get, set, row: TrackerPersonalStateDto) => {
+  if (row.itemId.startsWith('document:')) return;
   const current = get(trackerPersonalStateAtom);
   if (!current.hydrated || current.scope !== row.scope) return;
   if ((current.identityEmail ?? '').toLowerCase() !== row.userEmail.toLowerCase()) return;

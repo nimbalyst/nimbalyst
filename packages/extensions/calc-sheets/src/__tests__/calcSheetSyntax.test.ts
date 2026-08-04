@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { tokenizeCalcSheetLine } from '../calcSheetSyntax';
 
 function tokenTexts(line: string) {

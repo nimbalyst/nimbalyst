@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { FilesEmptyTipDisplay } from '../tips/FilesEmptyTipDisplay';
 
 export type WelcomeFileQuickPick = 'markdown' | 'mockup' | 'diagram';

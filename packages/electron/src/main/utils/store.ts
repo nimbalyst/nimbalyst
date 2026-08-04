@@ -22,9 +22,19 @@ export type ReleaseChannel = 'stable' | 'alpha';
 export type PreferredTerminalShell = 'auto' | 'pwsh' | 'powershell' | 'git-bash' | 'wsl' | 'cmd';
 export type WorkspaceFileTreeFilter = 'all' | 'markdown' | 'known' | 'git-uncommitted' | 'git-worktree' | 'ai-read' | 'ai-written';
 export type TrackerSyncModeSetting = 'local' | 'shared' | 'hybrid';
+export type AttachmentStagingMode = 'temp' | 'workspace' | 'custom';
+export interface AttachmentStagingConfig {
+  mode: AttachmentStagingMode;
+  customPath?: string;
+}
 export interface TrackerSyncPolicySetting {
   mode: TrackerSyncModeSetting;
   scope?: 'project' | 'workspace';
+}
+
+export interface TeamManagementWindowState {
+  bounds: { x: number; y: number; width: number; height: number };
+  maximized: boolean;
 }
 
 /**
@@ -77,9 +87,11 @@ interface AppStoreSchema {
   // Shared fallback for native file/folder dialogs outside workspace context.
   lastDialogDirectory?: string;
   // Organization the org-management window falls back to when opened without an
-  // explicit orgId (Window > Organization Manager, or the switcher's untargeted
+  // explicit orgId (Window > Organization Messages, or the switcher's untargeted
   // entries). Written whenever the selection changes.
   lastSelectedOrgId?: string;
+  // Bounds for the single global organization-management window.
+  teamManagementWindowState?: TeamManagementWindowState;
   // Default AI model for new sessions (format: "provider:model" e.g., "claude-code:sonnet")
   defaultAIModel?: string;
   // Defaults for the composer's effort / extended-thinking selectors. Both are
@@ -133,6 +145,7 @@ interface AppStoreSchema {
     // content, so only loopback hosts are accepted (see setClaudeCodeApiUpstreamUrl).
     apiUpstreamUrl?: string;
   };
+  attachmentStaging?: AttachmentStagingConfig;
   // OpenAI Codex settings
   openaiCodex?: {
     // Which codex transport to use for new sessions. 'app-server' (default)
@@ -839,6 +852,17 @@ export function saveSessionState(state: SessionState): void {
 
 export function clearSessionState(): void {
   getAppStore().delete('sessionState');
+}
+
+export function getTeamManagementWindowState(): TeamManagementWindowState | undefined {
+  return getAppStore().get('teamManagementWindowState');
+}
+
+export function saveTeamManagementWindowState(state: TeamManagementWindowState): void {
+  getAppStore().set('teamManagementWindowState', {
+    bounds: { ...state.bounds },
+    maximized: state.maximized,
+  });
 }
 
 export function getTheme(): AppTheme {
@@ -1786,6 +1810,33 @@ export function getClaudeCodeSettings(): {
     userCommandsEnabled: settings.userCommandsEnabled ?? true,
     apiUpstreamUrl: settings.apiUpstreamUrl,
   };
+}
+
+export function getAttachmentStagingConfig(): AttachmentStagingConfig {
+  const stored = getAppStore().get('attachmentStaging');
+  const mode = stored?.mode === 'workspace' || stored?.mode === 'custom'
+    ? stored.mode
+    : 'temp';
+  return {
+    mode,
+    ...(mode === 'custom' && typeof stored?.customPath === 'string'
+      ? { customPath: stored.customPath }
+      : {}),
+  };
+}
+
+export function setAttachmentStagingConfig(config: AttachmentStagingConfig): void {
+  const mode: AttachmentStagingMode =
+    config.mode === 'workspace' || config.mode === 'custom' ? config.mode : 'temp';
+  if (mode === 'custom' && (!config.customPath?.trim() || !path.isAbsolute(config.customPath.trim()))) {
+    throw new Error('Custom attachment staging path must be absolute');
+  }
+  getAppStore().set('attachmentStaging', {
+    mode,
+    ...(mode === 'custom' && config.customPath?.trim()
+      ? { customPath: config.customPath.trim() }
+      : {}),
+  });
 }
 
 /**

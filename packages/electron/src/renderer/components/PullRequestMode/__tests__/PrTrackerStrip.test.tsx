@@ -52,7 +52,7 @@ describe('PrTrackerStrip linked sessions', () => {
   it('renders a linked session as a titled chip with its provider glyph', () => {
     renderStrip([session('s-1', 'PR 978 contribution review', 'claude-code')], onOpenSession);
 
-    expect(screen.getByText('PR 978 contribution review')).toBeTruthy();
+    screen.getByText('PR 978 contribution review');
     expect(screen.queryByText('Session')).toBeNull();
     const chip = document.querySelector('.session-reference-chip');
     expect(chip?.getAttribute('data-session-id')).toBe('s-1');
@@ -89,12 +89,12 @@ describe('PrTrackerStrip linked sessions', () => {
       onOpenSession,
     );
 
-    expect(screen.getByText('First review')).toBeTruthy();
-    expect(screen.getByText('Second review')).toBeTruthy();
+    screen.getByText('First review');
+    screen.getByText('Second review');
     expect(screen.queryByText('Third review')).toBeNull();
 
     fireEvent.click(screen.getByTestId('pr-open-session'));
 
-    expect(screen.getByText('Third review')).toBeTruthy();
+    screen.getByText('Third review');
   });
 });

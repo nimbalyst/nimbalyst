@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { getMonacoTheme, toMonacoExtensionThemeName } from '../monacoUtils';
 import { registerThemeContribution } from '../../editor/themes/registry';

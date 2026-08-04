@@ -867,6 +867,18 @@ export function registerWorktreeHandlers(): void {
       const worktreeStore = createWorktreeStore(db);
       await worktreeStore.updatePinned(worktreeId, isPinned);
 
+      // Notify all windows so every surface showing this worktree (sidebar
+      // group, Agent mode header) reflects the new pin state.
+      const windows = BrowserWindow.getAllWindows();
+      for (const window of windows) {
+        if (!window.isDestroyed()) {
+          window.webContents.send('worktree:pinned-updated', {
+            worktreeId,
+            isPinned,
+          });
+        }
+      }
+
       return {
         success: true,
       };

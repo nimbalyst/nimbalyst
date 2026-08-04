@@ -40,9 +40,10 @@ describe('UnifiedOnboarding referral options', () => {
       const renderedOption = within(referralSelect).getByRole('option', { name: option.label });
       expect((renderedOption as HTMLOptionElement).value).toBe(option.value);
       fireEvent.change(referralSelect, { target: { value: option.value } });
-      fireEvent.click(screen.getByRole('button', { name: 'Get Started' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Get started…' }));
       expect(onComplete).toHaveBeenLastCalledWith(
         expect.objectContaining({ referralSource: option.value }),
+        'get-started',
       );
     }
   });
@@ -69,10 +70,11 @@ describe('UnifiedOnboarding referral options', () => {
     fireEvent.change(screen.getByLabelText('What did you search for?'), {
       target: { value: 'AI code editor' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Get Started' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Get started…' }));
 
     expect(onComplete).toHaveBeenCalledWith(
       expect.objectContaining({ referralSource: 'search:AI code editor' }),
+      'get-started',
     );
   });
 });

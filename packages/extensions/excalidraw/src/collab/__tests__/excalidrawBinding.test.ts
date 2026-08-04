@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Regression test: when ExcalidrawBinding is created against a Y.Doc that
  * already has elements (the recipient case for a shared doc), the binding

@@ -1,0 +1,142 @@
+/**
+ * Compact tracker metadata chips, shared by every surface that shows a
+ * tracker item's fields. Surfaces add their own class to the row (see
+ * `className`) when they need layout tweaks; the chip itself stays identical.
+ */
+
+.tracker-field-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px;
+  max-height: 58px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.tracker-field-pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 190px;
+  height: 24px;
+  margin: 0;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--nim-text-muted);
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.tracker-field-pill:hover,
+.tracker-field-pill[aria-expanded='true'] {
+  color: var(--nim-text);
+  background: var(--nim-bg-hover);
+}
+
+.tracker-field-pill:focus-visible {
+  outline: 2px solid var(--nim-border-focus);
+  outline-offset: 1px;
+}
+
+/*
+ * Unset fields are affordances, not data: they stay dashed and give up width so
+ * the fields that carry a value get the room.
+ */
+.tracker-field-pill-empty {
+  max-width: 130px;
+  color: var(--nim-text-faint);
+  background: transparent;
+  border-style: dashed;
+}
+
+.tracker-field-pill:disabled {
+  color: var(--nim-text-disabled);
+  cursor: default;
+}
+
+.tracker-field-pill-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tracker-field-pill-icon {
+  flex: none;
+}
+
+/*
+ * Keep bracket/comma-heavy arbitrary Tailwind classes off portaled surfaces:
+ * jsdom's selector engine can turn those class names into invalid :has()
+ * selectors while tests inspect an open popover.
+ */
+.tracker-field-popover {
+  z-index: 10000;
+  width: min(320px, calc(100vw - 16px));
+  min-width: 220px;
+  padding: 10px;
+  overflow-y: auto;
+  color: var(--nim-text);
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--nim-text) 16%, transparent);
+}
+
+/* Every field editor is headed by the field it edits. */
+.tracker-field-popover-header {
+  display: block;
+  margin: 0 0 6px;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--nim-text-muted);
+}
+
+.tracker-field-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.tracker-field-choice {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  color: var(--nim-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tracker-field-choice:hover,
+.tracker-field-choice-selected {
+  background: var(--nim-bg-hover);
+}
+
+.tracker-field-choice-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

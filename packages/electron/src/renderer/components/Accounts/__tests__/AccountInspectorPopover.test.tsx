@@ -34,9 +34,9 @@ describe('AccountInspectorPopover', () => {
     );
 
     // The active (sync) account's email appears, not a list of every account/project.
-    expect(screen.getByText('me@example.com')).toBeTruthy();
+    screen.getByText('me@example.com');
     expect(screen.queryByText('other@example.com')).toBeNull();
-    expect(screen.getByText('Work Team')).toBeTruthy();
+    screen.getByText('Work Team');
 
     fireEvent.click(screen.getByTestId('account-inspector-account-row'));
     expect(onOpenAccount).toHaveBeenCalledTimes(1);
@@ -83,8 +83,8 @@ describe('AccountInspectorPopover', () => {
       />,
     );
 
-    expect(screen.getByText('Sign in')).toBeTruthy();
-    expect(screen.getByText('No organization')).toBeTruthy();
+    screen.getByText('Sign in');
+    screen.getByText('No organization');
 
     // With no project org, the org row opens the window with no target (create flow).
     fireEvent.click(screen.getByTestId('account-inspector-organization-row'));

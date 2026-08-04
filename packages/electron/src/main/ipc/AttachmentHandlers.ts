@@ -2,10 +2,19 @@
  * IPC handlers for chat attachment operations
  */
 
-import { BrowserWindow, app } from 'electron';
+import { BrowserWindow } from 'electron';
 import { AttachmentService } from '../services/AttachmentService';
 import { getWindowId, windowStates } from '../window/WindowManager';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
+import { getAttachmentStagingConfig, setAttachmentStagingConfig } from '../utils/store';
+import { resolveWorkspaceAttachmentStagingDirectory } from '../services/attachments/attachmentStagingRoot';
+import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
+import { promises as fs } from 'fs';
+import type { ChatAttachment } from '@nimbalyst/runtime';
+import {
+  appendAttachmentGitignore,
+  getAttachmentGitignoreStatus,
+} from '../services/attachments/attachmentGitignore';
 
 // Map of workspace paths to AttachmentService instances
 const attachmentServices = new Map<string, AttachmentService>();
@@ -14,14 +23,62 @@ const attachmentServices = new Map<string, AttachmentService>();
  * Get or create an AttachmentService for a workspace
  */
 function getAttachmentService(workspacePath: string): AttachmentService {
-  if (!attachmentServices.has(workspacePath)) {
-    const userDataPath = app.getPath('userData');
-    attachmentServices.set(workspacePath, new AttachmentService(workspacePath, userDataPath));
+  const config = getAttachmentStagingConfig();
+  const stagingDirectory = resolveWorkspaceAttachmentStagingDirectory(workspacePath);
+  const key = `${workspacePath}\0${config.mode}\0${stagingDirectory}`;
+  if (!attachmentServices.has(key)) {
+    addNimAssetRoot(stagingDirectory);
+    attachmentServices.set(key, new AttachmentService(workspacePath, stagingDirectory, config.mode));
   }
-  return attachmentServices.get(workspacePath)!;
+  return attachmentServices.get(key)!;
 }
 
 export function registerAttachmentHandlers() {
+  safeHandle('attachment:workspace-staging-status', async (_event, workspacePath: string) => {
+    if (!workspacePath) throw new Error('attachment:workspace-staging-status requires workspacePath');
+    return getAttachmentGitignoreStatus(workspacePath);
+  });
+
+  safeHandle('attachment:append-workspace-gitignore', async (_event, workspacePath: string) => {
+    if (!workspacePath) throw new Error('attachment:append-workspace-gitignore requires workspacePath');
+    return appendAttachmentGitignore(workspacePath, true);
+  });
+
+  safeHandle('attachment:retry-in-workspace', async (event, payload: {
+    workspacePath: string;
+    sessionId: string;
+    attachments: ChatAttachment[];
+    addGitignore: boolean;
+  }) => {
+    if (!payload?.workspacePath) throw new Error('attachment:retry-in-workspace requires workspacePath');
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const windowId = window ? getWindowId(window) : null;
+    const callerWorkspace = windowId === null ? undefined : windowStates.get(windowId)?.workspacePath;
+    if (callerWorkspace !== payload.workspacePath) {
+      throw new Error('attachment:retry-in-workspace workspace does not match the calling window');
+    }
+
+    setAttachmentStagingConfig({ mode: 'workspace' });
+    const service = getAttachmentService(payload.workspacePath);
+    const restaged: ChatAttachment[] = [];
+    for (const attachment of payload.attachments ?? []) {
+      const buffer = await fs.readFile(attachment.filepath);
+      const result = await service.saveAttachment(
+        buffer,
+        attachment.filename,
+        attachment.mimeType,
+        payload.sessionId,
+      );
+      if (!result.success || !result.attachment) {
+        return { success: false, error: result.error ?? `Failed to re-stage ${attachment.filename}` };
+      }
+      restaged.push(result.attachment);
+    }
+
+    await appendAttachmentGitignore(payload.workspacePath, payload.addGitignore);
+    return { success: true, attachments: restaged };
+  });
+
   /**
    * Save an attachment file
    */

@@ -59,10 +59,13 @@ export function gitSandboxEnv(
     if (key.startsWith('GIT_')) delete env[key];
   }
   // A test must never launch an interactive editor (it would hang the suite),
-  // pager, or visual tool. simple-git also rejects these inherited variables
-  // unless callers enable unsafe flags, which sandboxed fixtures should not.
+  // pager, askpass helper, or visual tool. simple-git also rejects these
+  // inherited variables unless callers enable unsafe flags, which sandboxed
+  // fixtures should not. JetBrains IDEs export SSH_ASKPASS separately from the
+  // GIT_* namespace when running hooks.
   delete env.EDITOR;
   delete env.PAGER;
+  delete env.SSH_ASKPASS;
   delete env.VISUAL;
   if (pinConfigPaths) {
     // A path that does not exist reads as an empty config, so the developer's

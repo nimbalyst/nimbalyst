@@ -3,12 +3,16 @@ import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import {
   $getSelection,
+  $getNearestNodeFromDOMNode,
+  $getNodeByKey,
   $isRangeSelection,
   $createParagraphNode,
   TextNode,
   $createTextNode,
-  isDOMNode
+  isDOMNode,
+  type LexicalEditor,
 } from 'lexical';
+import { $isLinkNode, LinkNode } from '@lexical/link';
 import { $createDocumentReferenceNode } from './DocumentLinkNode';
 import { DocumentService } from '../../core/DocumentService';
 import documentLinkStyles from './DocumentLinkPlugin.css?inline';
@@ -20,6 +24,10 @@ import { isEmbeddableUrl } from '../../editor/plugins/EmbedPlugin/embeddableExte
 import { useDocumentPath } from '../../DocumentPathContext';
 import { resolveDocumentLinkLookupPath, isCollabReferenceHref } from './documentLinkPaths';
 import { isWorkspaceFileHref } from '../../editor/utils/workspaceLinkNavigation';
+import {
+  dispatchAppActionHref,
+  isAppActionHref,
+} from '../../utils/appActionLinks';
 
 /**
  * A shared/collaborative document the `@` typeahead can reference when the
@@ -136,6 +144,85 @@ function getWorkspaceFileAnchor(target: Node): HTMLAnchorElement | null {
   return isWorkspaceFileHref(anchor.getAttribute('href')) ? anchor : null;
 }
 
+function getAppActionHref(
+  target: Node,
+  editor: LexicalEditor,
+): string | null {
+  const targetElement =
+    typeof Element !== 'undefined' && target instanceof Element
+      ? target
+      : target.parentElement;
+  const anchor = targetElement?.closest('a[href]');
+  if (!(anchor instanceof HTMLAnchorElement)) {
+    return null;
+  }
+
+  const renderedHref = anchor.getAttribute('href');
+  if (isAppActionHref(renderedHref)) {
+    return renderedHref;
+  }
+
+  // Lexical sanitizes non-web LinkNode schemes to `about:blank` in the DOM.
+  // Read the authored URL from the backing node so the reserved app-action
+  // namespace can still be intercepted before ClickableLink opens it.
+  return editor.read(() => {
+    let lexicalNode = $getNearestNodeFromDOMNode(anchor);
+    while (lexicalNode && !$isLinkNode(lexicalNode)) {
+      lexicalNode = lexicalNode.getParent();
+    }
+    if (!$isLinkNode(lexicalNode)) {
+      return null;
+    }
+    const authoredHref = lexicalNode.getURL();
+    return isAppActionHref(authoredHref) ? authoredHref : null;
+  });
+}
+
+/**
+ * Put the authored path back on workspace-file anchors.
+ *
+ * Lexical builds a LinkNode's `href` with `sanitizeUrl` -> `formatUrl`, which
+ * prefixes any URL that lacks a scheme and doesn't start with `/`, `.`, or `#`
+ * with `https://`. So `[brief](documents/brief.md)` renders as
+ * `href="https://documents/brief.md"`, and every DOM-level consumer then reads
+ * it as an external web link — the renderer's global link handler sends it to
+ * the user's browser as a broken URL. The node keeps the authored URL, so
+ * markdown export is unaffected; only the rendered attribute is wrong.
+ */
+function registerWorkspaceFileHrefRepair(editor: LexicalEditor): () => void {
+  const repairKeys = (keys: Iterable<string>) => {
+    editor.getEditorState().read(() => {
+      for (const key of keys) {
+        const node = $getNodeByKey(key);
+        if (!$isLinkNode(node)) continue;
+        const authoredUrl = node.getURL();
+        if (!isWorkspaceFileHref(authoredUrl)) continue;
+        const element = editor.getElementByKey(key);
+        if (
+          element instanceof HTMLAnchorElement &&
+          element.getAttribute('href') !== authoredUrl
+        ) {
+          element.setAttribute('href', authoredUrl);
+        }
+      }
+    });
+  };
+
+  return editor.registerMutationListener(
+    LinkNode,
+    (mutations) => {
+      const changed: string[] = [];
+      for (const [key, mutation] of mutations) {
+        if (mutation !== 'destroyed') changed.push(key);
+      }
+      if (changed.length > 0) repairKeys(changed);
+    },
+    // Links present in the initial editor state (every markdown document that
+    // is opened, not just ones edited afterwards) must be repaired too.
+    { skipInitialization: false },
+  );
+}
+
 interface DocumentLinkPluginProps {
   documentService: DocumentService;
   TypeaheadMenuPlugin: React.ComponentType<any>;
@@ -166,6 +253,8 @@ export function DocumentLinkPlugin({
   const lastFetchTimeRef = useRef<number>(0);
   const CACHE_DURATION_MS = 5000; // 5 second cache
 
+  useEffect(() => registerWorkspaceFileHrefRepair(editor), [editor]);
+
   useEffect(() => {
     const handleDocumentReferenceClick = (event: MouseEvent, allowButton: (button: number) => boolean) => {
       if (event.defaultPrevented || !allowButton(event.button)) {
@@ -174,6 +263,23 @@ export function DocumentLinkPlugin({
 
       const target = event.target;
       if (!isDOMNode(target)) {
+        return;
+      }
+
+      const appActionHref = getAppActionHref(target, editor);
+      if (appActionHref) {
+        const selectionPreventsNavigation = editor
+          .getEditorState()
+          .read(() => {
+            const selection = $getSelection();
+            return $isRangeSelection(selection) && !selection.isCollapsed();
+          });
+
+        event.preventDefault();
+        event.stopPropagation();
+        if (!selectionPreventsNavigation) {
+          dispatchAppActionHref(appActionHref);
+        }
         return;
       }
 

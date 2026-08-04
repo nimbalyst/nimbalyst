@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 // Pure-utility imports only. Do NOT import from `../TableTransformer` here -
 // that file transitively imports the markdown directory which has a

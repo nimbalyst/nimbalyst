@@ -142,6 +142,12 @@ export class TranscriptWriter {
       deniedReason?: string;
       deniedReasonType?: string;
       deniedInput?: Record<string, unknown>;
+      isAttachmentStagingDenied?: boolean;
+      attachmentPath?: string;
+      attachmentFilename?: string;
+      attachmentStagingMode?: 'temp' | 'workspace' | 'custom';
+      attachmentDenyRule?: string;
+      attachmentDetection?: 'reactive' | 'preflight';
       searchable?: boolean;
       createdAt?: Date;
     },
@@ -155,6 +161,12 @@ export class TranscriptWriter {
       ...(options?.deniedReason ? { deniedReason: options.deniedReason } : {}),
       ...(options?.deniedReasonType ? { deniedReasonType: options.deniedReasonType } : {}),
       ...(options?.deniedInput ? { deniedInput: options.deniedInput } : {}),
+      ...(options?.isAttachmentStagingDenied ? { isAttachmentStagingDenied: true } : {}),
+      ...(options?.attachmentPath ? { attachmentPath: options.attachmentPath } : {}),
+      ...(options?.attachmentFilename ? { attachmentFilename: options.attachmentFilename } : {}),
+      ...(options?.attachmentStagingMode ? { attachmentStagingMode: options.attachmentStagingMode } : {}),
+      ...(options?.attachmentDenyRule ? { attachmentDenyRule: options.attachmentDenyRule } : {}),
+      ...(options?.attachmentDetection ? { attachmentDetection: options.attachmentDetection } : {}),
     };
 
     return this.insertEvent(sessionId, {

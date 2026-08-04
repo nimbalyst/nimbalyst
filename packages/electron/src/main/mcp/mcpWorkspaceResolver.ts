@@ -1,5 +1,6 @@
 import { BrowserWindow } from "electron";
 import { findWindowByWorkspace } from "../window/WindowManager";
+import { notifyWorkspaceWindowAvailable } from "../window/workspaceWindowAvailability";
 import {
   getBackendTools as registryGetBackendTools,
   getVoiceEnabledBackendTools as registryGetVoiceBackendTools,
@@ -257,6 +258,10 @@ export function registerWorkspaceWindow(
 ) {
   const isNew = !workspaceToWindowMap.has(workspacePath);
   workspaceToWindowMap.set(workspacePath, windowId);
+
+  // Wake anything deferred on "no window for this workspace" — notably queued
+  // prompts that arrived from mobile while the project was closed (#962).
+  notifyWorkspaceWindowAvailable(workspacePath);
 
   // First time we see a window for this workspace? Re-check any wakeups
   // that were waiting for it. Imported lazily to avoid circular imports

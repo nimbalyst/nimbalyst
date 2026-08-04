@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Settings navigation destination-leak guard (settings review finding).
  *

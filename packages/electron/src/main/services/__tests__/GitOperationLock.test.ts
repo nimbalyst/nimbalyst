@@ -1,3 +1,6 @@
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock electron-log before importing the module under test
@@ -164,5 +167,46 @@ describe('GitOperationLock', () => {
     resolveOp!();
     await Promise.all([op1, op2]);
     expect(gitOperationLock.getWaitingCount('/repo')).toBe(0);
+  });
+
+  /**
+   * NIM-2284: the queue used to key on the caller's raw string, so the same
+   * repository reached by a symlink, a trailing slash, or different letter case
+   * got its own queue — the lock looked healthy while serializing nothing.
+   */
+  it('serializes callers that spell the same repository differently', async () => {
+    const realRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'nim-lock-real-'));
+    const linkedRepo = path.join(os.tmpdir(), `nim-lock-link-${process.pid}`);
+    await fs.rm(linkedRepo, { force: true });
+    await fs.symlink(realRepo, linkedRepo);
+
+    try {
+      const order: string[] = [];
+      let releaseFirst!: () => void;
+      const firstMayFinish = new Promise<void>((resolve) => { releaseFirst = resolve; });
+
+      const first = gitOperationLock.withLock(realRepo, 'first', async () => {
+        order.push('first:start');
+        await firstMayFinish;
+        order.push('first:end');
+      });
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Same repository, reached through a symlink and with a trailing separator.
+      const second = gitOperationLock.withLock(`${linkedRepo}${path.sep}`, 'second', async () => {
+        order.push('second');
+      });
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(order).toEqual(['first:start']);
+      expect(gitOperationLock.getWaitingCount(realRepo)).toBe(1);
+
+      releaseFirst();
+      await Promise.all([first, second]);
+      expect(order).toEqual(['first:start', 'first:end', 'second']);
+    } finally {
+      await fs.rm(linkedRepo, { force: true });
+      await fs.rm(realRepo, { recursive: true, force: true });
+    }
   });
 });

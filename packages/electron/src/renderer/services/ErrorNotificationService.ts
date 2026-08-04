@@ -76,6 +76,12 @@ class ErrorNotificationService {
       details?: string;
       duration?: number;
       action?: NotificationAction;
+      /**
+       * Bypass the 5s duplicate suppression. Set this when the notification is
+       * the direct result of a user action (e.g. a Retry button) — otherwise a
+       * fast retry that fails the same way looks like it did nothing.
+       */
+      allowDuplicate?: boolean;
     }
   ): string {
     return this.notify({
@@ -133,12 +139,14 @@ class ErrorNotificationService {
     context?: Record<string, any>;
     duration?: number;
     action?: NotificationAction;
+    allowDuplicate?: boolean;
   }): string {
+    const { allowDuplicate, ...notificationOptions } = options;
     // Deduplicate: suppress identical title+message within the dedup window
     const dedupKey = `${options.severity}:${options.title}:${options.message}`;
     const now = Date.now();
     const existing = this.recentErrorKeys.get(dedupKey);
-    if (existing && (now - existing.firstSeen) < ErrorNotificationService.DEDUP_WINDOW_MS) {
+    if (!allowDuplicate && existing && (now - existing.firstSeen) < ErrorNotificationService.DEDUP_WINDOW_MS) {
       existing.count++;
       // Still log to console so devs can see the repeat count
       console.debug(`[ErrorNotificationService] Suppressed duplicate (x${existing.count}): ${options.title}: ${options.message}`);
@@ -160,7 +168,7 @@ class ErrorNotificationService {
       timestamp: Date.now(),
       dismissible: true,
       duration: options.duration ?? (options.severity === 'error' ? 0 : 10000),
-      ...options
+      ...notificationOptions
     };
 
     this.notifications.push(notification);

@@ -27,6 +27,12 @@ export type TeamRoomId = `org:${string}:team`;
 /** ProjectSync room ID format: org:{orgId}:user:{userId}:project:{projectId} (user-scoped, one per user+project) */
 export type PersonalProjectSyncRoomId = `org:${string}:user:${string}:project:${string}`;
 
+/** Conversation room ID format: org:{orgId}:conversation:{conversationId} (org-scoped, one DO per conversation) */
+export type ConversationRoomId = `org:${string}:conversation:${string}`;
+
+/** Team inbox room ID format: org:{orgId}:user:{userId}:inbox (user-scoped, one per member per org) */
+export type TeamInboxRoomId = `org:${string}:user:${string}:inbox`;
+
 export type RoomId =
   | PersonalSessionRoomId
   | PersonalIndexRoomId
@@ -34,4 +40,29 @@ export type RoomId =
   | TeamDocumentRoomId
   | TeamTrackerRoomId
   | TeamRoomId
-  | PersonalProjectSyncRoomId;
+  | PersonalProjectSyncRoomId
+  | ConversationRoomId
+  | TeamInboxRoomId;
+
+/**
+ * Build the conversation room id the server parses with
+ * `/^org:([^:]+):conversation:([^:]+)$/`.
+ */
+export function conversationRoomId(
+  orgId: string,
+  conversationId: string
+): ConversationRoomId {
+  return `org:${orgId}:conversation:${conversationId}`;
+}
+
+/**
+ * Build the per-member organization inbox room id the server parses with
+ * `/^org:([^:]+):user:([^:]+):inbox$/`. `userId` is the org-scoped team
+ * member id, never the personal user id (see jwtScopes).
+ */
+export function teamInboxRoomId(
+  orgId: string,
+  userId: string
+): TeamInboxRoomId {
+  return `org:${orgId}:user:${userId}:inbox`;
+}

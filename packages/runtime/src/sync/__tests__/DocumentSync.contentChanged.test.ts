@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
 import { DocumentSyncProvider } from '../DocumentSync';
@@ -10,7 +11,6 @@ describe('DocumentSyncProvider content change signal', () => {
       serverUrl: 'wss://example.invalid',
       getJwt: async () => 'jwt',
       orgId: 'org-1',
-      keyCustody: 'server-managed',
       userId: 'user-1',
       documentId: 'doc-1',
       onContentChanged,
@@ -31,7 +31,6 @@ describe('DocumentSyncProvider content change signal', () => {
       serverUrl: 'wss://example.invalid',
       getJwt: async () => 'jwt',
       orgId: 'org-1',
-      keyCustody: 'server-managed',
       userId: 'user-1',
       documentId: 'doc-1',
       onContentChanged: () => { throw new Error('host serialization failed'); },
@@ -55,7 +54,6 @@ describe('DocumentSyncProvider content change signal', () => {
       serverUrl: 'wss://example.invalid',
       getJwt: async () => 'jwt',
       orgId: 'org-1',
-      keyCustody: 'server-managed',
       userId: 'user-1',
       documentId: 'doc-1',
       onLocalUpdate: () => { throw new Error('analytics unavailable'); },

@@ -1,0 +1,70 @@
+.collab-bundle-editor {
+  container-name: collab-bundle-editor;
+  container-type: inline-size;
+  block-size: 100%;
+  inline-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+  background: var(--nim-bg);
+  color: var(--nim-text);
+}
+
+.collab-bundle-editor > .nimbalyst-editor,
+.collab-bundle-editor .editor-shell,
+.collab-bundle-editor .editor-container {
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.collab-bundle-editor .editor-scroller.select-text {
+  user-select: text;
+}
+
+/* Announcements are for assistive tech only: kept in the accessibility tree,
+   out of the visual layout, and never `display: none` (which would remove the
+   live region entirely). */
+.collab-bundle-presence-announcements {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The floating menus (table cell actions, the code block menu) rely on the
+   user-agent focus ring, whose blue is close to invisible on the dark themes
+   this surface ships with. `--nim-border-focus` restores the contrast; the
+   negative offset draws the ring inside the item so a menu that clips its
+   overflow cannot cut it off. */
+.collab-bundle-editor .dropdown .item:focus-visible {
+  outline: 2px solid var(--nim-border-focus, #3b82f6);
+  outline-offset: -2px;
+}
+
+/* Remote cursors -----------------------------------------------------------
+   `@lexical/yjs` builds the cursor layer imperatively and writes every style
+   inline, so overriding it needs `!important`. The shape it produces is
+   container > div > span (one selection rectangle) > span (the caret, on the
+   last rectangle only) > span (the name label).
+
+   The label ships as white text on the participant's color. Every color in the
+   presence palette lands between 2.9:1 and 4.7:1 against white, so most names
+   fail WCAG AA at 12px bold. The same palette carries black text at 4.5:1 or
+   better, so the identity color is kept and the name becomes legible. */
+.collab-bundle-editor .collab-cursors-container > div > span > span > span {
+  color: #000 !important;
+  border-radius: 3px;
+}
+
+/* The one animation on this surface: remote cursors cross-fade when they go
+   idle. */
+@media (prefers-reduced-motion: reduce) {
+  .collab-bundle-editor .collab-cursors-container > div > span {
+    transition: none !important;
+  }
+}

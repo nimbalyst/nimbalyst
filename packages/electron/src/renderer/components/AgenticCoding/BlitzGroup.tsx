@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, memo, useMemo, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { WorktreeIcon } from '../common/WorktreeIcon';
 import { groupSessionStatusAtom, sessionProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom } from '../../store';
 import { SessionContextMenu } from './SessionContextMenu';
 import { SessionRelativeTime } from './SessionRelativeTime';
@@ -153,13 +154,7 @@ const BlitzSessionRow: React.FC<{
       {isAnalysis ? (
         <MaterialSymbol icon="compare_arrows" size={14} />
       ) : (
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="3" y="2" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-          <rect x="10" y="2" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-          <rect x="3" y="11" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-          <path d="M4.5 5v3.5a1.5 1.5 0 0 0 1.5 1.5h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-          <path d="M11.5 5v5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-        </svg>
+        <WorktreeIcon size={14} />
       )}
     </div>
     {isRenaming ? (
@@ -637,13 +632,7 @@ export const BlitzGroup: React.FC<BlitzGroupProps> = memo(({
                     <div className={`shrink-0 flex items-center justify-center ${
                       worktreeIsActive ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-muted)]'
                     }`}>
-                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <rect x="3" y="2" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-                        <rect x="10" y="2" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-                        <rect x="3" y="11" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-                        <path d="M4.5 5v3.5a1.5 1.5 0 0 0 1.5 1.5h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                        <path d="M11.5 5v5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                      </svg>
+                      <WorktreeIcon size={12} />
                     </div>
                     <span className={`flex-1 text-xs whitespace-nowrap overflow-hidden text-ellipsis ${
                       worktreeIsActive ? 'font-medium text-[var(--nim-text)]' : 'text-[var(--nim-text)]'

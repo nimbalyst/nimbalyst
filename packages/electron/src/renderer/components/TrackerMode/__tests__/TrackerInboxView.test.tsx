@@ -131,7 +131,7 @@ describe('TrackerInboxView', () => {
     renderInbox([record('assigned', { owner: 'someone@example.com' })]);
 
     expect(screen.queryAllByTestId('tracker-inbox-row')).toHaveLength(0);
-    expect(screen.getByText(/Inbox zero/)).toBeTruthy();
+    screen.getByText(/Inbox zero/);
   });
 
   it('marks agent-filed items as proposals', () => {

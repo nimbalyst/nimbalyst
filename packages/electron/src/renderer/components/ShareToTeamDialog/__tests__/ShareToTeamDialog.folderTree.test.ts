@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { SharedFolder } from '../../../store/atoms/collabDocuments';
 import { buildShareFolderTree } from '../ShareToTeamDialog';

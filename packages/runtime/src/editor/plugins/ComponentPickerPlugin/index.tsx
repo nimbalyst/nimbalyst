@@ -80,24 +80,6 @@ export const MaterialIcon: React.FC<{name: string; className?: string; style?: R
   );
 };
 
-/**
- * Load Material Symbols font if not already loaded
- * Call this once at app initialization
- */
-export function ensureMaterialSymbolsLoaded() {
-  // Check if already loaded
-  if (document.getElementById('material-symbols-font')) {
-    return;
-  }
-
-  // Add the font link
-  const link = document.createElement('link');
-  link.id = 'material-symbols-font';
-  link.rel = 'stylesheet';
-  link.href = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200';
-  document.head.appendChild(link);
-}
-
 // ============================================================================
 // COMPONENT PICKER OPTIONS
 // ============================================================================
@@ -395,11 +377,6 @@ export default function ComponentPickerMenuPlugin({
   const [pluginDynamicOptions, setPluginDynamicOptions] = useState<TypeaheadMenuOption[]>([]);
   // Track contributions changes to re-render when extensions are loaded
   const [registryVersion, setRegistryVersion] = useState(0);
-
-  // Ensure Material Symbols font is loaded
-  useEffect(() => {
-    ensureMaterialSymbolsLoaded();
-  }, []);
 
   // Subscribe to extension contribution changes (e.g., when extensions load)
   useEffect(() => {

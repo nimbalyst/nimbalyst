@@ -17,6 +17,7 @@ import {
   CODE_COLLAB_FILE_EXTENSIONS,
   CodeCollabContentAdapter,
 } from '../utils/CodeCollabContentAdapter';
+import { registerElectronCollabDocumentTypes } from './ElectronCollabHost';
 
 export interface CollaborativeDocumentTypeDescriptor {
   documentType: string;
@@ -627,5 +628,10 @@ export function resetCollaborativeDocumentTypeCatalogForTests(): void {
   catalogSingleton?.dispose();
   catalogSingleton = null;
 }
+
+registerElectronCollabDocumentTypes(
+  () => getCollaborativeDocumentTypeCatalog().getDescriptors(),
+  (listener) => getCollaborativeDocumentTypeCatalog().subscribe(listener),
+);
 
 export { longestMatchingSuffix, normalizeSuffix };

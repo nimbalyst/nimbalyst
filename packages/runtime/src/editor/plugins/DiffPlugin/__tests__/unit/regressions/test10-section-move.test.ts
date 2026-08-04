@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test for section move bug - moving "Important Notes" below "Summary"
  */

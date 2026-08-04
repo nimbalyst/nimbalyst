@@ -90,10 +90,9 @@ describe('TipCard', () => {
       />
     );
 
-    expect(screen.getByText('Formatting Tip')).toBeTruthy();
+    screen.getByText('Formatting Tip');
 
     const list = screen.getByRole('list');
-    expect(list).toBeTruthy();
 
     const items = screen.getAllByRole('listitem').map((item) => item.textContent);
     expect(items).toEqual(['First item', 'Second item']);

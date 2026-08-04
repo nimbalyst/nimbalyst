@@ -4,23 +4,42 @@ A Nimbalyst extension that provides a Google Sheets-like editing experience for 
 
 ## Current Status
 
-**Phase 1 (Core Editor)**: Complete
-**Phase 2 (Formula Support)**: Complete
-**Phase 3+**: In Progress
+Shipped as marketplace extension v1.0.2. The todo list below was re-audited against the source on 2026-08-04; items that had shipped since it was first written have been moved into "What Works Now."
 
 ### What Works Now
 
-- Open and edit CSV/TSV files in a spreadsheet interface
-- Inline cell editing with RevoGrid
-- Add/delete rows and columns
+**Editing**
+
+- Open and edit CSV/TSV files in a spreadsheet interface (RevoGrid)
+- Inline cell editing; add/delete rows and columns
 - Sort columns ascending/descending
-- Formula bar showing raw formula for selected cell
-- Formula evaluation with 25+ Excel-compatible functions
-- Cell references (A1, B2) and ranges (A1:B10)
-- Error display (#REF!, #VALUE!, #DIV/0!, etc.)
+- Undo/redo with a dedicated history stack (`plugins/UndoRedoPlugin.ts`, Cmd+Z / Cmd+Shift+Z)
+- Copy/cut/paste and clear across cell ranges (Cmd+C/X/V, Delete)
+- Rectangular range selection, Cmd+A select-all, row/column header selection
+- Right-click context menu (cut/copy/paste/clear, insert/delete row/column)
+- Source mode toggle for editing raw CSV text
+
+**Formatting and layout**
+
+- Column types with formatting: text, number, currency (USD/EUR/GBP/JPY/CNY), percentage, date (4 formats), with decimal places and thousands separator (`ColumnFormatDialog.tsx`)
+- Header row designation, frozen columns, persisted column widths
+- Metadata persisted either inline as a CSV comment or in a sidecar `.csvmeta` file (workspace setting `metadataStorage`)
 - Theme integration (light/dark/crystal-dark)
-- Dirty state tracking and save integration
-- External file change detection and reload
+
+**Formulas**
+
+- Formula bar showing the raw formula for the selected cell
+- Formula evaluation via formula.js for 27 mapped functions
+- Cell references (A1, B2) and ranges (A1:B10), case-insensitive
+- Error display (#VALUE!, #NAME?, #REF!, #ERROR!)
+
+**Integration**
+
+- Collaborative editing with presence/awareness (selected cell, editing cell)
+- Diff mode for reviewing AI edits, with revert
+- Selection published to AI chat as a "+ context" range chip
+- Transcript embed support
+- Dirty state tracking, save integration, external file change detection and reload
 
 ## Tech Stack
 
@@ -29,7 +48,8 @@ A Nimbalyst extension that provides a Google Sheets-like editing experience for 
 | Grid UI | [RevoGrid](https://github.com/revolist/revogrid) | MIT |
 | Formula Engine | [formula.js](https://github.com/formulajs/formulajs) | MIT |
 | CSV Parsing | [Papa Parse](https://github.com/mholt/PapaParse) | MIT |
-| State Management | [Zustand](https://github.com/pmndrs/zustand) | MIT |
+| Undo History | [use-undoable](https://github.com/black7375/use-undoable) | MIT |
+| Diff | [diff](https://github.com/kpdecker/jsdiff) | BSD-3-Clause |
 
 ## Supported Formulas
 
@@ -40,113 +60,98 @@ A Nimbalyst extension that provides a Google Sheets-like editing experience for 
 
 ---
 
-## Todo List
+## Missing Features
 
-### Core Editing Features
+Re-audited 2026-08-04 against the extension source. Formula-engine findings are from a live probe of `evaluateFormula` / `recalculateFormulas`, not code reading.
 
-- [ ] **Undo/Redo stack** - Track edit history for Cmd+Z/Cmd+Shift+Z support
-- [ ] **Copy/paste** - Clipboard support for cells and ranges (Cmd+C/V/X)
-- [ ] **Multi-cell selection** - Click and drag to select cell ranges
-- [ ] **Keyboard navigation** - Arrow keys, Tab, Enter to move between cells
-- [ ] **Context menus** - Right-click menu for cut/copy/paste, insert/delete row/col
+### Formula engine — correctness gaps
 
-### Selection & Navigation
+These are the highest-value items: several produce a **silently wrong answer** rather than an error, which is worse than an unsupported feature.
 
-- [ ] **Drag selection** - Click and drag to select rectangular cell ranges
-- [ ] **Shift+click selection** - Extend selection from current cell to clicked cell
-- [ ] **Select all** - Cmd+A to select entire spreadsheet
-- [ ] **Select row/column** - Click row/column header to select entire row/column
+- [ ] **Composed expressions** — `=SUM(A1:A3)*2` returns `#VALUE!`. The evaluator matches one top-level `FUNC(...)` covering the entire expression, or falls back to a digits-only arithmetic path; a function result cannot participate in arithmetic.
+- [ ] **Nested functions** — `=IF(A1>0,SUM(B1:B3),0)` returns the literal string `"SUM([10,20,30])"` with no error. Arguments are never recursively evaluated.
+- [ ] **Comparison operators** — `A1>0`, `A1=1`, `<>` are not evaluated; they reach formula.js as strings and are truthy, so conditionals silently take the wrong branch.
+- [ ] **Absolute references** — `=SUM($A$1:$A$3)` returns `0`, no error. The reference regex does not accept `$`.
+- [ ] **Text literals are uppercased** — the whole expression is `.toUpperCase()`'d before evaluation, so `=IF(A1=1,"yes","no")` yields `"YES"` and `=CONCAT("Hello ","World")` yields `"HELLO WORLD"`. Any text-producing formula corrupts its output.
+- [ ] **Dependency ordering** — `recalculateFormulas` is a single row-order pass reading `cell.computed`, so a formula referencing another formula's result is one pass stale (a fresh `=C1` where `C1` is itself a formula computes `0` until the next recalculation). Needs a dependency graph with topological evaluation.
+- [ ] **Indirect circular references** — only direct self-reference is caught. `C1 = C2` with `C2 = C1` silently evaluates to `0` instead of `#CIRC!`.
+- [ ] **Function coverage** — only 27 of formula.js's 400+ functions are mapped, so VLOOKUP, SUMIF/COUNTIF, date functions, etc. return `#NAME?`. Consider exposing the library surface directly instead of a hand-maintained map.
+- [ ] **Percent and currency literals** — `=50%` returns `#VALUE!`.
 
-### Row & Column Management
+### Formula authoring UX
 
-- [ ] **Header row designation** - Mark first row as headers (freeze + style differently)
-- [ ] **Header column designation** - Mark first column as headers
-- [ ] **Drag reorder rows** - Drag row headers to reorder
-- [ ] **Drag reorder columns** - Drag column headers to reorder
-- [ ] **Resize columns** - Drag column borders to resize (partially working via RevoGrid)
-- [ ] **Resize rows** - Drag row borders to resize row height
-- [ ] **Auto-fit column width** - Double-click column border to fit content
-- [ ] **Hide/show columns** - Temporarily hide columns from view
+- [ ] **Formula result styling** — visually distinguish computed values from typed values
+- [ ] **Formula autocomplete** — suggest function names and signatures while typing
+- [ ] **Cell reference highlighting** — highlight referenced cells/ranges while editing a formula
+- [ ] **Click-to-insert references** — click a cell while editing to insert its reference
+- [ ] **Named ranges** — define names for ranges (e.g. `Sales` = A1:A100)
+- [ ] **Fill handle / formula fill-down** — drag to copy a formula down a column with relative reference adjustment
 
-### Formula Improvements
+### Formatting and visuals
 
-- [ ] **Formula result styling** - Visually distinguish computed values from raw text (italic, color)
-- [ ] **Formula autocomplete** - Suggest functions as user types
-- [ ] **Cell reference highlighting** - Highlight referenced cells when editing formula
-- [ ] **Circular reference detection** - Detect and display #CIRC! error for circular refs
-- [ ] **Relative/absolute references** - Support $A$1 style absolute references
-- [ ] **Named ranges** - Define names for cell ranges (e.g., "Sales" = A1:A100)
+- [ ] **Cell alignment** — left/center/right per cell or column (no alignment support exists today)
+- [ ] **Text wrapping** — wrap long text within a cell
+- [ ] **Row height / resize rows** — no row-height control exists
+- [ ] **Conditional formatting** — color scales, data bars, value-based highlighting
+- [ ] **Cell-level formatting** — bold/color/background on individual cells (formatting is column-scoped today)
+- [ ] **Cell borders**
+- [ ] **Alternating row colors** — zebra striping
+- [ ] **Cell comments/notes** — hover notes on cells
+- [ ] **Freeze rows** — frozen columns work; frozen header rows do not
+- [ ] **Auto-fit column width** — double-click a column border to fit content
+- [ ] **Hide/show columns**
+- [ ] **Drag reorder rows/columns**
 
-### Data Types & Formatting
+### Search and filter
 
-- [ ] **Column types** - Define column as text/number/date/currency
-- [ ] **Number formatting** - Decimal places, thousands separator
-- [ ] **Currency formatting** - $, EUR, etc. with proper display
-- [ ] **Date formatting** - Parse and display dates in various formats
-- [ ] **Percentage formatting** - Display 0.5 as 50%
-- [ ] **Cell alignment** - Left/center/right alignment per cell or column
-- [ ] **Text wrapping** - Wrap long text within cells
-- [ ] **Find** - Cmd+F to search for text in cells
-- [ ] **Find and replace** - Cmd+Shift+F to find/replace across spreadsheet
-- [ ] **Column filters** - Dropdown filters on column headers
-- [ ] **Filter by value** - Show only rows with specific values
-- [ ] **Filter by condition** - Show rows matching numeric/text conditions
+Nothing in this category exists yet — no find, no filtering, only sort.
 
-### Metadata & Persistence
+- [ ] **Find** — Cmd+F search across cells with match highlighting and next/previous
+- [ ] **Find and replace** — including replace-all scoped to a selection
+- [ ] **Column filters** — dropdown filter affordance on column headers
+- [ ] **Filter by value** — show only rows containing selected values
+- [ ] **Filter by condition** — numeric and text conditions (greater than, contains, is empty)
+- [ ] **Filter persistence** — decide whether an active filter is view-only or persisted in metadata
 
+### AI integration
 
-### AI Integration
+The entire Phase 3 of the original plan was never built. There is no `aiTools.ts` and no `aiTools` contribution in `manifest.json`; the AI can only see the spreadsheet through file reads and the selection context chip.
 
-- [ ] **Metadata storage** - Store column types, header designation, formatting
-- [ ] **File comment storage** - Store metadata as a comment at top of CSV
-- [ ] **Parallel metadata file** - Option to store as .csv.meta JSON file
-- [ ] **Configurable storage** - Let user choose comment vs. parallel file
-- [ ] **Preserve formula text** - Store =SUM(A1:A10) in CSV, not computed value
-- [ ] **Cell update visibility** - Flash/highlight cells as AI edits them
-- [ ] **AI tool: analyze\_data** - Describe data patterns, statistics, anomalies
-- [ ] **AI tool: add\_column** - Add calculated column with formula
-- [ ] **AI tool: filter\_rows** - Filter to rows matching criteria
-- [ ] **AI tool: sort\_data** - Sort by one or more columns
-- [ ] **AI tool: apply\_formula** - Apply formula to column or range
-- [ ] **AI tool: transform\_data** - Clean, normalize, or reshape data
+- [ ] **AI tool: analyze_data** — summary statistics, type detection, data quality issues
+- [ ] **AI tool: add_column** — add a calculated column, optionally formula-backed
+- [ ] **AI tool: filter_rows** — filter to rows matching natural-language criteria
+- [ ] **AI tool: sort_data** — single and multi-column sort
+- [ ] **AI tool: apply_formula** — apply a formula across a column or range
+- [ ] **AI tool: transform_data** — clean, normalize, or reshape data
+- [ ] **Cell update visibility** — flash/highlight cells as the AI edits them (diff mode covers review, not live edits)
+- [ ] **Range-scoped tool calls** — let tools target the user's current selection
 
-### Search & Filter
+### Data validation
 
+- [ ] **Dropdown lists** — restrict a cell or column to predefined options
+- [ ] **Numeric ranges** — min/max constraints
+- [ ] **Text patterns** — regex validation
+- [ ] **Required cells** — mark cells that cannot be empty
+- [ ] **Validation errors** — visual indicator for invalid cells
 
-### Data Validation
+### Import/export
 
-- [ ] **Required cells** - Mark cells that cannot be empty
-- [ ] **Dropdown lists** - Restrict cell to predefined options
-- [ ] **Numeric ranges** - Restrict to min/max values
-- [ ] **Text patterns** - Validate against regex pattern
-- [ ] **Validation errors** - Visual indicator for invalid cells
-
-### Visual Features
-
-- [ ] **Conditional formatting** - Highlight cells based on value (color scales, data bars)
-- [ ] **Alternating row colors** - Zebra striping for readability
-- [ ] **Cell borders** - Custom borders on cells
-- [ ] **Freeze panes** - Freeze header row/column while scrolling
-- [ ] **Cell comments/notes** - Add hover notes to cells
-
-### Import/Export
-
-- [ ] **Export to TSV** - Save with tab delimiter
-- [ ] **Export to Excel** - Export as .xlsx (requires additional library)
-- [ ] **Import from clipboard** - Paste tabular data from other apps
-- [ ] **Delimiter detection** - Auto-detect comma vs. tab vs. semicolon
+- [ ] **Export to Excel** — `.xlsx` output (needs an additional library)
+- [ ] **Delimiter detection** — auto-detect comma vs. tab vs. semicolon on open (delimiter is currently derived from the file extension)
+- [ ] **Semicolon and pipe delimiters** — the `getDelimiter` contract is `',' | '\t'` only
+- [ ] **Import from clipboard** — paste tabular data from other apps into a new sheet
 
 ### Performance
 
-- [ ] **Lazy formula evaluation** - Only recalculate visible cells for large files
-- [ ] **Debounced recalculation** - Batch formula updates during rapid editing
-- [ ] **Virtual scrolling optimization** - Tune RevoGrid for 100k+ row files
+- [ ] **Lazy formula evaluation** — recalculate only what changed rather than every formula cell on every edit
+- [ ] **Debounced recalculation** — batch formula updates during rapid editing
+- [ ] **Virtual scrolling tuning** — validate behavior on 100k+ row files
 
 ### Accessibility
 
-- [ ] **Screen reader support** - ARIA labels for grid navigation
-- [ ] **High contrast mode** - Support system high contrast settings
-- [ ] **Keyboard-only operation** - Full functionality without mouse
+- [ ] **Screen reader support** — ARIA labels for grid navigation
+- [ ] **High contrast mode** — respect system high contrast settings
+- [ ] **Keyboard-only operation** — audit full functionality without a mouse
 
 ---
 
@@ -160,17 +165,32 @@ packages/extensions/csv-spreadsheet/
   src/
     index.tsx                    # Extension entry point
     types.ts                     # TypeScript type definitions
+    selectionContext.ts          # Publishes the selected range to AI chat
     components/
       SpreadsheetEditor.tsx      # Main editor component
       SpreadsheetToolbar.tsx     # Toolbar buttons
       FormulaBar.tsx             # Formula input display
+      ColumnFormatDialog.tsx     # Column type and format editor
+      ContextMenu.tsx            # Right-click menu
+      CollabPresenceOverlay.tsx  # Remote cursor/selection overlay
     hooks/
-      useSpreadsheetStore.ts     # Zustand store for state
+      useSpreadsheetData.ts      # Parsed grid state and edit operations
+      useSpreadsheetMetadata.ts  # Headers, frozen columns, formats, widths
+    plugins/
+      UndoRedoPlugin.ts          # Undo/redo history stack
+    editors/
+      SheetsTextEditor.ts        # Source mode (raw CSV) editor
+    collab/
+      csvBinding.ts              # Y.Doc binding
+      presence.ts                # Awareness fields
+      seed.ts                    # Initial doc seeding
+      CsvCollabContentAdapter.ts # Shared-doc content adapter
     utils/
       csvParser.ts               # CSV parsing/serialization
       formulaEngine.ts           # Formula evaluation
-    aiTools.ts                   # AI tool registration
-    styles.css                   # Themed styles
+      formatters.ts              # Column type formatting
+      gridOperations.ts          # Clipboard, insert/delete, range ops
+      diffCompute.ts             # Diff mode computation
 ```
 
 ## Development

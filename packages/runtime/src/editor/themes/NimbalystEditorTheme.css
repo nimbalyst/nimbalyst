@@ -93,7 +93,8 @@
   font-weight: bold;
 }
 
-.nim-paragraph mark {
+/* Reset the UA default mark fill, but leave comment marks (.nim-mark) their own styling */
+.nim-paragraph mark:not(.nim-mark) {
   background-color: unset;
 }
 
@@ -704,6 +705,34 @@
 .nim-mark.resolved.selected {
   background: color-mix(in srgb, var(--nim-comment-mark) 15%, transparent);
   border-bottom: 1px dotted color-mix(in srgb, var(--nim-comment-mark) 42%, transparent);
+}
+
+/* Inline code inside a comment mark: .nim-text-code's background is opaque and, as a
+   descendant, paints over the mark's translucent fill — the mark would be invisible over
+   the code chip. Re-mix each state's fill against the chip background so the chip keeps its
+   own look while still reading as commented. */
+.nim-mark .nim-text-code {
+  background-color: color-mix(in srgb, var(--nim-comment-mark) 15%, var(--nim-code-bg));
+}
+
+.nim-mark-overlap .nim-text-code {
+  background-color: color-mix(in srgb, var(--nim-comment-mark) 28%, var(--nim-code-bg));
+}
+
+.nim-mark.selected .nim-text-code {
+  background-color: color-mix(in srgb, var(--nim-comment-mark) 34%, var(--nim-code-bg));
+}
+
+.nim-mark-overlap.selected .nim-text-code {
+  background-color: color-mix(in srgb, var(--nim-comment-mark) 46%, var(--nim-code-bg));
+}
+
+.nim-mark.resolved .nim-text-code {
+  background-color: var(--nim-code-bg);
+}
+
+.nim-mark.resolved.selected .nim-text-code {
+  background-color: color-mix(in srgb, var(--nim-comment-mark) 15%, var(--nim-code-bg));
 }
 
 /* ===== EMBED BLOCKS ===== */

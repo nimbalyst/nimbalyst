@@ -34,6 +34,13 @@ vi.mock('../../../store/atoms/collabDocuments', async () => {
   return {
     sharedDocumentsAtom: atom([]),
     pendingCollabDocumentAtom: atom(null),
+    // Deliberately differs from the explicit link target below. Copy Link must
+    // use the canonical document target, not ambient active-scope identity.
+    activeCollabScopeAtom: atom({
+      scopeKey: '/workspace',
+      orgId: 'different-active-org',
+      indexConfig: { serverUrl: 'wss://test.invalid', userId: 'user-1' },
+    }),
     activeTeamOrgIdAtom: atom(null),
     buildSharedDocumentDeepLink,
   };
@@ -150,6 +157,6 @@ describe('UnifiedEditorHeaderBar shared document link', () => {
     fireEvent.click(screen.getByTitle('More actions'));
 
     expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Copy as Markdown' })).toBeTruthy();
+    screen.getByRole('button', { name: 'Copy as Markdown' });
   });
 });

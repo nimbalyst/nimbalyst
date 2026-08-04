@@ -17,6 +17,8 @@ export interface TrackerPersonalStateHydration {
 
 interface IPCResponse<T> { success: boolean; data?: T; error?: string }
 
+const remoteListeners = new Set<(row: TrackerPersonalStateDto) => void>();
+
 function unwrap<T>(response: IPCResponse<T>, label: string): T {
   if (!response?.success || response.data === undefined) {
     throw new Error(response?.error || `${label} failed`);
@@ -40,4 +42,13 @@ export const trackerPersonalStateService = {
     const { workspacePath, ...payload } = input;
     return unwrap(await window.electronAPI.invoke('tracker-personal-state:set-snooze', payload, workspacePath), 'snooze tracker item');
   },
+  subscribe(listener: (row: TrackerPersonalStateDto) => void): () => void {
+    remoteListeners.add(listener);
+    return () => remoteListeners.delete(listener);
+  },
 };
+
+/** Called only by the centralized IPC listener. */
+export function publishRemoteTrackerPersonalState(row: TrackerPersonalStateDto): void {
+  for (const listener of remoteListeners) listener(row);
+}

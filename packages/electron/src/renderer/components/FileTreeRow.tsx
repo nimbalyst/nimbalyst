@@ -1,6 +1,7 @@
 import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol, getFileIcon } from '@nimbalyst/runtime';
+import { getFileIcon } from '@nimbalyst/runtime/ui/icons/fileIcons';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
   fileGitStatusAtom,
   directoryGitStatusAtom,

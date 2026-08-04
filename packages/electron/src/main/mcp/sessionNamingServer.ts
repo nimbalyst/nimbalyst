@@ -117,7 +117,7 @@ export async function buildSessionMetaToolSchemas(_aiSessionId: string): Promise
             type: "string",
             enum: ["backlog", "planning", "implementing", "validating", "complete"],
             description:
-              'Kanban phase: "planning" for exploration/design, "implementing" for coding, "validating" for testing/review. NEVER set "complete" without explicit user approval — only the user decides when work is complete.',
+              'Kanban phase: "planning" for exploration/design, "implementing" for coding, "validating" for testing/review. Do not set "complete" on your own judgment that the work is finished — but a commit is the user\'s approval, so set it once they have committed the work this session did.',
           },
           workflowPreset: {
             type: "string",

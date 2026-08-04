@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Phase 7.6 integration test.
  *

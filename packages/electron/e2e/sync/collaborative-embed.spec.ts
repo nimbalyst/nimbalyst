@@ -12,7 +12,6 @@
 
 import { test, expect } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
-import { webcrypto } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import {
@@ -48,17 +47,6 @@ let authorApp: ElectronApplication | null = null;
 let recipientApp: ElectronApplication | null = null;
 let authorWorkspace = '';
 let recipientWorkspace = '';
-let encryptionKeyBase64 = '';
-
-async function generateKeyBase64(): Promise<string> {
-  const key = await webcrypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt'],
-  );
-  const raw = await webcrypto.subtle.exportKey('raw', key);
-  return Buffer.from(raw).toString('base64');
-}
 
 async function waitForTestHelpers(page: Page): Promise<void> {
   await page.waitForFunction(() =>
@@ -78,19 +66,17 @@ async function registerTestConfig(
     userId: string;
   },
 ): Promise<void> {
-  await page.evaluate(async ({ input, serverUrl, orgId, keyBase64 }) => {
+  await page.evaluate(async ({ input, serverUrl, orgId }) => {
     await (window as any).__registerCollabConfigTest({
       ...input,
       serverUrl,
       orgId,
-      encryptionKeyBase64: keyBase64,
       urlExtraQuery: `test_user_id=${encodeURIComponent(input.userId)}&test_org_id=${encodeURIComponent(orgId)}`,
     });
   }, {
     input: params,
     serverUrl: `ws://localhost:${WRANGLER_PORT}`,
     orgId: TEST_ORG_ID,
-    keyBase64: encryptionKeyBase64,
   });
 }
 
@@ -123,7 +109,7 @@ async function exportRoom(
 }
 
 async function openHostAsRecipient(page: Page): Promise<void> {
-  await page.evaluate(async ({ documentId, serverUrl, orgId, userId, keyBase64 }) => {
+  await page.evaluate(async ({ documentId, serverUrl, orgId, userId }) => {
     await (window as any).__openCollabDocTest({
       documentId,
       title: 'Shared design',
@@ -131,7 +117,6 @@ async function openHostAsRecipient(page: Page): Promise<void> {
       serverUrl,
       orgId,
       userId,
-      encryptionKeyBase64: keyBase64,
       urlExtraQuery: `test_user_id=${encodeURIComponent(userId)}&test_org_id=${encodeURIComponent(orgId)}`,
     });
   }, {
@@ -139,7 +124,6 @@ async function openHostAsRecipient(page: Page): Promise<void> {
     serverUrl: `ws://localhost:${WRANGLER_PORT}`,
     orgId: TEST_ORG_ID,
     userId: RECIPIENT_USER_ID,
-    keyBase64: encryptionKeyBase64,
   });
 }
 
@@ -157,8 +141,6 @@ async function installRecipientConfigHandlers(app: ElectronApplication): Promise
         documentId: payload.documentId,
         title: payload.title ?? payload.documentId,
         documentType: payload.documentType,
-        keyCustody: 'legacy-e2e',
-        orgKeyBase64: config.keyBase64,
         serverUrl: config.serverUrl,
         urlExtraQuery: config.urlExtraQuery,
         accountId: config.userId,
@@ -176,7 +158,6 @@ async function installRecipientConfigHandlers(app: ElectronApplication): Promise
   }, {
     orgId: TEST_ORG_ID,
     userId: RECIPIENT_USER_ID,
-    keyBase64: encryptionKeyBase64,
     serverUrl: `ws://localhost:${WRANGLER_PORT}`,
     urlExtraQuery: URL_EXTRA_QUERY,
   });
@@ -186,7 +167,6 @@ test.beforeAll(async ({}, testInfo) => {
   testInfo.setTimeout(120_000);
   authorWorkspace = await createTempWorkspace();
   recipientWorkspace = await createTempWorkspace();
-  encryptionKeyBase64 = await generateKeyBase64();
   await fs.writeFile(path.join(authorWorkspace, 'README.md'), '# Author workspace\n', 'utf8');
   await fs.writeFile(path.join(recipientWorkspace, 'README.md'), '# Recipient workspace\n', 'utf8');
   await startWrangler(WRANGLER_PORT);

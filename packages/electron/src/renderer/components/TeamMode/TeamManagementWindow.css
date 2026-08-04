@@ -1,0 +1,43 @@
+.team-management-window .org-window-drag-region {
+  -webkit-app-region: drag;
+}
+
+.team-management-window .org-window-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/*
+ * `-webkit-app-region` is not inherited, and a drag rectangle swallows clicks
+ * the OS decides are title-bar drags. The sidebar and the rail are drag regions
+ * so their whitespace moves the window, which means every control painted
+ * inside one has to subtract itself. Marking each by hand is one forgotten
+ * class away from a dead button, so the interactive elements opt out by kind
+ * as well.
+ */
+.team-management-window .org-window-drag-region button,
+.team-management-window .org-window-drag-region a,
+.team-management-window .org-window-drag-region input,
+.team-management-window .org-window-drag-region textarea,
+.team-management-window .org-window-drag-region select,
+.team-management-window .org-window-drag-region [role='button'],
+.team-management-window .org-window-drag-region [role='menuitem'],
+.team-management-window .org-window-drag-region [contenteditable='true'] {
+  -webkit-app-region: no-drag;
+}
+
+/*
+ * The window's title bar: one full-width strip above the rail, the sidebar and
+ * the main pane, and the window's primary drag handle. On macOS it also holds
+ * the traffic lights (`titleBarStyle: hiddenInset`), so the left padding clears
+ * the button cluster; `trafficLightPosition` in TeamManagementWindow.ts centres
+ * them in this height. Other platforms keep their native title bar above it and
+ * only need the ordinary gutter.
+ */
+.team-management-window .org-window-titlebar {
+  height: 38px;
+  padding-left: 12px;
+}
+
+.team-management-window-mac .org-window-titlebar {
+  padding-left: 78px;
+}

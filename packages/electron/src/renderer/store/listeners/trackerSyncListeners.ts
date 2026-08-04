@@ -163,7 +163,14 @@ export function initTrackerSyncListeners(): () => void {
         message?: string;
       }) => {
         if (!data) return;
-        if (data.code !== 'staleKeyEpoch' && data.code !== 'rotationLocked') {
+        // staleKeyEpoch/rotationLocked are legacy codes retained for old-server
+        // compatibility; custodyUnavailable is the current server-managed
+        // rejection (server could not load the team DEK).
+        if (
+          data.code !== 'staleKeyEpoch' &&
+          data.code !== 'rotationLocked' &&
+          data.code !== 'custodyUnavailable'
+        ) {
           console.error('[trackerSyncListeners] tracker-sync rejection (non-banner)', data);
           return;
         }

@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Unit tests for the labels CRDT helpers in `trackerLabels.ts`.
  *

@@ -13,7 +13,7 @@
  */
 
 import { atom } from 'jotai';
-import { atomFamily } from 'jotai/utils';
+import { atomFamily } from 'jotai-family';
 
 export interface AskUserQuestionDraft {
   /** Question text -> picked option labels (array so multiSelect works). */

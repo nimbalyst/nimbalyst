@@ -130,6 +130,11 @@ import * as Y from 'yjs';
 import type { Doc } from 'yjs';
 import { DocumentSyncProvider } from './DocumentSync';
 import type { DocumentSyncStatus } from './documentSyncTypes';
+import {
+  COLLAB_CONNECTION_DIAGNOSTICS_COMPILED,
+  emitCollabLexicalConnectionEvent,
+  getCollabConnectionInstanceId,
+} from './collabConnectionDiagnostics';
 
 // Simple event emitter for wiring DocumentSyncProvider callbacks to Lexical's on/off API
 type EventMap = {
@@ -142,6 +147,9 @@ type EventMap = {
 type AwarenessEventMap = {
   update: () => void;
 };
+
+/** Refresh legacy desktop awareness before DocumentSync's 30s stale sweep. */
+const AWARENESS_HEARTBEAT_MS = 10_000;
 
 /**
  * Wraps DocumentSyncProvider to implement @lexical/yjs Provider interface.
@@ -177,6 +185,10 @@ export class CollabLexicalProvider implements Provider {
   private listeners: { [K in keyof EventMap]?: Set<EventMap[K]> } = {};
   private awarenessListeners: { [K in keyof AwarenessEventMap]?: Set<AwarenessEventMap[K]> } = {};
   private localUserState: UserState | null = null;
+  private lastLocalUserState: UserState | null = null;
+  private departureAnnounced = false;
+  private awarenessHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private transportConnected = false;
   private clientStates: Map<number, UserState> = new Map();
   private nextClientId = 1;
   private userIdToClientId: Map<string, number> = new Map();
@@ -209,10 +221,46 @@ export class CollabLexicalProvider implements Provider {
   private readonly fromEditorOrigin = { bridge: 'editor->shared' };
   private readonly onSharedDocUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === this.fromEditorOrigin) return;
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabLexicalConnectionEvent(
+        this,
+        this.syncProvider,
+        'bridge-shared-to-editor',
+        {
+          updateBytes: update.byteLength,
+          sharedDocId: getCollabConnectionInstanceId(
+            this.syncProvider.getYDoc(),
+            'YDoc',
+          ),
+          editorDocId: getCollabConnectionInstanceId(
+            this.editorDoc,
+            'YDoc',
+          ),
+        },
+      );
+    }
     Y.applyUpdate(this.editorDoc, update, this.fromSharedOrigin);
   };
   private readonly onEditorDocUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === this.fromSharedOrigin) return;
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabLexicalConnectionEvent(
+        this,
+        this.syncProvider,
+        'bridge-editor-to-shared',
+        {
+          updateBytes: update.byteLength,
+          sharedDocId: getCollabConnectionInstanceId(
+            this.syncProvider.getYDoc(),
+            'YDoc',
+          ),
+          editorDocId: getCollabConnectionInstanceId(
+            this.editorDoc,
+            'YDoc',
+          ),
+        },
+      );
+    }
     Y.applyUpdate(this.syncProvider.getYDoc(), update, this.fromEditorOrigin);
   };
 
@@ -221,6 +269,15 @@ export class CollabLexicalProvider implements Provider {
   constructor(syncProvider: DocumentSyncProvider, options: CollabLexicalProviderOptions = {}) {
     this.syncProvider = syncProvider;
     this.deferInitialSync = options.deferInitialSync ?? false;
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabLexicalConnectionEvent(this, syncProvider, 'construct', {
+        deferInitialSync: this.deferInitialSync,
+        editorDocId: getCollabConnectionInstanceId(
+          this.editorDoc,
+          'YDoc',
+        ),
+      });
+    }
 
     // Build the awareness adapter
     this.awareness = {
@@ -243,18 +300,14 @@ export class CollabLexicalProvider implements Provider {
         const previousState = this.localUserState;
         this.localUserState = state;
         const awarenessState = state ?? previousState;
+        if (awarenessState) {
+          this.lastLocalUserState = awarenessState;
+          if (state) this.departureAnnounced = false;
+        }
 
         // Forward to DocumentSyncProvider's awareness
-        this.syncProvider.setLocalAwareness({
-          cursor: state?.anchorPos && state.focusPos ? {
-            anchor: JSON.stringify(state.anchorPos),
-            head: JSON.stringify(state.focusPos),
-          } : undefined,
-          user: {
-            name: awarenessState?.name ?? '',
-            color: awarenessState?.color ?? '',
-          },
-        });
+        this.publishAwarenessState(state, awarenessState);
+        if (this.transportConnected) this.startAwarenessHeartbeat();
       },
 
       setLocalStateField: (field: string, value: unknown) => {
@@ -296,14 +349,46 @@ export class CollabLexicalProvider implements Provider {
    * binding. destroy() still tears down whichever editorDoc is current.
    */
   prepareForBinding(): void {
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabLexicalConnectionEvent(this, this.syncProvider, 'prepare-for-binding', {
+        editorDocClaimed: this.editorDocClaimed,
+        bridgeAttached: this.bridgeAttached,
+        editorDocId: getCollabConnectionInstanceId(
+          this.editorDoc,
+          'YDoc',
+        ),
+      });
+    }
     if (!this.editorDocClaimed) return;
     if (this.bridgeAttached) {
       this.bridgeAttached = false;
+      if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+        emitCollabLexicalConnectionEvent(this, this.syncProvider, 'bridge-detach', {
+          reason: 'editor-doc-rotation',
+          editorDocId: getCollabConnectionInstanceId(
+            this.editorDoc,
+            'YDoc',
+          ),
+        });
+      }
       this.syncProvider.getYDoc().off('update', this.onSharedDocUpdate);
       this.editorDoc.off('update', this.onEditorDocUpdate);
     }
+    const previousEditorDoc = this.editorDoc;
     this.editorDoc = new Y.Doc();
     this.editorDocClaimed = false;
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabLexicalConnectionEvent(this, this.syncProvider, 'editor-doc-rotate', {
+        fromEditorDocId: getCollabConnectionInstanceId(
+          previousEditorDoc,
+          'YDoc',
+        ),
+        toEditorDocId: getCollabConnectionInstanceId(
+          this.editorDoc,
+          'YDoc',
+        ),
+      });
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -311,6 +396,15 @@ export class CollabLexicalProvider implements Provider {
   // --------------------------------------------------------------------------
 
   async connect(): Promise<void> {
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabLexicalConnectionEvent(this, this.syncProvider, 'connect', {
+        bridgeAttached: this.bridgeAttached,
+        editorDocId: getCollabConnectionInstanceId(
+          this.editorDoc,
+          'YDoc',
+        ),
+      });
+    }
     // console.log('[CollabLexicalProvider] connect() called, sync listeners:', this.listeners.sync?.size ?? 0);
     // Subscribe to status changes from DocumentSyncProvider
     this.statusUnsubscribe?.();
@@ -363,6 +457,14 @@ export class CollabLexicalProvider implements Provider {
       this.editorDocClaimed = true;
       this.syncProvider.getYDoc().on('update', this.onSharedDocUpdate);
       this.editorDoc.on('update', this.onEditorDocUpdate);
+      if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+        emitCollabLexicalConnectionEvent(this, this.syncProvider, 'bridge-attach', {
+          editorDocId: getCollabConnectionInstanceId(
+            this.editorDoc,
+            'YDoc',
+          ),
+        });
+      }
     }
     const sharedDoc = this.syncProvider.getYDoc();
     Y.applyUpdate(this.editorDoc, Y.encodeStateAsUpdate(sharedDoc), this.fromSharedOrigin);
@@ -375,6 +477,15 @@ export class CollabLexicalProvider implements Provider {
   }
 
   disconnect(): void {
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabLexicalConnectionEvent(this, this.syncProvider, 'disconnect', {
+        bridgeAttached: this.bridgeAttached,
+        editorDocId: getCollabConnectionInstanceId(
+          this.editorDoc,
+          'YDoc',
+        ),
+      });
+    }
     this.awarenessUnsubscribe?.();
     this.awarenessUnsubscribe = null;
     this.statusUnsubscribe?.();
@@ -457,6 +568,17 @@ export class CollabLexicalProvider implements Provider {
     //   'status listeners:', this.listeners.status?.size ?? 0);
     this.listeners.status?.forEach(cb => cb({ status: lexicalStatus }));
 
+    this.transportConnected = status === 'connected';
+    if (this.transportConnected) {
+      const identityState = this.localUserState ?? this.lastLocalUserState;
+      if (identityState) {
+        this.publishAwarenessState(this.localUserState, identityState);
+      }
+      this.startAwarenessHeartbeat();
+    } else {
+      this.stopAwarenessHeartbeat();
+    }
+
     // When connected (synced), fire the sync event
     if (status === 'connected') {
       // console.log('[CollabLexicalProvider] Firing sync(true)');
@@ -481,19 +603,86 @@ export class CollabLexicalProvider implements Provider {
    * leaked bridge listener would keep feeding a dead editor doc.
    */
   destroy(): void {
+    this.announceDeparture();
+    this.stopAwarenessHeartbeat();
     if (this.bridgeAttached) {
       this.bridgeAttached = false;
+      if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+        emitCollabLexicalConnectionEvent(this, this.syncProvider, 'bridge-detach', {
+          reason: 'destroy',
+          editorDocId: getCollabConnectionInstanceId(
+            this.editorDoc,
+            'YDoc',
+          ),
+        });
+      }
       this.syncProvider.getYDoc().off('update', this.onSharedDocUpdate);
       this.editorDoc.off('update', this.onEditorDocUpdate);
     }
     this.awarenessUnsubscribe?.();
     this.awarenessUnsubscribe = null;
     this.editorDoc.destroy();
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabLexicalConnectionEvent(this, this.syncProvider, 'destroy', {
+        editorDocId: getCollabConnectionInstanceId(
+          this.editorDoc,
+          'YDoc',
+        ),
+      });
+    }
+  }
+
+  /** Send an explicit leave without changing setLocalState(null) semantics. */
+  announceDeparture(): boolean {
+    if (this.departureAnnounced) return false;
+    this.stopAwarenessHeartbeat();
+    const state = this.localUserState ?? this.lastLocalUserState;
+    if (!state) return false;
+    const sendDeparture = this.syncProvider.sendAwarenessDeparture;
+    if (typeof sendDeparture !== 'function') return false;
+    const announced = sendDeparture.call(this.syncProvider, {
+      name: state.name,
+      color: state.color,
+    });
+    if (announced) this.departureAnnounced = true;
+    return announced;
   }
 
   // --------------------------------------------------------------------------
   // Private helpers
   // --------------------------------------------------------------------------
+
+  private publishAwarenessState(
+    state: UserState | null,
+    identityState: UserState | null,
+  ): void {
+    this.syncProvider.setLocalAwareness({
+      cursor: state?.anchorPos && state.focusPos ? {
+        anchor: JSON.stringify(state.anchorPos),
+        head: JSON.stringify(state.focusPos),
+      } : undefined,
+      user: {
+        name: identityState?.name ?? '',
+        color: identityState?.color ?? '',
+      },
+    });
+  }
+
+  private startAwarenessHeartbeat(): void {
+    if (this.awarenessHeartbeatTimer || !this.lastLocalUserState) return;
+    this.awarenessHeartbeatTimer = setInterval(() => {
+      this.publishAwarenessState(
+        this.localUserState,
+        this.localUserState ?? this.lastLocalUserState,
+      );
+    }, AWARENESS_HEARTBEAT_MS);
+  }
+
+  private stopAwarenessHeartbeat(): void {
+    if (!this.awarenessHeartbeatTimer) return;
+    clearInterval(this.awarenessHeartbeatTimer);
+    this.awarenessHeartbeatTimer = null;
+  }
 
   private notifyAwareness(): void {
     this.awarenessListeners.update?.forEach(cb => cb());

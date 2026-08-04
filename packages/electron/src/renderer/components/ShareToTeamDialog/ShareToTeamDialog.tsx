@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
   createSharedFolder,
+  activeCollabScopeAtom,
   refreshSharedFolders,
   sharedFoldersAtom,
   type SharedFolder,
@@ -98,6 +99,7 @@ export function ShareToTeamDialog({
 }: ShareToTeamDialogProps) {
   const sharedFolders = useAtomValue(sharedFoldersAtom);
   const workspacePath = useAtomValue(activeWorkspacePathAtom);
+  const collabScope = useAtomValue(activeCollabScopeAtom);
 
   const [lastSharedFolderId, setLastSharedFolderId] = useState<string | null | undefined>(undefined);
   const [legacyLastSharedFolderPath, setLegacyLastSharedFolderPath] = useState<string>('');
@@ -139,7 +141,12 @@ export function ShareToTeamDialog({
     let cancelled = false;
     setIsRefreshingFolders(true);
     setFolderRefreshFailed(false);
-    void refreshSharedFolders(workspacePath ?? undefined)
+    if (!collabScope || collabScope.scopeKey !== workspacePath) {
+      setFolderRefreshFailed(true);
+      setIsRefreshingFolders(false);
+      return;
+    }
+    void refreshSharedFolders(collabScope)
       .then((refreshed) => {
         if (!cancelled && !refreshed) setFolderRefreshFailed(true);
       })
@@ -152,7 +159,7 @@ export function ShareToTeamDialog({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, workspacePath]);
+  }, [collabScope, isOpen, workspacePath]);
 
   // Load workspace-persisted state for the last-used destination. Folder rows
   // themselves come only from TeamRoom, never workspace/PGLite state.
@@ -311,7 +318,8 @@ export function ShareToTeamDialog({
       return;
     }
     try {
-      const folderId = await createSharedFolder(trimmed, parentFolderId);
+      if (!collabScope) return;
+      const folderId = await createSharedFolder(collabScope, trimmed, parentFolderId);
       setSelectedFolderId(folderId);
       setExpandedFolders(prev => {
         const next = new Set(prev);
@@ -322,7 +330,7 @@ export function ShareToTeamDialog({
     } catch (error) {
       console.error('[ShareToTeamDialog] Failed to create shared folder:', error);
     }
-  }, [folderLookups, newFolderName, newFolderParentId]);
+  }, [collabScope, folderLookups, newFolderName, newFolderParentId]);
 
   const cancelNewFolder = useCallback(() => {
     setNewFolderParentId(undefined);

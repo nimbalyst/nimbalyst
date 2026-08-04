@@ -4,7 +4,18 @@ vi.mock('../logger', () => ({
   logger: { ui: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } },
 }));
 
-import { createProxiedWebSocket } from '../collabDocumentOpener';
+import {
+  createProxiedWebSocket,
+  getCollabConfig,
+  registerCollabConfig,
+} from '../collabDocumentOpener';
+
+const scopeA = {
+  scopeKey: 'scope-a',
+  orgId: 'org-1',
+  indexConfig: { serverUrl: 'wss://sync.example.test', userId: 'user-1' },
+};
+const scopeB = { ...scopeA, scopeKey: 'scope-b' };
 
 class TestWebSocket {
   static readonly CONNECTING = 0;
@@ -18,6 +29,26 @@ afterEach(() => {
 });
 
 describe('createProxiedWebSocket', () => {
+  it('keeps identical document URIs isolated by host scope', () => {
+    const baseConfig = {
+      orgId: 'org-1',
+      documentId: 'doc-1',
+      title: 'Document',
+      serverUrl: 'wss://sync.example.test',
+      getJwt: async () => 'token',
+      userId: 'user-1',
+      accountId: 'account-1',
+    };
+    const configA = { ...baseConfig, scope: scopeA, title: 'Scope A' };
+    const configB = { ...baseConfig, scope: scopeB, title: 'Scope B' };
+
+    const uri = registerCollabConfig(configA);
+    registerCollabConfig(configB);
+
+    expect(getCollabConfig(scopeA, uri)).toBe(configA);
+    expect(getCollabConfig(scopeB, uri)).toBe(configB);
+  });
+
   it('waits for the proxied close event before reporting the socket closed', async () => {
     let emitWsEvent: ((event: {
       wsId: string;

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { ThemeManifest } from '@nimbalyst/extension-sdk';
 import { useTheme } from '../../../hooks/useTheme';
 import { pendingThemeFallbackAtom } from '../../../store/atoms/themeFallback';

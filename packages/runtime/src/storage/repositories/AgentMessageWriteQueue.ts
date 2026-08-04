@@ -88,6 +88,12 @@ export interface AgentMessageWriteQueueOptions {
   writer?: (messages: CreateAgentMessageInput[]) => Promise<void>;
   /** Logger for telemetry. Defaults to console; tests can inject a mock. */
   logger?: { warn: (...args: any[]) => void };
+  /**
+   * Consecutive whole-batch failures after which the per-row fallback is
+   * suspended. Default 2. See `runFlush` for why the fallback is dangerous
+   * when the database itself is down rather than one row being bad.
+   */
+  perRowFallbackFailureLimit?: number;
 }
 
 export class AgentMessageWriteQueue {
@@ -97,6 +103,13 @@ export class AgentMessageWriteQueue {
   private readonly pressureFlushMsThreshold: number;
   private readonly writer: (messages: CreateAgentMessageInput[]) => Promise<void>;
   private readonly logger: { warn: (...args: any[]) => void };
+  private readonly perRowFallbackFailureLimit: number;
+
+  /**
+   * Whole-batch failures since the last success. Drives the per-row fallback
+   * circuit breaker in `runFlush`.
+   */
+  private consecutiveBatchFailures = 0;
 
   /** Single FIFO buffer. Per-session order is preserved by enqueue order. */
   private buffer: QueuedMessageWrite[] = [];
@@ -114,6 +127,7 @@ export class AgentMessageWriteQueue {
     this.writer = options.writer
       ?? ((messages) => AgentMessagesRepository.createMany(messages));
     this.logger = options.logger ?? console;
+    this.perRowFallbackFailureLimit = options.perRowFallbackFailureLimit ?? 2;
   }
 
   /**
@@ -249,25 +263,56 @@ export class AgentMessageWriteQueue {
       await this.writer(messages);
       const flushMs = Date.now() - startedAt;
       this.maybeLogPressure(depth, flushMs, messages);
+      this.consecutiveBatchFailures = 0;
       for (const entry of batch) entry.resolve();
       this.emitBatchEvents(batch);
+      return;
     } catch (err) {
-      // Fall back to per-row inserts so a single bad row doesn't poison the
-      // whole batch.
-      const writer = (msg: CreateAgentMessageInput) => this.writer([msg]);
-      for (const entry of batch) {
-        try {
-          await writer(entry.message);
-          entry.resolve();
-        } catch (rowErr) {
-          entry.reject(rowErr);
-        }
+      this.consecutiveBatchFailures += 1;
+
+      // The per-row fallback assumes ONE poisoned row spoiled an otherwise
+      // healthy batch. When the database itself is unavailable that assumption
+      // inverts the cost: a 200-row batch becomes 200 more immediate failures,
+      // each one its own failed transaction and its own `database_error`
+      // telemetry event, with no backoff. That is how a single wedged database
+      // produced ~1,000 analytics events per minute from one session on
+      // 2026-08-03. After repeated whole-batch failures, stop guessing that the
+      // data is at fault and fail the batch as a batch.
+      if (this.consecutiveBatchFailures > this.perRowFallbackFailureLimit) {
+        for (const entry of batch) entry.reject(err);
+        this.logger.warn(
+          `[AgentMessageWriteQueue] batched INSERT failed ${this.consecutiveBatchFailures} times in a row; `
+          + `skipping the per-row fallback for ${batch.length} row(s). The database is likely unavailable:`,
+          err,
+        );
+        return;
       }
-      // Still emit batch events for the rows that resolved — the renderer's
-      // refresh trigger should fire even when some rows failed. The event
-      // count reflects how many were attempted, not how many succeeded; the
-      // UI re-reads from the database anyway.
-      this.emitBatchEvents(batch);
+
+      // Fall back to per-row inserts so a single bad row doesn't poison the
+      // whole batch. A one-row batch has no bad row to isolate — retrying it
+      // identically just doubles the failure.
+      let resolved = 0;
+      if (batch.length > 1) {
+        const writer = (msg: CreateAgentMessageInput) => this.writer([msg]);
+        for (const entry of batch) {
+          try {
+            await writer(entry.message);
+            entry.resolve();
+            resolved += 1;
+          } catch (rowErr) {
+            entry.reject(rowErr);
+          }
+        }
+      } else {
+        for (const entry of batch) entry.reject(err);
+      }
+
+      // Emit for the rows that resolved — the renderer's refresh trigger should
+      // fire even when some rows failed, and the UI re-reads from the database
+      // anyway. Emitting when NOTHING landed is what turned a failed write into
+      // a failed read: the renderer re-queried `ai_agent_messages`, that query
+      // failed too, and the pair looped in lockstep.
+      if (resolved > 0) this.emitBatchEvents(batch);
       // Surface the original batched-INSERT failure for diagnosis. Don't
       // re-throw; per-row results are already wired into entry promises.
       this.logger.warn('[AgentMessageWriteQueue] batched INSERT failed; fell back to per-row:', err);

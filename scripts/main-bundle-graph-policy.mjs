@@ -1,6 +1,11 @@
 /** Shared zero-budget policy for the Electron main-process module graph. */
 export const MAIN_BUNDLE_GRAPH_CATEGORIES = [
   { name: 'react-dom', test: (p) => /(^|\/)react-dom(\/|$)/.test(p) },
+  {
+    name: 'collab-client/docs-ui',
+    test: (p) => p.includes('collab-client/src/docs-ui/')
+      || p.includes('@nimbalyst/collab-client/docs-ui'),
+  },
   { name: 'runtime/src/editor', test: (p) => p.includes('runtime/src/editor/') },
   { name: '@lexical/*', test: (p) => p.includes('@lexical/') },
   { name: 'prismjs', test: (p) => p.includes('prismjs') },

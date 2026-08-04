@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { buildEntitySelectionContextItem, buildRelationshipSelectionContextItem } from '../selectionContext';
 import type { Entity, Relationship } from '../types';

@@ -6,7 +6,7 @@ const enumRule = <const T extends readonly string[]>(...values: T) => ({ type: '
 
 const surface = enumRule('desktop', 'web_console', 'ios');
 const actorType = enumRule('user', 'agent');
-const callerRole = enumRule('owner', 'admin', 'member', 'unknown');
+const callerRole = enumRule('owner', 'admin', 'member', 'viewer', 'unknown');
 const collaborationScope = enumRule('personal', 'shared', 'mixed', 'unknown');
 const connectionPath = enumRule('initial', 'reconnect', 'offline_open', 'resume');
 const encryptionMode = enumRule('server_managed', 'legacy_e2e', 'unknown');
@@ -18,6 +18,20 @@ const itemCountBucket = enumRule('0', '1', '2-5', '6-20', '21+');
 const retryCountBucket = enumRule('0', '1', '2-3', '4+');
 const queryLengthBucket = enumRule('1-3', '4-10', '11-30', '31+');
 const resourceType = enumRule('team_index', 'document', 'tracker', 'asset');
+
+export type TeamAnalyticsCallerRole = typeof callerRole.values[number];
+
+export function normalizeTeamAnalyticsCallerRole(role: unknown): TeamAnalyticsCallerRole {
+  switch (role) {
+    case 'owner':
+    case 'admin':
+    case 'member':
+    case 'viewer':
+      return role;
+    default:
+      return 'unknown';
+  }
+}
 /**
  * Every route that can open a shared document. `share_to_team` and
  * `embedded_document` are distinct entries rather than being folded into

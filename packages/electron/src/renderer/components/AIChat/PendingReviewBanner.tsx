@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { sessionPendingReviewFilesAtom } from '../../store/atoms/sessionFiles';
 
 interface PendingReviewBannerProps {

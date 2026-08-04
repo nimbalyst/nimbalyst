@@ -7,7 +7,7 @@ import { WindowMenuBar } from '../WindowMenuBar';
 import { windowMenuBarAtom } from '../../../store/atoms/windowMenu';
 import { EMPTY_MENU_BAR, type SerializedMenuBar } from '../../../../shared/menuBar';
 
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => (
     <span data-icon={icon} aria-hidden="true">{icon}</span>
   ),

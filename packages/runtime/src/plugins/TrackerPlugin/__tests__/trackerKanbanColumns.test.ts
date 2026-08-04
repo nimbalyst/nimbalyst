@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, afterEach } from 'vitest';
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import { globalRegistry, type TrackerDataModel } from '../models/TrackerDataModel';

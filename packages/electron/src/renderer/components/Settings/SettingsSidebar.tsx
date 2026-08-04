@@ -7,10 +7,13 @@ import {
   shift,
   useFloating,
 } from '@floating-ui/react';
-import { MaterialSymbol, getProviderIcon } from '@nimbalyst/runtime';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { getProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP } from '../common/TeamAlphaNotice';
 import { developerModeAtom } from '../../store/atoms/appSettings';
+import { teamsConfiguredAtom } from '../../store/atoms/settingsDomains';
 import {
   getSettingsRoutesForScope,
   type SettingsCategory,
@@ -52,6 +55,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   extensionRoutes = [],
 }) => {
   const developerMode = useAtomValue(developerModeAtom);
+  const teamsConfigured = useAtomValue(teamsConfiguredAtom);
   const [extAgentProviders, setExtAgentProviders] = useState<
     Array<{ id: string; name: string; icon?: string; status: string }>
   >([]);
@@ -59,7 +63,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   const { refs, floatingStyles } = useFloating({
     open: tooltipText !== null,
     placement: 'right',
-    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
 
   useEffect(() => {
@@ -78,7 +82,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
     const grouped = new Map<string, Array<SettingsRoute | { id: string; label: string; icon?: string; status: string }>>();
     for (const route of getSettingsRoutesForScope(
       scope,
-      { developerMode, showDirectChatProviders },
+      { developerMode, showDirectChatProviders, teamsConfigured },
       extensionRoutes,
     )) {
       const entries = grouped.get(route.group) ?? [];
@@ -91,7 +95,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
       grouped.set('Agent Providers', entries);
     }
     return [...grouped.entries()];
-  }, [developerMode, extAgentProviders, extensionRoutes, scope, showDirectChatProviders]);
+  }, [developerMode, extAgentProviders, extensionRoutes, scope, showDirectChatProviders, teamsConfigured]);
 
   return (
     <aside

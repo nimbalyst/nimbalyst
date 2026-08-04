@@ -16,6 +16,11 @@ export type ClaudeCodeSettingsLoader = () => Promise<{ projectCommandsEnabled: b
 export type ClaudeSettingsEnvLoader = () => Promise<Record<string, string>>;
 export type ShellEnvironmentLoader = () => Record<string, string> | null;
 export type AdditionalDirectoriesLoader = (workspacePath: string) => string[];
+export type AttachmentStagingLoader = (workspacePath: string) => {
+  root: string;
+  mode: 'temp' | 'workspace' | 'custom';
+};
+export type AttachmentDenyRulesLoader = (workspacePath: string) => Promise<string[]>;
 export type PatternSaver = (workspacePath: string, pattern: string) => Promise<void>;
 export type PatternChecker = (workspacePath: string, pattern: string) => Promise<boolean>;
 export type ImageCompressor = (
@@ -59,6 +64,13 @@ export const ClaudeCodeDeps = {
   // Returns merged user + workspace MCP servers
   mcpConfigLoader: null as McpConfigLoader | null,
 
+  // Names `mcpConfigLoader` deliberately withheld from its last result because
+  // they failed the OAuth check. Read straight after that loader resolves, so it
+  // reports the same pass. Kept off `mcpConfigLoader`'s return value because that
+  // value IS the server map handed to the SDK -- a withheld server must not be in
+  // it. See GH #1057: without this the drop is invisible to every surface.
+  mcpWithheldNamesLoader: null as ((workspacePath?: string) => string[]) | null,
+
   // Returns plugin paths from enabled extensions with Claude plugins
   // Accepts optional workspace path to include project-scoped CLI plugins
   extensionPluginsLoader: null as ExtensionPluginsLoader | null,
@@ -82,6 +94,11 @@ export const ClaudeCodeDeps = {
   // Returns additional directories Claude should have access to based on workspace context
   // (e.g., SDK docs when working on an extension project)
   additionalDirectoriesLoader: null as AdditionalDirectoriesLoader | null,
+
+  // Resolves the host-owned attachment staging directory and effective Claude
+  // deny rules without making the runtime package depend on Electron storage.
+  attachmentStagingLoader: null as AttachmentStagingLoader | null,
+  attachmentDenyRulesLoader: null as AttachmentDenyRulesLoader | null,
 
   // ---- Security / Permissions ----
 
@@ -134,6 +151,10 @@ export const ClaudeCodeDeps = {
     this.mcpConfigLoader = loader;
   },
 
+  setMcpWithheldNamesLoader(loader: ((workspacePath?: string) => string[]) | null): void {
+    this.mcpWithheldNamesLoader = loader;
+  },
+
   setExtensionPluginsLoader(loader: ExtensionPluginsLoader | null): void {
     this.extensionPluginsLoader = loader;
   },
@@ -156,6 +177,14 @@ export const ClaudeCodeDeps = {
 
   setAdditionalDirectoriesLoader(loader: AdditionalDirectoriesLoader | null): void {
     this.additionalDirectoriesLoader = loader;
+  },
+
+  setAttachmentStagingLoader(loader: AttachmentStagingLoader | null): void {
+    this.attachmentStagingLoader = loader;
+  },
+
+  setAttachmentDenyRulesLoader(loader: AttachmentDenyRulesLoader | null): void {
+    this.attachmentDenyRulesLoader = loader;
   },
 
   setClaudeSettingsPatternSaver(saver: PatternSaver | null): void {

@@ -17,9 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Agent brain profiles now preserve user additions, overrides, and disables when built-in models are updated.
 - Orchestrator sessions can explicitly opt in to reading or updating a session in another already-loaded project via `targetWorkspacePath`, while every session-context and meta-agent tool stays bound to the caller's own workspace by default.
 - Agent sessions can compact a target session's conversation directly via a new `compact_session` tool, reporting whether compaction actually ran instead of relying on a literal `/compact` prompt.
+- Spreadsheets can freeze columns and header rows again, and a selection now spans the frozen edge whether you drag it, select all, or copy it.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- The sessions popover in the gutter is wider, drag-resizable, and gives each session title a full row so long titles are readable.
 
 ### Fixed
 <!-- Bug fixes go here -->
@@ -34,9 +36,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An active content search no longer gets silently reset to zero results by unrelated session activity elsewhere in the workspace.
 - Windows shows the correct app icon in the taskbar and window chrome, checking the packaged `.ico` and current logo asset instead of only a `icon.png` name that no longer matches the packaged asset.
 - A slash command sent with arguments (e.g. `/compact focus on X`) via the agent queue tools now reliably runs instead of sometimes arriving as plain chat text and silently growing context instead of shrinking it.
+- Yes/no questions from the agent now show both answers as pickable buttons and wait for you to choose, instead of a single control that submitted "no" untouched.
 
 ### Removed
 <!-- Removed features go here -->
+
+## [0.72.1] - 2026-08-04
+
+
+### Added
+<!-- New features go here -->
+- The organization inbox is reachable from any project: a title-bar button badges unread messages, and the account menu gains a Messages entry.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Double-clicking a cell in the tracker table now edits it in place; the key, type and date columns still open the item.
+- Inbox rows are shorter and lead with what each delivery points at, with unread and source-type filters and a click that previews instead of navigating away.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Shared documents and team collaboration connect again after the sync server started rejecting the desktop app's connections.
+- Shared documents retry sync after a sign-in token refresh fails, instead of sitting on a connection that never comes back.
+- Team messages raise a desktop notification, and a direct message is titled after the other person, when more than one account is signed in.
+- Sessions no longer show as running after their work finished, so prompts queued behind an interrupted or background-task session send.
+- SSE-transport MCP servers that use OAuth reach your sessions again, and a server left out because it needs authorizing is now listed as such.
+- MCP servers whose provider refuses dynamic client registration can be authorized with a client ID you enter, and the error names that cause.
+- Tracker items in list and table views now expose their action menu without requiring a right-click.
+- Tracker date fields now show the day you entered, instead of the day before if your time zone is behind UTC.
+- Committing an agent's work now closes the tracker item it fixed and marks the session complete.
+- Changing a project's permission mode now applies to agent sessions that are already running.
+- Prompts you queue from the phone leave the queued list once the agent picks them up.
+- Tables exported to PDF now span the full page width with content-sized columns, instead of collapsing into a narrow strip.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.72.0] - 2026-08-01
+
+
+### Added
+<!-- New features go here -->
+- The new-worktree dialog can now search branches, narrowing the local and remote lists as you type.
+- The organization window gains rooms and direct messages, a rich message composer with attachments and mentions, live chips for pasted plan and tracker links, unread badges, and desktop notifications for new messages.
+- Tracker items can now open as full documents with collaborative editing, inline comments, consistent editable field chips (including collection creation), keyboard-driven search and filters, shared-document navigation, a side-by-side AI chat panel, and a visible action to copy shareable reopen links.
+- A new install now starts on the onboarding screen and can open a ready-made tutorial project — documents, data, designs, plans, and finished AI sessions to explore — reachable any time from the project manager or Help > Launch Tutorial.
+- Agent sessions can show an MCP status chip in the header listing which servers the session has, which are connected, and which never reached it at all — off by default, enable it under Settings > Agent Features.
+- Quick Open prompt search now distinguishes prompts you wrote from ones an agent sent, with filter controls to narrow to either.
+- The Agent mode header gains a pin toggle, and worktrees now show the worktree icon and their worktree name.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- The Agent mode right-panel control in the title bar is now a split button: one click hides or restores the panel, and the caret picks which panel to show.
+- Organizations are now managed in a dialog in whichever window you are already in — members, projects, settings, billing and the danger zone — leaving the organization window for messages, with a bottom-left profile menu that matches the project window's.
+- Signing in now hands back to the copy of Nimbalyst that started it rather than through a system-wide link handler.
+- Turning an MCP server off for Claude now also turns it off for Claude Code outside Nimbalyst in that project, because Nimbalyst records it the same way Claude Code does.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Checking for updates no longer fails outright when the newest release tag has no published downloads behind it; the app falls back to the most recent version that does.
+- Cancelling a Codex session now stops it for good, instead of the session sliding back into a running state seconds later after its turn had already failed.
+- Find-in-document now highlights matches inside inline code, and comment highlights are visible on commented inline code.
+- Source files containing NUL separators now render as text in GitHub reviews instead of appearing as binary changes.
+- Queued prompts now run on their own: a prompt sent from your phone opens the project and runs it, prompts left over from a quit resume once the project is open again, and a prompt that arrives mid-turn runs when the turn ends — no more pressing Escape or restarting to release the queue. (#962)
+- Web search and web fetch no longer fail in Claude Code CLI sessions running at max effort.
+- Sharing a plan or decision now produces a link your teammates can actually open, and the sharer edits the same collaborative content everyone else sees instead of quietly staying on their local file. Items shared earlier can be unshared and shared again to pick this up, keeping the content that has been edited since.
+- An AI session that reports its previous conversation has expired now genuinely starts fresh on the next message, instead of repeating the same expiration error forever. (#1098)
+- Tracker items with structured array fields no longer crash when opened, even when older schemas describe those fields as text lists. (#1104)
+- Claude Code sessions now use your existing MCP setup instead of overriding it, so account connectors load again and sessions no longer fail to start on machines with an organization-managed MCP policy. (#1051)
+- HTTP MCP servers that authenticate with a static key now connect directly on Claude Code sessions instead of being routed through an extra helper process.
+- Unified Quick Open tabs now show compact platform keyboard glyphs without shortcut labels overflowing into neighboring tabs.
+- Desktop AI notifications now lead with the originating session name and open that exact session and project, including child sessions, instead of following whichever project is currently visible.
+- Dropdown menus no longer open underneath the macOS window controls — the project rail's "+" menu now opens beside the button instead of jumping to the top corner. (#1096)
+- File reveal menus now name Finder on macOS, Explorer on Windows, and the containing folder on Linux.
+- Main windows now restore their maximized state after restart instead of reopening at stale pre-maximize bounds. (#1077)
+- AI sessions that preview a web page no longer strand a blank, unclosable window on a second monitor.
+- Tracker list progress cells now use the selected theme's background instead of a light block.
+- Sorting a tracker view by Updated, or any other date column, now orders rows by date instead of alphabetically by month name.
+- Embedded mockups and diagrams written as a plain relative link inside a shared document now open the shared copy instead of failing to load.
+- A link to a file written as a plain relative path, such as `design/dashboard.mockup.html`, now opens the file instead of a broken page in your web browser.
+- Shared-document references no longer make recovery exports empty or turn into tracker links.
+- Tracker sidebar type counts no longer read 0 for types that have items, and listing archived items no longer comes back empty.
+- Committing with the AI commit widget no longer leaves the just-committed files showing as deleted or reverted, and no longer discards changes you staged elsewhere at the same time.
+- Projects with many new, uncommitted folders no longer stall while the file tree and changed-files list refresh, and ignored files inside those folders no longer show up as changed.
+- Adding a second account no longer changes which account personal sync runs as.
+- Answering or cancelling a question from an agent now closes it for good, instead of leaving it on screen and bringing it back when you switch sessions and return. (#1116, #773)
+- Attaching a file the agent is not permitted to read now says so and offers an inline retry, and staged attachments are kept out of workspace scans and cleaned up afterwards. (#1086)
+- The sidebar extension panel reopens where you left it after a reload instead of coming back blank. (#1114)
+- Comments whose anchor text was deleted now scroll into view instead of being unreachable, and new comments are composed in the comments panel.
+- The Tracker columns menu now stays inside the window instead of running off the edge.
+- Window icons no longer flash their text labels while the window starts up.
+- Mockups containing XML-incompatible comments can be captured as screenshots again.
+- The organization inbox reconnects on its own after the connection drops.
+- Session titles inside an expanded workstream update as they change instead of showing the old name. (#973)
+- Windows builds sign the app payload before packaging, so the installer no longer reports an unsigned application. (#853)
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.71.3] - 2026-07-28
+
+
+### Added
+<!-- New features go here -->
+- The organization window gains an Inbox with conversations plus mentions and replies from shared-document comments.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Teams is still in alpha and new signups limited.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Queued chat messages now continue through a replacement project window after the original window reloads or closes.
+- Windows and Linux get the File/Edit/View menus back, now drawn in the project window's title bar.
+- Menus and popups that open over the title bar respond to clicks again on Windows and Linux, including "Open folder…" in the project switcher (#1052).
+- Tracker types defined in one project no longer overwrite another open project's identically-named types (#1035).
+- Codex sessions now reach for Nimbalyst's browser tools instead of dead-ending on the ChatGPT desktop app's in-app browser plugin.
+
+### Removed
+<!-- Removed features go here -->
+- Organizations still on the original client-managed encryption are no longer supported and must be set up again; all team collaboration — including attachments in shared documents — now uses Nimbalyst-managed encryption.
 
 ## [0.71.2] - 2026-07-26
 
@@ -116,6 +234,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resolved SQLite migration errors on startup and no longer offers the dry-run and migrate controls once you are already on SQLite.
 - Comment highlights in collaborative documents are now legible in dark mode.
 - Collaborative tracker items can now be filtered by who created them.
+- Expanded workstream rows now show external session renames immediately without reloading the session view.
 - Agent-mode document embeds now recover when their target file is created after the document opens.
 - Claude Code and Codex now honor relocated config directories, so usage, session history, settings, plugins, commands, and skills all resolve correctly.
 - Automations no longer rerun the same scheduled occurrence after restarting while a run is waiting or fails.

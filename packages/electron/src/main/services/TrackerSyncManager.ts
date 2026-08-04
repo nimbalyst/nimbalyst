@@ -6,7 +6,7 @@
  * itself is platform-neutral and lives in
  * `@nimbalyst/runtime/sync/TrackerSyncEngine`; this file is the Electron
  * host: it wires PGLite (`TrackerPGLiteStore`), team metadata
- * (`TeamService`), the org encryption key (`OrgKeyService`), and the
+ * (`TeamService`) and the
  * Stytch JWT into a `TrackerSyncEngineConfig`.
  *
  * Lifecycle:
@@ -14,28 +14,29 @@
  *     engine. Called from `RepositoryManager` per open workspace and
  *     from `WorkspaceManagerWindow`.
  *   - `shutdownTrackerSync(workspacePath?)` tears down one or all engines.
- *   - `reinitializeTrackerSync(workspacePath)` is the rotation handler:
- *     destroys + rebuilds the engine with fresh key material.
+ *   - `reinitializeTrackerSync(workspacePath)` destroys + rebuilds the engine
+ *     against freshly resolved routing. Triggered when the project's tracker
+ *     room moves to another org (`onRoomMoved`, Epic H3 P1) and by the
+ *     `tracker-sync:restart-for-workspace` IPC. It is no longer a key-rotation
+ *     handler: the team DEK is server-held and the client carries no key
+ *     material to refresh.
  *
  * Renderer bridge:
  *   The 7 `tracker-sync:*` IPC handlers preserved here keep the existing
  *   atoms in `store/listeners/trackerSyncListeners.ts` and
  *   `store/atoms/trackerSync.ts` functional without renderer changes.
- *   The legacy `tracker-sync:connect-test` channel is intentionally
- *   removed (per phase-3 plan question 5; nothing in the current
- *   Playwright suite calls it).
+ *   `tracker-sync:connect-test` is also registered here; the collab E2E
+ *   specs drive tracker sync through it.
  */
 
 import { BrowserWindow } from 'electron';
 import {
   TrackerSyncEngine,
-  fingerprintTrackerKey,
   applyLabelDiff,
   type TrackerSyncEngineConfig,
   type TrackerSyncStatus,
   type AppliedTrackerItem,
   type RejectedTrackerMutation,
-  type TrackerKeyMaterial,
   type TrackerItemPayload,
   type TrackerRoomConfig,
   type LabelsMap,
@@ -48,7 +49,6 @@ import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { isAuthenticated } from './StytchAuthService';
 import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
-import { getOrgKey, getOrgKeyFingerprint, fetchAndUnwrapOrgKey, fetchTeamKeyStatus, getLastKnownTeamKeyStatus, setTeamKeyCustodyMode } from './OrgKeyService';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { getDatabase } from '../database/initialize';
 import { TrackerPGLiteStore } from './tracker/TrackerPGLiteStore';
@@ -77,13 +77,6 @@ import { windows, windowStates } from '../window/windowState';
 import { getEffectiveTrackerSyncPolicy, decideBackfillAction } from './TrackerPolicyService';
 import { rowToTrackerItem } from '../mcp/tools/trackerToolHandlers';
 import { getWorkspaceState } from '../utils/store';
-import {
-  backupCollabOrganization,
-  finalizeCollabDocumentMigration,
-  finalizeCollabTitleMigration,
-  verifyOrMarkCollabBackups,
-} from './CollabBackupCoordinator';
-import { getCollabBackupService } from './CollabBackupService';
 import { AnalyticsService } from './analytics/AnalyticsService';
 import { sendTeamAnalyticsEvent } from './analytics/TeamAnalytics';
 import { CollaborationHealthAttemptTracker } from '../../shared/analytics/collaborationHealth';
@@ -219,17 +212,6 @@ function currentAggregateStatus(): TrackerSyncStatus {
   return 'disconnected';
 }
 
-/**
- * Legacy hook. The v1 implementation returned a `TrackerSyncProvider`
- * instance; phase 3 no longer exposes that surface (renderer reads PGLite
- * via existing IPC and observes engine events via `tracker-sync:*`).
- * Kept as `null` so callers that don't actually use the return type
- * still link.
- */
-export function getTrackerSyncProvider(_workspacePath?: string): null {
-  return null;
-}
-
 export function reconnectAllTrackerSyncs(): void {
   for (const entry of engines.values()) {
     void entry.engine.connect();
@@ -304,57 +286,9 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     return;
   }
 
-  // Epic H2: decide the key-custody lane BEFORE touching the ECDH envelope
-  // path. In server-managed mode the server holds the per-team DEK and the
-  // engine syncs PLAINTEXT, so no org key is fetched or required.
-  let keyStatusMode: 'legacy-e2e' | 'server-managed' = 'legacy-e2e';
-  try {
-    const orgJwt = await getOrgScopedJwt(team.orgId);
-    keyStatusMode = (await fetchTeamKeyStatus(team.orgId, orgJwt)).mode;
-  } catch (err) {
-    // Offline JWT mint failure (NIM-1778): fall back to the last-known mode
-    // instead of assuming legacy-e2e, which poisons the tracker sync lane.
-    keyStatusMode = getLastKnownTeamKeyStatus(team.orgId)?.mode ?? 'legacy-e2e';
-    logger.main.warn('[TrackerSyncManager] key-status resolve failed; using last-known mode', keyStatusMode, ':', err);
-  }
-  const serverManaged = keyStatusMode === 'server-managed';
-  const healthAttempt = new CollaborationHealthAttemptTracker(
-    'tracker',
-    serverManaged ? 'server_managed' : 'legacy_e2e',
-  );
+  const healthAttempt = new CollaborationHealthAttemptTracker('tracker', 'server_managed');
   healthAttempt.start(initializedTrackerSyncWorkspaces.has(workspacePath) ? 'reconnect' : 'initial');
   initializedTrackerSyncWorkspaces.add(workspacePath);
-
-  // Resolve org encryption key (legacy mode only). If the envelope hasn't been
-  // shared with us yet, surface a status update but don't crash; the user can
-  // ask an admin to share, then we'll reinitialize.
-  let encryptionKey: CryptoKey | null = null;
-  if (!serverManaged) {
-    encryptionKey = await getOrgKey(team.orgId);
-    if (!encryptionKey) {
-      try {
-        const orgJwt = await getOrgScopedJwt(team.orgId);
-        encryptionKey = await fetchAndUnwrapOrgKey(team.orgId, orgJwt);
-      } catch (err) {
-        logger.main.warn('[TrackerSyncManager] failed to fetch org key envelope:', err);
-      }
-      if (!encryptionKey) {
-        logger.main.warn(
-          '[TrackerSyncManager] no encryption key for', team.orgId,
-          '-- engine not started until admin shares envelope.',
-        );
-        const healthProperties = healthAttempt.observe('error', new Error('Encryption key unavailable'));
-        if (healthProperties) {
-          sendTeamAnalyticsEvent(trackerSyncAnalytics, 'collab_sync_attempt_completed', healthProperties);
-        }
-        return;
-      }
-    }
-  } else {
-    logger.main.info('[TrackerSyncManager] team', team.orgId, 'is server-managed; skipping ECDH org-key unwrap');
-  }
-
-  const orgKeyFingerprint = serverManaged ? null : getOrgKeyFingerprint(team.orgId);
 
   const db = getDatabase();
   if (!db) {
@@ -373,9 +307,6 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     orgId: team.orgId,
     teamProjectId: team.teamProjectId,
     userId: '',  // informational only; the JWT carries the authoritative sub
-    keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
-    encryptionKey: encryptionKey ?? undefined,
-    orgKeyFingerprint,
     persistence,
     initializeIssueKeyPrefix: getWorkspaceState(workspacePath).issueKeyPrefix,
     schemaSync: {
@@ -394,9 +325,6 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
       applyRemote: (def) => applyRemoteWorkspaceSharedSavedView(workspacePath, def),
     },
     getJwt: () => getOrgScopedJwt(team.orgId),
-    // Legacy-only: server-managed mode never hits staleKeyEpoch (server owns
-    // the epoch), so a key-refresh callback would be dead weight.
-    refreshKey: serverManaged ? undefined : () => refreshKeyForOrg(team.orgId),
     // Node.js 22+ ships a global WebSocket, but Electron's main process
     // historically pinned a Chromium-era version; use `ws` from the same
     // import DocumentSyncHandlers does for reliability across Electron
@@ -533,205 +461,6 @@ export function shutdownTrackerSync(workspacePath?: string): void {
 export async function reinitializeTrackerSync(workspacePath: string): Promise<void> {
   shutdownTrackerSync(workspacePath);
   await initializeTrackerSync(workspacePath);
-}
-
-/**
- * Epic H2 client-assisted migration cutover (admin action).
- *
- * Flips a team from legacy-e2e (client-side zero-knowledge) to server-managed,
- * then re-uploads the team's locally-decrypted tracker data as PLAINTEXT so the
- * server can re-encrypt it at rest with the team DEK. The legacy ciphertext rows
- * (written under the old org key, undecryptable to keyless clients) are thereby
- * replaced.
- *
- * Steps:
- *   1. POST set-key-custody-mode=server-managed (admin-gated server-side).
- *   2. Mark every shared local tracker item AND schema def for re-push
- *      (`sync_id = NULL`, `sync_status = 'pending'`).
- *   3. Reinitialize the engine — it fetches key-status (now server-managed),
- *      runs in plaintext pass-through, and the on-connect backfill re-uploads
- *      the marked items; `pushPendingSchemas` re-uploads the marked schemas.
- *
- * NOTE (documents): the background encryption finalizer now enumerates every
- * indexed room after cutover, explicitly re-registers recovered legacy titles,
- * and compacts fully decoded bodies before the server records completion.
- * The migrating caller must hold the legacy org key (enforced below) so that
- * finalization can actually happen.
- *
- * Returns the orgId and how many items were marked for re-push. Requires the
- * caller to be a team admin (enforced by the server REST gate).
- */
-export async function migrateTeamToServerManaged(
-  orgId: string,
-  workspacePath?: string,
-): Promise<{ orgId: string; itemsMarked: number; schemasMarked: number; workspacesMarked: string[] }> {
-  if (!orgId) throw new Error('orgId required');
-
-  if (workspacePath) {
-    const team = await findTeamForWorkspace(workspacePath);
-    if (!team) throw new Error('No team found for this workspace');
-    if (team.orgId !== orgId) {
-      throw new Error('Selected organization does not match the active workspace.');
-    }
-  }
-
-  const db = getDatabase();
-  if (!db) throw new Error('Database not available');
-
-  const orgJwt = await getOrgScopedJwt(orgId);
-  if ((await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed') {
-    return { orgId, itemsMarked: 0, schemasMarked: 0, workspacesMarked: [] };
-  }
-
-  // NIM-906: doc-index TITLES and document BODIES written before the flip stay
-  // AES-ciphertext on the server (it never held the zero-knowledge org key, so
-  // it cannot re-key them). Only a client that still holds the legacy org key
-  // can recover the plaintext and re-register it (the background finalizer
-  // explicitly heals titles and compacts bodies). So the precondition for a
-  // CLEAN cutover is that THIS migrating client holds the legacy org key —
-  // not that no docs are linked (the old guard blocked on linked docs yet did
-  // nothing to guarantee the data could actually be healed, and silently left
-  // the index as ciphertext when an admin migrated from a device that had no
-  // local bindings).
-  let legacyKey = await getOrgKey(orgId);
-  if (!legacyKey) {
-    try {
-      legacyKey = await fetchAndUnwrapOrgKey(orgId, await getOrgScopedJwt(orgId));
-    } catch {
-      // fall through to the guard below
-    }
-  }
-  if (!legacyKey) {
-    throw new Error(
-      'Cannot update encryption: this device does not have the team’s current encryption key, ' +
-      'so existing shared documents could not be re-encrypted. Migrate from a device that has ' +
-      'been an active member of this team (or ask an admin to re-share keys), then retry.',
-    );
-  }
-
-  const workspaceRows = await db.query<{ workspace: string }>(
-    `
-      SELECT DISTINCT workspace FROM tracker_items WHERE workspace IS NOT NULL
-      UNION
-      SELECT DISTINCT workspace FROM tracker_type_defs WHERE workspace IS NOT NULL
-    `,
-  );
-  const workspacesForOrg: string[] = [];
-  const unresolvedWorkspaces: Array<{ workspace: string; error: string }> = [];
-  for (const row of workspaceRows.rows) {
-    if (!row.workspace) continue;
-    try {
-      const team = await findTeamForWorkspace(row.workspace);
-      if (team?.orgId === orgId) {
-        workspacesForOrg.push(row.workspace);
-      }
-    } catch (err) {
-      // A THROW (not a null return) means we could not even resolve this
-      // workspace's org -- e.g. its git remote is gone. We cannot classify it,
-      // so it is neither swept nor excluded with confidence. Do NOT silently
-      // drop it: if it holds shared tracker bodies for THIS org, they would go
-      // uncaptured and the gate would pass without them (backup review 3a).
-      unresolvedWorkspaces.push({
-        workspace: row.workspace,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-  if (unresolvedWorkspaces.length > 0) {
-    logger.main.warn(
-      '[TeamMigration] Pre-migration sweep could not resolve some local workspaces; ' +
-      'any shared tracker bodies they hold for this org were not backed up',
-      { orgId, unresolvedWorkspaces },
-    );
-  }
-  if (workspacePath && !workspacesForOrg.includes(workspacePath)) {
-    workspacesForOrg.push(workspacePath);
-  }
-  // Gating safety precondition: capture every locally-known shared document
-  // and tracker body while the legacy key is still usable. The custody flip
-  // must not happen unless each sweep confirms a fresh plaintext backup.
-  const backupSummaries = await backupCollabOrganization(orgId, workspacesForOrg);
-  const backupProjectIds = await verifyOrMarkCollabBackups(
-    backupSummaries,
-    (projectIds, reason) => getCollabBackupService().markNeedsRecovery(orgId, projectIds, reason),
-  );
-
-  let cutoverComplete = false;
-  try {
-    // 1. Server cutover (admin-gated; throws on non-admin / failure).
-    await setTeamKeyCustodyMode(orgId, 'server-managed', orgJwt);
-    cutoverComplete = true;
-
-    // 2. Mark shared local items + schema defs for re-push as plaintext. Count
-    // first (cross-backend: the query seam doesn't expose an affected-row count).
-    const countRows = async (table: string, workspace: string): Promise<number> => {
-      const res = await db.query(
-        `SELECT COUNT(*) AS n FROM ${table} WHERE workspace = $1 AND deleted_at IS NULL`,
-        [workspace],
-      );
-      return Number((res.rows[0] as { n: number | string } | undefined)?.n ?? 0);
-    };
-    let itemsMarked = 0;
-    let schemasMarked = 0;
-    for (const workspace of workspacesForOrg) {
-      itemsMarked += await countRows('tracker_items', workspace);
-      schemasMarked += await countRows('tracker_type_defs', workspace);
-      await db.query(
-        `UPDATE tracker_items
-            SET sync_id = NULL, sync_status = 'pending'
-          WHERE workspace = $1 AND deleted_at IS NULL`,
-        [workspace],
-      );
-      await db.query(
-        `UPDATE tracker_type_defs
-            SET sync_id = NULL, sync_status = 'pending'
-          WHERE workspace = $1 AND deleted_at IS NULL`,
-        [workspace],
-      );
-    }
-    logger.main.info(
-      '[TrackerSyncManager] migrate-to-server-managed for', orgId,
-      '-- marked', itemsMarked, 'items and', schemasMarked, 'schemas across', workspacesForOrg.length, 'workspaces for plaintext re-push',
-    );
-
-    // 3. Reconnect in server-managed mode; on-connect backfill re-uploads.
-    for (const workspace of workspacesForOrg) {
-      backfilledWorkspaces.delete(workspace);
-      await reinitializeTrackerSync(workspace);
-    }
-
-    return { orgId, itemsMarked, schemasMarked, workspacesMarked: workspacesForOrg };
-  } catch (error) {
-    if (!cutoverComplete) throw error;
-    const reason = error instanceof Error ? error.message : String(error);
-    try {
-      await getCollabBackupService().markNeedsRecovery(orgId, backupProjectIds, reason);
-    } catch (markerError) {
-      logger.main.error('[TrackerSyncManager] Could not persist needs-recovery marker', {
-        orgId,
-        markerError,
-      });
-    }
-    logger.main.error('[TrackerSyncManager] Migration failed after custody cutover; org needs recovery', {
-      orgId,
-      reason,
-    });
-    throw new Error(
-      'Encryption migration failed after the server cutover. This organization needs recovery ' +
-      'from its local plaintext collaboration backup; no rollback was attempted. Cause: ' + reason,
-    );
-  }
-}
-
-export async function finalizeTeamEncryptionDocument(
-  orgId: string,
-  documentId: string,
-): Promise<void> {
-  await finalizeCollabDocumentMigration(orgId, documentId);
-}
-
-export async function finalizeTeamEncryptionTitles(orgId: string): Promise<void> {
-  await finalizeCollabTitleMigration(orgId);
 }
 
 /**
@@ -972,24 +701,7 @@ function emitRejection(workspacePath: string, rejection: RejectedTrackerMutation
 }
 
 // ============================================================================
-// Key rotation refresh path
-// ============================================================================
-
-async function refreshKeyForOrg(orgId: string): Promise<TrackerKeyMaterial | null> {
-  try {
-    const orgJwt = await getOrgScopedJwt(orgId);
-    const fresh = await fetchAndUnwrapOrgKey(orgId, orgJwt);
-    if (!fresh) return null;
-    const fingerprint = await fingerprintTrackerKey(fresh);
-    return { encryptionKey: fresh, orgKeyFingerprint: fingerprint };
-  } catch (err) {
-    logger.main.warn('[TrackerSyncManager] refreshKey failed for', orgId, ':', err);
-    return null;
-  }
-}
-
-// ============================================================================
-// IPC surface (7 channels; connect-test deleted per phase-3 plan Q5)
+// IPC surface
 // ============================================================================
 
 export function registerTrackerSyncHandlers(): void {
@@ -1041,22 +753,6 @@ export function registerTrackerSyncHandlers(): void {
     try {
       await reinitializeTrackerSync(wp);
       return { success: true };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  // Epic H2 admin action: migrate this workspace's team from legacy-e2e to
-  // server-managed key custody, then re-push local tracker data as plaintext.
-  safeHandle('tracker-sync:migrate-to-server-managed', async (_event, payload: string | { orgId?: string; workspacePath?: string }) => {
-    const orgId = typeof payload === 'string' ? undefined : payload?.orgId;
-    const wp = typeof payload === 'string' ? payload : payload?.workspacePath;
-    if (!orgId) {
-      return { success: false, error: 'orgId required' };
-    }
-    try {
-      const result = await migrateTeamToServerManaged(orgId, wp);
-      return { success: true, ...result };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
@@ -1116,7 +812,6 @@ export function registerTrackerSyncHandlers(): void {
       teamProjectId: string;
       orgId: string;
       userId: string;
-      encryptionKeyJwk: JsonWebKey;
     }) => {
       try {
         if (!payload?.workspacePath || !payload?.teamProjectId || !payload?.orgId) {
@@ -1135,14 +830,6 @@ export function registerTrackerSyncHandlers(): void {
           engines.delete(payload.workspacePath);
         }
 
-        const encryptionKey = await crypto.subtle.importKey(
-          'jwk',
-          payload.encryptionKeyJwk,
-          { name: 'AES-GCM', length: 256 },
-          true,
-          ['encrypt', 'decrypt'],
-        );
-        const orgKeyFingerprint = await fingerprintTrackerKey(encryptionKey);
         const persistence = new TrackerPGLiteStore(db, payload.workspacePath);
 
         const workspacePath = payload.workspacePath;
@@ -1151,8 +838,6 @@ export function registerTrackerSyncHandlers(): void {
           orgId: payload.orgId,
           teamProjectId: payload.teamProjectId,
           userId: payload.userId,
-          encryptionKey,
-          orgKeyFingerprint,
           persistence,
           schemaSync: {
             getMaxSyncId: () => getMaxTrackerSchemaSyncId(workspacePath),

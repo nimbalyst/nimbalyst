@@ -1,0 +1,44 @@
+.org-switcher-button {
+  position: relative;
+}
+
+.org-switcher-unread-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  color: #ffffff;
+  background: var(--nim-error);
+  border: 2px solid var(--nim-bg-secondary);
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.org-switcher-org-avatar {
+  border-radius: 7px;
+}
+
+.org-switcher-row-unread-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 17px;
+  padding: 0 5px;
+  color: #ffffff;
+  background: var(--nim-error);
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}

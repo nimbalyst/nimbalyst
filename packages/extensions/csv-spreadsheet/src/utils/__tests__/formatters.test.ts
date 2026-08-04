@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { formatCellValue } from '../formatters';
 import type { ColumnFormat } from '../../types';

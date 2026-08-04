@@ -2,12 +2,14 @@ import { BrowserWindow, shell, nativeImage, app, powerMonitor } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { windowStates, windows, getWindowId } from '../window/WindowManager';
 import { basename, join } from 'path';
-import { writeFileSync, existsSync } from 'fs';
+import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { reportDesktopActivity, setWindowFocused, setScreenLocked, setIdleThresholdMs, attemptReconnect } from '../services/SyncManager';
 import { startNetworkAvailability, onNetworkAvailable, notifyNetworkAvailable } from '../services/NetworkAvailability';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { getPackageRoot } from '../utils/appPaths';
+import { resolveImageExtension } from '../utils/imageFormat';
+import { resolveWorkspaceAttachmentStagingDirectory } from '../services/attachments/attachmentStagingRoot';
 
 /** Timestamp of last app_foregrounded event, used to throttle to once per 30 minutes */
 let lastForegroundedEventAt = 0;
@@ -108,7 +110,7 @@ export function registerWindowHandlers() {
         try {
             // Handle data URLs by creating a temp file
             if (imagePath.startsWith('data:')) {
-                const tempPath = await createTempFileFromDataURL(imagePath);
+                const tempPath = await createTempFileFromDataURL(imagePath, workspacePathForEvent(event));
                 if (tempPath) {
                     await shell.openPath(tempPath);
                     return { success: true };
@@ -151,7 +153,7 @@ export function registerWindowHandlers() {
 
             // Handle data URLs by creating a temp file
             if (imagePath.startsWith('data:')) {
-                const tempPath = await createTempFileFromDataURL(imagePath);
+                const tempPath = await createTempFileFromDataURL(imagePath, workspacePathForEvent(event));
                 if (!tempPath) {
                     return { success: false, error: 'Failed to create temp file from data URL' };
                 }
@@ -271,7 +273,15 @@ export function registerWindowHandlers() {
 }
 
 // Helper function to create a temp file from a data URL
-async function createTempFileFromDataURL(dataURL: string): Promise<string | null> {
+function workspacePathForEvent(event: Electron.IpcMainInvokeEvent): string | undefined {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return undefined;
+    const windowId = getWindowId(window);
+    if (windowId === null) return undefined;
+    return windowStates.get(windowId)?.workspacePath ?? undefined;
+}
+
+async function createTempFileFromDataURL(dataURL: string, workspacePath?: string): Promise<string | null> {
     try {
         // Parse data URL: data:image/png;base64,iVBORw0KGgo...
         const matches = dataURL.match(/^data:([^;]+);base64,(.+)$/);
@@ -282,21 +292,18 @@ async function createTempFileFromDataURL(dataURL: string): Promise<string | null
 
         const mimeType = matches[1];
         const base64Data = matches[2];
+        const buffer = Buffer.from(base64Data, 'base64');
 
-        // Determine file extension from MIME type
-        const extensionMap: Record<string, string> = {
-            'image/png': 'png',
-            'image/jpeg': 'jpg',
-            'image/jpg': 'jpg',
-            'image/gif': 'gif',
-            'image/webp': 'webp',
-            'image/svg+xml': 'svg',
-        };
-        const extension = extensionMap[mimeType] || 'png';
+        // Name the temp file after its actual bytes -- a blind `png` default hands downstream
+        // consumers a file no decoder can open (NIM-2211).
+        const extension = resolveImageExtension(mimeType, buffer);
 
         // Create temp file
-        const tempPath = join(tmpdir(), `image-${Date.now()}.${extension}`);
-        const buffer = Buffer.from(base64Data, 'base64');
+        const root = workspacePath
+            ? join(resolveWorkspaceAttachmentStagingDirectory(workspacePath), 'images')
+            : tmpdir();
+        mkdirSync(root, { recursive: true });
+        const tempPath = join(root, `image-${Date.now()}.${extension}`);
         writeFileSync(tempPath, buffer);
 
         return tempPath;

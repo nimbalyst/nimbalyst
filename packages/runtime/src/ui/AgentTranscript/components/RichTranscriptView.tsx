@@ -20,6 +20,7 @@ import { useTranscriptToolWidgetRegistryVersion } from '../contributions';
 import { ToolCallChanges } from './ToolCallChanges';
 import { setSessionIsAtBottom, getSessionIsAtBottom } from '../../../store/atoms/transcriptScroll';
 import { isAppleMobileWebKit } from '../../../utils/platform';
+import { AttachmentStagingDeniedCard } from './AttachmentStagingDeniedCard';
 
 // Per-session VList cache - survives component remounts so returning to a session
 // doesn't re-measure all items from scratch
@@ -2155,6 +2156,22 @@ export const RichTranscriptView = React.forwardRef<
     }
 
     if (message.type === 'system_message' && message.systemMessage?.systemType === 'permission_denied') {
+      if (message.systemMessage.isAttachmentStagingDenied) {
+        const priorUserMessage = messages
+          .slice(0, index)
+          .reverse()
+          .find((candidate) => candidate.type === 'user_message');
+        return (
+          <div key={messageKey} data-message-index={index}>
+            <AttachmentStagingDeniedCard
+              sessionId={sessionId}
+              systemMessage={message.systemMessage}
+              prompt={priorUserMessage?.text ?? ''}
+              attachments={priorUserMessage?.attachments ?? []}
+            />
+          </div>
+        );
+      }
       // Auto-mode classifier denials are paired with a re-prompt from the
       // PermissionDenied SDK hook (see AgentToolHooks.createPermissionDeniedHook).
       // The user sees the regular ToolPermission widget with the classifier

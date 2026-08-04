@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TeamSyncProvider } from '../TeamSync';
 
@@ -16,8 +17,6 @@ describe('TeamSyncProvider reconnect failures', () => {
       serverUrl: 'wss://sync.example',
       orgId: 'org-team',
       userId: 'member-team',
-      keyCustody: 'server-managed',
-      orgKeyFingerprint: null,
       getJwt,
     });
 

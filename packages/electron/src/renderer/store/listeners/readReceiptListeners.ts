@@ -12,9 +12,12 @@
 import { store } from '@nimbalyst/runtime/store';
 import { mergeReceipt, trackerReceiptsAtom } from '@nimbalyst/runtime';
 import type { ReadReceipt, SyncedReadReceipt } from '@nimbalyst/runtime';
-import { docReceiptsAtom } from '../atoms/docUnread';
+import { applyRemoteDocReceiptAtom } from '../atoms/docUnread';
 import { applyTrackerPersonalStateRowAtom } from '../atoms/trackerPersonalState';
-import type { TrackerPersonalStateDto } from '../../services/RendererTrackerPersonalStateService';
+import {
+  publishRemoteTrackerPersonalState,
+  type TrackerPersonalStateDto,
+} from '../../services/RendererTrackerPersonalStateService';
 
 export function initReadReceiptListeners(): () => void {
   const cleanups: Array<() => void> = [];
@@ -32,9 +35,11 @@ export function initReadReceiptListeners(): () => void {
         next.set(receipt.entityId, mergeReceipt(next.get(receipt.entityId), incoming));
         store.set(trackerReceiptsAtom, next);
       } else if (receipt.entityKind === 'doc') {
-        const next = new Map(store.get(docReceiptsAtom));
-        next.set(receipt.entityId, mergeReceipt(next.get(receipt.entityId), incoming));
-        store.set(docReceiptsAtom, next);
+        store.set(applyRemoteDocReceiptAtom, {
+          documentId: receipt.entityId,
+          orgId: receipt.scope,
+          receipt: incoming,
+        });
       }
     },
   );
@@ -42,7 +47,10 @@ export function initReadReceiptListeners(): () => void {
 
   const unsubscribeTrackerPersonalState = window.electronAPI?.on?.(
     'tracker-personal-state:remote-updated',
-    (row: TrackerPersonalStateDto) => store.set(applyTrackerPersonalStateRowAtom, row),
+    (row: TrackerPersonalStateDto) => {
+      store.set(applyTrackerPersonalStateRowAtom, row);
+      publishRemoteTrackerPersonalState(row);
+    },
   );
   if (typeof unsubscribeTrackerPersonalState === 'function') cleanups.push(unsubscribeTrackerPersonalState);
 

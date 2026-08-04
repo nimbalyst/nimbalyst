@@ -133,6 +133,110 @@ describe('queuedPromptDispatcher token owner', () => {
     expect(options.onChainSettled).not.toHaveBeenCalled();
   });
 
+  it('dispatches once to a replacement window when the original window is destroyed', async () => {
+    vi.useFakeTimers();
+
+    // Regression: a long guarded/streaming prompt retains its original
+    // BrowserWindow. If that renderer dies or reloads, FIFO continuation must
+    // not bail just because the passed window is gone — a replacement window
+    // for the same workspace should receive the next queued prompt exactly once.
+    const store = queueStoreFor(claimed());
+
+    // The original window is destroyed (renderer died/reloaded mid-stream).
+    const destroyedWindow = {
+      isDestroyed: () => true,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+
+    // The replacement window for the same workspace is live.
+    const replacementWindow = windowFixture();
+
+    let dispatchedSender: Electron.WebContents | undefined;
+    const resolveLiveWindow = vi.fn((_workspacePath: string) => replacementWindow);
+    const options = optionsFor(store, {
+      targetWindow: destroyedWindow,
+      resolveLiveWindow,
+      sendMessageHandler: vi.fn(async (event: Electron.IpcMainInvokeEvent) => {
+        dispatchedSender = event.sender;
+        return { content: 'ok' };
+      }),
+    });
+
+    const processed = await tryClaimAndDispatchNextQueuedPrompt(options);
+
+    // Without the fix the dispatcher bails on the destroyed window and never
+    // resolves a replacement, so nothing is dispatched.
+    expect(processed).toBe(true);
+    expect(resolveLiveWindow).toHaveBeenCalledWith('/workspace/project');
+
+    await vi.runAllTimersAsync();
+
+    // Exactly-once after the deferred dispatch settles. The replacement
+    // window's webContents, not the destroyed original, is the IPC sender.
+    expect(options.sendMessageHandler).toHaveBeenCalledTimes(1);
+    expect(dispatchedSender).toBe(replacementWindow.webContents);
+    expect(store.completeAfterDispatch).toHaveBeenCalledTimes(1);
+    expect(store.failAfterDispatch).not.toHaveBeenCalled();
+    expect(options.processingLeases.has('session-1')).toBe(false);
+  });
+
+  it('bails (without dispatching) when the window is destroyed and no replacement exists', async () => {
+    vi.useFakeTimers();
+
+    const store = queueStoreFor(claimed());
+
+    const destroyedWindow = {
+      isDestroyed: () => true,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+
+    const options = optionsFor(store, {
+      targetWindow: destroyedWindow,
+      resolveLiveWindow: vi.fn(() => null),
+    });
+
+    const processed = await tryClaimAndDispatchNextQueuedPrompt(options);
+
+    expect(processed).toBe(false);
+    expect(options.sendMessageHandler).not.toHaveBeenCalled();
+    expect(store.claim).not.toHaveBeenCalled();
+    expect(options.processingLeases.has('session-1')).toBe(false);
+  });
+
+  it('does NOT fire onChainSettled when a follow-on prompt is dispatched', async () => {
+    vi.useFakeTimers();
+
+    const store = queueStoreFor(claimed());
+    const onChainSettled = vi.fn(async () => {});
+    const processingLeases = new Map<string, symbol>();
+    // continueQueuedPromptChain dispatches a follow-on by re-acquiring the lease.
+    const continueQueuedPromptChain = vi.fn(async (sessionId: string) => {
+      processingLeases.set(sessionId, Symbol('follow-on'));
+    });
+    const options = optionsFor(store, {
+      onChainSettled,
+      processingLeases,
+      continueQueuedPromptChain,
+    });
+
+    await tryClaimAndDispatchNextQueuedPrompt(options);
+    await vi.runAllTimersAsync();
+
+    expect(onChainSettled).not.toHaveBeenCalled();
+  });
+    vi.useFakeTimers();
+    const store = queueStoreFor(claimed());
+    vi.mocked(store.beginDispatch).mockResolvedValue({ outcome: 'stale_owner' });
+    const options = optionsFor(store);
+    await expect(tryClaimAndDispatchNextQueuedPrompt(options)).resolves.toBe(true);
+    await vi.runAllTimersAsync();
+    expect(options.sendMessageHandler).not.toHaveBeenCalled();
+    expect(store.completeAfterDispatch).not.toHaveBeenCalled();
+    expect(store.failAfterDispatch).not.toHaveBeenCalled();
+    expect(options.continueQueuedPromptChain).not.toHaveBeenCalled();
+    expect(options.onChainSettled).not.toHaveBeenCalled();
+  });
+
   it('fails the same begun token on send error and only then continues', async () => {
     vi.useFakeTimers();
     const row = claimed();

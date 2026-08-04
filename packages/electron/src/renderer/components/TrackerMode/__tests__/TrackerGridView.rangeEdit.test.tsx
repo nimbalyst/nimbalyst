@@ -240,7 +240,10 @@ describe('TrackerGridView column layout', () => {
     );
 
     await waitFor(() => {
-      expect(gridElement.columns).toHaveLength(2);
+      expect(gridElement.columns).toEqual(expect.arrayContaining([
+        expect.objectContaining({ prop: 'title', name: 'Title' }),
+        expect.objectContaining({ prop: 'status', name: 'Status' }),
+      ]));
       expect(gridElement.source).toHaveLength(1);
     });
   });
@@ -300,7 +303,9 @@ describe('TrackerGridView column layout', () => {
       />,
     );
 
-    await waitFor(() => expect(gridElement.columns).toHaveLength(2));
+    await waitFor(() => expect(gridElement.columns).toEqual(expect.arrayContaining([
+      expect.objectContaining({ prop: 'status', columnTemplate: expect.any(Function) }),
+    ])));
     const status = (gridElement.columns as Array<Record<string, any>>)
       .find(column => column.prop === 'status')!;
     const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({
@@ -325,9 +330,9 @@ describe('TrackerGridView column layout', () => {
       });
     });
 
-    expect(screen.getByTestId('tracker-column-filter-value-submenu')).toBeTruthy();
-    expect(screen.getByText('1 issue')).toBeTruthy();
-    expect(screen.getByText('1 option not matching any issues')).toBeTruthy();
+    screen.getByTestId('tracker-column-filter-value-submenu');
+    screen.getByText('1 issue');
+    screen.getByText('1 option not matching any issues');
     fireEvent.click(screen.getByTestId('tracker-column-filter-option-to-do'));
 
     expect(onColumnFiltersChange).toHaveBeenCalledWith({
@@ -353,7 +358,9 @@ describe('TrackerGridView column layout', () => {
       />,
     );
 
-    await waitFor(() => expect(gridElement.columns).toHaveLength(2));
+    await waitFor(() => expect(gridElement.columns).toEqual(expect.arrayContaining([
+      expect.objectContaining({ prop: 'status', sortable: true }),
+    ])));
     const status = (gridElement.columns as Array<Record<string, any>>)
       .find(column => column.prop === 'status')!;
 
@@ -367,6 +374,63 @@ describe('TrackerGridView column layout', () => {
     });
 
     expect(onSortChange).toHaveBeenCalledWith('status', 'asc');
+  });
+});
+
+describe('TrackerGridView double-click', () => {
+  beforeAll(() => loadBuiltinTrackers());
+
+  beforeEach(() => {
+    getFocused.mockClear();
+    gridProps.current = null;
+    gridListeners.clear();
+  });
+
+  /** RevoGrid renders its own cells; stand in for one on the focused row. */
+  function doubleClickCell(): void {
+    const cell = document.createElement('div');
+    cell.setAttribute('data-rgrow', '0');
+    screen.getByTestId('mock-revogrid').appendChild(cell);
+    fireEvent.doubleClick(cell);
+  }
+
+  function renderGrid(onOpenDocument: () => void) {
+    render(
+      <TrackerGridView
+        filterType="bug"
+        overrideItems={[record()]}
+        columnConfig={{
+          visibleColumns: ['key', 'title', 'status'],
+          columnWidths: {},
+          groupBy: null,
+        }}
+        onOpenDocument={onOpenDocument}
+      />,
+    );
+  }
+
+  it('leaves an editable cell to RevoGrid instead of opening the item', async () => {
+    const onOpenDocument = vi.fn();
+    renderGrid(onOpenDocument);
+
+    doubleClickCell();
+
+    await waitFor(() => expect(getFocused).toHaveBeenCalled());
+    expect(onOpenDocument).not.toHaveBeenCalled();
+  });
+
+  it('opens the item from a readonly cell', async () => {
+    const onOpenDocument = vi.fn();
+    renderGrid(onOpenDocument);
+    getFocused.mockResolvedValueOnce({
+      cell: { x: 0, y: 0 },
+      column: { prop: 'key' },
+      rowType: 'rgRow',
+    });
+
+    doubleClickCell();
+
+    await waitFor(() => expect(onOpenDocument).toHaveBeenCalledWith('bug-1'));
   });
 });
 

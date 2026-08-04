@@ -33,6 +33,7 @@ import {
 } from './claudeCliPermissionHookConfig';
 import { resolveClaudeCliJsonlPath, shouldResumeClaudeCliSession } from './claudeCliJsonlPath';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
+import { hasEnterpriseManagedMcpConfig } from '@nimbalyst/runtime/ai/server/providers/claudeCode/enterpriseMcpConfig';
 import type { TerminalSessionManager } from '../TerminalSessionManager';
 import type { ClaudeTurnState, ParsedClaudePidFile } from './claudeCliPidState';
 
@@ -56,14 +57,16 @@ export interface ClaudeCliSessionLauncherDeps {
   baseEnv?: Record<string, string | undefined>;
   /**
    * Start the proxy observation backend for this session (NIM-806, Phase 3).
-   * Returns the `ANTHROPIC_BASE_URL` the CLI is pointed at and a `stop` to tear
-   * the proxy down on PTY exit. Returns null (or is omitted) when observation is
-   * disabled — the CLI then talks to the real API directly (terminal-only).
+   * Returns the `ANTHROPIC_BASE_URL` the CLI is pointed at, any extra env the
+   * proxy needs the CLI spawned with (see `proxyPassthroughEnv.ts`), and a
+   * `stop` to tear the proxy down on PTY exit. Returns null (or is omitted) when
+   * observation is disabled. The CLI then talks to the real API directly
+   * (terminal-only).
    */
   startObservation?: (opts: {
     sessionId: string;
     workspacePath: string;
-  }) => Promise<{ baseUrl: string; stop: () => void } | null>;
+  }) => Promise<{ baseUrl: string; env?: Record<string, string>; stop: () => void } | null>;
   /** Directory for temp MCP config files. Defaults to `os.tmpdir()/nimbalyst-claude-cli`. */
   tempDir?: string;
   /** fs overrides (tests). */
@@ -109,6 +112,14 @@ export interface ClaudeCliSessionLauncherDeps {
    * loader is the only gate); paired with `loadPluginDirs` in production.
    */
   cliSupportsPluginDir?: (executable: string) => boolean;
+  /**
+   * Report whether this machine has an enterprise `managed-mcp.json` (NIM-2372).
+   * The binary then rejects any `--mcp-config` we pass — with `You cannot
+   * dynamically configure MCP servers when an enterprise MCP config is present`
+   * and exit 1 — so we launch with no snapshot at all and the session runs on the
+   * enterprise's own servers. Injectable for tests; defaults to the real probe.
+   */
+  hasEnterpriseMcpLockdown?: () => boolean;
 }
 
 export interface LaunchClaudeCliSessionInput {
@@ -143,8 +154,11 @@ export interface LaunchClaudeCliSessionInput {
 }
 
 export interface LaunchClaudeCliSessionResult {
-  /** Path to the temp MCP config file handed to the CLI via `--mcp-config`. */
-  mcpConfigPath: string;
+  /**
+   * Path to the temp MCP config file handed to the CLI via `--mcp-config`.
+   * Absent under an enterprise MCP lockdown, where no snapshot is passed.
+   */
+  mcpConfigPath?: string;
 }
 
 export class ClaudeCliSessionLauncher {
@@ -181,11 +195,24 @@ export class ClaudeCliSessionLauncher {
     }
 
     // 1 + 2. Build the sessionId-bearing MCP config and persist it to a temp file.
-    const mcpServers = await this.deps.getMcpServersConfig({ sessionId, workspacePath });
-    const mcpConfigPath = await this.writeMcpConfig(sessionId, mcpServers);
-    // The map's keys are the trusted Nimbalyst MCP server names — pre-allow them so
-    // the genuine CLI doesn't double-prompt on top of our widgets (NIM-806 BUG 2).
-    const allowedMcpServerNames = Object.keys(mcpServers);
+    // Under an enterprise MCP lockdown the binary rejects any dynamically-passed
+    // server, so we skip the snapshot entirely and run degraded (NIM-2372) — the
+    // renderer surfaces which Nimbalyst tools are unavailable.
+    const mcpToolsUnavailable = (this.deps.hasEnterpriseMcpLockdown ?? hasEnterpriseManagedMcpConfig)();
+    let mcpConfigPath: string | undefined;
+    let allowedMcpServerNames: string[] = [];
+    let mcpServers: Record<string, unknown> = {};
+    if (mcpToolsUnavailable) {
+      console.log(
+        '[ClaudeCliSessionLauncher] enterprise managed-mcp.json detected; launching without Nimbalyst MCP servers',
+      );
+    } else {
+      mcpServers = await this.deps.getMcpServersConfig({ sessionId, workspacePath });
+      mcpConfigPath = await this.writeMcpConfig(sessionId, mcpServers);
+      // The map's keys are the trusted Nimbalyst MCP server names — pre-allow them so
+      // the genuine CLI doesn't double-prompt on top of our widgets (NIM-806 BUG 2).
+      allowedMcpServerNames = Object.keys(mcpServers);
+    }
 
     // NIM-806 Phase 4: a workspace the user has explicitly trusted "allow-all" /
     // "bypass-all" skips the gate entirely — spawn the genuine CLI with
@@ -229,7 +256,9 @@ export class ClaudeCliSessionLauncher {
 
     // 2.5. Start the proxy observation backend (Phase 3) BEFORE spawn, so we can
     // point the CLI's ANTHROPIC_BASE_URL at it. Tear down on PTY exit.
-    let observation: { baseUrl: string; stop: () => void } | null = null;
+    let observation: Awaited<
+      ReturnType<NonNullable<ClaudeCliSessionLauncherDeps['startObservation']>>
+    > = null;
     if (this.deps.startObservation) {
       try {
         observation = await this.deps.startObservation({ sessionId, workspacePath });
@@ -242,7 +271,9 @@ export class ClaudeCliSessionLauncher {
     const extraEnv: Record<string, string> | undefined =
       observation || Object.keys(permissionHookEnv).length > 0
         ? {
-            ...(observation ? { ANTHROPIC_BASE_URL: observation.baseUrl } : {}),
+            ...(observation
+              ? { ANTHROPIC_BASE_URL: observation.baseUrl, ...observation.env }
+              : {}),
             ...permissionHookEnv,
           }
         : undefined;
@@ -293,6 +324,7 @@ export class ClaudeCliSessionLauncher {
       dangerouslySkipPermissions,
       additionalDirectories: input.additionalDirectories,
       pluginDirs,
+      mcpToolsUnavailable,
     });
 
     // 4. Spawn the genuine interactive CLI in the terminal strip. Tear the proxy

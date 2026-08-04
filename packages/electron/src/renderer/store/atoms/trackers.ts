@@ -125,6 +125,21 @@ export async function initTrackerPanelLayout(workspacePath: string): Promise<voi
           ? savedModeLayout.recentlyViewedDays
           : DEFAULT_MODE_LAYOUT.recentlyViewedDays,
         inboxScope: savedModeLayout.inboxScope === 'type' ? 'type' : DEFAULT_MODE_LAYOUT.inboxScope,
+        itemViews: normalizeItemViews(savedModeLayout.itemViews),
+        documentListPaneVisible: typeof savedModeLayout.documentListPaneVisible === 'boolean'
+          ? savedModeLayout.documentListPaneVisible
+          : DEFAULT_MODE_LAYOUT.documentListPaneVisible,
+        documentListPaneWidth: clampDocumentListPaneWidth(
+          savedModeLayout.documentListPaneWidth ?? DEFAULT_MODE_LAYOUT.documentListPaneWidth,
+        ),
+        documentRightPanelVisible: typeof savedModeLayout.documentRightPanelVisible === 'boolean'
+          ? savedModeLayout.documentRightPanelVisible
+          : DEFAULT_MODE_LAYOUT.documentRightPanelVisible,
+        documentRightPanelWidth: clampDocumentRightPanelWidth(
+          savedModeLayout.documentRightPanelWidth ?? DEFAULT_MODE_LAYOUT.documentRightPanelWidth,
+        ),
+        documentRightPanelMode: normalizeDocumentPanelMode(savedModeLayout.documentRightPanelMode),
+        documentChatSessions: normalizeDocumentChatSessions(savedModeLayout.documentChatSessions),
         viewModeMigrated: true,
       };
 
@@ -217,6 +232,32 @@ export interface TrackerModeLayout {
   /** Whether the triage inbox spans every type or only the selected one. */
   inboxScope: InboxScope;
   /**
+   * Per-item presentation of the selected tracker item. `'document'` swaps
+   * Tracker Mode into the focused document layout (slim list left, the item's
+   * content filling the main area); `'item'` is the ordinary detail panel.
+   *
+   * Only items in document view are stored, so the map stays small and an
+   * absent key reads as `'item'`. Capped at {@link MAX_PERSISTED_ITEM_VIEWS}
+   * entries -- this is a UI preference, not a record of every item ever opened.
+   */
+  itemViews: Record<string, TrackerItemView>;
+  /** Document view: whether the slim list pane on the left is shown. */
+  documentListPaneVisible: boolean;
+  /** Document view: width of the slim list pane, in pixels. */
+  documentListPaneWidth: number;
+  /** Document view: whether the switchable chat/discussion panel is shown. */
+  documentRightPanelVisible: boolean;
+  /** Document view: width of the right panel, in pixels. */
+  documentRightPanelWidth: number;
+  /** Document view: which surface the right panel is showing. */
+  documentRightPanelMode: TrackerDocumentPanelMode;
+  /**
+   * Chat session paired with a tracker item, so reopening an item's document
+   * returns to the same conversation instead of starting a new one. Bounded the
+   * same way as {@link TrackerModeLayout.itemViews}.
+   */
+  documentChatSessions: Record<string, string>;
+  /**
    * Set to `true` once the one-shot `'table' -> 'list'` rewrite has run for
    * this workspace. Future loads pass `viewMode` through untouched so users
    * can pick the new `'table'` grid without it being clobbered.
@@ -238,8 +279,86 @@ const DEFAULT_MODE_LAYOUT: TrackerModeLayout = {
   sortDirection: 'desc',
   recentlyViewedDays: 30,
   inboxScope: 'global',
+  itemViews: {},
+  documentListPaneVisible: true,
+  documentListPaneWidth: 280,
+  documentRightPanelVisible: true,
+  documentRightPanelWidth: 380,
+  documentRightPanelMode: 'chat',
+  documentChatSessions: {},
   viewModeMigrated: true,
 };
+
+/** Presentation of a single tracker item inside Tracker Mode. */
+export type TrackerItemView = 'item' | 'document';
+
+/** Surface shown in the document view's right panel. */
+export type TrackerDocumentPanelMode = 'chat' | 'discussion';
+
+const DOCUMENT_PANEL_MODES: readonly TrackerDocumentPanelMode[] = ['chat', 'discussion'];
+
+/** Upper bound on remembered document-view items (oldest entries drop first). */
+export const MAX_PERSISTED_ITEM_VIEWS = 100;
+
+export const DOCUMENT_LIST_PANE_MIN_WIDTH = 200;
+export const DOCUMENT_LIST_PANE_MAX_WIDTH = 480;
+
+export function clampDocumentListPaneWidth(width: unknown): number {
+  if (typeof width !== 'number' || !Number.isFinite(width)) {
+    return DEFAULT_MODE_LAYOUT.documentListPaneWidth;
+  }
+  return Math.round(Math.max(
+    DOCUMENT_LIST_PANE_MIN_WIDTH,
+    Math.min(DOCUMENT_LIST_PANE_MAX_WIDTH, width),
+  ));
+}
+
+export const DOCUMENT_RIGHT_PANEL_MIN_WIDTH = 300;
+export const DOCUMENT_RIGHT_PANEL_MAX_WIDTH = 720;
+
+export function clampDocumentRightPanelWidth(width: unknown): number {
+  if (typeof width !== 'number' || !Number.isFinite(width)) {
+    return DEFAULT_MODE_LAYOUT.documentRightPanelWidth;
+  }
+  return Math.round(Math.max(
+    DOCUMENT_RIGHT_PANEL_MIN_WIDTH,
+    Math.min(DOCUMENT_RIGHT_PANEL_MAX_WIDTH, width),
+  ));
+}
+
+function normalizeDocumentPanelMode(raw: unknown): TrackerDocumentPanelMode {
+  return DOCUMENT_PANEL_MODES.includes(raw as TrackerDocumentPanelMode)
+    ? (raw as TrackerDocumentPanelMode)
+    : DEFAULT_MODE_LAYOUT.documentRightPanelMode;
+}
+
+/**
+ * Item -> chat session pairings, normalized the same defensive way as
+ * `itemViews`: anything that isn't a `string -> string` map reads as absent.
+ */
+function normalizeDocumentChatSessions(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const entries = Object.entries(raw as Record<string, unknown>)
+    .filter(([id, sessionId]) => (
+      typeof id === 'string' && id.length > 0
+      && typeof sessionId === 'string' && sessionId.length > 0
+    ))
+    .slice(-MAX_PERSISTED_ITEM_VIEWS) as Array<[string, string]>;
+  return Object.fromEntries(entries);
+}
+
+/**
+ * Persisted `itemViews` predates nothing -- but workspace state is written by
+ * many builds, so treat anything that isn't a `{ id: 'document' }` map as
+ * absent rather than trusting it into the atom.
+ */
+function normalizeItemViews(raw: unknown): Record<string, TrackerItemView> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const entries = Object.entries(raw as Record<string, unknown>)
+    .filter(([id, view]) => typeof id === 'string' && id.length > 0 && view === 'document')
+    .slice(-MAX_PERSISTED_ITEM_VIEWS) as Array<[string, TrackerItemView]>;
+  return Object.fromEntries(entries);
+}
 
 /** Main atom for tracker mode layout. */
 export const trackerModeLayoutAtom = atom<TrackerModeLayout>(DEFAULT_MODE_LAYOUT);
@@ -296,6 +415,101 @@ export const setTrackerModeLayoutAtom = atom(
 /** Active grouping in tracker mode. */
 export const trackerModeGroupByAtom = atom(
   (get) => get(trackerModeLayoutAtom).groupBy
+);
+
+/**
+ * The item currently presented as a document, or `null` when Tracker Mode is
+ * in its ordinary list + detail-panel presentation. Document view only applies
+ * to the *selected* item, so switching selection to an item that was never
+ * opened as a document leaves the focused layout.
+ */
+export const trackerModeDocumentItemIdAtom = atom((get) => {
+  const layout = get(trackerModeLayoutAtom);
+  const itemId = layout.selectedItemId;
+  if (!itemId) return null;
+  return layout.itemViews[itemId] === 'document' ? itemId : null;
+});
+
+/** Set (or clear) the document presentation for one item and persist it. */
+export const setTrackerItemViewAtom = atom(
+  null,
+  (get, set, params: { itemId: string; view: TrackerItemView }) => {
+    const current = get(trackerModeLayoutAtom);
+    const next: Record<string, TrackerItemView> = { ...current.itemViews };
+    // Only 'document' is stored; deleting on 'item' keeps the map bounded and
+    // makes an absent key unambiguously mean "ordinary detail panel".
+    if (params.view === 'document') {
+      // Re-insert so the most recently opened document is the newest key --
+      // the trim below drops the oldest.
+      delete next[params.itemId];
+      next[params.itemId] = 'document';
+    } else {
+      delete next[params.itemId];
+    }
+    const keys = Object.keys(next);
+    const trimmed = keys.length > MAX_PERSISTED_ITEM_VIEWS
+      ? Object.fromEntries(
+          keys.slice(keys.length - MAX_PERSISTED_ITEM_VIEWS).map((id) => [id, next[id]]),
+        )
+      : next;
+    set(setTrackerModeLayoutAtom, { itemViews: trimmed });
+  }
+);
+
+/**
+ * Remember (or forget) the chat session paired with a tracker item's document.
+ * Bounded like `itemViews` -- this is a convenience pairing, not a record of
+ * every chat ever opened.
+ */
+export const setTrackerDocumentChatSessionAtom = atom(
+  null,
+  (get, set, params: { itemId: string; sessionId: string | null }) => {
+    const current = get(trackerModeLayoutAtom);
+    const next: Record<string, string> = { ...current.documentChatSessions };
+    delete next[params.itemId];
+    if (params.sessionId) next[params.itemId] = params.sessionId;
+    const keys = Object.keys(next);
+    const trimmed = keys.length > MAX_PERSISTED_ITEM_VIEWS
+      ? Object.fromEntries(
+          keys.slice(keys.length - MAX_PERSISTED_ITEM_VIEWS).map((id) => [id, next[id]]),
+        )
+      : next;
+    set(setTrackerModeLayoutAtom, { documentChatSessions: trimmed });
+  }
+);
+
+/** Open an item in document view (selecting it if it isn't already). */
+export const openTrackerItemAsDocumentAtom = atom(
+  null,
+  (get, set, itemId: string) => {
+    set(setTrackerItemViewAtom, { itemId, view: 'document' });
+    if (get(trackerModeLayoutAtom).selectedItemId !== itemId) {
+      set(setTrackerModeLayoutAtom, { selectedItemId: itemId });
+    }
+  }
+);
+
+/**
+ * Leave a focused document through its tracker/type breadcrumb.
+ *
+ * Unlike "Collapse to tracker", breadcrumb navigation is a destination: it
+ * opens the owning type's row list with no detail panel obscuring it. Apply the
+ * presentation, type, and list-view changes in one persisted layout write so
+ * the title bar and Tracker Mode never observe an in-between state.
+ */
+export const returnToTrackerTypeListAtom = atom(
+  null,
+  (get, set, params: { itemId: string; trackerType: string }) => {
+    const current = get(trackerModeLayoutAtom);
+    const itemViews = { ...current.itemViews };
+    delete itemViews[params.itemId];
+    set(setTrackerModeLayoutAtom, {
+      selectedType: params.trackerType,
+      viewMode: 'list',
+      selectedItemId: null,
+      itemViews,
+    });
+  },
 );
 
 // ============================================================

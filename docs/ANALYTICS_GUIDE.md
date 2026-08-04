@@ -292,8 +292,8 @@ Use the `known_error` event to track recognized error conditions that we want to
 analyticsService.sendEvent('known_error', {
   errorId: 'pglite_wasm_runtime_crash',  // Unique identifier for this error type
   context: 'database_initialization',     // Where the error occurred
-  // Optional: include a truncated error message for unknown variants
-  // errorMessage: errorMessage.slice(0, 200),
+  errorCategory: 'availability',          // Fixed enum, never raw text
+  errorCode: 'wasm_runtime_crash',        // Fixed enum, never raw text
 });
 ```
 
@@ -301,9 +301,9 @@ analyticsService.sendEvent('known_error', {
 
 1. **Use a unique `errorId`**: Choose a descriptive snake_case identifier (e.g., `pglite_wasm_runtime_crash`)
 2. **Include `context`**: Describe where in the application the error occurred
-3. **Truncate error messages**: If including raw error text, truncate to 200 chars to avoid PII in stack traces
+3. **Never include raw error text**: Truncation does not make paths, usernames, document names, or secrets anonymous. Map errors to fixed categories/codes and keep detailed text in local logs only
 4. **Document in POSTHOG_EVENTS.md**: Add new error IDs to the "Known Error IDs" table
-5. **Don't include file paths**: Error messages may contain paths - sanitize or omit them
+5. **Don't include file paths**: Error messages commonly contain paths, so omit them from analytics entirely
 
 ## Lifecycle Management
 

@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Launch Dashboard</title>
+  <style>
+    :root {
+      --canvas: #0b1020;
+      --surface: #121a2d;
+      --surface-raised: #18233b;
+      --border: #263553;
+      --text: #f5f7fb;
+      --muted: #9aa8bf;
+      --faint: #66758e;
+      --blue: #6ea8fe;
+      --blue-soft: #203a63;
+      --green: #5ee0a0;
+      --green-soft: #173f35;
+      --amber: #f6c76b;
+      --amber-soft: #49391f;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-width: 720px;
+      min-height: 100vh;
+      background: var(--canvas);
+      color: var(--text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .dashboard {
+      width: min(1120px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 34px 0 40px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 26px;
+    }
+
+    .eyebrow {
+      margin: 0 0 7px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      letter-spacing: -0.03em;
+    }
+
+    .subtitle {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .period {
+      padding: 9px 13px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .metric,
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+
+    .metric {
+      padding: 17px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .metric-value {
+      margin-top: 8px;
+      font-size: 25px;
+      font-weight: 720;
+      letter-spacing: -0.03em;
+    }
+
+    .metric-change {
+      display: inline-block;
+      margin-top: 9px;
+      padding: 4px 7px;
+      border-radius: 999px;
+      background: var(--green-soft);
+      color: var(--green);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .metric-change.neutral {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr);
+      gap: 14px;
+    }
+
+    .panel {
+      padding: 20px;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 22px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .panel-note {
+      color: var(--faint);
+      font-size: 11px;
+    }
+
+    .chart {
+      height: 210px;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      align-items: end;
+      gap: 14px;
+      padding: 10px 8px 0;
+      border-bottom: 1px solid var(--border);
+      background-image: linear-gradient(to bottom, #18233b 1px, #00000000 1px);
+      background-size: 100% 52px;
+    }
+
+    .bar-group {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .bar-value {
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .bar {
+      width: min(52px, 72%);
+      min-height: 12px;
+      border-radius: 7px 7px 2px 2px;
+      background: var(--blue);
+    }
+
+    .bar.current {
+      background: var(--green);
+    }
+
+    .bar-label {
+      margin-bottom: -24px;
+      color: var(--faint);
+      font-size: 10px;
+    }
+
+    .side-stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .readiness {
+      padding: 17px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface-raised);
+    }
+
+    .readiness-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .readiness-value {
+      color: var(--green);
+      font-size: 20px;
+      font-weight: 750;
+    }
+
+    .track {
+      height: 8px;
+      margin: 13px 0 10px;
+      overflow: hidden;
+      border-radius: 99px;
+      background: var(--canvas);
+    }
+
+    .fill {
+      width: 97.2%;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--green);
+    }
+
+    .readiness p,
+    .decision p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .decision {
+      padding: 17px;
+      border: 1px solid #67512b;
+      border-radius: 12px;
+      background: var(--amber-soft);
+    }
+
+    .decision-label {
+      margin-bottom: 7px;
+      color: var(--amber);
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 18px;
+      font-size: 12px;
+    }
+
+    th,
+    td {
+      padding: 10px 4px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+
+    th {
+      color: var(--faint);
+      font-weight: 600;
+    }
+
+    td {
+      color: var(--muted);
+    }
+
+    th:last-child,
+    td:last-child {
+      text-align: right;
+    }
+
+    td strong {
+      color: var(--text);
+      font-weight: 650;
+    }
+
+    @media (max-width: 860px) {
+      .metrics {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="dashboard">
+    <header>
+      <div>
+        <p class="eyebrow">Northstar launch</p>
+        <h1>Revenue overview</h1>
+        <p class="subtitle">A focused view of momentum, customers, and launch readiness.</p>
+      </div>
+      <div class="period">January–June 2026</div>
+    </header>
+
+    <section class="metrics" aria-label="Headline metrics">
+      <article class="metric">
+        <div class="metric-label">June revenue</div>
+        <div class="metric-value">$82.6k</div>
+        <div class="metric-change">Up 13.9% monthly</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">Six-month total</div>
+        <div class="metric-value">$366.3k</div>
+        <div class="metric-change">Up 90.3% since January</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">New customers</div>
+        <div class="metric-value">39</div>
+        <div class="metric-change">5 more this month</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">Target gap</div>
+        <div class="metric-value">$2.4k</div>
+        <div class="metric-change neutral">97.2% attained</div>
+      </article>
+    </section>
+
+    <section class="main-grid">
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Total revenue</h2>
+          <span class="panel-note">Monthly, in thousands</span>
+        </div>
+        <div class="chart" aria-label="Revenue increased from 43.4 thousand dollars in January to 82.6 thousand dollars in June">
+          <div class="bar-group"><span class="bar-value">$43.4</span><div class="bar" style="height: 48%"></div><span class="bar-label">Jan</span></div>
+          <div class="bar-group"><span class="bar-value">$48.9</span><div class="bar" style="height: 55%"></div><span class="bar-label">Feb</span></div>
+          <div class="bar-group"><span class="bar-value">$55.4</span><div class="bar" style="height: 63%"></div><span class="bar-label">Mar</span></div>
+          <div class="bar-group"><span class="bar-value">$63.5</span><div class="bar" style="height: 72%"></div><span class="bar-label">Apr</span></div>
+          <div class="bar-group"><span class="bar-value">$72.5</span><div class="bar" style="height: 83%"></div><span class="bar-label">May</span></div>
+          <div class="bar-group"><span class="bar-value">$82.6</span><div class="bar current" style="height: 95%"></div><span class="bar-label">Jun</span></div>
+        </div>
+        <table aria-label="Recent monthly revenue">
+          <thead>
+            <tr><th>Month</th><th>New customers</th><th>Total revenue</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>April</td><td>29</td><td><strong>$63,500</strong></td></tr>
+            <tr><td>May</td><td>34</td><td><strong>$72,500</strong></td></tr>
+            <tr><td>June</td><td>39</td><td><strong>$82,600</strong></td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <aside class="panel side-stack">
+        <div class="panel-header">
+          <h2>Launch readiness</h2>
+          <span class="panel-note">Current target</span>
+        </div>
+        <div class="readiness">
+          <div class="readiness-top">
+            <strong>Revenue target</strong>
+            <span class="readiness-value">97.2%</span>
+          </div>
+          <div class="track"><div class="fill"></div></div>
+          <p>June finished $2,400 below the $85,000 launch target. The current trend closes that gap next month.</p>
+        </div>
+        <div class="decision">
+          <div class="decision-label">Decision to make</div>
+          <p>Keep the launch date and focus the next review on churn, or move the target to create more room for customer onboarding.</p>
+        </div>
+      </aside>
+    </section>
+  </main>
+</body>
+</html>

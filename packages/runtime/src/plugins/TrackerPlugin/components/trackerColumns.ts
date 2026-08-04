@@ -10,6 +10,7 @@
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import type { TrackerSchemaRole, FieldDefinition } from '../models/TrackerDataModel';
 import { globalRegistry } from '../models';
+import { defaultTrackerTypeColor, defaultTrackerTypeIcon } from '../models/trackerTypeIdentity';
 import { resolveRoleFieldName, getFieldByRole, getItemShareState } from '../trackerRecordAccessors';
 import { resolveCellEditor, READONLY_STRUCTURAL_COLUMNS, type CellEditorKind } from './trackerCellEditors';
 
@@ -247,21 +248,13 @@ export function getPriorityColor(priority: string | undefined): string {
 export function getTypeColor(type: string): string {
   const model = globalRegistry.get(type);
   if (model?.color) return model.color;
-  const colors: Record<string, string> = {
-    bug: '#dc2626', task: '#2563eb', plan: '#7c3aed', idea: '#ca8a04',
-    decision: '#8b5cf6', automation: '#60a5fa', feature: '#10b981',
-  };
-  return colors[type] || '#6b7280';
+  return defaultTrackerTypeColor(type);
 }
 
 export function getTypeIcon(type: string): string {
   const model = globalRegistry.get(type);
   if (model?.icon) return model.icon;
-  const icons: Record<string, string> = {
-    bug: 'bug_report', task: 'check_box', plan: 'assignment', idea: 'lightbulb',
-    decision: 'gavel', automation: 'auto_mode', feature: 'rocket_launch',
-  };
-  return icons[type] || 'label';
+  return defaultTrackerTypeIcon(type);
 }
 
 export function formatRelativeDate(date: Date): string {

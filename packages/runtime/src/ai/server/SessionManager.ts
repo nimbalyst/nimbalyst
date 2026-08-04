@@ -27,6 +27,7 @@ import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
 import type { SessionData as ChatSession } from './types';
 import { parseContextUsageMessage } from './utils/contextUsage';
 import { TranscriptMigrationRepository } from '../../storage/repositories/TranscriptMigrationRepository';
+import { stagedAttachmentRegistry } from './attachments/stagedAttachmentRegistry';
 
 /** Parsed tool_progress event from the agent stream */
 interface ToolProgressEvent {
@@ -1171,6 +1172,7 @@ export class SessionManager {
 
   async deleteSession(sessionId: string, workspacePath?: string): Promise<boolean> {
     await AISessionsRepository.delete(sessionId);
+    stagedAttachmentRegistry.clearSession(sessionId);
     if (this.currentSession?.id === sessionId) {
       this.currentSession = null;
     }
@@ -1178,7 +1180,14 @@ export class SessionManager {
   }
 
   async updateProviderSessionData(sessionId: string, providerSessionId?: string): Promise<void> {
-    await AISessionsRepository.updateMetadata(sessionId, { providerSessionId });
+    // Clear must travel as an explicit null. Stores skip any column whose
+    // payload value is `undefined`, so passing undefined through here silently
+    // left the dead provider session id on the row -- and every following
+    // prompt resumed it again, looping the "conversation session has expired"
+    // error with no way out. NIM-2308 / GH #1098.
+    await AISessionsRepository.updateMetadata(sessionId, {
+      providerSessionId: providerSessionId ?? null,
+    });
     if (this.currentSession?.id === sessionId) {
       this.currentSession = { ...this.currentSession, providerSessionId };
     }

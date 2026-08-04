@@ -31,7 +31,7 @@ describe('SelectionChips', () => {
     expect(screen.queryByText('Selection')).toBeNull();
 
     act(() => setTextSelection('selected text', FILE));
-    expect(screen.getByText('Selection')).toBeTruthy();
+    screen.getByText('Selection');
 
     fireEvent.click(screen.getByLabelText('Remove Selection from context'));
     expect(screen.queryByText('Selection')).toBeNull();
@@ -51,7 +51,7 @@ describe('SelectionChips', () => {
     expect(screen.queryByText('Selection')).toBeNull();
 
     act(() => setTextSelection('selected text', COLLAB_FILE));
-    expect(screen.getByText('Selection')).toBeTruthy();
+    screen.getByText('Selection');
   });
 
   it('does not show a selection belonging to a different file when currentFilePath is set', () => {
@@ -69,11 +69,11 @@ describe('SelectionChips', () => {
 
     fireEvent.click(screen.getByLabelText('Remove Rectangle A from context'));
     expect(screen.queryByText('Rectangle A')).toBeNull();
-    expect(screen.getByText('1 hidden — restore')).toBeTruthy();
+    screen.getByText('1 hidden — restore');
     expect(getActiveEditorContextItems(FILE)).toBeUndefined();
 
     fireEvent.click(screen.getByText('1 hidden — restore'));
-    expect(screen.getByText('Rectangle A')).toBeTruthy();
+    screen.getByText('Rectangle A');
     expect(getActiveEditorContextItems(FILE)?.[0].id).toBe('a');
   });
 
@@ -84,7 +84,7 @@ describe('SelectionChips', () => {
     });
 
     render(<SelectionChips currentFilePath={FILE} />);
-    expect(screen.getByText('Current file')).toBeTruthy();
+    screen.getByText('Current file');
     expect(screen.queryByText('Other file')).toBeNull();
   });
 
@@ -96,7 +96,7 @@ describe('SelectionChips', () => {
     });
 
     render(<SelectionChips currentFilePath={COLLAB_FILE} />);
-    expect(screen.getByText('Cells A1:B2')).toBeTruthy();
+    screen.getByText('Cells A1:B2');
   });
 
   it('does not leak an extension selection into a panel with no currentFilePath', () => {
@@ -124,11 +124,11 @@ describe('SelectionChips', () => {
     });
 
     render(<SelectionChips currentFilePath={FILE} />);
-    expect(screen.getByText('Shape 5')).toBeTruthy();
+    screen.getByText('Shape 5');
     expect(screen.queryByText('Shape 6')).toBeNull();
 
     fireEvent.click(screen.getByLabelText('Show 3 more shapes'));
-    expect(screen.getByText('Shape 8')).toBeTruthy();
-    expect(screen.getByLabelText('Show fewer shapes')).toBeTruthy();
+    screen.getByText('Shape 8');
+    screen.getByLabelText('Show fewer shapes');
   });
 });

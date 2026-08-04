@@ -69,7 +69,7 @@ describe('CollabDocumentHeaderMeta', () => {
       </Provider>,
     );
 
-    expect(screen.getByRole('button', { name: 'Copy current document' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Discard local copy' })).toBeTruthy();
+    screen.getByRole('button', { name: 'Copy current document' });
+    screen.getByRole('button', { name: 'Discard local copy' });
   });
 });

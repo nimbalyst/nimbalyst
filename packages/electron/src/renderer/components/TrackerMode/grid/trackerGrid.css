@@ -116,11 +116,17 @@
 
 /* Title cell: favorite star + text, matching the list view's affordance. */
 .tracker-grid-cell-title {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
+}
+
+.tracker-grid-cell-title > .tracker-grid-cell-text {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .tracker-grid-cell-favorite {
@@ -146,6 +152,52 @@
 .tracker-grid-cell-favorite-icon {
   font-size: 14px;
   line-height: 1;
+}
+
+.tracker-grid-cell-menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text-faint);
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.tracker-grid-view .rgRow:hover .tracker-grid-cell-menu,
+.tracker-grid-cell-menu:hover,
+.tracker-grid-cell-menu:focus-visible {
+  opacity: 1;
+}
+
+.tracker-grid-cell-menu:hover,
+.tracker-grid-cell-menu:focus-visible {
+  color: var(--nim-text);
+  background: var(--nim-bg-hover);
+  outline: none;
+}
+
+.tracker-grid-cell-menu-icon {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.tracker-grid-cell-menu-title {
+  opacity: 0;
+}
+
+.tracker-grid-view .rgRow:hover .tracker-grid-cell-menu-title,
+.tracker-grid-cell-menu-title:hover,
+.tracker-grid-cell-menu-title:focus-visible {
+  opacity: 1;
 }
 
 /* Editors */

@@ -19,6 +19,7 @@ import { $getRoot } from 'lexical';
 import { Doc as YDoc, applyUpdate, encodeStateAsUpdate } from 'yjs';
 import type { Doc } from 'yjs';
 import type { Provider } from '@lexical/yjs';
+import type { Transformer } from '@lexical/markdown';
 import type { CollabContentAdapter } from '@nimbalyst/collab-adapters';
 import {
   $convertFromEnhancedMarkdownString,
@@ -26,6 +27,11 @@ import {
   HeadlessBodyNodes,
   getEditorTransformers,
 } from '../editor';
+import {
+  CollabDocumentReferenceTransformer,
+  DocumentReferenceTransformer,
+  LegacyDocumentReferenceTransformer,
+} from '../plugins/DocumentLinkPlugin/DocumentLinkNode';
 import { TrackerReferenceTransformer } from '../plugins/TrackerLinkPlugin/TrackerReferenceTransformer';
 import { HeadlessLexicalYDoc } from './HeadlessLexicalYDoc';
 
@@ -48,10 +54,21 @@ const NOOP_PROVIDER: Provider = {
 const BRIDGE_ORIGIN = Symbol('nimbalyst:markdown-adapter-bridge');
 
 function getHeadlessEditorTransformers() {
-  const transformers = getEditorTransformers();
-  return transformers.includes(TrackerReferenceTransformer)
-    ? transformers
-    : [TrackerReferenceTransformer, ...transformers];
+  const requiredTransformers: Transformer[] = [
+    // Must precede TrackerReferenceTransformer, whose nimbalyst:// matcher is
+    // intentionally broad enough to otherwise claim shared-document links.
+    CollabDocumentReferenceTransformer,
+    TrackerReferenceTransformer,
+    DocumentReferenceTransformer,
+    LegacyDocumentReferenceTransformer,
+  ];
+  const requiredSet = new Set(requiredTransformers);
+  return [
+    ...requiredTransformers,
+    ...getEditorTransformers().filter(
+      (transformer) => !requiredSet.has(transformer),
+    ),
+  ];
 }
 
 /**

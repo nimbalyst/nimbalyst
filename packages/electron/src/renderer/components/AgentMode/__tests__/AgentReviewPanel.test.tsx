@@ -176,7 +176,7 @@ describe("AgentReviewPanel diff loading", () => {
     const { rerender } = render(<AgentReviewPanel {...defaultProps} />);
 
     await screen.findByText(/diff:src\/a\.ts:/);
-    expect(screen.getByText("4 files")).toBeTruthy();
+    screen.getByText("4 files");
     expect(window.electronAPI.invoke).toHaveBeenCalledTimes(1);
     expect(window.electronAPI.invoke).toHaveBeenCalledWith(
       "session:file-diff",
@@ -220,17 +220,17 @@ describe("AgentReviewPanel diff loading", () => {
     testState.visibleItemCount = 5;
     render(<AgentReviewPanel {...defaultProps} />);
 
-    expect(screen.getByText("Workstream Review")).toBeTruthy();
-    expect(screen.getByText("All sessions (2)")).toBeTruthy();
-    expect(screen.getByText("4 files")).toBeTruthy();
+    screen.getByText("Workstream Review");
+    screen.getByText("All sessions (2)");
+    screen.getByText("4 files");
 
     fireEvent.click(screen.getByTestId("workstream-review-target"));
     fireEvent.click(screen.getByLabelText("Current session only"));
 
     await waitFor(() => {
-      expect(screen.getByText("3 files")).toBeTruthy();
+      screen.getByText("3 files");
     });
-    expect(screen.getByText("Current session only")).toBeTruthy();
+    screen.getByText("Current session only");
   });
 
   it("waits for an expanded row before loading a new diff scope", async () => {

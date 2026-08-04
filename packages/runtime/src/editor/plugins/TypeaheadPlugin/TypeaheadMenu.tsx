@@ -30,6 +30,7 @@ import {
   type VirtualElement,
   useFloating,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import {
   $getSelection,
   $isRangeSelection,
@@ -439,14 +440,16 @@ import {
         offset(0),
         flip({ padding: VIEWPORT_PADDING }),
         shift({ padding: VIEWPORT_PADDING }),
+        windowControlsClearance(),
         size({
           padding: VIEWPORT_PADDING,
-          apply({ availableHeight, availableWidth, elements }) {
+          apply({ availableHeight, availableWidth, elements, middlewareData }) {
+            const pushed = middlewareData.windowControlsClearance?.pushed ?? 0;
             const constrainedWidth = Math.max(0, availableWidth);
             Object.assign(elements.floating.style, {
               minWidth: `${Math.min(minWidth, constrainedWidth)}px`,
               maxWidth: `${Math.min(maxWidth, constrainedWidth)}px`,
-              maxHeight: `${Math.max(0, Math.min(maxHeight, availableHeight))}px`,
+              maxHeight: `${Math.max(0, Math.min(maxHeight, availableHeight - pushed))}px`,
             });
           },
         }),

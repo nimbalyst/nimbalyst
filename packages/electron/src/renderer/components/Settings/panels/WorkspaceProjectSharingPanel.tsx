@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
-import { useDialogState } from '../../../contexts/DialogContext';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { dialogRef, useDialogState } from '../../../contexts/DialogContext';
 import { DIALOG_IDS } from '../../../dialogs/registry';
-import type { CreateTeamData } from '../../../dialogs/teamDialogs';
+import type { OrgCreationWizardData } from '../../../dialogs/teamDialogs';
+import type { AccountLoginData } from '../../../dialogs/accountDialogs';
 import { AlphaBadge } from '../../common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../../common/TeamAlphaNotice';
-import { SecurityEncryptionSection } from './H2EncryptionMigration';
 import { MoveProjectWizard } from './MoveProjectWizard';
 import { MergeOrgWizard } from './MergeOrgWizard';
 import { ProjectAccessEditor } from './ProjectAccessEditor';
@@ -14,18 +14,23 @@ import {
   bucketMemberCount,
   bucketProjectCount,
   categorizeTeamAnalyticsError,
+  normalizeTeamAnalyticsCallerRole,
 } from '../../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
+import { organizationCreationEnabled } from '../../../store/atoms/settingsDomains';
 
 // ============================================================================
 // Types
 // ============================================================================
 
+type TeamMemberRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest' | 'unknown';
+type EditableTeamMemberRole = 'admin' | 'member' | 'viewer';
+
 interface TeamMember {
   id: string;
   name: string;
   email: string;
-  role: 'admin' | 'member';
+  role: TeamMemberRole;
   status: 'pending' | 'active';
   avatarColor: string;
   isYou?: boolean;
@@ -44,6 +49,11 @@ interface TeamData {
   membershipType?: string;
   boundPersonalOrgId?: string;
   boundAccountEmail?: string | null;
+  /**
+   * How many personal accounts are stored. The bound account only needs naming
+   * when there is more than one it could have been.
+   */
+  storedAccountCount?: number;
 }
 
 interface PendingInvite {
@@ -69,6 +79,30 @@ const AVATAR_COLORS = ['#60a5fa', '#a78bfa', '#4ade80', '#fbbf24', '#f472b6', '#
 
 function getAvatarColor(index: number): string {
   return AVATAR_COLORS[index % AVATAR_COLORS.length];
+}
+
+function normalizeTeamMemberRole(role: unknown): TeamMemberRole {
+  switch (role) {
+    case 'owner':
+    case 'admin':
+    case 'member':
+    case 'viewer':
+    case 'guest':
+      return role;
+    default:
+      return 'unknown';
+  }
+}
+
+function teamMemberRoleLabel(role: TeamMemberRole): string {
+  switch (role) {
+    case 'owner': return 'Owner';
+    case 'admin': return 'Admin';
+    case 'member': return 'Member';
+    case 'viewer': return 'Viewer';
+    case 'guest': return 'Guest';
+    case 'unknown': return 'Unknown';
+  }
 }
 
 // ============================================================================
@@ -100,27 +134,28 @@ function MemberAvatar({ name, email, color, isPending }: {
   );
 }
 
-function RoleBadge({ role, editable, onChange }: { role: 'admin' | 'member'; editable?: boolean; onChange?: (newRole: 'admin' | 'member') => void }) {
+function RoleBadge({ role, editable, onChange }: { role: TeamMemberRole; editable?: boolean; onChange?: (newRole: EditableTeamMemberRole) => void }) {
   const colorClass = role === 'admin'
     ? 'bg-[rgba(96,165,250,0.15)] text-[var(--nim-primary)]'
     : 'bg-[rgba(180,180,180,0.1)] text-[var(--nim-text-faint)]';
 
-  if (editable && onChange) {
+  if (editable && onChange && (role === 'admin' || role === 'member' || role === 'viewer')) {
     return (
       <select
         value={role}
-        onChange={(e) => onChange(e.target.value as 'admin' | 'member')}
+        onChange={(e) => onChange(e.target.value as EditableTeamMemberRole)}
         className={`${colorClass} px-[5px] py-[2px] rounded-[10px] text-[10px] font-semibold border-none cursor-pointer outline-none hover:ring-1 hover:ring-[var(--nim-primary)]`}
       >
         <option value="admin">Admin</option>
         <option value="member">Member</option>
+        <option value="viewer">Viewer</option>
       </select>
     );
   }
 
   return (
     <span className={`${colorClass} px-[7px] py-[2px] rounded-[10px] text-[10px] font-semibold`}>
-      {role === 'admin' ? 'Admin' : 'Member'}
+      {teamMemberRoleLabel(role)}
     </span>
   );
 }
@@ -285,22 +320,33 @@ export function UnsharedProjectSharingState({
               </div>
             )}
 
-            <div className="project-sharing-choice rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
-              <div className="text-[13px] font-medium text-[var(--nim-text)]">Create a new organization</div>
-              <p className="m-0 mt-0.5 mb-2 text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
-                {canChooseExisting
-                  ? 'Start a separate organization with its own members and billing.'
-                  : 'You are not in an organization yet. Create one to start sharing this project.'}
-              </p>
-              <button
-                type="button"
-                onClick={() => setChoice('new')}
-                className="rounded-md border border-[var(--nim-border)] px-4 py-2 text-[12px] font-medium text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
-                data-testid="project-sharing-choose-new"
+            {organizationCreationEnabled && (
+              <div className="project-sharing-choice rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
+                <div className="text-[13px] font-medium text-[var(--nim-text)]">Create a new organization</div>
+                <p className="m-0 mt-0.5 mb-2 text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
+                  {canChooseExisting
+                    ? 'Start a separate organization with its own members and billing.'
+                    : 'You are not in an organization yet. Create one to start sharing this project.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setChoice('new')}
+                  className="rounded-md border border-[var(--nim-border)] px-4 py-2 text-[12px] font-medium text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+                  data-testid="project-sharing-choose-new"
+                >
+                  Continue
+                </button>
+              </div>
+            )}
+            {!organizationCreationEnabled && !canChooseExisting && (
+              <p
+                className="project-sharing-creation-unavailable m-0 text-[12px] leading-relaxed text-[var(--nim-text-muted)]"
+                data-testid="project-sharing-creation-unavailable"
               >
-                Continue
-              </button>
-            </div>
+                Creating an organization is temporarily unavailable while this is being finished.
+                Once you are an admin of one, you can add this project to it here.
+              </p>
+            )}
           </div>
         ) : (
           <div className="project-sharing-confirm rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4" data-testid="project-sharing-confirm">
@@ -411,20 +457,28 @@ export function ProjectScopedTeamExistsState({
     : undefined;
   const isAdmin = team.callerRole === 'admin' || team.callerRole === 'owner';
   const destinationOrganizations = adminOrgs.filter((organization) => organization.orgId !== team.orgId);
-  // Org administration opens in its own window (2026-07-17 decision-log correction).
+  // Administration opens in this window as a dialog (NIM-2322), on Projects:
+  // every entry point here is about this project's place in the organization.
   const openTeamSurface = () => {
-    void (window as any).electronAPI?.team?.openManagementWindow({ orgId: team.orgId, workspacePath });
+    dialogRef.current?.open(DIALOG_IDS.ORG_MANAGEMENT, { orgId: team.orgId, initialTab: 'projects' });
   };
 
   return (
     <div className="attached-project-sharing-state" data-testid="attached-project-sharing-state">
       <div className="project-identity-card rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4" data-testid="project-identity-card">
-        <div className="flex items-center gap-3"><MaterialSymbol icon="folder_shared" size={22} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{currentProject?.name || currentProject?.slug || team.name}</div><div className="truncate text-xs text-[var(--nim-text-muted)]">{team.name} · {team.callerRole || 'member'}</div></div></div>
+        <div className="flex items-center gap-3"><MaterialSymbol icon="folder_shared" size={22} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{currentProject?.name || currentProject?.slug || team.name}</div><div className="truncate text-xs text-[var(--nim-text-muted)]">{team.name} · {teamMemberRoleLabel(normalizeTeamMemberRole(team.callerRole))}</div></div></div>
         <div className="mt-3 flex items-center gap-2 rounded bg-[var(--nim-bg)] px-3 py-2"><MaterialSymbol icon={team.gitRemoteHash ? 'link' : 'link_off'} size={15} /><span className="min-w-0 flex-1 truncate select-text font-mono text-xs text-[var(--nim-text-muted)]">{localGitRemote || 'No git remote linked'}</span>{isAdmin && (team.gitRemoteHash ? <button type="button" className="text-xs text-[var(--nim-text-muted)]" onClick={onUnlinkProject}>Unlink</button> : localGitRemote ? <button type="button" className="text-xs text-[var(--nim-link)]" onClick={onLinkProject}>Relink</button> : null)}</div>
       </div>
 
       <div className="workspace-organization-account-chain mt-3 select-text rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-2 text-xs text-[var(--nim-text-muted)]" data-testid="workspace-organization-account-chain">
-        {workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? workspacePath} → {team.name} → {team.boundAccountEmail ?? team.boundPersonalOrgId ?? 'bound account'}
+        {workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? workspacePath} → {team.name}
+        {/* The owning login is only worth spelling out once a second account
+            exists; with one it is the only answer there could be. */}
+        {(team.storedAccountCount ?? 0) > 1 && (
+          <span data-testid="workspace-organization-account-tail">
+            {' → '}{team.boundAccountEmail ?? team.boundPersonalOrgId ?? 'bound account'}
+          </span>
+        )}
       </div>
 
       <div className="project-organization-links my-4 flex flex-wrap gap-2" data-testid="project-organization-links">
@@ -530,10 +584,9 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     user: { user_id: string; emails: Array<{ email: string }>; name?: { first_name?: string; last_name?: string } } | null;
   }>({ isAuthenticated: false, user: null });
 
-  const createTeamDialog = useDialogState<CreateTeamData>(DIALOG_IDS.CREATE_TEAM);
-  const analyticsCallerRole = team?.callerRole === 'owner' || team?.callerRole === 'admin' || team?.callerRole === 'member'
-    ? team.callerRole
-    : 'unknown';
+  const orgWizardDialog = useDialogState<OrgCreationWizardData>(DIALOG_IDS.ORG_CREATION_WIZARD);
+  const accountLoginDialog = useDialogState<AccountLoginData>(DIALOG_IDS.ACCOUNT_LOGIN);
+  const analyticsCallerRole = normalizeTeamAnalyticsCallerRole(team?.callerRole);
   const trackFailure = useCallback((
     operation: 'create_organization' | 'send_invitation' | 'accept_invitation' | 'change_member_role' | 'remove_member' | 'add_project' | 'link_project' | 'unlink_project' | 'delete_organization',
     reason: unknown,
@@ -628,7 +681,7 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       id: m.memberId,
       name: m.name || '',
       email: m.email,
-      role: m.role as 'admin' | 'member',
+      role: normalizeTeamMemberRole(m.role),
       status: m.status === 'pending' ? 'pending' as const : 'active' as const,
       avatarColor: getAvatarColor(i),
       isYou: m.memberId === currentUserId,
@@ -643,9 +696,10 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       gitRemoteHash: teamGitRemoteHash,
       teamProjectId: teamProjectId ?? null,
       members,
-      callerRole: membersResult.callerRole || 'member',
+      callerRole: normalizeTeamMemberRole(membersResult.callerRole),
       boundPersonalOrgId,
       boundAccountEmail: accounts.find((account) => account.personalOrgId === boundPersonalOrgId)?.email ?? null,
+      storedAccountCount: accounts.length,
     });
 
     // Epic H3 P0/A: list every project in this org (fire-and-forget).
@@ -723,54 +777,47 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     loadTeamData();
   }, [loadTeamData]);
 
-  const handleCreateTeam = async () => {
-    // Load accounts to show picker if multiple are signed in
-    let accounts: Array<{ personalOrgId: string; email: string | null; isSyncAccount: boolean }> = [];
-    try {
-      accounts = await (window as any).electronAPI.stytch.getAccounts() || [];
-    } catch {
-      // Fall back to empty -- dialog will work without account picker
-    }
-
-    createTeamDialog.open({
-      gitRemote: gitRemote || 'No git remote detected',
+  /**
+   * One organization-creation surface for the whole app: the wizard handles
+   * sign-in, naming, invites and rooms, and adopts this project on create. It
+   * reports `team_organization_created` itself, so this only records the
+   * project side of the same act.
+   */
+  const handleCreateTeam = () => {
+    orgWizardDialog.open({
+      workspacePath: workspacePath || undefined,
       suggestedName: workspacePath?.split('/').pop() || 'my-project',
-      accounts,
-      onCreateTeam: async (name: string, accountOrgId?: string) => {
-        setLoading(true);
-        setError(null);
-        try {
-          const result = await (window as any).electronAPI.team.create(name, workspacePath, accountOrgId);
-          if (result.success) {
-            trackTeamAnalyticsEvent('team_organization_created', {
-              surface: 'desktop',
-              entryPoint: 'project_sharing',
-              projectAttached: true,
-              encryptionMode: 'server_managed',
-              memberCountBucket: bucketMemberCount(1),
-              projectCountBucket: bucketProjectCount(1),
-            });
-            trackTeamAnalyticsEvent('team_project_added', {
-              surface: 'desktop',
-              entryPoint: 'project_sharing',
-              callerRole: 'owner',
-              organizationWasNew: true,
-              hasGitRemote: !!gitRemote,
-              projectCountBucket: bucketProjectCount(1),
-            });
-            await loadTeamData();
-          } else {
-            setError(result.error || 'Failed to create organization');
-            trackFailure('create_organization', result.error);
-          }
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Failed to create organization');
-          trackFailure('create_organization', err);
-        } finally {
-          setLoading(false);
-        }
+      entryPoint: 'project_sharing',
+      onOrganizationCreated: () => {
+        trackTeamAnalyticsEvent('team_project_added', {
+          surface: 'desktop',
+          entryPoint: 'project_sharing',
+          callerRole: 'owner',
+          organizationWasNew: true,
+          hasGitRemote: !!gitRemote,
+          projectCountBucket: bucketProjectCount(1),
+        });
+        void loadTeamData();
       },
     });
+  };
+
+  /**
+   * The signed-out arm's one button.
+   *
+   * Signing in is worth doing on its own — an invitation may already be waiting,
+   * and the signed-in panel can add this project to an existing organization.
+   * But while creation is switched off, the wizard's only destination past
+   * sign-in is a create step that cannot run, so this routes to the plain
+   * account sign-in instead of walking the user into that dead end. The
+   * signed-in card gates the create choice the same way.
+   */
+  const handleSignedOutSignIn = () => {
+    if (!organizationCreationEnabled) {
+      accountLoginDialog.open({ mode: 'first-sign-in' });
+      return;
+    }
+    handleCreateTeam();
   };
 
   // Epic H3 P0/A: attach the current workspace to an EXISTING org as a new
@@ -957,18 +1004,18 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     }
   };
 
-  const handleUpdateRole = async (memberId: string, newRole: 'admin' | 'member') => {
+  const handleUpdateRole = async (memberId: string, newRole: EditableTeamMemberRole) => {
     if (!team) return;
     setError(null);
     try {
       const result = await (window as any).electronAPI.team.updateRole(team.orgId, memberId, newRole);
       if (result.success) {
-        const previousRole = team.members.find((member) => member.id === memberId)?.role ?? 'member';
+        const previousRole = team.members.find((member) => member.id === memberId)?.role ?? 'unknown';
         trackTeamAnalyticsEvent('team_member_role_changed', {
           surface: 'desktop',
           callerRole: analyticsCallerRole,
-          fromRole: previousRole,
-          toRole: newRole,
+          fromRole: normalizeTeamAnalyticsCallerRole(previousRole),
+          toRole: normalizeTeamAnalyticsCallerRole(newRole),
         });
         // Optimistic update
         setTeam({
@@ -1044,16 +1091,27 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
           </p>
           <TeamAlphaNotice className="mt-2.5" />
         </div>
-        <div className="p-6 bg-[var(--nim-bg-secondary)] rounded-lg text-center">
-          <div className="w-12 h-12 mx-auto mb-3 bg-[rgba(96,165,250,0.15)] rounded-xl flex items-center justify-center">
+        {/* Signing out of this state is one click, not an instruction to go
+            find another panel: the wizard's first step is the sign-in. */}
+        <div
+          className="project-sharing-signed-out p-6 bg-[var(--nim-bg-secondary)] rounded-lg text-center"
+          data-testid="project-sharing-signed-out"
+        >
+          <div className="w-12 h-12 mx-auto mb-3 bg-[color-mix(in_srgb,var(--nim-primary)_15%,transparent)] rounded-xl flex items-center justify-center">
             <MaterialSymbol icon="account_circle" size={24} className="text-[var(--nim-primary)]" />
           </div>
-          <p className="text-[13px] text-[var(--nim-text-muted)] mb-2 leading-relaxed">
-            Sign in to create or join an organization.
+          <p className="text-[13px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
+            Sharing this project needs a Nimbalyst account. Signing in or creating one is the
+            first step.
           </p>
-          <p className="text-[12px] text-[var(--nim-text-faint)] m-0">
-            Go to <strong className="text-[var(--nim-text-muted)]">Account & Sync</strong> in the sidebar to sign in.
-          </p>
+          <button
+            type="button"
+            className="project-sharing-sign-in rounded-md bg-[var(--nim-primary)] px-4 py-2 text-[13px] font-medium text-white"
+            data-testid="project-sharing-sign-in"
+            onClick={handleSignedOutSignIn}
+          >
+            Sign in or create an account
+          </button>
         </div>
       </div>
     );

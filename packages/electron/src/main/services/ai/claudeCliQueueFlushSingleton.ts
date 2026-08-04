@@ -11,9 +11,10 @@
 
 import { BrowserWindow } from 'electron';
 import { getQueuedPromptsStore } from '../RepositoryManager';
+import { getSyncProvider } from '../SyncManager';
 import { submitClaudeCliPromptProduction } from './claudeCliSubmitSingleton';
 import { flushNextClaudeCliQueuedPrompt } from './claudeCliQueueFlush';
-import { preflightSessionPromptDispatch } from './queuedPromptDispatcher';
+import { publishQueuedPromptsToSync } from './queuedPromptSyncPublisher';
 
 /** Per-session guard so two close `idle` events can't double-flush. */
 const flushInFlight = new Set<string>();
@@ -30,22 +31,25 @@ export async function flushNextClaudeCliQueuedPromptForSession(
   flushInFlight.add(sessionId);
   try {
     const store = getQueuedPromptsStore();
-    return await flushNextClaudeCliQueuedPrompt(
+    // This path claims rows outside AIService, so it owns its own mirror of the
+    // queue to mobile — see queuedPromptSyncPublisher.ts (NIM-2402).
+    const publishQueueState = () =>
+      publishQueuedPromptsToSync(
+        {
+          listPending: (s) => store.listPending(s),
+          getSyncProvider,
+          logWarn: (message) => console.warn(message),
+        },
+        sessionId,
+      );
+
+    const flushed = await flushNextClaudeCliQueuedPrompt(
       { sessionId, workspacePath },
       {
-        preflight: preflightSessionPromptDispatch,
         listPending: (s) => store.listPending(s),
-        claim: (id, expectedSessionId, claimTrigger) => store.claim(id, expectedSessionId, claimTrigger),
-        beginDispatch: (id, expectedSessionId, claimToken) =>
-          store.beginDispatch(id, expectedSessionId, claimToken),
-        completeAfterDispatch: (id, expectedSessionId, claimToken) =>
-          store.completeAfterDispatch(id, expectedSessionId, claimToken),
-        failAfterDispatch: (id, message, expectedSessionId, claimToken) =>
-          store.failAfterDispatch(id, message, expectedSessionId, claimToken),
-        publishSnapshot: async (claimedSessionId) => {
-          const { publishQueuedPromptSnapshotForSession } = await import('./AIService');
-          await publishQueuedPromptSnapshotForSession(claimedSessionId, store);
-        },
+        claim: (id) => store.claim(id),
+        complete: (id) => store.complete(id),
+        fail: (id, m) => store.fail(id, m),
         submit: (i) => submitClaudeCliPromptProduction(i),
         // The flush runs from the PID-idle transition with no originating IPC
         // event, so there is no single target window; broadcasting is safe
@@ -56,9 +60,17 @@ export async function flushNextClaudeCliQueuedPromptForSession(
               win.webContents.send('ai:promptClaimed', { sessionId, promptId });
             }
           }
+          void publishQueueState();
         },
       },
     );
+
+    // Only when a row actually moved — this runs on every PID-idle transition,
+    // and an unconditional publish would be one index update per idle tick.
+    if (flushed) {
+      await publishQueueState();
+    }
+    return flushed;
   } catch (error) {
     console.warn('[ClaudeCliQueueFlush] flush failed:', error);
     return false;

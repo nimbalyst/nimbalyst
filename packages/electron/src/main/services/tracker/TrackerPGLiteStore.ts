@@ -37,7 +37,7 @@ import { mergeLabelMaps, normalizeLegacyLabelValues, projectLabelsToValues } fro
 import type { TrackerItem } from '@nimbalyst/runtime';
 import { trackerRecordToItem, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { logger } from '../../utils/logger';
-import { toDbBoolean } from './trackerDbValue';
+import { fromDbBoolean, toDbBoolean } from './trackerDbValue';
 import { extractItemCustomFields } from './trackerRowCustomFields';
 
 // ============================================================================
@@ -863,7 +863,7 @@ function pgliteRowToPayload(row: PGLiteTrackerItemRow): TrackerItemPayload {
   return {
     itemId: row.id,
     primaryType: row.type,
-    archived: row.archived ?? false,
+    archived: fromDbBoolean(row.archived),
     issueNumber: row.issue_number ?? undefined,
     issueKey: row.issue_key ?? undefined,
     bodyVersion: row.body_version !== null ? Number(row.body_version) : 0,
@@ -956,7 +956,7 @@ export function pgliteRowToTrackerItem(row: PGLiteTrackerItemRow, workspacePath:
     lastIndexed: row.last_indexed instanceof Date ? row.last_indexed : new Date(),
     customFields: extractItemCustomFields(data, knownDataKeys),
     content: undefined,
-    archived: row.archived ?? false,
+    archived: fromDbBoolean(row.archived),
     source: (row.source ?? 'native') as TrackerItem['source'],
     sourceRef: row.source_ref ?? undefined,
     authorIdentity: (data.authorIdentity as TrackerItem['authorIdentity']) ?? null,

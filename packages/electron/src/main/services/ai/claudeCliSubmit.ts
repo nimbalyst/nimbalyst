@@ -16,7 +16,7 @@
  * the real terminal manager, prompt-log, and analytics.
  */
 
-import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
+import type { ChatAttachment, PromptProvenance } from '@nimbalyst/runtime/ai/server/types';
 import {
   composeClaudeCliPtySubmission,
   type ClaudeCliDocumentContext,
@@ -71,6 +71,7 @@ export interface SubmitClaudeCliPromptDeps {
     workspacePath: string;
     prompt: string;
     attachments?: ChatAttachment[];
+    promptProvenance?: PromptProvenance;
   }) => Promise<void>;
   sendAnalytics: (payload: {
     messageLength: number;
@@ -204,6 +205,7 @@ export async function submitClaudeCliPrompt(
       workspacePath: input.workspacePath,
       prompt,
       attachments,
+      promptProvenance: input.documentContext?.promptProvenance,
     });
   } catch (error) {
     // Provider entry already happened. Do not report a false terminal failure

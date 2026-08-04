@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * DirectGateway unit tests against a real on-disk SQLite fixture built with the
  * actual tracker_items DDL (generated columns + JSON `data`), so list filters,

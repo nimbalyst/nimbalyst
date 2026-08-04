@@ -407,6 +407,23 @@ export interface SessionIndexData {
   messages?: AgentMessage[];
 }
 
+/**
+ * Tutorial fixtures are local examples, not user conversations. Keep them out
+ * of personal device sync even when a caller supplies an unfiltered session
+ * list directly to a sync provider.
+ */
+export function isSessionEligibleForPersonalSync(
+  session: Pick<SessionIndexData, 'metadata'>
+): boolean {
+  return session.metadata?.tutorial !== true;
+}
+
+export function filterSessionsForPersonalSync<T extends Pick<SessionIndexData, 'metadata'>>(
+  sessions: T[]
+): T[] {
+  return sessions.filter(isSessionEligibleForPersonalSync);
+}
+
 /** Types of changes that can be synced */
 export type SessionChange =
   | { type: 'message_added'; message: AgentMessage }

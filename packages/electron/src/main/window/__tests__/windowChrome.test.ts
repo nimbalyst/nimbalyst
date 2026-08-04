@@ -8,6 +8,7 @@ import {
   resetWindowChromeStateForTests,
   setResolvedTitleBarOverlayColors,
   titleBarOptionsForWindow,
+  windowControlsOverlayOptions,
 } from '../windowChrome';
 
 const FALLBACK = { color: '#1a1a1a', symbolColor: '#ffffff' };
@@ -44,6 +45,14 @@ describe('customTitleBarOptions', () => {
       });
     },
   );
+
+  // Without this the WCO API reports nothing in the auxiliary hiddenInset
+  // windows and windowControlsClearance() cannot keep menus off the lights.
+  it('exposes the controls overlay to hiddenInset windows on macOS only', () => {
+    expect(windowControlsOverlayOptions('darwin')).toEqual({ titleBarOverlay: true });
+    expect(windowControlsOverlayOptions('win32')).toEqual({});
+    expect(windowControlsOverlayOptions('linux')).toEqual({});
+  });
 
   it('returns no custom chrome for a window that did not opt in', () => {
     expect(titleBarOptionsForWindow({

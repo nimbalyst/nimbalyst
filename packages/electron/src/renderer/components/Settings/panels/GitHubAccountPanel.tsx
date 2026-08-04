@@ -11,7 +11,7 @@
 
 import type { JSX } from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { SettingsScope } from '../SettingsView';
 import { getPullRequestService } from '../../../services/RendererPullRequestService';
 

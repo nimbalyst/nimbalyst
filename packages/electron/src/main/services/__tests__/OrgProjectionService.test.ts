@@ -29,6 +29,7 @@ import {
   applyMemberRoleChanged,
   applyProjectGrant,
   applyProjectRevoke,
+  defaultProjectRoleForOrgRole,
   upsertProject,
 } from '../OrgProjectionService';
 import { canAccess } from '../OrgAccessResolver';
@@ -88,6 +89,21 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
     const r = await canAccess(db, 'member1', { projectId: 'proj-1', action: 'edit' });
     expect(r.allowed).toBe(true);
     expect(r.projectRole).toBe('project-editor');
+  });
+
+  it('seeds an organization viewer as a project viewer', async () => {
+    await backfillProjection(db, [{
+      org: { orgId: 'org-viewer', name: 'Viewer Org', flavor: 'team', teamProjectId: 'proj-viewer' },
+      members: [{ userId: 'viewer1', role: 'viewer' }],
+    }]);
+
+    const grant = await db.query<{ project_role: string }>(
+      `SELECT project_role FROM project_access WHERE project_id = 'proj-viewer' AND user_id = 'viewer1'`);
+    expect(grant.rows[0].project_role).toBe('project-viewer');
+  });
+
+  it('maps an unrecognized organization role to the least-privileged project role', () => {
+    expect(defaultProjectRoleForOrgRole('future-role')).toBe('project-viewer');
   });
 
   it('is idempotent and refreshes mutable fields on re-run', async () => {

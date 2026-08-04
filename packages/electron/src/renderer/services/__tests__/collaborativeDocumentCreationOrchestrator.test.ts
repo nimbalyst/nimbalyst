@@ -19,6 +19,8 @@ vi.mock('../../components/CollabMode/collabTree', () => ({
   normalizeCollabPath: (value: string) => value.replace(/\\/g, '/').split('/').filter(Boolean).join('/'),
 }));
 vi.mock('../../store/atoms/collabDocuments', () => ({
+  getSharedDocumentsForScope: vi.fn(() => []),
+  getSharedFoldersForScope: vi.fn(() => []),
   pendingCollabDocumentAtom: Symbol('pendingCollabDocumentAtom'),
   registerDocumentInIndex: vi.fn(),
   sharedDocumentsAtom: Symbol('sharedDocumentsAtom'),
@@ -47,6 +49,12 @@ import {
   CollaborativeDocumentCreationOrchestrator,
   type CollaborativeDocumentCreationDependencies,
 } from '../collaborativeDocumentCreationOrchestrator';
+
+const TEST_SCOPE = {
+  scopeKey: '/workspace',
+  orgId: 'org-1',
+  indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+};
 
 const markdownDescriptor: CollaborativeDocumentTypeDescriptor = {
   documentType: 'markdown',
@@ -107,7 +115,6 @@ function makeHarness(options: {
 
   const deps: CollaborativeDocumentCreationDependencies = {
     getCatalog: () => catalog,
-    getWorkspacePath: () => '/workspace',
     getDocuments: () => documents,
     getFolders: () => folders,
     resolveConfig: async () => {
@@ -120,10 +127,11 @@ function makeHarness(options: {
         ? { ok: false, error: 'ack timed out' }
         : { ok: true };
     },
-    register: async (documentId, title, documentType, parentFolderId, metadata) => {
+    register: async (_scope, documentId, title, documentType, parentFolderId, metadata) => {
       events.push('register');
       documents.push({
         documentId,
+        teamProjectId: _scope.indexConfig.teamProjectId ?? null,
         title,
         documentType,
         ...metadata,
@@ -137,7 +145,7 @@ function makeHarness(options: {
       events.push('save-origin');
       return { success: true };
     },
-    publishPending: document => {
+    publishPending: (_scope, document) => {
       published.push(document);
       events.push('publish');
     },
@@ -164,6 +172,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
     const harness = makeHarness({ descriptor: mockupDescriptor });
 
     await harness.orchestrator.create({
+      scope: TEST_SCOPE,
       descriptor: mockupDescriptor,
       requestedName: 'embedded.mockup.html',
       parentFolderId: null,
@@ -182,6 +191,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
     const register = vi.spyOn(harness.deps, 'register');
 
     const document = await harness.orchestrator.create({
+      scope: TEST_SCOPE,
       descriptor: markdownDescriptor,
       requestedName: 'Architecture',
       parentFolderId: null,
@@ -197,6 +207,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       editorId: 'builtin.lexical',
     });
     expect(register).toHaveBeenCalledWith(
+      TEST_SCOPE,
       'doc-1',
       'Architecture.md',
       'markdown',
@@ -214,6 +225,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
   it('registers an intentional empty markdown document without a content update', async () => {
     const harness = makeHarness();
     await harness.orchestrator.create({
+      scope: TEST_SCOPE,
       descriptor: markdownDescriptor,
       requestedName: 'Empty',
       parentFolderId: null,
@@ -225,6 +237,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
   it('cleans up a failed pre-announcement seed without registering a blank row', async () => {
     const harness = makeHarness({ seedResults: [false] });
     await expect(harness.orchestrator.create({
+      scope: TEST_SCOPE,
       descriptor: markdownDescriptor,
       requestedName: 'Unannounced',
       parentFolderId: null,
@@ -245,6 +258,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
   it('retries idempotently with the same operation and document id', async () => {
     const harness = makeHarness({ seedResults: [false, true] });
     const input = {
+      scope: TEST_SCOPE,
       descriptor: markdownDescriptor,
       requestedName: 'Retry',
       parentFolderId: null,
@@ -266,6 +280,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
   it('preserves an exact compound suffix and normalizes its case', async () => {
     const harness = makeHarness({ descriptor: mockupDescriptor });
     const document = await harness.orchestrator.create({
+      scope: TEST_SCOPE,
       descriptor: mockupDescriptor,
       requestedName: 'Checkout.MOCKUP.HTML',
       parentFolderId: null,
@@ -303,6 +318,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       const harness = makeHarness({ descriptor });
 
       const document = await harness.orchestrator.create({
+        scope: TEST_SCOPE,
         descriptor,
         requestedName: 'Untitled',
         parentFolderId: null,
@@ -333,6 +349,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       }],
     });
     await expect(harness.orchestrator.create({
+      scope: TEST_SCOPE,
       descriptor: markdownDescriptor,
       requestedName: 'Existing',
       parentFolderId: null,
@@ -345,6 +362,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
     const harness = makeHarness();
     const save = vi.spyOn(harness.deps, 'saveLocalOrigin' as any);
     await harness.orchestrator.create({
+      scope: TEST_SCOPE,
       descriptor: markdownDescriptor,
       requestedName: 'Promoted.md',
       parentFolderId: null,
@@ -365,6 +383,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
     const harness = makeHarness({ descriptor: mockupDescriptor });
     harness.setExtensionLoaded(false);
     await expect(harness.orchestrator.create({
+      scope: TEST_SCOPE,
       descriptor: mockupDescriptor,
       requestedName: 'Unavailable.mockup.html',
       parentFolderId: null,

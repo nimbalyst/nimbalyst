@@ -19,6 +19,7 @@ import type {
   ChatSession,
   AgentMessage
 } from '@nimbalyst/runtime';
+import { filterSessionsForPersonalSync } from '@nimbalyst/runtime/sync';
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
@@ -158,7 +159,7 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
     return true;
   });
 
-  const sessions = validRows.map((row: any) => {
+  const sessions = filterSessionsForPersonalSync(validRows.map((row: any) => {
     return {
       id: row.id,
       title: row.title || 'Untitled',
@@ -188,7 +189,7 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
       metadata: normalizeJsonObject(row.metadata),
       messages: undefined as SyncedMessage[] | undefined,
     };
-  });
+  }));
 
   // Optionally fetch messages for each session (include hidden - mobile filters client-side)
   if (includeMessages) {

@@ -17,10 +17,11 @@ import type { SessionStore } from '@nimbalyst/runtime';
 import { asPersonalMemberId } from '@nimbalyst/runtime';
 import type { DeviceInfo } from '@nimbalyst/runtime/sync';
 import * as syncModule from '@nimbalyst/runtime/sync';
-import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, getPreferredAgentLanguage, store, type SessionSyncConfig } from '../utils/store';
+import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, getPreferredAgentLanguage, getAttachmentStagingConfig, store, type SessionSyncConfig } from '../utils/store';
 import { logger } from '../utils/logger';
 import { getCredentials } from './CredentialService';
-import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSession } from './StytchAuthService';
+import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSessionDetailed } from './StytchAuthService';
+import { describePersonalJwtFailure, type PersonalRefreshFailureReason } from './auth/personalJwtFailure';
 import { app } from 'electron';
 import * as os from 'os';
 import { getProjectFileSyncService } from './ProjectFileSyncService';
@@ -34,6 +35,7 @@ import { reconnectAllTrackerSyncs } from './TrackerSyncManager';
 import { BrowserWindow } from 'electron';
 import { timeStartupPhase } from '../utils/startupTiming';
 import { compressImageIfNeeded } from '../mcp/mcpImageCompression';
+import { resolveWorkspaceAttachmentStagingDirectory } from './attachments/attachmentStagingRoot';
 
 // Screenshots taken by a desktop session are only viewable on mobile if their
 // bytes ride along in the synced message -- there is no desktop -> mobile
@@ -441,6 +443,10 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     // throttle on success -- the expiry check above is what gates that path.
     const FAILED_REFRESH_BACKOFF_MS = 5_000;
     let lastFailedRefreshTime = 0;
+    /** Why the most recent refresh attempt failed, so the thrown error can say so. */
+    let lastRefreshFailureReason: PersonalRefreshFailureReason | null = null;
+    /** The rendered transport error behind a `network` failure, for the log line. */
+    let lastRefreshFailureDetail: string | null = null;
 
     /**
      * Returns the `exp` claim (in ms since epoch) for the JWT, or null if it
@@ -533,12 +539,22 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
           const failedRecently =
             lastFailedRefreshTime > 0 && now - lastFailedRefreshTime < FAILED_REFRESH_BACKOFF_MS;
           if (!failedRecently) {
-            const refreshed = await refreshPersonalSession(serverUrl);
-            if (!refreshed) {
+            const outcome = await refreshPersonalSessionDetailed(serverUrl);
+            if (!outcome.ok) {
               lastFailedRefreshTime = Date.now();
-              logger.main.warn('[SyncManager] Personal session refresh failed, JWT may be stale');
+              lastRefreshFailureReason = outcome.reason;
+              lastRefreshFailureDetail = outcome.reason === 'network' ? outcome.detail ?? null : null;
+              // Name the URL AND the transport error. "refresh failed" alone is
+              // what made an unreachable collab worker unreadable in main.log.
+              logger.main.warn(
+                outcome.reason === 'network'
+                  ? `[SyncManager] Sync server ${serverUrl} is unreachable (${lastRefreshFailureDetail ?? 'unknown transport error'}) - personal session refresh will retry; credentials are NOT being cleared`
+                  : `[SyncManager] Personal session refresh rejected by ${serverUrl} (${outcome.reason}), JWT may be stale`,
+              );
             } else {
               lastFailedRefreshTime = 0;
+              lastRefreshFailureReason = null;
+              lastRefreshFailureDetail = null;
             }
           }
         }
@@ -553,9 +569,15 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
           // Returning an already-expired JWT guarantees the server rejects the
           // upgrade and the WS error loop never escapes. Throw so the caller's
           // reconnect-with-backoff path runs instead of the bad-token hammer.
-          throw new Error(
-            `[SyncManager] Personal JWT is expired (exp=${new Date(freshExpiryMs).toISOString()}) and refresh did not produce a fresh one`,
-          );
+          // The message must name the ACTUAL cause: an unreachable sync server
+          // is not a token problem, and calling it one has twice sent
+          // investigations after a JWT bug that did not exist.
+          throw describePersonalJwtFailure({
+            reason: lastRefreshFailureReason,
+            expiryMs: freshExpiryMs,
+            serverUrl,
+            detail: lastRefreshFailureDetail,
+          });
         }
 
         return freshJwt;
@@ -1384,8 +1406,9 @@ export async function decryptMobileAttachments(
   }
 
   const { AttachmentService } = await import('./AttachmentService');
-  const userDataPath = app.getPath('userData');
-  const attachmentService = new AttachmentService(workspacePath, userDataPath);
+  const stagingConfig = getAttachmentStagingConfig();
+  const stagingDirectory = resolveWorkspaceAttachmentStagingDirectory(workspacePath);
+  const attachmentService = new AttachmentService(workspacePath, stagingDirectory, stagingConfig.mode);
 
   const results: import('@nimbalyst/runtime').ChatAttachment[] = [];
 

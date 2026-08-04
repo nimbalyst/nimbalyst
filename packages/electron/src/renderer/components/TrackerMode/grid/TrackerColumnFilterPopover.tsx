@@ -18,6 +18,7 @@ import {
   useRole,
   useInteractions,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 import type { FieldDefinition } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import {
   opsForFieldType,
@@ -97,7 +98,7 @@ export function TrackerColumnFilterPopover({
     open: true,
     onOpenChange: open => { if (!open) onClose(); },
     placement: 'bottom-start',
-    middleware: [offset(4), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(4), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
 
   // Virtual anchor pinned to the header cell that was clicked.

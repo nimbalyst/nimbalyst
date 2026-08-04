@@ -12,6 +12,17 @@ import {
 const TRANSPORT_DEBOUNCE_MS = 120;
 const transportTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/**
+ * Tracker body documents have a live Y.Doc transport but no durable local
+ * replica. Preserve any already-published transport/outbox values so a second
+ * mount sharing the same cache entry cannot make the status dot flap.
+ */
+export function markCollabDocumentTransportOnly(filePath: string): void {
+  const atom = collabDocumentStateAtom(filePath);
+  const { replica: _replica, ...transportOnlyState } = store.get(atom);
+  store.set(atom, transportOnlyState);
+}
+
 export function setCollabReplicaState(
   filePath: string,
   replica: LocalDocumentReplicaState,

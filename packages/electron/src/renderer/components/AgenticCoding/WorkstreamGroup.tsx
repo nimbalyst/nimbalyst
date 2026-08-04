@@ -18,6 +18,7 @@ import {
 } from '../../store';
 import { isStructuralWorkstreamContainer } from '../../../shared/sessionHierarchy';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
+import { WorktreeIcon } from '../common/WorktreeIcon';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
 import { SessionContextMenu } from './SessionContextMenu';
@@ -625,13 +626,7 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
             isActive ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-muted)]'
           } [&_svg]:w-full [&_svg]:h-full`}>
             {type === 'worktree' ? (
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="3" y="2" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-                <rect x="10" y="2" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-                <rect x="3" y="11" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-                <path d="M4.5 5v3.5a1.5 1.5 0 0 0 1.5 1.5h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <path d="M11.5 5v5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
+              <WorktreeIcon size={16} />
             ) : (
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <circle cx="8" cy="4" r="1.5" fill="currentColor"/>

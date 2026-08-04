@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { app } from 'electron';
-import { getRecentItems } from './store';
+import { getAgentPermissions, getRecentItems, setWorkspaceTrusted } from './store';
 
 /**
  * NOTE: isPathInWorkspace and getRelativeWorkspacePath have similar implementations
@@ -505,6 +505,25 @@ export function getExtensionSDKDocsPath(): string | null {
   }
 
   return null;
+}
+
+/**
+ * Seeds agent trust for the bundled Extension SDK documentation workspace.
+ *
+ * The docs ship inside the app (dev: `packages/extension-sdk-docs`, packaged:
+ * `Resources/extension-sdk-docs`), so they are not a project the user chose to
+ * open and the trust dialog is pure friction. `'ask'` is the least-privileged
+ * trusted mode: no trust prompt, per-tool permission prompts intact.
+ *
+ * Only seeds when the workspace has NO stored permissions at all. An explicit
+ * user choice -- including untrusting the docs (`permissionMode: null`) -- is
+ * left alone.
+ */
+export function ensureExtensionSDKDocsTrusted(docsPath: string): void {
+  if (getAgentPermissions(docsPath) !== undefined) {
+    return;
+  }
+  setWorkspaceTrusted(docsPath, true, 'ask');
 }
 
 /**

@@ -5,6 +5,7 @@ import { sweepEmptySharedDocuments } from '../sharedDocumentCleanup';
 function doc(documentId: string, overrides: Partial<SharedDocument> = {}): SharedDocument {
   return {
     documentId,
+    teamProjectId: null,
     title: documentId,
     documentType: 'markdown',
     createdBy: 'user',

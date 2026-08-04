@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Unit tests for the write-input builders and --where parsing. Pure functions —
  * no DB or app required.

@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@nimbalyst/collab-client": ["../collab-client/src/core/index.ts"],
+      "@nimbalyst/collab-client/*": ["../collab-client/src/*/index.ts"],
+      "@nimbalyst/runtime/*": ["../runtime/src/*"],
+      "@nimbalyst/extension-sdk/*": ["../extension-sdk/src/*"]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "types/**/*",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "../runtime/src/editor/types/*.d.ts",
+    "../runtime/src/types/vite.d.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

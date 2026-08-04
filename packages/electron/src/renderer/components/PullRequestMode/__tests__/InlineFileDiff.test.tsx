@@ -37,8 +37,6 @@ describe("InlineFileDiff", () => {
       <InlineFileDiff filePath="image.png" status="modified" unifiedDiff="" />
     );
 
-    expect(
-      screen.getByText("No textual changes to display for this file.")
-    ).toBeTruthy();
+    screen.getByText("No textual changes to display for this file.");
   });
 });

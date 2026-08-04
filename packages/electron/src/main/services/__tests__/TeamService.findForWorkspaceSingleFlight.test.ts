@@ -65,11 +65,8 @@ vi.mock('@nimbalyst/runtime', () => ({
 vi.mock('../../database/initialize', () => ({}));
 vi.mock('../OrgProjectionService', () => ({}));
 vi.mock('../OrgAccessResolver', () => ({}));
-vi.mock('../OrgKeyService', () => ({}));
-vi.mock('../KeyRotationService', () => ({}));
 vi.mock('../TrackerSyncManager', () => ({}));
 vi.mock('../CollabBackupService', () => ({}));
-vi.mock('../SilentTeamEncryptionMigration', () => ({}));
 // createTeamAuthBootstrap is invoked at TeamService module scope (assigned to
 // runAuthenticatedTeamBootstrap), so the mock must return a callable factory
 // even though this test never triggers that bootstrap.

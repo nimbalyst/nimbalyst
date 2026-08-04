@@ -26,7 +26,7 @@
 
 import { useEffect } from 'react';
 import { getBodyDocCache, type BodyDocConfigFactory } from '../services/BodyDocCache';
-import { resolveCollabConfigForUri } from '../utils/collabDocumentOpener';
+import { resolveDesktopCollabConfigForUri } from '../utils/collabDocumentOpener';
 
 /**
  * Debounce window before firing prewarm after `itemIds` settles. Tuned
@@ -85,7 +85,7 @@ export function useTrackerBodyPrewarm({
       const factory: BodyDocConfigFactory = async (id) => {
         const documentId = `tracker-content/${id}`;
         const uri = `collab://tracker-content/${id}`;
-        const config = await resolveCollabConfigForUri(
+        const config = await resolveDesktopCollabConfigForUri(
           workspacePath,
           uri,
           documentId,
@@ -96,11 +96,6 @@ export function useTrackerBodyPrewarm({
           serverUrl: config.serverUrl,
           getJwt: config.getJwt,
           orgId: config.orgId,
-          keyCustody: config.keyCustody,
-          documentKey: config.documentKey,
-          // Legacy org key so pre-migration tracker bodies still decrypt (NIM-878).
-          legacyDocumentKey: config.legacyDocumentKey,
-          orgKeyFingerprint: config.orgKeyFingerprint,
           userId: config.userId,
           documentId: config.documentId,
           createWebSocket: config.createWebSocket,

@@ -111,6 +111,17 @@ export function isSlashCommandCatalogProvider(
   );
 }
 
+export interface InterruptTurnResult {
+  method: 'interrupt' | 'abort';
+  /**
+   * Whether there was actually a live turn to interrupt. Omitted by providers
+   * that can't tell — `false` is a positive claim that the interrupt hit
+   * nothing, which is what lets the caller clear a zombie running state
+   * (NIM-2434). Never report `false` on a guess.
+   */
+  hadActiveTurn?: boolean;
+}
+
 export interface AIProvider extends EventEmitter {
   /**
    * Initialize the provider with configuration
@@ -156,7 +167,7 @@ export interface AIProvider extends EventEmitter {
    * fall back to the default `abort()` and rely on the caller to trigger the
    * next queued prompt. The return value lets the caller distinguish the two.
    */
-  interruptCurrentTurn(): Promise<{ method: 'interrupt' | 'abort' }>;
+  interruptCurrentTurn(): Promise<InterruptTurnResult>;
 
   /**
    * Get the capabilities of this provider
@@ -257,7 +268,7 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
    * (always do, since both paths land in the same completion event in the
    * end).
    */
-  async interruptCurrentTurn(): Promise<{ method: 'interrupt' | 'abort' }> {
+  async interruptCurrentTurn(): Promise<InterruptTurnResult> {
     this.abort();
     return { method: 'abort' };
   }
@@ -357,6 +368,22 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
       documentTransition,
       documentDiff,
     });
+  }
+
+  protected withPromptProvenanceMetadata(
+    documentContext?: DocumentContext,
+    metadata: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    if (!documentContext?.promptProvenance && !documentContext?.promptOrigin) {
+      return metadata;
+    }
+    return {
+      ...metadata,
+      ...(documentContext.promptOrigin ? { promptOrigin: documentContext.promptOrigin } : {}),
+      ...(documentContext.promptProvenance
+        ? { promptProvenance: { ...documentContext.promptProvenance } }
+        : {}),
+    };
   }
 
   /**

@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test for 4-space indent handling
  */

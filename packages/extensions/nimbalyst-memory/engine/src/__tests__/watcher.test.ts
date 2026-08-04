@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { globBaseDir, computeWatchScope } from '../indexer/watcher.js';
 import type { SourceSet } from '../types.js';

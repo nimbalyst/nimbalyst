@@ -18,7 +18,8 @@
  * Call initNetworkAvailabilityListeners() once in App.tsx on mount.
  */
 
-import { getTeamSyncProvider } from '../atoms/collabDocuments';
+import { activeCollabScopeAtom, getTeamSyncProvider } from '../atoms/collabDocuments';
+import { store } from '@nimbalyst/runtime/store';
 import { documentSyncRegistry } from '../atoms/documentSyncRegistry';
 
 let initialized = false;
@@ -38,7 +39,8 @@ export function initNetworkAvailabilityListeners(): () => void {
   // 2. When main has verified the index is healthy, reconnect renderer-side
   //    providers. Fire-and-forget: each provider handles its own errors.
   const unsubscribeNetworkAvailable = window.electronAPI.on('sync:network-available', () => {
-    const teamSync = getTeamSyncProvider();
+    const scope = store.get(activeCollabScopeAtom);
+    const teamSync = scope ? getTeamSyncProvider(scope) : null;
     if (teamSync) {
       try {
         teamSync.reconnectNow();

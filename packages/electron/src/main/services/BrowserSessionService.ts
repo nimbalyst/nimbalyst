@@ -60,6 +60,21 @@ export interface BrowserSessionInitOptions {
 /** Default headless viewport when the caller doesn't specify one. */
 const DEFAULT_HEADLESS_VIEWPORT = { width: 1280, height: 800 };
 
+/**
+ * How long a headless (agent-owned) session may sit unused before we reap it.
+ *
+ * Agents routinely forget to call `browser.close_session`, and a leaked headless
+ * session keeps the shared host window alive for the rest of the app run. That
+ * window has to be *shown* to paint and macOS always drags it onto a real
+ * display, so `setOpacity(0)` is the only thing standing between the user and a
+ * frameless window they cannot close. Reaping idle sessions means we are not
+ * relying on that single defence for days at a time.
+ */
+const HEADLESS_IDLE_TTL_MS = 5 * 60 * 1000;
+
+/** How often the reaper checks for idle headless sessions. */
+const HEADLESS_REAP_INTERVAL_MS = 60 * 1000;
+
 export interface BrowserSessionBounds {
   /** CSS pixels, relative to the host window's content area. */
   x: number;
@@ -88,6 +103,30 @@ interface SessionEntry {
   state: BrowserNavigationState;
   /** Agent-owned session parked in the shared off-screen host window. */
   headless: boolean;
+  /** `Date.now()` of the last operation on this session; drives idle reaping. */
+  lastUsedAt: number;
+}
+
+/** Minimal shape the idle reaper needs; keeps the decision unit-testable. */
+export interface ReapCandidate {
+  sessionId: string;
+  headless: boolean;
+  lastUsedAt: number;
+}
+
+/**
+ * Pure-function reaper policy. Returns the ids of headless sessions that have
+ * been idle for at least `ttlMs`. Editor-backed sessions are never reaped --
+ * the user owns those, and their host window is a real app window.
+ */
+export function selectIdleHeadlessSessions(
+  candidates: ReapCandidate[],
+  now: number,
+  ttlMs: number,
+): string[] {
+  return candidates
+    .filter((c) => c.headless && now - c.lastUsedAt >= ttlMs)
+    .map((c) => c.sessionId);
 }
 
 /**
@@ -159,12 +198,16 @@ export class BrowserSessionService extends EventEmitter {
 
   /**
    * Shared host window for headless (agent-owned) sessions. Created lazily on
-   * the first headless session and positioned far off-screen but *shown* so
-   * Chromium actually composits the child views (a hidden/`show:false` window
-   * suspends painting, which empties capturePage()). Torn down when the last
-   * headless session goes away.
+   * the first headless session and *shown* so Chromium actually composits the
+   * child views (a hidden/`show:false` window suspends painting, which fails
+   * capturePage()), but held at opacity 0 so the user never sees it. Torn down
+   * when the last headless session goes away, or when the idle reaper collects
+   * the last leaked session.
    */
   private headlessHostWindow: BrowserWindow | null = null;
+
+  /** Interval that reaps idle headless sessions; only runs while any exist. */
+  private headlessReapTimer: NodeJS.Timeout | null = null;
 
   private constructor() {
     super();
@@ -254,6 +297,7 @@ export class BrowserSessionService extends EventEmitter {
       hostWindow: null,
       bounds: null,
       headless,
+      lastUsedAt: Date.now(),
       state: {
         sessionId: opts.sessionId,
         url: opts.url,
@@ -276,6 +320,7 @@ export class BrowserSessionService extends EventEmitter {
       const vp = opts.viewport ?? DEFAULT_HEADLESS_VIEWPORT;
       const host = this.getOrCreateHeadlessHostWindow(vp);
       this.attachToWindow(opts.sessionId, host, { x: 0, y: 0, width: vp.width, height: vp.height });
+      this.startHeadlessReaper();
     }
 
     // Kick off the initial load. We intentionally do not await -- the renderer
@@ -616,27 +661,41 @@ export class BrowserSessionService extends EventEmitter {
     const win = new BrowserWindow({
       width: viewport.width,
       height: viewport.height,
-      // Far off any real display so the user never sees it.
+      // Requested off-display. macOS does NOT honour this: AppKit constrains the
+      // frame back onto a real screen the moment the window is ordered in, even
+      // when it is frameless. Measured on a two-display Mac: a window asking for
+      // (-32000, -32000) lands at (-1352, 304) -- i.e. squarely on the second
+      // monitor. The request is kept because it is honoured on Windows/Linux;
+      // `setOpacity(0)` below is what actually hides it on macOS.
       x: -32000,
       y: -32000,
       show: false,
       focusable: false,
       skipTaskbar: true,
-      // Frameless keeps the OS from clamping the title bar onto a visible
-      // display, which would otherwise drag the window into view.
       frame: false,
     });
-    // showInactive() forces compositing (so child views paint) without stealing
-    // focus from the user's real window.
+    // The window must be *shown* for its child views to composite -- a window
+    // that is never shown fails capturePage() outright with "Current display
+    // surface not available for capture". showInactive() forces compositing
+    // without stealing focus from the user's real window.
     win.showInactive();
     win.setContentSize(viewport.width, viewport.height);
+    // Since macOS insists on placing it on a display, make it invisible there.
+    // Opacity 0 does not suppress compositing: child views keep painting and
+    // capturePage() still returns full-fidelity pixels.
+    win.setOpacity(0);
+    // Belt and braces -- a frameless, non-focusable window has no close button
+    // and no Cmd+W, so it must never be able to swallow the user's clicks.
+    win.setIgnoreMouseEvents(true);
 
     win.once('closed', () => {
       if (this.headlessHostWindow === win) this.headlessHostWindow = null;
     });
 
     this.headlessHostWindow = win;
-    logger.main.info('[BrowserSessionService] Created off-screen headless host window');
+    logger.main.info(
+      `[BrowserSessionService] Created headless host window at ${JSON.stringify(win.getBounds())} (opacity 0)`,
+    );
     return win;
   }
 
@@ -645,10 +704,53 @@ export class BrowserSessionService extends EventEmitter {
     if (!this.headlessHostWindow) return;
     const stillHeadless = [...this.sessions.values()].some((e) => e.headless);
     if (stillHeadless) return;
+    this.stopHeadlessReaper();
     if (!this.headlessHostWindow.isDestroyed()) {
       this.headlessHostWindow.destroy();
     }
     this.headlessHostWindow = null;
+  }
+
+  /**
+   * Start the idle reaper if it isn't already running. Every operation routes
+   * through `requireEntry`, which refreshes `lastUsedAt`, so an actively-driven
+   * session is never reaped mid-use.
+   */
+  private startHeadlessReaper(): void {
+    if (this.headlessReapTimer) return;
+    this.headlessReapTimer = setInterval(() => {
+      this.reapIdleHeadlessSessions();
+    }, HEADLESS_REAP_INTERVAL_MS);
+    // Don't hold the event loop open on our account.
+    this.headlessReapTimer.unref?.();
+  }
+
+  private stopHeadlessReaper(): void {
+    if (!this.headlessReapTimer) return;
+    clearInterval(this.headlessReapTimer);
+    this.headlessReapTimer = null;
+  }
+
+  /** Destroy headless sessions that have gone untouched for the idle TTL. */
+  private reapIdleHeadlessSessions(): void {
+    const expired = selectIdleHeadlessSessions(
+      [...this.sessions.values()].map((e) => ({
+        sessionId: e.sessionId,
+        headless: e.headless,
+        lastUsedAt: e.lastUsedAt,
+      })),
+      Date.now(),
+      HEADLESS_IDLE_TTL_MS,
+    );
+    for (const sessionId of expired) {
+      logger.main.info(
+        `[BrowserSessionService] Reaping idle headless session ${sessionId} (unused for >${HEADLESS_IDLE_TTL_MS}ms)`,
+      );
+      this.destroySession(sessionId);
+    }
+    if (![...this.sessions.values()].some((e) => e.headless)) {
+      this.stopHeadlessReaper();
+    }
   }
 
   private requireEntry(sessionId: string): SessionEntry {
@@ -656,6 +758,8 @@ export class BrowserSessionService extends EventEmitter {
     if (!entry) {
       throw new Error(`No browser session: ${sessionId}`);
     }
+    // Any operation counts as use and pushes back the idle deadline.
+    entry.lastUsedAt = Date.now();
     return entry;
   }
 
@@ -752,6 +856,7 @@ export class BrowserSessionService extends EventEmitter {
   }
 
   public cleanup(): void {
+    this.stopHeadlessReaper();
     for (const sessionId of [...this.sessions.keys()]) {
       this.destroySession(sessionId);
     }

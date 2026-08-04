@@ -674,6 +674,49 @@ export async function handleToolPermission(
   );
 }
 
+/**
+ * Record an approved commit against the session's tracker items.
+ *
+ * A commit the user approved is their sign-off on the work, so when its message
+ * closes linked items ("Fixes NIM-123") the session is complete too. Agents are
+ * barred from writing `done` or `complete` themselves; this is the one path that
+ * has a human's approval behind it, so it writes both rather than leaving
+ * finished work parked in `in-review` / `validating` forever.
+ *
+ * Fire-and-forget: a linking failure must not fail the commit that succeeded.
+ */
+async function linkCommitToTrackerItems(
+  commitHash: string,
+  commitMessage: string,
+  sessionId: string,
+  workspacePath: string
+): Promise<void> {
+  try {
+    const { commitTrackerLinker } = await import(
+      "../../services/CommitTrackerLinker"
+    );
+    const { closedItemIds } = await commitTrackerLinker.linkBySession(
+      commitHash,
+      commitMessage,
+      sessionId,
+      workspacePath
+    );
+    if (closedItemIds.length === 0) return;
+
+    const { SessionNamingService } = await import(
+      "../../services/SessionNamingService"
+    );
+    await SessionNamingService.getInstance().applySessionMetadata(sessionId, {
+      phase: "complete",
+    });
+    console.log(
+      `[MCP Server] Commit ${commitHash.slice(0, 7)} closed ${closedItemIds.length} tracker item(s); session marked complete`
+    );
+  } catch (err) {
+    console.error("[MCP Server] Commit-tracker linking failed:", err);
+  }
+}
+
 export async function handleGitCommitProposal(
   args: any,
   sessionId: string | undefined,
@@ -966,14 +1009,12 @@ export async function handleGitCommitProposal(
 
     if (response.action === "committed" && response.commitHash) {
       // Link commit to tracker items via session (fire-and-forget)
-      import("../../services/CommitTrackerLinker").then(({ commitTrackerLinker }) => {
-        commitTrackerLinker.linkBySession(
-          response.commitHash!,
-          commitMessage,
-          targetSessionId,
-          workspacePath,
-        ).catch((err) => console.error("[MCP Server] Commit-tracker linking failed:", err));
-      }).catch(() => { /* CommitTrackerLinker not available */ });
+      void linkCommitToTrackerItems(
+        response.commitHash,
+        commitMessage,
+        targetSessionId,
+        workspacePath,
+      );
 
       return {
         content: [
@@ -1062,14 +1103,12 @@ export async function handleGitCommitProposal(
       if (result.action === "committed" && result.commitHash) {
         // Link commit to tracker items via session (fire-and-forget)
         if (targetSessionId && targetSessionId !== "unknown") {
-          import("../../services/CommitTrackerLinker").then(({ commitTrackerLinker }) => {
-            commitTrackerLinker.linkBySession(
-              result.commitHash!,
-              result.commitMessage || proposalArgs.commitMessage || "",
-              targetSessionId,
-              workspacePath,
-            ).catch((err) => console.error("[MCP Server] Commit-tracker linking failed:", err));
-          }).catch(() => { /* CommitTrackerLinker not available */ });
+          void linkCommitToTrackerItems(
+            result.commitHash,
+            result.commitMessage || proposalArgs.commitMessage || "",
+            targetSessionId,
+            workspacePath,
+          );
         }
 
         const filesCount =
@@ -1217,7 +1256,7 @@ const REQUEST_USER_INPUT_FIELD_SCHEMA = {
     "  - singleSelect: options[]; optional allowOther\n" +
     "  - reorder: items[]; optional minItems\n" +
     "  - editText: initialText; optional format ('markdown'|'plain'), placeholder, minLength, maxLength\n" +
-    "  - confirm: optional defaultValue (boolean)",
+    "  - confirm: optional defaultValue (boolean); omit it to make the user pick yes or no before they can submit",
   properties: {
     type: {
       type: "string",
@@ -1287,7 +1326,11 @@ const REQUEST_USER_INPUT_FIELD_SCHEMA = {
     maxLength: { type: "integer", minimum: 1, description: "editText: maximum length." },
 
     // confirm.
-    defaultValue: { type: "boolean", description: "confirm: initial state (default false)." },
+    defaultValue: {
+      type: "boolean",
+      description:
+        "confirm: pre-select yes or no. Omitted means unanswered -- submit stays blocked until the user picks, so an untouched field can never be read as a deliberate no.",
+    },
   },
   required: ["type", "id", "label"],
 };

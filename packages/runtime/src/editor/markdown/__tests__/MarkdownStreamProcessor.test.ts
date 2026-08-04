@@ -1,3 +1,4 @@
+// @vitest-environment node
 import {describe, expect, it} from 'vitest';
 import {$getRoot, type LexicalEditor, type NodeKey} from 'lexical';
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { getProviderIcon } from '@nimbalyst/runtime';
+import { getProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { getClaudeCodeModelLabel } from '../../utils/modelUtils';
 
 interface Model {

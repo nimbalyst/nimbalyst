@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Integration test for the extension contributions store -- the
  * replacement for the legacy `pluginRegistry` user-command and

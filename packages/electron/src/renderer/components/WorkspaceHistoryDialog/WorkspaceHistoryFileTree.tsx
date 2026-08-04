@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { getFileIcon } from '@nimbalyst/runtime';
+import { getFileIcon } from '@nimbalyst/runtime/ui/icons/fileIcons';
 
 interface WorkspaceFile {
   path: string;

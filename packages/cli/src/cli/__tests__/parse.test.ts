@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * `--version` is overloaded: `nim --version` asks the CLI its version, while
  * `nim release finalize --version 0.71.0` names the release being shipped.

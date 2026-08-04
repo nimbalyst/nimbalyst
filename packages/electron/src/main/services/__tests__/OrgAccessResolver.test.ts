@@ -40,13 +40,14 @@ describe('canAccess resolver (SQLite backend, migration 0013)', () => {
     });
     await db.initialize();
 
-    // Seed: org "o" with an owner, an admin, a plain member, and a guest.
+    // Seed: org "o" with administrators, a member, a viewer, and an unknown role.
     await db.query(`INSERT INTO orgs (id, stytch_org_id, slug, flavor) VALUES ('o','s-o','acme','team')`);
     await db.query(`INSERT INTO projects (id, org_id, slug, git_origin_hash) VALUES ('p1','o','web','gh1')`);
     await db.query(`INSERT INTO org_members (org_id, user_id, role) VALUES ('o','owner1','owner')`);
     await db.query(`INSERT INTO org_members (org_id, user_id, role) VALUES ('o','admin1','admin')`);
     await db.query(`INSERT INTO org_members (org_id, user_id, role) VALUES ('o','member1','member')`);
-    await db.query(`INSERT INTO org_members (org_id, user_id, role) VALUES ('o','viewer1','member')`);
+    await db.query(`INSERT INTO org_members (org_id, user_id, role) VALUES ('o','viewer1','viewer')`);
+    await db.query(`INSERT INTO org_members (org_id, user_id, role) VALUES ('o','future1','future-role')`);
   });
 
   afterEach(async () => {
@@ -79,6 +80,14 @@ describe('canAccess resolver (SQLite backend, migration 0013)', () => {
     expect((await canAccess(db, 'member1', { orgId: 'o', action: 'admin' })).allowed).toBe(false);
   });
 
+  it('keeps an organization viewer read-only for org-level content', async () => {
+    expect((await canAccess(db, 'viewer1', { orgId: 'o', action: 'view' })).allowed).toBe(true);
+    const edit = await canAccess(db, 'viewer1', { orgId: 'o', action: 'edit' });
+    expect(edit.allowed).toBe(false);
+    expect(edit.orgRole).toBe('viewer');
+    expect(edit.reason).toBe('org-level-read-only-role');
+  });
+
   it('denies a member on a project with no grant', async () => {
     const r = await canAccess(db, 'member1', { orgId: 'o', projectId: 'p1', action: 'view' });
     expect(r.allowed).toBe(false);
@@ -99,6 +108,27 @@ describe('canAccess resolver (SQLite backend, migration 0013)', () => {
     await db.query(`INSERT INTO project_access (project_id, user_id, project_role) VALUES ('p1','viewer1','project-viewer')`);
     expect((await canAccess(db, 'viewer1', { orgId: 'o', projectId: 'p1', action: 'view' })).allowed).toBe(true);
     expect((await canAccess(db, 'viewer1', { orgId: 'o', projectId: 'p1', action: 'edit' })).allowed).toBe(false);
+  });
+
+  it('caps a viewer project grant at the organization read-only ceiling', async () => {
+    await db.query(`INSERT INTO project_access (project_id, user_id, project_role) VALUES ('p1','viewer1','project-admin')`);
+    const view = await canAccess(db, 'viewer1', { orgId: 'o', projectId: 'p1', action: 'view' });
+    expect(view.allowed).toBe(true);
+    expect(view.projectRole).toBe('project-viewer');
+    const edit = await canAccess(db, 'viewer1', { orgId: 'o', projectId: 'p1', action: 'edit' });
+    expect(edit.allowed).toBe(false);
+    expect(edit.projectRole).toBe('project-viewer');
+    expect(edit.reason).toBe('org-role-ceiling');
+  });
+
+  it('treats an unrecognized organization role as least-privileged', async () => {
+    await db.query(`INSERT INTO project_access (project_id, user_id, project_role) VALUES ('p1','future1','project-admin')`);
+    expect((await canAccess(db, 'future1', { orgId: 'o', action: 'view' })).allowed).toBe(true);
+    expect((await canAccess(db, 'future1', { orgId: 'o', action: 'edit' })).allowed).toBe(false);
+    const project = await canAccess(db, 'future1', { orgId: 'o', projectId: 'p1', action: 'edit' });
+    expect(project.allowed).toBe(false);
+    expect(project.orgRole).toBe('unknown');
+    expect(project.projectRole).toBe('project-viewer');
   });
 
   it('derives the org from the project when orgId is omitted', async () => {

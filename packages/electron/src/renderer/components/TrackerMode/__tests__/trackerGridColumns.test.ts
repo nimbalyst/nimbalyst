@@ -5,7 +5,9 @@ import { globalRegistry, type TrackerDataModel } from '@nimbalyst/runtime/plugin
 import { resolveColumnsForType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import {
   buildGridColumns,
+  buildGridActionsColumn,
   buildGridSource,
+  ROW_ACTIONS,
   ROW_ITEM_ID,
   ROW_ITEM_TYPE,
 } from '../grid/trackerGridColumns';
@@ -204,5 +206,107 @@ describe('buildGridColumns', () => {
       width: 0,
       height: 0,
     }));
+  });
+
+  it('opens the existing row context menu from the dedicated action column', () => {
+    const actionColumn = buildGridActionsColumn();
+    const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({
+      tag,
+      props,
+      children,
+    });
+    const action = (actionColumn.cellTemplate as any)(h, {
+      model: { [ROW_ITEM_ID]: '1', title: 'Alpha' },
+    });
+    const target = document.createElement('button');
+    const rowCell = document.createElement('div');
+    rowCell.dataset.rgrow = '0';
+    rowCell.appendChild(target);
+    const observed = vi.fn();
+    rowCell.addEventListener('contextmenu', observed);
+    const pointerEvent = { preventDefault: vi.fn(), stopPropagation: vi.fn() };
+
+    action.props.onPointerDown(pointerEvent);
+    action.props.onClick({
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      currentTarget: target,
+      clientX: 24,
+      clientY: 36,
+    });
+
+    expect(pointerEvent.preventDefault).toHaveBeenCalled();
+    expect(pointerEvent.stopPropagation).toHaveBeenCalled();
+    expect(actionColumn.prop).toBe(ROW_ACTIONS);
+    expect(actionColumn.pin).toBe('colPinEnd');
+    expect(observed).toHaveBeenCalledTimes(1);
+    const event = observed.mock.calls[0][0] as MouseEvent;
+    expect(event.clientX).toBe(24);
+    expect(event.clientY).toBe(36);
+  });
+
+  it('also keeps the overflow action inside the title cell', () => {
+    registerType();
+    const [title] = buildGridColumns(columnsFor(['title']), {
+      trackerType: gridType,
+      isRowEditable: () => true,
+      rowActions: true,
+    });
+    const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({
+      tag,
+      props,
+      children,
+    });
+    const cell = (title.cellTemplate as any)(h, {
+      model: { [ROW_ITEM_ID]: '1', title: 'Alpha' },
+    });
+
+    expect(cell.props.class).toBe('tracker-grid-cell-title');
+    expect(cell.children.at(-1).props.class).toContain('tracker-grid-cell-menu-title');
+  });
+
+});
+
+describe('buildGridColumns cellCompare', () => {
+  afterEach(() => globalRegistry.unregister(gridType));
+
+  function comparerFor(columnId: string) {
+    registerType();
+    const [column] = buildGridColumns(columnsFor([columnId]), {
+      trackerType: gridType,
+      isRowEditable: () => false,
+      sortingEnabled: true,
+    });
+    expect(column.cellCompare).toBeTypeOf('function');
+    return (a: unknown, b: unknown): number =>
+      column.cellCompare!.call({ order: 'asc' }, columnId, { [columnId]: a } as never, { [columnId]: b } as never);
+  }
+
+  it('orders Date cells chronologically, not by their stringified month name', () => {
+    const compare = comparerFor('updated');
+    // "wed may 20 2026" > "wed jun 24 2026" alphabetically, but May precedes June.
+    expect(compare(new Date('2026-05-20T12:00:00Z'), new Date('2026-06-24T12:00:00Z'))).toBeLessThan(0);
+    expect(compare(new Date('2026-06-24T12:00:00Z'), new Date('2026-05-20T12:00:00Z'))).toBeGreaterThan(0);
+    expect(compare(new Date('2026-06-24T12:00:00Z'), new Date('2026-06-24T12:00:00Z'))).toBe(0);
+  });
+
+  it('orders a date column holding mixed Date and string values chronologically', () => {
+    const compare = comparerFor('updated');
+    expect(compare('2026-01-05', new Date('2026-03-01T00:00:00Z'))).toBeLessThan(0);
+    expect(compare(new Date('2026-03-01T00:00:00Z'), '2026-01-05')).toBeGreaterThan(0);
+  });
+
+  it('keeps numeric columns numeric rather than lexicographic', () => {
+    const compare = comparerFor('points');
+    expect(compare(9, 10)).toBeLessThan(0);
+  });
+
+  it('sorts blank cells last ascending, matching the list comparator', () => {
+    const compare = comparerFor('updated');
+    expect(compare(undefined, new Date('2026-05-20T12:00:00Z'))).toBeGreaterThan(0);
+    expect(compare(new Date('2026-05-20T12:00:00Z'), undefined)).toBeLessThan(0);
+    // An emptied cell is stored as '' -- it must bucket with the blanks, not sort first.
+    expect(compare('', new Date('2026-05-20T12:00:00Z'))).toBeGreaterThan(0);
+    expect(compare('', undefined)).toBe(0);
   });
 });

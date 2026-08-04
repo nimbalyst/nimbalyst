@@ -14,7 +14,8 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import crypto from 'crypto';
+import { stageLargeTextAttachment } from './stageLargeTextAttachment';
+import type { AttachmentStagingMode } from './stagedAttachmentRegistry';
 
 /**
  * Raw attachment from UI
@@ -97,6 +98,9 @@ export interface AttachmentProcessorOptions {
    * If not provided, images are sent as-is
    */
   imageCompressor?: ImageCompressor;
+  stagingRoot?: string;
+  sessionId?: string;
+  stagingMode?: AttachmentStagingMode;
 }
 
 /**
@@ -116,9 +120,15 @@ export interface ProcessingOptions {
  */
 export class AttachmentProcessor {
   private readonly imageCompressor?: ImageCompressor;
+  private readonly stagingRoot?: string;
+  private readonly sessionId?: string;
+  private readonly stagingMode?: AttachmentStagingMode;
 
   constructor(options: AttachmentProcessorOptions = {}) {
     this.imageCompressor = options.imageCompressor;
+    this.stagingRoot = options.stagingRoot;
+    this.sessionId = options.sessionId;
+    this.stagingMode = options.stagingMode;
   }
 
   /**
@@ -234,9 +244,12 @@ export class AttachmentProcessor {
     if (textContent.length > largeTextThreshold) {
       // Large attachment - write to temp directory and reference in system message
       // Claude can use the Read tool to access the content when needed
-      const randomSuffix = crypto.randomBytes(8).toString('hex');
-      const tmpFilePath = path.join(os.tmpdir(), `nimbalyst-attachment-${Date.now()}-${randomSuffix}-${filename}`);
-      await fs.promises.writeFile(tmpFilePath, textContent, 'utf-8');
+      const tmpFilePath = await stageLargeTextAttachment(
+        textContent,
+        filename,
+        this.stagingRoot ?? os.tmpdir(),
+        { sessionId: this.sessionId, mode: this.stagingMode },
+      );
 
       return {
         type: 'document',

@@ -246,22 +246,11 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 
 ## Collaboration
 
-> **Encryption posture.** Team collaboration data (trackers, documents, doc-index
-> titles) is **encrypted in transit and at rest, isolated per team, and operated
-> by Nimbalyst**. New teams use server-managed custody (Epic H2 — the server
-> holds a per-team KMS-wrapped key and encrypts at rest, enabling
-> web/CLI/cloud-agent access). Existing `legacy-e2e` teams are transitional and
-> migrate silently, one-way, after an org-wide local plaintext recovery sweep.
-> **Server-managed team
-> data is not zero-knowledge.** **Personal sync** (your desktop ↔ phone: sessions,
-> prompts, drafts, settings, personal index) **stays zero-knowledge** — the server
-> never holds those keys. Customers who require true zero-knowledge for team data
-> run the software on their own infrastructure (self-host).
+> **Encryption posture.** Team collaboration data (trackers, documents, doc-index titles) is **encrypted in transit and at rest, isolated per team, and operated by Nimbalyst**. The server holds a per-team KMS-wrapped key and encrypts at rest, which is what enables web, CLI, and cloud-agent access. This is the only supported mode for team data, and **it is not zero-knowledge**. **Personal sync** (your desktop ↔ phone: sessions, prompts, drafts, settings, personal index) **stays zero-knowledge** — the server never holds those keys. Customers who require true zero-knowledge for team data run the software on their own infrastructure (self-host).
 
 - Real-time document editing (Lexical + yJS through Cloudflare Workers)
-- Encrypted tracker item sync (zero-knowledge in `legacy-e2e`; server-managed at-rest in H2)
-- Team trust model with ECDH key exchange and key envelopes (legacy-e2e mode)
-- Server-managed per-team encryption keys (Epic H2): KMS-wrapped split-knowledge DEK, admin key-recovery, append-only audit log
+- Encrypted tracker item sync (server-managed, encrypted at rest per team)
+- Server-managed per-team encryption keys: KMS-wrapped split-knowledge DEK, admin key-recovery, append-only audit log
 - Stytch B2B org management
 - Team invite / join / role management
 - Personal org + team org separation
@@ -304,7 +293,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Tracker sidebar with type counts
 - Item detail panel
 - Unread indicators — a dot on tracker rows/cards (list, kanban, tag board) when an item is new or was changed by someone else since you last viewed it; clears when you open it; your own edits and views sync across your devices (personal channel), and AI-agent edits count as unread
-- Encrypted sync across team members (zero-knowledge in `legacy-e2e`; server-managed at-rest in H2)
+- Encrypted sync across team members (server-managed, encrypted at rest per team)
 - Inline `#type` items in markdown (TrackerPlugin)
 - Live tracker reference links — `#` in a document references an existing tracker item, inserting a chip that shows the item's current status and title (resolved live, not a snapshot) and links to it; serialized as portable `[NIM-123](nimbalyst://NIM-123)` markdown; the same link renders as a live chip in the AI transcript; one-click "convert to tracked reference" turns a legacy inline embed into a real tracked item plus a reference chip
 - Tracker schema overrides in Trackers settings -- customize a built-in type into `.nimbalyst/trackers`, edit an existing override, reset back to the built-in default, and resync the local database mirror when schema files drift

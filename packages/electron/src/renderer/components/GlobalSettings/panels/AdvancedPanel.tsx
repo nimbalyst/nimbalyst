@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { SettingsToggle } from '../SettingsToggle';
 import { HelpTooltip } from '../../../help';
 import {

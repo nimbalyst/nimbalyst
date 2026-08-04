@@ -11,7 +11,7 @@
  * - gridOperations provides centralized cell operations
  */
 
-import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo, type RefObject } from 'react';
 import { RevoGrid, type RevoGridCustomEvent, type ColumnRegular } from '@revolist/react-datagrid';
 import type { RevoGridElement } from '../revogrid-types';
 import type { EditorHostProps, NormalizedSelectionRange, ColumnFormat, DiffState, CellDiff } from '../types';
@@ -37,6 +37,13 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { ColumnFormatDialog } from './ColumnFormatDialog';
 import { SheetsTextEditor } from '../editors/SheetsTextEditor';
 import { buildSpreadsheetSelectionContextItem } from '../selectionContext';
+import { useCellDragSelection } from '../selection/useCellDragSelection';
+import {
+  gridBounds,
+  paintCrossSectionRange,
+  resolveGridSections,
+  type SectionAwareGrid,
+} from '../selection/crossSectionSelection';
 
 // Buffer of extra empty rows/columns to show beyond actual data
 const DISPLAY_BUFFER_ROWS = 20;
@@ -210,6 +217,10 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   const selectionContextPublishVersionRef = useRef(0);
   const lastPublishedSelectionContextRef = useRef<string | null>(null);
   const skipFocusHandlerRef = useRef(false); // Flag to skip focus handler during programmatic selection
+  // Set while our own cross-section drag owns the selection. RevoGrid keeps
+  // emitting setrange with its clamped, single-section range during the drag;
+  // honouring it would snap the selection back at the frozen boundary.
+  const suppressGridRangeRef = useRef(false);
 
   // Grid initialization - render grid immediately, load data imperatively after mount
   // This avoids React props overwriting RevoGrid's internal state on re-renders
@@ -865,8 +876,9 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleFocusCell = useCallback(
     (event: RevoGridCustomEvent<any>) => {
-      // Skip if we're doing programmatic selection (e.g., select-all)
-      if (skipFocusHandlerRef.current) return;
+      // Skip if we're doing programmatic selection (e.g., select-all) or if our
+      // own drag is mid-flight and owns the range.
+      if (skipFocusHandlerRef.current || suppressGridRangeRef.current) return;
       if (!event.detail) return;
       const { rowIndex, colIndex, type } = event.detail;
 
@@ -886,6 +898,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   const handleCellClick = useCallback(
     (event: RevoGridCustomEvent<any>) => {
       if (!event.detail) return;
+      if (suppressGridRangeRef.current) return;
       const { row, col, type } = event.detail;
 
       const isPinned = type === 'rowPinStart';
@@ -904,6 +917,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       x?: number; y?: number; x1?: number; y1?: number;
     } | null>) => {
       if (!event.detail) return;
+      if (suppressGridRangeRef.current) return;
 
       const x = event.detail.area?.x ?? event.detail.x;
       const y = event.detail.area?.y ?? event.detail.y;
@@ -922,6 +936,18 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     [translateRowIndex, updateSelection]
   );
 
+  // Own cell drag-selection so ranges can cross the frozen/pinned boundaries
+  // that RevoGrid's built-in drag is clamped to.
+  useCellDragSelection({
+    containerRef: gridContainerRef,
+    gridRef: revoGridRef as RefObject<SectionAwareGrid | null>,
+    // Gate on the grid actually being rendered, not just on the tab being
+    // active -- the loading tree has no container to bind to.
+    enabled: isActive && !isLoading && !loadError,
+    onSelectionChange: updateSelection,
+    suppressGridRangeRef,
+  });
+
   // Handle formula bar input
   const handleFormulaChange = useCallback(
     async (value: string) => {
@@ -934,6 +960,32 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     },
     [publishSelectionContext]
   );
+
+  /**
+   * Paint a logical range across every viewport section it touches and adopt it
+   * as the selection. Replaces per-section `setCellsFocus` calls, which could
+   * only ever address one section and silently painted nothing when a range
+   * straddled a boundary.
+   */
+  const paintLogicalRange = useCallback(
+    async (range: NormalizedSelectionRange, focus?: { row: number; col: number }) => {
+      const grid = revoGridRef.current as SectionAwareGrid | null;
+      if (!grid) return;
+      const sections = await resolveGridSections(grid);
+      if (!sections) return;
+      await paintCrossSectionRange(grid, sections, range);
+      void updateSelection(focus ?? { row: range.startRow, col: range.startCol }, range);
+    },
+    [updateSelection]
+  );
+
+  /** Full row/column extent of the grid, for header-click selections. */
+  const getGridExtent = useCallback(async () => {
+    const grid = revoGridRef.current as SectionAwareGrid | null;
+    if (!grid) return null;
+    const sections = await resolveGridSections(grid);
+    return sections ? gridBounds(sections) : null;
+  }, []);
 
   // Select all cells (from 0,0 to last cell with data)
   const selectAll = useCallback(() => {
@@ -995,24 +1047,10 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         const lastRow = Math.max(0, pinnedRowCount + lastDataRowIndex);
 
         const selection = normalizeRange(0, 0, lastRow, lastColWithData);
-        void updateSelection({ row: 0, col: 0 }, selection);
 
-        // Set RevoGrid visual focus
-        // Note: RevoGrid can't visually select across pinned/data boundary,
-        // so we focus on data rows if present, otherwise pinned rows.
-        if (lastDataRowIndex >= 0) {
-          grid.setCellsFocus(
-            { x: 0, y: 0 },
-            { x: lastColWithData, y: lastDataRowIndex }
-          );
-        } else if (pinnedRowCount > 0) {
-          grid.setCellsFocus(
-            { x: 0, y: 0 },
-            { x: lastColWithData, y: pinnedRowCount - 1 },
-            undefined,
-            'rowPinStart'
-          );
-        }
+        // Paint across every section so the highlight covers pinned header rows
+        // and frozen columns as well as the body.
+        await paintLogicalRange(selection, { row: 0, col: 0 });
       } finally {
         // Re-enable focus handler after a short delay to allow RevoGrid events to settle
         setTimeout(() => {
@@ -1020,7 +1058,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         }, 100);
       }
     })();
-  }, [updateSelection]);
+  }, [paintLogicalRange]);
 
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback(
@@ -1282,67 +1320,40 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
 
   // Selection helpers
   const selectColumn = useCallback((colIndex: number) => {
-    const totalRows = 100; // Would need to get from grid
-    updateSelection({ row: 0, col: colIndex }, normalizeRange(0, colIndex, totalRows - 1, colIndex));
-    revoGridRef.current?.setCellsFocus(
-      { x: colIndex, y: 0 },
-      { x: colIndex, y: totalRows - 1 - headerRowCount }
-    );
-  }, [headerRowCount, updateSelection]);
+    void (async () => {
+      const extent = await getGridExtent();
+      if (!extent) return;
+      await paintLogicalRange(normalizeRange(0, colIndex, extent.lastRow, colIndex));
+    })();
+  }, [getGridExtent, paintLogicalRange]);
 
   const selectColumnRange = useCallback((startCol: number, endCol: number) => {
-    const totalRows = 100;
-    const minCol = Math.min(startCol, endCol);
-    const maxCol = Math.max(startCol, endCol);
-    updateSelection({ row: 0, col: minCol }, normalizeRange(0, minCol, totalRows - 1, maxCol));
-    revoGridRef.current?.setCellsFocus(
-      { x: minCol, y: 0 },
-      { x: maxCol, y: totalRows - 1 - headerRowCount }
-    );
-  }, [headerRowCount, updateSelection]);
+    void (async () => {
+      const extent = await getGridExtent();
+      if (!extent) return;
+      const minCol = Math.min(startCol, endCol);
+      const maxCol = Math.max(startCol, endCol);
+      await paintLogicalRange(normalizeRange(0, minCol, extent.lastRow, maxCol));
+    })();
+  }, [getGridExtent, paintLogicalRange]);
 
   const selectRow = useCallback((rowIndex: number) => {
-    const totalCols = spreadsheetMeta.metadata.columnCount;
-    updateSelection({ row: rowIndex, col: 0 }, normalizeRange(rowIndex, 0, rowIndex, totalCols - 1));
-
-    if (rowIndex < headerRowCount) {
-      revoGridRef.current?.setCellsFocus(
-        { x: 0, y: rowIndex },
-        { x: totalCols - 1, y: rowIndex },
-        undefined,
-        'rowPinStart'
-      );
-    } else {
-      const gridRowIndex = rowIndex - headerRowCount;
-      revoGridRef.current?.setCellsFocus(
-        { x: 0, y: gridRowIndex },
-        { x: totalCols - 1, y: gridRowIndex }
-      );
-    }
-  }, [spreadsheetMeta.metadata.columnCount, headerRowCount, updateSelection]);
+    void (async () => {
+      const extent = await getGridExtent();
+      if (!extent) return;
+      await paintLogicalRange(normalizeRange(rowIndex, 0, rowIndex, extent.lastCol));
+    })();
+  }, [getGridExtent, paintLogicalRange]);
 
   const selectRowRange = useCallback((startRow: number, endRow: number) => {
-    const totalCols = spreadsheetMeta.metadata.columnCount;
-    const minRow = Math.min(startRow, endRow);
-    const maxRow = Math.max(startRow, endRow);
-    updateSelection({ row: minRow, col: 0 }, normalizeRange(minRow, 0, maxRow, totalCols - 1));
-
-    if (maxRow < headerRowCount) {
-      revoGridRef.current?.setCellsFocus(
-        { x: 0, y: minRow },
-        { x: totalCols - 1, y: maxRow },
-        undefined,
-        'rowPinStart'
-      );
-    } else if (minRow >= headerRowCount) {
-      const gridMinRow = minRow - headerRowCount;
-      const gridMaxRow = maxRow - headerRowCount;
-      revoGridRef.current?.setCellsFocus(
-        { x: 0, y: gridMinRow },
-        { x: totalCols - 1, y: gridMaxRow }
-      );
-    }
-  }, [spreadsheetMeta.metadata.columnCount, headerRowCount, updateSelection]);
+    void (async () => {
+      const extent = await getGridExtent();
+      if (!extent) return;
+      const minRow = Math.min(startRow, endRow);
+      const maxRow = Math.max(startRow, endRow);
+      await paintLogicalRange(normalizeRange(minRow, 0, maxRow, extent.lastCol));
+    })();
+  }, [getGridExtent, paintLogicalRange]);
 
   // Header mouse handlers
   const handleHeaderMouseDown = useCallback((event: React.MouseEvent) => {
@@ -1417,45 +1428,43 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     const items: ContextMenuItem[] = [];
     const gridOps = gridOpsRef.current;
 
-    // TODO: Header row pinning is disabled because users can't select across the pinned/unpinned boundary
-    // which creates a confusing UX. Re-enable once RevoGrid supports cross-boundary selection.
-    // const isCurrentlyHeader = rowIndex < headerRowCount;
-    // const isTopRowOrAdjacentToHeader = rowIndex === 0 || rowIndex === headerRowCount;
+    // Header pinning is available again now that selection spans the pinned
+    // boundary (see selection/crossSectionSelection.ts).
+    const isCurrentlyHeader = rowIndex < headerRowCount;
+    const isTopRowOrAdjacentToHeader = rowIndex === 0 || rowIndex === headerRowCount;
 
-    // // Helper to update both grid data and metadata
-    // const setHeaderCount = async (count: number) => {
-    //   await gridOps?.updateHeaderRowCount(count);
-    //   spreadsheetMeta.setHeaderRowCount(count);
-    // };
+    // Helper to update both grid data and metadata
+    const setHeaderCount = async (count: number) => {
+      await gridOps?.updateHeaderRowCount(count);
+      spreadsheetMeta.setHeaderRowCount(count);
+    };
 
-    // if (isCurrentlyHeader) {
-    //   if (rowIndex === headerRowCount - 1) {
-    //     items.push({
-    //       label: 'Remove Header Row',
-    //       action: () => setHeaderCount(headerRowCount - 1),
-    //     });
-    //   }
-    //   if (headerRowCount > 1) {
-    //     items.push({
-    //       label: 'Remove All Header Rows',
-    //       action: () => setHeaderCount(0),
-    //     });
-    //   }
-    // } else {
-    //   if (isTopRowOrAdjacentToHeader) {
-    //     items.push({
-    //       label: 'Set as Header Row',
-    //       action: () => setHeaderCount(rowIndex + 1),
-    //     });
-    //   } else {
-    //     items.push({
-    //       label: `Set Rows 1-${rowIndex + 1} as Headers`,
-    //       action: () => setHeaderCount(rowIndex + 1),
-    //     });
-    //   }
-    // }
+    if (isCurrentlyHeader) {
+      if (rowIndex === headerRowCount - 1) {
+        items.push({
+          label: 'Remove Header Row',
+          action: () => setHeaderCount(headerRowCount - 1),
+        });
+      }
+      if (headerRowCount > 1) {
+        items.push({
+          label: 'Remove All Header Rows',
+          action: () => setHeaderCount(0),
+        });
+      }
+    } else if (isTopRowOrAdjacentToHeader) {
+      items.push({
+        label: 'Set as Header Row',
+        action: () => setHeaderCount(rowIndex + 1),
+      });
+    } else {
+      items.push({
+        label: `Set Rows 1-${rowIndex + 1} as Headers`,
+        action: () => setHeaderCount(rowIndex + 1),
+      });
+    }
 
-    // items.push({ label: '', action: () => {}, separator: true });
+    items.push({ label: '', action: () => {}, separator: true });
 
     items.push({
       label: 'Insert Row Above',
@@ -1519,36 +1528,37 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       { label: '', action: () => {}, separator: true },
     ];
 
-    // TODO: Column freeze is disabled because users can't select across the frozen/unfrozen boundary
-    // which creates a confusing UX. Re-enable once RevoGrid supports cross-boundary selection.
-    // if (isCurrentlyFrozen) {
-    //   if (colIndex === currentFrozenCount - 1) {
-    //     items.push({
-    //       label: 'Unfreeze Column',
-    //       action: () => spreadsheetMeta.setFrozenColumnCount(currentFrozenCount - 1),
-    //     });
-    //   }
-    //   if (currentFrozenCount > 1) {
-    //     items.push({
-    //       label: 'Unfreeze All Columns',
-    //       action: () => spreadsheetMeta.setFrozenColumnCount(0),
-    //     });
-    //   }
-    // } else {
-    //   if (isAtFrozenBoundary) {
-    //     items.push({
-    //       label: 'Freeze Column',
-    //       action: () => spreadsheetMeta.setFrozenColumnCount(colIndex + 1),
-    //     });
-    //   } else {
-    //     items.push({
-    //       label: `Freeze Columns A-${colLetter}`,
-    //       action: () => spreadsheetMeta.setFrozenColumnCount(colIndex + 1),
-    //     });
-    //   }
-    // }
+    // Freeze is available again now that selection spans the frozen boundary
+    // (see selection/crossSectionSelection.ts).
+    const isCurrentlyFrozen = colIndex < currentFrozenCount;
+    const isAtFrozenBoundary = colIndex === currentFrozenCount;
 
-    // items.push({ label: '', action: () => {}, separator: true });
+    if (isCurrentlyFrozen) {
+      if (colIndex === currentFrozenCount - 1) {
+        items.push({
+          label: 'Unfreeze Column',
+          action: () => spreadsheetMeta.setFrozenColumnCount(currentFrozenCount - 1),
+        });
+      }
+      if (currentFrozenCount > 1) {
+        items.push({
+          label: 'Unfreeze All Columns',
+          action: () => spreadsheetMeta.setFrozenColumnCount(0),
+        });
+      }
+    } else if (isAtFrozenBoundary) {
+      items.push({
+        label: 'Freeze Column',
+        action: () => spreadsheetMeta.setFrozenColumnCount(colIndex + 1),
+      });
+    } else {
+      items.push({
+        label: `Freeze Columns A-${colLetter}`,
+        action: () => spreadsheetMeta.setFrozenColumnCount(colIndex + 1),
+      });
+    }
+
+    items.push({ label: '', action: () => {}, separator: true });
 
     items.push({
       label: 'Insert Column Left',

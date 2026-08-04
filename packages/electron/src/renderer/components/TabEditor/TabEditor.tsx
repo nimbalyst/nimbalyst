@@ -56,6 +56,9 @@ import type { DiffState } from '../../services/document-model/types';
 import { diffTrace } from '@nimbalyst/runtime/utils/debugFlags';
 import { SearchReplaceStateManager, isLexicalSearchEditor } from '@nimbalyst/runtime/plugins/SearchReplace';
 import { hasEditorFind, registerEditorFindHandler } from './editorFindCommand';
+import { useSuppressedDocumentHeaderProviderIds } from './DocumentHeaderSuppressionContext';
+import { createCollectionItem } from '../TrackerMode/createCollectionItem';
+import { loadTrackerTeamMembers } from '../TrackerMode/useTrackerTeamMembers';
 
 /** Normalize a file path for comparison: backslashes to forward slashes, strip trailing slashes. */
 function normalizePathForCompare(p: string): string {
@@ -190,7 +193,25 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   // Check if the custom editor supports source mode (from registry)
   const customEditorSupportsSourceMode = customEditorRegistration?.supportsSourceMode || false;
   const customEditorSupportsDiffMode = customEditorRegistration?.supportsDiffMode === true;
+  // A host may already present one registered header (Tracker Mode presents the
+  // tracker chips). Preserve every other provider rather than hiding the whole
+  // document-header region.
+  const excludedDocumentHeaderProviderIds = useSuppressedDocumentHeaderProviderIds();
   const customEditorShowsDocumentHeader = customEditorRegistration?.showDocumentHeader !== false;
+  const loadDocumentHeaderTeamMembers = useCallback(
+    () => workspaceId ? loadTrackerTeamMembers(workspaceId) : Promise.resolve([]),
+    [workspaceId],
+  );
+  const createDocumentHeaderCollection = useCallback(
+    (title: string, type: string) => workspaceId
+      ? createCollectionItem({ workspacePath: workspaceId, title, type })
+      : Promise.resolve(null),
+    [workspaceId],
+  );
+  const trackerFieldCapabilities = useMemo(() => ({
+    loadTeamMembers: loadDocumentHeaderTeamMembers,
+    onCreateCollection: workspaceId ? createDocumentHeaderCollection : undefined,
+  }), [createDocumentHeaderCollection, loadDocumentHeaderTeamMembers, workspaceId]);
 
   // Source mode state - unified for both markdown and custom editors
   // When true, shows Monaco with raw content; when false, shows rich editor (Lexical or custom)
@@ -2739,6 +2760,8 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                         getContent={getDocumentHeaderContent}
                         contentVersion={reloadVersion}
                         onContentChange={handleDocumentHeaderContentChange}
+                        excludedProviderIds={excludedDocumentHeaderProviderIds}
+                        trackerFieldCapabilities={trackerFieldCapabilities}
                       />
                     )}
                     {customEditorSupportsDiffMode && showCustomEditorDiffBar && (
@@ -2776,6 +2799,8 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                       getContent={getDocumentHeaderContent}
                       contentVersion={reloadVersion}
                       onContentChange={handleDocumentHeaderContentChange}
+                      excludedProviderIds={excludedDocumentHeaderProviderIds}
+                      trackerFieldCapabilities={trackerFieldCapabilities}
                     />
                   )}
                   {customEditorSupportsDiffMode && showCustomEditorDiffBar && (
@@ -2843,6 +2868,8 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                         contentVersion={reloadVersion}
                         onContentChange={handleDocumentHeaderContentChange}
                         editor={editorRef.current}
+                        excludedProviderIds={excludedDocumentHeaderProviderIds}
+                        trackerFieldCapabilities={trackerFieldCapabilities}
                       />
                     ),
                   }}
@@ -2919,6 +2946,8 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                   getContent={getDocumentHeaderContent}
                   contentVersion={reloadVersion}
                   onContentChange={handleDocumentHeaderContentChange}
+                  excludedProviderIds={excludedDocumentHeaderProviderIds}
+                  trackerFieldCapabilities={trackerFieldCapabilities}
                 />
               )}
               {!isMarkdown && showMonacoDiffBar && (

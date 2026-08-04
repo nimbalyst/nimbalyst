@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { usePostHog } from 'posthog-js/react';
 import { useAtom, useAtomValue } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { QRPairingModal } from './QRPairingModal';
 import {
   syncConfigAtom,
@@ -138,6 +138,13 @@ export function SyncPanel({ section }: { section: PersonalSyncSection }) {
 
   const enabledProjects = config.enabledProjects ?? [];
   const enabledProjectCount = enabledProjects.length;
+
+  // One stored account is the common case, and it has nothing to choose between.
+  // The row then drops every comparison affordance (avatar, sync-account
+  // highlight and badge, per-account grouping) and reads as a plain
+  // "Signed in as ..." line. Nothing is removed — the multi-account chrome comes
+  // back the moment a second account exists.
+  const isSingleAccount = allAccounts.length === 1;
 
   // Derive whether sync is effectively active (has projects selected)
   const isSyncActive = config.enabled && enabledProjectCount > 0;
@@ -466,7 +473,9 @@ export function SyncPanel({ section }: { section: PersonalSyncSection }) {
         <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">{heading[1]}</p>
       </div>
 
-      {section === 'mobile' && config.personalSyncProfiles && Object.keys(config.personalSyncProfiles).length > 0 && (
+      {/* Purely informational: which retained profile belongs to which login.
+          With a single account there is no "which", so the card is noise. */}
+      {section === 'mobile' && allAccounts.length > 1 && config.personalSyncProfiles && Object.keys(config.personalSyncProfiles).length > 0 && (
         <section className="personal-sync-profile-groups mb-4 rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3" data-testid="personal-sync-profile-groups">
           <h4 className="m-0 mb-2 text-sm font-semibold">Projects by personal account</h4>
           <div className="flex flex-col gap-2">
@@ -529,9 +538,11 @@ export function SyncPanel({ section }: { section: PersonalSyncSection }) {
       {/* Account Section */}
       <div className={`sync-account-section provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0 ${sectionClass('accounts')}`}>
         {allAccounts.length > 0 ? (
-          <div className="sync-account-list flex flex-col gap-2">
+          <div className="sync-account-list flex flex-col gap-2" data-single-account={isSingleAccount || undefined}>
             <div className="sync-account-list-header flex items-center justify-between">
-              <h4 className="m-0 text-[13px] font-semibold text-[var(--nim-text)]">Accounts and organizations</h4>
+              <h4 className="m-0 text-[13px] font-semibold text-[var(--nim-text)]">
+                {isSingleAccount ? 'Account and organizations' : 'Accounts and organizations'}
+              </h4>
               <button
                 type="button"
                 onClick={handleRefreshOrganizations}
@@ -544,39 +555,56 @@ export function SyncPanel({ section }: { section: PersonalSyncSection }) {
             </div>
             {allAccounts.map((account, accountIndex) => {
               const isSyncAccount = account.isSyncAccount || account.personalOrgId === config.personalOrgId;
+              // "This is the one sync uses" only says something when there is
+              // another account it could have been.
+              const showsSyncAccountEmphasis = isSyncAccount && !isSingleAccount;
+              const isExpired = account.sessionStatus === 'expired';
 
               return (
                 <article
                   key={account.personalOrgId}
                   className={`sync-account-row flex flex-col rounded-lg border p-2.5 ${
-                    isSyncAccount
+                    showsSyncAccountEmphasis
                       ? 'border-[var(--nim-primary)] bg-[color-mix(in_srgb,var(--nim-primary)_8%,transparent)]'
                       : 'border-[var(--nim-border)] bg-[var(--nim-bg-secondary)]'
                   }`}
                   data-testid="sync-account-row"
                 >
                   <div className="sync-account-identity flex items-center gap-3">
-                    <div className={`sync-account-avatar flex size-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
-                      isSyncAccount
-                        ? 'bg-[var(--nim-primary)] text-[var(--nim-on-primary)]'
-                        : 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]'
-                    }`}>
-                      {(account.email?.[0] || '?').toUpperCase()}
-                    </div>
+                    {!isSingleAccount && (
+                      <div className={`sync-account-avatar flex size-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
+                        isSyncAccount
+                          ? 'bg-[var(--nim-primary)] text-[var(--nim-on-primary)]'
+                          : 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]'
+                      }`}>
+                        {(account.email?.[0] || '?').toUpperCase()}
+                      </div>
+                    )}
                     <div className="sync-account-summary min-w-0 flex-1 select-text">
-                      <div className="truncate text-[13px] font-medium text-[var(--nim-text)]">{account.email}</div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--nim-text-muted)]">
-                        {isSyncAccount && (
-                          <span className="rounded-full bg-[var(--nim-primary)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--nim-on-primary)]">
-                            Used for sync
-                          </span>
-                        )}
-                        {account.sessionStatus === 'expired' && (
-                          <span className="rounded-full bg-[var(--nim-warning-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--nim-warning)]">
-                            Session expired
-                          </span>
+                      <div className="truncate text-[13px] text-[var(--nim-text)]">
+                        {isSingleAccount ? (
+                          <>
+                            <span className="text-[var(--nim-text-muted)]">Signed in as </span>
+                            <span className="font-medium">{account.email}</span>
+                          </>
+                        ) : (
+                          <span className="font-medium">{account.email}</span>
                         )}
                       </div>
+                      {(showsSyncAccountEmphasis || isExpired) && (
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--nim-text-muted)]">
+                          {showsSyncAccountEmphasis && (
+                            <span className="rounded-full bg-[var(--nim-primary)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--nim-on-primary)]">
+                              Used for sync
+                            </span>
+                          )}
+                          {isExpired && (
+                            <span className="rounded-full bg-[var(--nim-warning-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--nim-warning)]">
+                              Session expired
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="sync-account-actions flex shrink-0 items-center gap-1.5">
                       {account.sessionStatus === 'expired' && (
@@ -612,18 +640,35 @@ export function SyncPanel({ section }: { section: PersonalSyncSection }) {
                       </button>
                     </div>
                   </div>
-                  <AccountOrgList group={accountOrganizationGroups[accountIndex]} />
+                  {/* Indented under its login only when there is more than one
+                      login to attribute organizations to. */}
+                  <AccountOrgList group={accountOrganizationGroups[accountIndex]} indented={!isSingleAccount} />
                 </article>
               );
             })}
-            <button
-              type="button"
-              onClick={handleAddAccount}
-              className="sync-add-account-button flex items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--nim-border)] bg-transparent px-3 py-2 text-xs text-[var(--nim-text-muted)] transition-colors hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
-            >
-              <MaterialSymbol icon="person_add" size={16} />
-              Add account
-            </button>
+            {/* Settings is the only place an account can be added. With one
+                account that stays a quiet text action rather than a call to
+                action for a feature most people never need. */}
+            {isSingleAccount ? (
+              <button
+                type="button"
+                onClick={handleAddAccount}
+                className="sync-add-account-button self-start border-none bg-transparent p-0 text-[11px] text-[var(--nim-text-muted)] underline-offset-2 hover:text-[var(--nim-text)] hover:underline"
+                data-testid="sync-add-account"
+              >
+                Add another account
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleAddAccount}
+                className="sync-add-account-button flex items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--nim-border)] bg-transparent px-3 py-2 text-xs text-[var(--nim-text-muted)] transition-colors hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+                data-testid="sync-add-account"
+              >
+                <MaterialSymbol icon="person_add" size={16} />
+                Add account
+              </button>
+            )}
           </div>
         ) : isStytchAvailable ? (
           <AccountLoginForm mode="first-sign-in" />

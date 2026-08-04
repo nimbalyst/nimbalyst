@@ -3,6 +3,7 @@ import { join } from 'path';
 import { getPreloadPath } from '../utils/appPaths';
 import { getTheme } from '../utils/store';
 import { getBackgroundColor } from '../theme/ThemeManager';
+import { windowControlsOverlayOptions } from './windowChrome';
 
 let databaseBrowserWindow: BrowserWindow | null = null;
 
@@ -27,6 +28,7 @@ export function createDatabaseBrowserWindow() {
         show: false,
         titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
         trafficLightPosition: { x: 10, y: 10 },
+        ...windowControlsOverlayOptions(),
         vibrancy: 'sidebar',
         backgroundColor: getBackgroundColor()
     });

@@ -97,8 +97,8 @@ describe('TrackerGridView row context menu', () => {
     selectedRange.current = { y: 0, y1: 0 };
     rightClickRow(1);
 
-    await waitFor(() => expect(screen.getByTestId('tracker-row-context-menu')).toBeTruthy());
-    expect(screen.getByText('1 item selected')).toBeTruthy();
+    await waitFor(() => screen.getByTestId('tracker-row-context-menu'));
+    screen.getByText('1 item selected');
 
     fireEvent.click(screen.getByTestId('tracker-row-context-archive'));
     expect(onArchiveItems).toHaveBeenCalledWith(['bug-2'], true);
@@ -112,7 +112,7 @@ describe('TrackerGridView row context menu', () => {
     selectedRange.current = { y: 0, y1: 1 };
     rightClickRow(1);
 
-    await waitFor(() => expect(screen.getByText('2 items selected')).toBeTruthy());
+    await waitFor(() => screen.getByText('2 items selected'));
 
     fireEvent.click(screen.getByTestId('tracker-row-context-delete'));
     expect(onDeleteItems).toHaveBeenCalledWith(['bug-1', 'bug-2']);
@@ -125,12 +125,12 @@ describe('TrackerGridView row context menu', () => {
 
     selectedRange.current = { y: 0, y1: 1 };
     rightClickRow(0);
-    await waitFor(() => expect(screen.getByText('2 items selected')).toBeTruthy());
+    await waitFor(() => screen.getByText('2 items selected'));
     expect(screen.queryByTestId('tracker-row-context-copy-link')).toBeNull();
 
     selectedRange.current = null;
     rightClickRow(0);
-    await waitFor(() => expect(screen.getByText('1 item selected')).toBeTruthy());
+    await waitFor(() => screen.getByText('1 item selected'));
     fireEvent.click(screen.getByTestId('tracker-row-context-copy-link'));
     expect(onCopyDeepLink).toHaveBeenCalledWith('bug-1');
   });
@@ -182,7 +182,7 @@ describe('TrackerGridView favorites', () => {
     expect(onToggleFavorite).toHaveBeenCalledWith('bug-1');
   });
 
-  it('omits the star when the surface does not support favorites', async () => {
+  it('omits the star but keeps the title action when favorites are unsupported', async () => {
     renderGrid({});
 
     await waitFor(() => expect(gridElement.columns).toBeTruthy());
@@ -197,6 +197,8 @@ describe('TrackerGridView favorites', () => {
       model: { __trackerItemId: 'bug-1', title: 'Title bug-1' },
     });
 
-    expect(cell.props.class).toBe('tracker-grid-cell-text');
+    expect(cell.props.class).toBe('tracker-grid-cell-title');
+    expect(cell.children[0].props.class).toBe('tracker-grid-cell-text');
+    expect(cell.children[1].props.class).toContain('tracker-grid-cell-menu-title');
   });
 });

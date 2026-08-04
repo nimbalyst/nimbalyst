@@ -11,7 +11,7 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { store } from '@nimbalyst/runtime/store';
 import { TerminalPanel } from '../Terminal/TerminalPanel';
 import { TerminalTab } from './TerminalTab';

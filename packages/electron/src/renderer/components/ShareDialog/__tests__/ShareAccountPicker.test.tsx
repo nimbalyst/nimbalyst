@@ -23,7 +23,7 @@ describe('ShareAccountPicker', () => {
     );
 
     expect((screen.getByRole('radio', { name: /work@example.com/ }) as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByText(/bound to this workspace/i)).toBeTruthy();
+    screen.getByText(/bound to this workspace/i);
     fireEvent.click(screen.getByRole('radio', { name: /me@example.com/ }));
     expect(onChange).toHaveBeenCalledWith('personal');
   });

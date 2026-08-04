@@ -1,5 +1,5 @@
 import React from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { store } from '@nimbalyst/runtime/store';
 import { FEATURE_USAGE_KEYS } from '../../../shared/featureUsage';
 import { openSettingsCommandAtom } from '../../store/atoms/settingsNavigation';

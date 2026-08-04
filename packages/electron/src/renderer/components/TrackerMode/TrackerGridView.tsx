@@ -60,7 +60,13 @@ import {
   type TrackerFieldFilter,
   type TrackerFilterSet,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
-import { buildGridColumns, buildGridSource, ROW_ITEM_ID } from './grid/trackerGridColumns';
+import {
+  buildGridActionsColumn,
+  buildGridColumns,
+  buildGridSource,
+  ROW_ACTIONS,
+  ROW_ITEM_ID,
+} from './grid/trackerGridColumns';
 import type { RelationshipCandidate } from './grid/trackerGridEditors';
 import {
   TrackerFilterValueMenu,
@@ -103,6 +109,8 @@ interface TrackerGridViewProps {
   onNewItem?: (type: TrackerItemType) => void;
   /** Copy a shareable deep link (team workspaces only). */
   onCopyDeepLink?: (itemId: string) => void;
+  /** Open a row's item as a document -- double-click and the row context menu. */
+  onOpenDocument?: (itemId: string) => void;
   favoriteItemIds?: ReadonlySet<string>;
   onToggleFavorite?: (itemId: string) => void;
 }
@@ -136,6 +144,7 @@ export function TrackerGridView({
   preserveItemOrder = false,
   onNewItem,
   onCopyDeepLink,
+  onOpenDocument,
   favoriteItemIds,
   onToggleFavorite,
 }: TrackerGridViewProps): JSX.Element {
@@ -284,18 +293,22 @@ export function TrackerGridView({
     [favoriteItemIds, onToggleFavorite],
   );
   const gridColumns = useMemo(
-    () => buildGridColumns(visibleColumnDefs, {
-      trackerType: schemaType,
-      columnWidths: effectiveColumnConfig.columnWidths,
-      isRowEditable,
-      editorContext: { relationshipCandidates },
-      filteredColumnIds,
-      onOpenFilter: onColumnFiltersChange
-        ? (columnId, rect) => setFilterTarget({ columnId, rect })
-        : undefined,
-      sortingEnabled,
-      favorites,
-    }),
+    () => [
+      ...buildGridColumns(visibleColumnDefs, {
+        trackerType: schemaType,
+        columnWidths: effectiveColumnConfig.columnWidths,
+        isRowEditable,
+        editorContext: { relationshipCandidates },
+        filteredColumnIds,
+        onOpenFilter: onColumnFiltersChange
+          ? (columnId, rect) => setFilterTarget({ columnId, rect })
+          : undefined,
+        sortingEnabled,
+        favorites,
+        rowActions: true,
+      }),
+      buildGridActionsColumn(),
+    ],
     [
       visibleColumnDefs, schemaType, effectiveColumnConfig.columnWidths,
       isRowEditable, relationshipCandidates, filteredColumnIds, onColumnFiltersChange,
@@ -399,33 +412,49 @@ export function TrackerGridView({
     onColumnConfigChange({ ...effectiveColumnConfig, columnWidths });
   }, [effectiveColumnConfig, onColumnConfigChange]);
 
+  /**
+   * Resolve the schema field a column maps to for one item, or `null` when the
+   * cell cannot be edited (derived column, readonly field, or locked row). The
+   * role lookup happens per item because a mixed-type view maps the same column
+   * to differently named fields on each row.
+   */
+  const resolveEditableField = useCallback((
+    item: TrackerRecord,
+    prop: string,
+  ): { fieldName: string; field: NonNullable<ReturnType<typeof getFieldForColumn>> } | null => {
+    if (!isItemEditable(item)) return null;
+    const column = visibleColumnDefs.find(c => c.id === prop);
+    if (!column?.editable) return null;
+    const fieldName = column.role
+      ? resolveRoleFieldName(item.primaryType, column.role)
+      : prop;
+    const field = getFieldForColumn(item.primaryType, fieldName);
+    if (!field || field.readOnly) return null;
+    return { fieldName, field };
+  }, [isItemEditable, visibleColumnDefs]);
+
   /** Commit one or more cells from the same row as one durable item update. */
   const commitRow = useCallback(async (
     rowIndex: number,
     changes: Record<string, unknown>,
   ): Promise<void> => {
     const item = await resolveGridRowItem(rowIndex);
-    if (!item || !isItemEditable(item)) return;
+    if (!item) return;
 
     const updates: Record<string, unknown> = {};
     for (const [prop, rawValue] of Object.entries(changes)) {
-      const column = visibleColumnDefs.find(c => c.id === prop);
-      if (!column?.editable) continue;
-      const fieldName = column.role
-        ? resolveRoleFieldName(item.primaryType, column.role)
-        : prop;
-      const field = getFieldForColumn(item.primaryType, fieldName);
-      if (!field || field.readOnly) continue;
-      const value = coerceCellValue(field, rawValue);
-      const current = item.fields[fieldName];
+      const editable = resolveEditableField(item, prop);
+      if (!editable) continue;
+      const value = coerceCellValue(editable.field, rawValue);
+      const current = item.fields[editable.fieldName];
       if (JSON.stringify(current ?? null) !== JSON.stringify(value ?? null)) {
-        updates[fieldName] = value;
+        updates[editable.fieldName] = value;
       }
     }
     if (Object.keys(updates).length > 0) {
       await handleItemUpdate(item, updates);
     }
-  }, [handleItemUpdate, isItemEditable, resolveGridRowItem, visibleColumnDefs]);
+  }, [handleItemUpdate, resolveEditableField, resolveGridRowItem]);
 
   const handleAfterEdit = useCallback((event: RevoGridCustomEvent<AfterEditEvent>) => {
     const detail = event.detail;
@@ -444,6 +473,40 @@ export function TrackerGridView({
     const single = detail as BeforeSaveDataDetails;
     void commitRow(single.rowIndex, { [String(single.prop)]: single.val });
   }, [commitRow]);
+
+  /**
+   * Double-click edits an editable cell and opens the row's item as a document
+   * otherwise. RevoGrid's own double-click handler already opened the inline
+   * editor by the time this runs, so opening the document over an editable cell
+   * would immediately throw the edit away. RevoGrid renders its own cells, so
+   * the row comes from the same `data-rgrow` attribute the context menu
+   * resolves against rather than a React row handler.
+   */
+  const handleGridDoubleClick = useCallback(async (
+    event: ReactMouseEvent<HTMLDivElement>,
+  ): Promise<void> => {
+    if (!onOpenDocument) return;
+    const cell = (event.target as HTMLElement | null)?.closest?.('[data-rgrow]');
+    const rowAttr = cell?.getAttribute('data-rgrow');
+    if (rowAttr == null) return;
+    const rowIndex = Number(rowAttr);
+    if (!Number.isFinite(rowIndex)) return;
+    const item = await resolveGridRowItem(rowIndex);
+    if (!item) return;
+
+    // The pointer down that started this double-click already focused the cell,
+    // so the focused column is the one under the cursor.
+    const focused = await gridRef.current?.getFocused?.();
+    const prop = focused?.column?.prop;
+    if (
+      focused?.cell?.y === rowIndex
+      && prop != null
+      && resolveEditableField(item, String(prop))
+    ) {
+      return;
+    }
+    onOpenDocument(item.id);
+  }, [onOpenDocument, resolveEditableField, resolveGridRowItem]);
 
   const openFocusedItem = useCallback(async (): Promise<void> => {
     const focused = await gridRef.current?.getFocused();
@@ -591,7 +654,7 @@ export function TrackerGridView({
           const items = store.get('items') as number[];
           const visibleColumns = items
             .map(index => source[index]?.prop)
-            .filter((prop): prop is string => typeof prop === 'string');
+            .filter((prop): prop is string => typeof prop === 'string' && prop !== ROW_ACTIONS);
           if (
             visibleColumns.length === effectiveColumnConfig.visibleColumns.length
             && visibleColumns.some((id, index) => id !== effectiveColumnConfig.visibleColumns[index])
@@ -684,6 +747,7 @@ export function TrackerGridView({
         className="tracker-grid-canvas relative min-h-0 flex-1 outline-none"
         onKeyDownCapture={handleGridKeyDownCapture}
         onContextMenu={(event) => { void handleGridContextMenu(event); }}
+        onDoubleClick={(event) => { void handleGridDoubleClick(event); }}
         onPointerDownCapture={() => {
           focusOriginRef.current = null;
         }}
@@ -801,6 +865,7 @@ export function TrackerGridView({
         onSetPriority={handleBulkPriorityUpdate}
         onAddToCollection={handleAddSelectionToCollection}
         onCopyDeepLink={onCopyDeepLink}
+        onOpenDocument={onOpenDocument}
         onArchiveItems={onArchiveItems}
         onDeleteItems={onDeleteItems}
         closeContextMenu={closeContextMenu}

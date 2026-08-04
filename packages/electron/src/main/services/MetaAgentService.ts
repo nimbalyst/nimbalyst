@@ -9,7 +9,7 @@ import {
   type ClaudeCodeBackend,
 } from '@nimbalyst/runtime/ai/server';
 import { preflightOllamaClaudeCodeBackend } from './ai/OllamaClaudeCodePreflight';
-import type { AIProviderType } from '@nimbalyst/runtime/ai/server/types';
+import type { AIProviderType, PromptProvenance } from '@nimbalyst/runtime/ai/server/types';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel, ThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import {
@@ -43,6 +43,7 @@ import {
   type PriorityControlPrompt,
   type PriorityTargetState,
 } from './PriorityPromptDeliveryService';
+import { composeNotificationTitle } from '../../shared/notificationTitle';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -399,7 +400,11 @@ export class MetaAgentService {
     );
   }
 
-  private async persistSyntheticInputMessage(sessionId: string, prompt: string): Promise<void> {
+  private async persistSyntheticInputMessage(
+    sessionId: string,
+    prompt: string,
+    promptProvenance?: PromptProvenance,
+  ): Promise<void> {
     await AgentMessagesRepository.create({
       sessionId,
       source: 'nimbalyst-meta-agent',
@@ -407,6 +412,7 @@ export class MetaAgentService {
       content: prompt,
       createdAt: new Date(),
       searchable: true,
+      metadata: promptProvenance ? { promptProvenance } : undefined,
     });
   }
 
@@ -889,10 +895,15 @@ export class MetaAgentService {
     const shouldBypassExecution = this.shouldBypassChildAgentExecutionForTests();
 
     if (initialPrompt) {
+      const promptProvenance: PromptProvenance = {
+        actor: 'agent',
+        origin: 'session-orchestration',
+        originSessionId: metaSessionId,
+      };
       if (shouldBypassExecution) {
-        await this.persistSyntheticInputMessage(sessionId, initialPrompt);
+        await this.persistSyntheticInputMessage(sessionId, initialPrompt, promptProvenance);
       } else {
-        await this.aiService.queuePromptForSession(sessionId, initialPrompt);
+        await this.aiService.queuePromptForSession(sessionId, initialPrompt, undefined, { promptProvenance });
       }
     }
 
@@ -922,7 +933,7 @@ export class MetaAgentService {
     }
 
     if (initialPrompt && !shouldBypassExecution) {
-      await this.aiService.triggerQueuedPromptProcessingForSession(sessionId, worktreePath || workspaceId);
+      await this.aiService.triggerQueuedPromptProcessingForSession(sessionId, worktreePath || workspaceId, 'meta-agent');
     }
 
     return {
@@ -1296,9 +1307,8 @@ export class MetaAgentService {
       sessionId
     );
 
-    // Whitespace validation above is not payload normalization.
-    const normalizedPrompt = prompt;
-    const promptProvenance = {
+    const normalizedPrompt = prompt.trim();
+    const promptProvenance: PromptProvenance = {
       actor: 'agent',
       origin: 'session-orchestration',
       originSessionId: callerSessionId,
@@ -1331,7 +1341,8 @@ export class MetaAgentService {
     if (processingTriggered) {
       await this.aiService.triggerQueuedPromptProcessingForSession(
         sessionId,
-        session.worktreePath || session.workspacePath
+        session.worktreePath || session.workspacePath,
+        'meta-agent'
       );
     }
 
@@ -1370,11 +1381,14 @@ export class MetaAgentService {
     }
 
     const boundedBody = body.length > 1000 ? `${body.slice(0, 997)}...` : body;
+    const rawSourceLabel = session.title || session.provider || `Session ${targetSessionId.slice(0, 8)}`;
+    const sourceLabel = rawSourceLabel.trim().slice(0, 60) || `Session ${targetSessionId.slice(0, 8)}`;
     const result = await this.showNotificationWithResult({
-      title: title.length > 120 ? `${title.slice(0, 117)}...` : title,
+      title: composeNotificationTitle(sourceLabel, title),
       body: boundedBody,
       sessionId: targetSessionId,
       workspacePath: session.workspacePath,
+      sourceLabel,
       provider: 'agent',
       bypassFocusCheck: args.bypassFocusCheck === true,
       silent: args.silent === true,
@@ -1597,7 +1611,18 @@ export class MetaAgentService {
       }
 
       const notification = this.buildNotificationMessage(eventType, result);
-      await this.aiService.queuePromptForSession(session.createdBySessionId, notification);
+      await this.aiService.queuePromptForSession(
+        session.createdBySessionId,
+        notification,
+        undefined,
+        {
+          promptProvenance: {
+            actor: 'agent',
+            origin: 'child-session-update',
+            originSessionId: session.id,
+          },
+        },
+      );
 
       // Do not auto-re-drive the parent when THIS child settle was an error.
       // The [Child Session Update] notification above is still queued for
@@ -1606,7 +1631,7 @@ export class MetaAgentService {
       // child settles instantly into 'error' every cycle). Native children
       // settle 'session:completed', so this gate is a no-op for them.
       if (eventType !== 'session:error' && (metaStatus === 'idle' || metaStatus === 'interrupted' || metaStatus === 'error')) {
-        await this.aiService.triggerQueuedPromptProcessingForSession(metaSession.id, metaSession.workspacePath);
+        await this.aiService.triggerQueuedPromptProcessingForSession(metaSession.id, metaSession.workspacePath, 'meta-agent');
       }
     } catch (error) {
       console.error(`[MetaAgentService] handleChildSessionEvent failed for session ${sessionId} (${eventType}):`, error);

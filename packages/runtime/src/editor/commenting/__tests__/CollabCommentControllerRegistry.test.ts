@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { MarkNode } from '@lexical/mark';
 import { createHeadlessEditor } from '@lexical/headless';
 import {

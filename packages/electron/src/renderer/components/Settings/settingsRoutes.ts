@@ -97,6 +97,8 @@ export type SettingsDestination =
 export interface SettingsAvailabilityContext {
   developerMode: boolean;
   showDirectChatProviders: boolean;
+  /** Teams alpha gate — see `teamsConfiguredAtom`. Hides org/sharing routes. */
+  teamsConfigured: boolean;
 }
 
 export interface BuiltinSettingsRoute {
@@ -127,6 +129,7 @@ export type SettingsRoute = BuiltinSettingsRoute | ExtensionSettingsRoute;
 const developerOnly = ({ developerMode }: SettingsAvailabilityContext) => developerMode;
 const directChatProvidersVisible = ({ showDirectChatProviders }: SettingsAvailabilityContext) =>
   showDirectChatProviders;
+const teamsVisible = ({ teamsConfigured }: SettingsAvailabilityContext) => teamsConfigured;
 
 const builtinSettingsRouteDefinitions: readonly Omit<BuiltinSettingsRoute, 'source'>[] = [
   { id: 'notifications', scope: 'application', group: 'Application', label: 'Notifications', icon: 'notifications' },
@@ -155,7 +158,7 @@ const builtinSettingsRouteDefinitions: readonly Omit<BuiltinSettingsRoute, 'sour
   { id: 'account-devices', scope: 'account', group: 'Account', label: 'Devices', icon: 'devices' },
   { id: 'account-shared-links', scope: 'account', group: 'Account', label: 'Shared Links', icon: 'link' },
 
-  { id: 'project-sharing', scope: 'project', group: 'Project', label: 'Sharing', icon: 'group', isAlpha: true },
+  { id: 'project-sharing', scope: 'project', group: 'Project', label: 'Sharing', icon: 'group', isAlpha: true, isAvailable: teamsVisible },
   { id: 'project-agent-permissions', scope: 'project', group: 'Project', label: 'Agent Permissions', icon: 'shield' },
   { id: 'project-trackers', scope: 'project', group: 'Project', label: 'Trackers', icon: 'assignment' },
   { id: 'project-ai-providers', scope: 'project', group: 'Project', label: 'AI Providers', icon: 'smart_toy' },

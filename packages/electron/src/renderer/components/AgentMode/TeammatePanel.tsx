@@ -14,7 +14,7 @@
 
 import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
   teammatePanelCollapsedAtom, toggleTeammatePanelCollapsedAtom,
   agentPanelCollapsedAtom, toggleAgentPanelCollapsedAtom,

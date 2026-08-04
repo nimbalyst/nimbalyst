@@ -1,32 +1,15 @@
 /**
- * Register the runtime's tracker-reference node, markdown transformer, and
- * renderer-only chip implementation as a Lexical extension.
+ * Register the tracker-reference node and its markdown transformer through the
+ * shared reference-node registration, plus the renderer-only live chip.
  */
 
-import { defineExtension } from 'lexical';
-import {
-  setExtensionContributions,
-  setExtensionLexicalExtension,
-} from '@nimbalyst/runtime';
 import {
   setTrackerReferenceNodeRenderer,
   TrackerReferenceChip,
-  TrackerReferenceNode,
-  TrackerReferenceTransformer,
 } from '@nimbalyst/runtime/plugins/TrackerLinkPlugin';
-
-const SOURCE = 'tracker-link';
+import { registerTrackerReferenceContributions } from '@nimbalyst/runtime/plugins/referenceNodeContributions';
 
 export function registerTrackerLinkPlugin(): void {
   setTrackerReferenceNodeRenderer(TrackerReferenceChip);
-  setExtensionLexicalExtension(
-    SOURCE,
-    defineExtension({
-      name: '@nimbalyst/tracker-link',
-      nodes: [TrackerReferenceNode],
-    }),
-  );
-  setExtensionContributions(SOURCE, {
-    markdownTransformers: [TrackerReferenceTransformer],
-  });
+  registerTrackerReferenceContributions();
 }

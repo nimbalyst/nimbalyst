@@ -60,7 +60,7 @@ describe('ContextUsageDisplay - context meter opens on click, not hover (#429)',
     render(<ContextUsageDisplay {...props} />);
     const meter = screen.getByTestId('context-indicator');
     fireEvent.click(meter);
-    expect(screen.getByRole('tooltip')).toBeTruthy();
+    screen.getByRole('tooltip');
     fireEvent.click(meter);
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
@@ -68,7 +68,7 @@ describe('ContextUsageDisplay - context meter opens on click, not hover (#429)',
   it('closes the panel on an outside click', () => {
     render(<ContextUsageDisplay {...props} />);
     fireEvent.click(screen.getByTestId('context-indicator'));
-    expect(screen.getByRole('tooltip')).toBeTruthy();
+    screen.getByRole('tooltip');
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
@@ -76,7 +76,7 @@ describe('ContextUsageDisplay - context meter opens on click, not hover (#429)',
   it('closes the panel on Escape', () => {
     render(<ContextUsageDisplay {...props} />);
     fireEvent.click(screen.getByTestId('context-indicator'));
-    expect(screen.getByRole('tooltip')).toBeTruthy();
+    screen.getByRole('tooltip');
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
@@ -98,7 +98,7 @@ describe('ContextUsageDisplay - cumulative rows are labeled as session totals (#
     // the same quantity and contradict each other (#824: 76k vs 12,073).
     render(<ContextUsageDisplay {...props} />);
     fireEvent.click(screen.getByTestId('context-indicator'));
-    expect(screen.getByText('Session totals (cumulative)')).toBeTruthy();
+    screen.getByText('Session totals (cumulative)');
   });
 
   it('keeps cumulative totals explicitly labeled when context truth is unavailable', () => {

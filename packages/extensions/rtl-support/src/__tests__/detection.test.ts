@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Tests for direction detection and inline run detection.
  *

@@ -13,9 +13,12 @@ const runtimeTypeMocks = vi.hoisted(() => ({
   ),
 }));
 
-vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
-  ...await importOriginal<typeof import('@nimbalyst/runtime')>(),
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: () => null,
+}));
+
+vi.mock('@nimbalyst/runtime/ui/icons/ProviderIcons', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@nimbalyst/runtime/ui/icons/ProviderIcons')>(),
   getProviderIcon: () => null,
 }));
 
@@ -748,8 +751,8 @@ describe('AI model picker provider visibility', () => {
     fireEvent.click(screen.getByTestId('model-picker'));
 
     expect(await screen.findByRole('button', { name: 'Haiku' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'GPT-5' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Local Model' })).toBeTruthy();
+    screen.getByRole('button', { name: 'GPT-5' });
+    screen.getByRole('button', { name: 'Local Model' });
   });
 
   it('keeps the current direct provider reachable for a started session', async () => {

@@ -42,6 +42,14 @@ import { FilesEditedSidebar } from './FilesEditedSidebar';
 import { AgentReviewPanel } from './AgentReviewPanel';
 import { ChatSidebar } from '../ChatSidebar/ChatSidebar';
 import { LayoutControls } from '../UnifiedAI/LayoutControls';
+import { ActiveSessionMcpStatusChip } from '../AgenticCoding/McpSessionStatusChip';
+import { WorktreeIcon } from '../common/WorktreeIcon';
+import { toggleWorkstreamHeaderPin } from './workstreamHeaderPin';
+import {
+  worktreeRecordAtom,
+  setWorktreeRecordAtom,
+  patchWorktreeRecordAtom,
+} from '../../store/atoms/worktrees';
 import {
   workstreamSessionsAtom,
   workstreamTitleAtom,
@@ -57,6 +65,7 @@ import {
   updateSessionStoreAtom,
   setActiveSessionInWorkstreamAtom,
   refreshSessionListAtom,
+  publishSessionPinnedUpdateAtom,
   type WorkstreamType,
 } from '../../store';
 import {
@@ -276,7 +285,7 @@ const WorkstreamHeaderTagsRow: React.FC<{ workstreamId: string }> = ({ workstrea
   }, [tagInput, allTags, tags]);
 
   // Content key so the layout effect only re-runs when tag contents change.
-  const tagsKey = tags.join(' ');
+  const tagsKey = tags.join('\u0000');
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -369,7 +378,7 @@ const WorkstreamHeaderTagsRow: React.FC<{ workstreamId: string }> = ({ workstrea
   return (
     <div
       ref={containerRef}
-      className="workstream-header-tags self-stretch flex items-center gap-1 flex-nowrap overflow-hidden min-w-0 relative"
+      className="workstream-header-tags flex-1 self-stretch flex items-center gap-1 flex-nowrap overflow-hidden min-w-0 relative"
     >
       {/* Hidden measurement layer. Mirrors visible-pill sizes without taking layout space. */}
       <div
@@ -459,19 +468,32 @@ const WorkstreamHeaderTagsRow: React.FC<{ workstreamId: string }> = ({ workstrea
 };
 
 /**
+ * atomFamily key used when the workstream is not a worktree. The family needs a
+ * string, and this never resolves to a record.
+ */
+const NO_WORKTREE_KEY = '__no_worktree__';
+
+/**
  * Header showing workstream title, provider icon, processing state, and layout controls.
  * Subscribes to atoms directly for isolated re-renders.
  */
 const WorkstreamHeader: React.FC<{
   workstreamId: string;
   workspacePath: string;
+  /**
+   * The session currently in view — the workstream's active child, or the
+   * workstream itself when it is a solo session. Per-session chrome (today:
+   * the MCP status chip) keys off this rather than workstreamId, since a
+   * workstream's tabs can be on different providers.
+   */
+  activeSessionId?: string | null;
   worktreeId?: string | null;
   worktreePath?: string | null;
   onArchiveStatusChange?: () => void;
   onOpenTerminal?: () => void;
   onCreateNewTerminal?: () => void;
   onShowArchiveDialog?: () => void;
-}> = React.memo(({ workstreamId, workspacePath, worktreeId, worktreePath, onArchiveStatusChange, onOpenTerminal, onCreateNewTerminal, onShowArchiveDialog }) => {
+}> = React.memo(({ workstreamId, workspacePath, activeSessionId, worktreeId, worktreePath, onArchiveStatusChange, onOpenTerminal, onCreateNewTerminal, onShowArchiveDialog }) => {
   const title = useAtomValue(workstreamTitleAtom(workstreamId));
   const isProcessing = useAtomValue(workstreamProcessingAtom(workstreamId));
   const sessionData = useAtomValue(sessionStoreAtom(workstreamId));
@@ -479,8 +501,11 @@ const WorkstreamHeader: React.FC<{
   const hasTabs = useAtomValue(workstreamHasOpenResourcesAtom(workstreamId));
   const sessions = useAtomValue(workstreamSessionsAtom(workstreamId));
   const [isArchived, setIsArchived] = useAtom(sessionArchivedAtom(workstreamId));
+  const worktreeRecord = useAtomValue(worktreeRecordAtom(worktreeId ?? NO_WORKTREE_KEY));
   const setLayoutMode = useSetAtom(setWorkstreamLayoutModeAtom);
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
+  const patchWorktreeRecord = useSetAtom(patchWorktreeRecordAtom);
+  const publishSessionPinnedUpdate = useSetAtom(publishSessionPinnedUpdateAtom);
 
   // Inline editing state
   const [isEditing, setIsEditing] = useState(false);
@@ -583,12 +608,40 @@ const WorkstreamHeader: React.FC<{
     setLayoutMode({ workstreamId, mode });
   }, [workstreamId, setLayoutMode]);
 
-  // Determine session type label for archive button
+  // Determine session type label for archive and pin buttons
   const getSessionTypeLabel = useCallback(() => {
     if (worktreeId) return 'Worktree';
     if (hasChildren) return 'Workstream';
     return 'Session';
   }, [worktreeId, hasChildren]);
+
+  // The header title stays the session title, so the chip shows the worktree's
+  // own name (its directory/branch slug) — the one piece of worktree identity
+  // that appears nowhere else in Agent mode. Falls back to the cached path so
+  // the chip is populated before `worktree:get` resolves.
+  const worktreeChipName = worktreeId
+    ? (worktreeRecord?.name || (worktreePath ? getWorktreeNameFromPath(worktreePath, '') : ''))
+    : '';
+
+  // Pin state lives on the worktree record for worktrees and on the session
+  // record otherwise — the same split the sidebar context menus use.
+  const isPinned = worktreeId ? (worktreeRecord?.isPinned ?? false) : (sessionData?.isPinned ?? false);
+
+  const handlePinToggle = useCallback(async () => {
+    try {
+      await toggleWorkstreamHeaderPin({
+        workstreamId,
+        worktreeId,
+        isPinned: !isPinned,
+        invoke: window.electronAPI.invoke,
+        patchWorktreeRecord,
+        updateSessionStore,
+        publishSessionPinnedUpdate,
+      });
+    } catch (error) {
+      console.error('[WorkstreamHeader] Failed to toggle pin:', error);
+    }
+  }, [isPinned, worktreeId, workstreamId, patchWorktreeRecord, updateSessionStore, publishSessionPinnedUpdate]);
 
   const handleArchive = useCallback(async () => {
     // For worktrees, show confirmation dialog first
@@ -623,8 +676,10 @@ const WorkstreamHeader: React.FC<{
   return (
     <div className="workstream-header shrink-0 h-14 px-4 border-b border-[var(--nim-border)] bg-[var(--nim-bg)]">
       <div className="workstream-header-main flex items-center gap-3 h-full">
-        <div className="workstream-header-icon shrink-0 text-[var(--nim-text-muted)]">
-          {hasChildren ? (
+        <div className="workstream-header-icon shrink-0 text-[var(--nim-text-muted)]" title={getSessionTypeLabel()}>
+          {worktreeId ? (
+            <WorktreeIcon size={20} />
+          ) : hasChildren ? (
             <MaterialSymbol icon="account_tree" size={20} />
           ) : (
             <ProviderIcon provider={sessionData?.provider || 'claude-code'} size={20} />
@@ -651,7 +706,18 @@ const WorkstreamHeader: React.FC<{
               {title}
             </h2>
           )}
-          <WorkstreamHeaderTagsRow workstreamId={workstreamId} />
+          <div className="workstream-header-meta-row flex items-center gap-1.5 w-full min-w-0">
+            {worktreeChipName && (
+              <span
+                className="workstream-header-worktree-chip shrink-0 flex items-center gap-1 max-w-[14rem] px-1.5 py-px rounded text-[0.625rem] font-medium text-[var(--nim-text-muted)] bg-[var(--nim-bg-secondary)] whitespace-nowrap overflow-hidden text-ellipsis"
+                title={worktreePath ? `Worktree: ${worktreeChipName}\n${worktreePath}` : `Worktree: ${worktreeChipName}`}
+              >
+                <WorktreeIcon size={10} />
+                {worktreeChipName}
+              </span>
+            )}
+            <WorkstreamHeaderTagsRow workstreamId={workstreamId} />
+          </div>
         </div>
 
         {isProcessing && (
@@ -659,6 +725,11 @@ const WorkstreamHeader: React.FC<{
             <span className="workstream-header-spinner w-4 h-4 border-2 border-[var(--nim-border)] border-t-[var(--nim-primary)] rounded-full animate-spin" />
           </div>
         )}
+
+        {/* MCP servers for the session currently in view. Hides itself for
+            providers with no MCP status channel and for sessions that have not
+            run a turn yet, so a healthy or irrelevant session shows nothing. */}
+        {activeSessionId && <ActiveSessionMcpStatusChip sessionId={activeSessionId} />}
 
         {/* Terminal button - only show for worktree sessions, positioned before layout controls */}
         {worktreeId && onOpenTerminal && (
@@ -700,6 +771,18 @@ const WorkstreamHeader: React.FC<{
           hasTabs={hasTabs}
           onModeChange={handleLayoutChange}
         />
+
+        {/* Pin/Unpin toggle - routes to the worktree or the session per type */}
+        <button
+          className={`workstream-pin-button w-8 h-8 flex items-center justify-center rounded cursor-pointer border-none bg-transparent hover:bg-[var(--nim-bg-hover)] ${
+            isPinned ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-faint)] hover:text-[var(--nim-text-muted)]'
+          }`}
+          onClick={handlePinToggle}
+          aria-pressed={isPinned}
+          title={`${isPinned ? 'Unpin' : 'Pin'} ${getSessionTypeLabel().toLowerCase()}`}
+        >
+          <MaterialSymbol icon="push_pin" size={18} fill={isPinned} />
+        </button>
 
         {/* Archive/Unarchive button */}
         <button
@@ -757,6 +840,8 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
   const setWorkstreamState = useSetAtom(workstreamStateAtom(workstreamId));
   const sessionParentId = useAtomValue(sessionParentIdDerivedAtom(workstreamId));
   const sessionWorktreeId = useAtomValue(sessionWorktreeIdAtom(workstreamId));
+  const worktreeRecord = useAtomValue(worktreeRecordAtom(sessionWorktreeId ?? NO_WORKTREE_KEY));
+  const setWorktreeRecord = useSetAtom(setWorktreeRecordAtom);
 
   useEffect(() => {
     if (persistedActiveSessionId !== activeSessionId) {
@@ -989,7 +1074,10 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
     }
   }, [workstreamId, workspacePath, sessionDataLoaded, sessionParentId, workstreamStatesLoaded, loadSessionChildren]);
 
-  // Resolve worktree path if this is a worktree session and not yet cached in atom
+  // Resolve the worktree if this is a worktree session and not yet cached.
+  // `worktreePath` is persisted with the workstream, but the record (name, pin
+  // state) is renderer-only, so a fresh launch needs the fetch even when the
+  // path is already known.
   useEffect(() => {
     if (!sessionWorktreeId) {
       if (worktreePath) {
@@ -998,23 +1086,31 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
       return;
     }
 
-    // Skip IPC if already cached in workstream state
-    if (worktreePath) return;
+    if (worktreePath && worktreeRecord) return;
 
-    // Query worktree path via IPC and cache in workstream state atom
     (async () => {
       try {
         const result = await window.electronAPI.invoke('worktree:get', sessionWorktreeId);
         if (result?.success && result.worktree) {
-          setWorkstreamState({ worktreePath: result.worktree.path });
+          const worktree = result.worktree;
+          if (!worktreePath) {
+            setWorkstreamState({ worktreePath: worktree.path });
+          }
+          setWorktreeRecord({
+            id: sessionWorktreeId,
+            name: worktree.name,
+            displayName: worktree.displayName ?? null,
+            path: worktree.path,
+            isPinned: worktree.isPinned ?? false,
+          });
         } else {
-          console.error('[AgentWorkstreamPanel] Failed to resolve worktree path:', result?.error);
+          console.error('[AgentWorkstreamPanel] Failed to resolve worktree:', result?.error);
         }
       } catch (error) {
-        console.error('[AgentWorkstreamPanel] Error resolving worktree path:', error);
+        console.error('[AgentWorkstreamPanel] Error resolving worktree:', error);
       }
     })();
-  }, [sessionWorktreeId, worktreePath, setWorkstreamState]);
+  }, [sessionWorktreeId, worktreePath, worktreeRecord, setWorkstreamState, setWorktreeRecord]);
 
   // Local state for drag states
   const [isDraggingVertical, setIsDraggingVertical] = useState(false);
@@ -1468,6 +1564,7 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
         <WorkstreamHeader
           workstreamId={workstreamId}
           workspacePath={workspacePath}
+          activeSessionId={chatTargetId}
           worktreeId={sessionWorktreeId}
           worktreePath={worktreePath}
           onOpenTerminal={sessionWorktreeId ? handleOpenTerminal : undefined}

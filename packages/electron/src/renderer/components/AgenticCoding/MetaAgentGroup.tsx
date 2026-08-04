@@ -10,7 +10,8 @@
 
 import React, { memo, useCallback, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { ProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import {
   groupSessionStatusAtom,
   sessionProcessingAtom,

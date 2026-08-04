@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import type { DocumentSyncStatus } from '../documentSyncTypes';
@@ -8,6 +9,7 @@ function createSyncProviderStub(status: DocumentSyncStatus = 'disconnected', sha
   return {
     onAwarenessChange: vi.fn(() => () => {}),
     setLocalAwareness: vi.fn(),
+    sendAwarenessDeparture: vi.fn(() => true),
     connect: vi.fn(async () => {}),
     getYDoc: vi.fn(() => doc),
     getStatus: vi.fn(() => status),
@@ -55,6 +57,43 @@ describe('CollabLexicalProvider', () => {
 
     expect(onSync).toHaveBeenCalledOnce();
     expect(onSync).toHaveBeenCalledWith(true);
+  });
+
+  it('keeps an idle desktop peer fresh and stops heartbeats on departure', async () => {
+    vi.useFakeTimers();
+    try {
+      const syncProvider = createSyncProviderStub();
+      const provider = new CollabLexicalProvider(syncProvider as any);
+      provider.awareness.setLocalState({
+        name: 'Desktop Member',
+        color: '#E05555',
+        anchorPos: null,
+        focusPos: null,
+        focusing: false,
+        awarenessData: {},
+      });
+      syncProvider.setLocalAwareness.mockClear();
+
+      provider.handleStatusChange('connected');
+      expect(syncProvider.setLocalAwareness).toHaveBeenCalledOnce();
+      expect(syncProvider.setLocalAwareness).toHaveBeenLastCalledWith({
+        cursor: undefined,
+        user: { name: 'Desktop Member', color: '#E05555' },
+      });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(syncProvider.setLocalAwareness).toHaveBeenCalledTimes(2);
+
+      provider.destroy();
+      expect(syncProvider.sendAwarenessDeparture).toHaveBeenCalledWith({
+        name: 'Desktop Member',
+        color: '#E05555',
+      });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(syncProvider.setLocalAwareness).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Lexical's CollaborationPlugin only paints content it OBSERVES as Y.Doc

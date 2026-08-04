@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createSyncedSessionStore } from '../SyncedSessionStore';
 import type { SessionStore } from '../../ai/adapters/sessionStore';

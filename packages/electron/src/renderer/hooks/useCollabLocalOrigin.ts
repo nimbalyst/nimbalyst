@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { errorNotificationService } from '../services/ErrorNotificationService';
-import { getTeamSyncProvider } from '../store/atoms/collabDocuments';
+import { getTeamSyncProviderForScopeKey } from '../store/atoms/collabDocuments';
 
 export type CollabLocalOriginBinding = NonNullable<
   Awaited<ReturnType<typeof window.electronAPI.documentSync.getLocalOrigin>>['binding']
@@ -45,7 +45,7 @@ function formatRelativeTime(ms: number): string {
 function resolveEditorLabel(workspacePath: string, userId: string | null | undefined): string | null {
   if (!userId) return null;
   try {
-    const members = getTeamSyncProvider(workspacePath)?.getTeamState()?.members ?? [];
+    const members = getTeamSyncProviderForScopeKey(workspacePath)?.getTeamState()?.members ?? [];
     return members.find((m) => m.userId === userId)?.email || null;
   } catch {
     return null;

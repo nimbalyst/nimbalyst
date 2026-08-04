@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { TrackerRecord } from '../../../../core/TrackerRecord';
 import { loadBuiltinTrackers } from '../ModelLoader';
@@ -12,9 +13,13 @@ import {
   computeCollectionRollup,
   computeCollectionRollups,
   isTerminalStatus,
+  isCollectionRelationshipField,
+  collectionTypesForField,
+  collectionTypeDisplay,
   COLLECTION_MEMBER_KEY,
   COLLECTION_INVERSE_KEY,
 } from '../trackerCollections';
+import type { FieldDefinition } from '../TrackerDataModel';
 
 beforeAll(() => {
   loadBuiltinTrackers();
@@ -180,5 +185,55 @@ describe('rollups', () => {
     const rollup = computeCollectionRollup(milestone, countingIndex, getRecordStatus);
     expect(lookups).toBe(500);
     expect(rollup.percentComplete).toBe(50);
+  });
+});
+
+describe('collection field detection (Collection chip binding)', () => {
+  const inCollection: FieldDefinition = {
+    name: 'collection',
+    type: 'relationship',
+    relationshipTypeKey: COLLECTION_INVERSE_KEY,
+    targetTrackerTypes: ['milestone', 'release'],
+    multiValue: true,
+  };
+
+  it('recognizes the in-collection vocabulary key', () => {
+    expect(isCollectionRelationshipField(inCollection)).toBe(true);
+  });
+
+  it('recognizes a field that only targets collection types', () => {
+    const custom: FieldDefinition = {
+      name: 'sprint',
+      type: 'relationship',
+      targetTrackerTypes: ['milestone'],
+    };
+    expect(isCollectionRelationshipField(custom)).toBe(true);
+  });
+
+  it('leaves other relationship fields alone', () => {
+    const blockedBy: FieldDefinition = {
+      name: 'blockedBy',
+      type: 'relationship',
+      relationshipTypeKey: 'depends-on',
+      targetTrackerTypes: ['bug'],
+    };
+    expect(isCollectionRelationshipField(blockedBy)).toBe(false);
+    // A wide-open target list is not evidence of a collection field.
+    expect(isCollectionRelationshipField({ name: 'related', type: 'relationship' })).toBe(false);
+    expect(isCollectionRelationshipField({ name: 'title', type: 'string' })).toBe(false);
+  });
+
+  it('offers exactly the field-declared collection types for inline create', () => {
+    expect(collectionTypesForField(inCollection)).toEqual(['milestone', 'release']);
+    expect(collectionTypesForField({ name: 'sprint', type: 'relationship', targetTrackerTypes: ['milestone'] }))
+      .toEqual(['milestone']);
+    // A field that targets anything falls back to the built-in collection types.
+    expect(collectionTypesForField({ name: 'related', type: 'relationship' }))
+      .toEqual(['milestone', 'release']);
+  });
+
+  it('labels the create toggle from the schema', () => {
+    expect(collectionTypeDisplay('milestone').label).toBe('Milestone');
+    expect(collectionTypeDisplay('release').label).toBe('Release');
   });
 });

@@ -15,6 +15,7 @@ import {
   CollabCommentControllerError,
 } from '@nimbalyst/runtime/editor';
 import { store } from '@nimbalyst/runtime/store';
+import type { CollabScope } from '@nimbalyst/collab-client/core';
 import { DocumentModelRegistry } from '../services/document-model/DocumentModelRegistry';
 import { aiApi } from '../services/aiApi';
 import { getFileName } from '../utils/pathUtils';
@@ -30,6 +31,7 @@ import {
   collectFolderSubtree,
   sharedFoldersAtom,
   allSharedDocumentsAtom,
+  activeCollabScopeAtom,
 } from '../store/atoms/collabDocuments';
 import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
 import { createCollaborativeDocument } from '../services/collaborativeDocumentCreationOrchestrator';
@@ -60,7 +62,10 @@ import {
  * (the same path a person uses). Empty/blank path resolves to the root (null).
  * Used by the shared-index MCP tool listeners below.
  */
-async function resolveSharedFolderPath(folderPath: string | undefined): Promise<string | null> {
+async function resolveSharedFolderPath(
+  scope: CollabScope,
+  folderPath: string | undefined,
+): Promise<string | null> {
   const trimmed = (folderPath ?? '').trim();
   if (!trimmed) return null;
   const segments = trimmed.split('/').map((s) => s.trim()).filter(Boolean);
@@ -73,10 +78,16 @@ async function resolveSharedFolderPath(folderPath: string | undefined): Promise<
     if (existing) {
       parentId = existing.folderId;
     } else {
-      parentId = await createSharedFolder(segment, parentId);
+      parentId = await createSharedFolder(scope, segment, parentId);
     }
   }
   return parentId;
+}
+
+function requireActiveCollabScope(): CollabScope {
+  const scope = store.get(activeCollabScopeAtom);
+  if (!scope) throw new Error('No active collaboration scope is available.');
+  return scope;
 }
 
 function mergeFrontmatterData(
@@ -806,10 +817,11 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (window.electronAPI.onMcpCreateSharedDoc) {
       cleanupFns.push(window.electronAPI.onMcpCreateSharedDoc(async ({ title, documentType, parentFolderId, folderPath, initialContent, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           // folderPath (by name, creates missing folders) wins over an explicit
           // parentFolderId when both are supplied.
           const targetParentId = folderPath !== undefined
-            ? await resolveSharedFolderPath(folderPath)
+            ? await resolveSharedFolderPath(scope, folderPath)
             : (parentFolderId ?? null);
 
           const requestedDocumentType = documentType || 'markdown';
@@ -819,6 +831,7 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
           if (resolution.state !== 'ready') throw new Error(resolution.reason);
 
           const document = await createCollaborativeDocument({
+            scope,
             descriptor: resolution.descriptor,
             requestedName: title,
             parentFolderId: targetParentId,
@@ -843,10 +856,11 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (window.electronAPI.onMcpCreateSharedFolder) {
       cleanupFns.push(window.electronAPI.onMcpCreateSharedFolder(async ({ name, parentFolderId, folderPath, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           const targetParentId = folderPath !== undefined
-            ? await resolveSharedFolderPath(folderPath)
+            ? await resolveSharedFolderPath(scope, folderPath)
             : (parentFolderId ?? null);
-          const folderId = await createSharedFolder(name, targetParentId);
+          const folderId = await createSharedFolder(scope, name, targetParentId);
           trackFolderCreated({
             actorType: 'agent',
             source: 'agent_tool',
@@ -865,13 +879,14 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (window.electronAPI.onMcpMoveSharedItem) {
       cleanupFns.push(window.electronAPI.onMcpMoveSharedItem(async ({ itemId, kind, newParentFolderId, folderPath, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           const targetParentId = folderPath !== undefined
-            ? await resolveSharedFolderPath(folderPath)
+            ? await resolveSharedFolderPath(scope, folderPath)
             : (newParentFolderId ?? null);
           if (kind === 'doc') {
             const movedType = store.get(allSharedDocumentsAtom)
               .find(doc => doc.documentId === itemId)?.documentType;
-            moveSharedDocument(itemId, targetParentId);
+            moveSharedDocument(scope, itemId, targetParentId);
             trackDocumentAction({
               action: 'moved',
               actorType: 'agent',
@@ -879,7 +894,7 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
               entryPoint: 'agent_tool',
             });
           } else {
-            moveSharedFolder(itemId, targetParentId);
+            moveSharedFolder(scope, itemId, targetParentId);
             trackFolderMoved({
               actorType: 'agent',
               source: 'agent_tool',
@@ -899,10 +914,11 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (window.electronAPI.onMcpRenameSharedItem) {
       cleanupFns.push(window.electronAPI.onMcpRenameSharedItem(async ({ itemId, kind, newName, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           if (kind === 'doc') {
             const renamedType = store.get(allSharedDocumentsAtom)
               .find(doc => doc.documentId === itemId)?.documentType;
-            await updateSharedDocumentTitle(itemId, newName);
+            await updateSharedDocumentTitle(scope, itemId, newName);
             trackDocumentAction({
               action: 'renamed',
               actorType: 'agent',
@@ -910,7 +926,7 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
               entryPoint: 'agent_tool',
             });
           } else {
-            await renameSharedFolder(itemId, newName);
+            await renameSharedFolder(scope, itemId, newName);
             trackFolderRenamed({
               actorType: 'agent',
               source: 'agent_tool',
@@ -929,10 +945,11 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (window.electronAPI.onMcpDeleteSharedItem) {
       cleanupFns.push(window.electronAPI.onMcpDeleteSharedItem(async ({ itemId, kind, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           if (kind === 'doc') {
             const trashedType = store.get(allSharedDocumentsAtom)
               .find(doc => doc.documentId === itemId)?.documentType;
-            removeSharedDocument(itemId);
+            removeSharedDocument(scope, itemId);
             trackDocumentAction({
               action: 'trashed',
               actorType: 'agent',
@@ -948,7 +965,7 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
             const removedCount = subtreeFolderIds.size;
             const documentCount = store.get(allSharedDocumentsAtom)
               .filter(doc => doc.parentFolderId && subtreeFolderIds.has(doc.parentFolderId)).length;
-            removeSharedFolder(itemId);
+            removeSharedFolder(scope, itemId);
             trackFolderDeleted({
               actorType: 'agent',
               source: 'agent_tool',

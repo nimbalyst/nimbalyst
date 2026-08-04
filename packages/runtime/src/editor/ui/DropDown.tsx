@@ -30,6 +30,7 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../../ui/floating/windowControlsClearance';
 
 type DropDownContextType = {
   registerItem: (ref: React.RefObject<HTMLButtonElement | null>) => void;
@@ -213,6 +214,7 @@ export default function DropDown({
       offset(dropDownPadding),
       flip({padding: 8}),
       shift({padding: 8}),
+      windowControlsClearance(),
     ],
   });
   const dismiss = useDismiss(context, {

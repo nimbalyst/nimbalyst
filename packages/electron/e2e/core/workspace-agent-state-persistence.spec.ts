@@ -115,4 +115,40 @@ planStatus:
 
     await electronApp.close();
   });
+
+  test('should restore a maximized window after restart', async () => {
+    test.setTimeout(30000);
+
+    let electronApp = await launchElectronApp({
+      workspace: workspacePath,
+      env: { NODE_ENV: 'test', ENABLE_SESSION_RESTORE: '1' },
+    });
+
+    const page = await electronApp.firstWindow();
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForSelector('.workspace-sidebar', { timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
+
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getFocusedWindow()?.maximize();
+    });
+    expect(await electronApp.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getFocusedWindow()?.isMaximized() ?? false
+    )).toBe(true);
+
+    await electronApp.close();
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    electronApp = await launchElectronApp({
+      workspace: workspacePath,
+      env: { NODE_ENV: 'test', ENABLE_SESSION_RESTORE: '1' },
+      preserveTestDatabase: true,
+    });
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    expect(await electronApp.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().some(window => window.isMaximized())
+    )).toBe(true);
+
+    await electronApp.close();
+  });
 });

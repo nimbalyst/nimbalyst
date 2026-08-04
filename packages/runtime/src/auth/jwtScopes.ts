@@ -56,3 +56,14 @@ export const asTeamJwt = (jwt: string): TeamJwt => jwt as TeamJwt;
 export const asPersonalMemberId = (id: string): PersonalMemberId => id as PersonalMemberId;
 /** Tag a raw string as a team-org member id. */
 export const asTeamMemberId = (id: string): TeamMemberId => id as TeamMemberId;
+
+/**
+ * Org scope (NIM-2232) lives in `@nimbalyst/collab-protocol` because the sync
+ * server enforces it and the client must speak the same type. Re-exported here
+ * so every scope brand is reachable from one module.
+ *
+ * A `VerifiedPersonalOrgId` is minted only by the server-side proof
+ * (`proveVerifiedPersonalOrg`); a plain org id — including the org claim of a
+ * verified JWT — is NOT one, and cannot be passed where one is required.
+ */
+export type { VerifiedPersonalOrgId } from '@nimbalyst/collab-protocol';

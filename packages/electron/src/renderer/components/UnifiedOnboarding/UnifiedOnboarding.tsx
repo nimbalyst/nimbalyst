@@ -3,11 +3,13 @@ import './UnifiedOnboarding.css';
 
 export interface UnifiedOnboardingProps {
   isOpen: boolean;
-  onComplete: (data: OnboardingData) => void;
+  onComplete: (data: OnboardingData, intent: OnboardingIntent) => void | Promise<void>;
   onSkip: () => void;
   /** Force showing as new user ('new') or existing user ('existing') for testing */
   forcedMode?: 'new' | 'existing' | null;
 }
+
+export type OnboardingIntent = 'get-started' | 'tutorial';
 
 export interface OnboardingData {
   role: string | null;
@@ -179,7 +181,7 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
     }
   };
 
-  const handleComplete = () => {
+  const handleComplete = (intent: OnboardingIntent) => {
     // Append optional detail to referral sources that collect a follow-up answer.
     let finalReferralSource = referralSource || null;
     if (referralSource === 'social' && socialMediaPlatform) {
@@ -199,7 +201,7 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
       email: email.trim() || null,
       developerMode: developerMode ?? false,
     };
-    onComplete(data);
+    void onComplete(data, intent);
   };
 
   if (!isOpen) return null;
@@ -459,13 +461,24 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
         </div>
 
         <div className="unified-onboarding-footer unified-onboarding-footer-single">
-          <button
-            className="unified-onboarding-submit"
-            onClick={handleComplete}
-            disabled={!isModeSelected || (showDataCollection && !isEmailValid)}
-          >
-            Get Started
-          </button>
+          <div className="unified-onboarding-footer-buttons">
+            <button
+              type="button"
+              className="unified-onboarding-secondary-button"
+              onClick={() => handleComplete('get-started')}
+              disabled={!isModeSelected || (showDataCollection && !isEmailValid)}
+            >
+              Get started…
+            </button>
+            <button
+              type="button"
+              className="unified-onboarding-submit"
+              onClick={() => handleComplete('tutorial')}
+              disabled={!isModeSelected || (showDataCollection && !isEmailValid)}
+            >
+              Start tutorial
+            </button>
+          </div>
           <p className="unified-onboarding-legal-links">
             By continuing, you agree to our{' '}
             <a

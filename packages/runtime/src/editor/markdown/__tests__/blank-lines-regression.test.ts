@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test for blank line preservation regression
  * This tests that blank lines are preserved during markdown import/export

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 // NIM-1779/C2: team key custody is server-managed, so the reachable team
 // sharing surface (ProjectScopedTeamExistsState) must not present the legacy
@@ -13,7 +13,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
-vi.mock('../H2EncryptionMigration', () => ({
+vi.mock('../SecurityEncryptionSection', () => ({
   SecurityEncryptionSection: () => <div data-testid="security-encryption-section" />,
 }));
 vi.mock('../MoveProjectWizard', () => ({ MoveProjectWizard: () => null }));
@@ -25,14 +25,23 @@ vi.mock('../../../common/AlphaBadge', () => ({
   AlphaBadge: () => null,
   SETTINGS_ALPHA_TOOLTIP: '',
 }));
+const openDialog = vi.fn();
 vi.mock('../../../../contexts/DialogContext', () => ({
   useDialogState: () => ({ open: vi.fn(), close: vi.fn(), isOpen: false, data: null }),
+  dialogRef: { current: { open: (...args: unknown[]) => openDialog(...args) } },
 }));
-vi.mock('../../../../dialogs/registry', () => ({ DIALOG_IDS: { CREATE_TEAM: 'create-team' } }));
+vi.mock('../../../../dialogs/registry', () => ({
+  DIALOG_IDS: {
+    ORG_CREATION_WIZARD: 'org-creation-wizard',
+    ORG_MANAGEMENT: 'org-management',
+  },
+}));
+
+const openManagementWindow = vi.fn();
 
 import { ProjectScopedTeamExistsState } from '../WorkspaceProjectSharingPanel';
 
-function renderServerManagedTeamSurface() {
+function renderServerManagedTeamSurface(callerRole = 'admin', teamOverrides: Record<string, unknown> = {}) {
   const team = {
     orgId: 'org-sm',
     name: 'Server Managed Team',
@@ -43,7 +52,8 @@ function renderServerManagedTeamSurface() {
       { id: 'm1', name: 'Alice', email: 'alice@example.com', role: 'admin' as const, status: 'active' as const, avatarColor: '#60a5fa', isYou: true },
       { id: 'm2', name: 'Bob', email: 'bob@example.com', role: 'member' as const, status: 'active' as const, avatarColor: '#a78bfa' },
     ],
-    callerRole: 'admin',
+    callerRole,
+    ...teamOverrides,
   };
   const projects = [
     { projectId: 'proj-1', teamProjectId: 'proj-1', gitRemoteHash: 'abc123', slug: 'app', name: 'App' },
@@ -63,13 +73,33 @@ function renderServerManagedTeamSurface() {
 }
 
 describe('WorkspaceProjectSharingPanel server-managed team surface (NIM-1779/C2)', () => {
+  beforeEach(() => {
+    openDialog.mockReset();
+    openManagementWindow.mockReset();
+    (window as any).electronAPI = { team: { openManagementWindow } };
+  });
   afterEach(() => cleanup());
+
+  // NIM-2322: administering the organization this project belongs to happens in
+  // this window, on the Projects tab — the surface this button sits on is about
+  // the project's place in the organization.
+  it('opens the management dialog on Projects instead of the organization window', () => {
+    renderServerManagedTeamSurface();
+
+    fireEvent.click(screen.getByText('Open organization'));
+
+    expect(openDialog).toHaveBeenCalledWith('org-management', {
+      orgId: 'org-sm',
+      initialTab: 'projects',
+    });
+    expect(openManagementWindow).not.toHaveBeenCalled();
+  });
 
   it('renders no envelope-based trust or re-share affordances', () => {
     renderServerManagedTeamSurface();
 
     // The people-with-access surface is present (the reachable team UI).
-    expect(screen.getByTestId('project-access-editor')).toBeTruthy();
+    screen.getByTestId('project-access-editor');
 
     // No legacy E2E trust / re-share UI.
     expect(screen.queryByText(/re-share/i)).toBeNull();
@@ -79,5 +109,39 @@ describe('WorkspaceProjectSharingPanel server-managed team surface (NIM-1779/C2)
     expect(screen.queryByText(/your fingerprint/i)).toBeNull();
     expect(screen.queryByTitle(/identity verified/i)).toBeNull();
     expect(screen.queryByTitle(/not verified/i)).toBeNull();
+  });
+
+  it('labels an organization viewer as Viewer', () => {
+    renderServerManagedTeamSurface('viewer');
+    screen.getByText('Server Managed Team · Viewer');
+  });
+
+  /**
+   * The workspace -> organization -> account chain ends at the login that owns
+   * the binding. That tail only distinguishes something once a second account
+   * exists; with one it is the only answer there could be.
+   */
+  it('omits the owning-account tail when only one account is stored', () => {
+    renderServerManagedTeamSurface('admin', {
+      boundPersonalOrgId: 'personal-1',
+      boundAccountEmail: 'solo@example.com',
+      storedAccountCount: 1,
+    });
+
+    expect(screen.queryByTestId('workspace-organization-account-tail')).toBeNull();
+    // The workspace -> organization part of the chain is untouched.
+    expect(screen.getByTestId('workspace-organization-account-chain').textContent)
+      .toContain('app → Server Managed Team');
+  });
+
+  it('names the owning account once a second account is stored', () => {
+    renderServerManagedTeamSurface('admin', {
+      boundPersonalOrgId: 'personal-1',
+      boundAccountEmail: 'solo@example.com',
+      storedAccountCount: 2,
+    });
+
+    expect(screen.getByTestId('workspace-organization-account-tail').textContent)
+      .toContain('solo@example.com');
   });
 });

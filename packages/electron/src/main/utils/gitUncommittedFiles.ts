@@ -1,5 +1,6 @@
 import path from 'path';
 import { existsSync } from 'fs';
+import { GIT_INHERITED_ENV_UNSAFE } from '../services/gitInheritedEnvUnsafe';
 
 // ============================================================
 // Git Status Cache
@@ -69,7 +70,17 @@ export async function getCachedUncommittedFiles(workspacePath: string): Promise<
         // output, so a hung `git status` rejects instead of hanging. The
         // explicit withTimeout race is belt-and-suspenders in case the child
         // streams output but never exits.
-        const git = simpleGit(workspacePath, { timeout: { block: GIT_STATUS_TIMEOUT_MS } });
+        // GIT_OPTIONAL_LOCKS=0 is the environment equivalent of the
+        // `--no-optional-locks` flag simple-git gives no way to pass. It keeps
+        // this read-only status from refreshing (and so locking) `.git/index`,
+        // where it would contend with concurrent git writers such as the commit
+        // path (NIM-2285). The unsafe flags are required because supplying ANY
+        // env makes simple-git scan it and refuse to spawn git when the user's
+        // own environment contains GIT_EDITOR, GIT_PAGER and friends.
+        const git = simpleGit(workspacePath, {
+            timeout: { block: GIT_STATUS_TIMEOUT_MS },
+            unsafe: GIT_INHERITED_ENV_UNSAFE,
+        }).env({ ...process.env, GIT_OPTIONAL_LOCKS: '0' });
         const status = await withTimeout(
             git.status(),
             GIT_STATUS_TIMEOUT_MS,

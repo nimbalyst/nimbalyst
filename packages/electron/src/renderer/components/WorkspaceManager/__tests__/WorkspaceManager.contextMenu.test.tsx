@@ -15,6 +15,10 @@ const recentWorkspaces = [
     getWorkspaceStats: vi.fn().mockResolvedValue({ fileCount: 1, markdownCount: 1, totalSize: 10, recentFiles: [] }),
     openWorkspace: vi.fn(),
   },
+  tutorial: {
+    getStatus: vi.fn().mockResolvedValue({ success: true, exists: false }),
+    start: vi.fn(),
+  },
 };
 
 const { WorkspaceManager } = await import('../WorkspaceManager');

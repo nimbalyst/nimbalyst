@@ -7,7 +7,11 @@ import type {
 } from '@nimbalyst/runtime/sync';
 
 export interface CollabDocumentState {
-  replica: LocalDocumentReplicaState;
+  /**
+   * Omitted for transport-only documents such as tracker bodies, which share
+   * the DocumentRoom protocol but do not own a LocalDocumentReplica.
+   */
+  replica?: LocalDocumentReplicaState;
   transport: DocumentSyncStatus;
   outbox: LocalDocumentReplicaOutboxState;
 }
@@ -117,8 +121,12 @@ export function deriveCollabProductStatus(
   }
   return {
     kind: 'offline-safe',
-    label: 'Offline — changes saved on this device',
-    detail: 'Offline changes are saved locally and shared with other open windows on this device.',
+    label: state.replica === undefined
+      ? 'Offline'
+      : 'Offline — changes saved on this device',
+    detail: state.replica === undefined
+      ? 'Reconnect to continue syncing this tracker body.'
+      : 'Offline changes are saved locally and shared with other open windows on this device.',
     severity: 'warning',
     showPresence: false,
     showRejectedActions: false,
@@ -171,9 +179,3 @@ export const collabAwarenessAtom = atomFamily(
 export function hasCollabUnsyncedChanges(status: DocumentSyncStatus): boolean {
   return status === 'offline-unsynced' || status === 'replaying';
 }
-
-/**
- * Monotonically increasing counter bumped when the org encryption key is rotated.
- * CollaborativeTabEditor watches this to teardown/recreate providers with the new key.
- */
-export const collabKeyRotationEpochAtom = atom(0);

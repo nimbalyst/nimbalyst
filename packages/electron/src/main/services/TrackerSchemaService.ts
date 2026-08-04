@@ -43,6 +43,7 @@ import {
   type ApplyRemoteSchemaResult,
   type TypeDefDb,
 } from './tracker/trackerTypeDefStore';
+import { installTrackerSchemaScopeProvider } from './tracker/trackerSchemaScope';
 
 // ---------------------------------------------------------------------------
 // Service State
@@ -51,6 +52,18 @@ import {
 let initialized = false;
 let watcher: ReturnType<typeof chokidar.watch> | null = null;
 let currentWorkspacePath: string | null = null;
+
+/**
+ * Set the workspace that owns the live registry view. Always go through this
+ * instead of assigning `currentWorkspacePath` directly: the registry needs to
+ * know which workspace `models` represents so a lookup on behalf of a DIFFERENT
+ * workspace resolves against that workspace's own layer rather than corrupting
+ * this one (#1035).
+ */
+function setCurrentWorkspacePath(workspacePath: string | null): void {
+  currentWorkspacePath = workspacePath;
+  globalRegistry.setActiveWorkspace(workspacePath);
+}
 
 // ---------------------------------------------------------------------------
 // Patch overrides (delta files)
@@ -128,12 +141,13 @@ function orderSchemaFilesForLoad(files: string[]): string[] {
 export function initTrackerSchemaService(workspacePath?: string | null): void {
   if (!initialized) {
     loadBuiltinTrackers();
+    installTrackerSchemaScopeProvider();
     registerIpcHandlers();
     initialized = true;
   }
 
   if (workspacePath && workspacePath !== currentWorkspacePath) {
-    currentWorkspacePath = workspacePath;
+    setCurrentWorkspacePath(workspacePath);
     loadWorkspaceSchemas(workspacePath);
     watchSchemaDirectory(workspacePath);
   }
@@ -145,7 +159,7 @@ export function initTrackerSchemaService(workspacePath?: string | null): void {
  */
 export function updateTrackerSchemaWorkspace(workspacePath: string | null): void {
   if (workspacePath === currentWorkspacePath) return;
-  currentWorkspacePath = workspacePath;
+  setCurrentWorkspacePath(workspacePath);
 
   if (workspacePath) {
     loadWorkspaceSchemas(workspacePath); // clears old workspace schemas first
@@ -451,10 +465,21 @@ export function getAllTrackerSchemas(): TrackerDataModel[] {
  * custom types are invisible to `tracker_list_types` and rejected by
  * `tracker_create`/`tracker_update` (NIM-760).
  *
- * Reads the `.nimbalyst/trackers` YAML dir directly and registers each model.
- * Additive and idempotent (`register()` overwrites by type); it never clears, so
- * it cannot wipe the active workspace's schemas when called for a different one.
- * Builtins are assumed loaded by `initTrackerSchemaService` at startup.
+ * Reads the `.nimbalyst/trackers` YAML dir directly. Builtins are assumed loaded
+ * by `initTrackerSchemaService` at startup.
+ *
+ * The registry is keyed by TYPE NAME ONLY, so this must never register another
+ * project's schemas into the live view: two projects that both define `widget`
+ * would otherwise share one slot, and a read-only MCP call for project B would
+ * silently replace project A's `widget` schema — making A validate its items
+ * against B's required fields and status options (#1035). So:
+ *
+ *  - active workspace (or none claimed yet): register into the live view, as
+ *    before — additive and idempotent, never clearing, so synced/CLI-registered
+ *    types with no YAML on disk survive (NIM-865).
+ *  - any other workspace: populate that workspace's own cached layer. Reads made
+ *    on behalf of it (see `runWithTrackerSchemaWorkspace`) resolve there, so its
+ *    custom types stay visible (NIM-760) with the active view left untouched.
  */
 export function ensureWorkspaceTrackerSchemasLoaded(workspacePath: string | null | undefined): void {
   if (!workspacePath) return;
@@ -470,15 +495,26 @@ export function ensureWorkspaceTrackerSchemasLoaded(workspacePath: string | null
     return;
   }
 
+  const isActive = currentWorkspacePath === null || currentWorkspacePath === workspacePath;
+  const models: TrackerDataModel[] = [];
+
   for (const file of files) {
     try {
       const content = fs.readFileSync(path.join(trackersDir, file), 'utf-8');
       const model = resolveSchemaModelFromContent(file, content);
-      globalRegistry.register(model); // workspace schemas are not builtin
+      if (isActive) {
+        globalRegistry.register(model); // workspace schemas are not builtin
+      } else {
+        models.push(model);
+      }
     } catch (err) {
       console.error(`[TrackerSchemaService] ensureWorkspaceTrackerSchemasLoaded failed for ${file}:`, err);
     }
   }
+
+  // Replace rather than merge: the full YAML dir was just re-read, so a type
+  // whose file was deleted must not linger in the cached layer.
+  if (!isActive) globalRegistry.setWorkspaceLayer(workspacePath, models);
 }
 
 export function isBuiltinTrackerSchema(type: string): boolean {
@@ -531,7 +567,7 @@ function refreshWorkspaceSchemasIfCurrent(workspacePath: string): void {
   // Also load when currentWorkspacePath is null -- no workspace has been set yet
   // (happens when upsertWorkspaceTrackerSchema is called before any workspace window opens).
   if (currentWorkspacePath !== null && workspacePath !== currentWorkspacePath) return;
-  currentWorkspacePath = workspacePath;
+  setCurrentWorkspacePath(workspacePath);
   loadWorkspaceSchemas(workspacePath);
   watchSchemaDirectory(workspacePath);
   notifySchemaChanged();

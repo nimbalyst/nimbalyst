@@ -7,6 +7,7 @@ import { getBackgroundColor } from '../theme/ThemeManager';
 import { windows, windowStates } from './windowState';
 import * as workspaceEventBus from '../file/WorkspaceEventBus';
 import { database } from '../database/PGLiteDatabaseWorker';
+import { windowControlsOverlayOptions } from './windowChrome';
 
 let developerDashboardWindow: BrowserWindow | null = null;
 
@@ -121,6 +122,7 @@ export function createDeveloperDashboardWindow() {
         show: false,
         titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
         trafficLightPosition: { x: 10, y: 10 },
+        ...windowControlsOverlayOptions(),
         vibrancy: 'sidebar',
         backgroundColor: getBackgroundColor()
     });

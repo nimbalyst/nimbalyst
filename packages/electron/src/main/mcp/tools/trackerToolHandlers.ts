@@ -40,6 +40,7 @@ import type { ElectronDocumentService } from '../../services/ElectronDocumentSer
 import { getTrackerImporterRegistry } from '../../services/tracker/TrackerImporterRegistry';
 import { getTrackerImportService } from '../../services/tracker/TrackerImportService';
 import { materializeTrackerTypeDef, removeTrackerTypeDef } from '../../services/tracker/trackerTypeDefStore';
+import { fromDbBoolean } from '../../services/tracker/trackerDbValue';
 import {
   trackTrackerMutation,
   type TrackerMutationAction,
@@ -641,7 +642,7 @@ export const trackerToolSchemas = [
   {
     name: "tracker_create",
     description:
-      "Create a new tracker item (bug, task, plan, idea, decision, or any custom type).\n\nBy default, the new item is NOT linked to the current session. Pass linkSession: true to link it, or call tracker_link_session afterward.\n\nIMPORTANT: Never set status to 'done' or 'completed'. Use 'in-review' or 'in-progress' instead. Only the user can mark items as done.",
+      "Create a new tracker item (bug, task, plan, idea, decision, or any custom type).\n\nBy default, the new item is NOT linked to the current session. Pass linkSession: true to link it, or call tracker_link_session afterward.\n\nIMPORTANT: Never create an item already marked 'done' or 'completed'. Use 'to-do', 'in-progress', or 'in-review'.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -730,7 +731,7 @@ export const trackerToolSchemas = [
   {
     name: "tracker_update",
     description:
-      "Update an existing tracker item's metadata or content. Can change title, status, priority, tags, description, owner, dueDate, progress, assigneeId, reporterId, labels, linkedCommitSha, or archive state.\n\nIMPORTANT: Never set status to 'done' or 'completed' without explicit user approval. Use 'in-review' when work is finished and awaiting review. Only the user decides when work is actually done.",
+      "Update an existing tracker item's metadata or content. Can change title, status, priority, tags, description, owner, dueDate, progress, assigneeId, reporterId, labels, linkedCommitSha, or archive state.\n\nIMPORTANT: Use 'in-review' when work is finished but not yet committed -- do not set 'done' on your own judgment. Once the user commits the work, that is their approval: prefer closing the item through a 'Fixes <issue key>' reference in the commit message, which closes it automatically. Setting 'done' directly is acceptable only for work the user has already committed.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -1113,7 +1114,7 @@ export async function handleTrackerList(
 
     const items = rawItems
       .filter((item) => !workspacePath || item.workspace === workspacePath)
-      .filter((item) => args.archived ? item.archived === true : item.archived !== true)
+      .filter((item) => fromDbBoolean(item.archived) === Boolean(args.archived))
       .filter((item) => !args.type || item.type === args.type)
       .filter((item) => !args.typeTag || (item.typeTags || [item.type]).includes(args.typeTag))
       .filter((item) => {

@@ -161,6 +161,13 @@
 
 .project-rail-context-menu {
   position: fixed;
+  /* The add menu now grows downward from the `+` button (`right-start`) and
+     `windowControlsClearance()` keeps any rail popover out from under the OS
+     window controls, so it no longer lands in the title bar (#1096). Keep the
+     opt-out anyway — declared here as well as globally (see index.css) —
+     because a menu shifted into the drag region is the surface issue #1052
+     reported: on Windows the OS ate the click on "Open folder…". */
+  -webkit-app-region: no-drag;
   min-width: 180px;
   background-color: var(--nim-bg-secondary, #1a1a1a);
   border: 1px solid var(--nim-border, rgba(255, 255, 255, 0.12));

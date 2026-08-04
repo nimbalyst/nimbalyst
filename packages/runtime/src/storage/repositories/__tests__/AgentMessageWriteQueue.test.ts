@@ -212,6 +212,121 @@ describe('AgentMessageWriteQueue — error fallback', () => {
     expect(writer.mock.calls[2][0].length).toBe(1); // per-row 2
     expect(writer.mock.calls[3][0].length).toBe(1); // per-row 3
   });
+
+  /**
+   * The per-row fallback exists to isolate one poisoned row. When the database
+   * is down it instead multiplies every flush by its batch size, and each
+   * failed write is its own `database_error` event — the shape behind the
+   * 2026-08-03 telemetry spike (~62k events in two hours from one session).
+   */
+  it('stops multiplying failures per row once the database is consistently unavailable', async () => {
+    const writer = vi.fn(async () => {
+      throw new Error('database unavailable');
+    });
+    const queue = new AgentMessageWriteQueue({
+      idleFlushMs: 60_000,
+      writer,
+      logger: { warn: () => {} },
+      perRowFallbackFailureLimit: 2,
+    });
+
+    const flushBatchOfTen = async () => {
+      const promises = Array.from({ length: 10 }, (_, i) =>
+        queue.enqueue(makeMessage({ content: `row-${i}` })).catch(() => {}));
+      await queue.flushAll();
+      await Promise.all(promises);
+    };
+
+    // First two flushes still try the fallback: 1 batched + 10 per-row each.
+    await flushBatchOfTen();
+    await flushBatchOfTen();
+    expect(writer).toHaveBeenCalledTimes(22);
+
+    // From the third failure on, a 10-row batch costs exactly one write
+    // attempt, not eleven.
+    writer.mockClear();
+    await flushBatchOfTen();
+    await flushBatchOfTen();
+    expect(writer).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a single-row batch identically', async () => {
+    const writer = vi.fn(async () => {
+      throw new Error('database unavailable');
+    });
+    const queue = new AgentMessageWriteQueue({
+      idleFlushMs: 60_000,
+      writer,
+      logger: { warn: () => {} },
+    });
+
+    const pending = queue.enqueue(makeMessage());
+    await queue.flushAll();
+
+    await expect(pending).rejects.toThrow('database unavailable');
+    // One row has no bad row to isolate; re-running the same write is pure waste.
+    expect(writer).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers the per-row fallback after a successful flush', async () => {
+    let failing = true;
+    const writer = vi.fn(async (messages: CreateAgentMessageInput[]) => {
+      if (failing && messages.length > 1) throw new Error('database unavailable');
+      if (failing) throw new Error('database unavailable');
+    });
+    const queue = new AgentMessageWriteQueue({
+      idleFlushMs: 60_000,
+      writer,
+      logger: { warn: () => {} },
+      perRowFallbackFailureLimit: 1,
+    });
+
+    const flushPair = async () => {
+      const promises = [
+        queue.enqueue(makeMessage({ content: 'a' })).catch(() => {}),
+        queue.enqueue(makeMessage({ content: 'b' })).catch(() => {}),
+      ];
+      await queue.flushAll();
+      await Promise.all(promises);
+    };
+
+    await flushPair();
+    await flushPair();
+
+    failing = false;
+    await flushPair();
+
+    // A healthy flush clears the breaker, so a later failure gets the fallback
+    // again rather than being permanently degraded.
+    failing = true;
+    writer.mockClear();
+    await flushPair();
+    expect(writer).toHaveBeenCalledTimes(3); // 1 batched + 2 per-row
+  });
+
+  it('does not emit a batch event when every row failed', async () => {
+    const writer = vi.fn(async () => {
+      throw new Error('database unavailable');
+    });
+    const events: MessagesLoggedBatchEvent[] = [];
+    const queue = new AgentMessageWriteQueue({
+      idleFlushMs: 60_000,
+      writer,
+      logger: { warn: () => {} },
+    });
+    queue.onBatch((e) => events.push(e));
+
+    const promises = [
+      queue.enqueue(makeMessage({ content: 'a' })).catch(() => {}),
+      queue.enqueue(makeMessage({ content: 'b' })).catch(() => {}),
+    ];
+    await queue.flushAll();
+    await Promise.all(promises);
+
+    // Emitting here told the renderer to re-read `ai_agent_messages`, which
+    // also failed — that is why the failed reads tracked the failed writes 1:1.
+    expect(events).toHaveLength(0);
+  });
 });
 
 describe('AgentMessageWriteQueue — batch event emission', () => {

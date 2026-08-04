@@ -94,6 +94,12 @@ export interface SystemMessageDescriptor {
   deniedReason?: string;
   deniedReasonType?: PermissionDeniedReasonType | (string & {});
   deniedInput?: Record<string, unknown>;
+  isAttachmentStagingDenied?: boolean;
+  attachmentPath?: string;
+  attachmentFilename?: string;
+  attachmentStagingMode?: 'temp' | 'workspace' | 'custom';
+  attachmentDenyRule?: string;
+  attachmentDetection?: 'reactive' | 'preflight';
 }
 
 export interface ToolCallStartedDescriptor {

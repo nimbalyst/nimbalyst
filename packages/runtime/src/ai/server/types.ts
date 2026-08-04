@@ -89,6 +89,25 @@ export interface DocumentContext {
 
   /** Identifies the origin of this message when it comes from an automated source (e.g. 'wakeup_resume'). */
   promptOrigin?: string;
+
+  /** Durable authorship provenance for prompt search and audit surfaces. */
+  promptProvenance?: PromptProvenance;
+}
+
+export type PromptActor = 'human' | 'agent' | 'system';
+
+export type PromptProvenanceOrigin =
+  | 'composer'
+  | 'session-orchestration'
+  | 'child-session-update'
+  | 'mobile'
+  | 'automation';
+
+export interface PromptProvenance {
+  actor: PromptActor;
+  origin: PromptProvenanceOrigin;
+  originSessionId?: string;
+  queuedPromptId?: string;
 }
 
 export interface ChatAttachment {

@@ -76,11 +76,21 @@ export function shouldExcludeDir(dirName: string): boolean {
   return EXCLUDED_DIRS.has(dirName);
 }
 
+export function isAttachmentStagingPath(fullPath: string): boolean {
+  const normalized = fullPath.replace(/\\/g, '/');
+  return /(?:^|\/)nimbalyst-local\/attachments(?:\/|$)/.test(normalized);
+}
+
+export function shouldExcludePath(fullPath: string): boolean {
+  return isAttachmentStagingPath(fullPath) || pathContainsExcludedDir(fullPath);
+}
+
 /**
  * Check if a path component contains an excluded directory
  * Useful for checking full paths to ensure no part of the path contains excluded dirs
  */
 export function pathContainsExcludedDir(fullPath: string): boolean {
+  if (isAttachmentStagingPath(fullPath)) return true;
   const parts = fullPath.split(/[/\\]/);
   return parts.some(part => shouldExcludeDir(part));
 }
@@ -116,13 +126,14 @@ export const GLOB_EXCLUDE_PATTERNS = [
   '**/vendor/**',
   '**/Pods/**',
   '**/.swiftpm/**',
-  '**/DerivedData/**'
+  '**/DerivedData/**',
+  '**/nimbalyst-local/attachments/**'
 ];
 
 /**
  * Ripgrep glob arguments for excluding directories (as plain string to avoid bundler issues)
  */
-export const RIPGREP_EXCLUDE_ARGS = '--glob !**/node_modules/** --glob !**/.git/** --glob !**/.worktrees/** --glob !**/worktrees/** --glob !**/dist/** --glob !**/build/** --glob !**/.build/** --glob !**/out/** --glob !**/.next/** --glob !**/.nuxt/** --glob !**/.cache/** --glob !**/coverage/** --glob !**/.vscode/** --glob !**/.idea/** --glob !**/__pycache__/** --glob !**/.DS_Store/** --glob !**/.venv/** --glob !**/venv/** --glob !**/.env/** --glob !**/env/** --glob !**/.tox/** --glob !**/target/** --glob !**/.gradle/** --glob !**/.maven/** --glob !**/vendor/** --glob !**/Pods/** --glob !**/.swiftpm/** --glob !**/DerivedData/**';
+export const RIPGREP_EXCLUDE_ARGS = '--glob !**/node_modules/** --glob !**/.git/** --glob !**/.worktrees/** --glob !**/worktrees/** --glob !**/dist/** --glob !**/build/** --glob !**/.build/** --glob !**/out/** --glob !**/.next/** --glob !**/.nuxt/** --glob !**/.cache/** --glob !**/coverage/** --glob !**/.vscode/** --glob !**/.idea/** --glob !**/__pycache__/** --glob !**/.DS_Store/** --glob !**/.venv/** --glob !**/venv/** --glob !**/.env/** --glob !**/env/** --glob !**/.tox/** --glob !**/target/** --glob !**/.gradle/** --glob !**/.maven/** --glob !**/vendor/** --glob !**/Pods/** --glob !**/.swiftpm/** --glob !**/DerivedData/** --glob !**/nimbalyst-local/attachments/**';
 
 /**
  * Ripgrep file type arguments for QuickOpen content search
@@ -161,10 +172,11 @@ export const RIPGREP_EXCLUDE_ARGS_ARRAY = [
     '--glob', '!**/vendor/**',
     '--glob', '!**/Pods/**',
     '--glob', '!**/.swiftpm/**',
-    '--glob', '!**/DerivedData/**'
+    '--glob', '!**/DerivedData/**',
+    '--glob', '!**/nimbalyst-local/attachments/**'
 ];
 
 /**
  * Find command prune arguments for excluding directories
  */
-export const FIND_PRUNE_ARGS = '\\( -path "*/node_modules/*" -o -path "*/.git/*" -o -path "*/.worktrees/*" -o -path "*/worktrees/*" -o -path "*/dist/*" -o -path "*/build/*" -o -path "*/.build/*" -o -path "*/out/*" -o -path "*/.next/*" -o -path "*/.nuxt/*" -o -path "*/.cache/*" -o -path "*/coverage/*" -o -path "*/.vscode/*" -o -path "*/.idea/*" -o -path "*/__pycache__/*" -o -path "*/.DS_Store/*" -o -path "*/.venv/*" -o -path "*/venv/*" -o -path "*/.env/*" -o -path "*/env/*" -o -path "*/.tox/*" -o -path "*/target/*" -o -path "*/.gradle/*" -o -path "*/.maven/*" -o -path "*/vendor/*" -o -path "*/Pods/*" -o -path "*/.swiftpm/*" -o -path "*/DerivedData/*" \\) -prune -o';
+export const FIND_PRUNE_ARGS = '\\( -path "*/node_modules/*" -o -path "*/.git/*" -o -path "*/.worktrees/*" -o -path "*/worktrees/*" -o -path "*/dist/*" -o -path "*/build/*" -o -path "*/.build/*" -o -path "*/out/*" -o -path "*/.next/*" -o -path "*/.nuxt/*" -o -path "*/.cache/*" -o -path "*/coverage/*" -o -path "*/.vscode/*" -o -path "*/.idea/*" -o -path "*/__pycache__/*" -o -path "*/.DS_Store/*" -o -path "*/.venv/*" -o -path "*/venv/*" -o -path "*/.env/*" -o -path "*/env/*" -o -path "*/.tox/*" -o -path "*/target/*" -o -path "*/.gradle/*" -o -path "*/.maven/*" -o -path "*/vendor/*" -o -path "*/Pods/*" -o -path "*/.swiftpm/*" -o -path "*/DerivedData/*" -o -path "*/nimbalyst-local/attachments/*" \\) -prune -o';

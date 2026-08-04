@@ -34,6 +34,7 @@ The bounded error categories are:
 - `port_conflict`
 - `command_unavailable`
 - `provider_rejected`
+- `dynamic_registration_unsupported`
 - `callback_validation`
 - `token_exchange`
 - `network`
@@ -49,6 +50,7 @@ The configured `oauth.authTimeoutSeconds` value is passed to `mcp-remote`, and N
 Nimbalyst only classifies evidence emitted by the helper process or confirmed by the token cache.
 
 - A provider denial is `provider_rejected` only when the helper exposes an explicit denial signal.
+- `mcp-remote` always attempts RFC 7591 dynamic client registration. A provider that only accepts pre-registered clients fails the helper before a browser opens; that is `dynamic_registration_unsupported`, and the remedy is a pre-registered client ID in `oauth.staticClientInfo`, not a cache clear.
 - A callback without an authorization code, an invalid state, and a PKCE/token-exchange failure are separate categories only when the helper reports them.
 - If the browser flow is abandoned without a terminal helper signal, the honest outcome is `timed_out`, not `provider_rejected`.
 - Duplicate callbacks and provider callback query parameters are not visible to Nimbalyst and must not be inferred from a generic process exit.

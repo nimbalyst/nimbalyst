@@ -58,6 +58,43 @@ export function getCollectionField(type: string): FieldDefinition | undefined {
     ?.fields.find(f => isRelationshipField(f) && f.relationshipTypeKey === COLLECTION_INVERSE_KEY);
 }
 
+/**
+ * Whether a field definition is the member-side link to a collection -- i.e. the
+ * field a "Collection" chip is bound to.
+ *
+ * The `in-collection` vocabulary key is the primary signal. A field that only
+ * declares collection tracker types as its targets counts too, so a custom
+ * schema that points at milestones without adopting the vocabulary still gets
+ * the collection picker rather than the generic relationship editor.
+ */
+export function isCollectionRelationshipField(field: FieldDefinition): boolean {
+  if (!isRelationshipField(field)) return false;
+  if (field.relationshipTypeKey === COLLECTION_INVERSE_KEY) return true;
+  const targets = field.targetTrackerTypes;
+  if (!targets || targets === '*' || targets.length === 0) return false;
+  return targets.every(isCollectionType);
+}
+
+/**
+ * The collection types a field may create into, in schema order.
+ * Falls back to the built-in list when the field targets anything.
+ */
+export function collectionTypesForField(field: FieldDefinition): string[] {
+  const targets = field.targetTrackerTypes;
+  if (!targets || targets === '*') return [...COLLECTION_TYPES];
+  const usable = targets.filter(isCollectionType);
+  return usable.length > 0 ? usable : [...COLLECTION_TYPES];
+}
+
+/** Display label + icon for a collection type, for the inline create toggle. */
+export function collectionTypeDisplay(type: string): { label: string; icon: string } {
+  const model = globalRegistry.get(type) as { displayName?: string; icon?: string } | undefined;
+  return {
+    label: model?.displayName ?? type.charAt(0).toUpperCase() + type.slice(1),
+    icon: model?.icon ?? 'inventory_2',
+  };
+}
+
 /** Member item ids of a collection record, deduped and in stored order. */
 export function getMemberIds(collection: TrackerRecord): string[] {
   const field = getMembersField(collection.primaryType);

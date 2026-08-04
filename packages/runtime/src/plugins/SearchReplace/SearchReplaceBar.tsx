@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import type { LexicalEditor } from 'lexical';
 import { $getRoot, $getNodeByKey, $isTextNode, $createRangeSelection, $setSelection } from 'lexical';
 import { SearchReplaceStateManager } from './SearchReplaceStateManager';
+import { resolveMatchRange } from './resolveMatchRange';
 // Only contains global highlight styles for dynamically applied classes
 import './SearchReplaceBar.css';
 
@@ -107,22 +108,10 @@ class HighlightManager {
         const domElement = this.editor.getElementByKey(match.key);
         if (!domElement) return;
 
-        const textNode = domElement.firstChild as Text;
-        if (!textNode || textNode.nodeType !== Node.TEXT_NODE) return;
-
-        // Clamp the range to valid offsets
-        const validOffset = Math.min(match.offset, textNode.length);
-        const validEnd = Math.min(match.offset + match.length, textNode.length);
-
-        if (validOffset >= validEnd) return;
-
-        const range = document.createRange();
-        try {
-          range.setStart(textNode, validOffset);
-          range.setEnd(textNode, validEnd);
-        } catch (e) {
-          return;
-        }
+        // Not every TextNode renders as a single text child — inline code renders as
+        // <code><span class="nim-text-code">…</span></code> — so walk descendant text nodes.
+        const range = resolveMatchRange(domElement, match.offset, match.length);
+        if (!range) return;
 
         const rects = Array.from(range.getClientRects());
         rects.forEach((rect) => {

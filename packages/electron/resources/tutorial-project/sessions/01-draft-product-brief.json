@@ -1,0 +1,97 @@
+{
+  "session": {
+    "provider": "claude-code",
+    "model": "claude-code:sonnet",
+    "title": "Draft the product brief",
+    "agentRole": "standard",
+    "metadata": {
+      "linkedTrackerItemIds": ["file:product-brief.md"]
+    }
+  },
+  "messages": [
+    {
+      "direction": "input",
+      "source": "claude-code",
+      "content": "{\"prompt\":\"Turn the revenue data and dashboard concept into a concise product brief. Keep the source files linked so the team can trace every claim.\",\"options\":{\"cwd\":\"{{TUTORIAL_ROOT}}\"}}",
+      "messageKind": "user",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"I’ll tighten the audience section, keep the dashboard and revenue sources connected, and then show the result in context.\"}]}}",
+      "messageKind": "assistant",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tutorial-edit-product-brief\",\"name\":\"Edit\",\"input\":{\"file_path\":\"{{TUTORIAL_ROOT}}/product-brief.md\",\"old_string\":\"The first version is for a team preparing a product launch.\",\"new_string\":\"The first version is for a team preparing a product launch. They already have monthly data, but they need a shared view that keeps planning conversations grounded in the same numbers.\"}}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tutorial-edit-product-brief\",\"content\":\"Updated {{TUTORIAL_ROOT}}/product-brief.md.\"}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tutorial-display-revenue\",\"name\":\"mcp__nimbalyst__display_to_user\",\"input\":{\"items\":[{\"description\":\"Monthly total revenue from revenue.csv, January through June.\",\"chart\":{\"chartType\":\"line\",\"data\":[{\"month\":\"January\",\"revenue\":43400},{\"month\":\"February\",\"revenue\":48900},{\"month\":\"March\",\"revenue\":55400},{\"month\":\"April\",\"revenue\":63500},{\"month\":\"May\",\"revenue\":72500},{\"month\":\"June\",\"revenue\":82600}],\"xAxisKey\":\"month\",\"yAxisKey\":\"revenue\"}}]}}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tutorial-display-revenue\",\"content\":\"Displayed the revenue trend from {{TUTORIAL_ROOT}}/revenue.csv.\"}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"nimbalyst_tool_use\",\"id\":\"tutorial-brief-emphasis\",\"name\":\"AskUserQuestion\",\"input\":{\"questions\":[{\"header\":\"Brief emphasis\",\"question\":\"Which direction should the brief emphasize?\",\"options\":[{\"label\":\"Revenue momentum\",\"description\":\"Lead with the six-month growth story.\"},{\"label\":\"Launch readiness\",\"description\":\"Lead with the remaining work before launch.\"}],\"multiSelect\":false}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"nimbalyst_tool_result\",\"tool_use_id\":\"tutorial-brief-emphasis\",\"result\":\"{\\\"answers\\\":{\\\"Which direction should the brief emphasize?\\\":\\\"Revenue momentum\\\"},\\\"cancelled\\\":false,\\\"respondedBy\\\":\\\"desktop\\\"}\",\"is_error\":false}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tutorial-dashboard-screenshot\",\"name\":\"mcp__nimbalyst__capture_editor_screenshot\",\"input\":{\"file_path\":\"{{TUTORIAL_ROOT}}/dashboard.mockup.html\"}}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tutorial-dashboard-screenshot\",\"content\":[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"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\"}}]}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"The brief now leads with revenue momentum, cites [revenue.csv](revenue.csv), and keeps the rendered [dashboard mockup](dashboard.mockup.html) beside the written story.\"}]}}",
+      "messageKind": "assistant",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"Note to the user: You can type into the window below and continue this session or start a new one\"}]}}",
+      "messageKind": "assistant",
+      "hidden": false
+    }
+  ]
+}

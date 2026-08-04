@@ -56,8 +56,20 @@ jobs:
         working-directory: packages/extension-sdk
         run: npm run build
 
+      # docsUiStoreBinding.test.tsx imports the built bundle entry
+      # (@nimbalyst/collab-bundle/docs-ui -> dist/docs-ui.js) on purpose: it
+      # gates the store binding that only exists once the bundle is built. The
+      # pre-push hook gets that dist for free because typecheck:prepush runs
+      # the collab-bundle typecheck (which builds) before vitest; CI has to
+      # build it explicitly or the import cannot resolve.
+      - name: Build collab-bundle
+        run: npm run build --workspace=@nimbalyst/collab-bundle
+
       - name: Check override/dep sync
         run: npm run check:override-sync
+
+      - name: Check tracked text files for raw NUL bytes
+        run: npm run check:text-nuls -- --ref HEAD
 
       - name: Run unit tests
         run: npm run test:unit -- --run

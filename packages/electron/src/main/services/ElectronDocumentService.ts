@@ -17,6 +17,7 @@ import { getCurrentIdentity } from './TrackerIdentityService';
 import { applyCommentMutation, type CommentMutation } from './tracker/commentMutations';
 import { appendActivity } from './tracker/trackerActivity';
 import { extractItemCustomFields } from './tracker/trackerRowCustomFields';
+import { fromDbBoolean } from './tracker/trackerDbValue';
 import {
   getBacklinks as getRelationshipBacklinks,
   reindexItemRelationships,
@@ -33,6 +34,7 @@ import {
   updateInlineTrackerItem,
   removeInlineTrackerItem,
   setShareInFrontmatter,
+  setTrackerIdInFrontmatter,
   EXTENSION_OWNED_KEYS,
   LEGACY_KEY_TO_TYPE,
   buildFullDocumentTrackerId,
@@ -40,7 +42,9 @@ import {
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel';
 import { database } from '../database/PGLiteDatabaseWorker';
-import { shouldExcludeDir } from '../utils/fileFilters';
+import { shouldExcludeDir, shouldExcludePath } from '../utils/fileFilters';
+import { isRendererUnsupportedImage, resolveImageExtension, sniffImageExtension } from '../utils/imageFormat';
+import { compressImage } from './ImageCompressor';
 import { getRegisteredExtensions } from '../extensions/RegisteredFileTypes';
 import { isPathInWorkspace, getRelativeWorkspacePath } from '../utils/workspaceDetection';
 import { syncTrackerItem, unsyncTrackerItem, isTrackerSyncActive } from './TrackerSyncManager';
@@ -51,7 +55,7 @@ import {
   shouldSyncTrackerItem,
 } from './TrackerPolicyService';
 import { computeFrontmatterTrackerTransition } from './tracker/frontmatterTrackerTransition';
-import { applyHeadlessBodyMarkdown } from './MainBodyDocService';
+import { applyHeadlessBodyMarkdown, readHeadlessBodyMarkdown } from './MainBodyDocService';
 import { getWorkspaceState } from '../utils/store';
 import { AnalyticsService } from './analytics/AnalyticsService';
 import { sendTeamAnalyticsEvent } from './analytics/TeamAnalytics';
@@ -743,7 +747,7 @@ export class ElectronDocumentService implements DocumentService {
 
           if (stats.isDirectory()) {
             // Use centralized directory exclusion logic (worktrees, node_modules, .git, etc.)
-            if (shouldExcludeDir(item)) {
+            if (shouldExcludeDir(item) || shouldExcludePath(fullPath)) {
               continue;
             }
             // Add directory as a mentionable document for @ mentions
@@ -1299,16 +1303,8 @@ export class ElectronDocumentService implements DocumentService {
     const parsed = parseFullDocumentTrackerId(itemId);
     if (!parsed) return null;
 
-    const bySourceRef = await database.query<any>(
-      `SELECT * FROM tracker_items
-       WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3
-       ORDER BY updated DESC
-       LIMIT 1`,
-      [this.workspacePath, parsed.relativePath, parsed.trackerType]
-    );
-    if (bySourceRef.rows.length > 0) {
-      return bySourceRef.rows[0];
-    }
+    const bySourceRef = await this.findRowForFrontmatterFile(parsed.relativePath, parsed.trackerType);
+    if (bySourceRef) return bySourceRef;
 
     if (!options?.createProjectionForFullDocument) {
       return null;
@@ -1316,14 +1312,296 @@ export class ElectronDocumentService implements DocumentService {
 
     await this.ensureFrontmatterProjectionRow(parsed.relativePath, parsed.trackerType);
 
-    const created = await database.query<any>(
+    return await this.findRowForFrontmatterFile(parsed.relativePath, parsed.trackerType);
+  }
+
+  /**
+   * Find the tracker row backing a frontmatter file, WITHOUT filtering on
+   * `source = 'frontmatter'`.
+   *
+   * A file-backed plan that gets shared is PROMOTED: its row keeps `source_ref`
+   * but flips to `source = 'native'` under a stable id (see
+   * `promoteFileBackedTrackerRow`). Every file->row lookup therefore has to
+   * match on provenance rather than on source, or the next frontmatter scan
+   * misses the promoted row and inserts a duplicate `fm:` row for the same file.
+   *
+   * Resolution order:
+   *   1. the file's declared `trackerId` (exact row id) -- survives a rename,
+   *   2. `source_ref` match regardless of `source`.
+   */
+  private async findRowForFrontmatterFile(
+    relativePath: string,
+    trackerType: string,
+    frontmatter?: Record<string, any> | null,
+  ): Promise<any | null> {
+    const declaredId = typeof frontmatter?.trackerId === 'string' ? frontmatter.trackerId.trim() : '';
+    if (declaredId) {
+      const byDeclaredId = await database.query<any>(
+        `SELECT * FROM tracker_items WHERE id = $1 AND workspace = $2 LIMIT 1`,
+        [declaredId, this.workspacePath],
+      );
+      if (byDeclaredId.rows.length > 0) return byDeclaredId.rows[0];
+    }
+
+    const bySourceRef = await database.query<any>(
       `SELECT * FROM tracker_items
-       WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3
+       WHERE workspace = $1 AND source_ref = $2 AND type = $3
        ORDER BY updated DESC
        LIMIT 1`,
-      [this.workspacePath, parsed.relativePath, parsed.trackerType]
+      [this.workspacePath, relativePath, trackerType],
     );
-    return created.rows[0] || null;
+    return bySourceRef.rows[0] || null;
+  }
+
+  /**
+   * Whether a row is a PROMOTED file-backed item: it still records the markdown
+   * file it came from, but it is now an ordinary native item whose content lives
+   * in the `tracker-content/<id>` collab room.
+   *
+   * Its markdown file is an INERT ORIGIN -- the source at promotion time and
+   * nothing after. Callers use this to skip the frontmatter projection's content
+   * and field refresh, which would otherwise clobber the shared body with a
+   * stale local file on the next rescan.
+   *
+   * `declaredId` is the file's own `trackerId`, and a match on it is decisive.
+   * The sync round-trip rewrites the sharer's row from the incoming payload,
+   * which carries no file path -- so a promoted row loses `source_ref` once it
+   * comes back down from the room. Provenance alone is therefore not a reliable
+   * signal; the file pointing AT the row is.
+   */
+  private isPromotedTrackerRow(
+    row: { id?: string; source?: string | null; source_ref?: string | null } | null,
+    declaredId?: string,
+  ): boolean {
+    if (!row) return false;
+    if (declaredId && row.id === declaredId) return true;
+    return row.source === 'native' && typeof row.source_ref === 'string' && row.source_ref.length > 0;
+  }
+
+  /**
+   * Promote a file-backed (frontmatter) tracker row to a stable native id.
+   *
+   * Sharing a plan copies its markdown into the item's collab doc, but the row
+   * kept `id = fm:<type>:<local path>` -- so every copy-link surface emitted a
+   * link addressed by the SHARER's file path, which no teammate can open, and
+   * the collab room inherited that non-URL-safe id. Promotion happens at share
+   * time, BEFORE the first room push, so the `fm:` id never reaches the wire and
+   * no room migration is needed.
+   *
+   * The row is renamed (not copied) and `source` flips to `'native'`, keeping
+   * `source_ref` / `document_path` for provenance. Two behaviors fall out of the
+   * flip: `getCanonicalTrackerItemIdFromRow` returns the stable id, and the
+   * detail view's `isNativeItem` switches the sharer to the collaborative editor.
+   *
+   * Callers own the file write -- promotion is paired with a single write that
+   * puts `trackerId` and `share` in the frontmatter together, so a rescan never
+   * observes a half-promoted file.
+   */
+  private async promoteFileBackedTrackerRow(row: any): Promise<{ newId: string; oldId: string }> {
+    const oldId: string = row.id;
+    const newId = `${row.type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    await database.query(
+      `UPDATE tracker_items SET id = $1, source = 'native' WHERE id = $2`,
+      [newId, oldId],
+    );
+    // Anything keyed by the item id has to follow the rename or it silently
+    // detaches (a favorited plan loses its star, the cached body goes missing).
+    await database.query(`UPDATE tracker_body_cache SET item_id = $1 WHERE item_id = $2`, [newId, oldId]);
+    await database.query(`UPDATE tracker_personal_state SET item_id = $1 WHERE item_id = $2`, [newId, oldId]);
+    await database.query(
+      `UPDATE tracker_relationship_index SET source_item_id = $1 WHERE source_item_id = $2`,
+      [newId, oldId],
+    );
+    await database.query(
+      `UPDATE tracker_relationship_index SET target_item_id = $1 WHERE target_item_id = $2`,
+      [newId, oldId],
+    );
+
+    return { newId, oldId };
+  }
+
+  /**
+   * The workspace-relative markdown file behind a row, from whichever record of
+   * it survives.
+   *
+   * `source_ref` / `document_path` are the normal answer, but the sync
+   * round-trip rewrites a shared row from the room's payload, which carries no
+   * file path -- so an item that has been shared for a while has null columns and
+   * an `fm:<type>:<path>` id. For those, the id IS the record of the file.
+   */
+  private fileRelativePathForRow(row: { id: string; source_ref?: string | null; document_path?: string | null }): string | null {
+    return row.source_ref || row.document_path || parseFullDocumentTrackerId(row.id)?.relativePath || null;
+  }
+
+  /**
+   * Inverse of `promoteFileBackedTrackerRow`, run when a promoted item is
+   * unshared. The row returns to its `fm:<type>:<path>` id and `source =
+   * 'frontmatter'`, with `source_ref` / `document_path` restored, so the file
+   * becomes authoritative again and the existing file-backed unshare path (which
+   * relies on the row re-projecting from disk) keeps working.
+   *
+   * This also covers items shared BEFORE promotion existed: their id is already
+   * the `fm:` id, so the rename is a no-op and the useful work is restoring the
+   * provenance columns the round-trip stripped. That is what makes
+   * unshare-then-reshare a viable alternative to migrating them.
+   *
+   * The item's current body is flushed back to the markdown file first: the file
+   * has been inert since the share, so without the flush an unshare would
+   * silently revert the content to its pre-share snapshot.
+   */
+  private async demoteFileBackedTrackerRow(row: any): Promise<{ newId: string; oldId: string }> {
+    const oldId: string = row.id;
+    const relativePath = this.fileRelativePathForRow(row)!;
+    const newId = buildFullDocumentTrackerId(row.type, relativePath);
+
+    await this.flushTrackerBodyToFile(row, relativePath);
+
+    await database.query(
+      `UPDATE tracker_items
+       SET id = $1, source = 'frontmatter', source_ref = $3, document_path = $3
+       WHERE id = $2`,
+      [newId, oldId, relativePath],
+    );
+    await database.query(`UPDATE tracker_body_cache SET item_id = $1 WHERE item_id = $2`, [newId, oldId]);
+    await database.query(`UPDATE tracker_personal_state SET item_id = $1 WHERE item_id = $2`, [newId, oldId]);
+    await database.query(
+      `UPDATE tracker_relationship_index SET source_item_id = $1 WHERE source_item_id = $2`,
+      [newId, oldId],
+    );
+    await database.query(
+      `UPDATE tracker_relationship_index SET target_item_id = $1 WHERE target_item_id = $2`,
+      [newId, oldId],
+    );
+
+    return { newId, oldId };
+  }
+
+  /**
+   * One-shot migration for items that were ALREADY shared under an `fm:` id,
+   * before promotion existed. Manual by design (`document-service:migrate-shared-
+   * frontmatter-ids`): the affected set is tiny, and each row involves a live
+   * room read plus a tombstone, which is not something to run on every startup.
+   *
+   * Per row:
+   *   1. read the body from the OLD `tracker-content/fm:…` room -- NOT from the
+   *      markdown file, which has been diverging since the moment of the share,
+   *   2. promote the row (the `issue_number` / `issue_key` columns ride along
+   *      with the rename, so NIM-2324 stays NIM-2324),
+   *   3. write `trackerId` into the file's frontmatter,
+   *   4. seed the new room with the carried body and push the item under the new
+   *      id,
+   *   5. tombstone the old id so teammates' `fm:` row disappears instead of
+   *      lingering as a duplicate.
+   *
+   * Candidates are selected by ID SHAPE, not by `source`: the sync round-trip
+   * rewrites the sharer's row from the incoming payload, which carries no file
+   * path, so every already-shared item has long since become
+   * `source = 'native'` with a null `source_ref` while keeping its `fm:` id. The
+   * backing file is recovered from the id itself.
+   *
+   * `dryRun` reports the candidate set without touching anything.
+   */
+  async migrateSharedFrontmatterItemsToStableIds(
+    options?: { dryRun?: boolean },
+  ): Promise<{
+    dryRun: boolean;
+    migrated: Array<{ oldId: string; newId: string; issueKey?: string; bodySource: string }>;
+    skipped: Array<{ id: string; reason: string }>;
+  }> {
+    const dryRun = options?.dryRun ?? false;
+    const migrated: Array<{ oldId: string; newId: string; issueKey?: string; bodySource: string }> = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+
+    const candidates = await database.query<any>(
+      `SELECT * FROM tracker_items
+       WHERE workspace = $1 AND id LIKE 'fm:%' AND sync_id IS NOT NULL
+       ORDER BY updated DESC`,
+      [this.workspacePath],
+    );
+
+    for (const row of candidates.rows) {
+      const relativePath: string | null =
+        row.source_ref || row.document_path || parseFullDocumentTrackerId(row.id)?.relativePath || null;
+      if (!relativePath) {
+        skipped.push({ id: row.id, reason: 'no backing file path' });
+        continue;
+      }
+      if (dryRun) {
+        migrated.push({ oldId: row.id, newId: '(dry run)', issueKey: row.issue_key ?? undefined, bodySource: '(dry run)' });
+        continue;
+      }
+
+      try {
+        // 1. The room is the authoritative body: teammates have been editing it
+        // since the share, while the file has been frozen at the pre-share text.
+        const roomBody = await readHeadlessBodyMarkdown(this.workspacePath, row.id);
+        const cachedBody = row.content != null ? parseTrackerContentColumn(row.content) : undefined;
+        const body = (roomBody && roomBody.trim()) ? roomBody : (typeof cachedBody === 'string' ? cachedBody : '');
+        const bodySource = (roomBody && roomBody.trim()) ? 'room' : (body ? 'local-cache' : 'empty');
+
+        // 2. Promote (issue_number / issue_key follow the row).
+        const { newId, oldId } = await this.promoteFileBackedTrackerRow(row);
+
+        // 3. Mark the file as promoted so the next scan leaves it alone.
+        try {
+          const fullPath = path.join(this.workspacePath, relativePath);
+          const content = await fs.readFile(fullPath, 'utf-8');
+          await fs.writeFile(fullPath, setTrackerIdInFrontmatter(content, newId), 'utf-8');
+        } catch (err) {
+          console.error(`[DocumentService] migrate: could not stamp trackerId into ${relativePath}:`, err);
+        }
+
+        // 4. Carry the body into the new room and push the item under the new id.
+        if (body) {
+          await this.updateTrackerItemContent(newId, body);
+          await applyHeadlessBodyMarkdown(this.workspacePath, newId, body);
+        }
+        const promotedRow = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [newId]);
+        if (promotedRow.rows.length > 0 && isTrackerSyncActive(this.workspacePath)) {
+          await syncTrackerItem(this.rowToTrackerItem(promotedRow.rows[0]));
+        }
+
+        // 5. Tombstone the old id. The local row is already renamed, so this
+        // only removes the stale `fm:` entry from the team room.
+        try {
+          await unsyncTrackerItem(oldId, this.workspacePath);
+        } catch (err) {
+          console.error(`[DocumentService] migrate: tombstoning ${oldId} failed:`, err);
+        }
+
+        migrated.push({ oldId, newId, issueKey: row.issue_key ?? undefined, bodySource });
+      } catch (err) {
+        skipped.push({ id: row.id, reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return { dryRun, migrated, skipped };
+  }
+
+  /**
+   * Write a shared item's body back into its markdown file, preserving the
+   * file's frontmatter block verbatim. Best-effort: the durable copy is the row.
+   *
+   * The LIVE ROOM wins over the local `content` column. Teammates have been
+   * editing the collab doc since the share while this row only holds whatever
+   * was last cached locally -- for items shared before promotion existed that
+   * column is usually null outright.
+   */
+  private async flushTrackerBodyToFile(row: any, relativePath: string): Promise<void> {
+    try {
+      const roomBody = await readHeadlessBodyMarkdown(this.workspacePath, row.id);
+      const cached = row.content != null ? parseTrackerContentColumn(row.content) : undefined;
+      const body = roomBody && roomBody.trim() ? roomBody : cached;
+      if (typeof body !== 'string' || !body.trim()) return;
+      const fullPath = path.join(this.workspacePath, relativePath);
+      const existing = await fs.readFile(fullPath, 'utf-8');
+      const fmMatch = existing.match(/^(---\r?\n[\s\S]*?\r?\n---\r?\n)/);
+      const next = fmMatch ? `${fmMatch[1]}${body}\n` : `${body}\n`;
+      if (next !== existing) await fs.writeFile(fullPath, next, 'utf-8');
+    } catch (err) {
+      console.error('[DocumentService] flushTrackerBodyToFile failed:', err);
+    }
   }
 
   private async ensureFrontmatterProjectionRow(
@@ -1350,38 +1628,46 @@ export class ElectronDocumentService implements DocumentService {
       || (frontmatter.title as string)
       || relativePath.split('/').pop()?.replace(/\.md$/, '')
       || 'Untitled';
+    const declaredId = typeof frontmatter.trackerId === 'string' ? frontmatter.trackerId.trim() : '';
+    const existing = await this.findRowForFrontmatterFile(relativePath, resolved.trackerType, frontmatter);
+
+    // A promoted file is an inert origin: its content and fields now live in the
+    // shared item. Re-projecting would overwrite a teammate's edits with the
+    // stale local file, so the scan stops here.
+    if (this.isPromotedTrackerRow(existing, declaredId)) {
+      return this.rowToTrackerItem(existing);
+    }
+
     const bodyMatch = fileContent.match(/^---\s*\n[\s\S]*?\n---\s*\n([\s\S]*)$/);
     const markdownBody = bodyMatch ? bodyMatch[1].trim() : '';
-    const canonicalId = buildFullDocumentTrackerId(resolved.trackerType, relativePath);
+    // A file that declares `trackerId` was already promoted (possibly on another
+    // member's machine, then committed): bind it to that id as a native row
+    // instead of minting a parallel `fm:` projection.
+    const canonicalId = declaredId || buildFullDocumentTrackerId(resolved.trackerType, relativePath);
+    const source = declaredId ? 'native' : 'frontmatter';
 
     const data: Record<string, any> = { title };
     for (const [key, value] of Object.entries(resolved.trackerData)) {
-      if (key === 'type' || key === 'trackerStatus') continue;
+      if (key === 'type' || key === 'trackerStatus' || key === 'trackerId') continue;
       if (value !== undefined && value !== null) {
         data[key] = value;
       }
     }
 
-    const existing = await database.query<any>(
-      `SELECT id FROM tracker_items
-       WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3
-       LIMIT 1`,
-      [this.workspacePath, relativePath, resolved.trackerType]
-    );
-
-    if (existing.rows.length > 0 && existing.rows[0].id !== canonicalId) {
+    if (existing && existing.id !== canonicalId) {
       await database.query(
         `UPDATE tracker_items
-         SET data = $1, content = $2, source = 'frontmatter', source_ref = $3, document_path = $3, updated = NOW()
+         SET data = $1, content = $2, source = $5, source_ref = $3, document_path = $3, updated = NOW()
          WHERE id = $4`,
         [
           JSON.stringify(data),
           markdownBody ? JSON.stringify(markdownBody) : null,
           relativePath,
-          existing.rows[0].id,
+          existing.id,
+          source,
         ]
       );
-      const result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [existing.rows[0].id]);
+      const result = await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [existing.id]);
       return result.rows.length > 0 ? this.rowToTrackerItem(result.rows[0]) : null;
     }
 
@@ -1390,11 +1676,11 @@ export class ElectronDocumentService implements DocumentService {
         id, type, data, workspace, document_path, line_number,
         created, updated, last_indexed, sync_status,
         content, archived, source, source_ref
-      ) VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW(), NOW(), 'local', $6, FALSE, 'frontmatter', $5)
+      ) VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW(), NOW(), 'local', $6, FALSE, $7, $5)
       ON CONFLICT (id) DO UPDATE SET
         data = tracker_items.data || $3,
         content = $6,
-        source = 'frontmatter',
+        source = $7,
         source_ref = $5,
         document_path = $5,
         updated = NOW()`,
@@ -1405,6 +1691,7 @@ export class ElectronDocumentService implements DocumentService {
         this.workspacePath,
         relativePath,
         markdownBody ? JSON.stringify(markdownBody) : null,
+        source,
       ]
     );
 
@@ -1434,14 +1721,14 @@ export class ElectronDocumentService implements DocumentService {
       const type = resolved.trackerType;
       const canonicalId = buildFullDocumentTrackerId(type, relativePath);
 
-      const existingRes = await database.query<any>(
-        `SELECT id, data FROM tracker_items
-         WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3
-         ORDER BY updated DESC
-         LIMIT 1`,
-        [this.workspacePath, relativePath, type],
-      );
-      const row = existingRes.rows[0];
+      const declaredId = typeof frontmatter.trackerId === 'string' ? frontmatter.trackerId.trim() : '';
+      const row = await this.findRowForFrontmatterFile(relativePath, type, frontmatter);
+
+      // Promoted (shared) items own their fields now -- the file is an inert
+      // origin. Replaying the file's frontmatter over the row would revert a
+      // teammate's status/title change on the next local save.
+      if (this.isPromotedTrackerRow(row, declaredId)) return;
+
       const existingData = row ? (parseJsonColumn<Record<string, any>>(row.data) ?? {}) : null;
 
       // Tracked field values from the resolved frontmatter, minus routing keys.
@@ -1452,7 +1739,7 @@ export class ElectronDocumentService implements DocumentService {
         || 'Untitled';
       const newFields: Record<string, any> = { title };
       for (const [key, value] of Object.entries(resolved.trackerData)) {
-        if (key === 'type' || key === 'trackerStatus' || key === 'activity') continue;
+        if (key === 'type' || key === 'trackerStatus' || key === 'activity' || key === 'trackerId') continue;
         if (value !== undefined && value !== null) newFields[key] = value;
       }
 
@@ -1776,7 +2063,7 @@ export class ElectronDocumentService implements DocumentService {
       // undo that on read or the raw JSON-quoted string renders as literal text.
       content: row.content != null ? parseTrackerContentColumn(row.content) : undefined,
       // Archive state
-      archived: row.archived ?? false,
+      archived: fromDbBoolean(row.archived),
       archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
       // Source tracking
       source: row.source || (row.document_path ? 'inline' : 'native'),
@@ -2016,7 +2303,7 @@ export class ElectronDocumentService implements DocumentService {
    * in the markdown and are reconciled by `reconcileFrontmatterShare` on save.
    */
   async setTrackerItemShared(itemId: string, shared: boolean): Promise<TrackerItem> {
-    const row = await this.resolveTrackerRowForPublicId(itemId, { createProjectionForFullDocument: true });
+    let row = await this.resolveTrackerRowForPublicId(itemId, { createProjectionForFullDocument: true });
     if (!row) {
       throw new Error(`Tracker item not found: ${itemId}`);
     }
@@ -2035,12 +2322,41 @@ export class ElectronDocumentService implements DocumentService {
     // time the rescan runs captureFrontmatterTrackerTransition sees no change
     // and skips its reconcile. reconcileFrontmatterShare pushes the item (and
     // seeds its file body) on share, or tombstones it on unshare.
-    if ((row.source === 'frontmatter' || row.source === 'import') && (row.source_ref || row.document_path)) {
-      const relativePath = row.source_ref || row.document_path;
+    // A legacy `fm:` id means the item was shared before promotion existed: the
+    // round-trip stripped its provenance columns, so on `source` alone it reads
+    // as a native item and the unshare guard below would refuse it. The id still
+    // names the file, which makes it file-backed and therefore safe to unshare.
+    const isLegacyFullDocumentRow = parseFullDocumentTrackerId(row.id) !== null;
+    const relativePath = this.fileRelativePathForRow(row);
+    const isFileBackedRow =
+      !!relativePath &&
+      (row.source === 'frontmatter' ||
+        row.source === 'import' ||
+        this.isPromotedTrackerRow(row) ||
+        isLegacyFullDocumentRow);
+
+    if (isFileBackedRow) {
       const fullPath = path.join(this.workspacePath, relativePath);
+
+      // PROMOTE on share / DE-PROMOTE on unshare, before anything touches the
+      // room. The item's public id is the room address, so minting the stable id
+      // here is what keeps the sharer's local file path off the wire and out of
+      // every copy-link surface. Unshare restores the `fm:` id so the file
+      // becomes authoritative again and the row re-projects from disk as before.
+      if (shared && !this.isPromotedTrackerRow(row)) {
+        const { newId } = await this.promoteFileBackedTrackerRow(row);
+        row = (await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [newId])).rows[0];
+      } else if (!shared && (this.isPromotedTrackerRow(row) || isLegacyFullDocumentRow)) {
+        const { newId } = await this.demoteFileBackedTrackerRow(row);
+        row = (await database.query<any>(`SELECT * FROM tracker_items WHERE id = $1`, [newId])).rows[0];
+      }
+
+      // Single file write: `trackerId` and `share` land together so a rescan can
+      // never observe a half-promoted file.
       try {
         const content = await fs.readFile(fullPath, 'utf-8');
-        const updatedContent = setShareInFrontmatter(content, shared ? shareFlag : null);
+        const withShare = setShareInFrontmatter(content, shared ? shareFlag : null);
+        const updatedContent = setTrackerIdInFrontmatter(withShare, shared ? row.id : null);
         await fs.writeFile(fullPath, updatedContent, 'utf-8');
       } catch (err) {
         throw new Error(`Failed to write share flag to ${relativePath}: ${err instanceof Error ? err.message : String(err)}`);
@@ -3275,7 +3591,7 @@ export class ElectronDocumentService implements DocumentService {
             : (existing.updated != null
                 ? new Date(existing.updated).toISOString()
                 : scanNow);
-          const isArchived = item.archived === true;
+          const isArchived = fromDbBoolean(item.archived);
           const b = i * COLS_PER_ROW;
           valuesClauses.push(
             `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, NOW(), $${b + 7}, $${b + 8}, $${b + 9}, $${b + 10})`
@@ -3347,19 +3663,12 @@ export class ElectronDocumentService implements DocumentService {
 
   // Asset management methods
   async storeAsset(buffer: Buffer, mimeType: string, documentPath?: string): Promise<{ hash: string, extension: string, relativePath: string }> {
-    // Hash the image buffer
-    const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+    const { buffer: assetBuffer, mimeType: assetMimeType } = await this.transcodeUnsupportedImage(buffer, mimeType);
 
-    // Determine file extension from MIME type
-    const extensionMap: Record<string, string> = {
-      'image/png': 'png',
-      'image/jpeg': 'jpg',
-      'image/jpg': 'jpg',
-      'image/gif': 'gif',
-      'image/webp': 'webp',
-      'image/svg+xml': 'svg'
-    };
-    const extension = extensionMap[mimeType] || 'png';
+    // Hash the stored bytes so deduplication keys off what actually lands on disk
+    const hash = crypto.createHash('sha256').update(assetBuffer).digest('hex');
+
+    const extension = resolveImageExtension(assetMimeType, assetBuffer);
     const filename = `${hash}.${extension}`;
 
     // Determine asset storage location based on document path
@@ -3388,18 +3697,50 @@ export class ElectronDocumentService implements DocumentService {
       await fs.access(assetPath);
       // console.log(`[DocumentService] Asset ${filename} already exists at ${assetsDir}, skipping write`);
     } catch {
-      await fs.writeFile(assetPath, buffer);
-      // console.log(`[DocumentService] Stored asset ${filename} at ${assetsDir} (${buffer.length} bytes)`);
+      await fs.writeFile(assetPath, assetBuffer);
+      // console.log(`[DocumentService] Stored asset ${filename} at ${assetsDir} (${assetBuffer.length} bytes)`);
     }
 
     return { hash, extension, relativePath };
+  }
+
+  /**
+   * Convert images Chromium cannot decode (HEIC/HEIF from Apple devices) into a web-renderable
+   * format. Without this the raw bytes are stored under whatever extension the MIME map produced
+   * and the document shows a permanently broken image (NIM-2211).
+   *
+   * Detection uses the bytes as well as the MIME type because some drag sources report an empty
+   * `File.type`.
+   */
+  private async transcodeUnsupportedImage(
+    buffer: Buffer,
+    mimeType: string
+  ): Promise<{ buffer: Buffer; mimeType: string }> {
+    const needsTranscode = isRendererUnsupportedImage(mimeType) || sniffImageExtension(buffer) === 'heic';
+    if (!needsTranscode) {
+      return { buffer, mimeType };
+    }
+
+    try {
+      // Pass an explicit HEIC type so the decoder is selected even when the source MIME was blank.
+      const result = await compressImage(buffer, 'image/heic', {
+        maxDimension: 4096,
+        targetSizeBytes: 8 * 1024 * 1024
+      });
+      return { buffer: result.buffer, mimeType: result.mimeType };
+    } catch (error) {
+      // Keep the original bytes; resolveImageExtension will name them .heic so the file stays
+      // openable outside the app rather than masquerading as a png.
+      console.warn('[DocumentService] Failed to convert HEIC asset, storing original', error);
+      return { buffer, mimeType: mimeType || 'image/heic' };
+    }
   }
 
   async getAssetPath(hash: string): Promise<string | null> {
     const assetsDir = path.join(this.workspacePath, '.nimbalyst', 'assets');
 
     // Try common extensions
-    const extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
+    const extensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'tiff', 'heic'];
     for (const ext of extensions) {
       const assetPath = path.join(assetsDir, `${hash}.${ext}`);
       try {
@@ -3898,6 +4239,21 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
     }
   });
 
+  // Manual one-shot: promote items that were already shared under an `fm:` id.
+  // Deliberately not a startup sweep -- see
+  // migrateSharedFrontmatterItemsToStableIds.
+  safeHandle('document-service:migrate-shared-frontmatter-ids', async (event, payload?: { dryRun?: boolean }) => {
+    try {
+      const report = await requireDocumentService(event).migrateSharedFrontmatterItemsToStableIds({
+        dryRun: payload?.dryRun,
+      });
+      return { success: true, ...report };
+    } catch (error) {
+      console.error('[DocumentService] migrate-shared-frontmatter-ids failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   // Per-item "Share with team" toggle for hybrid trackers (e.g. plans).
   safeHandle('document-service:set-tracker-item-shared', async (event, payload: {
     itemId: string;
@@ -4041,8 +4397,33 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
     updates: Record<string, any>;
   }) => {
     try {
-      const item = await requireDocumentService(event).updateTrackerItemInFile(payload.itemId, payload.updates);
+      const svc = requireDocumentService(event);
+
+      // Capture pre-update relationship values so inverse propagation (below) can
+      // diff added/dropped targets. Same best-effort read as the non-file update
+      // handler: no old row means we skip propagation rather than guess.
+      let oldData: Record<string, unknown> = {};
+      try {
+        const oldRow = await database.query<any>(`SELECT data FROM tracker_items WHERE id = $1`, [payload.itemId]);
+        if (oldRow.rows[0]) oldData = parseJsonColumn<Record<string, unknown>>(oldRow.rows[0].data) ?? {};
+      } catch { /* skip inverse propagation if old data is unavailable */ }
+
+      const item = await svc.updateTrackerItemInFile(payload.itemId, payload.updates);
       const policy = getEffectiveTrackerSyncPolicy(item.workspace, item.type);
+
+      // A file-backed item's relationship fields have the same inverses as a
+      // native one's: assigning a frontmatter-backed plan to a milestone must
+      // still add that plan to the milestone's members. Without this the
+      // Collection chip looked like it worked but only wrote the member side.
+      try {
+        await svc.propagateInverseForUpdate(
+          { id: item.id, type: item.type, issueKey: item.issueKey, title: item.title },
+          payload.updates,
+          oldData,
+        );
+      } catch (invErr) {
+        console.error('[DocumentService] inverse relationship propagation failed (in-file):', invErr);
+      }
       trackTrackerMutation({
         itemId: payload.itemId,
         action: trackerMutationAction(payload.updates),
@@ -4129,7 +4510,7 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
         tags: d.tags || undefined, created: d.created || r.created || undefined,
         updated: d.updated || r.updated || undefined, dueDate: d.dueDate || undefined,
         lastIndexed: new Date(r.last_indexed), content: r.content || undefined,
-        archived: r.archived ?? false,
+        archived: fromDbBoolean(r.archived),
         archivedAt: r.archived_at ? new Date(r.archived_at).toISOString() : undefined,
         source: r.source || (r.document_path ? 'inline' : 'native'),
         sourceRef: r.source_ref || undefined,

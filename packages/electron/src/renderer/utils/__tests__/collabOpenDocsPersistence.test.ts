@@ -18,6 +18,12 @@ import {
   readEntriesFromState,
 } from '../collabOpenDocsPersistence';
 
+const TEST_SCOPE = {
+  scopeKey: '/ws',
+  orgId: 'org-1',
+  indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+};
+
 interface MockState {
   openCollabDocumentIds?: string[];
   openCollabDocumentEntries?: Array<{
@@ -64,8 +70,8 @@ describe('collabOpenDocsPersistence', () => {
       { documentId: 'doc-2', documentType: 'mockup.html' },
     ];
 
-    await persistOpenCollabDocs('/ws', entries);
-    const loaded = await loadOpenCollabDocs('/ws');
+    await persistOpenCollabDocs(TEST_SCOPE, entries);
+    const loaded = await loadOpenCollabDocs(TEST_SCOPE);
 
     expect(loaded).toEqual(entries);
     // The legacy id list is also written for one release of downgrade safety.
@@ -82,8 +88,8 @@ describe('collabOpenDocsPersistence', () => {
     };
     installMockElectronAPI({ openCollabDocumentEntries: [entry] });
 
-    expect(await getPersistedCollabDocMetadata('/ws', 'drawing-1')).toEqual(entry);
-    expect((await getPersistedCollabDocMetadata('/ws', 'drawing-1'))?.documentType)
+    expect(await getPersistedCollabDocMetadata(TEST_SCOPE, 'drawing-1')).toEqual(entry);
+    expect((await getPersistedCollabDocMetadata(TEST_SCOPE, 'drawing-1'))?.documentType)
       .not.toBe('markdown');
   });
 
@@ -95,9 +101,9 @@ describe('collabOpenDocsPersistence', () => {
       displayPath: 'Specs/Auth/Architecture Plan',
     }];
 
-    await persistOpenCollabDocs('/ws', entries);
+    await persistOpenCollabDocs(TEST_SCOPE, entries);
 
-    expect(await loadOpenCollabDocs('/ws')).toEqual(entries);
+    expect(await loadOpenCollabDocs(TEST_SCOPE)).toEqual(entries);
     expect(harness.getState().openCollabDocumentEntries?.[0]?.displayPath)
       .toBe('Specs/Auth/Architecture Plan');
   });
@@ -109,9 +115,9 @@ describe('collabOpenDocsPersistence', () => {
     ];
     installMockElectronAPI();
 
-    await persistOpenCollabDocs('/ws', entries);
+    await persistOpenCollabDocs(TEST_SCOPE, entries);
 
-    expect(await loadOpenCollabDocs('/ws')).toEqual(entries);
+    expect(await loadOpenCollabDocs(TEST_SCOPE)).toEqual(entries);
   });
 
   it('migrates legacy openCollabDocumentIds: string[] as markdown entries', () => {
@@ -143,7 +149,7 @@ describe('collabOpenDocsPersistence', () => {
 
   it('returns an empty list when no state is persisted', async () => {
     installMockElectronAPI();
-    expect(await loadOpenCollabDocs('/ws')).toEqual([]);
+    expect(await loadOpenCollabDocs(TEST_SCOPE)).toEqual([]);
   });
 
   it('returns the documentType for a single open doc lookup', async () => {
@@ -152,13 +158,13 @@ describe('collabOpenDocsPersistence', () => {
         { documentId: 'sketch-1', documentType: 'excalidraw' },
       ],
     });
-    expect(await getPersistedCollabDocType('/ws', 'sketch-1')).toBe('excalidraw');
-    expect(await getPersistedCollabDocType('/ws', 'missing')).toBeUndefined();
+    expect(await getPersistedCollabDocType(TEST_SCOPE, 'sketch-1')).toBe('excalidraw');
+    expect(await getPersistedCollabDocType(TEST_SCOPE, 'missing')).toBeUndefined();
   });
 
   it('returns the migrated markdown type for legacy ids in single-lookup', async () => {
     installMockElectronAPI({ openCollabDocumentIds: ['legacy-doc'] });
-    expect(await getPersistedCollabDocType('/ws', 'legacy-doc')).toBe('markdown');
+    expect(await getPersistedCollabDocType(TEST_SCOPE, 'legacy-doc')).toBe('markdown');
   });
 
   it('drops malformed entries instead of returning broken records', () => {

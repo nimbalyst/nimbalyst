@@ -1,12 +1,11 @@
 /**
- * Types for DocumentSync -- client-side Yjs + encryption layer.
+ * Types for DocumentSync -- client-side Yjs sync layer.
  *
  * Wire-protocol message shapes come from `@nimbalyst/collab-protocol` and
  * are shared with the sync server. This file adds the client-side config
  * surface, review-gate state, and awareness types the renderer consumes.
  */
 
-import type { KeyEnvelopeMessage as ProtocolKeyEnvelopeMessage } from '@nimbalyst/collab-protocol';
 import type { Doc } from 'yjs';
 import type { LocalDocumentReplica } from './LocalDocumentReplica';
 
@@ -17,8 +16,6 @@ export type {
   DocUpdateMessage,
   DocCompactMessage,
   DocAwarenessMessage,
-  AddKeyEnvelopeMessage,
-  RequestKeyEnvelopeMessage,
   DocSetMetadataMessage,
   DocSyncResponseMessage,
   DocUpdateBroadcastMessage,
@@ -28,9 +25,6 @@ export type {
   EncryptedDocUpdate,
   EncryptedDocSnapshot,
 } from '@nimbalyst/collab-protocol';
-
-/** Wire key-envelope delivery message (`type: 'keyEnvelope'`). */
-export type DocKeyEnvelopeMessage = ProtocolKeyEnvelopeMessage;
 
 // ============================================================================
 // Configuration
@@ -55,53 +49,11 @@ export interface DocumentSyncConfig {
   /** B2B organization ID */
   orgId: string;
 
-  /**
-   * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
-   * Yjs updates with `documentKey` (zero-knowledge). `server-managed`: the
-   * server holds the per-team DEK and encrypts at rest, so the client sends and
-   * receives PLAINTEXT (base64 raw bytes, no iv) and `documentKey` is unused.
-   */
-  keyCustody?: 'legacy-e2e' | 'server-managed';
-
-  /**
-   * AES-256-GCM key for encrypting/decrypting Yjs updates. Required in
-   * `legacy-e2e` mode; unused (and optional) in `server-managed` mode.
-   */
-  documentKey?: CryptoKey;
-
-  /**
-   * Legacy org key for reading PRE-MIGRATION rows in `server-managed` mode.
-   *
-   * When a team migrates legacy-e2e -> server-managed, rows written before the
-   * flip are still AES-ciphertext (the server passes them through with their
-   * original iv; only DEK-fingerprinted rows are server-decrypted to plaintext
-   * with an empty-iv sentinel). To read those old rows the client must AES-
-   * decrypt them with the original org key. This holds that key so server-
-   * managed docs can still surface their legacy history. Optional: absent when
-   * the legacy envelope is unavailable (those rows then skip, never crash).
-   */
-  legacyDocumentKey?: CryptoKey;
-
-  /**
-   * NIM-959: every candidate legacy org-key epoch for reading PRE-MIGRATION
-   * rows in `server-managed` mode. A team that rotated its org key while still
-   * legacy-e2e can have content rows spanning multiple epochs; the doc-content
-   * read path must try each (the doc INDEX path already does this for titles,
-   * NIM-906/910). `decryptFromWire` tries these in order until one succeeds, so
-   * a snapshot written under a now-archived epoch still decrypts instead of
-   * blanking the document body. Superset of `legacyDocumentKey` when present.
-   */
-  legacyDocumentKeys?: CryptoKey[];
-
   /** Current user's ID */
   userId: string;
 
   /** Document ID (used to construct room ID) */
   documentId: string;
-
-  /** Org key fingerprint for key epoch enforcement. If provided, the server
-   *  rejects writes with a stale fingerprint after key rotation. */
-  orgKeyFingerprint?: string;
 
   /** Called when a remote Yjs update is applied to the Y.Doc */
   onRemoteUpdate?: (origin: string) => void;
@@ -126,6 +78,19 @@ export interface DocumentSyncConfig {
 
   /** Called when connection status changes */
   onStatusChange?: (status: DocumentSyncStatus) => void;
+
+  /**
+   * Called when an update reached the Y.Doc but a listener threw while handling
+   * it -- in practice, the Lexical binding aborting.
+   *
+   * This is NOT a payload problem and deliberately does not stop sync, but the
+   * host has to know: the document is in the Y.Doc and did not paint, so an
+   * editor left on screen shows an empty document that looks blank rather than
+   * broken. That is exactly how an unregistered `tracker-reference` node
+   * reached production as "some docs still don't load" with nothing but a
+   * console error to show for it.
+   */
+  onEditorBindingError?: (error: unknown) => void;
 
   /** Structured, content-free desktop observability sink. */
   onOfflineMetric?: (event: {
@@ -163,19 +128,6 @@ export interface DocumentSyncConfig {
    * authoritative content from other collaborators.
    */
   onFirstSyncComplete?: (isEmpty: boolean) => void;
-
-  /**
-   * Called when a key envelope is received from the server.
-   * The consumer should verify `senderPublicKey` against the sender's
-   * registered identity key (from TeamRoom) before using the envelope
-   * to unwrap the document key. Use ECDHKeyManager.unwrapDocumentKeyVerified().
-   */
-  onKeyEnvelope?: (envelope: {
-    wrappedKey: string;
-    iv: string;
-    senderPublicKey: string;
-    senderUserId: string;
-  }) => void;
 
   /**
    * Epic H3 P1: called when the server reports this document room was relocated
@@ -273,6 +225,12 @@ export type AwarenessState = Record<string, unknown> & {
    *  the extension path so the SDK hook can dedupe remote collaborators by
    *  stable user id rather than y-protocols clientID. */
   user: { name: string; color: string; id?: string; [k: string]: unknown };
+  /**
+   * Additive, ephemeral departure marker. Updated clients delete the sender's
+   * remote state immediately; older clients ignore it and fall back to their
+   * existing stale-state cleanup while retaining the required user block.
+   */
+  nimbalystDeparture?: { version: 1 };
   /** Lexical-style cursor block (markdown path only). */
   cursor?: {
     anchor: SerializedRelativePosition;

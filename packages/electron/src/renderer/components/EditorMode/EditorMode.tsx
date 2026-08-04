@@ -424,8 +424,8 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         console.error('[openCollabDoc] No workspace path');
         return;
       }
-      const { openCollabDocumentViaIPC } = await import('../../utils/collabDocumentOpener');
-      const tabId = await openCollabDocumentViaIPC({
+      const { openCollabDocumentViaIPCForDesktop } = await import('../../utils/collabDocumentOpener');
+      const tabId = await openCollabDocumentViaIPCForDesktop({
         workspacePath,
         documentId,
         title,
@@ -455,7 +455,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       serverUrl: string;
       orgId: string;
       userId: string;
-      encryptionKeyBase64: string;
       /** Optional query-string suffix appended to the WS URL (no leading ?). */
       urlExtraQuery?: string;
     }) => {
@@ -470,7 +469,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
           userId: params.userId,
           documentId: params.documentId,
           title: params.title ?? params.documentId,
-          encryptionKeyBase64: params.encryptionKeyBase64,
         },
       );
       if (!testResult?.success || !testResult.config) {
@@ -479,18 +477,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         );
       }
       const cfg = testResult.config;
-      // Reconstruct CryptoKey from base64.
-      const binary = atob(cfg.orgKeyBase64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const documentKey = await crypto.subtle.importKey(
-        'raw',
-        bytes,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt'],
-      );
-
       const { openCollabDocument, createProxiedWebSocket } = await import(
         '../../utils/collabDocumentOpener'
       );
@@ -505,12 +491,15 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         : undefined;
 
       const tabId = openCollabDocument({
-        workspacePath,
+        scope: {
+          scopeKey: workspacePath,
+          orgId: cfg.orgId,
+          indexConfig: { serverUrl: cfg.serverUrl, userId: cfg.userId },
+        },
         orgId: cfg.orgId,
         documentId: cfg.documentId,
         title: cfg.title,
         documentType: params.documentType,
-        documentKey,
         serverUrl: cfg.serverUrl,
         accountId: cfg.accountId ?? cfg.userId,
         userId: cfg.userId,
@@ -537,7 +526,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       serverUrl: string;
       orgId: string;
       userId: string;
-      encryptionKeyBase64: string;
       urlExtraQuery?: string;
     }) => {
       if (!workspacePath) {
@@ -551,7 +539,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
           userId: params.userId,
           documentId: params.documentId,
           title: params.title ?? params.documentId,
-          encryptionKeyBase64: params.encryptionKeyBase64,
         },
       );
       if (!testResult?.success || !testResult.config) {
@@ -560,16 +547,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         );
       }
       const cfg = testResult.config;
-      const binary = atob(cfg.orgKeyBase64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const documentKey = await crypto.subtle.importKey(
-        'raw',
-        bytes,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt'],
-      );
       const { registerCollabConfig, createProxiedWebSocket } = await import(
         '../../utils/collabDocumentOpener'
       );
@@ -583,12 +560,15 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
           }
         : undefined;
       return registerCollabConfig({
-        workspacePath,
+        scope: {
+          scopeKey: workspacePath,
+          orgId: cfg.orgId,
+          indexConfig: { serverUrl: cfg.serverUrl, userId: cfg.userId },
+        },
         orgId: cfg.orgId,
         documentId: cfg.documentId,
         title: cfg.title,
         documentType: params.documentType,
-        documentKey,
         serverUrl: cfg.serverUrl,
         accountId: cfg.accountId ?? cfg.userId,
         userId: cfg.userId,

@@ -10,6 +10,7 @@ import {
   FloatingPortal,
   type VirtualElement,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../../floating/windowControlsClearance';
 import type { FileEditSummary } from '../types';
 import { MaterialSymbol } from '../../icons/MaterialSymbol';
 import { useDiffPeek } from '../../git/useDiffPeek';
@@ -19,6 +20,7 @@ import {
   getWorkspaceRelativeFilePath,
   type FileDirectoryNode,
 } from '@nimbalyst/extension-sdk/file-tree';
+import { getShowInFileBrowserLabel } from '../utils/fileBrowserLabel';
 
 interface FileEditsSidebarProps {
   fileEdits: FileEditSummary[];
@@ -158,7 +160,7 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
       if (!open) setContextMenu({ isOpen: false, x: 0, y: 0, filePath: '' });
     },
     placement: 'bottom-start',
-    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const contextMenuDismiss = useDismiss(contextMenuContext);
   const contextMenuRole = useRole(contextMenuContext, { role: 'menu' });
@@ -517,7 +519,7 @@ export const FileEditsSidebar: React.FC<FileEditsSidebarProps> = ({
               }}
             >
               <MaterialSymbol icon="folder_open" size={16} className="text-[var(--nim-text-muted)]" />
-              Reveal in Finder
+              {getShowInFileBrowserLabel()}
             </button>
           )}
         </div>

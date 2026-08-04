@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { DocumentSyncProvider } from '../DocumentSync';
 
@@ -14,7 +15,6 @@ function createProvider(documentKey: CryptoKey): DocumentSyncProvider {
     serverUrl: 'ws://example.test',
     getJwt: async () => 'token',
     orgId: 'org-1',
-    documentKey,
     userId: 'user-1',
     documentId: 'doc-1',
     reviewGateEnabled: false,

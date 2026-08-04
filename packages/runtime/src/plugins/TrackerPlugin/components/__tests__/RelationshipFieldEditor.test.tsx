@@ -20,7 +20,7 @@ describe('RelationshipFieldEditor', () => {
         onChange={() => {}}
       />,
     );
-    expect(screen.getByText('NIM-1')).toBeTruthy();
+    screen.getByText('NIM-1');
   });
 
   it('adds a typed candidate and emits the multi-value array', () => {
@@ -74,9 +74,9 @@ describe('RelationshipFieldEditor', () => {
     render(<RelationshipFieldEditor field={field} value={null} onChange={() => {}} candidates={[{ itemId: 'b' }]} />);
     // Collapsed by default: only the toggle is shown, not the input.
     expect(screen.queryByPlaceholderText('Link an item…')).toBeNull();
-    expect(screen.getByLabelText('Add link')).toBeTruthy();
+    screen.getByLabelText('Add link');
     fireEvent.click(screen.getByLabelText('Add link'));
-    expect(screen.getByPlaceholderText('Link an item…')).toBeTruthy();
+    screen.getByPlaceholderText('Link an item…');
   });
 
   it('does not add a hand-typed bare id that is not a resolved candidate', () => {

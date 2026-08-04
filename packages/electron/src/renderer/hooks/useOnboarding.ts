@@ -4,6 +4,7 @@ import { usePostHog } from 'posthog-js/react';
 import { dialogRef, dialogReadyAtom } from '../contexts/DialogContext';
 import { DIALOG_IDS } from '../dialogs';
 import type { OnboardingData, UnifiedOnboardingData, WindowsClaudeCodeWarningData, RosettaWarningData } from '../dialogs';
+import type { OnboardingIntent } from '../components/UnifiedOnboarding/UnifiedOnboarding';
 import OnboardingService from '../services/OnboardingService';
 import type { ContentMode } from '../types/WindowModeTypes';
 import { setDeveloperFeatureSettingsAtom } from '../store/atoms/appSettings';
@@ -11,6 +12,7 @@ import {
   unifiedOnboardingRequestAtom,
   windowsClaudeCodeWarningRequestAtom,
 } from '../store/atoms/appCommands';
+import { persistOnboardingCompletion } from '../utils/onboardingCompletion';
 
 interface UseOnboardingOptions {
   workspacePath: string | null;
@@ -49,20 +51,11 @@ export function useOnboarding({
   const forcedModeRef = useRef<'new' | 'existing' | null>(null);
 
   // Handle unified onboarding completion
-  const handleOnboardingComplete = useCallback(async (data: OnboardingData) => {
-    const roleToStore = data.customRole || data.role || undefined;
-
-    // Store onboarding data in electron-store (app settings)
-    await window.electronAPI.invoke('onboarding:update', {
-      userRole: roleToStore,
-      userEmail: data.email || undefined,
-      referralSource: data.referralSource || undefined,
-      unifiedOnboardingCompleted: true,
-      onboardingCompleted: true, // Keep for backward compatibility
-    });
-
-    // Store developer mode globally in app settings
-    await window.electronAPI.invoke('developer-mode:set', data.developerMode);
+  const handleOnboardingComplete = useCallback(async (
+    data: OnboardingData,
+    intent: OnboardingIntent,
+  ) => {
+    await persistOnboardingCompletion(data);
 
     // Update the atom so UI reflects the change immediately (without requiring refresh)
     updateDeveloperSettings({ developerMode: data.developerMode });
@@ -152,6 +145,10 @@ export function useOnboarding({
         source: 'onboarding',
         is_initial: true,
       });
+    }
+
+    if (intent === 'tutorial') {
+      await window.electronAPI.tutorial.start();
     }
 
     onboardingOpenRef.current = false;

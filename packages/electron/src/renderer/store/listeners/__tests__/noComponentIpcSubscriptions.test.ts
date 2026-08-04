@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Enforces the centralized-listener rule from docs/IPC_LISTENERS.md.
  *

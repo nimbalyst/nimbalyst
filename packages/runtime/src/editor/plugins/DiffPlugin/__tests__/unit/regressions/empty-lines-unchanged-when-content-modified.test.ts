@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test that empty lines remain unchanged when surrounding content is modified
  *

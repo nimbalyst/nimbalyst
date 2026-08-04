@@ -17,6 +17,7 @@ import type {JSX} from 'react';
 import './ImageNode.css';
 
 import type {VirtualElement} from '@floating-ui/react';
+import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import {
   FloatingPortal,
   offset,
@@ -263,7 +264,7 @@ export function ImageContextMenu({
       if (!open) onClose();
     },
     placement: 'right-start',
-    middleware: [offset(4), flip({padding: 8}), shift({padding: 8})],
+    middleware: [offset(4), flip({padding: 8}), shift({padding: 8}), windowControlsClearance()],
   });
   // Virtual anchor at the cursor position (react's `elements.reference` only
   // accepts a real Element, so point references go through setPositionReference).

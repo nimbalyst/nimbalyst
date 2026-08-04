@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { getClaudeCodeModelLabel } from '../../utils/modelUtils';
 
 export interface AgentModelOption {

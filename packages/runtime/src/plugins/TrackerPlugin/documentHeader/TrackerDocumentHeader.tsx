@@ -11,6 +11,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import { StatusBar } from '../components/StatusBar';
+import { useTrackerChipFieldSections } from '../components/trackerChipFields';
+import { useTrackerRelationshipCandidates } from '../components/useTrackerRelationshipCandidates';
+import type { TeamMemberOption } from '../components/TrackerFieldEditor';
 import { ModelLoader } from '../models/ModelLoader';
 import type { TrackerDataModel } from '../models/TrackerDataModel';
 import type { TrackerRecord } from '../../../core/TrackerRecord';
@@ -56,10 +59,13 @@ export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
   contentVersion,
   onContentChange,
   editor,
+  trackerFieldCapabilities,
 }) => {
   const [dataModel, setDataModel] = useState<TrackerDataModel | null>(null);
   const [trackerType, setTrackerType] = useState<string | null>(null);
   const trackerItems = useAtomValue(trackerItemsMapAtom);
+  const [teamMembers, setTeamMembers] = useState<TeamMemberOption[]>([]);
+  const { chipFields } = useTrackerChipFieldSections(dataModel?.type ?? '');
 
   // Get fresh tracker data when contentVersion changes
   const trackerData = useMemo(() => {
@@ -107,6 +113,38 @@ export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
     if (!trackerData) return null;
     return findAssociatedTrackerItem(trackerItems.values(), filePath, trackerData.type);
   }, [filePath, trackerData, trackerItems]);
+  const relationshipCandidates = useTrackerRelationshipCandidates(associatedItem, chipFields);
+
+  useEffect(() => {
+    const loadTeamMembers = trackerFieldCapabilities?.loadTeamMembers;
+    if (!loadTeamMembers || !trackerData) {
+      setTeamMembers([]);
+      return;
+    }
+    let cancelled = false;
+    void loadTeamMembers()
+      .then((members) => {
+        if (!cancelled) setTeamMembers(members);
+      })
+      .catch(() => {
+        if (!cancelled) setTeamMembers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [trackerData?.type, trackerFieldCapabilities?.loadTeamMembers]);
+
+  const handleOpenItem = useCallback((itemId: string) => {
+    const related = trackerItems.get(itemId);
+    if (!related) return;
+    const title = getRecordTitle(related) || related.issueKey || 'Tracker item';
+    navigateToTrackerReference({
+      id: related.id,
+      issueKey: related.issueKey,
+      title,
+      type: related.primaryType,
+    });
+  }, [trackerItems]);
 
   const trackerItemLink = useMemo(() => {
     if (!associatedItem) return undefined;
@@ -135,6 +173,10 @@ export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
         data={trackerData.data}
         onChange={handleChange}
         trackerItemLink={trackerItemLink}
+        teamMembers={teamMembers}
+        relationshipCandidates={relationshipCandidates}
+        onOpenItem={handleOpenItem}
+        onCreateCollection={trackerFieldCapabilities?.onCreateCollection}
       />
     </div>
   );

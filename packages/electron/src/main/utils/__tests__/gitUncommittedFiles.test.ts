@@ -6,11 +6,24 @@ import * as path from 'path';
 // git.status() is controlled per-test via this ref so we can simulate a hung
 // git subprocess (issue #929: an un-timed `git status` froze sessions:list).
 let statusImpl: () => Promise<unknown>;
+// Environment handed to simple-git, asserted for GIT_OPTIONAL_LOCKS (NIM-2285).
+let capturedEnv: Record<string, string | undefined> | undefined;
+// Options simple-git was constructed with, asserted for the `unsafe` opt-in that
+// supplying an env requires.
+let capturedOptions: { unsafe?: Record<string, boolean> } | undefined;
 
 vi.mock('simple-git', () => ({
-  default: vi.fn(() => ({
-    status: () => statusImpl(),
-  })),
+  default: vi.fn((_baseDir: string, options?: { unsafe?: Record<string, boolean> }) => {
+    capturedOptions = options;
+    const git = {
+      status: () => statusImpl(),
+      env: (env: Record<string, string | undefined>) => {
+        capturedEnv = env;
+        return git;
+      },
+    };
+    return git;
+  }),
 }));
 
 import { getCachedUncommittedFiles, withTimeout } from '../gitUncommittedFiles';
@@ -55,6 +68,25 @@ describe('getCachedUncommittedFiles git-status timeout (#929)', () => {
     await expect(getCachedUncommittedFiles(tmpRoot)).resolves.toEqual(
       new Set(['a.ts', 'b.ts']),
     );
+  });
+
+  it('runs git status with optional locks disabled so it cannot block a git writer (NIM-2285)', async () => {
+    capturedEnv = {};
+    statusImpl = async () => ({
+      modified: [], created: [], not_added: [], deleted: [], renamed: [], staged: [],
+    });
+
+    await getCachedUncommittedFiles(tmpRoot);
+
+    // Plain `git status` refreshes the stat cache under `index.lock`; this env
+    // var is the equivalent of the `--no-optional-locks` flag simple-git has no
+    // way to pass.
+    expect(capturedEnv?.GIT_OPTIONAL_LOCKS).toBe('0');
+    // .env() REPLACES the child environment, so the rest of it must be kept.
+    expect(capturedEnv?.PATH).toBe(process.env.PATH);
+    // Supplying any env makes simple-git scan it and refuse to spawn git when
+    // the user has GIT_EDITOR/GIT_PAGER exported, so the opt-in is required.
+    expect(capturedOptions?.unsafe?.allowUnsafeEditor).toBe(true);
   });
 });
 

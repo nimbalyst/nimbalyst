@@ -1056,36 +1056,37 @@ export function applyMarkdownDiffToDocument(
     // Phase 1: Match root-level nodes
     const rootMatchResult = treeMatcher.matchRootChildren();
 
-    // Calculate text diff statistics
-    const originalLines = originalMarkdown.split('\n');
-    const newLines = newMarkdown.split('\n');
-    const textStats = {
-      originalLines: originalLines.length,
-      newLines: newLines.length,
-      linesAdded: Math.max(0, newLines.length - originalLines.length),
-      linesRemoved: Math.max(0, originalLines.length - newLines.length),
-    };
-
-    // Calculate lexical node diff statistics
-    const removes = rootMatchResult.sequence.filter(d => d.changeType === 'remove').length;
-    const updates = rootMatchResult.sequence.filter(d => d.changeType === 'update').length;
-    const adds = rootMatchResult.sequence.filter(d => d.changeType === 'add').length;
-    const lexicalStats = {
-      sourceNodes: sourceNodeCount,
-      targetNodes: targetNodeCount,
-      nodesRemoved: removes,
-      nodesModified: updates,
-      nodesAdded: adds,
-      totalOperations: removes + updates + adds,
-    };
-
-    // PRODUCTION LOG: Diff statistics comparison
-    console.log('[DIFF STATS]', JSON.stringify({
-      text: textStats,
-      lexical: lexicalStats,
-      // Flag potential duplication: if lexical adds >> text line adds, might be duplication bug
-      suspectDuplication: lexicalStats.nodesAdded > (textStats.linesAdded * 2),
-    }));
+    // Diff statistics -- commented out because both the stat computation (three
+    // full passes over the match sequence) and the log ran unconditionally on
+    // every diff, in the app and in every test that exercises this path.
+    // Uncomment when investigating node duplication: `suspectDuplication` flags
+    // lexical adds far exceeding text line adds.
+    // const originalLines = originalMarkdown.split('\n');
+    // const newLines = newMarkdown.split('\n');
+    // const textStats = {
+    //   originalLines: originalLines.length,
+    //   newLines: newLines.length,
+    //   linesAdded: Math.max(0, newLines.length - originalLines.length),
+    //   linesRemoved: Math.max(0, originalLines.length - newLines.length),
+    // };
+    //
+    // const removes = rootMatchResult.sequence.filter(d => d.changeType === 'remove').length;
+    // const updates = rootMatchResult.sequence.filter(d => d.changeType === 'update').length;
+    // const adds = rootMatchResult.sequence.filter(d => d.changeType === 'add').length;
+    // const lexicalStats = {
+    //   sourceNodes: sourceNodeCount,
+    //   targetNodes: targetNodeCount,
+    //   nodesRemoved: removes,
+    //   nodesModified: updates,
+    //   nodesAdded: adds,
+    //   totalOperations: removes + updates + adds,
+    // };
+    //
+    // console.log('[DIFF STATS]', JSON.stringify({
+    //   text: textStats,
+    //   lexical: lexicalStats,
+    //   suspectDuplication: lexicalStats.nodesAdded > (textStats.linesAdded * 2),
+    // }));
 
     // Phase 2: Apply changes correctly respecting exact match positions
     try {

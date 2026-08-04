@@ -26,6 +26,7 @@ import { useOnboarding } from './hooks/useOnboarding';
 import { handleWorkspaceFileSelect as handleWorkspaceFileSelectUtil } from './utils/workspaceFileOperations';
 import { createInitialFileContent } from './utils/fileUtils';
 import { resolveHistoryDocumentPath } from './utils/historyDocumentResolver';
+import { loadActiveExtensionPanel, persistActiveExtensionPanel } from './utils/activeExtensionPanelPersistence';
 import { aiToolService } from './services/AIToolService';
 import { editorRegistry } from '@nimbalyst/runtime/ai/EditorRegistry';
 import { WorkspaceWelcome } from './components/WorkspaceWelcome.tsx';
@@ -43,8 +44,8 @@ import { ErrorToastContainer } from './components/ErrorToast/ErrorToast';
 import { ExtensionPermissionPrompt } from './components/ExtensionPermissions/ExtensionPermissionPrompt';
 import { errorNotificationService } from './services/ErrorNotificationService';
 // NOTE: ProjectSelectionDialog now managed by DialogProvider
-// NOTE: UnifiedOnboarding now managed by DialogProvider
-import { WorkspaceManager } from './components/WorkspaceManager/WorkspaceManager.tsx';
+// NOTE: Project-window UnifiedOnboarding is managed by DialogProvider.
+import { WorkspaceManagerOnboarding } from './components/WorkspaceManager/WorkspaceManagerOnboarding';
 import { AIUsageReport } from './components/AIUsageReport';
 import { DatabaseBrowser } from './components/DatabaseBrowser/DatabaseBrowser';
 import { DeveloperDashboard } from './components/DeveloperDashboard/DeveloperDashboard';
@@ -118,6 +119,10 @@ import { initFileChangeListeners } from './store/listeners/fileChangeListeners';
 import { initMcpListeners } from './store/listeners/mcpListeners';
 import { initMenuCommandListeners } from './store/listeners/menuCommandListeners';
 import { initNetworkAvailabilityListeners } from './store/listeners/networkAvailabilityListeners';
+import { initTeamInboxListeners } from './store/listeners/teamInboxListeners';
+import { initConversationListeners } from './store/listeners/conversationListeners';
+import { initConversationDirectoryListeners } from './store/listeners/conversationDirectoryListeners';
+import { initOrgSettingsListeners } from './store/listeners/orgSettingsListeners';
 import { initCollabReplicaListeners } from './store/listeners/collabReplicaListeners';
 import { initCollabConversionListeners } from './store/listeners/collabConversionListeners';
 import { initNotificationListeners } from './store/listeners/notificationListeners';
@@ -173,6 +178,7 @@ import { ExtensionHostComponents } from './components/ExtensionHostComponents';
 // ClaudeCommandsToast removed - commands now provided via extension-based claude plugins
 import { UpdateToast } from './components/UpdateToast';
 import { ProjectTrustToast } from './components/ProjectTrustToast';
+import { StartupSkeleton } from './components/StartupSkeleton';
 import { getTextSelection } from './components/UnifiedAI/TextSelectionIndicator';
 // NOTE: FeedbackIntakeDialog now managed by DialogProvider
 import { buildFeedbackInitialDraft, type FeedbackIntakeLaunchOptions } from './components/Feedback';
@@ -371,6 +377,10 @@ export default function App() {
     const cleanupWalkthrough = initWalkthroughListeners();
     const cleanupWakeup = initWakeupListeners();
     const cleanupNetworkAvailability = initNetworkAvailabilityListeners();
+    const cleanupTeamInbox = initTeamInboxListeners();
+    const cleanupConversations = initConversationListeners();
+    const cleanupConversationDirectory = initConversationDirectoryListeners();
+    const cleanupOrgSettings = initOrgSettingsListeners();
     const cleanupCollabReplicas = initCollabReplicaListeners();
     const cleanupCollabConversion = initCollabConversionListeners();
     const cleanupWindowMenu = initWindowMenuListener();
@@ -407,6 +417,10 @@ export default function App() {
       cleanupWalkthrough?.();
       cleanupWakeup?.();
       cleanupNetworkAvailability?.();
+      cleanupTeamInbox?.();
+      cleanupConversations?.();
+      cleanupConversationDirectory?.();
+      cleanupOrgSettings?.();
       cleanupCollabReplicas?.();
       cleanupCollabConversion?.();
     };
@@ -463,7 +477,11 @@ export default function App() {
         window.electronAPI.setTitle('Project Manager - Nimbalyst');
       }
     }, []);
-    return <WorkspaceManager />;
+    return (
+      <WorkspaceManagerOnboarding
+        showOnboarding={urlParams.get('onboarding') === '1'}
+      />
+    );
   }
 
   if (windowMode === 'usage-report') {
@@ -555,6 +573,9 @@ export default function App() {
 
   // Active extension panel (for sidebar or fullscreen panels from extensions)
   const [activeExtensionPanel, setActiveExtensionPanel] = useState<string | null>(null);
+  // Guards the write-back effect below from firing with the initial `null`
+  // before the hydration effect has had a chance to restore a stored value.
+  const activeExtensionPanelHydratedRef = useRef(false);
 
   // Active extension bottom panel (for bottom-placement panels from extensions)
   const [activeExtensionBottomPanel, setActiveExtensionBottomPanel] = useState<string | null>(null);
@@ -824,6 +845,36 @@ export default function App() {
       });
   }, [workspacePath, setDiffTreeGroupByDirectory, setAgentFileScopeMode, hydrateFileGutterCollapsed]);
 
+  // Restore the active sidebar extension panel. Gated on `extensionsReady`,
+  // not just `workspacePath`: eager extensions load asynchronously in
+  // parallel at startup, so checking getPanelById before they've registered
+  // would always miss a panel that hadn't loaded yet (e.g. Session Tree) --
+  // restore would silently never fire even though the id was persisted fine.
+  useEffect(() => {
+    activeExtensionPanelHydratedRef.current = false;
+    if (!workspacePath || !window.electronAPI || !extensionsReady) return;
+    let cancelled = false;
+    void loadActiveExtensionPanel(workspacePath, (panelId) => getPanelById(panelId)?.placement === 'sidebar')
+      .then((restored) => {
+        if (!cancelled && restored) {
+          setActiveExtensionPanel(restored);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) activeExtensionPanelHydratedRef.current = true;
+      });
+    return () => { cancelled = true; };
+  }, [workspacePath, extensionsReady]);
+
+  // Write the active sidebar panel back to workspace state so it survives a
+  // reload. Gated on the hydration effect above finishing first -- otherwise
+  // this fires with the initial `null` and overwrites the stored value before
+  // it's ever read.
+  useEffect(() => {
+    if (!workspacePath || !window.electronAPI || !activeExtensionPanelHydratedRef.current) return;
+    void persistActiveExtensionPanel(workspacePath, activeExtensionPanel);
+  }, [activeExtensionPanel, workspacePath]);
+
   // Initialize tracker panel state from workspace state
   useEffect(() => {
     if (workspacePath) {
@@ -1027,23 +1078,15 @@ export default function App() {
           label: 'Agent right panel',
           collapsed: !agentPanelState.visible,
           onToggle: toggleActiveRightPane,
+          // No 'Hidden' entry: the split button's toggle half hides the panel,
+          // and the selection stays marked while hidden so re-showing restores
+          // the last-used mode.
           options: [
-            {
-              id: 'hidden',
-              label: 'Hidden',
-              icon: 'dock_to_left',
-              selected: !agentPanelState.visible,
-              onSelect: () => {
-                if (agentPanelState.visible) {
-                  agentModeRef.current?.toggleRightPanel();
-                }
-              },
-            },
             {
               id: 'edited-files',
               label: 'Edited Files',
               icon: 'description',
-              selected: agentPanelState.visible && agentPanelState.mode === 'edited-files',
+              selected: agentPanelState.mode === 'edited-files',
               onSelect: () => {
                 agentModeRef.current?.showRightPanel('edited-files');
               },
@@ -1052,7 +1095,7 @@ export default function App() {
               id: 'review',
               label: 'Review',
               icon: 'rate_review',
-              selected: agentPanelState.visible && agentPanelState.mode === 'review',
+              selected: agentPanelState.mode === 'review',
               onSelect: () => {
                 agentModeRef.current?.showRightPanel('review');
               },
@@ -1061,7 +1104,7 @@ export default function App() {
               id: 'session-chat',
               label: 'Chat with Session',
               icon: 'forum',
-              selected: agentPanelState.visible && agentPanelState.mode === 'session-chat',
+              selected: agentPanelState.mode === 'session-chat',
               onSelect: () => {
                 agentModeRef.current?.showRightPanel('session-chat');
               },
@@ -2421,11 +2464,12 @@ export default function App() {
     };
   }, []);
 
-  // Show nothing while initializing - let HTML/CSS background show through
   // Wait for both initial state and extensions to be ready before rendering editors
-  // This ensures extension nodes (like DataModelNode) are published into the runtime extension stores
+  // This ensures extension nodes (like DataModelNode) are published into the runtime extension stores.
+  // Extension registration takes seconds on a machine with several extensions,
+  // so show placeholder chrome rather than an empty window for that whole time.
   if (isInitializing || !extensionsReady) {
-    return <div className="h-screen" />;
+    return <StartupSkeleton workspaceMode={workspaceMode} />;
   }
 
   return (
@@ -2468,6 +2512,7 @@ export default function App() {
           }}
           panelControls={windowTopBarPanelControls}
           newSessionControl={windowTopBarNewSessionControl}
+          workspacePath={workspacePath}
         />
       )}
       <div data-layout="workspace-row" className="flex flex-row flex-1 min-h-0">

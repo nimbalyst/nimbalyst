@@ -83,7 +83,7 @@ function setting<S extends z.ZodTypeAny>(
  *   - ai.apiKey.<name>  -- per-provider API key (string, may be empty)
  *   - ai.defaultProvider, ai.showToolCalls, ai.chatShowToolCalls, ai.aiDebugLogging,
  *     ai.showPromptAdditions, ai.customClaudeCodePath, ai.autoCommitEnabled,
- *     ai.trackerAutomation, ai.diffPeekSize
+ *     ai.showMcpSessionStatus, ai.trackerAutomation, ai.diffPeekSize
  */
 export const SETTINGS_REGISTRY = {
   // ---- AI providers (per-key) ----
@@ -204,6 +204,11 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'autoCommitEnabled' },
     false,
   ),
+  'ai.showMcpSessionStatus': setting(
+    z.boolean(),
+    { store: 'ai-settings', path: 'showMcpSessionStatus' },
+    false,
+  ),
   'ai.trackerAutomation': setting(
     z.object({
       enabled: z.boolean(),
@@ -231,6 +236,27 @@ export const SETTINGS_REGISTRY = {
     z.boolean(),
     { store: 'ai-settings', path: 'showGeminiUsageIndicator' },
     true,
+  ),
+  /** Width (px) of the gutter's agent sessions attention popover. */
+  'agent.sessionsPopoverWidth': setting(
+    z.number(),
+    { store: 'app-settings', path: 'agentSessionsPopover.width' },
+    420,
+  ),
+  'team.presence.status': setting(
+    z.enum(['online', 'away']),
+    { store: 'app-settings', path: 'teamPresence.status' },
+    'online',
+  ),
+  /**
+   * Message row density in the org window's conversation surfaces. Document
+   * comments are deliberately out of scope: they live in a document's margin,
+   * not a chat log, and are always comfortable.
+   */
+  'team.messages.density': setting(
+    z.enum(['comfortable', 'compact']),
+    { store: 'app-settings', path: 'teamMessages.density' },
+    'comfortable',
   ),
 } as const;
 

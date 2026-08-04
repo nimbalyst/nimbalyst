@@ -10,6 +10,7 @@ import {
   FloatingPortal,
   type VirtualElement,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 
 // Apply the active theme as a base dark/light class on the WorkspaceManager
 // (project picker) window. The picker does not load the extension theme
@@ -78,6 +79,7 @@ export const WorkspaceManager: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [tutorialExists, setTutorialExists] = useState(false);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
@@ -93,7 +95,7 @@ export const WorkspaceManager: React.FC = () => {
       if (!open) setContextMenu(prev => ({ ...prev, visible: false }));
     },
     placement: 'bottom-start',
-    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const contextMenuDismiss = useDismiss(contextMenuContext);
   const contextMenuRole = useRole(contextMenuContext, { role: 'menu' });
@@ -136,6 +138,7 @@ export const WorkspaceManager: React.FC = () => {
 
   useEffect(() => {
     loadWorkspaces();
+    loadTutorialStatus();
   }, []);
 
   useEffect(() => {
@@ -226,6 +229,17 @@ export const WorkspaceManager: React.FC = () => {
     }
   };
 
+  const loadTutorialStatus = async () => {
+    try {
+      const result = await window.electronAPI.tutorial.getStatus();
+      if (result.success) {
+        setTutorialExists(result.exists);
+      }
+    } catch (error) {
+      console.error('Failed to load tutorial status:', error);
+    }
+  };
+
   const loadWorkspaceStats = async (workspacePath: string) => {
     try {
       const stats = await window.electronAPI.workspaceManager.getWorkspaceStats(workspacePath);
@@ -264,6 +278,24 @@ export const WorkspaceManager: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to create workspace:', error);
+    }
+  };
+
+  const handleTutorial = async () => {
+    setOperationError(null);
+    setOperationLabel(tutorialExists ? 'Opening tutorial...' : 'Starting tutorial...');
+    setOperationInProgress(true);
+    try {
+      const result = await window.electronAPI.tutorial.start();
+      if (!result.success) {
+        setOperationError(result.error);
+        return;
+      }
+      setTutorialExists(true);
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOperationInProgress(false);
     }
   };
 
@@ -573,12 +605,20 @@ export const WorkspaceManager: React.FC = () => {
             <img src="./icon.png" alt="Nimbalyst" className="app-logo w-8 h-8 shrink-0 object-contain" />
             <h2 className="m-0 text-lg font-bold text-[var(--nim-text)] tracking-tight">Nimbalyst</h2>
           </div>
-          <div className="action-buttons flex gap-2">
+          <div className="action-buttons flex flex-wrap gap-2">
             <button className="btn nim-btn-primary" onClick={handleBrowse}>
               Open Folder
             </button>
             <button className="btn nim-btn-secondary" onClick={handleCreateWorkspace}>
               New Folder
+            </button>
+            <button
+              className="workspace-manager-sidebar-tutorial-button inline-flex h-8 items-center justify-center rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg)] px-2.5 text-[12px] font-medium text-[var(--nim-text-muted)] transition-colors hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)] disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="workspace-manager-sidebar-tutorial-button"
+              onClick={handleTutorial}
+              disabled={operationInProgress}
+            >
+              {tutorialExists ? 'Open tutorial' : 'Start tutorial'}
             </button>
           </div>
         </div>
@@ -614,7 +654,7 @@ export const WorkspaceManager: React.FC = () => {
             filteredWorkspaces.map((workspace, index) => (
               <div
                 key={workspace.path}
-                className={`workspace-item flex gap-2 py-1.5 px-2 mb-0.5 rounded cursor-pointer transition-colors duration-100 border-none items-center hover:bg-[var(--nim-bg-hover)] ${selectedWorkspace?.path === workspace.path ? 'selected bg-[var(--nim-bg-selected)]' : ''} ${highlightedIndex === index ? 'highlighted bg-[var(--nim-bg-hover)]' : ''} ${highlightedIndex === index && selectedWorkspace?.path === workspace.path ? '!bg-[var(--nim-bg-selected-hover)]' : ''}`}
+                className={`workspace-item flex gap-2 py-1.5 px-2 mb-0.5 rounded cursor-pointer transition-colors duration-100 border-none items-center hover:bg-[var(--nim-bg-hover)] ${selectedWorkspace?.path === workspace.path ? 'selected bg-[var(--nim-bg-selected)]' : ''} ${highlightedIndex === index ? 'highlighted bg-[var(--nim-bg-hover)]' : ''} ${highlightedIndex === index && selectedWorkspace?.path === workspace.path ? '!bg-[color-mix(in_srgb,var(--nim-primary)_22%,transparent)]' : ''}`}
                 onClick={(e) => {
                   // Command/Ctrl + click to deselect
                   if (e.metaKey || e.ctrlKey) {
@@ -661,7 +701,7 @@ export const WorkspaceManager: React.FC = () => {
                   <button className="btn nim-btn-primary" onClick={handleOpenWorkspace}>
                     Open Project
                   </button>
-                  <button className="btn nim-btn-secondary !text-[var(--nim-error)] !border-[var(--nim-error-subtle)] hover:!bg-[var(--nim-error-subtle)]" onClick={() => handleRemoveFromRecent()}>
+                  <button className="btn nim-btn-secondary !text-[var(--nim-error)] !border-[color-mix(in_srgb,var(--nim-error)_40%,transparent)] hover:!bg-[color-mix(in_srgb,var(--nim-error)_14%,transparent)]" onClick={() => handleRemoveFromRecent()}>
                     Remove from Recent
                   </button>
                 </div>
@@ -709,7 +749,7 @@ export const WorkspaceManager: React.FC = () => {
                       <h3 className="text-sm font-semibold text-[var(--nim-text)] m-0 mb-3">Recent Files</h3>
                       <ul className="list-none m-0 p-0">
                         {workspaceStats.recentFiles.map(file => (
-                          <li key={file} className="flex items-center gap-2 py-1.5 text-[13px] text-[var(--nim-text-muted)] border-b border-[var(--nim-border-subtle)] last:border-b-0">
+                          <li key={file} className="flex items-center gap-2 py-1.5 text-[13px] text-[var(--nim-text-muted)] border-b border-[color-mix(in_srgb,var(--nim-border)_60%,transparent)] last:border-b-0">
                             <span className="material-symbols-outlined text-base text-[var(--nim-text-faint)]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>description</span>
                             {file}
                           </li>
@@ -726,35 +766,98 @@ export const WorkspaceManager: React.FC = () => {
             </div>
           </>
         ) : (
-          <div className="welcome-container flex items-center justify-center h-full p-10 bg-gradient-to-br from-[#667eea] to-[#764ba2] relative overflow-hidden before:content-[''] before:absolute before:top-[-50%] before:right-[-50%] before:w-[200%] before:h-[200%] before:bg-[radial-gradient(circle,rgba(255,255,255,0.1)_0%,transparent_70%)] before:animate-[float_20s_ease-in-out_infinite]">
-            <div className="welcome-content bg-white/[0.98] dark:bg-[var(--nim-bg)] rounded-2xl p-8 max-w-[500px] w-full shadow-[0_25px_50px_-12px_rgba(0,0,0,0.25)] backdrop-blur-[10px] relative z-[1]">
-              <div className="welcome-header flex items-center justify-center gap-5 mb-6">
-                <img src="./icon.png" alt="Nimbalyst" className="welcome-logo w-16 h-16 object-contain" />
-                <div className="welcome-text text-left">
-                  <h1 className="welcome-title text-[28px] font-extrabold text-[var(--nim-text)] m-0 mb-1 tracking-tight">Nimbalyst</h1>
-                  <p className="welcome-subtitle text-sm text-[var(--nim-text-muted)] m-0 font-normal">AI-native, interactive work platform</p>
+          <div className="welcome-container relative flex h-full items-center justify-center overflow-y-auto bg-[color-mix(in_srgb,var(--nim-primary)_14%,var(--nim-bg-secondary))] p-6 before:pointer-events-none before:absolute before:inset-0 before:bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--nim-purple)_24%,transparent),transparent_68%)]">
+            <section
+              className="workspace-manager-welcome-card relative z-[1] mx-auto my-auto w-full max-w-[720px] rounded-2xl border border-[var(--nim-border)] bg-[var(--nim-bg)] px-8 py-7 shadow-[0_20px_50px_color-mix(in_srgb,var(--nim-text)_18%,transparent)]"
+              data-testid="workspace-manager-welcome-card"
+              data-component="WorkspaceManagerWelcomeCard"
+            >
+              <div className="workspace-manager-welcome-header mb-4 flex items-center gap-3.5">
+                <img src="./icon.png" alt="Nimbalyst" className="workspace-manager-welcome-logo h-[46px] w-[46px] shrink-0 object-contain" />
+                <div className="workspace-manager-welcome-heading">
+                  <h1 className="m-0 text-[26px] font-bold tracking-[-0.3px] text-[var(--nim-text)]">Welcome to Nimbalyst</h1>
+                  <p className="m-0 mt-0.5 text-sm text-[var(--nim-text-muted)]">Visual workspace for building with coding agents</p>
                 </div>
               </div>
 
-              <div className="welcome-info-compact mb-6 text-center">
-                <p className="welcome-description text-sm text-[var(--nim-text-muted)] leading-relaxed m-0">
-                  Projects are local folders on your computer. Open any folder to view and edit all markdown files within it.
-                  If you are working on a coding project, it is recommended to open the root folder of your project as
-                  agents are configured at the project level.
-                </p>
+              <p className="workspace-manager-welcome-lede m-0 mb-5 text-[14.5px] leading-[1.62] text-[var(--nim-text-muted)]">
+                Everything in Nimbalyst lives in a <strong className="font-semibold text-[var(--nim-text)]">project</strong>: a folder of related files on your computer. For code that is your git repository, for anything else any folder you choose. Open one to write docs, run AI coding agents, track work, and sketch ideas together.
+              </p>
+
+              <div
+                className="workspace-manager-welcome-feature-grid mb-5 grid grid-cols-2 gap-3"
+                data-testid="workspace-manager-welcome-feature-grid"
+              >
+                <div className="workspace-manager-welcome-feature flex gap-3 rounded-[10px] border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3.5 py-3">
+                  <div className="workspace-manager-welcome-feature-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--nim-primary)_14%,transparent)] text-[var(--nim-primary)]">
+                    <span className="material-symbols-outlined text-[19px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>description</span>
+                  </div>
+                  <div>
+                    <h2 className="m-0 mb-0.5 text-[13.5px] font-semibold text-[var(--nim-text)]">Documents &amp; notes</h2>
+                    <p className="m-0 text-[12.5px] leading-[1.5] text-[var(--nim-text-muted)]">Rich text, tables, and files you edit visually.</p>
+                  </div>
+                </div>
+                <div className="workspace-manager-welcome-feature flex gap-3 rounded-[10px] border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3.5 py-3">
+                  <div className="workspace-manager-welcome-feature-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--nim-purple)_14%,transparent)] text-[var(--nim-purple)]">
+                    <span className="material-symbols-outlined text-[19px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>code</span>
+                  </div>
+                  <div>
+                    <h2 className="m-0 mb-0.5 text-[13.5px] font-semibold text-[var(--nim-text)]">AI coding agents</h2>
+                    <p className="m-0 text-[12.5px] leading-[1.5] text-[var(--nim-text-muted)]">Run Claude Code, Codex, and other agents inside your projects.</p>
+                  </div>
+                </div>
+                <div className="workspace-manager-welcome-feature flex gap-3 rounded-[10px] border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3.5 py-3">
+                  <div className="workspace-manager-welcome-feature-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--nim-success)_14%,transparent)] text-[var(--nim-success)]">
+                    <span className="material-symbols-outlined text-[19px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>checklist</span>
+                  </div>
+                  <div>
+                    <h2 className="m-0 mb-0.5 text-[13.5px] font-semibold text-[var(--nim-text)]">Trackers &amp; plans</h2>
+                    <p className="m-0 text-[12.5px] leading-[1.5] text-[var(--nim-text-muted)]">Bugs, tasks, and decisions beside your work.</p>
+                  </div>
+                </div>
+                <div className="workspace-manager-welcome-feature flex gap-3 rounded-[10px] border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3.5 py-3">
+                  <div className="workspace-manager-welcome-feature-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--nim-warning)_14%,transparent)] text-[var(--nim-warning)]">
+                    <span className="material-symbols-outlined text-[19px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>draw</span>
+                  </div>
+                  <div>
+                    <h2 className="m-0 mb-0.5 text-[13.5px] font-semibold text-[var(--nim-text)]">Diagrams &amp; mockups</h2>
+                    <p className="m-0 text-[12.5px] leading-[1.5] text-[var(--nim-text-muted)]">Excalidraw, Mermaid, mindmaps, mockups, data models.</p>
+                  </div>
+                </div>
               </div>
 
-              <div className="welcome-actions flex justify-center gap-4">
-                <button className="btn btn-large btn-welcome-primary bg-[var(--nim-primary)] text-white border-none py-3 px-6 text-[15px] font-semibold rounded-lg cursor-pointer transition-all duration-200 flex items-center justify-center gap-2 shadow-[0_2px_8px_rgba(59,130,246,0.3)] hover:bg-[var(--nim-primary-hover)] hover:shadow-[0_4px_12px_rgba(59,130,246,0.4)] hover:-translate-y-px" onClick={handleBrowse}>
-                  <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>folder_open</span>
-                  Open Folder
+              <div className="workspace-manager-welcome-rule mb-5 h-px bg-[var(--nim-border)]" />
+
+              <div className="workspace-manager-welcome-cta-wrap text-center">
+                <button
+                  type="button"
+                  className="workspace-manager-welcome-tutorial-cta relative inline-flex items-center justify-center gap-2.5 rounded-[10px] border-0 bg-[var(--nim-primary)] px-[30px] py-[13px] text-[15px] font-semibold text-white shadow-[0_8px_20px_color-mix(in_srgb,var(--nim-primary)_28%,transparent)] transition-all duration-200 hover:-translate-y-px hover:bg-[var(--nim-primary-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nim-border-focus)] disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="workspace-manager-welcome-tutorial-cta"
+                  onClick={handleTutorial}
+                  disabled={operationInProgress}
+                >
+                  <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 500, 'GRAD' 0, 'opsz' 20" }}>play_arrow</span>
+                  {tutorialExists ? 'Open tutorial' : 'Try the interactive tutorial'}
+                  {!tutorialExists && (
+                    <span className="workspace-manager-welcome-new-badge absolute -right-4 -top-2 rounded-full border border-[color-mix(in_srgb,var(--nim-success)_48%,transparent)] bg-[color-mix(in_srgb,var(--nim-success)_18%,var(--nim-bg))] px-2 py-0.5 text-[10.5px] font-bold leading-none text-[var(--nim-success)]">
+                      New
+                    </span>
+                  )}
                 </button>
-                <button className="btn btn-large btn-welcome-secondary bg-[var(--nim-bg)] text-[var(--nim-text-muted)] border-2 border-[var(--nim-border)] py-3 px-6 text-[15px] font-semibold rounded-lg cursor-pointer transition-all duration-200 flex items-center justify-center gap-2 hover:bg-[var(--nim-bg-secondary)] hover:border-[var(--nim-border-hover)] hover:-translate-y-px" onClick={handleCreateWorkspace}>
-                  <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20" }}>create_new_folder</span>
-                  New Folder
-                </button>
+                <p className="m-0 mt-2.5 text-[12.5px] text-[var(--nim-text-faint)]">Opens a sample project you work in, hands-on, nothing to set up.</p>
               </div>
-            </div>
+
+              <div className="workspace-manager-welcome-divider my-4 flex items-center gap-3 text-[10.5px] font-bold uppercase tracking-[1px] text-[var(--nim-text-faint)]">
+                <span className="h-px flex-1 bg-[var(--nim-border)]" />
+                <span>or open your own project</span>
+                <span className="h-px flex-1 bg-[var(--nim-border)]" />
+              </div>
+
+              <div className="workspace-manager-welcome-own-project flex items-center justify-center gap-2.5 rounded-[10px] border border-dashed border-[var(--nim-border)] px-4 py-3.5 text-[13.5px] text-[var(--nim-text-muted)]">
+                <span className="material-symbols-outlined text-[18px] text-[var(--nim-primary)]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 500, 'GRAD' 0, 'opsz' 20" }}>arrow_back</span>
+                <span><strong className="font-semibold text-[var(--nim-text)]">Open a folder</strong> from the sidebar to work in your own project.</span>
+              </div>
+            </section>
           </div>
         )}
       </div>

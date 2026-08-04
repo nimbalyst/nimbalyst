@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { AudioCapture } from '../../utils/audioCapture';
 import { AudioPlayback } from '../../utils/audioPlayback';
 import { voiceModeEnabledAtom } from '../../store/atoms/appSettings';

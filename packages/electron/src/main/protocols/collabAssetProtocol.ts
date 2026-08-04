@@ -1,13 +1,14 @@
 /**
- * `collab-asset://` custom protocol — E2E-encrypted document attachment bridge.
+ * `collab-asset://` custom protocol — shared-document attachment bridge.
  *
  * Mirrors the `nim-asset://` pattern (see `nimAssetProtocol.ts`). The renderer
  * loads `<img src="collab-asset://doc/{documentId}/asset/{assetId}">` and
  * Chromium routes the request to this handler in main, where we:
  *   1. Translate `documentId` → `orgId` via the per-window registry.
- *   2. Fetch the encrypted asset from `sync.nimbalyst.com` with the org-scoped JWT.
- *   3. Decrypt the body + metadata using the cached org key.
- *   4. Hand the plaintext bytes back to the renderer with the right Content-Type.
+ *   2. Fetch the asset from `sync.nimbalyst.com` with the org-scoped JWT.
+ *   3. Check the stored-format marker the worker returns (NIM-2235) and serve
+ *      plaintext blobs directly; anything else fails closed with a typed error.
+ *   4. Hand the bytes back to the renderer with the right Content-Type.
  *
  * Why a custom protocol: the production worker only allows CORS from
  * `https://app.nimbalyst.com`, `https://nimbalyst.com`, `capacitor://localhost`.
@@ -20,15 +21,23 @@
  * by `document-sync:close-doc` from the tab unmount.
  */
 import { protocol, net } from "electron";
+import {
+  COLLAB_ASSET_HEADER_ERROR_CODE,
+  COLLAB_ASSET_HEADER_FILE_NAME,
+  COLLAB_ASSET_HEADER_MIME,
+  COLLAB_ASSET_HEADER_PLAINTEXT_SIZE,
+  COLLAB_ASSET_HEADER_STORED_FORMAT,
+  COLLAB_ASSET_HEADER_WIRE_FORMAT,
+  COLLAB_ASSET_UNREADABLE_FORMAT_CODE,
+  COLLAB_ASSET_WIRE_FORMAT_PLAINTEXT,
+  collabAssetUnreadableFormatMessage,
+} from "../../shared/collabAssetFormat";
 
 export const COLLAB_ASSET_SCHEME = "collab-asset";
 export const COLLAB_ASSET_HOST = "doc";
 
-const HEADER_IV = "X-Collab-Asset-Iv";
-const HEADER_METADATA = "X-Collab-Asset-Metadata";
-const HEADER_METADATA_IV = "X-Collab-Asset-Metadata-Iv";
-const HEADER_MIME = "X-Collab-Asset-Mime-Type";
-const HEADER_PLAINTEXT_SIZE = "X-Collab-Asset-Plaintext-Size";
+/** Response header carrying the structured reason a blob could not be served. */
+export const HEADER_ASSET_ERROR_CODE = COLLAB_ASSET_HEADER_ERROR_CODE;
 
 export interface ParsedCollabAssetUrl {
   documentId: string;
@@ -231,62 +240,42 @@ export function registerCollabAssetSchemeAsPrivileged(): void {
 }
 
 // ----------------------------------------------------------------------------
-// Crypto helpers (mirror of CollabAssetService, but in main)
+// Handler
 // ----------------------------------------------------------------------------
 
-interface AssetMetadataPayload {
-  name?: string;
-}
-
-function base64ToUint8Array(base64: string): Uint8Array {
-  return new Uint8Array(Buffer.from(base64, "base64"));
-}
-
-async function decryptBytes(
-  ciphertext: ArrayBuffer,
-  ivBase64: string,
-  key: CryptoKey
-): Promise<Uint8Array> {
-  const iv = base64ToUint8Array(ivBase64);
-  const decrypted = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: iv as BufferSource },
-    key,
-    ciphertext
+/**
+ * Terminal, explicit refusal for a blob the server could not decode.
+ *
+ * 415 rather than 500 so the editor's broken-attachment placeholder settles
+ * instead of retrying, and the structured code rides along for anything that
+ * inspects it. Legacy client-encrypted attachments land here permanently:
+ * their key is gone, and by decision they are not being recovered.
+ */
+function unreadableFormatResponse(storedFormat: string | null): Response {
+  const message = collabAssetUnreadableFormatMessage(storedFormat);
+  console.warn(
+    "[collab-asset] Server refused to decode asset; stored format:",
+    storedFormat ?? "unknown"
   );
-  return new Uint8Array(decrypted);
+  const headers = new Headers({
+    "Content-Type": "text/plain; charset=utf-8",
+    [COLLAB_ASSET_HEADER_ERROR_CODE]: COLLAB_ASSET_UNREADABLE_FORMAT_CODE,
+  });
+  if (storedFormat) headers.set(COLLAB_ASSET_HEADER_STORED_FORMAT, storedFormat);
+  return new Response(message, { status: 415, headers });
 }
 
-async function decryptMetadata(
-  encryptedMetadata: string | null,
-  metadataIv: string | null,
-  key: CryptoKey
-): Promise<AssetMetadataPayload | null> {
-  if (!encryptedMetadata || !metadataIv) return null;
-  const ciphertext = base64ToUint8Array(encryptedMetadata);
-  const plaintext = await decryptBytes(
-    ciphertext.buffer.slice(
-      ciphertext.byteOffset,
-      ciphertext.byteOffset + ciphertext.byteLength
-    ) as ArrayBuffer,
-    metadataIv,
-    key
-  );
+function decodeFileNameHeader(raw: string | null): string | null {
+  if (!raw) return null;
   try {
-    return JSON.parse(
-      new TextDecoder().decode(plaintext)
-    ) as AssetMetadataPayload;
+    const decoded = decodeURIComponent(raw);
+    return decoded || null;
   } catch {
     return null;
   }
 }
 
-// ----------------------------------------------------------------------------
-// Handler
-// ----------------------------------------------------------------------------
-
 interface AssetHandlerDeps {
-  /** Returns the cached AES org key, or null if absent. */
-  getOrgKey: (orgId: string) => Promise<CryptoKey | null>;
   /** Mints (or returns cached) org-scoped JWT for the given org. */
   getOrgScopedJwt: (orgId: string) => Promise<string>;
   /** Resolves the collab server HTTP base URL (e.g. https://sync.nimbalyst.com). */
@@ -400,12 +389,6 @@ export function createCollabAssetRequestHandler(deps: AssetHandlerDeps) {
         }
       }
 
-      const orgKey = await deps.getOrgKey(orgId);
-      if (!orgKey) {
-        console.warn("[collab-asset] No org key cached for", orgId);
-        return new Response("Key unavailable", { status: 500 });
-      }
-
       let jwt: string;
       try {
         jwt = await deps.getOrgScopedJwt(orgId);
@@ -433,6 +416,19 @@ export function createCollabAssetRequestHandler(deps: AssetHandlerDeps) {
       if (upstream.status === 404) {
         return new Response("Not found", { status: 404 });
       }
+      // The server decrypts under the team key and refuses anything it cannot
+      // decode -- a blob from the retired client-managed lane, or one written
+      // under a key epoch that no longer applies. That refusal is terminal and
+      // arrives with its own structured code; surface it as such instead of a
+      // generic upstream error the editor would keep retrying.
+      if (
+        upstream.headers.get(COLLAB_ASSET_HEADER_ERROR_CODE) ===
+        COLLAB_ASSET_UNREADABLE_FORMAT_CODE
+      ) {
+        return unreadableFormatResponse(
+          upstream.headers.get(COLLAB_ASSET_HEADER_STORED_FORMAT)
+        );
+      }
       if (!upstream.ok) {
         const body = await upstream.text().catch(() => "");
         console.warn(
@@ -443,46 +439,36 @@ export function createCollabAssetRequestHandler(deps: AssetHandlerDeps) {
         return new Response("Upstream error", { status: 502 });
       }
 
-      const iv = upstream.headers.get(HEADER_IV);
-      if (!iv) {
-        return new Response("Missing IV", { status: 502 });
+      // A 200 whose body is not plaintext would be handed straight to an
+      // `<img>` tag. Only the format this client knows how to render is
+      // served; anything else is a server ahead of this build, not an image.
+      const wireFormat =
+        upstream.headers.get(COLLAB_ASSET_HEADER_WIRE_FORMAT) ??
+        COLLAB_ASSET_WIRE_FORMAT_PLAINTEXT;
+      if (wireFormat !== COLLAB_ASSET_WIRE_FORMAT_PLAINTEXT) {
+        return unreadableFormatResponse(
+          upstream.headers.get(COLLAB_ASSET_HEADER_STORED_FORMAT) ?? wireFormat
+        );
       }
 
       const mimeType =
-        upstream.headers.get(HEADER_MIME) || "application/octet-stream";
-      const encryptedMetadata = upstream.headers.get(HEADER_METADATA);
-      const metadataIv = upstream.headers.get(HEADER_METADATA_IV);
-      const plaintextSize = upstream.headers.get(HEADER_PLAINTEXT_SIZE);
+        upstream.headers.get(COLLAB_ASSET_HEADER_MIME) ||
+        "application/octet-stream";
+      const plaintextSize = upstream.headers.get(
+        COLLAB_ASSET_HEADER_PLAINTEXT_SIZE
+      );
+      const filename =
+        decodeFileNameHeader(
+          upstream.headers.get(COLLAB_ASSET_HEADER_FILE_NAME)
+        ) ?? `${parsed.assetId}.bin`;
 
-      const ciphertext = await upstream.arrayBuffer();
-      let plaintext: Uint8Array;
-      try {
-        plaintext = await decryptBytes(ciphertext, iv, orgKey);
-      } catch (err) {
-        console.warn("[collab-asset] Decrypt failed", err);
-        return new Response("Decrypt failed", { status: 500 });
-      }
-
-      // Decrypt metadata best-effort -- not load-bearing for `<img>` rendering,
-      // but we expose it as `Content-Disposition` so download flows pick up
-      // the original filename.
-      let filename = `${parsed.assetId}.bin`;
-      try {
-        const meta = await decryptMetadata(
-          encryptedMetadata,
-          metadataIv,
-          orgKey
-        );
-        if (meta?.name) filename = meta.name;
-      } catch {
-        // ignore -- decoration only
-      }
+      const bytes = new Uint8Array(await upstream.arrayBuffer());
 
       if (cacheIdentity && deps.assetStore) {
         try {
           await deps.assetStore.cacheAsset({
             identity: cacheIdentity,
-            bytes: plaintext,
+            bytes,
             mimeType,
             fileName: filename,
           });
@@ -492,7 +478,7 @@ export function createCollabAssetRequestHandler(deps: AssetHandlerDeps) {
           console.warn("[collab-asset] Failed to cache viewed asset", error);
         }
       }
-      return assetResponse(plaintext, mimeType, filename, plaintextSize);
+      return assetResponse(bytes, mimeType, filename, plaintextSize);
     } catch (err) {
       console.error("[collab-asset] handler error:", err);
       return new Response("Internal error", { status: 500 });

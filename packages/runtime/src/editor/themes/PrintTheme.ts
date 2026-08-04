@@ -321,13 +321,31 @@ body {
 .nim-table {
   border-collapse: collapse;
   border-spacing: 0;
-  table-layout: fixed;
+  table-layout: auto;
+  width: 100%;
   margin: 16px 0;
   page-break-inside: avoid;
 }
 
+/*
+ * Columns the author sized with the resizer export as <col style="width: Npx">.
+ * Honour those exactly instead of stretching the table to the page.
+ */
+.nim-table:has(> colgroup > col[style*='width']) {
+  table-layout: fixed;
+  width: auto;
+  max-width: 100%;
+}
+
 .nim-table-cell {
-  border: 1px solid #bbb;
+  /*
+   * Lexical's TableCellNode.exportDOM stamps a hardcoded 75px width and a black
+   * border on every cell whether or not the author ever sized the column. Under
+   * the default auto layout the width is only a hint, but it still starves the
+   * columns, so drop it and let content (or the <colgroup> above) decide.
+   */
+  width: auto !important;
+  border: 1px solid #bbb !important;
   vertical-align: top;
   text-align: start;
   padding: 6px 8px;

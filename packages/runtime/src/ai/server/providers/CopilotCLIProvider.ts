@@ -248,7 +248,7 @@ export class CopilotCLIProvider extends BaseAgentProvider {
     const prompt = messageWithContext;
 
     if (sessionId) {
-      const metadataToLog: Record<string, unknown> = {};
+      const metadataToLog: Record<string, unknown> = this.withPromptProvenanceMetadata(documentContext);
       if (documentContext?.mode) {
         metadataToLog.mode = documentContext.mode;
       }

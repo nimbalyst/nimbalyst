@@ -16,17 +16,24 @@ interface DialogPathInputs {
   explicitPath?: string;
   workspacePath?: string | null;
   lastDirectory?: string;
-  documentsPath: string;
+  /**
+   * Resolved lazily: `app.getPath('documents')` throws when the Documents
+   * known-folder is unavailable (a OneDrive Known Folder Move that has not
+   * synced is the common Windows case). Eagerly evaluating it took down every
+   * dialog in the app — including the folder picker — even when a perfectly
+   * good workspace or remembered directory was already in hand.
+   */
+  documentsPath: () => string;
   suggestedName?: string;
 }
 
 export function selectDialogDefaultPath(inputs: DialogPathInputs): string {
-  const basePath = inputs.workspacePath || inputs.lastDirectory || inputs.documentsPath;
-  if (inputs.explicitPath) {
-    return isAbsolute(inputs.explicitPath)
-      ? inputs.explicitPath
-      : join(basePath, inputs.explicitPath);
-  }
+  // An absolute explicit path answers the question on its own, so it must not
+  // pay for resolving a base directory it will never use.
+  if (inputs.explicitPath && isAbsolute(inputs.explicitPath)) return inputs.explicitPath;
+
+  const basePath = inputs.workspacePath || inputs.lastDirectory || inputs.documentsPath();
+  if (inputs.explicitPath) return join(basePath, inputs.explicitPath);
   return inputs.suggestedName ? join(basePath, inputs.suggestedName) : basePath;
 }
 
@@ -70,7 +77,7 @@ export function getDialogDefaultPath(options: DialogPathOptions = {}): string {
     explicitPath: options.explicitPath,
     workspacePath: usableDirectory(workspacePathForWindow(options.window)) ?? null,
     lastDirectory: usableDirectory(store.get('lastDialogDirectory')),
-    documentsPath: app.getPath('documents'),
+    documentsPath: () => app.getPath('documents'),
     suggestedName: options.suggestedName,
   });
 }

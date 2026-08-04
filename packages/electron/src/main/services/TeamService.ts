@@ -21,6 +21,7 @@
 
 import { BrowserWindow, net } from 'electron';
 import { createHash } from 'crypto';
+import { existsSync } from 'fs';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getNormalizedGitRemote } from '../utils/gitUtils';
@@ -28,6 +29,7 @@ import { resolveTeamForRemoteHash } from './teamProjectResolver';
 import { getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
 import { assertJwtMatchesOrg, getJwtExp, AuthContextMismatchError } from './jwtOrg';
 import { createSingleFlight } from '../utils/asyncCache';
+import { setHasOrganizationsForMenu } from '../menu/organizationMenuState';
 import {
   getAccounts,
   getPersonalSessionJwt,
@@ -42,8 +44,22 @@ import {
   getUserEmail,
   getPersonalOrgId,
   getPersonalUserId,
+  getSyncAccount,
 } from './StytchAuthService';
 import { asTeamJwt, type PersonalJwt, type TeamJwt } from '@nimbalyst/runtime';
+import type {
+  ConversationDirectoryEntry,
+  ConversationDirectoryMembersResult,
+  ConversationMutationResult,
+  CreateConversationInput,
+  CreateConversationResult,
+  ListConversationsOptions,
+  SetConversationMembershipInput,
+  SetConversationMembershipResult,
+  UpdateConversationInput,
+} from '../../shared/conversationDirectory';
+import type { OrgSettings } from '../../shared/orgSettings';
+import { normalizeOrgSettings } from '../../shared/orgSettings';
 import { getDatabase } from '../database/initialize';
 import {
   backfillProjection,
@@ -59,47 +75,13 @@ import {
   type ProjectRole,
 } from './OrgProjectionService';
 import { canAccess, type CanAccessInput, type AccessDatabase } from './OrgAccessResolver';
-import {
-  getOrCreateIdentityKeyPair,
-  uploadIdentityKeyToOrg,
-  wrapOrgKeyForMember,
-  uploadEnvelope,
-  exportPublicKeyJwk,
-  fetchMemberPublicKey,
-  deleteEnvelope,
-  deleteAllEnvelopes,
-  fetchAllEnvelopes,
-  hasOrgKey,
-  fetchAndUnwrapOrgKey,
-  fetchOwnEnvelope,
-  getOrgKeyFingerprint,
-  clearOrgKey,
-  getMemberTrustStatus,
-  markMemberVerified,
-  fingerprintIdentityKey,
-  fetchTeamKeyStatus,
-  getLastKnownTeamKeyStatus,
-  setTeamKeyCustodyMode,
-} from './OrgKeyService';
-import { performKeyRotation, cleanupOrphanedDocuments, reEncryptTrackerFromLocal } from './KeyRotationService';
+import { setTeamServerManagedCustody } from './TeamCustodyService';
 // TrackerSyncManager already imports from this module (findTeamForWorkspace).
 // The cycle is safe because both sides only reference the imported symbols
 // inside function bodies, never at module-init time -- by the time
 // autoMatchTeamForWorkspace runs, both modules are fully loaded.
-import {
-  ensureTrackerSyncForWorkspace,
-  finalizeTeamEncryptionDocument,
-  finalizeTeamEncryptionTitles,
-  migrateTeamToServerManaged,
-} from './TrackerSyncManager';
+import { ensureTrackerSyncForWorkspace } from './TrackerSyncManager';
 import { getCollabBackupService } from './CollabBackupService';
-import {
-  getSilentMigrationState,
-  initializeServerManagedOrganization,
-  resetSilentMigrationForOrg,
-  runSilentTeamEncryptionMigrations,
-  type MigrationFinalizationStatus,
-} from './SilentTeamEncryptionMigration';
 import { createTeamAuthBootstrap } from './TeamAuthBootstrap';
 import {
   repairAccountOrgBindingFromEmail,
@@ -107,6 +89,13 @@ import {
   upsertAccountOrgBinding,
   type AccountOrgBindingSource,
 } from './AccountOrgBindingService';
+import { getRecentItems } from '../utils/store';
+import { windowReferencesWorkspace, windowStates } from '../window/windowState';
+import {
+  resolveOrgProjectLocalStates,
+  type OrgProjectLocalState,
+  type WorkspaceRemoteState,
+} from './orgProjectLocalState';
 
 // ============================================================================
 // Server URL Helper
@@ -184,7 +173,7 @@ export interface MovePreview {
   projectId: string;
   slug: string | null;
   slugCollision: boolean; // dest already has a project with this slug
-  custodyBlocked: boolean; // either org still legacy-e2e -> route to H2 first
+  custodyBlocked: boolean; // either org was never converted to server-managed custody
   members: MovePreviewMember[];
   seatDelta: number; // # of members who'll be invited (new paid seats)
 }
@@ -214,7 +203,7 @@ export interface MergeResultSummary {
   error?: string;
 }
 
-interface TeamMember {
+export interface TeamMember {
   memberId: string;
   email: string;
   name: string;
@@ -277,7 +266,12 @@ export async function getOrgScopedJwt(
     const signedInAccounts = getAccounts();
     const signedInAccountIds = signedInAccounts.map((account) => account.personalOrgId);
     let binding = db
-      ? await resolveTeamOrgAccountBinding(db, orgId, signedInAccountIds)
+      ? await resolveTeamOrgAccountBinding(
+        db,
+        orgId,
+        signedInAccountIds,
+        getSyncAccount()?.personalOrgId,
+      )
       : null;
     const discoveryHint = teamAccountBindingHints.get(orgId);
     resolvedAccountOrgId = binding?.personalOrgId
@@ -296,7 +290,12 @@ export async function getOrgScopedJwt(
           orgId,
           account.email,
         );
-        binding = await resolveTeamOrgAccountBinding(db, orgId, signedInAccountIds);
+        binding = await resolveTeamOrgAccountBinding(
+          db,
+          orgId,
+          signedInAccountIds,
+          getSyncAccount()?.personalOrgId,
+        );
         if (binding) {
           resolvedAccountOrgId = binding.personalOrgId;
           break;
@@ -664,19 +663,6 @@ async function fetchTeamApi(
   return response.json();
 }
 
-export async function getTeamMigrationFinalizationStatus(
-  orgId: string,
-): Promise<MigrationFinalizationStatus> {
-  return fetchTeamApi(
-    `/api/teams/${orgId}/migration-finalization-status`,
-    'GET',
-    undefined,
-    orgId,
-    undefined,
-    { timeoutMs: MIGRATION_FINALIZATION_API_TIMEOUT_MS },
-  ) as Promise<MigrationFinalizationStatus>;
-}
-
 // ============================================================================
 // Git Remote Detection
 // ============================================================================
@@ -732,6 +718,241 @@ async function persistServerAccountOrgBinding(
 // Public API
 // ============================================================================
 
+function requireConversationIdentifier(
+  value: string,
+  name: string,
+): string {
+  if (!value?.trim()) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
+}
+
+/**
+ * List the caller-visible conversation directory for one organization.
+ *
+ * Team JWT authentication is mandatory: passing `orgId` to `fetchTeamApi`
+ * selects `getOrgScopedJwt` and its org-binding checks. Direct conversations
+ * are included by default because the org window renders rooms and DMs from
+ * this one directory.
+ */
+export async function listConversations(
+  orgId: string,
+  options: ListConversationsOptions = {},
+): Promise<ConversationDirectoryEntry[]> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  const params = new URLSearchParams();
+  if (options.includeDirect !== false) params.set('includeDirect', 'true');
+  if (options.includeArchived === true) params.set('includeArchived', 'true');
+  const suffix = params.size > 0 ? `?${params.toString()}` : '';
+  const result = await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations${suffix}`,
+    'GET',
+    undefined,
+    orgId,
+  ) as { conversations?: ConversationDirectoryEntry[] };
+  // A server old enough to omit capabilities must not take the directory down
+  // with it: the row arrives with no grants and the renderer filters it out.
+  return (result.conversations ?? []).map((conversation) => ({
+    ...conversation,
+    capabilities: conversation.capabilities ?? [],
+  }));
+}
+
+export async function createConversation(
+  orgId: string,
+  input: CreateConversationInput,
+): Promise<CreateConversationResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  if (!input?.kind || !input.visibility) {
+    throw new Error('Conversation kind and visibility are required');
+  }
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations`,
+    'POST',
+    input,
+    orgId,
+  ) as CreateConversationResult;
+}
+
+/**
+ * Rename an organization room or change its topic.
+ *
+ * Only the supplied fields are serialized: the server treats a present `topic`
+ * key as "replace" (with `null` clearing it) and an absent one as "leave
+ * alone", so sending `undefined` fields would silently wipe the topic on a
+ * rename. Rooms are the only kind with editable titles — the server rejects
+ * DMs and document discussions.
+ */
+export async function updateConversation(
+  orgId: string,
+  conversationId: string,
+  input: UpdateConversationInput,
+): Promise<ConversationMutationResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  const body: Record<string, unknown> = {};
+  if (input?.title !== undefined) {
+    if (typeof input.title !== 'string' || !input.title.trim()) {
+      throw new Error('Conversation title must be a non-empty string');
+    }
+    body.title = input.title.trim();
+  }
+  if (input?.topic !== undefined) {
+    if (input.topic !== null && typeof input.topic !== 'string') {
+      throw new Error('Conversation topic must be a string or null');
+    }
+    body.topic = typeof input.topic === 'string' && input.topic.trim()
+      ? input.topic.trim()
+      : null;
+  }
+  if (Object.keys(body).length === 0) {
+    throw new Error('Conversation title or topic is required');
+  }
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}`,
+    'PUT',
+    body,
+    orgId,
+  ) as ConversationMutationResult;
+}
+
+export async function archiveConversation(
+  orgId: string,
+  conversationId: string,
+): Promise<ConversationMutationResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/archive`,
+    'POST',
+    undefined,
+    orgId,
+  ) as ConversationMutationResult;
+}
+
+export async function setConversationMembership(
+  orgId: string,
+  conversationId: string,
+  userId: string,
+  input: SetConversationMembershipInput,
+): Promise<SetConversationMembershipResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  requireConversationIdentifier(userId, 'Conversation member user id');
+  if (typeof input?.active !== 'boolean') {
+    throw new Error('Conversation membership active state is required');
+  }
+  if (
+    input.role !== undefined
+    && input.role !== 'member'
+    && input.role !== 'roomAdmin'
+  ) {
+    throw new Error('Conversation membership role is invalid');
+  }
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(userId)}`,
+    input.active ? 'PUT' : 'DELETE',
+    input.active ? { role: input.role ?? 'member' } : undefined,
+    orgId,
+  ) as SetConversationMembershipResult;
+}
+
+export async function listConversationMembers(
+  orgId: string,
+  conversationId: string,
+): Promise<ConversationDirectoryMembersResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  const result = await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/members`,
+    'GET',
+    undefined,
+    orgId,
+  ) as ConversationDirectoryMembersResult;
+  return { memberships: result.memberships ?? [] };
+}
+
+/**
+ * Read one organization's settings.
+ *
+ * Team JWT authentication (any active member may read). Pre-settings servers
+ * and never-configured orgs answer with an absent or partial object, so the
+ * result is defaulted field by field rather than trusted as complete.
+ */
+export async function getOrgSettings(orgId: string): Promise<OrgSettings> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  const result = await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/settings`,
+    'GET',
+    undefined,
+    orgId,
+  ) as { settings?: unknown };
+  return normalizeOrgSettings(result?.settings);
+}
+
+/**
+ * Replace one organization's settings (organization admins only, enforced
+ * server-side).
+ *
+ * The server's PUT is a whole-object replace — omitted fields fall back to
+ * their defaults rather than keeping their current value — so callers send the
+ * complete settings they want stored, not a patch.
+ */
+export async function updateOrgSettings(
+  orgId: string,
+  settings: OrgSettings,
+): Promise<OrgSettings> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  if (!settings || typeof settings !== 'object') {
+    throw new Error('Organization settings are required');
+  }
+  const result = await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/settings`,
+    'PUT',
+    normalizeOrgSettings(settings),
+    orgId,
+  ) as { settings?: unknown };
+  return normalizeOrgSettings(result?.settings);
+}
+
+export async function renameOrganization(
+  orgId: string,
+  name: string,
+): Promise<{ orgId: string; name: string }> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  const normalizedName = name?.trim();
+  if (!normalizedName) {
+    throw new Error('Organization name is required');
+  }
+  await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}`,
+    'PUT',
+    { name: normalizedName },
+    orgId,
+  );
+  invalidateListTeamsCache();
+  return { orgId, name: normalizedName };
+}
+
+export async function setAgentPosting(
+  orgId: string,
+  conversationId: string,
+  enabled: boolean,
+): Promise<ConversationMutationResult> {
+  requireConversationIdentifier(orgId, 'Organization id');
+  requireConversationIdentifier(conversationId, 'Conversation id');
+  if (typeof enabled !== 'boolean') {
+    throw new Error('Agent posting enabled state is required');
+  }
+  return await fetchTeamApi(
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/agent-posting`,
+    'PUT',
+    { enabled },
+    orgId,
+  ) as ConversationMutationResult;
+}
+
 /**
  * List all teams the current user belongs to, across all signed-in accounts.
  * Queries each account's teams and deduplicates by orgId.
@@ -752,7 +973,7 @@ export function invalidateListTeamsCache(): void {
   teamAccountBindingHints.clear();
 }
 
-async function listTeams(): Promise<TeamDetails[]> {
+export async function listTeams(): Promise<TeamDetails[]> {
   if (!isAuthenticated()) {
     logger.main.info('[TeamService] listTeams: not authenticated, skipping');
     return [];
@@ -833,7 +1054,12 @@ async function listTeams(): Promise<TeamDetails[]> {
     const signedInAccountIds = allAccounts.map((account) => account.personalOrgId);
     for (const team of allTeams) {
       const resolved = db
-        ? await resolveTeamOrgAccountBinding(db, team.orgId, signedInAccountIds)
+        ? await resolveTeamOrgAccountBinding(
+          db,
+          team.orgId,
+          signedInAccountIds,
+          getSyncAccount()?.personalOrgId,
+        )
         : null;
       team.boundPersonalOrgId = resolved?.personalOrgId
         ?? [...(team.accountBindings ?? [])]
@@ -853,9 +1079,16 @@ async function listTeams(): Promise<TeamDetails[]> {
   // did resolve to this caller, but evict the result immediately so a timeout
   // cannot pin "no teams" (or an incomplete list) for the full five minutes.
   void promise.then(
-    () => {
+    (teams) => {
       if (!allAccountLookupsSucceeded && listTeamsCache?.promise === promise) {
         listTeamsCache = null;
+      }
+      // Drive the Organization Messages menu item's visibility. A partial lookup
+      // may under-report, so only an authoritative empty result hides the item.
+      if (teams.length > 0) {
+        setHasOrganizationsForMenu(true);
+      } else if (allAccountLookupsSucceeded) {
+        setHasOrganizationsForMenu(false);
       }
     },
     () => {
@@ -950,6 +1183,45 @@ export async function findPendingInviteForWorkspace(workspacePath: string): Prom
   }
 }
 
+export function pendingInviteForEmail(
+  teams: readonly TeamDetails[],
+  email: string,
+): TeamDetails | null {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) return null;
+  return teams.find((team) => (
+    team.membershipType !== undefined
+    && team.membershipType !== 'active_member'
+    && team.sourceEmail?.trim().toLowerCase() === normalizedEmail
+  )) ?? null;
+}
+
+/**
+ * Find an invitation owned by the signed-in account for `email`.
+ *
+ * The team directory is already account-attributed by `listTeams`, so this is
+ * the same lookup seam as the workspace matcher without requiring a git remote
+ * before a new user has chosen a project.
+ */
+export async function findPendingInviteForEmail(email: string): Promise<TeamDetails | null> {
+  if (!isAuthenticated()) return null;
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) return null;
+  const ownsEmail = getAccounts().some((account) => (
+    account.sessionStatus === 'active'
+    && account.email?.trim().toLowerCase() === normalizedEmail
+  ));
+  if (!ownsEmail) return null;
+
+  try {
+    const teams = await listTeams();
+    return pendingInviteForEmail(teams, normalizedEmail);
+  } catch (error) {
+    logger.main.error('[TeamService] findPendingInviteForEmail error:', error);
+    return null;
+  }
+}
+
 type FindForWorkspaceResult = { success: true; team: TeamDetails | null };
 
 async function findTeamOrPendingInviteForWorkspace(workspacePath: string): Promise<FindForWorkspaceResult> {
@@ -1019,14 +1291,13 @@ async function createTeam(name: string, workspacePath?: string, accountOrgId?: s
     });
   }
 
-  // Team collaboration is always server-managed. Never create a client-custodied
-  // team key for a new org; the personal/mobile zero-knowledge lane is separate.
-  await initializeServerManagedOrganization(result.orgId, {
-    setServerManaged: async (orgId) => {
-      const orgJwt = await getOrgScopedJwt(orgId, accountOrgId);
-      await setTeamKeyCustodyMode(orgId, 'server-managed', orgJwt);
-    },
-  });
+  // Team collaboration is server-managed, and only server-managed. Mark the
+  // new org before anything tries to sync into it; the server refuses content
+  // for an org without this marker.
+  {
+    const orgJwt = await getOrgScopedJwt(result.orgId, accountOrgId);
+    await setTeamServerManagedCustody(result.orgId, orgJwt);
+  }
   logger.main.info('[TeamService] Server-managed encryption enabled for team:', result.orgId);
 
   // The new org must be visible to findTeamForWorkspace/listTeams immediately
@@ -1102,6 +1373,48 @@ async function listProjectsForOrg(orgId: string): Promise<TeamProjectSummary[]> 
     projects: TeamProjectSummary[];
   };
   return result.projects || [];
+}
+
+function isWorkspaceOpen(workspacePath: string): boolean {
+  for (const state of windowStates.values()) {
+    if (windowReferencesWorkspace(state, workspacePath)) return true;
+  }
+  return false;
+}
+
+async function getRecentWorkspaceRemoteStates(
+  projectGitRemoteHashes: ReadonlySet<string>,
+): Promise<WorkspaceRemoteState[]> {
+  const states: WorkspaceRemoteState[] = [];
+  for (const workspace of getRecentItems('workspaces')) {
+    if (!workspace.path || !existsSync(workspace.path)) continue;
+    const remote = await getNormalizedGitRemote(workspace.path);
+    if (!remote) continue;
+    const gitRemoteHash = hashGitRemote(remote);
+    if (!projectGitRemoteHashes.has(gitRemoteHash)) continue;
+    states.push({
+      workspacePath: workspace.path,
+      gitRemoteHash,
+      open: isWorkspaceOpen(workspace.path),
+    });
+  }
+  return states;
+}
+
+async function resolveLocalProjectStatesForOrg(
+  orgId: string,
+): Promise<OrgProjectLocalState[]> {
+  if (!orgId || typeof orgId !== 'string') {
+    throw new Error('team:resolve-org-projects-local-state requires orgId');
+  }
+  const projects = await listProjectsForOrg(orgId);
+  const hashes = new Set(
+    projects
+      .map((project) => project.gitRemoteHash)
+      .filter((hash): hash is string => !!hash),
+  );
+  const workspaces = await getRecentWorkspaceRemoteStates(hashes);
+  return resolveOrgProjectLocalStates(projects, workspaces);
 }
 
 /** Epic H3 P3: read-only pre-flight for the "Move to another org" wizard.
@@ -1182,20 +1495,7 @@ async function acceptInvite(orgId: string): Promise<TeamDetails> {
   // 1. Exchange session for the team org -- Stytch promotes pending -> active_member
   const orgJwt = await getOrgScopedJwt(orgId, inviteAccountOrgId);
 
-  // 2. Set up encryption: identity key + fetch org key
-  try {
-    await getOrCreateIdentityKeyPair();
-    await uploadIdentityKeyToOrg(orgJwt);
-
-    // Try to fetch and unwrap org key (admin may not have wrapped it yet)
-    await fetchAndUnwrapOrgKey(orgId, orgJwt);
-    logger.main.info('[TeamService] Encryption set up after accepting invite for:', orgId);
-  } catch (err) {
-    // Encryption setup can fail if admin hasn't shared key yet -- that's OK
-    logger.main.warn('[TeamService] Encryption setup after invite accept (non-fatal):', err);
-  }
-
-  // 3. Fetch team details now that we're an active member. Invalidate first --
+  // 2. Fetch team details now that we're an active member. Invalidate first --
   // with the long listTeams TTL, a pre-join cache entry would otherwise make
   // this lookup miss the team we just joined.
   invalidateListTeamsCache();
@@ -1212,7 +1512,7 @@ async function acceptInvite(orgId: string): Promise<TeamDetails> {
 /**
  * List members of a team. Requires explicit orgId.
  */
-async function listMembers(orgId: string): Promise<{ members: TeamMember[]; callerRole: string }> {
+export async function listMembers(orgId: string): Promise<{ members: TeamMember[]; callerRole: string }> {
   const data = await fetchTeamApi(`/api/teams/${orgId}/members`, 'GET', undefined, orgId) as {
     members: TeamMember[];
     callerRole: string;
@@ -1230,44 +1530,12 @@ async function inviteMember(orgId: string, email: string): Promise<void> {
 /**
  * Remove a member from a team. Requires explicit orgId.
  *
- * IMPORTANT: Rotation happens BEFORE member removal. If rotation fails,
- * the member stays in the org (fail closed). This prevents the scenario
- * where a member is removed but data is still encrypted with the old key
- * that the removed member had access to.
+ * The server holds the team DEK and revokes the member's access when the
+ * membership row goes away; there is no client-held key to rotate.
  */
 async function removeMember(orgId: string, memberId: string): Promise<void> {
-  const orgJwt = await getOrgScopedJwt(orgId);
-  const serverUrl = getCollabServerUrl();
-
-  if ((await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed') {
-    await fetchTeamApi(`/api/teams/${orgId}/members/${memberId}`, 'DELETE', undefined, orgId);
-    logger.main.info('[TeamService] Member removed from server-managed organization:', memberId);
-    return;
-  }
-
-  // Step 1: Rotate key and re-encrypt all data BEFORE removing the member.
-  // If this fails, the member stays -- fail closed, not fail open.
-  // IMPORTANT: Exclude the member being removed from the key distribution list.
-  // Otherwise they receive the new key before deletion completes.
-  const { backupDir } = await performKeyRotation(
-    orgId,
-    `member-removal:${memberId}`,
-    orgJwt,
-    serverUrl,
-    async () => {
-      const { members } = await listMembers(orgId);
-      return { members: members.filter(m => m.memberId !== memberId) };
-    }
-  );
-
-  logger.main.info('[TeamService] Key rotation complete, backup:', backupDir);
-
-  // Step 2: Only remove the member after rotation succeeds.
-  // At this point all data is re-encrypted with the new key that
-  // the removed member never had access to.
   await fetchTeamApi(`/api/teams/${orgId}/members/${memberId}`, 'DELETE', undefined, orgId);
-
-  logger.main.info('[TeamService] Member removed after successful rotation:', memberId);
+  logger.main.info('[TeamService] Member removed from organization:', memberId);
 }
 
 /**
@@ -1336,252 +1604,7 @@ async function listProjectAccess(
 }
 
 /**
- * Re-share the org encryption key with a specific member.
- * Admin-only: fetches the member's current public key and wraps the org key for them.
- * Used when a member's identity key pair was regenerated (new device, corrupted safeStorage).
- */
-async function reshareKeyForMember(orgId: string, memberId: string): Promise<void> {
-  const orgJwt = await getOrgScopedJwt(orgId);
-
-  // Delete stale envelope for this member (if any)
-  try {
-    await deleteEnvelope(orgId, memberId, orgJwt);
-  } catch {
-    // May not exist -- that's fine
-  }
-
-  // Fetch the member's current public key and wrap the org key for them
-  const memberPubKey = await fetchMemberPublicKey(memberId, orgJwt);
-  const envelope = await wrapOrgKeyForMember(orgId, memberPubKey);
-  await uploadEnvelope(orgId, memberId, envelope, orgJwt);
-
-  logger.main.info('[TeamService] Re-shared org key for member:', memberId);
-}
-
-// ============================================================================
-// Auto-Match: Org Key for Workspace
-// ============================================================================
-
-/**
- * Ensure the org encryption key is available for a workspace's team.
- * If the workspace matches a team and we don't have the key yet,
- * fetches the key envelope from the server and unwraps it.
- */
-async function ensureOrgKeyForWorkspace(workspacePath: string): Promise<{
-  team: TeamDetails | null;
-  hasKey: boolean;
-}> {
-  if (!isAuthenticated()) return { team: null, hasKey: false };
-
-  const team = await findTeamForWorkspace(workspacePath);
-  if (!team) return { team: null, hasKey: false };
-
-  // Check if we already have the org key locally
-  if (hasOrgKey(team.orgId)) {
-    // Verify our local key matches the server's current key fingerprint.
-    // If it doesn't match, the key was rotated by another admin and ours is stale.
-    let keyIsStale = false;
-    try {
-      const orgJwt = await getOrgScopedJwt(team.orgId);
-      const localFp = getOrgKeyFingerprint(team.orgId);
-
-      // Check server fingerprint
-      try {
-        const fpResp = await fetchTeamApi(`/api/teams/${team.orgId}/org-key-fingerprint`, 'GET', undefined, team.orgId) as { fingerprint: string | null };
-        if (fpResp.fingerprint && localFp && fpResp.fingerprint !== localFp) {
-          logger.main.warn('[TeamService] Org key is stale (local:', localFp, 'server:', fpResp.fingerprint, ')');
-          clearOrgKey(team.orgId);
-          keyIsStale = true;
-        } else if (!fpResp.fingerprint && localFp) {
-          // Server has no fingerprint yet (legacy team) -- seed it if we're an admin
-          logger.main.info('[TeamService] Server has no org key fingerprint, seeding:', localFp);
-          try {
-            await fetchTeamApi(`/api/teams/${team.orgId}/org-key-fingerprint`, 'PUT', { fingerprint: localFp }, team.orgId);
-          } catch {
-            // Non-fatal -- admin-only, may fail if we're not admin
-          }
-        }
-      } catch {
-        // Network error checking fingerprint -- proceed with local key
-      }
-
-      if (!keyIsStale) {
-        // Key is current. Ensure our envelope exists on the server.
-        // After a DO wipe, the local key cache survives but server envelopes are gone.
-        await getOrCreateIdentityKeyPair();
-        await uploadIdentityKeyToOrg(orgJwt);
-
-        const existingEnvelope = await fetchOwnEnvelope(team.orgId, orgJwt);
-        if (!existingEnvelope) {
-          logger.main.info('[TeamService] Has local key but no server envelope, re-uploading for:', team.orgId);
-          const myPublicKeyJwk = await exportPublicKeyJwk();
-          const envelope = await wrapOrgKeyForMember(team.orgId, myPublicKeyJwk);
-          const myMemberId = getMemberIdFromJwt(orgJwt);
-          if (myMemberId) {
-            await uploadEnvelope(team.orgId, myMemberId, envelope, orgJwt);
-            logger.main.info('[TeamService] Re-uploaded envelope for:', team.orgId);
-          }
-        }
-        return { team, hasKey: true };
-      }
-      // If key was stale, fall through to re-fetch from server
-    } catch (err) {
-      if (!keyIsStale) {
-        // Non-fatal -- we still have the key locally
-        logger.main.warn('[TeamService] Failed to verify/re-upload envelope:', err);
-        return { team, hasKey: true };
-      }
-    }
-  }
-
-  // Try to fetch and unwrap from server
-  try {
-    const orgJwt = await getOrgScopedJwt(team.orgId);
-
-    // Ensure identity key pair exists and public key is uploaded
-    await getOrCreateIdentityKeyPair();
-    await uploadIdentityKeyToOrg(orgJwt);
-
-    let key: CryptoKey | null = null;
-    let unwrapFailed = false;
-    try {
-      key = await fetchAndUnwrapOrgKey(team.orgId, orgJwt);
-    } catch (unwrapErr) {
-      // Envelope exists but can't be unwrapped (identity key was regenerated).
-      // Recovery strategy:
-      // 1. Delete the stale envelope (wrapped for old identity key)
-      // 2. Re-upload identity key to trigger `identityKeyUploaded` broadcast
-      //    to all connected TeamRoom clients
-      // 3. Connected admins who have the org key will auto-wrap a fresh
-      //    envelope for our new identity key via `autoWrapNewMembers`
-      // 4. We poll for the new envelope below
-      logger.main.warn(
-        '[TeamService] Failed to unwrap own envelope for:',
-        team.orgId,
-        '-- identity key may have changed. Triggering key recovery from other admins.',
-        unwrapErr,
-      );
-      unwrapFailed = true;
-      const myMemberId = getMemberIdFromJwt(orgJwt);
-      if (myMemberId) {
-        try {
-          // Step 1: Delete stale envelope first (so we appear "unwrapped")
-          await deleteEnvelope(team.orgId, myMemberId, orgJwt);
-          logger.main.info('[TeamService] Deleted stale envelope for self');
-
-          // Step 2: Re-upload identity key to broadcast `identityKeyUploaded`
-          // to connected admins. They see us as "unwrapped" and auto-wrap.
-          await uploadIdentityKeyToOrg(orgJwt);
-          logger.main.info('[TeamService] Re-uploaded identity key to trigger auto-wrap from other admins');
-        } catch (recoveryErr) {
-          logger.main.warn('[TeamService] Key recovery setup failed:', recoveryErr);
-        }
-      }
-    }
-
-    if (key !== null) {
-      return { team, hasKey: true };
-    }
-
-    // No usable org key yet. If we just signaled other admins, poll briefly
-    // to see if one of them wraps a fresh envelope for us in realtime.
-    if (unwrapFailed) {
-      logger.main.info('[TeamService] Polling for fresh envelope from other admins...');
-      for (let attempt = 0; attempt < 5; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        try {
-          const freshKey = await fetchAndUnwrapOrgKey(team.orgId, orgJwt);
-          if (freshKey !== null) {
-            logger.main.info('[TeamService] Recovered org key from another admin on attempt', attempt + 1);
-            return { team, hasKey: true };
-          }
-        } catch {
-          // Envelope still not available or still stale -- keep polling
-        }
-      }
-      logger.main.warn(
-        '[TeamService] Org key recovery timed out for:', team.orgId,
-        '-- another admin with the org key needs to be online for recovery.',
-      );
-    } else {
-      logger.main.warn(
-        '[TeamService] No envelope found on server for:', team.orgId,
-        '-- another admin with the org key must be online to share the key.',
-      );
-    }
-
-    return { team, hasKey: false };
-
-  } catch (err) {
-    logger.main.warn('[TeamService] Failed to ensure org key for workspace:', workspacePath, err);
-    return { team, hasKey: false };
-  }
-}
-
-// Active auto-wrap polling intervals keyed by orgId
-const autoWrapIntervals = new Map<string, ReturnType<typeof setInterval>>();
-
-/**
- * Start a background polling interval that periodically checks for unwrapped
- * team members and wraps the org key for them. This handles the case where a
- * new member uploads their identity key after the admin's initial startup wrap.
- * Polls every 15s for 5 minutes, then stops.
- */
-function startAutoWrapPolling(orgId: string): void {
-  // Don't start duplicate intervals for the same org
-  if (autoWrapIntervals.has(orgId)) return;
-
-  let attempts = 0;
-  const maxAttempts = 20; // 15s * 20 = 5 minutes
-  const intervalMs = 15_000;
-
-  const interval = setInterval(async () => {
-    attempts++;
-    if (attempts > maxAttempts) {
-      clearInterval(interval);
-      autoWrapIntervals.delete(orgId);
-      return;
-    }
-
-    // Epic H2: stop polling for server-managed teams -- they have no key
-    // envelopes, so autoWrapForNewMembers is a no-op every iteration.
-    try {
-      const orgJwt = await getOrgScopedJwt(orgId);
-      if ((await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed') {
-        clearInterval(interval);
-        autoWrapIntervals.delete(orgId);
-        return;
-      }
-    } catch {
-      // Could not determine mode (offline, NIM-1778) -- trust the last-known
-      // mode; only continue with legacy wrapping when we have never seen the
-      // org as server-managed.
-      if (getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed') {
-        clearInterval(interval);
-        autoWrapIntervals.delete(orgId);
-        return;
-      }
-    }
-
-    try {
-      await autoWrapForNewMembers(orgId);
-    } catch (err) {
-      // Non-admin members will get "Only admins can manage key envelopes" --
-      // stop polling since this user can't wrap keys
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('Only admins') || msg.includes('403')) {
-        clearInterval(interval);
-        autoWrapIntervals.delete(orgId);
-      }
-    }
-  }, intervalMs);
-
-  autoWrapIntervals.set(orgId, interval);
-}
-
-/**
- * Auto-match a workspace to a team on open. Fire-and-forget.
- * If matched, ensures the org key is available and notifies renderer windows.
+ * Match a workspace to its team and start the collaboration services for it.
  */
 export async function autoMatchTeamForWorkspace(workspacePath: string): Promise<void> {
   logger.main.info('[TeamService] autoMatchTeamForWorkspace:', workspacePath);
@@ -1601,18 +1624,9 @@ export async function autoMatchTeamForWorkspace(workspacePath: string): Promise<
   }
 
   try {
-    const result = await ensureOrgKeyForWorkspace(workspacePath);
-    if (result.team) {
-      logger.main.info('[TeamService] Workspace matched to team:', result.team.name, 'orgId:', result.team.orgId, 'hasKey:', result.hasKey);
-
-      // If we have the org key, auto-wrap for any members missing envelopes
-      if (result.hasKey) {
-        autoWrapForNewMembers(result.team.orgId).catch(err => {
-          logger.main.warn(`[TeamService] Auto-wrap for new members of ${result.team?.orgId} failed:`, err);
-        });
-        // Start background polling to catch members who upload their key later
-        startAutoWrapPolling(result.team.orgId);
-      }
+    const team = await findTeamForWorkspace(workspacePath);
+    if (team) {
+      logger.main.info('[TeamService] Workspace matched to team:', team.name, 'orgId:', team.orgId);
 
       // Epic H1: refresh the local org/project/membership projection so the
       // canAccess resolver has this team's roster + grants. Best-effort.
@@ -1623,10 +1637,10 @@ export async function autoMatchTeamForWorkspace(workspacePath: string): Promise<
       // Notify all renderer windows about the team match
       for (const win of BrowserWindow.getAllWindows()) {
         win.webContents.send('team:workspace-matched', {
-          orgId: result.team.orgId,
-          teamName: result.team.name,
+          orgId: team.orgId,
+          teamName: team.name,
           workspacePath,
-          hasKey: result.hasKey,
+          hasKey: true,
         });
       }
 
@@ -1649,172 +1663,6 @@ export async function autoMatchTeamForWorkspace(workspacePath: string): Promise<
   }
 }
 
-/**
- * Check for team members who don't have key envelopes yet and wrap for them.
- * Called by admin's client on workspace open to distribute org keys to new members.
- */
-export async function autoWrapForNewMembers(orgId: string): Promise<void> {
-  // Verify our local key is current before wrapping for others.
-  // Wrapping a stale key for new members would spread split-brain encryption.
-  const localFp = getOrgKeyFingerprint(orgId);
-  if (!localFp) return; // No local key at all
-
-  const orgJwt = await getOrgScopedJwt(orgId);
-
-  // Epic H2: server-managed teams have no per-member key envelopes -- the server
-  // holds the per-team DEK and sync paths skip the ECDH unwrap entirely. Wrapping
-  // org keys for members is dead work here (and noisily fails with "Public key not
-  // found" for members who never uploaded an identity key). Skip it.
-  try {
-    if ((await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed') {
-      return;
-    }
-  } catch {
-    // Could not determine custody mode (offline, NIM-1778) -- trust the
-    // last-known mode; only fall through to legacy wrapping when the org has
-    // never been seen as server-managed.
-    if (getLastKnownTeamKeyStatus(orgId)?.mode === 'server-managed') {
-      return;
-    }
-  }
-
-  try {
-    const fpResp = await fetchTeamApi(`/api/teams/${orgId}/org-key-fingerprint`, 'GET', undefined, orgId) as { fingerprint: string | null };
-    if (fpResp.fingerprint && fpResp.fingerprint !== localFp) {
-      logger.main.warn('[TeamService] autoWrap skipped: local org key is stale (local:', localFp, 'server:', fpResp.fingerprint, ')');
-      return;
-    }
-  } catch {
-    // Network error -- skip wrapping to be safe (don't risk spreading a stale key)
-    logger.main.warn('[TeamService] autoWrap skipped: could not verify org key fingerprint');
-    return;
-  }
-
-  // Get all members and all existing envelopes
-  const { members } = await listMembers(orgId);
-  const envelopes = await fetchAllEnvelopes(orgId, orgJwt);
-  const wrappedUserIds = new Set(envelopes.map((e: { targetUserId: string }) => e.targetUserId));
-
-  // Find active members without envelopes
-  const unwrappedMembers = members.filter(
-    m => m.status !== 'pending' && !wrappedUserIds.has(m.memberId)
-  );
-
-  if (unwrappedMembers.length === 0) return;
-
-  logger.main.info('[TeamService] Auto-wrapping org key for', unwrappedMembers.length, 'new member(s)');
-
-  for (const member of unwrappedMembers) {
-    try {
-      const memberPubKey = await fetchMemberPublicKey(member.memberId, orgJwt);
-      // Trust gate (security review Issue 2): only wrap if we haven't
-      // recorded a different fingerprint for this member. `unverified` is
-      // TOFU on first contact -- we wrap and record the fingerprint so the
-      // next swap (member rotates their device key, or server lies about
-      // which key belongs to them) is caught as `fingerprint-changed` and
-      // skipped until the admin manually re-verifies via the trust UI.
-      const memberFingerprint = await fingerprintIdentityKey(memberPubKey);
-      const trustStatus = getMemberTrustStatus(orgId, member.memberId, memberFingerprint);
-      if (trustStatus === 'fingerprint-changed') {
-        logger.main.warn(
-          '[TeamService] Skipping auto-wrap for', member.email || member.memberId,
-          '-- identity key fingerprint changed; manual re-verification required',
-        );
-        continue;
-      }
-
-      const envelope = await wrapOrgKeyForMember(orgId, memberPubKey);
-      await uploadEnvelope(orgId, member.memberId, envelope, orgJwt);
-      if (trustStatus === 'unverified') {
-        markMemberVerified(orgId, member.memberId, memberFingerprint);
-      }
-      logger.main.info('[TeamService] Wrapped org key for member:', member.email || member.memberId);
-    } catch (err) {
-      // Member may not have uploaded their public key yet - that's OK
-      logger.main.warn('[TeamService] Could not wrap key for member:', member.memberId, err);
-    }
-  }
-}
-
-/**
- * NIM-913: repair stranded members by FORCE re-wrapping the CURRENT org key for
- * EVERY active member, overwriting any stale envelope.
- *
- * Unlike `autoWrapForNewMembers` (which only wraps members with NO envelope),
- * this re-wraps members who already have an envelope but on the WRONG epoch —
- * the exact case left behind when a key rotation's per-member re-wrap failed for
- * someone, stranding them on the old key so they can't decrypt current-epoch
- * data (e.g. shared doc-index titles).
- *
- * Must run from a device that HOLDS THE CURRENT key: it is gated on the local
- * key matching the server's current fingerprint (wrapping a stale key for
- * everyone would spread split-brain encryption), and `upload-envelope` is
- * admin-gated server-side. The server upserts envelopes, so this safely
- * overwrites. Returns per-member outcome counts.
- */
-export async function rewrapOrgKeyForAllMembers(
-  orgId: string,
-): Promise<{ rewrapped: number; skipped: number; failed: string[] }> {
-  const localFp = getOrgKeyFingerprint(orgId);
-  if (!localFp) throw new Error('No local org key — open the workspace as a member who holds the team key.');
-
-  const orgJwt = await getOrgScopedJwt(orgId);
-
-  // Gate: only redistribute if OUR key is the server's current epoch. Otherwise
-  // we'd overwrite everyone's good envelopes with a stale key.
-  const fpResp = await fetchTeamApi(`/api/teams/${orgId}/org-key-fingerprint`, 'GET', undefined, orgId) as { fingerprint: string | null };
-  if (fpResp.fingerprint && fpResp.fingerprint !== localFp) {
-    throw new Error(
-      `This device holds a stale team key (${localFp.slice(0, 8)}…), not the current one (${fpResp.fingerprint.slice(0, 8)}…). ` +
-      'Run the repair from the admin device that performed the key rotation.',
-    );
-  }
-
-  const { members } = await listMembers(orgId);
-  const activeMembers = members.filter(m => m.status !== 'pending');
-
-  logger.main.info('[TeamService] NIM-913 re-wrap: redistributing current org key to', activeMembers.length, 'active member(s)');
-
-  let rewrapped = 0;
-  let skipped = 0;
-  const failed: string[] = [];
-  for (const member of activeMembers) {
-    try {
-      const memberPubKey = await fetchMemberPublicKey(member.memberId, orgJwt);
-      const memberFingerprint = await fingerprintIdentityKey(memberPubKey);
-      const trustStatus = getMemberTrustStatus(orgId, member.memberId, memberFingerprint);
-      if (trustStatus === 'fingerprint-changed') {
-        logger.main.warn('[TeamService] NIM-913 re-wrap: skipping', member.email || member.memberId, '-- identity key changed; manual re-verification required');
-        skipped += 1;
-        continue;
-      }
-      const envelope = await wrapOrgKeyForMember(orgId, memberPubKey);
-      await uploadEnvelope(orgId, member.memberId, envelope, orgJwt);
-      if (trustStatus === 'unverified') markMemberVerified(orgId, member.memberId, memberFingerprint);
-      rewrapped += 1;
-    } catch (err) {
-      logger.main.warn('[TeamService] NIM-913 re-wrap failed for member:', member.memberId, err);
-      failed.push(member.email || member.memberId);
-    }
-  }
-  logger.main.info('[TeamService] NIM-913 re-wrap complete: rewrapped', rewrapped, 'skipped', skipped, 'failed', failed.length);
-  return { rewrapped, skipped, failed };
-}
-
-// ============================================================================
-// IPC Handler Registration
-// ============================================================================
-
-/**
- * Epic H1: refresh the LOCAL org/project/membership projection from the
- * server-authoritative roster. Mints/updates `orgs`/`projects`/`org_members`/
- * `project_access` so the `canAccess` resolver can gate UX locally.
- *
- * Idempotent (upserts + DO NOTHING grant seeding) — safe to call on workspace
- * team match, after team mutations, or periodically. Best-effort: a roster
- * fetch failure for one team seeds that team with an empty roster rather than
- * aborting the whole sync.
- */
 export async function syncOrgProjectionFromServer(knownTeams?: TeamDetails[]): Promise<{
   success: boolean;
   counts?: { orgs: number; projects: number; members: number; grants: number };
@@ -1896,7 +1744,6 @@ const runAuthenticatedTeamBootstrap = createTeamAuthBootstrap(async () => {
     const teams = await listTeams();
     await Promise.all([
       syncOrgProjectionFromServer(teams),
-      scheduleSilentEncryptionMigrations(teams),
     ]);
   } catch (err) {
     logger.main.warn('[TeamService] authenticated team bootstrap failed:', err);
@@ -1905,8 +1752,9 @@ const runAuthenticatedTeamBootstrap = createTeamAuthBootstrap(async () => {
 
 /**
  * Resolve the viewer's per-org member id from the team org's explicit account
- * binding, independently of the sync-account selection. Legacy email matching
- * remains isolated to the logged, one-time repair path.
+ * binding. The sync account only breaks a tie between two signed-in accounts
+ * that both bind this org. Legacy email matching remains isolated to the
+ * logged, one-time repair path.
  */
 export async function canAccessForCurrentUser(input: CanAccessInput): Promise<{
   allowed: boolean; orgRole: string | null; projectRole: string | null; reason: string;
@@ -1918,7 +1766,7 @@ export async function canAccessForCurrentUser(input: CanAccessInput): Promise<{
   let viewerUserId = '';
 
   // Resolve the org first (from projectId if needed), then resolve its bound
-  // signed-in account. The sync account is deliberately not consulted.
+  // signed-in account, preferring the sync account when the org is ambiguous.
   let orgId = input.orgId ?? null;
   if (!orgId && input.projectId) {
     const pr = await db.query<{ org_id: string }>(`SELECT org_id FROM projects WHERE id = $1`, [input.projectId]);
@@ -1933,6 +1781,7 @@ export async function canAccessForCurrentUser(input: CanAccessInput): Promise<{
         db,
         orgId,
         signedInAccounts.map((account) => account.personalOrgId),
+        getSyncAccount()?.personalOrgId,
       );
       if (!binding) {
         for (const account of signedInAccounts) {
@@ -1947,6 +1796,7 @@ export async function canAccessForCurrentUser(input: CanAccessInput): Promise<{
             db,
             orgId,
             signedInAccounts.map((candidate) => candidate.personalOrgId),
+            getSyncAccount()?.personalOrgId,
           );
           if (binding) break;
         }
@@ -2062,7 +1912,6 @@ export function registerTeamHandlers(): void {
       // settings for the cases those events miss (e.g. invited from elsewhere).
       if (options?.forceRefresh) invalidateListTeamsCache();
       const teams = await listTeams();
-      scheduleSilentEncryptionMigrations(teams);
       return { success: true, teams };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -2077,6 +1926,18 @@ export function registerTeamHandlers(): void {
     }
   });
 
+  safeHandle('team:find-pending-invite-for-email', async (_event, email: string) => {
+    try {
+      if (typeof email !== 'string' || !email.trim()) {
+        return { success: false, error: 'team:find-pending-invite-for-email requires email' };
+      }
+      const invitation = await findPendingInviteForEmail(email);
+      return { success: true, invitation };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   safeHandle('team:get', async (_event, orgId: string) => {
     try {
       const team = await getTeamByOrgId(orgId);
@@ -2086,25 +1947,15 @@ export function registerTeamHandlers(): void {
     }
   });
 
-  safeHandle('team:get-encryption-migration-status', async (_event, orgId: string) => {
-    return { success: true, migration: getSilentMigrationState(orgId) };
-  });
-
-  safeHandle('team:retry-encryption-migration', async (_event, orgId: string) => {
+  safeHandle('team:rename', async (_event, orgId: string, name: string) => {
     try {
-      const teams = await listTeams();
-      const team = teams.find((candidate) => candidate.orgId === orgId);
-      if (!team) return { success: false, error: 'Organization not found' };
-      resetSilentMigrationForOrg(orgId);
-      await scheduleSilentEncryptionMigrations([team]);
-      const migration = getSilentMigrationState(orgId);
-      return {
-        success: migration?.status === 'complete',
-        migration,
-        error: migration?.status === 'stuck' ? migration.message : undefined,
-      };
+      const organization = await renameOrganization(orgId, name);
+      return { success: true, organization };
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   });
 
@@ -2132,6 +1983,15 @@ export function registerTeamHandlers(): void {
   safeHandle('team:list-projects', async (_event, orgId: string) => {
     try {
       const projects = await listProjectsForOrg(orgId);
+      return { success: true, projects };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  safeHandle('team:resolve-org-projects-local-state', async (_event, orgId: string) => {
+    try {
+      const projects = await resolveLocalProjectStatesForOrg(orgId);
       return { success: true, projects };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -2251,100 +2111,6 @@ export function registerTeamHandlers(): void {
     }
   });
 
-  safeHandle('team:ensure-workspace-key', async (_event, workspacePath: string) => {
-    try {
-      const result = await ensureOrgKeyForWorkspace(workspacePath);
-      return { success: true, team: result.team, hasKey: result.hasKey };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
-
-  safeHandle('team:reshare-key', async (_event, orgId: string, memberId: string) => {
-    try {
-      await reshareKeyForMember(orgId, memberId);
-      return { success: true };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
-
-  safeHandle('team:auto-wrap-new-members', async (_event, orgId: string) => {
-    try {
-      await autoWrapForNewMembers(orgId);
-      return { success: true };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
-
-  // NIM-913: admin repair — force re-wrap the current org key for ALL active
-  // members, fixing members stranded on a stale epoch by a failed rotation
-  // re-wrap. Must be run from a device holding the current key (gated inside).
-  safeHandle('team:rewrap-all-member-keys', async (_event, orgId: string) => {
-    if (!isAuthenticated()) return { success: false, error: 'Not authenticated' };
-    try {
-      const result = await rewrapOrgKeyForAllMembers(orgId);
-      return { success: true, ...result };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
-
-  safeHandle('team:handle-org-key-rotated', async (_event, orgId: string, serverFingerprint: string) => {
-    try {
-      const localFp = getOrgKeyFingerprint(orgId);
-      if (localFp && localFp !== serverFingerprint) {
-        logger.main.warn('[TeamService] Org key rotated! Local key is stale. Clearing and re-fetching.');
-        clearOrgKey(orgId);
-
-        // Attempt to fetch the new key from our envelope
-        const orgJwt = await getOrgScopedJwt(orgId);
-        const key = await fetchAndUnwrapOrgKey(orgId, orgJwt);
-        if (key) {
-          logger.main.info('[TeamService] Successfully re-fetched org key after rotation');
-          return { success: true, keyRefreshed: true };
-        } else {
-          logger.main.warn('[TeamService] No envelope available yet after key rotation');
-          return { success: true, keyRefreshed: false };
-        }
-      }
-      return { success: true, keyRefreshed: false };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
-
-  safeHandle('team:cleanup-orphaned-documents', async (_event, orgId: string) => {
-    try {
-      const orgJwt = await getOrgScopedJwt(orgId);
-      const serverUrl = getCollabServerUrl();
-      const result = await cleanupOrphanedDocuments(orgId, orgJwt, serverUrl);
-      return { success: true, ...result };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
-
-  safeHandle('team:recover-tracker-from-local', async (_event, orgId: string, workspacePath: string) => {
-    try {
-      const orgJwt = await getOrgScopedJwt(orgId);
-      const serverUrl = getCollabServerUrl();
-      const remote = await getNormalizedGitRemote(workspacePath);
-      if (!remote) {
-        return { success: false, error: 'No git remote found for workspace' };
-      }
-      const database = getDatabase();
-      if (!database) {
-        return { success: false, error: 'Database is not initialized' };
-      }
-      const result = await reEncryptTrackerFromLocal(orgId, remote, orgJwt, serverUrl, workspacePath, database);
-      return { success: true, ...result };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
-
   // Epic H1: populate the local org/project/membership projection independently
   // of a workspace team match, so `canAccess` resolves correctly even before (or
   // without) opening a matched workspace. onAuthStateChange immediately supplies
@@ -2361,38 +2127,4 @@ export function registerTeamHandlers(): void {
       void runAuthenticatedTeamBootstrap();
     }
   });
-}
-
-async function scheduleSilentEncryptionMigrations(teams: TeamDetails[]): Promise<void> {
-  try {
-    const result = await runSilentTeamEncryptionMigrations(teams, {
-      getStatus: async (orgId) => {
-        const orgJwt = await getOrgScopedJwt(orgId);
-        return (await fetchTeamKeyStatus(orgId, orgJwt)).mode;
-      },
-      migrate: async (orgId) => {
-        await migrateTeamToServerManaged(orgId);
-      },
-      getFinalizationStatus: async (orgId) => {
-        const status = await getTeamMigrationFinalizationStatus(orgId);
-        const purgedUpdates = status.purgedLegacyUpdates ?? 0;
-        const purgedSnapshots = status.purgedLegacySnapshots ?? 0;
-        if (purgedUpdates + purgedSnapshots > 0) {
-          logger.main.warn('[TeamService] Permanently deleted legacy collaboration rows after server-managed cutover', {
-            orgId,
-            purgedUpdates,
-            purgedSnapshots,
-          });
-        }
-        return status;
-      },
-      finalizeDocument: finalizeTeamEncryptionDocument,
-      finalizeTitles: finalizeTeamEncryptionTitles,
-    });
-    if (result.attempted > 0) {
-      logger.main.info('[TeamService] Silent encryption migration scan complete', result);
-    }
-  } catch (error) {
-    logger.main.warn('[TeamService] Silent encryption migration scan failed', error);
-  }
 }

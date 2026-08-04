@@ -69,7 +69,7 @@ describe('ExtensionSettingsRoutePanel', () => {
       />,
     );
 
-    expect(screen.getByText('Extension route mounted')).toBeTruthy();
+    screen.getByText('Extension route mounted');
     expect(receivedProps).toEqual(
       expect.objectContaining({
         storage,

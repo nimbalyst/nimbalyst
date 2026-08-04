@@ -3,6 +3,53 @@
  */
 
 /**
+ * html2canvas's foreignObject renderer serializes the cloned HTML as SVG/XML.
+ * HTML comments may contain consecutive hyphens, but XML comments may not.
+ * Normalize only the invisible capture clone so the mockup source is untouched.
+ */
+export function sanitizeScreenshotCloneForXml(clone: Document): void {
+  const walker = clone.createTreeWalker(clone, NodeFilter.SHOW_COMMENT);
+  let node = walker.nextNode();
+
+  while (node) {
+    const comment = node as Comment;
+    comment.data = comment.data.replace(/-{2,}/g, (hyphens) =>
+      hyphens.split('').join(' ')
+    );
+    if (comment.data.endsWith('-')) {
+      comment.data += ' ';
+    }
+    node = walker.nextNode();
+  }
+}
+
+export function describeScreenshotCaptureError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (
+    error &&
+    typeof error === 'object' &&
+    'type' in error &&
+    typeof error.type === 'string'
+  ) {
+    const target = 'target' in error ? error.target : null;
+    const targetTag =
+      target &&
+      typeof target === 'object' &&
+      'tagName' in target &&
+      typeof target.tagName === 'string'
+        ? target.tagName.toLowerCase()
+        : null;
+    const subject = targetTag === 'img' ? 'Mockup image serialization' : 'Browser capture';
+    return `${subject} failed (${error.type} event)`;
+  }
+
+  return String(error);
+}
+
+/**
  * Capture a composite screenshot of a mockup iframe with optional drawing overlay
  *
  * @param iframe - The iframe element containing the mockup
@@ -61,6 +108,7 @@ export async function captureMockupComposite(
     height: elemHeight,
     windowWidth: elemWidth,
     windowHeight: elemHeight,
+    onclone: sanitizeScreenshotCloneForXml,
   });
 
   // Create a new canvas to composite mockup + drawing

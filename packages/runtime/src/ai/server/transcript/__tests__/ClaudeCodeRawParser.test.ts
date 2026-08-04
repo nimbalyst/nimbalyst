@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { ClaudeCodeRawParser } from '../parsers/ClaudeCodeRawParser';
 import type { ParseContext, CanonicalEventDescriptor } from '../parsers/IRawMessageParser';
 import type { RawMessage } from '../TranscriptTransformer';
+import { stagedAttachmentRegistry } from '../../attachments/stagedAttachmentRegistry';
 
 const SESSION_ID = 'test-session';
 
@@ -267,6 +268,58 @@ describe('ClaudeCodeRawParser', () => {
         providerToolCallId: 'tool-1',
         arguments: { file_path: '/test.ts' },
       });
+    });
+
+    it('emits an attachment staging warning for a denied Read result', async () => {
+      const parser = new ClaudeCodeRawParser();
+      const stagedPath = '/tmp/nimbalyst-attachment-report.txt';
+      stagedAttachmentRegistry.resetForTests();
+      stagedAttachmentRegistry.register(SESSION_ID, {
+        path: stagedPath,
+        filename: 'report.txt',
+        mode: 'temp',
+      });
+
+      await parser.parseMessage(makeRawMessage({
+        content: JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: 'attachment-read',
+              name: 'Read',
+              input: { file_path: stagedPath },
+            }],
+          },
+        }),
+      }), makeContext());
+
+      const descriptors = await parser.parseMessage(makeRawMessage({
+        direction: 'input',
+        content: JSON.stringify({
+          type: 'user',
+          message: {
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'attachment-read',
+              is_error: true,
+              content: 'File is in a directory that is denied by your permission settings.',
+            }],
+          },
+        }),
+      }), makeContext());
+
+      expect(descriptors).toHaveLength(2);
+      expect(descriptors[1]).toMatchObject({
+        type: 'system_message',
+        systemType: 'permission_denied',
+        isAttachmentStagingDenied: true,
+        attachmentPath: stagedPath,
+        attachmentFilename: 'report.txt',
+        attachmentStagingMode: 'temp',
+        attachmentDetection: 'reactive',
+      });
+      stagedAttachmentRegistry.resetForTests();
     });
 
     it('parses MCP tool calls with server/tool extraction', async () => {

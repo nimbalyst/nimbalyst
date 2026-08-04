@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import type { editor as MonacoEditorNamespace } from 'monaco-editor';
 import { waitForMonacoModel, type MonacoModelWaitTarget } from '../monacoModelReady';

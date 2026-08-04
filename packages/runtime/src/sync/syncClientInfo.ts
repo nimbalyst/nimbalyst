@@ -19,14 +19,14 @@
 const MAX_LABEL_LENGTH = 32;
 
 export interface SyncClientInfo {
-  /** Coarse client kind: 'desktop' (Electron), 'mobile', or 'web'. */
+  /** Coarse client kind: 'desktop' (Electron), 'mobile', 'web', or 'unknown'. */
   platform: string;
   /** App version string, e.g. the package.json/build version like '1.4.2'. */
   version: string;
 }
 
 let clientInfo: SyncClientInfo = {
-  platform: 'desktop',
+  platform: 'unknown',
   version: 'unknown',
 };
 

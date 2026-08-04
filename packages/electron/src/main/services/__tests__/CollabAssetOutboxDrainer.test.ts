@@ -123,6 +123,26 @@ describe("CollabAssetOutboxDrainer", () => {
     expect(store.errorCode).toBe("forbidden");
   });
 
+  it.each(["http_400", "http_413", "asset_format_unreadable"])(
+    "parks a server-refused upload (%s) on the first attempt",
+    async (errorCode) => {
+      const store = makeStore();
+      const transport: CollabAssetUploadTransport = {
+        upload: vi.fn(async () => ({ status: "rejected" as const, errorCode })),
+      };
+      const drainer = new CollabAssetOutboxDrainer(store, transport);
+
+      const result = await drainer.drainOnce(identity.accountId);
+
+      // The server rejected the request on its own terms; the same bytes with
+      // the same headers will be rejected forever.
+      expect(store.state).toBe("rejected");
+      expect(store.errorCode).toBe(errorCode);
+      expect(store.nextAttemptAt).toBeNull();
+      expect(result.rejectedAssets).toBe(1);
+    },
+  );
+
   it("keeps transient and write-barrier failures retryable", async () => {
     const store = makeStore();
     const transport: CollabAssetUploadTransport = {

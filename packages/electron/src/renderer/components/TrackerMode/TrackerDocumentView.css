@@ -1,0 +1,127 @@
+/**
+ * Tracker document view - focused reading/editing layout inside Tracker Mode.
+ */
+
+.tracker-document-view-list-pane {
+  border-right: 1px solid var(--nim-border);
+  background: var(--nim-bg-secondary);
+  container-name: tracker-document-list-pane;
+  container-type: inline-size;
+}
+
+.tracker-document-list-pane-header {
+  background: var(--nim-bg-secondary);
+}
+
+.tracker-document-view-right-panel {
+  border-left: 1px solid var(--nim-border);
+  background: var(--nim-bg-secondary);
+}
+
+.tracker-document-view-header {
+  container-name: tracker-document-header;
+  container-type: inline-size;
+}
+
+/*
+ * The chip row itself is shared (TrackerFieldPills.css in the runtime package).
+ * Only the header's own width behaviour is scoped here.
+ */
+@container tracker-document-header (max-width: 720px) {
+  .tracker-document-field-pills .tracker-field-pill {
+    max-width: 140px;
+  }
+
+  .tracker-document-field-pills .tracker-field-pill-empty {
+    max-width: 110px;
+  }
+}
+
+/*
+ * The list pane is deliberately narrow, so its rows have to give up the
+ * comfortable padding they carry at full width.
+ */
+.tracker-document-view-list-pane .tracker-table-row {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/*
+ * In the narrow document-list pane, reserve the first line for identity/meta
+ * and give the title the entire second line. The ordinary Tracker list keeps
+ * its single-row layout because this is scoped to the pane container.
+ */
+@container tracker-document-list-pane (max-width: 420px) {
+  .tracker-document-view-list-pane .tracker-table-row {
+    display: grid;
+    grid-template-columns: 8px 24px 20px minmax(0, 1fr) auto auto;
+    grid-template-rows: minmax(24px, auto) minmax(20px, auto);
+    column-gap: 8px;
+    row-gap: 2px;
+    align-items: center;
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+
+  /*
+   * Anything the rules below don't place explicitly still belongs on line 1.
+   * Without this, a newly added row child auto-places into an implicit third
+   * row and every row in the pane grows a band of empty space (NIM-2434).
+   */
+  .tracker-document-view-list-pane .tracker-table-row > * {
+    grid-row: 1;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-unread-dot {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-favorite-star {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > span.w-5 {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-table-cell.title {
+    display: contents;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-table-cell.title > div {
+    display: contents;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-cell.title .font-mono {
+    grid-column: 4;
+    grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-cell.title span:not(.font-mono) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-cell.title > input {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-table-row-meta {
+    grid-column: 5;
+    grid-row: 1;
+  }
+
+  .tracker-document-view-list-pane .tracker-table-row > .tracker-row-more-actions {
+    grid-column: 6;
+    grid-row: 1;
+  }
+}

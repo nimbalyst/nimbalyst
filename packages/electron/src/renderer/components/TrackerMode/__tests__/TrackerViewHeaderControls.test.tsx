@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   TrackerColumnDef,
@@ -107,9 +107,8 @@ describe('TrackerViewHeaderControls', () => {
     renderControls();
 
     expect(screen.getByTestId('tracker-view-item-count').textContent).toBe('42 items');
-    expect(screen.getByTestId('tracker-view-filter-button')).toBeTruthy();
+    screen.getByTestId('tracker-view-filter-button');
     const displayOptions = screen.getByTestId('tracker-view-display-options');
-    expect(displayOptions).toBeTruthy();
     // The button is text-labeled ("Columns"), not a bare icon.
     expect(displayOptions.textContent).toContain('Columns');
   });
@@ -164,17 +163,17 @@ describe('TrackerViewHeaderControls', () => {
     const { onFiltersChange } = renderControls();
     fireEvent.click(screen.getByTestId('tracker-view-filter-button'));
 
-    expect(screen.getByPlaceholderText('Add filter…')).toBeTruthy();
-    expect(screen.getByTestId('tracker-filter-advanced')).toBeTruthy();
+    screen.getByPlaceholderText('Add filter…');
+    screen.getByTestId('tracker-filter-advanced');
     fireEvent.change(screen.getByTestId('tracker-filter-command-search'), {
       target: { value: 'status' },
     });
-    expect(screen.getByTestId('tracker-filter-field-status')).toBeTruthy();
+    screen.getByTestId('tracker-filter-field-status');
     expect(screen.queryByTestId('tracker-filter-field-priority')).toBeNull();
 
     fireEvent.click(screen.getByTestId('tracker-filter-field-status'));
-    expect(screen.getByTestId('tracker-filter-value-submenu')).toBeTruthy();
-    expect(screen.getByTestId('tracker-filter-field-status')).toBeTruthy();
+    screen.getByTestId('tracker-filter-value-submenu');
+    screen.getByTestId('tracker-filter-field-status');
     fireEvent.click(screen.getByTestId('tracker-filter-option-done'));
 
     expect(onFiltersChange).toHaveBeenCalledWith({
@@ -199,7 +198,7 @@ describe('TrackerViewHeaderControls', () => {
     expect(onFiltersChange).not.toHaveBeenCalled();
     expect(ui.getAttribute('aria-checked')).toBe('true');
     expect(backend.getAttribute('aria-checked')).toBe('true');
-    expect(screen.getByTestId('tracker-filter-value-submenu')).toBeTruthy();
+    screen.getByTestId('tracker-filter-value-submenu');
 
     fireEvent.click(screen.getByTestId('tracker-filter-apply-multiple'));
 
@@ -226,7 +225,7 @@ describe('TrackerViewHeaderControls', () => {
     );
     fireEvent.click(screen.getByTestId('tracker-view-filter-button'));
     fireEvent.click(screen.getByTestId('tracker-filter-field-tags'));
-    expect(screen.getByTestId('tracker-filter-value-submenu')).toBeTruthy();
+    screen.getByTestId('tracker-filter-value-submenu');
 
     rerender(
       <TrackerViewHeaderControls
@@ -238,8 +237,8 @@ describe('TrackerViewHeaderControls', () => {
       />,
     );
 
-    expect(screen.getByTestId('tracker-filter-value-submenu')).toBeTruthy();
-    expect(screen.getByTestId('tracker-filter-apply-multiple')).toBeTruthy();
+    screen.getByTestId('tracker-filter-value-submenu');
+    screen.getByTestId('tracker-filter-apply-multiple');
   });
 
   it('reopens a collection filter with its values selected and replaces it', () => {
@@ -274,11 +273,11 @@ describe('TrackerViewHeaderControls', () => {
     });
     fireEvent.click(screen.getByTestId('tracker-view-filter-button'));
 
-    expect(screen.getByTestId('tracker-filter-active-list')).toBeTruthy();
+    screen.getByTestId('tracker-filter-active-list');
     fireEvent.keyDown(screen.getByTestId('tracker-filter-command-search'), { key: 'ArrowDown' });
     fireEvent.keyDown(screen.getByTestId('tracker-filter-command-search'), { key: 'Enter' });
-    expect(screen.getByTestId('tracker-filter-value-submenu')).toBeTruthy();
-    expect(screen.getByTestId('tracker-filter-builder')).toBeTruthy();
+    screen.getByTestId('tracker-filter-value-submenu');
+    screen.getByTestId('tracker-filter-builder');
 
     fireEvent.click(screen.getByLabelText('Remove Status filter'));
     expect(onFiltersChange).toHaveBeenCalledWith({ combinator: 'and', clauses: [] });
@@ -325,21 +324,21 @@ describe('TrackerViewHeaderControls', () => {
     fireEvent.click(screen.getByTestId('tracker-view-filter-button'));
     fireEvent.mouseEnter(screen.getByTestId('tracker-filter-field-status'));
 
-    expect(screen.getByTestId('tracker-filter-builder')).toBeTruthy();
-    expect(screen.getByTestId('tracker-filter-value-submenu')).toBeTruthy();
-    expect(screen.getByText('2 issues')).toBeTruthy();
-    expect(screen.getByText('1 option not matching any issues')).toBeTruthy();
+    screen.getByTestId('tracker-filter-builder');
+    screen.getByTestId('tracker-filter-value-submenu');
+    screen.getByText('2 issues');
+    screen.getByText('1 option not matching any issues');
 
     fireEvent.change(screen.getByTestId('tracker-filter-option-search'), {
       target: { value: 'don' },
     });
-    expect(screen.getByTestId('tracker-filter-option-done')).toBeTruthy();
+    screen.getByTestId('tracker-filter-option-done');
   });
 
   it('uses the same display-options panel for column visibility', () => {
     const { onColumnConfigChange } = renderControls();
     fireEvent.click(screen.getByTestId('tracker-view-display-options'));
-    expect(screen.getByText('Display Options')).toBeTruthy();
+    screen.getByText('Display Options');
 
     fireEvent.click(screen.getAllByText('Priority').find(element => element.tagName === 'SPAN')!);
     expect(onColumnConfigChange).toHaveBeenCalledWith({
@@ -349,18 +348,83 @@ describe('TrackerViewHeaderControls', () => {
     });
   });
 
+  it('keeps a long display-options panel within the viewport and scrollable', async () => {
+    const manyColumns = [
+      ...columns,
+      ...Array.from({ length: 20 }, (_, index) => ({
+        ...columns[0],
+        id: `custom-${index}`,
+        label: `Custom ${index}`,
+        defaultVisible: false,
+        builtin: false,
+      })),
+    ] satisfies TrackerColumnDef[];
+
+    renderControls({ availableColumns: manyColumns });
+    fireEvent.click(screen.getByTestId('tracker-view-display-options'));
+
+    const panel = screen.getByTestId('tracker-display-options-panel');
+    await waitFor(() => {
+      expect(panel.style.position).toBe('fixed');
+      expect(panel.style.maxHeight).toMatch(/^\d+(?:\.\d+)?px$/);
+    });
+    expect(screen.getByTestId('tracker-display-options-scroll-region').className)
+      .toContain('overflow-y-auto');
+  });
+
+  it('gives the starred field a star icon and finds it by its stored id', () => {
+    renderControls({
+      filterFields: [
+        ...filterFields,
+        { id: 'favorite', label: 'Starred', type: 'boolean' as const },
+      ],
+    });
+    fireEvent.click(screen.getByTestId('tracker-view-filter-button'));
+
+    // Typing the persisted id still finds the renamed field.
+    fireEvent.change(screen.getByTestId('tracker-filter-command-search'), {
+      target: { value: 'favorite' },
+    });
+    const row = screen.getByTestId('tracker-filter-field-favorite');
+    expect(row.textContent).toContain('Starred');
+    expect(row.querySelector('.material-symbols-outlined')?.textContent).toBe('star');
+    expect(screen.queryByTestId('tracker-filter-field-status')).toBeNull();
+  });
+
+  it('names the active filter value the way the field does', () => {
+    renderControls({
+      filterFields: [
+        ...filterFields,
+        {
+          id: 'favorite',
+          label: 'Starred',
+          type: 'boolean' as const,
+          options: [
+            { value: 'true', label: 'Yes' },
+            { value: 'false', label: 'No' },
+          ],
+        },
+      ],
+      filters: { combinator: 'and', clauses: [{ field: 'favorite', op: '=', value: true }] },
+    });
+    fireEvent.click(screen.getByTestId('tracker-view-filter-button'));
+
+    expect(screen.getByTestId('tracker-filter-active-list').textContent)
+      .toContain('Starred is Yes');
+  });
+
   it('hides column controls for non-column views while preserving filters and count', () => {
     renderControls({ showColumnControls: false });
 
     expect(screen.queryByTestId('tracker-view-display-options')).toBeNull();
-    expect(screen.getByTestId('tracker-view-filter-button')).toBeTruthy();
-    expect(screen.getByTestId('tracker-view-item-count')).toBeTruthy();
+    screen.getByTestId('tracker-view-filter-button');
+    screen.getByTestId('tracker-view-item-count');
   });
 
   it('opens filter management when an active filter pill requests it', () => {
     renderControls({ openFiltersToken: 1 });
 
-    expect(screen.getByTestId('tracker-filter-builder')).toBeTruthy();
+    screen.getByTestId('tracker-filter-builder');
   });
 
 });

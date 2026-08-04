@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-22T21:06:28.076Z",
+  "generatedAt": "2026-07-27T21:02:05.862Z",
   "scope": {
     "workspaceRoots": [
       "packages/electron",
@@ -55,7 +55,7 @@
     "approvedExceptions": [
       {
         "name": "@anthropic-ai/claude-agent-sdk",
-        "version": "0.3.217",
+        "version": "0.3.220",
         "license": "Anthropic Commercial",
         "reason": "Anthropic commercial license (https://code.claude.com/docs/en/legal-and-compliance). Permits use by developers writing code locally, which is exactly how Nimbalyst integrates the SDK. Used unmodified."
       },
@@ -125,9 +125,9 @@
       "noticeFiles": []
     },
     {
-      "id": "@anthropic-ai/claude-agent-sdk@0.3.217",
+      "id": "@anthropic-ai/claude-agent-sdk@0.3.220",
       "name": "@anthropic-ai/claude-agent-sdk",
-      "version": "0.3.217",
+      "version": "0.3.220",
       "rawLicense": "SEE LICENSE IN README.md",
       "selectedLicense": null,
       "reviewRequired": false,
@@ -139,7 +139,7 @@
       "installPaths": [
         "node_modules/@anthropic-ai/claude-agent-sdk"
       ],
-      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.217.tgz",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.220.tgz",
       "licenseFiles": [
         {
           "fileName": "LICENSE.md",

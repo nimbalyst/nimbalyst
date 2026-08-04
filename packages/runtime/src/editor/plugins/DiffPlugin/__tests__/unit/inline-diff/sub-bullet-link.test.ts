@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Regression: list items containing a mix of plain text and a link should
  * diff per child rather than dragging the whole bullet into the block

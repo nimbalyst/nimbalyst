@@ -10,6 +10,7 @@ import {
   useRole,
   type VirtualElement,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
@@ -178,7 +179,7 @@ export const SessionLaunchPopup: React.FC<SessionLaunchPopupProps> = ({ workspac
     onOpenChange: setOpen,
     placement: 'top',
     strategy: 'fixed',
-    middleware: [offset(16), shift({ padding: 16 })],
+    middleware: [offset(16), shift({ padding: 16 }), windowControlsClearance()],
     whileElementsMounted: autoUpdate,
   });
   const dismiss = useDismiss(context, { outsidePress: false });

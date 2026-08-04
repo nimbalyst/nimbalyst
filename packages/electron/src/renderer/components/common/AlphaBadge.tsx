@@ -9,6 +9,7 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 
 interface AlphaBadgeProps {
   /**
@@ -42,7 +43,7 @@ export const AlphaBadge: React.FC<AlphaBadgeProps> = ({
     open: tooltipOpen,
     onOpenChange: setTooltipOpen,
     placement: 'top',
-    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const hover = useHover(context, { delay: { open: 250, close: 0 }, move: false });
   const role = useRole(context, { role: 'tooltip' });

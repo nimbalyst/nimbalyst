@@ -18,6 +18,14 @@ import {
   TrackerReferenceNode,
   TRACKER_REFERENCE_URN_SCHEME,
 } from './TrackerReferenceNode';
+import { TRACKER_REFERENCE_KEY_PATTERN } from './trackerReferenceHref';
+
+const TRACKER_REFERENCE_IMPORT_REGEXP = new RegExp(
+  `(?<!!)\\[([^\\]]+)\\]\\(nimbalyst:\\/\\/(${TRACKER_REFERENCE_KEY_PATTERN})\\)`,
+);
+const TRACKER_REFERENCE_REGEXP = new RegExp(
+  `${TRACKER_REFERENCE_IMPORT_REGEXP.source}$`,
+);
 
 export const TrackerReferenceTransformer: TextMatchTransformer = {
   dependencies: [TrackerReferenceNode],
@@ -28,10 +36,10 @@ export const TrackerReferenceTransformer: TextMatchTransformer = {
     const key = node.getReferenceKey();
     return `[${key}](${TRACKER_REFERENCE_URN_SCHEME}${key})`;
   },
-  // Match markdown links whose href uses the nimbalyst:// scheme. The label
-  // (group 1) is display-only; the reference key (group 2) is the URN path.
-  importRegExp: /(?<!!)\[([^\]]+)\]\(nimbalyst:\/\/([^)\s]+)\)/,
-  regExp: /(?<!!)\[([^\]]+)\]\(nimbalyst:\/\/([^)\s]+)\)$/,
+  // Match only tracker issue keys and local tracker URNs. Other nimbalyst://
+  // namespaces (including action links) must remain ordinary links.
+  importRegExp: TRACKER_REFERENCE_IMPORT_REGEXP,
+  regExp: TRACKER_REFERENCE_REGEXP,
   replace: (textNode, match) => {
     const [, , referenceKey] = match;
     textNode.replace($createTrackerReferenceNode(referenceKey));

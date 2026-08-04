@@ -73,6 +73,34 @@ describe('OpenAICodexProvider', () => {
     });
   });
 
+  describe('shadowing ChatGPT.app browser plugin', () => {
+    const protocol = {
+      platform: 'test',
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      forkSession: vi.fn(),
+      sendMessage: vi.fn(),
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+
+    it('disables browser@openai-bundled on app-server with the id verbatim', () => {
+      const provider = new OpenAICodexProvider({}, { transport: 'app-server', protocol });
+
+      expect((provider as any).buildCodexConfigOverrides({}).plugins).toEqual({
+        'browser@openai-bundled': { enabled: false },
+      });
+    });
+
+    it('quotes the plugin id for the SDK transport so the flattened TOML path is legal', () => {
+      const provider = new OpenAICodexProvider({}, { transport: 'sdk', protocol });
+
+      expect((provider as any).buildCodexConfigOverrides({}).plugins).toEqual({
+        '"browser@openai-bundled"': { enabled: false },
+      });
+    });
+  });
+
   describe('AskUserQuestion completion persistence', () => {
     function providerWithPendingQuestion(questionId: string, sessionId: string) {
       const provider = new OpenAICodexProvider({ apiKey: 'test-key' });

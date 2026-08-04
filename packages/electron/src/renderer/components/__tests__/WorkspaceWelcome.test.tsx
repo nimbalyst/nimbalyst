@@ -39,8 +39,8 @@ describe('WorkspaceWelcome', () => {
       />,
     );
 
-    expect(screen.getByText('Files are saved automatically as you work')).toBeTruthy();
-    expect(screen.getByTestId('files-empty-tip-display')).toBeTruthy();
+    screen.getByText('Files are saved automatically as you work');
+    screen.getByTestId('files-empty-tip-display');
 
     fireEvent.click(screen.getByRole('button', { name: 'Create a new file' }));
     expect(onNewFile).toHaveBeenCalledWith();

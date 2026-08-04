@@ -209,6 +209,40 @@ export function setShareInFrontmatter(
 }
 
 /**
+ * Set or clear ONLY the `trackerId` key in a document's frontmatter, preserving
+ * every other key (including extension/legacy blocks like `planStatus`) exactly
+ * as-is. Sibling of `setShareInFrontmatter` -- same write style, same "never
+ * migrate legacy keys" guarantee.
+ *
+ * `trackerId` binds a markdown file to a tracker row that is no longer
+ * identified by its path: when a file-backed plan is shared it is PROMOTED to a
+ * stable native id, and this key is what stops the next frontmatter scan from
+ * minting a parallel `fm:<type>:<path>` row for the same file. Pass `null` to
+ * remove the key (de-promotion on unshare).
+ */
+export function setTrackerIdInFrontmatter(
+  content: string,
+  trackerId: string | null,
+): string {
+  const frontmatter = extractFrontmatter(content) || {};
+  const next: Record<string, any> = { ...frontmatter };
+  if (trackerId) next.trackerId = trackerId;
+  else delete next.trackerId;
+
+  const yamlContent = jsyaml.dump(next, {
+    indent: 2,
+    lineWidth: -1,
+    noRefs: true,
+  });
+  // `\r?\n` matches both LF and CRLF openers (nimbalyst#68).
+  const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+  if (frontmatterRegex.test(content)) {
+    return content.replace(frontmatterRegex, `---\n${yamlContent}---\n`);
+  }
+  return `---\n${yamlContent}---\n${content}`;
+}
+
+/**
  * Update frontmatter in markdown content
  */
 export function updateFrontmatter(

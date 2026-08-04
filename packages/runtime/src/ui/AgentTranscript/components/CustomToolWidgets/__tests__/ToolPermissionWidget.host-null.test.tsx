@@ -80,10 +80,10 @@ describe('ToolPermissionWidget — host-null regression (#276)', () => {
     // Before the fix, the widget short-circuited to a Waiting-only shell.
     // The fix means we should see all four interactive buttons even
     // without a host installed.
-    expect(screen.getByTestId('tool-permission-deny')).toBeTruthy();
-    expect(screen.getByTestId('tool-permission-allow-once')).toBeTruthy();
-    expect(screen.getByTestId('tool-permission-allow-session')).toBeTruthy();
-    expect(screen.getByTestId('tool-permission-allow-always')).toBeTruthy();
+    screen.getByTestId('tool-permission-deny');
+    screen.getByTestId('tool-permission-allow-once');
+    screen.getByTestId('tool-permission-allow-session');
+    screen.getByTestId('tool-permission-allow-always');
   });
 
   it('shows a "Reconnecting to permission backend" note when host is null', () => {
@@ -98,7 +98,7 @@ describe('ToolPermissionWidget — host-null regression (#276)', () => {
       />,
     );
 
-    expect(screen.getByTestId('tool-permission-host-reconnecting')).toBeTruthy();
+    screen.getByTestId('tool-permission-host-reconnecting');
   });
 
   it('hides the reconnecting note once a host is installed', () => {
@@ -114,7 +114,7 @@ describe('ToolPermissionWidget — host-null regression (#276)', () => {
     );
 
     expect(screen.queryByTestId('tool-permission-host-reconnecting')).toBeNull();
-    expect(screen.getByTestId('tool-permission-deny')).toBeTruthy();
+    screen.getByTestId('tool-permission-deny');
   });
 
   it('does not regress the no-toolCall guard', () => {

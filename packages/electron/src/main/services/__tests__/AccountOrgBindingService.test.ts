@@ -24,6 +24,8 @@ import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
 import {
   repairAccountOrgBindingFromEmail,
   resolveAccountOrgBinding,
+  resolveTeamOrgAccountBinding,
+  upsertAccountOrgBinding,
 } from '../AccountOrgBindingService';
 
 const SCHEMA_DIR = path.resolve(__dirname, '..', '..', 'database', 'sqlite', 'schemas');
@@ -109,5 +111,37 @@ describe('AccountOrgBindingService', () => {
       'same@example.com',
     )).resolves.toEqual({ outcome: 'already-attempted', teamMemberId: null });
     expect(errorMock).toHaveBeenCalledTimes(1);
+  });
+
+  // NIM-2459: two accounts bound to one team org used to resolve by
+  // lexicographic personal org id, so the app acted as an arbitrary identity
+  // and messages sent to the other account never reached the Inbox.
+  it('prefers the sync account when two signed-in accounts bind the same team org', async () => {
+    await upsertAccountOrgBinding(db, {
+      personalOrgId: 'org-a-sorts-first',
+      teamOrgId: 'team',
+      teamMemberId: 'member-a',
+      source: 'server-exchange',
+    });
+    await upsertAccountOrgBinding(db, {
+      personalOrgId: 'org-b-sorts-second',
+      teamOrgId: 'team',
+      teamMemberId: 'member-b',
+      source: 'server-sync',
+    });
+    const signedIn = ['org-a-sorts-first', 'org-b-sorts-second'];
+
+    await expect(resolveTeamOrgAccountBinding(db, 'team', signedIn, 'org-b-sorts-second'))
+      .resolves.toEqual({ personalOrgId: 'org-b-sorts-second', teamMemberId: 'member-b' });
+
+    // A sync account with no binding here, or none at all, keeps stable order.
+    await expect(resolveTeamOrgAccountBinding(db, 'team', signedIn, 'org-unbound'))
+      .resolves.toEqual({ personalOrgId: 'org-a-sorts-first', teamMemberId: 'member-a' });
+    await expect(resolveTeamOrgAccountBinding(db, 'team', signedIn))
+      .resolves.toEqual({ personalOrgId: 'org-a-sorts-first', teamMemberId: 'member-a' });
+
+    // A signed-out account is never eligible, even when it is the sync account.
+    await expect(resolveTeamOrgAccountBinding(db, 'team', ['org-a-sorts-first'], 'org-b-sorts-second'))
+      .resolves.toEqual({ personalOrgId: 'org-a-sorts-first', teamMemberId: 'member-a' });
   });
 });

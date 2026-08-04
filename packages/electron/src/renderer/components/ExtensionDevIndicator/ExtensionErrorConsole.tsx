@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 type LogSource = 'renderer' | 'main' | 'build';

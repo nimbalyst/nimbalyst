@@ -12,47 +12,40 @@ For extension theme development, see [EXTENSION_THEMING.md](/docs/EXTENSION_THEM
 
 ### NEVER HARDCODE COLORS IN CSS FILES
 All colors MUST use CSS variables. The theme system has two variable naming conventions:
-- **Legacy**: `--surface-*`, `--text-*`, `--border-*`, `--accent-*` (defined in `PlaygroundEditorTheme.css`)
-- **Unified**: `--nim-*` (defined in `NimbalystTheme.css`, recommended for new code)
+- **Legacy**: `--surface-*`, `--text-*`, `--border-*`, `--accent-*` (still consumed by older components)
+- **Unified**: `--nim-*` (recommended for new code)
 
 ### Single Source of Truth
 Theme colors are defined in `/packages/runtime/src/editor/themes/`:
-- `PlaygroundEditorTheme.css` - Legacy variable definitions
-- `NimbalystTheme.css` - Unified `--nim-*` variable definitions (maps from legacy vars)
+- `registry.ts` - Light and Dark values returned by `getBaseThemeColors()`
+- `/packages/runtime/src/themes/builtin/*/theme.json` - File-based theme values, including Crystal Dark
+- `NimbalystTheme.css` - Light fallback values only; the active values are written inline by the renderer theme system
 
 ## Theme Architecture
 
 ### 1. Theme Definition Location
-```
-/packages/runtime/src/editor/themes/PlaygroundEditorTheme.css
-```
 
-This file contains ALL theme variable definitions for:
-- Light theme (default :root)
-- Dark theme (dark theme selectors)
-- Crystal Dark theme (crystal-dark theme selectors)
+Light and Dark are defined in `/packages/runtime/src/editor/themes/registry.ts`. File-based themes such as Crystal Dark are defined in `/packages/runtime/src/themes/builtin/<theme-id>/theme.json` and merged over the corresponding Light or Dark base palette.
 
 ### 2. How Themes are Applied
 
-Themes are applied using BOTH CSS classes AND data-theme attributes on the root HTML element:
+Themes are applied with a base CSS class, the selected theme ID in `data-theme`, and inline `--nim-*` custom properties on the root HTML element. See `applyThemeToDOM()` in `/packages/electron/src/renderer/hooks/useTheme.ts`.
 
 ```javascript
-// Correct theme application (as in GlobalSettings.tsx, SessionManager.tsx)
-if (savedTheme === 'dark') {
-  root.setAttribute('data-theme', 'dark');
-  root.classList.add('dark-theme');
-} else if (savedTheme === 'crystal-dark') {
-  root.setAttribute('data-theme', 'crystal-dark');
-  root.classList.add('crystal-dark-theme');
-} else if (savedTheme === 'light') {
-  root.setAttribute('data-theme', 'light');
-  root.classList.add('light-theme');
+const colors = savedTheme === 'light' || savedTheme === 'dark'
+  ? getBaseThemeColors(savedTheme === 'dark')
+  : deriveColorsFromTheme(themeFile.colors, getBaseThemeColors(themeFile.isDark));
+
+root.classList.add(themeIsDark ? 'dark-theme' : 'light-theme');
+root.setAttribute('data-theme', savedTheme);
+for (const [key, cssVariable] of Object.entries(CSS_VAR_MAP)) {
+  root.style.setProperty(cssVariable, colors[key]);
 }
 ```
 
 ### 3. CSS Variable Structure
 
-#### Core Variables (defined in PlaygroundEditorTheme.css):
+#### Core Variables (defined in `registry.ts` and overridden by builtin theme manifests):
 ```css
 /* Surfaces/Backgrounds */
 --nim-bg: #ffffff;           /* Main content background */
@@ -85,23 +78,21 @@ if (savedTheme === 'dark') {
 
 The regular dark theme uses warm grays (#2d2d2d, #1a1a1a, #3a3a3a):
 
-```css
-:root.dark-theme {
-    --surface-primary: #2d2d2d; /* NOT #0f172a (that's crystal-dark) */
-    --surface-secondary: #1a1a1a;
-    --surface-tertiary: #3a3a3a;
-    /* ... */
-}
+```typescript
+const darkThemeColors = {
+  'bg': '#2d2d2d', // NOT #0f172a (that's Crystal Dark)
+  'bg-secondary': '#1a1a1a',
+  'bg-tertiary': '#3a3a3a',
+};
 ```
 
 The Crystal Dark theme uses Tailwind gray scale colors (#0f172a, #020617, #1e293b):
 
-```css
-:root.crystal-dark-theme {
-    --surface-primary: #0f172a;
-    --surface-secondary: #020617;
-    --surface-tertiary: #1e293b;
-    /* ... */
+```json
+{
+  "bg": "#0f172a",
+  "bg-secondary": "#020617",
+  "bg-tertiary": "#1e293b"
 }
 ```
 
@@ -137,12 +128,12 @@ The Crystal Dark theme uses Tailwind gray scale colors (#0f172a, #020617, #1e293
 }
 ```
 
-### ✅ CORRECT: Using variables from PlaygroundEditorTheme.css
+### ✅ CORRECT: Using variables from the active runtime theme
 
 ```css
 /* component.css - ALWAYS DO THIS */
 .my-component {
-    background: var(--nim-bg); /* Defined in PlaygroundEditorTheme.css */
+    background: var(--nim-bg); /* Written by applyThemeToDOM() */
 }
 ```
 
@@ -164,9 +155,9 @@ root.classList.add('dark-theme');
 When creating new components that need theming:
 
 1. **NEVER** hardcode colors
-2. **ALWAYS** use variables from PlaygroundEditorTheme.css
+2. **ALWAYS** use canonical `--nim-*` variables
 3. **NEVER** create new theme variable definitions in your component
-4. If you need a new color variable, add it to PlaygroundEditorTheme.css for ALL themes
+4. If you need a new color variable, add it to the runtime theme types and every base theme source
 
 Example for a new component:
 
@@ -204,15 +195,16 @@ If a component shows wrong colors:
 2. **Verify variable usage**: Ensure all colors use var(--variable-name)
 3. **Check theme application**: Verify the component sets both data-theme AND class name
 4. **Inspect CSS cascade**: Use DevTools to see which styles are being applied
-5. **Check PlaygroundEditorTheme.css imports**: Ensure PlaygroundEditorTheme.css is imported before component CSS
+5. **Check inline theme values**: Inspect `document.documentElement.style` and the selected `data-theme`
 
 ## The Golden Rule
 
 **There is ONE and ONLY ONE place to define theme colors: `/packages/runtime/src/editor/themes/`**
 
-The theme files are:
-- `PlaygroundEditorTheme.css` - Legacy variables (`--surface-*`, `--text-*`, etc.)
-- `NimbalystTheme.css` - Unified variables (`--nim-*`) that map from legacy vars
+The theme sources are:
+- `registry.ts` - Light and Dark base values
+- `themes/builtin/*/theme.json` - File-based theme overrides
+- `NimbalystTheme.css` - Unified Light fallback values for startup safety
 
 Everything else MUST reference these variables. No exceptions.
 

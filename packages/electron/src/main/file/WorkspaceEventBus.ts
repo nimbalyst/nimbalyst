@@ -92,7 +92,9 @@ function normalizeToForwardSlash(p: string): string {
 }
 
 function pathContainsExcludedDir(relativePath: string): boolean {
-  const segments = normalizeToForwardSlash(relativePath).split('/').filter(Boolean);
+  const normalized = normalizeToForwardSlash(relativePath);
+  if (/(?:^|\/)nimbalyst-local\/attachments(?:\/|$)/.test(normalized)) return true;
+  const segments = normalized.split('/').filter(Boolean);
   return segments.some((segment) => shouldExcludeDir(segment));
 }
 

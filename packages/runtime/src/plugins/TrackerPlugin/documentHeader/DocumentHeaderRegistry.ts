@@ -6,6 +6,13 @@
  */
 
 import React from 'react';
+import type { TeamMemberOption } from '../components/TrackerFieldEditor';
+import type { RelationshipCandidate } from '../components/RelationshipFieldEditor';
+
+export interface TrackerDocumentFieldCapabilities {
+  loadTeamMembers?: () => Promise<TeamMemberOption[]>;
+  onCreateCollection?: (title: string, type: string) => Promise<RelationshipCandidate | null>;
+}
 
 export interface DocumentHeaderComponentProps {
   filePath: string;
@@ -16,6 +23,7 @@ export interface DocumentHeaderComponentProps {
   contentVersion: number;
   onContentChange?: (newContent: string) => void;
   editor?: any; // Lexical editor instance
+  trackerFieldCapabilities?: TrackerDocumentFieldCapabilities;
 }
 
 export interface DocumentHeaderProvider {

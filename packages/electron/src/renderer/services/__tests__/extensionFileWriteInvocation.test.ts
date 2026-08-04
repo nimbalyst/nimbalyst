@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { Buffer as NodeBuffer } from 'node:buffer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildExtensionFileWriteInvocation } from '../extensionFileWriteInvocation';

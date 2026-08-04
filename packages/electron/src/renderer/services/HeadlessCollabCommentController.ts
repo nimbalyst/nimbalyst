@@ -10,10 +10,11 @@ import {
 } from '@nimbalyst/runtime/editor';
 
 import {
-  getTeamSyncProvider,
-  getSharedDocumentsForWorkspace,
+  getTeamSyncProviderForScopeKey,
+  getSharedDocumentsForScopeKey,
 } from '../store/atoms/collabDocuments';
 import { parseCollabUri } from '../utils/collabUri';
+import { notifyDocumentCommentRecipients } from './documentCommentNotifier';
 import { collaborativeEmbedProviderCache } from './CollaborativeEmbedProviderCache';
 import { getCollaborativeDocumentTypeCatalog } from './CollaborativeDocumentTypeCatalog';
 
@@ -50,7 +51,7 @@ export async function acquireHeadlessCollabCommentController(
   workspacePath: string,
 ): Promise<HeadlessCollabCommentAcquisition> {
   const { orgId, documentId } = parseCollabUri(documentUri);
-  const document = getSharedDocumentsForWorkspace(workspacePath)
+  const document = getSharedDocumentsForScopeKey(workspacePath)
     .find((candidate) => candidate.documentId === documentId);
   if (!document) {
     throw new Error(
@@ -108,7 +109,7 @@ export async function acquireHeadlessCollabCommentController(
       id: config.userId,
       name: config.userName || config.userEmail || config.userId,
     };
-    const teamProvider = getTeamSyncProvider(workspacePath);
+    const teamProvider = getTeamSyncProviderForScopeKey(workspacePath);
     const getMembers = () =>
       (teamProvider?.getTeamState()?.members ?? [])
         .filter((member) => member.userId !== currentUser.id)
@@ -117,23 +118,6 @@ export async function acquireHeadlessCollabCommentController(
           name: member.email || member.userId,
           personalOrgId: member.personalOrgId,
         }));
-    const fanout = (
-      kind: 'mention' | 'reply',
-      recipients: string[],
-      payload: CommentMentionPayload,
-    ) => {
-      if (!teamProvider || recipients.length === 0) return;
-      void teamProvider.fanoutInboxEvent({
-        recipients,
-        kind,
-        sourceKind: 'lexical_document',
-        sourceId: documentId,
-        payload,
-      }).catch((error) => {
-        console.warn(`[HeadlessCollabComments] ${kind} fanout failed`, error);
-      });
-    };
-
     const controller = createCollabCommentController({
       commentStore,
       currentUser,
@@ -162,19 +146,29 @@ export async function acquireHeadlessCollabCommentController(
           actorName,
           sourceTitle: document.title,
           snippet: comment.content.slice(0, 200),
+          commentId: comment.id,
           threadId: thread.id,
           markId: thread.id,
           url: documentUri,
         };
-        fanout('mention', mentionRecipients, payload);
-        fanout(
-          'reply',
-          replyRecipientUserIds.filter(
-            (id) =>
-              id !== currentUser.id && !mentionRecipients.includes(id),
+        notifyDocumentCommentRecipients({
+          workspacePath,
+          documentId,
+          reason: 'mention',
+          recipientUserIds: mentionRecipients,
+          payload,
+        });
+        // A mention already reached these recipients; a second delivery for the
+        // same comment would be deduped server-side but still muddies the ack.
+        notifyDocumentCommentRecipients({
+          workspacePath,
+          documentId,
+          reason: 'reply',
+          recipientUserIds: replyRecipientUserIds.filter(
+            (id) => id !== currentUser.id && !mentionRecipients.includes(id),
           ),
           payload,
-        );
+        });
       },
     });
 

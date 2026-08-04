@@ -12,7 +12,8 @@
 
 import React, { useCallback, useState, useRef, useEffect } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { ProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { store } from '@nimbalyst/runtime/store';
 import { sessionArchivedAtom, sessionRegistryAtom } from '../../store/atoms/sessions';
 import { AgentSessionPanel } from './AgentSessionPanel';

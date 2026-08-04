@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import {
   trackerItemToRecord,
@@ -72,6 +73,17 @@ describe('trackerItemToRecord', () => {
 
     expect(record.fields.severity).toBe('high');
     expect(record.fields.component).toBe('renderer');
+  });
+
+  // NIM-2280: SQLite stores `archived` as INTEGER, so a legacy item can carry
+  // 0/1. `TrackerRecord.archived` is typed `boolean`, and consumers compare it
+  // strictly -- a leaked number silently inverts those comparisons.
+  it('normalizes a numeric archived flag to a strict boolean', () => {
+    const numeric = (value: 0 | 1) => value as unknown as boolean;
+
+    expect(trackerItemToRecord({ ...makeTrackerItem(), archived: numeric(0) }).archived).toBe(false);
+    expect(trackerItemToRecord({ ...makeTrackerItem(), archived: numeric(1) }).archived).toBe(true);
+    expect(trackerItemToRecord({ ...makeTrackerItem(), archived: undefined }).archived).toBe(false);
   });
 
   it('places system metadata in system', () => {

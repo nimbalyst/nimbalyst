@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test matching the exact scenario from the screenshot
  */

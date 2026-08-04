@@ -37,6 +37,7 @@ import {
 } from './PGLiteToSQLiteMigrator';
 import { MigrationProgressReporter } from './MigrationProgressReporter';
 import { commitMigrationToSqlite } from './BackendSelector';
+import { classifyDatabaseError } from '../DatabaseErrorTelemetry';
 
 /**
  * Read surface satisfied by the live PGLiteDatabaseWorker. Mirrors the adapter
@@ -292,7 +293,7 @@ export class MigrationOrchestrator {
       reporter?.emitFailed({ phase, message, stack });
       this.opts.sendEvent?.('migration_failed', {
         phase,
-        message: message.slice(0, 500),
+        ...classifyDatabaseError(err),
       });
 
       // Best-effort cleanup. We're conservative about not touching pglite-db;

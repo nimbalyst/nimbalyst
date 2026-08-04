@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test for filtering removed diff nodes during markdown export.
  *

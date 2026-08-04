@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, afterEach } from 'vitest';
 import {
   clearCollabContentAdapters,

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { createStore } from 'jotai';
 import { describe, expect, it } from 'vitest';
 import type { SessionMeta } from '@nimbalyst/runtime';

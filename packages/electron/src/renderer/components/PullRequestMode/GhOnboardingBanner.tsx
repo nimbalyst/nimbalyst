@@ -11,7 +11,7 @@
 
 import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { getGhCliService, type GhCliStatus } from '../../services/RendererGhCliService';
 
 interface GhOnboardingBannerProps {

@@ -33,7 +33,7 @@
 import { DocumentSyncProvider } from '@nimbalyst/runtime/sync';
 import { COLLAB_INIT_ORIGIN } from '@nimbalyst/runtime';
 import { getCollabContentAdapter } from '@nimbalyst/collab-adapters';
-import { resolveCollabConfigForUri } from './collabDocumentOpener';
+import { resolveDesktopCollabConfigForUri } from './collabDocumentOpener';
 import { logger } from './logger';
 
 export type SeedStrategy =
@@ -85,7 +85,7 @@ export async function inspectSharedDocumentEmptiness(
   const codec = getCollabContentAdapter(params.documentType);
   if (!codec) return { status: 'unsupported' };
 
-  const config = await resolveCollabConfigForUri(
+  const config = await resolveDesktopCollabConfigForUri(
     params.workspacePath,
     `collab://cleanup/${params.documentId}`,
     params.documentId,
@@ -102,11 +102,6 @@ export async function inspectSharedDocumentEmptiness(
     serverUrl: config.serverUrl,
     getJwt: config.getJwt,
     orgId: config.orgId,
-    keyCustody: config.keyCustody,
-    documentKey: config.documentKey,
-    legacyDocumentKey: config.legacyDocumentKey,
-    legacyDocumentKeys: config.legacyDocumentKeys,
-    orgKeyFingerprint: config.orgKeyFingerprint,
     userId: config.userId,
     documentId: config.documentId,
     createWebSocket: config.createWebSocket,
@@ -222,7 +217,7 @@ export async function exportSharedDocument(params: Omit<SeedParams, 'content'>):
     };
   }
 
-  const config = await resolveCollabConfigForUri(
+  const config = await resolveDesktopCollabConfigForUri(
     params.workspacePath,
     `collab://seed/${params.documentId}`,
     params.documentId,
@@ -242,11 +237,6 @@ export async function exportSharedDocument(params: Omit<SeedParams, 'content'>):
     serverUrl: config.serverUrl,
     getJwt: config.getJwt,
     orgId: config.orgId,
-    keyCustody: config.keyCustody,
-    documentKey: config.documentKey,
-    legacyDocumentKey: config.legacyDocumentKey,
-    legacyDocumentKeys: config.legacyDocumentKeys,
-    orgKeyFingerprint: config.orgKeyFingerprint,
     userId: config.userId,
     documentId: config.documentId,
     createWebSocket: config.createWebSocket,
@@ -325,7 +315,7 @@ async function runHeadlessRoomWrite(
   write: (yDoc: import('yjs').Doc) => void | Record<string, unknown>,
 ): Promise<SeedResult & Record<string, unknown>> {
 
-  const config = await resolveCollabConfigForUri(
+  const config = await resolveDesktopCollabConfigForUri(
     params.workspacePath,
     `collab://seed/${params.documentId}`,
     params.documentId,
@@ -345,11 +335,6 @@ async function runHeadlessRoomWrite(
     serverUrl: config.serverUrl,
     getJwt: config.getJwt,
     orgId: config.orgId,
-    keyCustody: config.keyCustody,
-    documentKey: config.documentKey,
-    legacyDocumentKey: config.legacyDocumentKey,
-    legacyDocumentKeys: config.legacyDocumentKeys,
-    orgKeyFingerprint: config.orgKeyFingerprint,
     userId: config.userId,
     documentId: config.documentId,
     createWebSocket: config.createWebSocket,

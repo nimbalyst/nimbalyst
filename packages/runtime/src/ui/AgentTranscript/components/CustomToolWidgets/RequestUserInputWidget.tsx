@@ -71,6 +71,11 @@ import {
   type RequestUserInputDraft,
   type RequestUserInputFieldDraft,
 } from '../../../../store/atoms/requestUserInputDraft';
+import {
+  draftToAnswers,
+  fieldDraftValid,
+  seedDraft,
+} from './requestUserInputFieldLogic';
 import type {
   RequestUserInputAnswer,
   RequestUserInputArgs,
@@ -191,147 +196,6 @@ function parseFromUnknown(value: unknown): ParsedResult | null {
   }
 
   return null;
-}
-
-// ============================================================
-// Initial-draft seeding from field defaults
-// ============================================================
-
-function seedFieldDraft(field: RequestUserInputField): RequestUserInputFieldDraft {
-  switch (field.type) {
-    case 'multiSelect':
-      return {
-        type: 'multiSelect',
-        state: {
-          selectedIds: field.items.filter((i) => i.defaultChecked).map((i) => i.id),
-        },
-      };
-    case 'singleSelect':
-      return {
-        type: 'singleSelect',
-        state: { selectedId: null, otherSelected: false, otherText: '' },
-      };
-    case 'reorder':
-      return {
-        type: 'reorder',
-        state: { orderedIds: field.items.map((i) => i.id), removedIds: [] },
-      };
-    case 'editText':
-      return {
-        type: 'editText',
-        state: { text: field.initialText ?? '' },
-      };
-    case 'confirm':
-      return {
-        type: 'confirm',
-        state: { value: field.defaultValue ?? false },
-      };
-  }
-}
-
-function seedDraft(args: RequestUserInputArgs): RequestUserInputDraft {
-  const fields: Record<string, RequestUserInputFieldDraft> = {};
-  for (const f of args.fields) {
-    fields[f.id] = seedFieldDraft(f);
-  }
-  return { fields, primed: true };
-}
-
-// ============================================================
-// Validation - is the draft submittable?
-// ============================================================
-
-function fieldDraftValid(
-  field: RequestUserInputField,
-  draft: RequestUserInputFieldDraft | undefined,
-): boolean {
-  if (!draft) return false;
-  if (draft.type !== field.type) return false;
-
-  switch (field.type) {
-    case 'multiSelect': {
-      const min = field.minSelected ?? 0;
-      const max = field.maxSelected ?? field.items.length;
-      const count = (draft as any).state.selectedIds.length;
-      return count >= min && count <= max;
-    }
-    case 'singleSelect': {
-      const s = (draft as any).state;
-      if (s.otherSelected) {
-        return field.allowOther === true && typeof s.otherText === 'string' && s.otherText.trim().length > 0;
-      }
-      return typeof s.selectedId === 'string' && s.selectedId.length > 0;
-    }
-    case 'reorder': {
-      const min = field.minItems ?? 0;
-      return (draft as any).state.orderedIds.length >= Math.max(min, 0);
-    }
-    case 'editText': {
-      const s = (draft as any).state;
-      const trimmed = typeof s.text === 'string' ? s.text.trim() : '';
-      const min = field.minLength ?? 0;
-      const max = field.maxLength ?? Infinity;
-      return trimmed.length >= min && (s.text?.length ?? 0) <= max;
-    }
-    case 'confirm':
-      return true;
-  }
-}
-
-function draftToAnswers(
-  args: RequestUserInputArgs,
-  draft: RequestUserInputDraft,
-): Record<string, RequestUserInputAnswer> {
-  const out: Record<string, RequestUserInputAnswer> = {};
-  for (const field of args.fields) {
-    const fd = draft.fields[field.id];
-    if (!fd) continue;
-
-    switch (field.type) {
-      case 'multiSelect':
-        if (fd.type === 'multiSelect') {
-          out[field.id] = { type: 'multiSelect', selectedIds: [...fd.state.selectedIds] };
-        }
-        break;
-      case 'singleSelect':
-        if (fd.type === 'singleSelect') {
-          if (fd.state.otherSelected) {
-            out[field.id] = {
-              type: 'singleSelect',
-              selectedId: '__other__',
-              otherText: fd.state.otherText.trim(),
-            };
-          } else if (fd.state.selectedId) {
-            out[field.id] = { type: 'singleSelect', selectedId: fd.state.selectedId };
-          }
-        }
-        break;
-      case 'reorder':
-        if (fd.type === 'reorder') {
-          out[field.id] = {
-            type: 'reorder',
-            orderedIds: [...fd.state.orderedIds],
-            removedIds: [...fd.state.removedIds],
-          };
-        }
-        break;
-      case 'editText':
-        if (fd.type === 'editText') {
-          out[field.id] = {
-            type: 'editText',
-            text: fd.state.text,
-            edited: fd.state.text !== (field.initialText ?? ''),
-          };
-        }
-        break;
-      case 'confirm':
-        if (fd.type === 'confirm') {
-          out[field.id] = { type: 'confirm', value: fd.state.value };
-        }
-        break;
-    }
-  }
-  return out;
 }
 
 // ============================================================
@@ -991,37 +855,53 @@ function ConfirmRenderer({
   if (draft.type !== 'confirm') return null;
   const value = draft.state.value;
 
-  const toggle = () => {
+  const pick = (next: boolean) => {
     if (disabled) return;
-    setDraft({ type: 'confirm', state: { value: !value } });
+    setDraft({ type: 'confirm', state: { value: next } });
   };
 
+  // Both answers are always on screen as separate targets. The old single
+  // toggle labelled itself with its own current value ("No" when false), which
+  // reads as "the No option" rather than "currently set to No" -- users had no
+  // visible way to say yes, and untouched fields submitted a silent false.
   return (
-    <button
-      type="button"
+    <div
+      role="radiogroup"
+      aria-label={field.label}
       data-testid={`request-user-input-confirm-${field.id}`}
-      data-checked={value}
-      onClick={toggle}
-      disabled={disabled}
-      className={`flex items-start gap-2 py-2 px-2.5 rounded border transition-colors duration-150 cursor-pointer text-left bg-transparent disabled:opacity-50 disabled:cursor-not-allowed w-full ${
-        value
-          ? 'border-nim-primary bg-[color-mix(in_srgb,var(--nim-primary)_8%,var(--nim-bg-secondary))]'
-          : 'border-nim bg-nim-secondary hover:bg-nim-hover'
-      }`}
+      data-checked={value === null ? 'unanswered' : value}
+      className="flex gap-2"
     >
-      <span
-        className={`w-4 h-4 mt-0.5 shrink-0 border rounded-sm flex items-center justify-center transition-colors ${
-          value ? 'bg-nim-primary border-nim-primary text-nim-on-primary' : 'bg-nim border-nim text-nim-primary'
-        }`}
-      >
-        {value && (
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <path d="M8.5 2.5L3.75 7.25L1.5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        )}
-      </span>
-      <span className="text-[0.8125rem] font-medium text-nim leading-snug">{value ? 'Yes' : 'No'}</span>
-    </button>
+      {([true, false] as const).map((option) => {
+        const isSelected = value === option;
+        return (
+          <button
+            key={String(option)}
+            type="button"
+            role="radio"
+            aria-checked={isSelected}
+            data-testid={`request-user-input-confirm-${field.id}-${option ? 'yes' : 'no'}`}
+            data-selected={isSelected}
+            onClick={() => pick(option)}
+            disabled={disabled}
+            className={`flex-1 flex items-center justify-center gap-2 py-2 px-2.5 rounded border transition-colors duration-150 cursor-pointer bg-transparent disabled:opacity-50 disabled:cursor-not-allowed ${
+              isSelected
+                ? 'border-nim-primary bg-[color-mix(in_srgb,var(--nim-primary)_8%,var(--nim-bg-secondary))]'
+                : 'border-nim bg-nim-secondary hover:bg-nim-hover'
+            }`}
+          >
+            <span
+              className={`w-4 h-4 shrink-0 border rounded-full flex items-center justify-center transition-colors ${
+                isSelected ? 'bg-nim-primary border-nim-primary' : 'bg-nim border-nim'
+              }`}
+            >
+              {isSelected && <span className="w-2 h-2 rounded-full bg-white" />}
+            </span>
+            <span className="text-[0.8125rem] font-medium text-nim leading-snug">{option ? 'Yes' : 'No'}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1059,7 +939,7 @@ function FieldCard({
       case 'editText':
         return field.format === 'plain' ? 'Plain text' : 'Markdown supported';
       case 'confirm':
-        return undefined;
+        return 'Answer yes or no';
     }
   })();
 

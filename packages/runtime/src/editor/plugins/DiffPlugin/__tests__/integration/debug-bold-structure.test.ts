@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Debug test to check how bold text structure is represented
  */

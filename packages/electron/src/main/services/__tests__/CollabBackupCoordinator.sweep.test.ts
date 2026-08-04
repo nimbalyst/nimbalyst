@@ -48,14 +48,6 @@ vi.mock('../TeamService', () => ({
   getOrgScopedJwt: async () => 'jwt',
 }));
 
-vi.mock('../OrgKeyService', () => ({
-  getOrgKey: () => new Uint8Array(),
-  getOrgKeyFingerprint: () => 'fp',
-  fetchAndUnwrapOrgKey: async () => new Uint8Array(),
-  fetchTeamKeyStatus: async () => ({ custodyMode: 'server-managed' }),
-  getArchivedOrgKeys: () => [],
-}));
-
 vi.mock('../TrackerPolicyService', () => ({
   getEffectiveTrackerSyncPolicy: () => ({}),
   shouldSyncTrackerItem: () => false,

@@ -8,6 +8,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFloating, offset, flip, shift } from '@floating-ui/react';
+import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import { usePostHog } from 'posthog-js/react';
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import type { TrackerItemType } from '../../../core/DocumentService';
@@ -145,7 +146,7 @@ export function useTrackerRows({
   // Floating context menu
   const { refs: contextRefs, floatingStyles: contextFloatingStyles } = useFloating({
     placement: 'right-start',
-    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   useEffect(() => {
     if (contextAnchor) {

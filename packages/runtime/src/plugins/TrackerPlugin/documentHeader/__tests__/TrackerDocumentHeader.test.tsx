@@ -64,6 +64,6 @@ describe('TrackerDocumentHeader tracker item link', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open tracker item NIM-42' }));
 
     expect(onOpen).toHaveBeenCalledOnce();
-    expect(screen.getByText('Plan')).toBeTruthy();
+    screen.getByText('Plan');
   });
 });

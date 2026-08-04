@@ -1,21 +1,27 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it } from 'vitest';
 import { store } from '@nimbalyst/runtime/store';
-import { activeWorkspacePathAtom } from '../openProjects';
-import { registerDocumentInIndex, sharedDocumentsAtom } from '../collabDocuments';
+import { activeCollabScopeAtom, registerDocumentInIndex, sharedDocumentsAtom } from '../collabDocuments';
 import { pendingDocRegistrations } from '../pendingDocRegistrations';
+import type { CollabScope } from '@nimbalyst/collab-client/core';
 
 const WS = '/workspace/register-test';
+const SCOPE: CollabScope = {
+  scopeKey: WS,
+  orgId: 'org-register',
+  indexConfig: { serverUrl: 'wss://example.test', userId: 'user-register' },
+};
 
 afterEach(() => {
   pendingDocRegistrations.clear(WS);
-  store.set(activeWorkspacePathAtom, null);
+  store.set(activeCollabScopeAtom, null);
 });
 
 describe('registerDocumentInIndex (NIM-1565)', () => {
   it('queues the registration when no team-sync provider is connected', async () => {
-    store.set(activeWorkspacePathAtom, WS);
+    store.set(activeCollabScopeAtom, SCOPE);
 
-    await registerDocumentInIndex('doc-1', 'Folder/What is Next.md', 'markdown', 'folder-1', {
+    await registerDocumentInIndex(SCOPE, 'doc-1', 'Folder/What is Next.md', 'markdown', 'folder-1', {
       metadataVersion: 2,
       fileExtension: '.md',
       editorId: 'builtin.lexical',

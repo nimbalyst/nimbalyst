@@ -25,7 +25,6 @@
 import { test, expect } from '@playwright/test';
 test.skip(() => !process.env.RUN_COLLAB_TESTS, 'Requires RUN_COLLAB_TESTS=1 and wrangler dev');
 import type { ElectronApplication, Page } from '@playwright/test';
-import { webcrypto } from 'crypto';
 import * as fs from 'fs/promises';
 import {
   launchElectronApp,
@@ -47,22 +46,12 @@ const MANUAL_ADDITION = 'Manual revision line.';
 let electronApp: ElectronApplication;
 let page: Page;
 let workspaceDir: string;
-let encryptionKeyBase64: string;
 let docId: string;
 
-async function generateKeyBase64(): Promise<string> {
-  const key = await webcrypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt'],
-  );
-  const raw = await webcrypto.subtle.exportKey('raw', key);
-  return Buffer.from(raw).toString('base64');
-}
 
 async function openCollabMarkdown(page: Page, initialContent: string): Promise<void> {
   await page.evaluate(
-    async ({ documentId, content, serverUrl, orgId, userId, keyBase64 }) => {
+    async ({ documentId, content, serverUrl, orgId, userId }) => {
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
         if (typeof (window as any).__openCollabDocTest === 'function') break;
@@ -80,7 +69,6 @@ async function openCollabMarkdown(page: Page, initialContent: string): Promise<v
         serverUrl,
         orgId,
         userId,
-        encryptionKeyBase64: keyBase64,
         urlExtraQuery: `test_user_id=${encodeURIComponent(userId)}&test_org_id=${encodeURIComponent(orgId)}`,
       });
     },
@@ -90,7 +78,6 @@ async function openCollabMarkdown(page: Page, initialContent: string): Promise<v
       serverUrl: `ws://localhost:${WRANGLER_PORT}`,
       orgId: TEST_ORG_ID,
       userId: TEST_USER_ID,
-      keyBase64: encryptionKeyBase64,
     },
   );
 }
@@ -121,7 +108,6 @@ test.beforeAll(async ({}, testInfo) => {
   testInfo.setTimeout(120_000);
 
   workspaceDir = await createTempWorkspace();
-  encryptionKeyBase64 = await generateKeyBase64();
   docId = `history-spec-${Date.now()}.md`;
 
   await startWrangler(WRANGLER_PORT);

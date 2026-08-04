@@ -9,7 +9,10 @@ import {
 } from '@nimbalyst/runtime/ai/server';
 import { persistProviderRuntimeRouteSnapshot } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerRuntimeRoutePersistence';
 import { resolveClaudeAgentRuntimeRoutes } from '@nimbalyst/runtime/ai/server/providers/claudeCode/runtimeRouteResolver';
-import { createPGLiteSessionStore } from '../PGLiteSessionStore';
+import {
+  createPGLiteSessionStore,
+  getAllSessionsForSync,
+} from '../PGLiteSessionStore';
 
 describe('PGLiteSessionStore archive filters', () => {
   it('filters out sessions that belong to archived worktrees in list()', async () => {
@@ -42,6 +45,42 @@ describe('PGLiteSessionStore archive filters', () => {
 
     expect(queries[0]).toContain('LEFT JOIN worktrees w ON s.worktree_id = w.id');
     expect(queries[0]).toContain('(s.worktree_id IS NULL OR w.is_archived = FALSE OR w.is_archived IS NULL)');
+  });
+});
+
+describe('PGLiteSessionStore personal sync snapshot', () => {
+  it('excludes tutorial sessions identified by parsed metadata', async () => {
+    const db = {
+      query: vi.fn(async () => ({
+        rows: [
+          {
+            id: 'tutorial-session',
+            workspace_id: '/tutorial',
+            provider: 'claude-code',
+            title: 'Tutorial',
+            created_at: new Date(0),
+            updated_at: new Date(0),
+            metadata: '{"tutorial":true}',
+          },
+          {
+            id: 'personal-session',
+            workspace_id: '/project',
+            provider: 'claude-code',
+            title: 'Personal',
+            created_at: new Date(0),
+            updated_at: new Date(0),
+            metadata: '{"phase":"implementing"}',
+          },
+        ],
+      })),
+    };
+    createPGLiteSessionStore(db as any);
+
+    const sessions = await getAllSessionsForSync();
+
+    expect(sessions.map((session) => session.id)).toEqual([
+      'personal-session',
+    ]);
   });
 });
 
@@ -506,5 +545,40 @@ describe('PGLiteSessionStore atomic model reconciliation', () => {
     } finally {
       await db.close();
     }
+  });
+});
+
+describe('PGLiteSessionStore.updateMetadata nullable column clears', () => {
+  // NIM-2308 / GH #1098: an expired Claude Code session could never be
+  // recovered because the "clear the dead provider session id" write was a
+  // silent no-op. Every column here is guarded by `!== undefined`, so the
+  // clear must travel as an explicit null or it never reaches SQL.
+  it('writes SQL NULL when provider_session_id is cleared with null', async () => {
+    const db = { query: vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [] })) };
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('s1', { providerSessionId: null });
+
+    const updateCall = db.query.mock.calls.find((c: any[]) =>
+      typeof c[0] === 'string' && /UPDATE\s+ai_sessions\s+SET/i.test(c[0])
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall![0]).toContain('provider_session_id =');
+    // values[0] is the session id; the bound clear value must be null, not
+    // undefined -- undefined would leave the stale id on the row.
+    expect(updateCall![1]).toEqual(['s1', null]);
+  });
+
+  it('still skips the column when providerSessionId is absent from the payload', async () => {
+    const db = { query: vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [] })) };
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('s1', { title: 'Renamed' });
+
+    const updateCall = db.query.mock.calls.find((c: any[]) =>
+      typeof c[0] === 'string' && /UPDATE\s+ai_sessions\s+SET/i.test(c[0])
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall![0]).not.toContain('provider_session_id =');
   });
 });

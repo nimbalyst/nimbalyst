@@ -45,3 +45,15 @@ test('shared policy detects renderer and Lexical modules in the main graph', () 
     ['@lexical/*', '.tsx modules', 'renderer/ files'],
   );
 });
+
+test('shared policy keeps collab-client docs UI out of the main graph', () => {
+  const violations = findMainBundleGraphViolations([
+    '/repo/packages/electron/src/main/index.ts',
+    '/repo/packages/collab-client/src/docs-ui/index.ts',
+  ]);
+
+  assert.deepEqual(
+    violations.map(({ name }) => name),
+    ['collab-client/docs-ui'],
+  );
+});

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createTextCollabContentAdapter } from '../collab/createTextCollabContentAdapter';

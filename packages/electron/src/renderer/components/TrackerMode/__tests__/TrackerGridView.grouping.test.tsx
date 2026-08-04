@@ -150,7 +150,9 @@ describe('TrackerGridView sorting', () => {
       />,
     );
 
-    await waitFor(() => expect(gridElement.columns).toHaveLength(3));
+    await waitFor(() => expect(gridElement.columns).toEqual(expect.arrayContaining([
+      expect.objectContaining({ prop: 'status', sortable: true }),
+    ])));
     const statusColumn = gridElement.columns.find(
       (column: Record<string, unknown>) => column.prop === 'status',
     );

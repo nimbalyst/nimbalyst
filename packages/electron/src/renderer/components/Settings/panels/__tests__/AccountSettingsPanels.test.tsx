@@ -28,7 +28,7 @@ import {
   validateSettingsDestination,
 } from '../../settingsRoutes';
 
-const context = { developerMode: false, showDirectChatProviders: false };
+const context = { developerMode: false, showDirectChatProviders: false, teamsConfigured: false };
 
 describe('Account settings panels', () => {
   afterEach(() => cleanup());
@@ -58,7 +58,7 @@ describe('Account settings panels', () => {
   it('renders shared links on their own, with no sync sections', () => {
     render(<AccountSharedLinksSettingsPanel />);
 
-    expect(screen.getByTestId('shared-links-panel')).toBeTruthy();
+    screen.getByTestId('shared-links-panel');
     expect(screen.queryByTestId('sync-panel')).toBeNull();
   });
 });

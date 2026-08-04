@@ -18,7 +18,7 @@
  */
 
 import { atom } from 'jotai';
-import { atomFamily } from 'jotai/utils';
+import { atomFamily } from 'jotai-family';
 
 /** The minimal live data a session chip needs to render. */
 export interface SessionRefMeta {

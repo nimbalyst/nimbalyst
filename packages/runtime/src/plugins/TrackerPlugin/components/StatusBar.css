@@ -1,0 +1,9 @@
+/**
+ * Document tracker header. The shared chip row caps its own height so a
+ * document header can't grow without bound; this header is collapsible, so it
+ * shows every chip instead of scrolling a strip of metadata.
+ */
+
+.tracker-field-pills.status-bar-field-pills {
+  max-height: none;
+}

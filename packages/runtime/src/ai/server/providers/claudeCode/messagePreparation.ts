@@ -4,6 +4,8 @@ import os from 'os';
 import type { DocumentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources';
 import { buildUserMessageAddition } from '../documentContextUtils';
 import type { DocumentContext } from '../../types';
+import { stageLargeTextAttachment } from '../../attachments/stageLargeTextAttachment';
+import type { AttachmentStagingMode } from '../../attachments/stagedAttachmentRegistry';
 
 export interface LargeAttachmentFileRef {
   filename: string;
@@ -24,6 +26,9 @@ interface PrepareAttachmentsOptions {
     mimeType: string,
     options?: { targetSizeBytes?: number }
   ) => Promise<{ buffer: Buffer; mimeType: string; wasCompressed: boolean }>;
+  stagingRoot?: string;
+  stagingMode?: AttachmentStagingMode;
+  sessionId?: string;
 }
 
 export async function prepareClaudeCodeAttachments(
@@ -33,6 +38,9 @@ export async function prepareClaudeCodeAttachments(
     attachments,
     largeAttachmentCharThreshold,
     imageCompressor,
+    stagingRoot = os.tmpdir(),
+    stagingMode,
+    sessionId,
   } = options;
 
   const imageContentBlocks: ImageBlockParam[] = [];
@@ -108,15 +116,12 @@ export async function prepareClaudeCodeAttachments(
         const filename = attachment.filename || path.basename(attachment.filepath);
 
         if (textContent.length > largeAttachmentCharThreshold) {
-          // Use os.tmpdir() for cross-platform temp directory resolution. The
-          // previous hardcoded '/tmp' produced literal Windows paths like
-          // `\tmp\nimbalyst-attachment-...txt` that do not resolve, so the
-          // agent received a path it could not Read and either failed the
-          // turn or wasted turns globbing for the file. AttachmentProcessor
-          // already uses os.tmpdir(); this brings the duplicate path-build
-          // here in line. See nimbalyst#269.
-          const tmpFilePath = path.join(os.tmpdir(), `nimbalyst-attachment-${Date.now()}-${filename}`);
-          await fs.promises.writeFile(tmpFilePath, textContent, 'utf-8');
+          const tmpFilePath = await stageLargeTextAttachment(
+            textContent,
+            filename,
+            stagingRoot,
+            { sessionId, mode: stagingMode },
+          );
           largeAttachmentFilePaths.push({ filename, filepath: tmpFilePath });
         } else {
           documentContentBlocks.push({

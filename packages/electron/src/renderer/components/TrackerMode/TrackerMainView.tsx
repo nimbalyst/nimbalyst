@@ -1,7 +1,6 @@
-import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { FloatingPortal } from '@floating-ui/react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { copyToClipboard, MaterialSymbol } from '@nimbalyst/runtime';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import {
@@ -30,22 +29,31 @@ import { KanbanBoard } from './KanbanBoard';
 import { TagBoard } from './TagBoard';
 import { TrackerGridView } from './TrackerGridView';
 import { TrackerInboxView } from './TrackerInboxView';
-import { TrackerItemDetail } from './TrackerItemDetail';
+import {
+  TrackerItemDetail,
+  type TrackerContentMode,
+} from './TrackerItemDetail';
 import {
   TrackerViewHeaderControls,
   type TrackerFilterField,
 } from './TrackerViewHeaderControls';
 import { TrackerViewTitle } from './TrackerViewTitle';
 import { TrackerActiveFilterPills } from './TrackerActiveFilterPills';
+import { TrackerFilterOmnibox } from './TrackerFilterOmnibox';
 import { TrackerSyncRejectionBanner } from './TrackerSyncRejectionBanner';
 import { ImportFromSourceDialog } from './ImportFromSourceDialog';
+import { TrackerDocumentView } from './TrackerDocumentView';
 import {
   trackerModeLayoutAtom,
   setTrackerModeLayoutAtom,
+  setTrackerDocumentChatSessionAtom,
+  setTrackerItemViewAtom,
+  trackerModeDocumentItemIdAtom,
+  openTrackerItemAsDocumentAtom,
   type TrackerFilterChip,
   type TypeColumnConfig,
 } from '../../store/atoms/trackers';
-import { activeTeamOrgIdAtom, buildTrackerDeepLink } from '../../store/atoms/collabDocuments';
+import { activeTeamOrgIdAtom, buildTrackerDeepLink, buildTrackerDocumentDeepLink } from '../../store/atoms/collabDocuments';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { useTrackerBodyPrewarm } from '../../hooks/useTrackerBodyPrewarm';
 import { setSelectedWorkstreamAtom, sessionRegistryAtom, refreshSessionListAtom, initSessionList } from '../../store/atoms/sessions';
@@ -56,7 +64,6 @@ import { setWindowModeAtom } from '../../store/atoms/windowMode';
 import { defaultAgentModelAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { store } from '../../store';
-import { useFloatingMenu } from '../../hooks/useFloatingMenu';
 import { buildTrackerTagOptions } from './trackerTagFilterUtils';
 import {
   filterTrackerItems,
@@ -150,12 +157,8 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [quickAddType, setQuickAddType] = useState<string | null>(null);
-  const [showTagDropdown, setShowTagDropdown] = useState(false);
-  const [tagQuery, setTagQuery] = useState('');
-  const [highlightedTagIndex, setHighlightedTagIndex] = useState(0);
   const [pendingWorktreeLaunch, setPendingWorktreeLaunch] = useState<TrackerLaunchContext | null>(null);
   const [openFiltersToken, setOpenFiltersToken] = useState(0);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   // User's selected default model. Used by handleLaunchSession so the new
   // session uses the workspace's configured provider rather than always
@@ -176,7 +179,19 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   // Selected item for detail panel
   const modeLayout = useAtomValue(trackerModeLayoutAtom);
   const setModeLayout = useSetAtom(setTrackerModeLayoutAtom);
+  const setDocumentChatSession = useSetAtom(setTrackerDocumentChatSessionAtom);
   const setFavorite = useSetAtom(setTrackerFavoriteAtom);
+  // Non-null only while the selected item is presented as a document.
+  const documentItemId = useAtomValue(trackerModeDocumentItemIdAtom);
+  // How the detail is editing the body, reported by TrackerItemDetail: the
+  // focused header hosts the collab chrome only for collaborative bodies.
+  const [detailContentMode, setDetailContentMode] = useState<TrackerContentMode>('file-backed');
+  // The body's Lexical editor, published by the detail once it mounts. State
+  // rather than a ref: the document header bar's table of contents and
+  // editor-backed actions only appear once there is an editor to read.
+  const [bodyEditor, setBodyEditor] = useState<unknown>(null);
+  const setItemView = useSetAtom(setTrackerItemViewAtom);
+  const openItemAsDocument = useSetAtom(openTrackerItemAsDocumentAtom);
   const selectedItemId = modeLayout.selectedItemId;
   const inboxScope = modeLayout.inboxScope;
   const detailPanelWidth = modeLayout.detailPanelWidth;
@@ -207,6 +222,15 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     }
     return persisted;
   }, [modeLayout.groupBy, modeLayout.typeColumnConfigs, columnConfigKey]);
+
+  // The document view's left pane is a few hundred pixels wide, so it drops the
+  // badge columns and keeps grouping -- the title (plus its unread/favorite
+  // affordances) is all that fits.
+  const slimColumnConfig = useMemo<TypeColumnConfig>(() => ({
+    visibleColumns: ['title'],
+    columnWidths: {},
+    groupBy: columnConfig.groupBy,
+  }), [columnConfig.groupBy]);
 
   const handleColumnConfigChange = useCallback((config: TypeColumnConfig) => {
     setModeLayout({
@@ -366,7 +390,18 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       });
     }
     if (!fields.some(field => field.id === 'favorite')) {
-      fields.push({ id: 'favorite', label: 'Favorite', type: 'boolean', group: 'system' });
+      // The id stays `favorite` -- saved views and typed `favorite:` tokens
+      // persist it -- while the label matches the star people actually click.
+      fields.push({
+        id: 'favorite',
+        label: 'Starred',
+        type: 'boolean',
+        group: 'system',
+        options: [
+          { value: 'true', label: 'Yes' },
+          { value: 'false', label: 'No' },
+        ],
+      });
     }
     if (!fields.some(field => field.id === 'archived')) {
       fields.push({ id: 'archived', label: 'Archived', type: 'boolean', group: 'system' });
@@ -567,13 +602,12 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
 
   const allTags = useMemo(() => buildTrackerTagOptions(baseFilteredItems), [baseFilteredItems]);
 
-  const filteredTagOptions = useMemo(() => {
+  // The omnibox narrows these against what the user is typing; all this owes it
+  // is the set of tags not already applied.
+  const availableTagOptions = useMemo(() => {
     const activeSet = new Set(tagFilter);
-    const query = tagQuery.toLowerCase();
-    return allTags
-      .filter((tag) => !activeSet.has(tag.name))
-      .filter((tag) => !query || tag.name.toLowerCase().includes(query));
-  }, [allTags, tagFilter, tagQuery]);
+    return allTags.filter((tag) => !activeSet.has(tag.name));
+  }, [allTags, tagFilter]);
 
   // Source provenance: 'native' or the importer provider id (from origin).
   const sourceOptions = useMemo(() => {
@@ -745,8 +779,6 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     || hasActiveFilters(columnFilters);
   const clearTableFilters = useCallback(() => {
     setSearchQuery('');
-    setTagQuery('');
-    setShowTagDropdown(false);
     setTagFilter([]);
     setSourceFilter([]);
     handleColumnFiltersChange({ combinator: 'and', clauses: [] });
@@ -763,33 +795,9 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     },
   })), [viewFilteredItems, viewedAtByItemId]);
 
-  const tagMenu = useFloatingMenu({
-    placement: 'bottom-start',
-    open: showTagDropdown,
-    onOpenChange: setShowTagDropdown,
-  });
-
-  const setSearchInputNode = useCallback((node: HTMLInputElement | null) => {
-    searchInputRef.current = node;
-    tagMenu.refs.setReference(node);
-  }, [tagMenu.refs]);
-
-  const addTagFilter = useCallback((tag: string) => {
-    setTagFilter((current) => current.includes(tag) ? current : [...current, tag]);
-    setTagQuery('');
-    setShowTagDropdown(false);
-    setHighlightedTagIndex(0);
-  }, []);
-
   const removeTagFilter = useCallback((tag: string) => {
     setTagFilter((current) => current.filter((candidate) => candidate !== tag));
   }, []);
-
-  useEffect(() => {
-    if (!showTagDropdown) {
-      setHighlightedTagIndex(0);
-    }
-  }, [showTagDropdown]);
 
   // Pre-warm body Y.Docs for visible team-synced items so detail-open
   // hits a warm WebSocket + Y.Doc state (phase 4a of the tracker sync
@@ -871,6 +879,17 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     setModeLayout({ selectedItemId: null });
   }, [setModeLayout]);
 
+  /** Swap the document in place when a row in the slim list pane is clicked. */
+  const handleOpenItemAsDocument = useCallback((itemId: string) => {
+    openItemAsDocument(itemId);
+  }, [openItemAsDocument]);
+
+  /** Back to the ordinary list + detail-panel presentation. */
+  const handleCollapseToTracker = useCallback(() => {
+    if (!documentItemId) return;
+    setItemView({ itemId: documentItemId, view: 'item' });
+  }, [documentItemId, setItemView]);
+
   const handleArchiveItem = useCallback(async (itemId: string, archive: boolean) => {
     try {
       const result = await window.electronAPI.documentService.archiveTrackerItem({ itemId, archive });
@@ -916,7 +935,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
     if (!teamOrgId) return;
     const url = buildTrackerDeepLink(itemId, teamOrgId);
     try {
-      await navigator.clipboard.writeText(url);
+      await copyToClipboard(url);
       errorNotificationService.showInfo(
         'Link copied',
         'Paste it anywhere to open this tracker in Nimbalyst.',
@@ -930,6 +949,26 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       );
     }
   }, [teamOrgId]);
+
+  /** Link that reopens the item in document view (`view=document`). */
+  const handleCopyDocumentLink = useCallback(async () => {
+    if (!teamOrgId || !documentItemId) return;
+    const url = buildTrackerDocumentDeepLink(documentItemId, teamOrgId);
+    try {
+      await copyToClipboard(url);
+      errorNotificationService.showInfo(
+        'Document link copied',
+        'Paste it anywhere to open this item as a document in Nimbalyst.',
+        { duration: 3000 }
+      );
+    } catch (err) {
+      console.error('[TrackerMainView] Failed to copy document link:', err);
+      errorNotificationService.showError(
+        'Copy failed',
+        'Could not write the link to the clipboard.'
+      );
+    }
+  }, [documentItemId, teamOrgId]);
 
   /** Bulk archive for multi-select context menu */
   const handleArchiveItems = useCallback(async (itemIds: string[], archive: boolean) => {
@@ -1082,8 +1121,93 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   const showColumnControls = viewMode === 'list'
     || viewMode === 'table';
 
-  return (
-    <div className="tracker-main-view flex-1 flex flex-col overflow-hidden min-h-0">
+  // ---- Document view (focused presentation of the selected item) ----
+
+  // Document view only ever shows the selected item, so one detail element
+  // serves both presentations -- and `TrackerDocumentView` keeps it at a single
+  // JSX position so switching presentations never remounts the body editor.
+  const detailItemId = documentItemId ?? selectedItemId;
+  const detailNode = detailItemId ? (
+    <TrackerItemDetail
+      itemId={detailItemId}
+      workspacePath={workspacePath}
+      onClose={handleCloseDetail}
+      onSwitchToFilesMode={onSwitchToFilesMode}
+      onSwitchToAgentMode={handleSwitchToAgentMode}
+      onOpenSessionInChat={(sessionId) => {
+        setDocumentChatSession({ itemId: detailItemId, sessionId });
+        setModeLayout({
+          documentRightPanelMode: 'chat',
+          documentRightPanelVisible: true,
+        });
+      }}
+      onLaunchSession={handleLaunchSession}
+      onLaunchWorktree={isWorktreesFeatureAvailable && isGitRepo ? handleLaunchWorktree : undefined}
+      onArchive={handleArchiveItem}
+      onDelete={handleDeleteItem}
+      onOpenItem={handleItemSelect}
+      enableContentFocus
+      contentFocus={Boolean(documentItemId)}
+      onContentFocusChange={(focus) => {
+        // The in-detail toggle is the same gesture as the document view: it
+        // flips this item's persisted presentation rather than a local flag.
+        setItemView({ itemId: detailItemId, view: focus ? 'document' : 'item' });
+      }}
+      // The focused header already carries the item's identity.
+      hideHeader={Boolean(documentItemId)}
+      onContentModeChange={setDetailContentMode}
+      onBodyEditorReady={setBodyEditor}
+    />
+  ) : null;
+
+  // Presence and the sync dot live in the detail's own header normally; in
+  // document view that header is suppressed, so the document header bar hosts
+  // them alongside the breadcrumb -- the same cluster a collaborative document
+  // tab shows.
+
+  const documentListPane = documentItemId ? (
+    <TrackerTable
+      filterType={filterType}
+      sortBy={sortBy}
+      sortDirection={sortDirection}
+      hideTypeTabs
+      hideToolbar
+      preserveItemOrder={recencyOrderActive}
+      favoriteItemIds={favoriteItemIds}
+      onToggleFavorite={handleToggleFavorite}
+      onItemSelect={handleOpenItemAsDocument}
+      onOpenDocument={handleOpenItemAsDocument}
+      selectedItemId={documentItemId}
+      overrideItems={viewItemsWithPersonalFields}
+      onArchiveItems={handleArchiveItems}
+      onDeleteItems={handleDeleteItems}
+      onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
+      searchQuery={searchQuery}
+      hasExternalFilters={hasExternalTableFilters}
+      onClearFilters={clearTableFilters}
+      columnConfig={slimColumnConfig}
+    />
+  ) : null;
+
+  // Document view hides the toolbar, so the list pane carries the search box --
+  // the same `searchQuery` and the same persisted column filters, plus a typed
+  // filter grammar so the whole dropdown is reachable from the keyboard.
+  const documentListPaneSearch = documentItemId ? (
+    <TrackerFilterOmnibox
+      className="shrink-0 border-b border-nim px-2 py-1.5"
+      searchQuery={searchQuery}
+      onSearchQueryChange={setSearchQuery}
+      fields={headerFilterFields}
+      filters={columnFilters}
+      onFiltersChange={handleColumnFiltersChange}
+      tagOptions={availableTagOptions}
+      tagFilter={tagFilter}
+      onTagFilterChange={setTagFilter}
+    />
+  ) : null;
+
+  const itemChrome = (
+    <>
       {/* Sync rejection banner -- key rotation / stale-envelope feedback */}
       <TrackerSyncRejectionBanner workspacePath={workspacePath} />
       {/* Toolbar */}
@@ -1100,96 +1224,21 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
           onExitSavedView={onExitSavedView}
         />
 
-        {/* Search */}
-        <div className="relative flex-1 max-w-[360px] min-w-0">
-          <MaterialSymbol
-            icon="search"
-            size={16}
-            className="absolute left-2 top-1/2 -translate-y-1/2 text-nim-faint pointer-events-none"
-          />
-          <input
-            ref={setSearchInputNode}
-            type="text"
-            placeholder="Search or type # to filter by tag..."
-            value={showTagDropdown
-              ? (searchQuery ? searchQuery + ' ' : '') + '#' + tagQuery
-              : searchQuery}
-            onChange={(e) => {
-              const value = e.target.value;
-              const hashIndex = value.lastIndexOf('#');
-
-              if (hashIndex >= 0) {
-                setSearchQuery(value.slice(0, hashIndex).trim());
-                setTagQuery(value.slice(hashIndex + 1));
-                setShowTagDropdown(true);
-                setHighlightedTagIndex(0);
-                return;
-              }
-
-              setSearchQuery(value);
-              setTagQuery('');
-              setShowTagDropdown(false);
-            }}
-            onKeyDown={(e) => {
-              if (showTagDropdown) {
-                if (e.key === 'Escape') {
-                  e.preventDefault();
-                  setShowTagDropdown(false);
-                  setTagQuery('');
-                  return;
-                }
-                if (e.key === 'Backspace' && tagQuery.length === 0) {
-                  e.preventDefault();
-                  setShowTagDropdown(false);
-                  return;
-                }
-                if (filteredTagOptions.length === 0) {
-                  return;
-                }
-                if (e.key === 'ArrowDown') {
-                  e.preventDefault();
-                  setHighlightedTagIndex((current) => Math.min(current + 1, filteredTagOptions.length - 1));
-                  return;
-                }
-                if (e.key === 'ArrowUp') {
-                  e.preventDefault();
-                  setHighlightedTagIndex((current) => Math.max(current - 1, 0));
-                  return;
-                }
-                if (e.key === 'Enter' || e.key === 'Tab') {
-                  e.preventDefault();
-                  addTagFilter(filteredTagOptions[highlightedTagIndex].name);
-                  return;
-                }
-              }
-
-              if (e.key === 'Backspace' && searchQuery.length === 0 && tagFilter.length > 0) {
-                e.preventDefault();
-                removeTagFilter(tagFilter[tagFilter.length - 1]);
-              }
-            }}
-            onFocus={() => {
-              if (tagQuery) {
-                setShowTagDropdown(true);
-              }
-            }}
-            className="w-full pl-7 pr-7 py-1 text-xs bg-nim-secondary border border-nim rounded text-nim placeholder:text-nim-faint focus:outline-none focus:border-[var(--nim-primary)]"
-            aria-label="Search trackers or filter by tag"
-          />
-          {(searchQuery || tagFilter.length > 0 || showTagDropdown) && (
-            <button
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-nim-faint hover:text-nim"
-              onClick={() => {
-                setSearchQuery('');
-                setTagQuery('');
-                setShowTagDropdown(false);
-                setTagFilter([]);
-              }}
-            >
-              <MaterialSymbol icon="close" size={14} />
-            </button>
-          )}
-        </div>
+        {/* Search + filter omnibox -- the same control the document-view list
+            pane uses. Pills stand down here: the toolbar renders its own
+            horizontal pill row (and tag chips) beside the box. */}
+        <TrackerFilterOmnibox
+          className="flex-1 max-w-[420px]"
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+          fields={headerFilterFields}
+          filters={columnFilters}
+          onFiltersChange={handleColumnFiltersChange}
+          tagOptions={availableTagOptions}
+          tagFilter={tagFilter}
+          onTagFilterChange={setTagFilter}
+          showPills={false}
+        />
 
         <TrackerActiveFilterPills
           fields={headerFilterFields}
@@ -1197,44 +1246,6 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
           onManage={() => setOpenFiltersToken(token => token + 1)}
           onRemove={removeFieldFilter}
         />
-
-        {showTagDropdown && (
-          <FloatingPortal>
-            <div
-              ref={tagMenu.refs.setFloating}
-              style={{
-                ...tagMenu.floatingStyles,
-                width: searchInputRef.current?.offsetWidth,
-              }}
-              className="bg-nim-secondary border border-nim rounded shadow-lg z-[100] overflow-y-auto"
-              data-testid="tracker-tag-dropdown"
-              {...tagMenu.getFloatingProps()}
-            >
-              {filteredTagOptions.length > 0 ? (
-                filteredTagOptions.slice(0, 15).map((tag, index) => (
-                  <button
-                    key={tag.name}
-                    type="button"
-                    className={`w-full text-left px-3 py-1.5 text-[12px] flex items-center justify-between cursor-pointer transition-colors ${
-                      index === highlightedTagIndex
-                        ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text)]'
-                        : 'text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-tertiary)]'
-                    }`}
-                    onMouseEnter={() => setHighlightedTagIndex(index)}
-                    onClick={() => addTagFilter(tag.name)}
-                  >
-                    <span>#{tag.name}</span>
-                    <span className="text-[var(--nim-text-faint)] text-[11px] tabular-nums">{tag.count}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="px-3 py-2 text-[12px] text-[var(--nim-text-faint)] italic">
-                  {tagQuery ? 'No matching tags' : 'No tags in these trackers yet'}
-                </div>
-              )}
-            </div>
-          </FloatingPortal>
-        )}
 
         {tagFilter.length > 0 && (
           <div className="flex flex-wrap gap-1 shrink-0" data-testid="tracker-tag-chips">
@@ -1397,12 +1408,12 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
           </button>
         )}
       </div>
+    </>
+  );
 
-      {/* Content area: table/kanban + optional detail panel */}
-      <div className="flex-1 flex flex-row overflow-hidden min-h-0">
-        {/* Table/Kanban (flex-1, shrinks when detail is open) */}
-        <div className="flex-1 overflow-hidden min-h-0 min-w-0 relative">
-          {personalStateRequired && !personalStateHydrated ? (
+  const itemListPane = (
+    <>
+      {personalStateRequired && !personalStateHydrated ? (
             <div className="h-full flex items-center justify-center text-sm text-nim-muted" data-testid="tracker-personal-state-loading">
               Loading personal tracker state...
             </div>
@@ -1427,6 +1438,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onArchiveItems={handleArchiveItems}
               onDeleteItems={handleDeleteItems}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
+              onOpenDocument={handleOpenItemAsDocument}
               searchQuery={searchQuery}
               hasExternalFilters={hasExternalTableFilters}
               onClearFilters={clearTableFilters}
@@ -1449,6 +1461,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onArchiveItems={handleArchiveItems}
               onDeleteItems={handleDeleteItems}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
+              onOpenDocument={handleOpenItemAsDocument}
               favoriteItemIds={favoriteItemIds}
               onToggleFavorite={handleToggleFavorite}
               searchQuery={searchQuery}
@@ -1487,6 +1500,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               searchQuery={searchQuery}
               onItemSelect={handleItemSelect}
               selectedItemId={selectedItemId}
+              onOpenDocument={handleOpenItemAsDocument}
               overrideItems={viewFilteredItems}
               favoriteItemIds={favoriteItemIds}
               onToggleFavorite={handleToggleFavorite}
@@ -1502,6 +1516,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onArchiveItems={handleArchiveItems}
               onDeleteItems={handleDeleteItems}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
+              onOpenDocument={handleOpenItemAsDocument}
               favoriteItemIds={favoriteItemIds}
               onToggleFavorite={handleToggleFavorite}
             />
@@ -1516,29 +1531,30 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onClose={handleQuickAddClose}
             />
           )}
-        </div>
+    </>
+  );
 
-        {/* Detail panel (right side, shown when item selected) */}
-        {selectedItemId && (
-          <DetailPanelResizable
-            width={detailPanelWidth}
-            onWidthChange={(w) => setModeLayout({ detailPanelWidth: w })}
-          >
-            <TrackerItemDetail
-              itemId={selectedItemId}
-              workspacePath={workspacePath}
-              onClose={handleCloseDetail}
-              onSwitchToFilesMode={onSwitchToFilesMode}
-              onSwitchToAgentMode={handleSwitchToAgentMode}
-              onLaunchSession={handleLaunchSession}
-              onLaunchWorktree={isWorktreesFeatureAvailable && isGitRepo ? handleLaunchWorktree : undefined}
-              onArchive={handleArchiveItem}
-              onDelete={handleDeleteItem}
-              onOpenItem={handleItemSelect}
-            />
-          </DetailPanelResizable>
-        )}
-      </div>
+  return (
+    <>
+      <TrackerDocumentView
+        presentation={documentItemId ? 'document' : 'item'}
+        documentItemId={documentItemId}
+        workspacePath={workspacePath}
+        itemChrome={itemChrome}
+        listPane={documentItemId ? documentListPane : itemListPane}
+        listPaneSearch={documentListPaneSearch}
+        detail={detailNode}
+        contentMode={detailContentMode}
+        bodyEditor={bodyEditor}
+        detailPanelWidth={detailPanelWidth}
+        onDetailPanelWidthChange={(w) => setModeLayout({ detailPanelWidth: w })}
+        onCopyDocumentLink={teamOrgId && documentItemId ? handleCopyDocumentLink : undefined}
+        onCollapseToTracker={handleCollapseToTracker}
+        onOpenItem={handleItemSelect}
+        onSwitchToAgentMode={(sessionId) => {
+          if (sessionId) handleSwitchToAgentMode(sessionId);
+        }}
+      />
 
       {/* External-source import picker */}
       {sourceDialog && workspacePath && (
@@ -1565,72 +1581,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
           onCancel={() => setPendingWorktreeLaunch(null)}
         />
       )}
-    </div>
-  );
-};
-
-/**
- * Resizable wrapper for the detail panel (right side).
- * Drag the left edge to resize.
- */
-const DetailPanelResizable: React.FC<{
-  width: number;
-  onWidthChange: (width: number) => void;
-  children: React.ReactNode;
-}> = ({ width, onWidthChange, children }) => {
-  const [isDragging, setIsDragging] = useState(false);
-  const [currentWidth, setCurrentWidth] = useState(width);
-  const startXRef = useRef(0);
-  const startWidthRef = useRef(width);
-  const MIN_WIDTH = 300;
-  const MAX_WIDTH = 1200;
-
-  useEffect(() => { setCurrentWidth(width); }, [width]);
-
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-    startXRef.current = e.clientX;
-    startWidthRef.current = currentWidth;
-    document.body.style.cursor = 'ew-resize';
-    document.body.style.userSelect = 'none';
-  }, [currentWidth]);
-
-  useEffect(() => {
-    if (!isDragging) return;
-    const handleMouseMove = (e: MouseEvent) => {
-      // Dragging left increases width, dragging right decreases
-      const deltaX = startXRef.current - e.clientX;
-      const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startWidthRef.current + deltaX));
-      setCurrentWidth(newWidth);
-    };
-    const handleMouseUp = () => {
-      setIsDragging(false);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      onWidthChange(currentWidth);
-    };
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging, currentWidth, onWidthChange]);
-
-  return (
-    <div className="flex shrink-0" style={{ width: `${currentWidth}px` }}>
-      <div
-        className={`relative w-0.5 cursor-ew-resize bg-nim-border shrink-0 transition-colors duration-150 hover:bg-nim-accent ${isDragging ? 'bg-nim-accent' : ''}`}
-        onMouseDown={handleMouseDown}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize detail panel"
-      />
-      <div className="flex-1 overflow-hidden">
-        {children}
-      </div>
-    </div>
+    </>
   );
 };
 

@@ -20,7 +20,7 @@
 
 import { BrowserWindow } from 'electron';
 import { AgentMessagesRepository } from '@nimbalyst/runtime';
-import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
+import type { ChatAttachment, PromptProvenance } from '@nimbalyst/runtime/ai/server/types';
 
 export interface LogClaudeCliUserPromptInput {
   sessionId: string;
@@ -35,6 +35,7 @@ export interface LogClaudeCliUserPromptInput {
    * (see `claudeCliPromptComposer.ts`), not from here.
    */
   attachments?: ChatAttachment[];
+  promptProvenance?: PromptProvenance;
 }
 
 export interface LogClaudeCliUserPromptDeps {
@@ -84,6 +85,10 @@ export async function logClaudeCliUserPrompt(
   if (!prompt && attachments.length === 0) return;
 
   try {
+    const metadata = {
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(input.promptProvenance ? { promptProvenance: input.promptProvenance } : {}),
+    };
     await deps.createMessage({
       sessionId: input.sessionId,
       source: 'claude-code',
@@ -91,7 +96,7 @@ export async function logClaudeCliUserPrompt(
       content: JSON.stringify({ prompt }),
       hidden: false,
       createdAt: deps.now(),
-      ...(attachments.length > 0 ? { metadata: { attachments } } : {}),
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     });
     deps.notifyMessageLogged(input.sessionId, input.workspacePath);
   } catch (err) {

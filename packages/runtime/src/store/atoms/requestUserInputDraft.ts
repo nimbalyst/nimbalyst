@@ -13,7 +13,7 @@
  */
 
 import { atom } from 'jotai';
-import { atomFamily } from 'jotai/utils';
+import { atomFamily } from 'jotai-family';
 
 export interface RequestUserInputMultiSelectDraft {
   /** Currently checked item ids. */
@@ -40,7 +40,8 @@ export interface RequestUserInputEditTextDraft {
 }
 
 export interface RequestUserInputConfirmDraft {
-  value: boolean;
+  /** null until the user picks a side; submit stays blocked while unanswered. */
+  value: boolean | null;
 }
 
 export type RequestUserInputFieldDraft =

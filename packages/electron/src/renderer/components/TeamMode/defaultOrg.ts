@@ -1,6 +1,6 @@
 /**
  * Which organization the org-management window lands on when it is opened
- * without an explicit `orgId` (Window > Organization Manager, the switcher's
+ * without an explicit `orgId` (Window > Organization Messages, the switcher's
  * untargeted entries).
  *
  * Pure so the precedence is testable without mounting the window — see

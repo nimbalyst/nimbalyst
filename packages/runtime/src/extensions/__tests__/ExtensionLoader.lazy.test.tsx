@@ -285,7 +285,7 @@ describe("ExtensionLoader deferred editor bundles", () => {
     expect(loader.getExtensionLoadState(manifest.id)).toBe("deferred");
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText("Lazy editor ready")).toBeTruthy();
+    await screen.findByText("Lazy editor ready");
     expect(platform.loadModule).toHaveBeenCalledTimes(2);
   });
 

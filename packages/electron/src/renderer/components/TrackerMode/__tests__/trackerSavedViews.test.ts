@@ -1,5 +1,6 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
+import { dbRowToRecord, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import {
   countFilteredTrackerItemsByTypes,
@@ -206,6 +207,28 @@ describe('filterTrackerItems', () => {
       },
       { identity },
     )).toBe(1);
+  });
+
+  // NIM-2280 / #1071: on the SQLite backend `tracker_items.archived` is an
+  // INTEGER, so rows arrive with 0/1 instead of false/true. The sidebar badge
+  // compares `archived` strictly, so before `dbRowToRecord` normalized it every
+  // native item was dropped and every type read 0 -- while the list and kanban
+  // (which test truthiness) still showed the items. Count through the real row
+  // mapper so the whole reporter chain is covered, not a hand-forged record.
+  it('counts items built from rows whose archived flag is a database integer', () => {
+    const row = (id: string, archived: 0 | 1) => dbRowToRecord({
+      id,
+      type: 'task',
+      data: { title: id },
+      workspace: '/ws',
+      archived,
+      sync_status: 'local',
+    });
+    const items = [row('active-a', 0), row('active-b', 0), row('gone', 1)];
+
+    expect(items.map((item) => item.archived)).toEqual([false, false, true]);
+    expect(countFilteredTrackerItemsByTypes(items, ['task'], { activeFilters: [], tagFilter: [] })).toBe(2);
+    expect(countFilteredTrackerItemsByTypes(items, ['task'], { activeFilters: ['archived'], tagFilter: [] })).toBe(1);
   });
 
   it('keeps sidebar counts aligned with archived relative field filters', () => {

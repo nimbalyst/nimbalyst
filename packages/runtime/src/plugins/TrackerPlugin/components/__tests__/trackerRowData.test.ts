@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import type { TrackerRecord } from '../../../../core/TrackerRecord';
 import {
@@ -7,6 +8,7 @@ import {
   getTrackerGroupLabel,
   groupTrackerRecords,
   sortTrackerRecords,
+  compareCellValues,
 } from '../trackerRowData';
 
 function record(partial: Partial<TrackerRecord> & { id: string }): TrackerRecord {
@@ -157,5 +159,41 @@ describe('groupTrackerRecords', () => {
   it('returns a flat group when grouping is disabled', () => {
     const items = [record({ id: 'a' }), record({ id: 'b' })];
     expect(groupTrackerRecords(items, null)).toEqual([{ key: '', label: null, items }]);
+  });
+});
+
+describe('compareCellValues', () => {
+  it('orders dates chronologically rather than by stringified month name', () => {
+    // Both are Wednesdays; "may" sorts after "jun" alphabetically.
+    expect(compareCellValues(
+      new Date('2026-05-20T12:00:00Z'),
+      new Date('2026-06-24T12:00:00Z'),
+    )).toBeLessThan(0);
+  });
+
+  it('coerces a mixed Date/string date pair to epoch', () => {
+    expect(compareCellValues('2026-01-05', new Date('2026-03-01T00:00:00Z'))).toBeLessThan(0);
+    expect(compareCellValues(new Date('2026-03-01T00:00:00Z'), '2026-01-05')).toBeGreaterThan(0);
+  });
+
+  it('treats an emptied cell the same as a missing one', () => {
+    expect(compareCellValues('', undefined)).toBe(0);
+    expect(compareCellValues('', 'alpha')).toBeGreaterThan(0);
+  });
+
+  it('falls back to a string compare for unparseable date-column values', () => {
+    expect(compareCellValues('not a date', 'zebra', 'date')).toBeLessThan(0);
+  });
+});
+
+describe('sortTrackerRecords by Updated', () => {
+  it('orders the Updated column chronologically in both directions', () => {
+    const items = [
+      record({ id: 'mar', system: { workspace: '/w', createdAt: '2026-03-25T12:00:00.000Z', updatedAt: '2026-03-25T12:00:00.000Z' } }),
+      record({ id: 'may', system: { workspace: '/w', createdAt: '2026-05-20T12:00:00.000Z', updatedAt: '2026-05-20T12:00:00.000Z' } }),
+      record({ id: 'jun', system: { workspace: '/w', createdAt: '2026-06-24T12:00:00.000Z', updatedAt: '2026-06-24T12:00:00.000Z' } }),
+    ];
+    expect(sortTrackerRecords(items, 'updated', 'desc').map(i => i.id)).toEqual(['jun', 'may', 'mar']);
+    expect(sortTrackerRecords(items, 'updated', 'asc').map(i => i.id)).toEqual(['mar', 'may', 'jun']);
   });
 });

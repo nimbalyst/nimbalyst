@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
   isClauseComplete,
   OP_LABELS,

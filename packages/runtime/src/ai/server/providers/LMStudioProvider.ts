@@ -205,7 +205,13 @@ export class LMStudioProvider extends BaseAIProvider {
     // Log the input message
     // CRITICAL: Must await to ensure user message is persisted before proceeding
     if (sessionId) {
-      await this.logAgentMessage(sessionId, 'lmstudio', 'input', message);
+      await this.logAgentMessage(
+        sessionId,
+        'lmstudio',
+        'input',
+        message,
+        this.withPromptProvenanceMetadata(documentContext),
+      );
     }
 
     // Use the centralized tool system (OpenAI-compatible format)

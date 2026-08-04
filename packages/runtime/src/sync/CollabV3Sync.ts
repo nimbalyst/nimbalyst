@@ -51,6 +51,7 @@ import type {
   EncryptedAttachment,
   FileIndexData,
 } from "./types";
+import { filterSessionsForPersonalSync } from "./types";
 import type { SyncedReadReceipt } from "../readReceipts/readReceipts";
 
 // ============================================================================
@@ -4558,30 +4559,35 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       }
     },
 
-    syncSessionsToIndex(
-      sessionsData: SessionIndexData[],
-      options?: {
-        syncMessages?: boolean;
-        messageSyncRequests?: Array<{
-          sessionId: string;
-          sinceTimestamp: number;
-        }>;
-        getMessagesForSync?: (
-          requests: Array<{ sessionId: string; sinceTimestamp: number }>
-        ) => Promise<Map<string, any[]>>;
+    syncSessionsToIndex(sessionsData: SessionIndexData[], options?: {
+      syncMessages?: boolean;
+      messageSyncRequests?: Array<{ sessionId: string; sinceTimestamp: number }>;
+      getMessagesForSync?: (requests: Array<{ sessionId: string; sinceTimestamp: number }>) => Promise<Map<string, any[]>>;
+    }): void {
+      const syncableSessions = filterSessionsForPersonalSync(sessionsData);
+      if (syncableSessions.length === 0) {
+        return;
       }
-    ): void {
+
+      const syncableSessionIds = new Set(
+        syncableSessions.map((session) => session.id)
+      );
+      const syncableOptions = options
+        ? {
+            ...options,
+            messageSyncRequests: options.messageSyncRequests?.filter(
+              (request) => syncableSessionIds.has(request.sessionId)
+            ),
+          }
+        : undefined;
+
       if (!indexWs || !indexConnected) {
         // Queue the operation to run when connection is established
-        console.log(
-          "[CollabV3] Index not connected yet, queueing sync of",
-          sessionsData.length,
-          "sessions"
-        );
+        console.log('[CollabV3] Index not connected yet, queueing sync of', syncableSessions.length, 'sessions');
         pendingOperations.push({
-          type: "sessions",
-          data: sessionsData,
-          options,
+          type: 'sessions',
+          data: syncableSessions,
+          options: syncableOptions,
         });
         return;
       }
@@ -4590,8 +4596,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
       // Call the helper function
       // Note: async but this method returns void for backwards compatibility
-      doSyncSessionsToIndex(sessionsData, options).catch((err) => {
-        console.error("[CollabV3] Error in doSyncSessionsToIndex:", err);
+      doSyncSessionsToIndex(syncableSessions, syncableOptions).catch(err => {
+        console.error('[CollabV3] Error in doSyncSessionsToIndex:', err);
       });
     },
 

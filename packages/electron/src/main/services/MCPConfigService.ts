@@ -6,12 +6,21 @@ import { MCPConfig, MCPServerConfig, MCPServerEnv } from '@nimbalyst/runtime/typ
 import { logger } from '../utils/logger';
 import { getEnhancedPath } from './CLIManager';
 import {
+  applyDisabledMcpjsonServersToSettings,
+  applyDisabledServersToClaudeConfig,
+  claudeDisabledServersInput,
+  type ClaudeConfigShape,
+  type ClaudeDisabledServersInput,
+  type ClaudeSettingsShape,
+} from './mcp/claudeCodeDisabledServers';
+import {
   buildMcpRemoteArgs,
   checkMcpRemoteAuthStatus,
   discoverMcpRemoteOAuthRequirement,
   extractMcpRemoteConfig,
   usesNativeRemoteOAuth,
 } from './MCPRemoteOAuth';
+import { requiresMcpRemote, type McpRemoteRequirementOptions } from './mcpRemoteRequirement';
 
 /**
  * Service for managing MCP server configurations.
@@ -423,6 +432,97 @@ export class MCPConfigService {
   }
 
   /**
+   * Project Nimbalyst's on/off state into Claude Code's own disable fields
+   * (NIM-2372) so the CLI honors the toggle without Nimbalyst having to override
+   * its whole config with `--strict-mcp-config`. See claudeCodeDisabledServers.ts
+   * for the field mapping and the read-modify-write contract.
+   *
+   * Both files are co-owned with the CLI and the user, so this only ever touches
+   * names Nimbalyst manages, and skips the write entirely when nothing changed.
+   * Never throws: a session start must not fail over a config projection.
+   *
+   * Scope note: the CLI keys `disabledMcpServers` off the session's cwd. Worktree
+   * sessions run from the worktree path, not `workspacePath`, so their toggles are
+   * not projected — they fall back to whatever the ecosystem already says.
+   */
+  /**
+   * Project the current on/off state for a workspace, computing the input from
+   * the merged config so callers don't each decide what "off" means.
+   *
+   * Session start passes the map it has already read. The Settings write path
+   * passes nothing and pays for a re-read, so flipping a toggle lands in
+   * `~/.claude.json` right away — otherwise a terminal `claude` in that project
+   * keeps loading the server until the next Nimbalyst session happens to start.
+   */
+  async projectClaudeCodeDisabledServers(
+    workspacePath: string | undefined,
+    allServers?: Record<string, MCPServerConfig>
+  ): Promise<void> {
+    if (!workspacePath) return;
+    const servers = allServers ?? (await this.getMergedConfig(workspacePath)).mcpServers ?? {};
+    await this.syncClaudeCodeDisabledServers(workspacePath, claudeDisabledServersInput(servers));
+  }
+
+  async syncClaudeCodeDisabledServers(
+    workspacePath: string,
+    input: ClaudeDisabledServersInput
+  ): Promise<void> {
+    if (!workspacePath) return;
+
+    try {
+      const claudeConfigRaw = await this.readJsonFile<ClaudeConfigShape>(this.userConfigPath);
+      const { config, changed } = applyDisabledServersToClaudeConfig(
+        claudeConfigRaw ?? {},
+        workspacePath,
+        input
+      );
+      if (changed) {
+        this.markRecentWrite(this.userConfigPath);
+        await fs.writeFile(this.userConfigPath, JSON.stringify(config, null, 2), 'utf8');
+        logger.mcp.info(
+          `[MCP] Synced disabledMcpServers for ${workspacePath}: ` +
+            `${config.projects?.[workspacePath]?.disabledMcpServers?.join(', ') || '(none)'}`
+        );
+      }
+    } catch (error) {
+      logger.mcp.warn('Failed to sync disabledMcpServers into ~/.claude.json:', error);
+    }
+
+    try {
+      const mcpJson = await this.readJsonFile<MCPConfig>(path.join(workspacePath, '.mcp.json'));
+      const mcpJsonNames = Object.keys(mcpJson?.mcpServers ?? {});
+      if (mcpJsonNames.length === 0) return;
+
+      const settingsPath = path.join(workspacePath, '.claude', 'settings.local.json');
+      const existing = await this.readJsonFile<ClaudeSettingsShape>(settingsPath);
+      const { settings, changed } = applyDisabledMcpjsonServersToSettings(
+        existing ?? {},
+        input,
+        mcpJsonNames
+      );
+      if (changed) {
+        await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+        this.markRecentWrite(settingsPath);
+        await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+      }
+    } catch (error) {
+      logger.mcp.warn('Failed to sync disabledMcpjsonServers into .claude/settings.local.json:', error);
+    }
+  }
+
+  /** Read + parse a JSON file, or null when it is missing/unreadable/malformed. */
+  private async readJsonFile<T>(filePath: string): Promise<T | null> {
+    try {
+      return JSON.parse(await fs.readFile(filePath, 'utf8')) as T;
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        logger.mcp.warn(`Failed to read ${filePath}:`, error);
+      }
+      return null;
+    }
+  }
+
+  /**
    * Get merged MCP configuration (User + Workspace).
    * Workspace servers override User servers with the same name.
    */
@@ -715,7 +815,17 @@ export class MCPConfigService {
    *
    * Headers are passed as --header arguments to mcp-remote.
    */
-  private convertHttpToStdio(serverConfig: MCPServerConfig): MCPServerConfig {
+  private convertHttpToStdio(
+    serverConfig: MCPServerConfig,
+    options: McpRemoteRequirementOptions = {},
+  ): MCPServerConfig {
+    // A CLI that speaks HTTP natively does not need the wrapper for a server
+    // that uses no OAuth. Wrapping it costs a process tree and puts the token
+    // on the command line.
+    if (!requiresMcpRemote(serverConfig, options)) {
+      return serverConfig;
+    }
+
     const remoteConfig = extractMcpRemoteConfig(serverConfig);
     if (serverConfig.type !== 'http' || !remoteConfig) {
       return serverConfig;
@@ -744,9 +854,33 @@ export class MCPConfigService {
 
   async isOAuthAuthorized(
     serverConfig: MCPServerConfig,
-    options: { useMcpRemoteForNativeOAuth?: boolean } = {}
+    options: { useMcpRemoteForNativeOAuth?: boolean } & McpRemoteRequirementOptions = {}
   ): Promise<boolean> {
     if (usesNativeRemoteOAuth(serverConfig) && !options.useMcpRemoteForNativeOAuth) {
+      return true;
+    }
+    // A remote server we are not going to wrap must not be OAuth-probed through
+    // mcp-remote either: a static-key server answering 401 to that probe was
+    // being classified as an unauthorized OAuth server and silently dropped.
+    //
+    // This covers `sse` as well as `http` (nimbalyst#1057). `requiresMcpRemote`
+    // refuses to wrap anything that is not `http`, so an sse server always goes
+    // to the CLI directly and no token is ever written to ~/.mcp-auth -- gating
+    // it on that token dropped every sse OAuth server from the session while the
+    // same config worked in the Claude CLI on its own keychain token. stdio
+    // servers that are themselves `npx mcp-remote` invocations are excluded, and
+    // still go through the real check.
+    //
+    // `useMcpRemoteForNativeOAuth` opts a caller INTO the wrapper for native-OAuth
+    // servers (Codex, Codex ACP, Copilot), so it must not be short-circuited here:
+    // `requiresMcpRemote` says "no wrapper" for anything with OAuth credentials,
+    // which would report every such server authorized and stop those providers
+    // dropping the ones that are not.
+    if (
+      (serverConfig.type === 'http' || serverConfig.type === 'sse') &&
+      !options.useMcpRemoteForNativeOAuth &&
+      !requiresMcpRemote(serverConfig, options)
+    ) {
       return true;
     }
     const remoteConfig = extractMcpRemoteConfig(serverConfig, options);
@@ -825,9 +959,13 @@ export class MCPConfigService {
    * Routes bare `node` commands through Electron's bundled Node runtime so
    * MCP servers do not require a system-wide Node install (see #197).
    */
-  processServerConfigForRuntime(serverConfig: MCPServerConfig): MCPServerConfig {
-    // First, convert HTTP to stdio with mcp-remote wrapper
-    let config = this.normalizeTransportFields(this.convertHttpToStdio(serverConfig));
+  processServerConfigForRuntime(
+    serverConfig: MCPServerConfig,
+    options: McpRemoteRequirementOptions = {},
+  ): MCPServerConfig {
+    // First, convert HTTP to stdio with mcp-remote wrapper (unless the target
+    // CLI speaks HTTP natively and the server needs no OAuth)
+    let config = this.normalizeTransportFields(this.convertHttpToStdio(serverConfig, options));
 
     // Only process stdio servers with a command
     if (config.type === 'sse' || !config.command) {

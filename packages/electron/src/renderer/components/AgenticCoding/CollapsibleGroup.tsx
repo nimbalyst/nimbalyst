@@ -1,5 +1,5 @@
 import React, { ReactNode } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 interface CollapsibleGroupProps {
   title: string;

@@ -5,6 +5,16 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  autoUpdate,
+  flip,
+  FloatingPortal,
+  offset,
+  shift,
+  size,
+  useFloating,
+} from '@floating-ui/react';
+import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import type { TrackerColumnDef, TypeColumnConfig } from './trackerColumns';
 
 interface DisplayOptionsPanelProps {
@@ -16,6 +26,8 @@ interface DisplayOptionsPanelProps {
   onConfigChange: (config: TypeColumnConfig) => void;
   /** Close the panel */
   onClose: () => void;
+  /** Optional trigger element for viewport-aware floating positioning */
+  anchorElement?: HTMLElement | null;
 }
 
 export const DisplayOptionsPanel: React.FC<DisplayOptionsPanelProps> = ({
@@ -23,21 +35,56 @@ export const DisplayOptionsPanel: React.FC<DisplayOptionsPanelProps> = ({
   config,
   onConfigChange,
   onClose,
+  anchorElement,
 }) => {
   const panelRef = useRef<HTMLDivElement>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const isFloating = Boolean(anchorElement);
+  const { refs, floatingStyles } = useFloating({
+    open: isFloating,
+    placement: 'bottom-end',
+    strategy: 'fixed',
+    whileElementsMounted: autoUpdate,
+    middleware: [
+      offset(4),
+      flip({ padding: 8 }),
+      shift({ padding: 8 }),
+      windowControlsClearance(),
+      size({
+        padding: 8,
+        apply({ availableHeight, elements, middlewareData }) {
+          const pushed = middlewareData.windowControlsClearance?.pushed ?? 0;
+          elements.floating.style.maxHeight = `${Math.max(0, availableHeight - pushed)}px`;
+        },
+      }),
+    ],
+  });
+
+  useEffect(() => {
+    if (anchorElement) refs.setReference(anchorElement);
+  }, [anchorElement, refs]);
+
+  const setPanelElement = useCallback((element: HTMLDivElement | null) => {
+    panelRef.current = element;
+    if (isFloating) refs.setFloating(element);
+  }, [isFloating, refs]);
 
   // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        panelRef.current
+        && !panelRef.current.contains(target)
+        && !anchorElement?.contains(target)
+      ) {
         onClose();
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [onClose]);
+  }, [anchorElement, onClose]);
 
   const toggleColumn = useCallback((columnId: string) => {
     const visible = [...config.visibleColumns];
@@ -112,10 +159,12 @@ export const DisplayOptionsPanel: React.FC<DisplayOptionsPanelProps> = ({
     { value: 'owner', label: 'Owner' },
   ];
 
-  return (
+  const panel = (
     <div
-      ref={panelRef}
-      className="absolute right-0 top-full mt-1 w-[260px] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-lg shadow-xl z-50 overflow-hidden"
+      ref={setPanelElement}
+      style={isFloating ? floatingStyles : undefined}
+      data-testid="tracker-display-options-panel"
+      className={`${isFloating ? '' : 'absolute right-0 top-full mt-1 max-h-[calc(100vh-4rem)]'} flex w-[260px] flex-col overflow-hidden rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] shadow-xl z-50`}
     >
       {/* Header */}
       <div className="px-3 py-2 border-b border-[var(--nim-border)]">
@@ -139,59 +188,64 @@ export const DisplayOptionsPanel: React.FC<DisplayOptionsPanelProps> = ({
         </div>
       </div>
 
-      {/* Visible columns (drag-reorderable) */}
-      <div className="px-3 py-2 border-b border-[var(--nim-border)]">
-        <span className="text-[11px] font-medium text-[var(--nim-text-faint)] uppercase tracking-wide">Display properties</span>
-        <div className="mt-1.5 space-y-0.5">
-          {visibleColumns.map(col => (
-            <div
-              key={col.id}
-              draggable={col.id !== 'title'}
-              onDragStart={(e) => handleDragStart(e, col.id)}
-              onDragOver={(e) => handleDragOver(e, col.id)}
-              onDrop={(e) => handleDrop(e, col.id)}
-              onDragEnd={handleDragEnd}
-              className={`flex items-center gap-2 px-1.5 py-1 rounded text-xs cursor-grab ${
-                dragOverId === col.id ? 'bg-[var(--nim-primary)]15 border border-dashed border-[var(--nim-primary)]' : 'hover:bg-[var(--nim-bg-hover)]'
-              } ${draggedId === col.id ? 'opacity-50' : ''}`}
-            >
-              {col.id !== 'title' && (
-                <span className="material-symbols-outlined text-[14px] text-[var(--nim-text-faint)] cursor-grab">drag_indicator</span>
-              )}
-              <span className="flex-1 text-[var(--nim-text)]">{col.label}</span>
-              {col.id !== 'title' && (
-                <button
-                  onClick={() => toggleColumn(col.id)}
-                  className="text-[var(--nim-text-faint)] hover:text-[var(--nim-text)] transition-colors"
-                  title="Hide column"
-                >
-                  <span className="material-symbols-outlined text-[14px]">visibility</span>
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Hidden columns */}
-      {hiddenColumns.length > 0 && (
-        <div className="px-3 py-2">
-          <span className="text-[11px] font-medium text-[var(--nim-text-faint)] uppercase tracking-wide">Hidden</span>
+      <div
+        className="min-h-0 overflow-y-auto overscroll-contain"
+        data-testid="tracker-display-options-scroll-region"
+      >
+        {/* Visible columns (drag-reorderable) */}
+        <div className="px-3 py-2 border-b border-[var(--nim-border)]">
+          <span className="text-[11px] font-medium text-[var(--nim-text-faint)] uppercase tracking-wide">Display properties</span>
           <div className="mt-1.5 space-y-0.5">
-            {hiddenColumns.map(col => (
+            {visibleColumns.map(col => (
               <div
                 key={col.id}
-                className="flex items-center gap-2 px-1.5 py-1 rounded text-xs hover:bg-[var(--nim-bg-hover)] cursor-pointer"
-                onClick={() => toggleColumn(col.id)}
+                draggable={col.id !== 'title'}
+                onDragStart={(e) => handleDragStart(e, col.id)}
+                onDragOver={(e) => handleDragOver(e, col.id)}
+                onDrop={(e) => handleDrop(e, col.id)}
+                onDragEnd={handleDragEnd}
+                className={`flex items-center gap-2 px-1.5 py-1 rounded text-xs cursor-grab ${
+                  dragOverId === col.id ? 'bg-[var(--nim-primary)]15 border border-dashed border-[var(--nim-primary)]' : 'hover:bg-[var(--nim-bg-hover)]'
+                } ${draggedId === col.id ? 'opacity-50' : ''}`}
               >
-                <span className="material-symbols-outlined text-[14px] text-[var(--nim-text-faint)]">visibility_off</span>
-                <span className="flex-1 text-[var(--nim-text-faint)]">{col.label}</span>
-                <span className="text-[10px] text-[var(--nim-primary)]">Show</span>
+                {col.id !== 'title' && (
+                  <span className="material-symbols-outlined text-[14px] text-[var(--nim-text-faint)] cursor-grab">drag_indicator</span>
+                )}
+                <span className="flex-1 text-[var(--nim-text)]">{col.label}</span>
+                {col.id !== 'title' && (
+                  <button
+                    onClick={() => toggleColumn(col.id)}
+                    className="text-[var(--nim-text-faint)] hover:text-[var(--nim-text)] transition-colors"
+                    title="Hide column"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">visibility</span>
+                  </button>
+                )}
               </div>
             ))}
           </div>
         </div>
-      )}
+
+        {/* Hidden columns */}
+        {hiddenColumns.length > 0 && (
+          <div className="px-3 py-2">
+            <span className="text-[11px] font-medium text-[var(--nim-text-faint)] uppercase tracking-wide">Hidden</span>
+            <div className="mt-1.5 space-y-0.5">
+              {hiddenColumns.map(col => (
+                <div
+                  key={col.id}
+                  className="flex items-center gap-2 px-1.5 py-1 rounded text-xs hover:bg-[var(--nim-bg-hover)] cursor-pointer"
+                  onClick={() => toggleColumn(col.id)}
+                >
+                  <span className="material-symbols-outlined text-[14px] text-[var(--nim-text-faint)]">visibility_off</span>
+                  <span className="flex-1 text-[var(--nim-text-faint)]">{col.label}</span>
+                  <span className="text-[10px] text-[var(--nim-primary)]">Show</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Reset */}
       <div className="px-3 py-2 border-t border-[var(--nim-border)]">
@@ -207,4 +261,6 @@ export const DisplayOptionsPanel: React.FC<DisplayOptionsPanelProps> = ({
       </div>
     </div>
   );
+
+  return isFloating ? <FloatingPortal>{panel}</FloatingPortal> : panel;
 };

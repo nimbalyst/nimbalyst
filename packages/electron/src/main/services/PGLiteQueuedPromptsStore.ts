@@ -14,6 +14,7 @@ import {
   receiptQueuedPromptPayload,
   type QueuedPromptPayloadReceipt,
 } from './ai/queuedPromptTruth';
+import type { PromptProvenance } from '@nimbalyst/runtime/ai/server/types';
 
 export type QueueSettlementOutcome =
   | 'settled'
@@ -55,6 +56,7 @@ export interface QueuedPrompt {
     fileType?: string;
     /** Identifies the origin of this queued prompt (e.g. 'wakeup_resume' for ScheduleWakeup). */
     promptOrigin?: string;
+    promptProvenance?: PromptProvenance;
   };
   createdAt: number;  // epoch ms
   claimedAt?: number; // epoch ms
@@ -113,6 +115,7 @@ export interface CreateQueuedPromptInput {
     fileType?: string;
     /** Identifies the origin of this queued prompt (e.g. 'wakeup_resume' for ScheduleWakeup). */
     promptOrigin?: string;
+    promptProvenance?: PromptProvenance;
   };
 }
 
@@ -164,6 +167,22 @@ export interface QueuedPromptsStore {
     generation: string;
     receipt: QueuedPromptInterruptReceipt;
   }): Promise<QueuedPrompt>;
+
+  /**
+   * Distinct session ids that currently have at least one `pending` row.
+   * Boot recovery uses this to re-drive every stranded queue: the boot sweep
+   * buckets `executing` rows back to `pending` and, before this existed,
+   * nothing ever claimed them (#962).
+   */
+  listSessionIdsWithPending(): Promise<string[]>;
+
+  /**
+   * Mark every pending row for a session failed. Used when delivery is
+   * terminally impossible (the project folder is gone), where deferring
+   * forever would leave the prompt silently stuck.
+   * Returns the number of rows failed.
+   */
+  failAllPendingForSession(sessionId: string, errorMessage: string): Promise<number>;
 
   /**
    * Atomically claim a pending prompt for execution.
@@ -662,6 +681,16 @@ export function createPGLiteQueuedPromptsStore(
       return rows.map((row) => row.session_id);
     },
 
+    async listSessionIdsWithPending(): Promise<string[]> {
+      await ensureReady();
+
+      const { rows } = await db.query<{ session_id: string }>(
+        `SELECT DISTINCT session_id FROM queued_prompts WHERE status = 'pending'`
+      );
+
+      return rows.map((row) => row.session_id);
+    },
+
     async failAllPendingForSession(sessionId: string, errorMessage: string): Promise<number> {
       await ensureReady();
       const { rows } = await db.query<{ id: string }>(
@@ -671,6 +700,13 @@ export function createPGLiteQueuedPromptsStore(
          RETURNING id`,
         [sessionId, errorMessage],
       );
+
+      if (rows.length > 0) {
+        console.log(
+          `[QueuedPromptsStore] Marked ${rows.length} pending prompt(s) for session ${sessionId} as failed: ${errorMessage}`
+        );
+      }
+
       return rows.length;
     },
 

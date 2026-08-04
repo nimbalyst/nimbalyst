@@ -7,7 +7,7 @@
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { pendingVoiceCommandAtom } from '../../store/atoms/voiceModeState';
 
 // Global set of submitted command IDs to prevent duplicate submissions across component instances

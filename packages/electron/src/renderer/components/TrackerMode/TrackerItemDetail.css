@@ -1,0 +1,9 @@
+/**
+ * Tracker Mode's detail pane. The shared chip row caps its height so a document
+ * header stays compact; this pane is a scrolling inspector, so its chips wrap
+ * for as many rows as the item's schema needs.
+ */
+
+.tracker-field-pills.tracker-detail-field-pills {
+  max-height: none;
+}

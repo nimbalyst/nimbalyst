@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Regression test: List items with bold text should NOT show as changed
  * when they haven't been modified.

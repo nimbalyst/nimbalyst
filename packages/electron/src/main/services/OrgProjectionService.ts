@@ -18,7 +18,7 @@
  */
 
 export type OrgFlavor = 'personal' | 'team';
-export type OrgRole = 'owner' | 'admin' | 'member' | 'guest';
+export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest';
 export type ProjectRole = 'project-admin' | 'project-editor' | 'project-viewer';
 
 export interface ProjectionDb {
@@ -56,9 +56,17 @@ export interface BackfillCounts {
 /** Map an org role to the project role the roster-derived seed uses. Mirrors
  *  the server's backfillProjectAccess so the two projections agree. */
 export function defaultProjectRoleForOrgRole(orgRole: string): ProjectRole {
-  if (orgRole === 'owner' || orgRole === 'admin') return 'project-admin';
-  if (orgRole === 'guest') return 'project-viewer';
-  return 'project-editor';
+  switch (orgRole) {
+    case 'owner':
+    case 'admin':
+      return 'project-admin';
+    case 'member':
+      return 'project-editor';
+    case 'viewer':
+    case 'guest':
+    default:
+      return 'project-viewer';
+  }
 }
 
 function nowIso(): string {
@@ -190,7 +198,8 @@ export async function applyProjectRevoke(db: ProjectionDb, projectId: string, us
 /**
  * Seed project_access for a project from its org roster (role-derived). Mirrors
  * the server-side backfill: owner/admin -> project-admin, member -> editor,
- * guest -> viewer. Idempotent (does not clobber a grant set elsewhere).
+ * viewer/guest/unknown -> viewer. Idempotent (does not clobber a grant set
+ * elsewhere).
  */
 export async function seedProjectAccessFromRoster(
   db: ProjectionDb,

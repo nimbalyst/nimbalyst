@@ -10,7 +10,7 @@ import type { JSX } from 'react';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { getMonacoTheme } from '@nimbalyst/runtime/editors';
 import { isDarkThemeAtom, themeIdAtom } from '@nimbalyst/runtime/store';
 import { VList, type VListHandle } from 'virtua';

@@ -16,10 +16,19 @@ export interface MCPServerEnv {
 /**
  * Optional OAuth settings for remote MCP servers.
  *
- * These map to mcp-remote flags so Nimbalyst can support servers that:
- * - require OAuth instead of API keys
- * - require a fixed callback port
- * - require pre-registered/static OAuth client information
+ * Two fields here look interchangeable and are not. They select WHO performs
+ * the authorization, which is the difference that matters:
+ *
+ * - `staticClientInfo` -> Nimbalyst authorizes, via its own `mcp-remote` child
+ *   process. The Authorize button works and tokens land in `~/.mcp-auth`.
+ * - `clientId` / `clientSecret` -> the downstream CLI owns this server's auth
+ *   and Nimbalyst stays out of it. `usesNativeRemoteOAuth` reads these two, and
+ *   it also suppresses the `mcp-remote` wrapper and the OAuth probe, so setting
+ *   them replaces the Authorize button with "authorize from a Claude or Codex
+ *   session".
+ *
+ * Everything else maps to `mcp-remote` flags for servers that need OAuth
+ * instead of an API key, a fixed callback port, or explicit client metadata.
  */
 export interface MCPServerOAuthConfig {
   /** Fixed local callback port for OAuth redirects. */
@@ -38,15 +47,33 @@ export interface MCPServerOAuthConfig {
   authTimeoutSeconds?: number;
 
   /**
-   * Static OAuth client information for servers that do not support dynamic client registration.
-   * Example: { client_id: 'abc', client_secret: 'def' }
+   * Pre-registered OAuth client that NIMBALYST authorizes with, passed to
+   * `mcp-remote` as `--static-oauth-client-info`. Use this for providers that
+   * refuse RFC 7591 dynamic client registration -- without it `mcp-remote`
+   * attempts registration, the provider rejects it, and the helper dies before
+   * a browser opens (`dynamic_registration_unsupported`).
+   *
+   * Example: { client_id: 'abc' }
+   *
+   * Prefer a public client: `mcp-remote` already uses PKCE, and a `client_secret`
+   * here lands in the MCP config JSON and on the helper's argv. If a confidential
+   * client is unavoidable, `mcp-remote` also accepts `@/path/to/file.json` to read
+   * the value off disk instead -- but note `safeJsonParse` in MCPRemoteOAuth.ts
+   * deliberately ignores `@`-prefixed values when parsing a command line back
+   * into a descriptor, so that form does not round-trip today.
    */
   staticClientInfo?: Record<string, string>;
 
-  /** Native MCP OAuth client ID for clients that support remote OAuth directly. */
+  /**
+   * Pre-registered OAuth client that THE DOWNSTREAM CLI authorizes with. Setting
+   * this hands the server's auth to Claude/Codex entirely: Nimbalyst stops
+   * wrapping it in `mcp-remote`, stops probing it for OAuth, and hides its own
+   * Authorize button. This is not the field for making the Authorize button work
+   * against a no-DCR provider -- that is `staticClientInfo`.
+   */
   clientId?: string;
 
-  /** Optional native MCP OAuth client secret for pre-registered confidential clients. */
+  /** Native MCP OAuth client secret, for a confidential client the CLI authorizes. */
   clientSecret?: string;
 
   /**
@@ -147,4 +174,155 @@ export interface MCPConfig {
  */
 export interface MCPServerWithName extends MCPServerConfig {
   name: string;
+}
+
+// ---------------------------------------------------------------------------
+// Per-session MCP status (NIM-2272 / GH #1089)
+//
+// What a *running* agent session currently knows about its MCP servers, as
+// opposed to the static config above. Shared by the runtime provider, the
+// Electron main handler, and the renderer chip.
+// ---------------------------------------------------------------------------
+
+/**
+ * Row status on the session surface.
+ *
+ * The first five mirror the SDK's `McpServerStatus.status`. `absent` is ours:
+ * the server is in the config snapshot this session was spawned with but the
+ * CLI never reported it at all — the connector-stripping case (GH #1088,
+ * #1051), which is invisible without something to diff against.
+ */
+export type McpSessionServerState =
+  | 'connected'
+  | 'failed'
+  | 'needs-auth'
+  | 'pending'
+  | 'disabled'
+  | 'absent';
+
+/**
+ * One server row. Deliberately narrow: the SDK's status object also carries a
+ * `config` with URLs, headers, and env, and the config snapshot holds
+ * credentials. Neither may cross the IPC boundary, so this type has no field
+ * that could hold one.
+ */
+export interface McpSessionServerRow {
+  name: string;
+  state: McpSessionServerState;
+  /** project | user | local | claudeai | managed — undefined when the SDK omits it. */
+  scope?: string;
+  /** Error text from the SDK, when it supplied one. */
+  error?: string;
+  /** Number of tools the session registered for this server. */
+  toolCount?: number;
+  /** Server-reported version, for diagnosing a stale binary. */
+  version?: string;
+}
+
+/** Everything the chip needs for one session. */
+export interface McpSessionStatusSnapshot {
+  sessionId: string;
+  /** False when this session's provider has no MCP status support (e.g. Codex). */
+  supported: boolean;
+  /** False when no live provider exists yet — distinct from "no servers". */
+  active: boolean;
+  servers: McpSessionServerRow[];
+  /** Epoch ms of the last successful poll. Null means never polled. */
+  lastCheckedAt: number | null;
+}
+
+/** Structural shape of the SDK status object, so this module stays import-free. */
+export interface McpSessionStatusInput {
+  name: string;
+  status: string;
+  error?: string;
+  scope?: string;
+  serverInfo?: { name?: string; version?: string };
+  tools?: unknown[];
+}
+
+const KNOWN_STATES: ReadonlySet<string> = new Set([
+  'connected',
+  'failed',
+  'needs-auth',
+  'pending',
+  'disabled',
+]);
+
+/**
+ * Build the IPC payload from what the provider knows.
+ *
+ * Two rules worth stating out loud:
+ *
+ * 1. Only whitelisted scalar fields are copied. Anything the SDK adds later —
+ *    including a `config` with headers or env — is dropped by construction
+ *    rather than by a blocklist that would go stale.
+ * 2. Absent rows are only emitted once a poll has actually happened. Before the
+ *    first poll every configured server is missing from the status list, and
+ *    reporting that as "configured but never reached this session" would be a
+ *    lie during the session's first seconds.
+ * 3. Withheld servers arrive on their own channel, not via the absent diff. They
+ *    are removed before `configuredNames` is built, so the diff's baseline never
+ *    contained them and could never have surfaced them (GH #1057). They are also
+ *    reported immediately: unlike absence, "we did not pass this server on" is
+ *    known at spawn time and needs no poll to confirm.
+ */
+export function buildMcpSessionStatusSnapshot(params: {
+  sessionId: string;
+  supported: boolean;
+  active: boolean;
+  statuses: McpSessionStatusInput[];
+  /** Server names from the frozen config snapshot; null when it hasn't settled. */
+  configuredNames: string[] | null;
+  /** Configured servers deliberately not passed to the CLI, for failing the OAuth check. */
+  withheldNames?: string[] | null;
+  lastCheckedAt: number | null;
+}): McpSessionStatusSnapshot {
+  const { sessionId, supported, active, statuses, configuredNames, withheldNames, lastCheckedAt } = params;
+
+  const reported = new Set<string>();
+  const servers: McpSessionServerRow[] = [];
+
+  for (const status of statuses) {
+    if (!status?.name) continue;
+    reported.add(status.name);
+    const row: McpSessionServerRow = {
+      name: status.name,
+      state: KNOWN_STATES.has(status.status)
+        ? (status.status as McpSessionServerState)
+        : 'pending',
+    };
+    if (status.scope) row.scope = status.scope;
+    if (status.error) row.error = status.error;
+    if (Array.isArray(status.tools)) row.toolCount = status.tools.length;
+    if (status.serverInfo?.version) row.version = status.serverInfo.version;
+    servers.push(row);
+  }
+
+  // Withheld rows come after the reported ones so a real status always wins: the
+  // CLI reads its own config too, so a server we withheld may still have
+  // connected on the CLI's own credentials. Saying "needs authorization" about a
+  // server the user can see working would be worse than saying nothing.
+  const withheld = new Set<string>();
+  for (const name of withheldNames ?? []) {
+    if (reported.has(name) || withheld.has(name)) continue;
+    withheld.add(name);
+    servers.push({ name, state: 'needs-auth' });
+  }
+
+  // See rule 2 above: no poll yet means we can't tell absent from not-yet-known.
+  if (lastCheckedAt !== null && configuredNames) {
+    for (const name of configuredNames) {
+      if (!reported.has(name) && !withheld.has(name)) {
+        servers.push({ name, state: 'absent' });
+      }
+    }
+  }
+
+  return { sessionId, supported, active, servers, lastCheckedAt };
+}
+
+/** True when a row is something the user may need to act on. */
+export function isMcpSessionServerProblem(row: McpSessionServerRow): boolean {
+  return row.state !== 'connected';
 }

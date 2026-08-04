@@ -36,6 +36,9 @@ When fixing a bug, **always ensure a tracker bug item exists** before starting t
 2. **Create if missing**: If no tracker item exists, create one before writing any fix code
 3. **Keep it updated**: Update the tracker item's status as you progress (`to-do` → `in-progress` → `in-review`)
 4. **Link the session**: Always call `tracker_link_session` so the bug and session are cross-referenced
+5. **Close it on the commit**: When the user commits the fix, put a closing reference on its own line in the commit message — `Fixes NIM-123`, using the item's issue key. That commit is the user's sign-off, and `CommitTrackerLinker` moves the item to `done` and marks the session `complete`. A bare `NIM-123` only links the commit; it does not close.
+
+Do not stop at step 3. An item left in `in-review` after its fix shipped is a false backlog entry — the user has to clear it by hand. If the item has no issue key, say so when you propose the commit rather than silently omitting the reference.
 
 **How to create:**
 

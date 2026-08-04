@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Simplified tests for ListTransformers
  */

@@ -17,9 +17,13 @@
 import { store } from '../index';
 import { setWindowModeAtom } from '../atoms/windowMode';
 import { pendingCollabDocumentAtom, pendingCollabFolderAtom } from '../atoms/collabDocuments';
-import { setTrackerModeLayoutAtom } from '../atoms/trackers';
+import {
+  openTrackerItemAsDocumentAtom,
+  setTrackerModeLayoutAtom,
+} from '../atoms/trackers';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
+import type { TrackerDeepLinkView } from '../../../shared/trackerDeepLinks';
 
 interface SharedDocPayload {
   documentId: string;
@@ -37,6 +41,7 @@ interface TrackerPayload {
   trackerId: string;
   orgId: string;
   workspacePath: string;
+  view?: TrackerDeepLinkView;
 }
 
 function ensureActiveWorkspace(workspacePath: string): void {
@@ -49,28 +54,48 @@ function ensureActiveWorkspace(workspacePath: string): void {
 }
 
 function applySharedDocPayload(data: SharedDocPayload): void {
-  if (!data?.documentId || !data?.workspacePath) return;
+  if (!data?.documentId || !data?.orgId || !data?.workspacePath) return;
   ensureActiveWorkspace(data.workspacePath);
   store.set(setWindowModeAtom, 'collab');
-  store.set(pendingCollabDocumentAtom, { documentId: data.documentId, analyticsSource: 'deep_link' });
+  store.set(pendingCollabDocumentAtom, {
+    scopeKey: data.workspacePath,
+    orgId: data.orgId,
+    documentId: data.documentId,
+    analyticsSource: 'deep_link',
+  });
 }
 
 function applySharedFolderPayload(data: SharedFolderPayload): void {
-  if (!data?.folderId || !data?.workspacePath) return;
+  if (!data?.folderId || !data?.orgId || !data?.workspacePath) return;
   ensureActiveWorkspace(data.workspacePath);
   store.set(setWindowModeAtom, 'collab');
-  store.set(pendingCollabFolderAtom, { folderId: data.folderId });
+  store.set(pendingCollabFolderAtom, {
+    scopeKey: data.workspacePath,
+    orgId: data.orgId,
+    folderId: data.folderId,
+  });
 }
 
 function applyTrackerPayload(data: TrackerPayload): void {
-  if (!data?.trackerId || !data?.workspacePath) return;
+  if (!data?.trackerId || !data?.orgId || !data?.workspacePath) {
+    throw new Error('Tracker deep-link payload requires trackerId, orgId, and workspacePath');
+  }
+  if (data.view !== undefined && data.view !== 'document') {
+    throw new Error(`Tracker deep-link payload has unsupported view: ${data.view}`);
+  }
+
   ensureActiveWorkspace(data.workspacePath);
   store.set(setWindowModeAtom, 'tracker');
   // 'all' so the tracker shows in the list regardless of its primaryType.
-  store.set(setTrackerModeLayoutAtom, {
-    selectedType: 'all',
-    selectedItemId: data.trackerId,
-  });
+  if (data.view === 'document') {
+    store.set(setTrackerModeLayoutAtom, { selectedType: 'all' });
+    store.set(openTrackerItemAsDocumentAtom, data.trackerId);
+  } else {
+    store.set(setTrackerModeLayoutAtom, {
+      selectedType: 'all',
+      selectedItemId: data.trackerId,
+    });
+  }
 }
 
 async function drainPendingFor(workspacePath: string | null): Promise<void> {

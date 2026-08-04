@@ -83,6 +83,14 @@ interface PendingAskUserQuestionEntry {
   sessionId: string;
 }
 
+/**
+ * Codex plugin id (`<plugin>@<marketplace>`) for the ChatGPT desktop app's
+ * bundled browser plugin. It lives in the shared `~/.codex/config.toml`, so
+ * Nimbalyst's codex sessions inherit it; see `buildCodexConfigOverrides` for why
+ * we turn it off.
+ */
+const SHADOWING_CODEX_BROWSER_PLUGIN_ID = 'browser@openai-bundled';
+
 const PERSISTED_APP_SERVER_NOTIFICATION_METHODS = new Set([
   'item/started',
   'item/completed',
@@ -1007,7 +1015,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     });
 
     if (sessionId) {
-      const metadataToLog: Record<string, unknown> = {};
+      const metadataToLog: Record<string, unknown> = this.withPromptProvenanceMetadata(documentContext);
       if (attachments && attachments.length > 0) {
         metadataToLog.attachments = attachments;
       }
@@ -2028,6 +2036,26 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       // Codex SDK documents this config flag as the switch for surfacing
       // raw agent reasoning in streamed events.
       show_raw_agent_reasoning: true,
+
+      // Codex reads the shared `~/.codex/config.toml`, which the ChatGPT desktop
+      // app writes. Its bundled `browser` plugin injects a "control-in-app-browser"
+      // skill that steers the model at ChatGPT.app's in-app browser via the
+      // `node_repl` `js` tool. That browser only exists inside ChatGPT.app, so in
+      // Nimbalyst the model dead-ends on "No browser is available" -- and never
+      // reaches for our own `mcp__nimbalyst_browser` tools, which are deferred.
+      // Disabling the plugin per-session leaves the user's ChatGPT.app config
+      // untouched.
+      //
+      // The key needs different shapes per transport: app-server takes the
+      // override map as nested JSON and looks the plugin id up verbatim, while
+      // the legacy SDK flattens it into `--config a.b.c=value` dotted TOML paths
+      // (`serializeConfigOverrides`) without quoting -- and `@` is not legal in a
+      // TOML bare key, so the SDK path has to carry its own quotes.
+      plugins: {
+        [this.transport === 'sdk'
+          ? `"${SHADOWING_CODEX_BROWSER_PLUGIN_ID}"`
+          : SHADOWING_CODEX_BROWSER_PLUGIN_ID]: { enabled: false },
+      },
     };
 
     if (Object.keys(codexMcpServers).length > 0) {

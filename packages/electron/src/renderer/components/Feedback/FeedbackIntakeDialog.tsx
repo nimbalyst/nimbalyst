@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { usePostHog } from 'posthog-js/react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 export type FeedbackKind = 'bug' | 'feature';
 

@@ -22,7 +22,24 @@ function isConfirmedOutboxRevocationCode(errorCode: string): boolean {
 const TERMINAL_AFTER_RETRY_CODES = new Set([
   "http_404",
   "document_not_found",
-  "key_unavailable",
+]);
+
+/**
+ * Refusals no retry can fix. The server rejected the request on its own terms,
+ * so the same bytes with the same headers will be rejected again forever;
+ * parking on the first attempt keeps a permanently-bad asset from occupying the
+ * drain lane every 30 seconds for the life of the install.
+ *
+ * `http_400` covers a payload the server's boundary validation refuses (an
+ * over-long filename, an unsupported wire format). `http_413` is an oversize
+ * asset. `asset_format_unreadable` is a blob whose stored format this server
+ * cannot decode. Transport errors and 5xx stay retryable -- those are the ones
+ * that come back on their own.
+ */
+const TERMINAL_ON_FIRST_ATTEMPT_CODES = new Set([
+  "http_400",
+  "http_413",
+  "asset_format_unreadable",
 ]);
 
 const DEFAULT_BACKOFF_MS = 30_000;
@@ -117,6 +134,7 @@ export class CollabAssetOutboxDrainer {
   private shouldPark(errorCode: string, attemptCount: number): boolean {
     return (
       isConfirmedOutboxRevocationCode(errorCode) ||
+      TERMINAL_ON_FIRST_ATTEMPT_CODES.has(errorCode) ||
       (TERMINAL_AFTER_RETRY_CODES.has(errorCode) &&
         attemptCount >= this.terminalAttemptCap)
     );

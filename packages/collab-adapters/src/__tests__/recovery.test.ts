@@ -1,3 +1,4 @@
+// @vitest-environment node
 import * as Y from 'yjs';
 import { describe, expect, it } from 'vitest';
 
