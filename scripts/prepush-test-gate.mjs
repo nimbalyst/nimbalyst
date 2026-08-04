@@ -1,13 +1,61 @@
+import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+
+import { WINDOWS_KNOWN_FAILING_SUITES } from './windows-known-failing-suites.mjs';
+
 /**
- * The full Vitest suite currently has Windows-nonportable failures. Keep it
- * mandatory everywhere else, including Windows CI, while local Windows pushes
- * retain the typecheck and focused-test gates.
+ * Keep the complete suite mandatory everywhere except an interactive Windows
+ * push, where only the explicitly tracked nonportable files are excluded.
  */
-export function shouldRunFullPrePushSuite({ platform = process.platform, ci = process.env.CI } = {}) {
-  return platform !== 'win32' || /^(1|true|yes)$/i.test(ci ?? '');
+export function shouldExcludeKnownFailingSuites({
+  platform = process.platform,
+  ci = process.env.CI,
+} = {}) {
+  return platform === 'win32' && !/^(1|true|yes)$/i.test(ci ?? '');
+}
+
+export function buildVitestArgs(options = {}) {
+  const args = ['vitest', '--run'];
+  if (shouldExcludeKnownFailingSuites(options)) {
+    args.push('--maxWorkers', '4');
+  }
+  return args;
+}
+
+export function buildVitestEnv(options = {}, baseEnv = process.env) {
+  const env = { ...baseEnv };
+  if (shouldExcludeKnownFailingSuites(options)) {
+    env.NIMBALYST_PREPUSH_GATE = '1';
+  } else {
+    delete env.NIMBALYST_PREPUSH_GATE;
+  }
+  return env;
+}
+
+function main() {
+  const options = {};
+  const excludesKnownFailures = shouldExcludeKnownFailingSuites(options);
+  const args = buildVitestArgs(options);
+  const env = buildVitestEnv(options);
+
+  if (excludesKnownFailures) {
+    process.stderr.write(
+      `[prepush] Local Windows push: excluding ${WINDOWS_KNOWN_FAILING_SUITES.length} ` +
+        'tracked nonportable suite(s); all other suites remain mandatory. ' +
+        'See docs/WINDOWS_PREPUSH_GATE.md.\n',
+    );
+  }
+
+  const child = spawn('npx', args, { stdio: 'inherit', shell: true, env });
+  child.on('error', (error) => {
+    process.stderr.write(`[prepush] ERROR: unable to start Vitest: ${error.message}\n`);
+    process.exitCode = 1;
+  });
+  child.on('exit', (code, signal) => {
+    process.exitCode = code ?? (signal ? 1 : 0);
+  });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.stdout.write(shouldRunFullPrePushSuite() ? 'run\n' : 'skip\n');
+  main();
 }
-import { pathToFileURL } from 'node:url';
