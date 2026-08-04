@@ -656,7 +656,8 @@ export class MessageStreamingHandler {
       }
 
       // Mark prompt ID as processing
-      // Note: session lock is already set in claimQueuedPrompt handler, no need to check here
+      // Note: session lock is already set via the queue dispatcher's claim/lease
+      // path (queueProcessingLeases), no need to check here
       this.svc.processingQueuedPromptIds.add(queuedPromptId);
       logger.main.info(`[AIService] Processing queued prompt: ${queuedPromptId}, session: ${sessionId}, total prompts in progress: ${this.svc.processingQueuedPromptIds.size}`);
     }
@@ -3155,7 +3156,7 @@ export class MessageStreamingHandler {
         sawComplete: sawCompleteChunk,
         providerError,
         alreadySettled: settledOnErrorChunk,
-        queuedChainActive: this.svc.sessionsProcessingQueue.has(session.id),
+        queuedChainActive: this.svc.hasActiveQueueLease(session.id),
       })) {
         logger.main.warn(
           `[AIService] Provider stream for ${session.id} ended on an error chunk without completing -- settling session`

@@ -1617,7 +1617,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       // Claude Code, hard abort for other providers via the BaseAIProvider
       // default); (2) explicitly trigger queue processing. The natural
       // completion-handler path also triggers it, and the server's
-      // sessionsProcessingQueue guard de-dupes, so this is safe to call.
+      // queueProcessingLeases guard (hasActiveQueueLease) de-dupes, so this is safe to call.
       // We don't rely on the isLoading auto-effect because session:completed
       // may race or, in some edge cases, may not fire cleanly after abort.
       await window.electronAPI.invoke('ai:interruptCurrentTurn', sessionId);

@@ -128,7 +128,6 @@ import {
   categorizeAIError,
 } from './aiServiceUtils';
 import { MessageStreamingHandler } from './MessageStreamingHandler';
-import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { shouldForceIdleOnCancel } from './sessionSettlePolicy';
 import {
   hasTerminalizedAskUserQuestion,
@@ -525,7 +524,7 @@ export class AIService {
     return runQueueDriveAttempt<Electron.BrowserWindow>(
       {
         listPendingIds: async (id) => (await queueStore.listPending(id)).map((row) => row.id),
-        isChainActive: (id) => this.sessionsProcessingQueue.has(id),
+        isChainActive: (id) => this.queueProcessingLeases.has(id),
         isSessionBusy: (id) => {
           const liveState = getSessionStateManager().getSessionState(id);
           return !!liveState && (liveState.status === 'running' || liveState.isStreaming);
@@ -2905,70 +2904,12 @@ export class AIService {
       return { success: true };
     });
 
-    // Atomically claim a queued prompt for processing
-    // Returns the prompt data if successfully claimed, null if already claimed by another instance
-    // Uses the new queued_prompts table with proper row-level atomic updates
-    safeHandle('ai:claimQueuedPrompt', async (
-      event,
-      sessionId: string,
-      promptId: string
-    ) => {
-      // Use the new QueuedPromptsStore for atomic claim
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-
-      // Atomic claim - only succeeds if status is still 'pending'
-      const claimed = await queueStore.claim(promptId);
-
-      if (claimed) {
-        logger.main.info(`[AIService] claimQueuedPrompt: claimed ${promptId} for session ${sessionId}`);
-        // The claimed prompt is now in the transcript, so drop it from the
-        // queue mobile sees rather than leaving it double-reported.
-        await this.publishQueueStateToSync(sessionId);
-        // Return in the format expected by the renderer
-        return {
-          id: claimed.id,
-          prompt: claimed.prompt,
-          timestamp: claimed.createdAt,
-          attachments: claimed.attachments,
-          documentContext: claimed.documentContext,
-        };
-      }
-
-      logger.main.info(`[AIService] claimQueuedPrompt: prompt ${promptId} not found or already claimed`);
-      return null;
-    });
-
-    // Mark a queued prompt as completed
-    safeHandle('ai:completeQueuedPrompt', async (
-      event,
-      promptId: string
-    ) => {
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-      const row = await queueStore.get(promptId);
-      await queueStore.complete(promptId);
-      logger.main.info(`[AIService] completeQueuedPrompt: ${promptId}`);
-      if (row?.sessionId) {
-        await this.publishQueueStateToSync(row.sessionId);
-      }
-    });
-
-    // Mark a queued prompt as failed
-    safeHandle('ai:failQueuedPrompt', async (
-      event,
-      promptId: string,
-      errorMessage: string
-    ) => {
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-      const row = await queueStore.get(promptId);
-      await queueStore.fail(promptId, errorMessage);
-      logger.main.info(`[AIService] failQueuedPrompt: ${promptId} - ${errorMessage}`);
-      if (row?.sessionId) {
-        await this.publishQueueStateToSync(row.sessionId);
-      }
-    });
+    // ai:claimQueuedPrompt / ai:completeQueuedPrompt / ai:failQueuedPrompt were removed: they let any
+    // renderer caller settle an arbitrary queued prompt with no ownership proof.
+    // The token/lease dispatch model (completeAfterDispatch/failAfterDispatch)
+    // requires an exact claimToken and is only ever called by the internal
+    // dispatcher that holds it -- not exposed over IPC. Asserted absent by
+    // AIService.getModelsCatalog.test.ts and SessionTranscript.modelRecoveryProduction.test.ts.
 
     // List pending prompts for a session
     safeHandle('ai:listPendingPrompts', async (

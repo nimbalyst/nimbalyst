@@ -462,6 +462,7 @@ describe("AIService ai:getModels catalog projection", () => {
       success: true,
       method: "provider-interrupt",
       nativeEntered: true,
+      forcedIdle: false,
     });
     expect(interruptCurrentTurn).toHaveBeenCalledTimes(1);
   });

@@ -5,6 +5,10 @@ import {
   SWEEP_UNANSWERED_ERROR,
 } from '../PGLiteQueuedPromptsStore';
 
+/** Minimal local mirror of the store's unexported `PGliteLike` -- just enough
+ * to type a mocked `query` for the boot re-drive tests below. */
+type DbStub = { query: (sql: string, params?: any[]) => Promise<{ rows: any[] }> };
+
 const databases: PGlite[] = [];
 
 async function createDatabase(): Promise<PGlite> {

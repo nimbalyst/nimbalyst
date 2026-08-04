@@ -83,12 +83,10 @@ describe('catalog reasoning controls', () => {
     expect(supportsThinkingModeForModel('claude-code:claudex-sol')).toBe(false);
   });
 
-  it('derives DeepSeek effort and thinking from the catalog', () => {
-    expect(supportedEffortLevelsForModel('claude-code:deepseek-v4-pro')).toEqual([
-      { key: 'high', label: 'High' },
-      { key: 'max', label: 'Max' },
-    ]);
-    expect(supportsThinkingModeForModel('claude-code:deepseek-v4-pro')).toBe(true);
+  it('fails closed for DeepSeek: its reasoning control is provider-scoped ' +
+    '("reasoning-mode": None/High/Max, not the generic effort-level ladder)', () => {
+    expect(supportedEffortLevelsForModel('claude-code:deepseek-v4-pro')).toEqual([]);
+    expect(supportsThinkingModeForModel('claude-code:deepseek-v4-pro')).toBe(false);
   });
 
   it('fails closed when a catalog model defines no reasoning controls', () => {
