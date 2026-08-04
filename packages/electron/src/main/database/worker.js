@@ -1684,8 +1684,37 @@ class PGLiteWorker {
           document_context JSONB,
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
           claimed_at TIMESTAMPTZ,
+          claim_token TEXT,
+          dispatch_started_at TIMESTAMPTZ,
+          settlement_provenance TEXT,
           completed_at TIMESTAMPTZ,
           error_message TEXT,
+          delivery_class TEXT NOT NULL DEFAULT 'ordinary'
+            CHECK (delivery_class IN ('ordinary', 'control')),
+          priority_rank INTEGER NOT NULL DEFAULT 0,
+          delivery_ready BOOLEAN NOT NULL DEFAULT TRUE,
+          producer TEXT,
+          idempotency_key TEXT,
+          request_digest TEXT,
+          control_operation TEXT,
+          interrupt_target_generation TEXT,
+          interrupt_reservation_owner TEXT,
+          interrupt_receipt JSONB,
+          client_submission_id TEXT,
+          source_session_id TEXT,
+          source_room_id TEXT,
+          submission_sequence INTEGER,
+          payload_utf8_bytes INTEGER,
+          payload_unicode_scalars INTEGER,
+          payload_sha256 TEXT,
+          claim_trigger TEXT,
+          claim_triggered_at TIMESTAMPTZ,
+          turn_id TEXT,
+          provider_input_message_id TEXT,
+          provider_output_message_id TEXT,
+          stream_event_sequence INTEGER NOT NULL DEFAULT 0,
+          terminal_status TEXT,
+          terminal_at TIMESTAMPTZ,
           CONSTRAINT fk_queued_prompts_session
             FOREIGN KEY (session_id)
             REFERENCES ai_sessions(id)
@@ -1696,6 +1725,66 @@ class PGLiteWorker {
         CREATE INDEX IF NOT EXISTS idx_queued_prompts_status ON queued_prompts(status);
         CREATE INDEX IF NOT EXISTS idx_queued_prompts_session_status ON queued_prompts(session_id, status);
         CREATE INDEX IF NOT EXISTS idx_queued_prompts_created ON queued_prompts(created_at);
+
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS delivery_class TEXT NOT NULL DEFAULT 'ordinary';
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS priority_rank INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS delivery_ready BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS producer TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS request_digest TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS control_operation TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_target_generation TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_reservation_owner TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS interrupt_receipt JSONB;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS claim_token TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS dispatch_started_at TIMESTAMPTZ;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS settlement_provenance TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS client_submission_id TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS source_session_id TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS source_room_id TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS submission_sequence INTEGER;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS payload_utf8_bytes INTEGER;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS payload_unicode_scalars INTEGER;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS payload_sha256 TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS claim_trigger TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS claim_triggered_at TIMESTAMPTZ;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS turn_id TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS provider_input_message_id TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS provider_output_message_id TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS stream_event_sequence INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS terminal_status TEXT;
+        ALTER TABLE queued_prompts ADD COLUMN IF NOT EXISTS terminal_at TIMESTAMPTZ;
+
+        WITH ranked AS (
+          SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at, id) AS sequence
+          FROM queued_prompts
+        )
+        UPDATE queued_prompts q
+        SET client_submission_id = COALESCE(q.client_submission_id, q.id),
+            source_session_id = COALESCE(q.source_session_id, q.session_id),
+            source_room_id = COALESCE(q.source_room_id, q.session_id),
+            submission_sequence = COALESCE(q.submission_sequence, ranked.sequence),
+            payload_utf8_bytes = COALESCE(q.payload_utf8_bytes, octet_length(q.prompt)),
+            payload_unicode_scalars = COALESCE(q.payload_unicode_scalars, char_length(q.prompt)),
+            payload_sha256 = COALESCE(q.payload_sha256, 'legacy-unverified')
+        FROM ranked WHERE ranked.id = q.id;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_prompts_control_idempotency
+          ON queued_prompts(session_id, idempotency_key)
+          WHERE idempotency_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_queued_prompts_priority_pending
+          ON queued_prompts(session_id, status, delivery_ready, priority_rank DESC, created_at ASC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_prompts_interrupt_generation_owner
+          ON queued_prompts(session_id, interrupt_target_generation)
+          WHERE delivery_class = 'control' AND interrupt_target_generation IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_prompts_client_submission
+          ON queued_prompts(client_submission_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_prompts_source_sequence
+          ON queued_prompts(source_session_id, submission_sequence);
+        CREATE TABLE IF NOT EXISTS queued_prompt_source_sequences (
+          source_session_id TEXT PRIMARY KEY,
+          next_sequence INTEGER NOT NULL
+        );
       `);
       console.log('[PGLite Worker] queued_prompts table created successfully');
     } catch (error) {
