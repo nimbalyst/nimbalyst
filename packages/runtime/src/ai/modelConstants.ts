@@ -491,6 +491,7 @@ export const DEFAULT_MODELS = {
   lmstudio: 'lmstudio:local-model',
   opencode: 'opencode:anthropic/claude-sonnet-4-5',
   'copilot-cli': 'copilot-cli:default',
+  'kimi-code': 'kimi-code:default',
 };
 
 /**
@@ -557,6 +558,44 @@ export const OPENCODE_PRESET_MODELS: OpenCodePresetModel[] = [
     name: 'GLM 5.2 (Z.AI Coding Plan)',
     providerID: 'zai-coding-plan',
     modelID: 'glm-5.2',
+  },
+];
+
+/**
+ * Preset models for the Kimi Code agent.
+ *
+ * Kimi Code's model catalog is served dynamically after `kimi login`, so this
+ * list only carries the models we want in the picker before the CLI is
+ * authenticated. The `acpModelId` is what the provider passes to
+ * `session/set_config_option` (configId `model`); `default` means "leave the
+ * CLI on its own default" and is never sent.
+ */
+export interface KimiCodePresetModel {
+  /** Full id with the `kimi-code:` registry prefix. */
+  id: string;
+  /** Human-readable label shown in pickers. */
+  name: string;
+  /** Model id on the ACP wire (`session/set_config_option`). */
+  acpModelId: string;
+  /** Context window in tokens. */
+  contextWindow: number;
+}
+
+export const KIMI_CODE_PRESET_MODELS: KimiCodePresetModel[] = [
+  {
+    id: 'kimi-code:default',
+    name: 'Kimi Code (default)',
+    acpModelId: 'default',
+    // The CLI default currently resolves to a K3-family model; 1M window
+    // per the K3 model card (github.com/MoonshotAI/Kimi-K3).
+    contextWindow: 1000000,
+  },
+  {
+    id: 'kimi-code:kimi-k3',
+    name: 'Kimi K3',
+    acpModelId: 'kimi-k3',
+    // K3 ships with a 1M-token context window (github.com/MoonshotAI/Kimi-K3).
+    contextWindow: 1000000,
   },
 ];
 

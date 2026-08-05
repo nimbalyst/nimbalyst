@@ -27,6 +27,7 @@ import { OpenAIPanel } from '../GlobalSettings/panels/OpenAIPanel';
 import { OpenAICodexPanel } from '../GlobalSettings/panels/OpenAICodexPanel';
 import { OpenCodePanel } from '../GlobalSettings/panels/OpenCodePanel';
 import { CopilotCLIPanel } from '../GlobalSettings/panels/CopilotCLIPanel';
+import { KimiCodePanel } from '../GlobalSettings/panels/KimiCodePanel';
 import { LMStudioPanel } from '../GlobalSettings/panels/LMStudioPanel';
 import { AdvancedPanel } from '../GlobalSettings/panels/AdvancedPanel';
 import { DatabasePanel } from '../GlobalSettings/panels/DatabasePanel';
@@ -504,7 +505,7 @@ export function SettingsView({
   };
 
   const handleProviderToggle = async (provider: string, enabled: boolean) => {
-    if (enabled && (provider === 'claude-code' || provider === 'openai-codex' || provider === 'opencode' || provider === 'copilot-cli')) {
+    if (enabled && (provider === 'claude-code' || provider === 'openai-codex' || provider === 'opencode' || provider === 'copilot-cli' || provider === 'kimi-code')) {
       await fetchModels(provider);
     }
 
@@ -520,12 +521,12 @@ export function SettingsView({
 
       posthog?.capture('ai_provider_configured', {
         provider,
-        modelCount: (provider === 'openai-codex' || provider === 'opencode' || provider === 'copilot-cli') ? 0 : models.length,
+        modelCount: (provider === 'openai-codex' || provider === 'opencode' || provider === 'copilot-cli' || provider === 'kimi-code') ? 0 : models.length,
         action: enabled ? 'enabled' : 'disabled'
       });
 
       // OpenAI Codex and OpenCode use dynamic model discovery, not user selection
-      if (provider === 'openai-codex' || provider === 'opencode' || provider === 'copilot-cli') {
+      if (provider === 'openai-codex' || provider === 'opencode' || provider === 'copilot-cli' || provider === 'kimi-code') {
         const currentProvider = prev[provider] || { enabled: false };
         return {
           ...prev,
@@ -547,7 +548,7 @@ export function SettingsView({
     });
     debouncedSave();
 
-    if (enabled && provider !== 'claude-code' && provider !== 'openai-codex' && provider !== 'opencode' && provider !== 'copilot-cli') {
+    if (enabled && provider !== 'claude-code' && provider !== 'openai-codex' && provider !== 'opencode' && provider !== 'copilot-cli' && provider !== 'kimi-code') {
       fetchModels(provider);
     }
   };
@@ -671,7 +672,7 @@ export function SettingsView({
       onApiKeyChange: handleApiKeyChange,
       onModelToggle: (modelId: string, enabled: boolean) => {
         // OpenAI Codex, OpenCode, and Copilot don't support user model selection - models are discovered dynamically
-        if (selectedCategory === 'openai-codex' || selectedCategory === 'opencode' || selectedCategory === 'copilot-cli') {
+        if (selectedCategory === 'openai-codex' || selectedCategory === 'opencode' || selectedCategory === 'copilot-cli' || selectedCategory === 'kimi-code') {
           return;
         }
 
@@ -698,7 +699,7 @@ export function SettingsView({
       },
       onSelectAllModels: (selectAll: boolean) => {
         // OpenAI Codex, OpenCode, and Copilot don't support user model selection - models are discovered dynamically
-        if (selectedCategory === 'openai-codex' || selectedCategory === 'opencode' || selectedCategory === 'copilot-cli') {
+        if (selectedCategory === 'openai-codex' || selectedCategory === 'opencode' || selectedCategory === 'copilot-cli' || selectedCategory === 'kimi-code') {
           return;
         }
 
@@ -871,6 +872,8 @@ export function SettingsView({
         return wrapWithOverride('opencode', 'OpenCode', <OpenCodePanel {...commonProps} />);
       case 'copilot-cli':
         return wrapWithOverride('copilot-cli', 'GitHub Copilot', <CopilotCLIPanel {...commonProps} />);
+      case 'kimi-code':
+        return wrapWithOverride('kimi-code', 'Kimi Code', <KimiCodePanel {...commonProps} />);
       case 'lmstudio':
         return wrapWithOverride('lmstudio', 'LM Studio', <LMStudioPanel {...commonProps} />);
       case 'advanced':

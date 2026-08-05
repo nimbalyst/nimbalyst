@@ -534,6 +534,10 @@ export class MessageStreamingHandler {
             // Copilot uses its own CLI auth, no API key needed
             requiresApiKey = false;
             break;
+          case 'kimi-code':
+            // Kimi Code uses its own CLI auth, no API key needed
+            requiresApiKey = false;
+            break;
           case 'lmstudio':
             // LMStudio doesn't need an API key, just the base URL
             apiKey = 'not-required'; // Dummy value since LMStudio doesn't need a key

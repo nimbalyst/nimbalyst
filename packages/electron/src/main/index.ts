@@ -186,7 +186,7 @@ import { installExtensionAgentBridge } from './extensions/extensionAgentBridge';
 import { getAgentWorkflowService } from './services/AgentWorkflowService';
 import { queueMarketplaceInstallRequest, registerExtensionMarketplaceHandlers, runExtensionAutoUpdate } from './ipc/ExtensionMarketplaceHandlers';
 import { getRegisteredExtensions } from './extensions/RegisteredFileTypes';
-import { ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, OpenCodeProvider, CopilotCLIProvider } from '@nimbalyst/runtime/ai/server';
+import { ClaudeCodeProvider, OpenAICodexProvider, OpenAICodexACPProvider, OpenCodeProvider, CopilotCLIProvider, KimiCodeProvider } from '@nimbalyst/runtime/ai/server';
 import { configureMcpServers } from '@nimbalyst/runtime/ai/server';
 import { matchesAllowPattern } from '@nimbalyst/runtime/ai/server/permissions/toolPermissionHelpers';
 import { resolveCodexPreEditHookScriptPath } from './services/ai/codexPreEditHookPath';
@@ -1893,6 +1893,28 @@ app.whenReady().then(async () => {
         }
         return enabledServers;
     });
+    KimiCodeProvider.setMCPConfigLoader(async (workspacePath?: string) => {
+        if (!mcpConfigService) {
+            throw new Error('MCP config service not initialized');
+        }
+        const mergedConfig = await mcpConfigService.getMergedConfig(workspacePath);
+        const allServers = mergedConfig.mcpServers || {};
+
+        const enabledServers: Record<string, any> = {};
+        for (const [name, config] of Object.entries(allServers)) {
+            if (isMCPServerEnabledForProvider(config as MCPServerConfig, MCP_PROVIDER_IDS.KIMI)) {
+                const isAuthorized = await mcpConfigService.isOAuthAuthorized(config as MCPServerConfig, {
+                    useMcpRemoteForNativeOAuth: true,
+                });
+                if (!isAuthorized) {
+                    logger.mcp.info(`[MCP] Skipping unauthorized OAuth server for Kimi: ${name}`);
+                    continue;
+                }
+                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any);
+            }
+        }
+        return enabledServers;
+    });
 
     // Claude CLI (subscription) launcher shares the Claude Agent MCP filter —
     // the genuine CLI hits the identical MCP handlers as the SDK path (NIM-806).
@@ -1991,6 +2013,7 @@ app.whenReady().then(async () => {
     OpenAICodexACPProvider.setShellEnvironmentLoader(() => getShellEnvironment());
     OpenCodeProvider.setShellEnvironmentLoader(() => getShellEnvironment());
     CopilotCLIProvider.setShellEnvironmentLoader(() => getShellEnvironment());
+    KimiCodeProvider.setShellEnvironmentLoader(() => getShellEnvironment());
 
     // Inject enhanced PATH loader so agents can access system tools
     // (docker, homebrew, nvm, etc.) that are missing from Electron's GUI PATH.
@@ -2002,6 +2025,7 @@ app.whenReady().then(async () => {
     OpenAICodexACPProvider.setEnhancedPathLoader(() => getEnhancedPath());
     OpenCodeProvider.setEnhancedPathLoader(() => getEnhancedPath());
     CopilotCLIProvider.setEnhancedPathLoader(() => getEnhancedPath());
+    KimiCodeProvider.setEnhancedPathLoader(() => getEnhancedPath());
 
     // Inject opencode.json loader so OpenCodeProvider.getModels() can surface
     // user-configured providers (e.g. an LM Studio bridge) in the model picker.

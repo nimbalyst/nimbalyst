@@ -172,6 +172,7 @@ export function getProviderDisplayName(provider: string): string {
     case 'openai': return 'OpenAI';
     case 'lmstudio': return 'LMStudio';
     case 'copilot-cli': return 'GitHub Copilot';
+    case 'kimi-code': return 'Kimi Code';
     default: return provider;
   }
 }
