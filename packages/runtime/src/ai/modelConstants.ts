@@ -591,11 +591,19 @@ export const KIMI_CODE_PRESET_MODELS: KimiCodePresetModel[] = [
     contextWindow: 1000000,
   },
   {
-    id: 'kimi-code:kimi-k3',
+    id: 'kimi-code:k3',
     name: 'Kimi K3',
-    acpModelId: 'kimi-k3',
+    // Wire id verified against the authenticated catalog returned by
+    // session/new (configOptions.model): kimi-code/k3.
+    acpModelId: 'kimi-code/k3',
     // K3 ships with a 1M-token context window (github.com/MoonshotAI/Kimi-K3).
     contextWindow: 1000000,
+  },
+  {
+    id: 'kimi-code:k3-256k',
+    name: 'Kimi K3 256k',
+    acpModelId: 'kimi-code/k3-256k',
+    contextWindow: 262144,
   },
 ];
 

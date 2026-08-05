@@ -304,8 +304,10 @@ export class KimiCodeProvider extends BaseAgentProvider {
       }
 
       const configuredModel = this.config?.model || KimiCodeProvider.DEFAULT_MODEL;
-      // Strip the registry prefix: `kimi-code:kimi-k3` -> `kimi-k3` for ACP.
-      const resolvedModel = configuredModel.replace(/^kimi-code:/, '');
+      // Map the registry id to the ACP wire id (`kimi-code:k3` -> `kimi-code/k3`);
+      // unknown ids fall back to the bare variant so user-typed wire ids pass through.
+      const preset = KIMI_CODE_PRESET_MODELS.find((p) => p.id === configuredModel);
+      const resolvedModel = preset ? preset.acpModelId : configuredModel.replace(/^kimi-code:/, '');
       const isResumedSession = !!existingSessionId;
 
       const sessionOptions = {
