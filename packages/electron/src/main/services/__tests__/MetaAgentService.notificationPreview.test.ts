@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it, vi } from 'vitest';
 
 // FIX B regression guard: buildNotificationMessage() must bound the reinjected
@@ -10,9 +12,13 @@ import { describe, expect, it, vi } from 'vitest';
 // MetaAgentService without pulling electron-app / node-pty into the graph).
 // buildNotificationMessage takes a plain SessionResultData object directly, so
 // no repository mocking is needed beyond making the import succeed.
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: { create: vi.fn(), updateMetadata: vi.fn(), get: vi.fn() },
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => ({
   AgentMessagesRepository: { list: vi.fn() },
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/SessionFilesRepository', () => ({
   SessionFilesRepository: { getFilesBySession: vi.fn().mockResolvedValue([]) },
 }));
 vi.mock('@nimbalyst/runtime/ai/server', () => ({
