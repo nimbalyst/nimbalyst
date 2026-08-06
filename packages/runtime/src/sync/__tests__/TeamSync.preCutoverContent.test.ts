@@ -98,7 +98,14 @@ describe('TeamSyncProvider pre-cutover content', () => {
     const provider = createProvider();
     const sent: Array<Record<string, unknown>> = [];
     (provider as unknown as { send: (m: Record<string, unknown>) => void }).send =
-      (message) => { sent.push(message); };
+      (message) => {
+        sent.push(message);
+        // Stand in for the server's `docIndexRegistered` ack, which
+        // `registerDocument` now waits on (NIM-2472).
+        if (message.type === 'docIndexRegister') {
+          (provider as any).resolveRegisterAck(message.documentId, true);
+        }
+      };
 
     await provider.registerDocument('doc-1', 'Notes.md', 'markdown', null);
     await provider.updateDocumentTitle('doc-1', 'Renamed.md');

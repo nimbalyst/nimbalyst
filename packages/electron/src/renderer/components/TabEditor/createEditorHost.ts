@@ -15,7 +15,7 @@ import type {
   EditorMenuItem,
   EditorHostFileSystem,
 } from '@nimbalyst/runtime';
-import { registerEditorAPI, unregisterEditorAPI } from '@nimbalyst/runtime';
+import { createEditorAPIOwnerToken, registerEditorAPI, unregisterEditorAPI } from '@nimbalyst/runtime';
 import { normalizeExternalHttpsUrl } from './externalUrl';
 
 export interface EditorHostOptions {
@@ -89,6 +89,9 @@ export interface EditorHostOptions {
   /** Optional: Subscribe to diff being cleared externally */
   subscribeToDiffCleared?: (callback: () => void) => () => void;
 
+  /** Optional: Subscribe to the app's Find command (see EditorHost.onFindRequested) */
+  subscribeToFindRequests?: (callback: () => void) => () => void;
+
   // ============ SOURCE MODE (OPTIONAL) ============
 
   /** Whether this editor supports source mode */
@@ -136,6 +139,7 @@ export interface EditorHostOptions {
  * by wiring up to TabEditor's existing save/load/watch machinery.
  */
 export function createEditorHost(options: EditorHostOptions): EditorHost {
+  const editorAPIOwnerToken = createEditorAPIOwnerToken(`visible:${options.filePath}`);
   return {
     // ============ FILE INFO ============
     filePath: options.filePath,
@@ -217,6 +221,11 @@ export function createEditorHost(options: EditorHostOptions): EditorHost {
       ? (callback: () => void) => options.subscribeToDiffCleared!(callback)
       : undefined,
 
+    // ============ FIND (OPTIONAL) ============
+    onFindRequested: options.subscribeToFindRequests
+      ? (callback: () => void) => options.subscribeToFindRequests!(callback)
+      : undefined,
+
     // ============ SOURCE MODE (OPTIONAL) ============
     supportsSourceMode: options.supportsSourceMode,
 
@@ -247,9 +256,12 @@ export function createEditorHost(options: EditorHostOptions): EditorHost {
     // ============ EDITOR API REGISTRATION ============
     registerEditorAPI(api: unknown | null): void {
       if (api) {
-        registerEditorAPI(options.filePath, api, options.triggerSave);
+        registerEditorAPI(options.filePath, api, options.triggerSave, {
+          ownerToken: editorAPIOwnerToken,
+          priority: 'visible',
+        });
       } else {
-        unregisterEditorAPI(options.filePath);
+        unregisterEditorAPI(options.filePath, editorAPIOwnerToken);
       }
     },
 

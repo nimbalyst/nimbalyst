@@ -1,20 +1,10 @@
 /**
  * The live wiring behind `OrgWizardApi` — every call the wizard makes goes
- * through an existing path (team create/invite IPC, the conversation directory
- * client, the conversation append channel). Nothing new was added server-side.
+ * through an existing path (the team create/invite IPC). Nothing new was added
+ * server-side.
  */
 
-import {
-  createDirectoryConversation,
-  listConversationDirectory,
-} from '../../../services/conversationDirectoryClient';
-import type { CreateConversationInput } from '../../../../shared/conversationDirectory';
-import { resolveViewerMemberId, type OrgRosterMember } from '../useOrgRoster';
 import type { OrgWizardApi } from './orgWizardRunner';
-
-function mutationId(): string {
-  return `org-welcome-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
 
 export function createOrgWizardApi(): OrgWizardApi {
   return {
@@ -57,46 +47,6 @@ export function createOrgWizardApi(): OrgWizardApi {
       if (result?.success === false) {
         throw new Error(result.error ?? 'Could not send the invitation');
       }
-    },
-
-    listConversations(orgId) {
-      return listConversationDirectory({ orgId, includeArchived: true });
-    },
-
-    async createConversation(orgId: string, input: CreateConversationInput) {
-      await createDirectoryConversation({ orgId, input });
-    },
-
-    async resolveViewerUserId(orgId) {
-      const [roster, accounts, syncAccount] = await Promise.all([
-        window.electronAPI?.organization?.listMembers?.(orgId),
-        window.electronAPI?.stytch?.getAccounts?.(),
-        window.electronAPI?.stytch?.getSyncAccount?.(),
-      ]);
-      const members: OrgRosterMember[] = roster?.success && Array.isArray(roster.members)
-        ? roster.members
-        : [];
-      const accountRows = Array.isArray(accounts) ? accounts : [];
-      return resolveViewerMemberId(
-        members,
-        accountRows.map((account: { email?: string | null }) => account.email),
-        syncAccount?.email,
-      );
-    },
-
-    async postMessage({ orgId, conversationId, userId, text }) {
-      await window.electronAPI.invoke('conversation:append', {
-        orgId,
-        conversationId,
-        input: {
-          clientMutationId: mutationId(),
-          actor: { kind: 'user', userId, onBehalfOfUserId: userId },
-          operation: 'messageCreated',
-          payload: {
-            body: { version: 1, format: 'plainText', text },
-          },
-        },
-      });
     },
   };
 }

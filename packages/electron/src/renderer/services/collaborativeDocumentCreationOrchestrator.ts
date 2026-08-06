@@ -17,6 +17,7 @@ import {
   getSharedDocumentsForScope,
   getSharedFoldersForScope,
   registerDocumentInIndex,
+  trashSharedDocument,
   type SharedDocument,
   type SharedFolder,
 } from '../store/atoms/collabDocuments';
@@ -122,7 +123,13 @@ export interface CollaborativeDocumentCreationDependencies {
     documentType: string;
     title: string;
     content: string | Uint8Array;
+    /** Tolerate a room whose index row may still be in flight. */
+    retryWhileUnregistered?: boolean;
   }): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Resolves `true` when the server confirmed the index row is committed.
+   * The seed cannot connect until it is (NIM-2472).
+   */
   register(
     scope: CollabScope,
     documentId: string,
@@ -130,7 +137,9 @@ export interface CollaborativeDocumentCreationDependencies {
     documentType: string,
     parentFolderId: string | null,
     metadata: { metadataVersion: 2; fileExtension: string; editorId: string },
-  ): Promise<void>;
+  ): Promise<boolean>;
+  /** Undo an announced registration when the seed that follows it fails. */
+  rollbackRegistration(scope: CollabScope, documentId: string): void;
   saveLocalOrigin?(payload: {
     workspacePath: string;
     documentId: string;
@@ -271,6 +280,7 @@ function defaultDependencies(): CollaborativeDocumentCreationDependencies {
       ),
     seed: seedSharedDocument,
     register: registerDocumentInIndex,
+    rollbackRegistration: trashSharedDocument,
     saveLocalOrigin: async payload => {
       const save = window.electronAPI?.documentSync?.saveLocalOrigin;
       if (!save) return { success: false, error: 'Local-origin persistence is unavailable.' };
@@ -464,29 +474,17 @@ export class CollaborativeDocumentCreationOrchestrator {
         }
         configResolved = true;
 
-        const requiresSeed = byteLength(content) > 0
-          || (descriptor.content.strategy !== 'lexical' && descriptor.content.strategy !== 'text');
-        if (requiresSeed) {
-          const seed = await this.dependencies.seed({
-            workspacePath: scope.scopeKey,
-            documentId,
-            documentType: descriptor.documentType,
-            title,
-            content,
-          });
-          if (!seed.ok) {
-            throw new CollaborativeDocumentCreationError(
-              'seed-failed',
-              seed.error || 'The initial shared content was not acknowledged by the server.',
-              operationId,
-              documentId,
-              false,
-            );
-          }
-        }
-
+        // Announce BEFORE seeding. The server binds a document room's id
+        // through the org's index and 404s an id that isn't there yet, so a
+        // seed that runs first can never connect (NIM-2472). `register`
+        // resolves only once the row is confirmed committed.
+        //
+        // The cost is a window where teammates can see the document before its
+        // content lands. That is deliberate and bounded: the seed follows
+        // immediately, and a seed failure trashes the row below.
+        let registrationAcked = false;
         try {
-          await this.dependencies.register(
+          registrationAcked = await this.dependencies.register(
             scope,
             documentId,
             title,
@@ -504,6 +502,45 @@ export class CollaborativeDocumentCreationOrchestrator {
             false,
             { cause },
           );
+        }
+
+        const requiresSeed = byteLength(content) > 0
+          || (descriptor.content.strategy !== 'lexical' && descriptor.content.strategy !== 'text');
+        if (requiresSeed) {
+          const seed = await this.dependencies.seed({
+            workspacePath: scope.scopeKey,
+            documentId,
+            documentType: descriptor.documentType,
+            title,
+            content,
+            // An unconfirmed registration (server predating the ack, or a
+            // queued offline mutation) means the row may still be in flight,
+            // so the room's 404 is transient and worth retrying. A confirmed
+            // one makes a 404 a real error to surface immediately.
+            retryWhileUnregistered: !registrationAcked,
+          });
+          if (!seed.ok) {
+            // The document is already announced. Roll it back into Trash so a
+            // failed share doesn't leave teammates an empty document, and
+            // report the failure as unannounced -- the caller's rollback path
+            // has nothing left to undo.
+            try {
+              this.dependencies.rollbackRegistration(scope, documentId);
+              announced = false;
+            } catch (rollbackError) {
+              logger.ui.warn(
+                '[collaborativeDocumentCreationOrchestrator] Failed to roll back registration',
+                rollbackError,
+              );
+            }
+            throw new CollaborativeDocumentCreationError(
+              'seed-failed',
+              seed.error || 'The initial shared content was not acknowledged by the server.',
+              operationId,
+              documentId,
+              false,
+            );
+          }
         }
       }
 

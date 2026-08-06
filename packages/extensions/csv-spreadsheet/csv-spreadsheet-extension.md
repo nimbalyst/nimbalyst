@@ -15,7 +15,7 @@ Shipped as marketplace extension v1.0.2. The todo list below was re-audited agai
 - Sort columns ascending/descending
 - Undo/redo with a dedicated history stack (`plugins/UndoRedoPlugin.ts`, Cmd+Z / Cmd+Shift+Z)
 - Copy/cut/paste and clear across cell ranges (Cmd+C/X/V, Delete)
-- Rectangular range selection, Cmd+A select-all, row/column header selection
+- Rectangular range selection, Cmd+A select-all, row/column header selection; drag-selection crosses the frozen-column and pinned-row boundaries as one unbroken rectangle, and autoscrolls when dragged past the viewport edge (`selection/`)
 - Right-click context menu (cut/copy/paste/clear, insert/delete row/column)
 - Source mode toggle for editing raw CSV text
 
@@ -104,13 +104,20 @@ These are the highest-value items: several produce a **silently wrong answer** r
 
 ### Search and filter
 
-Nothing in this category exists yet — no find, no filtering, only sort.
+The find/replace, filter-predicate, and row-mapping engines live under `src/filter/`. The find bar (Cmd+F, including replace-all scoped to a selection) and the column-header filter dropdown are both connected and shipped.
 
-- [ ] **Find** — Cmd+F search across cells with match highlighting and next/previous
-- [ ] **Find and replace** — including replace-all scoped to a selection
-- [ ] **Column filters** — dropdown filter affordance on column headers
-- [ ] **Filter by value** — show only rows containing selected values
-- [ ] **Filter by condition** — numeric and text conditions (greater than, contains, is empty)
+#### Row-index contract
+
+Selections stay in logical sheet coordinates, while RevoGrid filtering hides physical `rgRow` indexes without removing source rows. Every range consumer must therefore map each visible row through the shared visible↔logical mapping and operate on the returned ordered logical-row list; it must never rebuild a contiguous logical range from the first and last row.
+
+Copy and AI selection context collapse that ordered logical-row list into adjacent output rows. For example, visible rows backed by logical rows 2, 7, and 19 serialize as a three-row block with no blank padding, while clear and paste address those same visible rows and never the hidden rows between them.
+
+A column header's rendered text is decorative — the column template appends a filter funnel glyph — so a header's column index always comes from `data-rgcol` through `resolveHeaderColumnIndex`, never from `textContent`.
+
+Both derivations are snapshots: the hidden rows a filter derived, and the mapping built from them. Any mutation invalidates them, so every mutating grid operation and every whole-source load funnels through the editor's single invalidation path rather than refreshing at individual call sites.
+
+Filter predicates are session-only view state. Reopening the file clears filters; filter state is not CSV metadata, `.csvmeta` content, collaboration state, or migration data.
+
 - [ ] **Filter persistence** — decide whether an active filter is view-only or persisted in metadata
 
 ### AI integration
@@ -174,8 +181,9 @@ packages/extensions/csv-spreadsheet/
       ContextMenu.tsx            # Right-click menu
       CollabPresenceOverlay.tsx  # Remote cursor/selection overlay
     hooks/
-      useSpreadsheetData.ts      # Parsed grid state and edit operations
       useSpreadsheetMetadata.ts  # Headers, frozen columns, formats, widths
+      useColumnFilters.ts        # Session-only column filter state
+      useSpreadsheetFind.ts      # Find bar state and replace
     plugins/
       UndoRedoPlugin.ts          # Undo/redo history stack
     editors/
@@ -203,6 +211,16 @@ npm run build
 # Install into Nimbalyst (via Extension Dev Kit MCP)
 # Or copy dist/ to extensions folder
 ```
+
+### Probing the live grid from `renderer_eval`
+
+Three things make a hand-written probe report "nothing is there" when the feature works. All three cost a session an hour on 2026-08-04.
+
+- **Several `.spreadsheet-editor` nodes are mounted at once.** AI-tool file mounts leave zero-size editors behind holding unrelated CSVs, so `document.querySelector('.spreadsheet-editor')` usually returns the wrong one. Always pick with `getBoundingClientRect().width > 0`.
+- **A hidden grid virtualizes to nothing.** A zero-size editor reports zero cells and zero selection overlays, so any measurement taken while the tab's mode is hidden is meaningless rather than negative. Check the width before believing a count of `0`.
+- **Synthetic drags must match what the drag hook expects.** `handlePointerDown` is `async` (it awaits `getProviders()`), so the moves need a tick after `pointerdown`; and `handlePointerMove` returns early on `event.buttons === 0`, so every `pointermove` needs `buttons: 1`. Without both, the hook never arms and no `.selection-border-range` is ever painted.
+
+Selection is also painted asynchronously, so allow a frame after `pointerup` before reading `data-csv-open-*` attributes or computed styles.
 
 ## References
 

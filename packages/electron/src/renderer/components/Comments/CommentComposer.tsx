@@ -132,6 +132,8 @@ export function CommentComposer({
   initialAttachments = EMPTY_ATTACHMENTS,
   submitLabel = 'Send',
   onCancel,
+  onDraftChange,
+  onDraftCleared,
 }: {
   capabilities: CommentCapabilities;
   context: ConversationContext;
@@ -157,6 +159,10 @@ export function CommentComposer({
   initialAttachments?: readonly MessageAttachment[];
   submitLabel?: string;
   onCancel?: () => void;
+  /** Main conversation composer only: persist text as the author changes it. */
+  onDraftChange?: (text: string) => void;
+  /** Main conversation composer only: flush the cleared draft after send. */
+  onDraftCleared?: () => void;
 }) {
   const [text, setText] = useState(initialText);
   const [pool, setPool] = useState<DraftPool>(initialPool);
@@ -168,6 +174,7 @@ export function CommentComposer({
   const [attachmentErrors, setAttachmentErrors] = useState<string[]>([]);
   const inputRef = useRef<ComposerInputHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastDraftTextRef = useRef(initialText);
   // Read by `addFiles` so a second paste sees the count the first one added
   // without making the callback depend on it.
   const pendingRef = useRef(pendingAttachments);
@@ -354,6 +361,13 @@ export function CommentComposer({
     (entry) => entry.status !== 'ready',
   );
 
+  const handleTextChange = useCallback((next: string) => {
+    setText(next);
+    if (next === lastDraftTextRef.current) return;
+    lastDraftTextRef.current = next;
+    onDraftChange?.(next);
+  }, [onDraftChange]);
+
   const submit = useCallback(async () => {
     if (!validation.canSend || attachmentsSettling) {
       setShowErrors(true);
@@ -367,6 +381,8 @@ export function CommentComposer({
         mentionedUserIds: draft.mentionedUserIds,
         mentionedAgentSessionIds: draft.mentionedAgentSessionIds,
       });
+      lastDraftTextRef.current = '';
+      onDraftCleared?.();
       inputRef.current?.clear();
       setText('');
       setPool(EMPTY_POOL);
@@ -384,6 +400,7 @@ export function CommentComposer({
     attachmentsSettling,
     draft,
     onSubmit,
+    onDraftCleared,
     pendingAttachments,
     validation.canSend,
   ]);
@@ -441,7 +458,7 @@ export function CommentComposer({
         autoFocus={autoFocus}
         ariaLabel={`Message ${context.surfaceLabel}`}
         placeholder={placeholder ?? `Message ${context.surfaceLabel}. Type @ to mention someone or an agent.`}
-        onChange={setText}
+        onChange={handleTextChange}
         onSubmit={() => void submit()}
         mentionCandidatesFor={candidatesFor}
         onMentionSelected={selectMention}

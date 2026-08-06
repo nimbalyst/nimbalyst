@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { useAtomValue, useSetAtom } from 'jotai';
 
 import { ActivityRow, shouldGroupWithPrevious, suppressDuplicateActivity } from './ActivityRow';
 import { CommentComposer, type ComposerSubmission } from './CommentComposer';
@@ -35,6 +36,12 @@ import type {
   ResourceRef,
   TimelineEntry,
 } from './commentTypes';
+import {
+  conversationDraftHydratedAtomFamily,
+  conversationDraftInputAtomFamily,
+  hydrateConversationDraftInputAtom,
+  setConversationDraftInputAtom,
+} from '../../store/atoms/conversations';
 
 /** Stable identity, so an absent `activity` prop does not churn the timeline memo. */
 const NO_ACTIVITY: ActivityView[] = [];
@@ -135,6 +142,31 @@ export function CommentThread({
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
   const [pendingSends, setPendingSends] =
     useState<Map<string, PendingSend>>(new Map());
+  const draftTarget = useMemo(() => ({
+    orgId,
+    conversationId: context.conversationId ?? '',
+  }), [context.conversationId, orgId]);
+  const draftInput = useAtomValue(conversationDraftInputAtomFamily(draftTarget));
+  const draftHydrated = useAtomValue(
+    conversationDraftHydratedAtomFamily(draftTarget),
+  );
+  const hydrateDraft = useSetAtom(hydrateConversationDraftInputAtom);
+  const setDraftInput = useSetAtom(setConversationDraftInputAtom);
+
+  useEffect(() => {
+    if (!draftTarget.conversationId) return;
+    void hydrateDraft(draftTarget);
+  }, [draftTarget, hydrateDraft]);
+
+  const handleDraftChange = useCallback((text: string) => {
+    if (!draftTarget.conversationId) return;
+    setDraftInput({ target: draftTarget, text });
+  }, [draftTarget, setDraftInput]);
+
+  const handleDraftCleared = useCallback(() => {
+    if (!draftTarget.conversationId) return;
+    setDraftInput({ target: draftTarget, text: '', flush: true });
+  }, [draftTarget, setDraftInput]);
 
   // Reactions are absent, not disabled, when the adapter does not implement
   // them -- tracker comments and inline document comments in V1.
@@ -563,7 +595,8 @@ export function CommentThread({
         </p>
       )}
 
-      <CommentComposer
+      {(!draftTarget.conversationId || draftHydrated) && <CommentComposer
+        key={`composer:${orgId}:${draftTarget.conversationId || 'ephemeral'}`}
         autoFocus={autoFocusComposer}
         capabilities={capabilities}
         context={context}
@@ -583,7 +616,10 @@ export function CommentThread({
         }
         onCancelReply={() => setReplyTo(null)}
         onSubmit={submit}
-      />
+        initialText={draftTarget.conversationId ? draftInput : ''}
+        onDraftChange={draftTarget.conversationId ? handleDraftChange : undefined}
+        onDraftCleared={draftTarget.conversationId ? handleDraftCleared : undefined}
+      />}
     </div>
   );
 }

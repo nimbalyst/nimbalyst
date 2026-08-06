@@ -53,5 +53,12 @@ export type CollabDocsCommand = {
 };
 export interface CollabDocsCommandResult extends CollabCommandResult {
     folders?: SharedFolder[] | null;
+    /**
+     * `register-document` only: whether the server confirmed the index row is
+     * committed. `false` means unconfirmed (older server, or queued offline) —
+     * not failed. Callers about to write into the new document's room use this
+     * to decide whether the room is known-reachable yet (NIM-2472).
+     */
+    registrationAcked?: boolean;
 }
 export type CollabDocsDataSource = CollabDataSource<SharedDocument, SharedFolder, CollabDocsCommand, CollabDocsCommandResult>;

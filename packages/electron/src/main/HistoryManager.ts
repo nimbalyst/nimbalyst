@@ -437,6 +437,11 @@ export class HistoryManager {
   /**
    * Create a tag for a document version (Phase 1 of file-watcher diff approval)
    * Tags are permanent records that mark specific document states
+   *
+   * `options.speculative` marks a baseline written by a guessing attribution
+   * path (the workspace watcher, the bash-command scanner) rather than by a
+   * writer that observed the real pre-edit moment. Only speculative baselines
+   * may have their content replaced -- see `replaceSpeculative` below.
    */
   async createTag(
     workspacePath: string,
@@ -445,7 +450,7 @@ export class HistoryManager {
     content: string,
     sessionId: string,
     toolUseId: string,
-    options?: { replaceSpeculative?: boolean }
+    options?: { replaceSpeculative?: boolean; speculative?: boolean }
   ): Promise<void> {
     try {
       // Ensure database is initialized
@@ -466,8 +471,9 @@ export class HistoryManager {
       // the watcher-based WorkspaceFileEditAttributionService creates a tag with
       // empty beforeContent (cache miss / null fallback) before the proactive
       // file_change handler can supply the correct baseline from the snapshot cache.
-      const existing = await database.query<{ session_id: string; content: Buffer; tag_id: string }>(`
-        SELECT metadata->>'sessionId' as session_id, content, metadata->>'tagId' as tag_id
+      const existing = await database.query<{ session_id: string; content: Buffer; tag_id: string; speculative: string | null }>(`
+        SELECT metadata->>'sessionId' as session_id, content, metadata->>'tagId' as tag_id,
+               metadata->>'speculative' as speculative
         FROM document_history
         WHERE file_path = $1
           AND metadata->>'status' = 'pending-review'
@@ -489,6 +495,8 @@ export class HistoryManager {
 
         const existingTagId = existing.rows[0].tag_id;
         const replaceSpeculative = options?.replaceSpeculative === true;
+        const existingIsSpeculative =
+          existing.rows[0].speculative === 'true' || existing.rows[0].speculative === '1';
 
         // Authoritative attribution override: when an explicitly
         // authoritative caller (file_change `pre_edit_snapshot`, OpenCode
@@ -507,30 +515,61 @@ export class HistoryManager {
         // combo would only update content (not toolUseId) and the diff
         // would still mis-attribute via ToolCallMatcher.computeHistoryDiff.
         if (replaceSpeculative && existingTagId !== tagId) {
-          logger.main.info('[HistoryManager] Replacing speculative pre-edit tag with authoritative attribution:', {
+          // The baseline itself only moves when the existing one is
+          // speculative (or empty). An authoritative baseline is immutable
+          // for the life of the pending tag: a session's second and third
+          // edits to the same file must still diff against the state before
+          // its FIRST edit, or the user sees only the last sub-edit
+          // (NIM-804). Codex mints a fresh synthetic tool-use id per
+          // sub-edit, so `existingTagId !== tagId` is true on every one of
+          // them -- the tagId difference alone says nothing about whether
+          // the stored content is a guess.
+          const replaceContent = existingIsSpeculative || existingIsEmpty;
+          logger.main.info('[HistoryManager] Re-attributing pre-edit tag to authoritative tool call:', {
             filePath,
             sessionId,
             previousTagId: existingTagId,
             newTagId: tagId,
             newToolUseId: toolUseId,
             existingWasEmpty: existingIsEmpty,
-            replaceSpeculative,
+            existingWasSpeculative: existingIsSpeculative,
+            replacedBaselineContent: replaceContent,
           });
-          await database.query(`
-            UPDATE document_history
-            SET content = $1,
-                size_bytes = $2,
-                timestamp = $3,
-                metadata = jsonb_set(
-                  jsonb_set(
-                    jsonb_set(metadata, '{tagId}', to_jsonb($4::text)),
-                    '{toolUseId}', to_jsonb($5::text)
-                  ),
-                  '{updatedAt}', to_jsonb($6::bigint)
-                )
-            WHERE file_path = $7
-              AND metadata->>'tagId' = $8
-          `, [compressed, compressed.length, now, tagId, toolUseId, now, filePath, existingTagId]);
+          if (replaceContent) {
+            await database.query(`
+              UPDATE document_history
+              SET content = $1,
+                  size_bytes = $2,
+                  timestamp = $3,
+                  metadata = jsonb_set(
+                    jsonb_set(
+                      jsonb_set(
+                        jsonb_set(metadata, '{tagId}', to_jsonb($4::text)),
+                        '{toolUseId}', to_jsonb($5::text)
+                      ),
+                      '{updatedAt}', to_jsonb($6::bigint)
+                    ),
+                    '{speculative}', to_jsonb($7::boolean)
+                  )
+              WHERE file_path = $8
+                AND metadata->>'tagId' = $9
+            `, [compressed, compressed.length, now, tagId, toolUseId, now, false, filePath, existingTagId]);
+          } else {
+            // Attribution only -- content, size and timestamp stay put so the
+            // baseline keeps describing the pre-first-edit state.
+            await database.query(`
+              UPDATE document_history
+              SET metadata = jsonb_set(
+                    jsonb_set(
+                      jsonb_set(metadata, '{tagId}', to_jsonb($1::text)),
+                      '{toolUseId}', to_jsonb($2::text)
+                    ),
+                    '{updatedAt}', to_jsonb($3::bigint)
+                  )
+              WHERE file_path = $4
+                AND metadata->>'tagId' = $5
+            `, [tagId, toolUseId, now, filePath, existingTagId]);
+          }
 
           const windows = BrowserWindow.getAllWindows();
           for (const window of windows) {
@@ -601,7 +640,8 @@ export class HistoryManager {
           sessionId,
           toolUseId,
           createdAt: now,
-          updatedAt: now
+          updatedAt: now,
+          ...(options?.speculative === true ? { speculative: true } : {})
         }
       ]);
 

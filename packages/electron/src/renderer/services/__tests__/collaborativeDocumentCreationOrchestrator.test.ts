@@ -23,6 +23,7 @@ vi.mock('../../store/atoms/collabDocuments', () => ({
   getSharedFoldersForScope: vi.fn(() => []),
   pendingCollabDocumentAtom: Symbol('pendingCollabDocumentAtom'),
   registerDocumentInIndex: vi.fn(),
+  trashSharedDocument: vi.fn(),
   sharedDocumentsAtom: Symbol('sharedDocumentsAtom'),
   sharedFoldersAtom: Symbol('sharedFoldersAtom'),
 }));
@@ -91,12 +92,15 @@ function makeHarness(options: {
   folders?: SharedFolder[];
   seedResults?: boolean[];
   extensionLoaded?: boolean;
+  /** Whether the server confirmed the index row landed. */
+  registrationAcked?: boolean;
 } = {}) {
   const descriptor = options.descriptor ?? markdownDescriptor;
   const documents = options.documents ?? [];
   const folders = options.folders ?? [];
   const events: string[] = [];
   const seedResults = [...(options.seedResults ?? [true])];
+  const seedRetryFlags: boolean[] = [];
   let extensionLoaded = options.extensionLoaded ?? true;
   let generated = 0;
   const published: SharedDocument[] = [];
@@ -121,8 +125,9 @@ function makeHarness(options: {
       events.push('resolve-config');
       return { documentId: 'resolved' } as any;
     },
-    seed: async () => {
+    seed: async (params) => {
       events.push('seed');
+      seedRetryFlags.push(params.retryWhileUnregistered === true);
       return seedResults.shift() === false
         ? { ok: false, error: 'ack timed out' }
         : { ok: true };
@@ -140,6 +145,12 @@ function makeHarness(options: {
         createdAt: 100,
         updatedAt: 100,
       });
+      return options.registrationAcked ?? true;
+    },
+    rollbackRegistration: (_scope, documentId) => {
+      events.push('rollback');
+      const index = documents.findIndex(document => document.documentId === documentId);
+      if (index >= 0) documents.splice(index, 1);
     },
     saveLocalOrigin: async () => {
       events.push('save-origin');
@@ -160,6 +171,7 @@ function makeHarness(options: {
     documents,
     events,
     published,
+    seedRetryFlags,
     resolveMetadata,
     setExtensionLoaded(value: boolean) { extensionLoaded = value; },
   };
@@ -183,10 +195,13 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
     });
 
     expect(harness.published).toEqual([]);
-    expect(harness.events).toEqual(['resolve-config', 'seed', 'register', 'cleanup']);
+    expect(harness.events).toEqual(['resolve-config', 'register', 'seed', 'cleanup']);
   });
 
-  it('seeds with acknowledgement before registering one V2 index row', async () => {
+  it('registers one V2 index row before seeding, so the room accepts the write', async () => {
+    // NIM-2472: the document room binds its id through the org index and 404s
+    // an unregistered id, so seeding first could never connect. The order in
+    // `events` IS the regression -- assert it, not just the outcome.
     const harness = makeHarness();
     const register = vi.spyOn(harness.deps, 'register');
 
@@ -198,7 +213,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       sourceContent: '# Architecture',
     });
 
-    expect(harness.events).toEqual(['resolve-config', 'seed', 'register', 'cleanup', 'publish']);
+    expect(harness.events).toEqual(['resolve-config', 'register', 'seed', 'cleanup', 'publish']);
     expect(document).toMatchObject({
       title: 'Architecture.md',
       documentType: 'markdown',
@@ -222,6 +237,32 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
     }));
   });
 
+  it('tells the seed to tolerate an in-flight row when registration was not acked', async () => {
+    // An unacked registration means a server predating the ack, or a mutation
+    // queued offline. The row may still be landing, so the room's 404 is
+    // transient -- the seed has to retry rather than fail the whole share.
+    const unacked = makeHarness({ registrationAcked: false });
+    await unacked.orchestrator.create({
+      scope: TEST_SCOPE,
+      descriptor: markdownDescriptor,
+      requestedName: 'Unconfirmed',
+      parentFolderId: null,
+      sourceContent: '# Unconfirmed',
+    });
+    expect(unacked.seedRetryFlags).toEqual([true]);
+
+    // A confirmed registration makes a 404 a real error, so no retry budget.
+    const acked = makeHarness({ registrationAcked: true });
+    await acked.orchestrator.create({
+      scope: TEST_SCOPE,
+      descriptor: markdownDescriptor,
+      requestedName: 'Confirmed',
+      parentFolderId: null,
+      sourceContent: '# Confirmed',
+    });
+    expect(acked.seedRetryFlags).toEqual([false]);
+  });
+
   it('registers an intentional empty markdown document without a content update', async () => {
     const harness = makeHarness();
     await harness.orchestrator.create({
@@ -234,7 +275,10 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
     expect(harness.events).toEqual(['resolve-config', 'register', 'cleanup', 'publish']);
   });
 
-  it('cleans up a failed pre-announcement seed without registering a blank row', async () => {
+  it('trashes the announced row when the seed that follows it fails', async () => {
+    // Registration now precedes the seed, so a seed failure leaves a real row
+    // behind. It has to be rolled back, and still reported as unannounced so
+    // the caller does not try to undo it a second time.
     const harness = makeHarness({ seedResults: [false] });
     await expect(harness.orchestrator.create({
       scope: TEST_SCOPE,
@@ -246,7 +290,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       code: 'seed-failed',
       announced: false,
     });
-    expect(harness.events).toEqual(['resolve-config', 'seed', 'cleanup']);
+    expect(harness.events).toEqual(['resolve-config', 'register', 'seed', 'rollback', 'cleanup']);
     expect(harness.documents).toEqual([]);
     expect(trackTeamAnalyticsEvent).toHaveBeenCalledWith('collab_operation_failed', expect.objectContaining({
       operation: 'create_document',
@@ -272,7 +316,11 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
 
     expect(retried.documentId).toBe('doc-1');
     expect(repeated).toBe(retried);
-    expect(harness.events.filter(event => event === 'register')).toHaveLength(1);
+    // Two registrations, not one: the failed attempt's row was trashed by the
+    // rollback, so the retry has to re-announce it. Both the upsert and its
+    // ack are idempotent server-side, and re-registering revives the trashed
+    // row -- otherwise the retry could never reach its own room.
+    expect(harness.events.filter(event => event === 'register')).toHaveLength(2);
     expect(harness.events.filter(event => event === 'publish')).toHaveLength(1);
     expect(harness.resolveMetadata).toHaveBeenCalledOnce();
   });
@@ -370,7 +418,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       localOrigin: { sourceFilePath: '/workspace/Promoted.md', sourceContent: 'original' },
     });
     expect(harness.events).toEqual([
-      'resolve-config', 'seed', 'register', 'save-origin', 'cleanup', 'publish',
+      'resolve-config', 'register', 'seed', 'save-origin', 'cleanup', 'publish',
     ]);
     expect(save).toHaveBeenCalledWith(expect.objectContaining({
       sourceFilePath: '/workspace/Promoted.md',

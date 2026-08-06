@@ -41,6 +41,7 @@ import { VoiceListenWindowController } from './voiceListenWindow';
 import { formatGitCommitProposalForVoice } from './voiceInteractivePrompt';
 import { activeSessionIdAtom, sessionRegistryAtom, sessionHasPendingInteractivePromptAtom, sessionPendingPromptsAtom, sessionProcessingAtom, respondToPromptAtom, refreshSessionListAtom, reloadSessionDataAtom } from '../atoms/sessions';
 import { windowModeAtom } from '../atoms/windowMode';
+import { buildCommitPrompt } from '@nimbalyst/runtime/ui/AgentTranscript/utils/commitPromptBuilder';
 
 /**
  * Callback for notifying VoiceModeButton when the linked session changes.
@@ -668,25 +669,10 @@ export function initVoiceModeListeners(): () => void {
           error?: string;
         };
 
-        let message = 'Use the developer_git_commit_proposal tool to create a commit. If its schema is not loaded, use ToolSearch to load it first.';
-
-        if (commitContext.success && commitContext.files.length > 0) {
-          const fileList = commitContext.files
-            .map(f => `- ${f.path} (${f.status})`)
-            .join('\n');
-          message += `\n\nHere are the files edited in this session that have uncommitted changes:\n${fileList}`;
-          message += '\n\nThis list covers files edited directly. If you ALSO ran commands this session that change files as a side effect ' +
-            '(e.g. npm install rewriting package-lock.json, a build/codegen step, license regeneration), include those changed files too -- ' +
-            'check git status for them. If you ran no such commands, the list above is complete; do not go looking. ' +
-            'Either way, do NOT add unrelated uncommitted changes -- other concurrent sessions may have their own work in this repo.';
-          message += '\n\nThen call developer_git_commit_proposal with the file list.';
-          message += '\nDo NOT call get_session_edited_files or get_workstream_edited_files -- the edited-file data is already provided above.';
-        } else if (commitContext.success && commitContext.files.length === 0) {
-          message += '\n\nNo session-edited files have uncommitted changes. Check git status to see if there are any other uncommitted changes to commit.';
-        } else {
-          message += '\n\nFirst call get_session_edited_files to find all files edited, ' +
-            'then cross-reference with git status to include all session-edited files that have uncommitted changes.';
-        }
+        const message = buildCommitPrompt({
+          commitContext,
+          isInWorktree: false,
+        });
 
         const docContext = {
           filePath: undefined,

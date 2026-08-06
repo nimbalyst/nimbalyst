@@ -28,6 +28,7 @@ import {
   getTypeColor as getTypeColorFromRegistry,
   getTypeIcon as getTypeIconFromRegistry,
   formatRelativeDate,
+  formatTrackerDateCell,
   getCellValue,
   getEffectiveUpdatedDate,
   type TrackerColumnDef,
@@ -307,27 +308,6 @@ function getTypeIcon(type: TrackerItemType): string {
     'feature': 'rocket_launch',
   };
   return icons[type];
-}
-
-function formatDate(date: Date): string {
-  // If date is invalid or epoch (our placeholder for missing dates), show nothing
-  if (!date || date.getTime() === 0 || isNaN(date.getTime())) {
-    return '';
-  }
-
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  const minutes = Math.floor(diff / (1000 * 60));
-  const hours = Math.floor(diff / (1000 * 60 * 60));
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-  if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days === 1) return 'Yesterday';
-  if (days < 7) return `${days}d ago`;
-  if (days < 30) return `${Math.floor(days / 7)}w ago`;
-  return date.toLocaleDateString();
 }
 
 /**
@@ -682,14 +662,14 @@ export function renderCell(
             </div>
           );
 
-        case 'date':
-          if (value instanceof Date) return <span className="text-[var(--nim-text-faint)] text-xs">{formatRelativeDate(value)}</span>;
-          if (typeof value === 'string') {
-            // parseDate, not `new Date`: a calendar-day string is local, not UTC midnight (nimbalyst#1135).
-            const d = parseDate(value);
-            return <span className="text-[var(--nim-text-faint)] text-xs">{d ? formatRelativeDate(d) : value}</span>;
-          }
-          return null;
+        case 'date': {
+          // formatTrackerDateCell, not `new Date`: a calendar-day string is
+          // local midnight, not UTC midnight, and reads by day rather than by
+          // elapsed time (nimbalyst#1135, #1156).
+          const { display, title } = formatTrackerDateCell(value);
+          if (!display) return null;
+          return <span className="text-[var(--nim-text-faint)] text-xs" title={title || undefined}>{display}</span>;
+        }
 
         case 'badge': {
           const strVal = String(value);

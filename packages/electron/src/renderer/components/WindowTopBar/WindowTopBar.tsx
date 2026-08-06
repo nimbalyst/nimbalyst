@@ -124,7 +124,7 @@ export function clampGitFeedbackMessage(
  * org being worked in.
  */
 function InboxButton({ workspacePath }: { workspacePath?: string | null }) {
-  const projectOrg = useProjectOrg(workspacePath);
+  const { org: projectOrg } = useProjectOrg(workspacePath);
   const unreadCount = useAtomValue(
     orgInboxUnreadCountAtomFamily(projectOrg?.orgId ?? ''),
   );

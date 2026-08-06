@@ -8,16 +8,9 @@
  * inside the dialog.
  */
 
-import type { ConversationDirectoryEntry } from '../../../../shared/conversationDirectory';
-import type { CreateConversationInput } from '../../../../shared/conversationDirectory';
 import {
   markInvited,
-  markRoomsCreated,
   pendingInvites,
-  pendingStarterRooms,
-  shouldPostWelcome,
-  starterRoomCreateInput,
-  welcomeMessageBody,
   type OrgWizardState,
   type PendingOrgInvitation,
 } from './orgWizardModel';
@@ -32,16 +25,6 @@ export interface OrgWizardApi {
     workspacePath?: string;
   }): Promise<{ orgId: string }>;
   inviteMember(orgId: string, email: string): Promise<void>;
-  listConversations(orgId: string): Promise<ConversationDirectoryEntry[]>;
-  createConversation(orgId: string, input: CreateConversationInput): Promise<void>;
-  /** Resolves the caller's member id inside the new org; null when unknown. */
-  resolveViewerUserId(orgId: string): Promise<string | null>;
-  postMessage(input: {
-    orgId: string;
-    conversationId: string;
-    userId: string;
-    text: string;
-  }): Promise<void>;
 }
 
 function errorMessage(reason: unknown): string {
@@ -98,66 +81,3 @@ export async function runSendInvites(
   };
 }
 
-/**
- * Step 3. Skips rooms the org already has (including `#general`, which the
- * server seeds) so re-running the step is a no-op rather than a slug collision.
- */
-export async function runCreateStarterRooms(
-  state: OrgWizardState,
-  api: OrgWizardApi,
-): Promise<OrgWizardState> {
-  const orgId = state.createdOrgId;
-  if (!orgId) return { ...state, error: 'The organization has not been created yet.' };
-  let existingRoomIds: string[] = [];
-  try {
-    const directory = await api.listConversations(orgId);
-    existingRoomIds = directory.map((entry) => entry.id);
-  } catch {
-    // A directory that cannot be read is treated as empty: the create call
-    // itself is the authority on collisions, and blocking here would strand
-    // the wizard on an optional step.
-  }
-  let next = state;
-  const failures: string[] = [];
-  for (const option of pendingStarterRooms(state, existingRoomIds)) {
-    try {
-      await api.createConversation(orgId, starterRoomCreateInput(option));
-      next = markRoomsCreated(next, [option.id]);
-    } catch (reason) {
-      failures.push(`#${option.id}: ${errorMessage(reason)}`);
-    }
-  }
-  return {
-    ...next,
-    error: failures.length > 0 ? `Some rooms were not created — ${failures.join('; ')}` : null,
-  };
-}
-
-/**
- * Step 4. The welcome message explains the window to whoever lands in
- * `#general` next; it is posted once and a failure is not fatal — the org is
- * complete without it.
- */
-export async function runPostWelcomeMessage(
-  state: OrgWizardState,
-  api: OrgWizardApi,
-  conversationId: string,
-): Promise<OrgWizardState> {
-  if (!shouldPostWelcome(state)) return state;
-  const orgId = state.createdOrgId;
-  if (!orgId) return state;
-  try {
-    const userId = await api.resolveViewerUserId(orgId);
-    if (!userId) return state;
-    await api.postMessage({
-      orgId,
-      conversationId,
-      userId,
-      text: welcomeMessageBody(state.orgName).text,
-    });
-    return { ...state, welcomePosted: true };
-  } catch {
-    // Leave `welcomePosted` false so a later run can try again.
-    return state;
-  }
-}

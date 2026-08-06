@@ -79,6 +79,18 @@ export function rebindElectronCollabHostScope(host: ElectronCollabHost, scopeKey
   host.setScopeKey(scopeKey);
 }
 
+/**
+ * Re-resolve the collaboration scope of every host mounted in this window.
+ *
+ * Called when the answer to "does this project have a team?" may have changed
+ * without the workspace path changing -- signing in, or binding the project to
+ * a newly created organization. Hosts are per-workspace and a window only ever
+ * mounts its own, so this does not need the broadcast's workspace path.
+ */
+export function invalidateElectronCollabScopes(): void {
+  for (const host of hostsByScope.values()) host.invalidateScope();
+}
+
 export function getElectronCollabHost(scope: CollabScope): ElectronCollabHost {
   return getOrCreateElectronHost(scope.scopeKey);
 }
@@ -155,6 +167,12 @@ export async function refreshSharedFolders(scope: CollabScope): Promise<boolean>
   return getElectronCollabDocsSession(scope).refreshFolders();
 }
 
+/**
+ * Resolves `true` when the server confirmed the index row is committed, so a
+ * caller that is about to seed the document's room knows it is reachable
+ * (NIM-2472). A queued/unacked registration resolves `false` rather than
+ * throwing — the mutation is idempotent and the offline queue still carries it.
+ */
 export async function registerDocumentInIndex(
   scope: CollabScope,
   documentId: string,
@@ -162,9 +180,9 @@ export async function registerDocumentInIndex(
   documentType = 'markdown',
   parentFolderId: string | null = null,
   metadata?: { metadataVersion: 2; fileExtension: string; editorId: string },
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await getElectronCollabDocsSession(scope).registerDocument({
+    return await getElectronCollabDocsSession(scope).registerDocument({
       documentId,
       title,
       documentType,
@@ -180,6 +198,7 @@ export async function registerDocumentInIndex(
       parentFolderId,
       ...metadata,
     });
+    return false;
   }
 }
 

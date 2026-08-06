@@ -17,6 +17,7 @@ import { store, gitStatusMapAtom, revealRequestAtom, rawFileTreeAtom, fileTreeLo
 import { sessionFileEditsAtom } from '../store/atoms/sessionFiles';
 import { refreshFileTree } from '../store/listeners/fileTreeListeners';
 import { useTabsActions } from '../contexts/TabsContext';
+import { useProjectOrg } from '../hooks/useProjectOrg';
 import { WorkspaceSummaryHeader } from './WorkspaceSummaryHeader';
 
 type FileTreeItem = RendererFileTreeItem;
@@ -133,6 +134,9 @@ export function WorkspaceSidebar({
   onSelectedFolderChange,
   currentAISessionId
 }: WorkspaceSidebarProps) {
+  // Names the organization in the empty-folder state, so a project opened from
+  // one explains where its shared work actually is.
+  const { org: projectOrg } = useProjectOrg(workspacePath);
   // Subscribe to TabsContext to get reactive updates when active tab changes
   // This enables auto-scroll functionality after the Jotai refactor that
   // made EditorMode stop re-rendering on tab switches
@@ -1209,6 +1213,25 @@ export function WorkspaceSidebar({
               <div className="flex items-center gap-2 px-4 py-3 text-[13px] text-[var(--nim-text-muted)]">
                 <span className="material-symbols-outlined text-base animate-spin">progress_activity</span>
                 Loading files...
+              </div>
+            ) : isFilteredTreeEmpty && fileTreeFilter === 'all' ? (
+              // A project opened from an organization starts as an empty
+              // folder, because shared work lives in rooms rather than on
+              // disk. Without this the tree is simply blank, which reads as a
+              // failure to load.
+              <div
+                className="file-tree-empty-workspace flex flex-col items-center justify-center py-12 px-6 text-center min-h-[200px]"
+                data-testid="file-tree-empty-workspace"
+              >
+                <span className="material-symbols-outlined file-tree-empty-icon text-5xl text-[var(--nim-text-faint)] opacity-50 mb-4">
+                  folder_open
+                </span>
+                <h3 className="file-tree-empty-title m-0 mb-2 text-base font-semibold text-[var(--nim-text)]">This folder is empty</h3>
+                <p className="file-tree-empty-description m-0 text-[13px] text-[var(--nim-text-muted)] leading-normal max-w-[280px]">
+                  {projectOrg
+                    ? `Shared documents and tracker items for ${projectOrg.name} open from the sidebar, not from this folder. Files you add here stay on this computer.`
+                    : 'Files you add to this folder will show up here.'}
+                </p>
               </div>
             ) : isFilteredTreeEmpty && fileTreeFilter !== 'all' ? (
               <div className="file-tree-empty-state flex flex-col items-center justify-center py-12 px-6 text-center min-h-[300px]">

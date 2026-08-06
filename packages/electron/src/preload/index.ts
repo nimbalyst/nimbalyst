@@ -1622,6 +1622,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('team:resolve-org-projects-local-state', orgId),
     openProjectWorkspace: (workspacePath: string) =>
       ipcRenderer.invoke('team:open-project-workspace', workspacePath),
+    // Attach a local directory to a shared project that has no git remote, then
+    // open it -- the join half of the git-free flow.
+    openSharedProject: (payload: { orgId: string; teamProjectId: string; directoryPath: string }) =>
+      ipcRenderer.invoke('team:open-shared-project', payload),
     // Epic H3 P3: move-project wizard. Preview is read-only; move is destructive (admin on both orgs).
     moveProjectPreview: (srcOrgId: string, projectId: string, destOrgId: string) =>
       ipcRenderer.invoke('team:move-project-preview', srcOrgId, projectId, destOrgId),

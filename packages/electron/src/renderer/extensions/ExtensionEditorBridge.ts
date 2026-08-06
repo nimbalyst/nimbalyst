@@ -52,6 +52,7 @@ function registerExtensionEditors(extensionId: string): string[] {
         supportsAI: manifest.permissions?.ai || false,
         supportsSourceMode: contribution.supportsSourceMode || false,
         supportsDiffMode: contribution.supportsDiffMode,
+        readOnlyDuringDiff: contribution.readOnlyDuringDiff,
         showDocumentHeader: contribution.showDocumentHeader,
         supportsTranscriptEmbed: contribution.supportsTranscriptEmbed || false,
         transcriptEmbedHeight: contribution.transcriptEmbedHeight,

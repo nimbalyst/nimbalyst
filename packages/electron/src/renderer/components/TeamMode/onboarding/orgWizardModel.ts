@@ -1,37 +1,32 @@
 /**
  * Pure state for the organization creation wizard.
  *
- * The wizard performs four side effects against three different APIs (create
- * team, invite members, create conversations, post a welcome message), and the
- * user can close the dialog between any of them. Every one of those effects is
+ * The wizard performs two side effects against two different APIs (create team,
+ * invite members), and the user can close the dialog between them. Both are
  * therefore driven from this module's derived "what is still outstanding"
  * helpers rather than from step transitions: re-running a step after a failure —
  * or after re-opening the wizard on an org that already exists — must not create
- * a second organization, re-send an invite, or duplicate a starter room.
+ * a second organization or re-send an invite.
  *
  * Kept free of React and IPC so the state machine and its idempotency guards are
  * testable directly (see `__tests__/orgWizardModel.test.ts`).
  */
 
-import type { CreateConversationInput } from '../../../../shared/conversationDirectory';
-
-export type OrgWizardStepId = 'account' | 'identity' | 'invite' | 'rooms' | 'done';
+export type OrgWizardStepId = 'account' | 'identity' | 'invite' | 'done';
 
 export const ORG_WIZARD_STEPS: readonly OrgWizardStepId[] = [
   'account',
   'identity',
   'invite',
-  'rooms',
   'done',
 ];
 
 export const ORG_WIZARD_STEP_LABELS: Record<OrgWizardStepId, string> = {
-  // One word each: five chips share the dialog's width, and anything longer
+  // One word each: the chips share the dialog's width, and anything longer
   // wraps onto a second line.
   account: 'Account',
   identity: 'Name',
   invite: 'Invite',
-  rooms: 'Rooms',
   done: 'Done',
 };
 
@@ -39,24 +34,7 @@ export function orgWizardSteps(isAuthenticated: boolean): readonly OrgWizardStep
   return isAuthenticated ? ORG_WIZARD_STEPS.slice(1) : ORG_WIZARD_STEPS;
 }
 
-export interface StarterRoomOption {
-  /** Slug the room is addressed by, e.g. `dev` renders as `#dev`. */
-  id: string;
-  title: string;
-  topic: string;
-}
-
-/**
- * Offered alongside `#general`, which the server seeds for every org and which
- * the wizard therefore only displays.
- */
-export const STARTER_ROOM_OPTIONS: readonly StarterRoomOption[] = [
-  { id: 'dev', title: 'dev', topic: 'Engineering work in progress' },
-  { id: 'design', title: 'design', topic: 'Design reviews and explorations' },
-  { id: 'releases', title: 'releases', topic: 'Ships, changelogs and rollouts' },
-];
-
-/** The room every organization already has; shown as included, never created. */
+/** The room every organization already has; seeded server-side, never created here. */
 export const GENERAL_ROOM_ID = 'general';
 
 export interface PendingOrgInvitation {
@@ -93,10 +71,6 @@ export interface OrgWizardState {
   emails: string[];
   /** Addresses the invite API has already accepted. */
   invitedEmails: string[];
-  selectedRoomIds: string[];
-  /** Starter rooms the conversations API has already created. */
-  createdRoomIds: string[];
-  welcomePosted: boolean;
   pendingInvitation: PendingOrgInvitation | null;
   inviteLookupStatus: 'idle' | 'checking' | 'complete';
   busy: boolean;
@@ -118,9 +92,6 @@ export function createOrgWizardState(
     createdOrgId: null,
     emails: [],
     invitedEmails: [],
-    selectedRoomIds: [],
-    createdRoomIds: [],
-    welcomePosted: false,
     pendingInvitation: null,
     inviteLookupStatus: 'idle',
     busy: false,
@@ -156,10 +127,14 @@ export interface OrgWizardDraft {
   createdOrgId: string | null;
   emails: string[];
   invitedEmails: string[];
-  selectedRoomIds: string[];
-  createdRoomIds: string[];
-  welcomePosted: boolean;
 }
+
+/**
+ * The starter-rooms step the wizard used to end on. Drafts written by those
+ * versions still name it, and they are exactly the drafts that already have an
+ * organization — dropping them would offer to create a second one.
+ */
+const RETIRED_ROOMS_STEP = 'rooms';
 
 /** Lower-cased so a differently-typed email is still the same identity. */
 export function normalizeOwnerId(value: string | null | undefined): string | null {
@@ -191,9 +166,6 @@ export function serializeOrgWizardDraft(state: OrgWizardState): OrgWizardDraft {
     createdOrgId: state.createdOrgId,
     emails: [...state.emails],
     invitedEmails: [...state.invitedEmails],
-    selectedRoomIds: [...state.selectedRoomIds],
-    createdRoomIds: [...state.createdRoomIds],
-    welcomePosted: state.welcomePosted,
   };
 }
 
@@ -204,22 +176,25 @@ function stringArray(value: unknown): string[] {
 }
 
 /** Steps that only make sense once the organization exists. */
-const POST_CREATE_STEPS: readonly OrgWizardStepId[] = ['invite', 'rooms', 'done'];
+const POST_CREATE_STEPS: readonly OrgWizardStepId[] = ['invite', 'done'];
 
 export function rehydrateOrgWizardDraft(stored: unknown): OrgWizardState | null {
   if (!stored || typeof stored !== 'object') return null;
   const draft = stored as Partial<OrgWizardDraft>;
   if (draft.version !== 1) return null;
-  if (!draft.step || !ORG_WIZARD_STEPS.includes(draft.step)) return null;
+  // The retired rooms step landed between invite and done, so a draft paused
+  // there has nothing left to do but finish.
+  const storedStep = (draft.step as string) === RETIRED_ROOMS_STEP ? 'done' : draft.step;
+  if (!storedStep || !ORG_WIZARD_STEPS.includes(storedStep)) return null;
 
   const owner = normalizeOwnerId(draft.owner);
   const createdOrgId = typeof draft.createdOrgId === 'string' ? draft.createdOrgId : null;
   // A truncated or hand-edited draft can name a step whose whole screen is about
   // an organization it has no id for. Resume where the wizard can still act:
   // naming it, or signing in first if nobody ever did.
-  const step = POST_CREATE_STEPS.includes(draft.step) && !createdOrgId
+  const step = POST_CREATE_STEPS.includes(storedStep) && !createdOrgId
     ? (owner ? 'identity' : 'account')
-    : draft.step;
+    : storedStep;
 
   return {
     ...createOrgWizardState({ isAuthenticated: step !== 'account' }),
@@ -232,9 +207,6 @@ export function rehydrateOrgWizardDraft(stored: unknown): OrgWizardState | null 
     createdOrgId,
     emails: stringArray(draft.emails),
     invitedEmails: stringArray(draft.invitedEmails),
-    selectedRoomIds: stringArray(draft.selectedRoomIds),
-    createdRoomIds: stringArray(draft.createdRoomIds),
-    welcomePosted: draft.welcomePosted === true,
   };
 }
 
@@ -320,11 +292,11 @@ export function canAdvance(state: OrgWizardState): boolean {
 }
 
 /**
- * Steps 2 and 3 are optional; the org already exists by then, so leaving is
- * always safe. Step 1 has nothing to skip and step 4 is the exit.
+ * Inviting is optional; the org already exists by then, so leaving is always
+ * safe. The naming step has nothing to skip and the last step is the exit.
  */
 export function canSkip(state: OrgWizardState): boolean {
-  return !state.busy && (state.step === 'invite' || state.step === 'rooms');
+  return !state.busy && state.step === 'invite';
 }
 
 // ---------------------------------------------------------------------------
@@ -425,75 +397,6 @@ export function markInvited(
 }
 
 // ---------------------------------------------------------------------------
-// Starter rooms
-// ---------------------------------------------------------------------------
-
-/** The server's room id shape: `^[A-Za-z0-9._-]+$`. */
-export function deriveRoomId(label: string): string {
-  return label
-    .trim()
-    .toLowerCase()
-    .replace(/^#+/, '')
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-export function toggleStarterRoom(
-  state: OrgWizardState,
-  roomId: string,
-): OrgWizardState {
-  const selected = state.selectedRoomIds.includes(roomId);
-  return {
-    ...state,
-    selectedRoomIds: selected
-      ? state.selectedRoomIds.filter((entry) => entry !== roomId)
-      : [...state.selectedRoomIds, roomId],
-  };
-}
-
-/**
- * Starter rooms still to create: selected, not created by this wizard run, and
- * not already present in the org's directory (a re-run, or a slug the org
- * happens to already use, must not collide).
- */
-export function pendingStarterRooms(
-  state: OrgWizardState,
-  existingRoomIds: readonly string[] = [],
-): StarterRoomOption[] {
-  const taken = new Set([
-    ...state.createdRoomIds,
-    ...existingRoomIds,
-    GENERAL_ROOM_ID,
-  ]);
-  return STARTER_ROOM_OPTIONS.filter(
-    (option) => state.selectedRoomIds.includes(option.id) && !taken.has(option.id),
-  );
-}
-
-export function markRoomsCreated(
-  state: OrgWizardState,
-  roomIds: readonly string[],
-): OrgWizardState {
-  if (roomIds.length === 0) return state;
-  const known = new Set(state.createdRoomIds);
-  const additions = roomIds.filter((roomId) => !known.has(roomId));
-  if (additions.length === 0) return state;
-  return { ...state, createdRoomIds: [...state.createdRoomIds, ...additions] };
-}
-
-export function starterRoomCreateInput(
-  option: StarterRoomOption,
-): CreateConversationInput {
-  return {
-    id: option.id,
-    kind: 'orgRoom',
-    visibility: 'public',
-    title: option.title,
-    topic: option.topic,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Identity preview
 // ---------------------------------------------------------------------------
 
@@ -526,33 +429,4 @@ export function orgAvatarColor(seed: string): string {
     hash = (hash * 31 + normalized.charCodeAt(index)) % 100000;
   }
   return ORG_AVATAR_COLORS[hash % ORG_AVATAR_COLORS.length];
-}
-
-// ---------------------------------------------------------------------------
-// Welcome message
-// ---------------------------------------------------------------------------
-
-export interface WelcomeMessageBody {
-  version: 1;
-  format: 'plainText';
-  text: string;
-}
-
-export function welcomeMessageText(orgName: string): string {
-  const name = orgName.trim() || 'this organization';
-  return [
-    `Welcome to ${name}.`,
-    '',
-    'This is #general — everyone in the organization is here.',
-    'Rooms and direct messages live in the sidebar on the left, the Inbox collects everything addressed to you, and administration sits under Admin at the bottom.',
-  ].join('\n');
-}
-
-export function welcomeMessageBody(orgName: string): WelcomeMessageBody {
-  return { version: 1, format: 'plainText', text: welcomeMessageText(orgName) };
-}
-
-/** Posted once per created org; a re-entered wizard must not repeat it. */
-export function shouldPostWelcome(state: OrgWizardState): boolean {
-  return state.createdOrgId !== null && !state.welcomePosted;
 }

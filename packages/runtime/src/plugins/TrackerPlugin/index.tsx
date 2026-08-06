@@ -1039,6 +1039,8 @@ export {
   getTypeColor,
   getTypeIcon,
   formatRelativeDate,
+  formatRelativeCalendarDay,
+  formatTrackerDateCell,
   getEffectiveUpdatedDate,
 } from './components/trackerColumns';
 export type { TrackerColumnDef, TypeColumnConfig, ColumnRenderType } from './components/trackerColumns';

@@ -92,22 +92,22 @@ describe('UnsharedProjectSharingState', () => {
     screen.getByTestId('project-sharing-choose-new');
   });
 
-  // Adding without a remote POSTs a nameless, remote-less project that no
-  // workspace can ever resolve to, and the panel then falls back to these
-  // choices with no error — so every retry would orphan another one.
-  it('blocks the add-to-existing confirm action when the workspace has no git remote', () => {
+  // Adding without a remote used to be blocked, because nothing could match the
+  // workspace back to the project the server minted. The workspace now records
+  // which project it was added as, so the flow goes through and only says what
+  // the missing remote costs.
+  it('allows adding to an existing organization without a git remote', () => {
     const { onAddToOrg } = renderFlow({ gitRemote: '' });
 
     fireEvent.change(screen.getByTestId('project-sharing-org-picker'), { target: { value: 'org-1' } });
     fireEvent.click(screen.getByTestId('project-sharing-choose-existing'));
 
     const confirmAction = screen.getByTestId('project-sharing-confirm-action') as HTMLButtonElement;
-    expect(confirmAction.disabled).toBe(true);
-    expect(screen.getByTestId('project-sharing-blocked').textContent).toContain('needs a git remote');
-    expect(screen.getByTestId('project-sharing-blocked').textContent).toContain('git remote add origin');
+    expect(confirmAction.disabled).toBe(false);
+    expect(screen.getByTestId('project-sharing-confirm').textContent).toContain('only this computer connects');
 
     fireEvent.click(confirmAction);
-    expect(onAddToOrg).not.toHaveBeenCalled();
+    expect(onAddToOrg).toHaveBeenCalledWith('org-1');
   });
 
   it('still allows creating an organization without a git remote', () => {
@@ -116,7 +116,6 @@ describe('UnsharedProjectSharingState', () => {
     fireEvent.click(screen.getByTestId('project-sharing-choose-new'));
     const confirmAction = screen.getByTestId('project-sharing-confirm-action') as HTMLButtonElement;
     expect(confirmAction.disabled).toBe(false);
-    expect(screen.queryByTestId('project-sharing-blocked')).toBeNull();
 
     fireEvent.click(confirmAction);
     expect(onCreateOrganization).toHaveBeenCalled();

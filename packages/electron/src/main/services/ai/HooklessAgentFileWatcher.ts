@@ -400,6 +400,7 @@ export class HooklessAgentFileWatcher {
           resolvedBeforeContent,
           session.id,
           existingTag.toolUseId,
+          { speculative: true },
         );
         logger.main.info('[HooklessAgentFileWatcher] Upgraded empty bash tag with baseline:', {
           sessionId: session.id, filePath, tagId: existingTag.id,
@@ -423,6 +424,9 @@ export class HooklessAgentFileWatcher {
         resolvedBeforeContent,
         session.id,
         toolUseId,
+        // Speculative: the baseline is inferred from paths scraped out of a
+        // bash command, so an authoritative writer may replace its content.
+        { speculative: true },
       );
 
       await SessionFilesRepository.addFileLink({

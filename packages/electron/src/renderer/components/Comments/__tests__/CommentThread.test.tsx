@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { createStore } from 'jotai';
+import { createStore, Provider } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CommentThread } from '../CommentThread';
@@ -40,6 +40,7 @@ function renderThread(
     onCopyLink?: (urn: string) => void;
     activity?: ActivityView[];
     adapter?: CommentAdapter;
+    store?: ReturnType<typeof createStore>;
   } = {},
 ) {
   const fixtures = createCommentFixtures({ now: NOW, capabilities: options.capabilities });
@@ -50,27 +51,33 @@ function renderThread(
     sourceKind: options.sourceKind,
   });
   const adapter = options.adapter ?? fixtureAdapter;
+  const targetStore = options.store ?? createStore();
   const utils = render(
-    <CommentThread
-      adapter={adapter}
-      capabilities={options.capabilities ?? FULL_CAPABILITIES}
-      context={fixtures.context}
-      directory={fixtures.directory}
-      orgId={fixtures.orgId}
-      viewerUserId={fixtures.viewerUserId}
-      viewerActor={VIEWER}
-      resolver={createFixtureResolver()}
-      resourceCandidates={fixtures.candidates}
-      now={NOW}
-      onCopyLink={options.onCopyLink}
-      activity={options.activity}
-    />,
+    <Provider store={targetStore}>
+      <CommentThread
+        adapter={adapter}
+        capabilities={options.capabilities ?? FULL_CAPABILITIES}
+        context={fixtures.context}
+        directory={fixtures.directory}
+        orgId={fixtures.orgId}
+        viewerUserId={fixtures.viewerUserId}
+        viewerActor={VIEWER}
+        resolver={createFixtureResolver()}
+        resourceCandidates={fixtures.candidates}
+        now={NOW}
+        onCopyLink={options.onCopyLink}
+        activity={options.activity}
+      />
+    </Provider>,
   );
-  return { adapter, fixtureAdapter, fixtures, ...utils };
+  return { adapter, fixtureAdapter, fixtures, store: targetStore, ...utils };
 }
 
 describe('CommentThread', () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
 
   it('renders the conversation with agent attribution and a composer', async () => {
     renderThread();
@@ -190,6 +197,49 @@ describe('CommentThread', () => {
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId('comment-row-pending').textContent).toContain('Sending');
     expect(composerText()).toBe('');
+  });
+
+  it('restores a persisted conversation draft after unmount and clears it on send', async () => {
+    const persisted = new Map<string, unknown>();
+    const invoke = vi.fn(
+      async (channel: string, key: string, value?: unknown) => {
+        if (channel === 'app-settings:get') return persisted.get(key);
+        if (channel === 'app-settings:set') {
+          persisted.set(key, value);
+          return undefined;
+        }
+        return undefined;
+      },
+    );
+    vi.stubGlobal('electronAPI', { invoke });
+
+    const first = renderThread({ store: createStore() });
+    await waitFor(() => screen.getByTestId('comment-composer-input'));
+    typeIntoComposer('keep this unsent');
+    await waitFor(
+      () => expect(
+        [...persisted.values()].some(
+          (value) => (value as { text?: string })?.text === 'keep this unsent',
+        ),
+      ).toBe(true),
+      { timeout: 2000 },
+    );
+
+    const adapter = first.adapter;
+    first.unmount();
+    renderThread({ adapter, store: createStore() });
+    await waitFor(() => expect(composerText()).toBe('keep this unsent'));
+
+    fireEvent.click(screen.getByTestId('comment-composer-send'));
+    await waitFor(() => expect(
+      [...persisted.values()].some(
+        (value) => (value as { text?: string })?.text === '',
+      ),
+    ).toBe(true));
+
+    cleanup();
+    renderThread({ adapter, store: createStore() });
+    await waitFor(() => expect(composerText()).toBe(''));
   });
 
   it('keeps a failed send reachable and retries the real IPC append with the same mutation id', async () => {

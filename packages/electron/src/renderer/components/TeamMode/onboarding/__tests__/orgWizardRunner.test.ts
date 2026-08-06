@@ -1,12 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ConversationDirectoryEntry } from '../../../../../shared/conversationDirectory';
 import { createOrgWizardState, type OrgWizardState } from '../orgWizardModel';
 import {
   runCreateOrganization,
-  runCreateStarterRooms,
-  runPostWelcomeMessage,
   runSendInvites,
   type OrgWizardApi,
 } from '../orgWizardRunner';
@@ -17,24 +14,7 @@ function fakeApi(overrides: Partial<OrgWizardApi> = {}): OrgWizardApi {
     acceptInvitation: vi.fn(async (orgId: string) => ({ orgId })),
     createOrganization: vi.fn(async () => ({ orgId: 'org-1' })),
     inviteMember: vi.fn(async () => {}),
-    listConversations: vi.fn(async () => [] as ConversationDirectoryEntry[]),
-    createConversation: vi.fn(async () => {}),
-    resolveViewerUserId: vi.fn(async () => 'member-1'),
-    postMessage: vi.fn(async () => {}),
     ...overrides,
-  };
-}
-
-function directoryEntry(id: string): ConversationDirectoryEntry {
-  return {
-    id,
-    orgId: 'org-1',
-    kind: 'orgRoom',
-    visibility: 'public',
-    agentPostingEnabled: false,
-    createdByUserId: 'member-1',
-    createdAt: 0,
-    capabilities: [],
   };
 }
 
@@ -128,88 +108,5 @@ describe('runSendInvites', () => {
     );
     expect(api.inviteMember).not.toHaveBeenCalled();
     expect(state.error).toBeTruthy();
-  });
-});
-
-describe('runCreateStarterRooms', () => {
-  it('creates only the selected rooms', async () => {
-    const api = fakeApi();
-    const state = await runCreateStarterRooms(created({ selectedRoomIds: ['dev'] }), api);
-    expect(api.createConversation).toHaveBeenCalledTimes(1);
-    expect(api.createConversation).toHaveBeenCalledWith('org-1', expect.objectContaining({ id: 'dev' }));
-    expect(state.createdRoomIds).toEqual(['dev']);
-  });
-
-  it('skips rooms the organization already has', async () => {
-    const api = fakeApi({
-      listConversations: vi.fn(async () => [directoryEntry('general'), directoryEntry('dev')]),
-    });
-    const state = await runCreateStarterRooms(
-      created({ selectedRoomIds: ['dev', 'design'] }),
-      api,
-    );
-    expect(api.createConversation).toHaveBeenCalledTimes(1);
-    expect(api.createConversation).toHaveBeenCalledWith('org-1', expect.objectContaining({ id: 'design' }));
-    expect(state.createdRoomIds).toEqual(['design']);
-  });
-
-  it('creates nothing on a second run', async () => {
-    const api = fakeApi();
-    const once = await runCreateStarterRooms(created({ selectedRoomIds: ['dev'] }), api);
-    await runCreateStarterRooms(once, api);
-    expect(api.createConversation).toHaveBeenCalledTimes(1);
-  });
-
-  it('still attempts creation when the directory cannot be read', async () => {
-    const api = fakeApi({
-      listConversations: vi.fn(async () => { throw new Error('offline'); }),
-    });
-    const state = await runCreateStarterRooms(created({ selectedRoomIds: ['dev'] }), api);
-    expect(state.createdRoomIds).toEqual(['dev']);
-  });
-
-  it('reports the rooms that failed', async () => {
-    const api = fakeApi({
-      createConversation: vi.fn(async () => { throw new Error('name taken'); }),
-    });
-    const state = await runCreateStarterRooms(created({ selectedRoomIds: ['dev'] }), api);
-    expect(state.createdRoomIds).toEqual([]);
-    expect(state.error).toContain('#dev');
-  });
-});
-
-describe('runPostWelcomeMessage', () => {
-  it('posts the welcome into #general as the creator', async () => {
-    const api = fakeApi();
-    const state = await runPostWelcomeMessage(created(), api, 'general');
-    expect(state.welcomePosted).toBe(true);
-    expect(api.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-      orgId: 'org-1',
-      conversationId: 'general',
-      userId: 'member-1',
-    }));
-    expect(vi.mocked(api.postMessage).mock.calls[0][0].text).toContain('Welcome to Acme.');
-  });
-
-  it('posts once', async () => {
-    const api = fakeApi();
-    const once = await runPostWelcomeMessage(created(), api, 'general');
-    await runPostWelcomeMessage(once, api, 'general');
-    expect(api.postMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it('leaves the flag unset when the post fails, so a later run retries', async () => {
-    const api = fakeApi({
-      postMessage: vi.fn(async () => { throw new Error('room unreachable'); }),
-    });
-    const state = await runPostWelcomeMessage(created(), api, 'general');
-    expect(state.welcomePosted).toBe(false);
-  });
-
-  it('does not post without a resolved member id', async () => {
-    const api = fakeApi({ resolveViewerUserId: vi.fn(async () => null) });
-    const state = await runPostWelcomeMessage(created(), api, 'general');
-    expect(api.postMessage).not.toHaveBeenCalled();
-    expect(state.welcomePosted).toBe(false);
   });
 });

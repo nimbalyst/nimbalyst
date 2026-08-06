@@ -72,6 +72,7 @@ vi.mock('../StytchAuthService', () => ({
   refreshPersonalSessionForAccount: vi.fn(async () => null),
   onAuthStateChange: vi.fn(() => () => {}),
   updateSessionToken: vi.fn(),
+  updateSessionTokenForAccount: vi.fn(),
   getStytchUserId: vi.fn(() => 'user-1'),
   getUserEmail: vi.fn(() => 'user@test.com'),
   getPersonalOrgId: vi.fn(() => 'personal-1'),
@@ -126,8 +127,11 @@ const EXPECTED_TEAM_CHANNELS = [
   'team:update-role',
 ];
 
+// Both live in WorkspaceManagerWindow: opening a project is window work, and
+// TeamService only owns the membership check and the binding behind it.
 const TEAM_CHANNELS_REGISTERED_OUTSIDE_TEAM_SERVICE = [
   'team:open-project-workspace',
+  'team:open-shared-project',
 ];
 
 const EXPECTED_ORG_CHANNELS = [

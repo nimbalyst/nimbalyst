@@ -20,7 +20,11 @@ import {
   extractMcpRemoteConfig,
   usesNativeRemoteOAuth,
 } from './MCPRemoteOAuth';
-import { requiresMcpRemote, type McpRemoteRequirementOptions } from './mcpRemoteRequirement';
+import {
+  requiresMcpRemote,
+  resolveMcpRemoteRequirementOptions,
+  type McpRemoteRequirementOptions,
+} from './mcpRemoteRequirement';
 
 /**
  * Service for managing MCP server configurations.
@@ -844,6 +848,20 @@ export class MCPConfigService {
     };
   }
 
+  /**
+   * Resolve the wrapper decision for one server before it is used.
+   *
+   * Callers that pass `nativeHttpSupported` must run this first and hand the
+   * result to BOTH `isOAuthAuthorized` and `processServerConfigForRuntime`, so
+   * the two answers are derived from the same reading of ~/.mcp-auth (NIM-2433).
+   */
+  async resolveMcpRemoteOptions(
+    serverConfig: MCPServerConfig,
+    options: McpRemoteRequirementOptions,
+  ): Promise<McpRemoteRequirementOptions> {
+    return resolveMcpRemoteRequirementOptions(serverConfig, options);
+  }
+
   isOAuthServer(serverConfig: MCPServerConfig): boolean {
     if (usesNativeRemoteOAuth(serverConfig)) {
       return true;
@@ -857,6 +875,12 @@ export class MCPConfigService {
     options: { useMcpRemoteForNativeOAuth?: boolean } & McpRemoteRequirementOptions = {}
   ): Promise<boolean> {
     if (usesNativeRemoteOAuth(serverConfig) && !options.useMcpRemoteForNativeOAuth) {
+      return true;
+    }
+    // The token this would go on to look for has already been found by
+    // `resolveMcpRemoteOptions`; re-probing the server over the network to
+    // rediscover that it wants OAuth buys nothing.
+    if (options.hasCachedMcpRemoteToken) {
       return true;
     }
     // A remote server we are not going to wrap must not be OAuth-probed through

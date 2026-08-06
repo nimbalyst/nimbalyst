@@ -38,6 +38,11 @@ export interface CustomEditorRegistration {
   // Optional: Whether this editor supports the host AI diff review UI
   supportsDiffMode?: boolean;
 
+  // Optional: Whether this editor refuses edits while a diff is under review.
+  // The diff header tells the user so, which is only honest if the editor
+  // actually locks.
+  readOnlyDuringDiff?: boolean;
+
   // Optional: Whether to show the host-provided document header above the editor
   showDocumentHeader?: boolean;
 

@@ -15,7 +15,7 @@ import {
   getPriorityColor,
   getTypeColor,
   getFieldForColumn,
-  formatRelativeDate,
+  formatTrackerDateCell,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { compareCellValues } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerRowData';
@@ -54,8 +54,8 @@ export function buildGridSource(
   });
 }
 
-function textNode(createElement: HyperFunc<VNode>, text: string): VNode {
-  return createElement('span', { class: 'tracker-grid-cell-text' }, text);
+function textNode(createElement: HyperFunc<VNode>, text: string, title?: string): VNode {
+  return createElement('span', { class: 'tracker-grid-cell-text', ...(title ? { title } : {}) }, text);
 }
 
 function badgeNode(createElement: HyperFunc<VNode>, text: string, color: string): VNode {
@@ -74,10 +74,11 @@ function formatValue(col: TrackerColumnDef, value: unknown, trackerType: string)
   if (value === undefined || value === null || value === '') return '';
 
   switch (col.render) {
-    case 'date': {
-      const date = value instanceof Date ? value : new Date(String(value));
-      return Number.isNaN(date.getTime()) ? String(value) : formatRelativeDate(date);
-    }
+    case 'date':
+      // formatTrackerDateCell, not `new Date`: a calendar-day string is local
+      // midnight, not UTC midnight, and reads by day rather than by elapsed
+      // time (nimbalyst#1135, #1156).
+      return formatTrackerDateCell(value).display;
     case 'tags':
       return Array.isArray(value) ? value.join(', ') : String(value);
     case 'url': {
@@ -248,6 +249,12 @@ function buildCellTemplate(
         { class: 'tracker-grid-cell-tags' },
         parts.map(p => badgeNode(createElement, p, '#6b7280')),
       );
+    }
+
+    // A relative label ("in 5 days") hides the real value, so keep the exact
+    // date reachable on hover.
+    if (col.render === 'date') {
+      return textNode(createElement, text, formatTrackerDateCell(value).title);
     }
 
     return textNode(createElement, text);

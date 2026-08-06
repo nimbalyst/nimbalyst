@@ -11,6 +11,7 @@ import {
   $createTextNode,
   isDOMNode,
   type LexicalEditor,
+  type RangeSelection,
 } from 'lexical';
 import { $isLinkNode, LinkNode } from '@lexical/link';
 import { $createDocumentReferenceNode } from './DocumentLinkNode';
@@ -41,6 +42,14 @@ export interface CollabReferenceOption {
   target: string;
   /** Folder breadcrumb ("Design/Specs") shown as secondary text; optional. */
   folderPath?: string;
+  /**
+   * File extension of the shared document (".mockup.html", ".excalidraw"),
+   * when the host knows it. A collab deep link carries no extension, so this
+   * is the only way the embed rule can tell a shared mockup from a shared
+   * markdown doc -- it becomes the `embedType` attribute on the inserted node
+   * and travels with the link through markdown (NIM-2473).
+   */
+  embedType?: string;
 }
 
 /**
@@ -65,9 +74,33 @@ interface ReferenceDoc {
   collabTarget?: string;
   /** Present only for collab references; folder breadcrumb for display. */
   folderPath?: string;
+  /** Present only for collab references; the shared document's file extension. */
+  collabEmbedType?: string;
 }
 
 const DOCUMENT_REFERENCE_STYLE_ID = 'document-reference-styles';
+
+/**
+ * Insert an embed at the caret. `EmbeddedFileNode` is block-level, so it goes
+ * in as a sibling of the current top-level block with a trailing paragraph for
+ * the caret to land in. If that block is now empty (the typeahead stripped the
+ * trigger and the line held nothing else) it is dropped, so the embed doesn't
+ * sit under a blank line.
+ */
+function $insertEmbedBlock(
+  selection: RangeSelection,
+  embed: { src: string; label: string; attrs: Record<string, string> },
+): void {
+  const embedNode = $createEmbeddedFileNode(embed);
+  const block = selection.anchor.getNode().getTopLevelElementOrThrow();
+  block.insertAfter(embedNode);
+  const trailing = $createParagraphNode();
+  embedNode.insertAfter(trailing);
+  trailing.select();
+  if (block.getChildrenSize() === 0) {
+    block.remove();
+  }
+}
 
 /**
  * Truncate a path for display, keeping the most relevant parts visible.
@@ -401,6 +434,7 @@ export function DocumentLinkPlugin({
         path: opt.folderPath ?? '',
         collabTarget: opt.target,
         folderPath: opt.folderPath,
+        collabEmbedType: opt.embedType,
       })));
       return;
     }
@@ -469,9 +503,22 @@ export function DocumentLinkPlugin({
       const doc = documents.find(d => d.id === docId);
       if (!doc) return;
 
-      // Collaborative reference: insert a reference node whose target is the
-      // shared-doc link (deep link). No embeddable/file-path handling applies.
+      // Collaborative reference: the target is a shared-doc deep link.
       if (doc.collabTarget) {
+        // A shared document whose type an extension can render inline gets the
+        // same block embed a local file of that type would. The deep link has
+        // no extension, so the embed rule is driven by the host-supplied
+        // `embedType`, which is also recorded on the node so the hint survives
+        // export to markdown and the Y.Doc round trip (NIM-2473).
+        if (isEmbeddableUrl(doc.collabTarget, doc.collabEmbedType)) {
+          $insertEmbedBlock(selection, {
+            src: doc.collabTarget,
+            label: doc.name,
+            attrs: doc.collabEmbedType ? { embedType: doc.collabEmbedType } : {},
+          });
+          return;
+        }
+
         const collabNode = $createDocumentReferenceNode(
           doc.id,
           doc.name,
@@ -491,24 +538,7 @@ export function DocumentLinkPlugin({
       // EmbeddedFileNodes so they render inline immediately. Other files
       // use the existing inline DocumentReferenceNode.
       if (isEmbeddableUrl(linkPath)) {
-        const embedNode = $createEmbeddedFileNode({
-          src: linkPath,
-          label: doc.name,
-          attrs: {},
-        });
-        // EmbeddedFileNode is block-level. Insert as a sibling of the
-        // current top-level block, then add a trailing paragraph so the
-        // caret has somewhere to land. If the original block is now empty
-        // (typeahead stripped the trigger and the line had nothing else),
-        // drop it so we don't leave a blank line above the embed.
-        const block = selection.anchor.getNode().getTopLevelElementOrThrow();
-        block.insertAfter(embedNode);
-        const trailing = $createParagraphNode();
-        embedNode.insertAfter(trailing);
-        trailing.select();
-        if (block.getChildrenSize() === 0) {
-          block.remove();
-        }
+        $insertEmbedBlock(selection, { src: linkPath, label: doc.name, attrs: {} });
         return;
       }
 

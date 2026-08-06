@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@nimbalyst/runtime', () => ({
+  createEditorAPIOwnerToken: (label?: string) => Symbol(label),
   registerEditorAPI: vi.fn(),
   unregisterEditorAPI: vi.fn(),
 }));

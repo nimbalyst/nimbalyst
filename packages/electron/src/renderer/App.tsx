@@ -69,6 +69,7 @@ import {
   setSelectedWorkstreamAtom,
   initSessionList,
 } from './store/atoms/sessions';
+import { dispatchCreateNewSession } from './store/actions/sessionHistoryActions';
 import { NavigationGutter } from './components/NavigationGutter';
 // NOTE: useTabs and useTabNavigation removed - EditorMode manages tabs now
 import type { ContentMode } from './types/WindowModeTypes';
@@ -122,6 +123,8 @@ import { initTeamInboxListeners } from './store/listeners/teamInboxListeners';
 import { initConversationListeners } from './store/listeners/conversationListeners';
 import { initConversationDirectoryListeners } from './store/listeners/conversationDirectoryListeners';
 import { initOrgSettingsListeners } from './store/listeners/orgSettingsListeners';
+import { initProjectOrgListeners } from './store/listeners/projectOrgListeners';
+import { initCollabScopeListeners } from './store/listeners/collabScopeListeners';
 import { initCollabReplicaListeners } from './store/listeners/collabReplicaListeners';
 import { initCollabConversionListeners } from './store/listeners/collabConversionListeners';
 import { initNotificationListeners } from './store/listeners/notificationListeners';
@@ -179,6 +182,7 @@ import { UpdateToast } from './components/UpdateToast';
 import { ProjectTrustToast } from './components/ProjectTrustToast';
 import { StartupSkeleton } from './components/StartupSkeleton';
 import { getTextSelection } from './components/UnifiedAI/TextSelectionIndicator';
+import { isClaudeCliTerminalSession } from './components/UnifiedAI/claudeCliInputRouting';
 // NOTE: FeedbackIntakeDialog now managed by DialogProvider
 import { buildFeedbackInitialDraft, type FeedbackIntakeLaunchOptions } from './components/Feedback';
 import OnboardingService from './services/OnboardingService';
@@ -208,9 +212,16 @@ import {
 import { gitStatusAtom } from './store/atoms/gitOperations';
 import { normalizeGitStatus } from './utils/gitStatus';
 import {
+  defaultAgentModelAtom,
   developerModeAtom,
   setDeveloperFeatureSettingsAtom,
 } from './store/atoms/appSettings';
+import { resolveProviderFromModel } from './utils/modelUtils';
+import {
+  buildSelectedCommitPrompt,
+  mapSelectedCommitFiles,
+  type SelectedCommitFile,
+} from '@nimbalyst/runtime/ui/AgentTranscript/utils/commitPromptBuilder';
 import {
   agentInsertPlanReferenceRequestAtom,
   closeActiveTabRequestAtom,
@@ -379,6 +390,8 @@ export default function App() {
     const cleanupConversations = initConversationListeners();
     const cleanupConversationDirectory = initConversationDirectoryListeners();
     const cleanupOrgSettings = initOrgSettingsListeners();
+    const cleanupProjectOrg = initProjectOrgListeners();
+    const cleanupCollabScope = initCollabScopeListeners();
     const cleanupCollabReplicas = initCollabReplicaListeners();
     const cleanupCollabConversion = initCollabConversionListeners();
     const cleanupWindowMenu = initWindowMenuListener();
@@ -418,6 +431,8 @@ export default function App() {
       cleanupConversations?.();
       cleanupConversationDirectory?.();
       cleanupOrgSettings?.();
+      cleanupProjectOrg?.();
+      cleanupCollabScope?.();
       cleanupCollabReplicas?.();
       cleanupCollabConversion?.();
     };
@@ -1996,7 +2011,7 @@ export default function App() {
     };
   }, [workspacePath]);
 
-  // Listen for open-ai-session events (from rebase/merge conflict resolution)
+  // Listen for open-ai-session events from flows that create and focus AI sessions.
   useEffect(() => {
     const handleOpenAiSession = async (event: CustomEvent<{ sessionId: string; workspacePath: string; draftInput?: string }>) => {
       const { sessionId, workspacePath: eventWorkspacePath, draftInput } = event.detail;
@@ -2026,6 +2041,71 @@ export default function App() {
     window.addEventListener('open-ai-session', handleOpenAiSession as unknown as EventListener);
     return () => window.removeEventListener('open-ai-session', handleOpenAiSession as unknown as EventListener);
   }, [activeMode]);
+
+  // Receive explicit git-extension selections and seed a new standalone commit session.
+  useEffect(() => {
+    const handleCommitWithAi = async (event: CustomEvent<{
+      workspacePath: string;
+      files: SelectedCommitFile[];
+    }>) => {
+      const { workspacePath: commitWorkspacePath, files } = event.detail ?? {};
+      if (!commitWorkspacePath || !Array.isArray(files) || files.length === 0) return;
+
+      const commitFiles = mapSelectedCommitFiles(files);
+      if (commitFiles.length === 0) {
+        errorNotificationService.showWarning(
+          'Nothing to commit',
+          'The selected files cannot be committed (conflicted files are excluded).',
+        );
+        return;
+      }
+
+      try {
+        // The git panel's workspacePath is the extension host's, i.e. the active
+        // workspace — the same path createNewSessionActionAtom creates against.
+        const model = store.get(defaultAgentModelAtom);
+        const provider = resolveProviderFromModel(model);
+        const sessionId = await dispatchCreateNewSession({
+          title: `Commit: ${commitFiles.length} ${commitFiles.length === 1 ? 'file' : 'files'}`,
+          mode: 'agent',
+        });
+
+        if (!sessionId) {
+          throw new Error('Failed to create commit session');
+        }
+
+        // The atom selects the session but does not switch modes or open a tab.
+        window.dispatchEvent(new CustomEvent('open-ai-session', {
+          detail: { sessionId, workspacePath: commitWorkspacePath },
+        }));
+
+        const message = buildSelectedCommitPrompt(commitFiles);
+        const docContext = {
+          filePath: undefined,
+          content: undefined,
+          fileType: undefined,
+          attachments: undefined,
+          mode: 'agent',
+          inputType: 'user' as const,
+        };
+
+        if (isClaudeCliTerminalSession(provider)) {
+          await window.electronAPI.invoke('ai:createQueuedPrompt', sessionId, message, [], docContext);
+        } else {
+          await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, commitWorkspacePath);
+        }
+      } catch (error) {
+        console.error('[App] Commit with AI failed:', error);
+        errorNotificationService.showError(
+          'Commit with AI failed',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    };
+
+    window.addEventListener('nimbalyst:commit-with-ai', handleCommitWithAi as unknown as EventListener);
+    return () => window.removeEventListener('nimbalyst:commit-with-ai', handleCommitWithAi as unknown as EventListener);
+  }, []);
 
   // AI chat layout persistence is owned by EditorMode's workspace-keyed atoms.
   // Do not mirror the legacy App-local values here: they are not reset on rail

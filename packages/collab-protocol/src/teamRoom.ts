@@ -205,6 +205,7 @@ export type TeamServerMessage =
   | TeamMemberRemovedMessage
   | TeamMemberRoleChangedMessage
   | TeamDocIndexSyncResponseMessage
+  | TeamDocIndexRegisteredMessage
   | TeamDocIndexBroadcastMessage
   | TeamDocIndexRemoveBroadcastMessage
   | TeamFolderIndexSyncResponseMessage
@@ -270,6 +271,20 @@ export interface TeamProjectAccessChangedMessage {
 export interface TeamDocIndexSyncResponseMessage {
   type: 'docIndexSyncResponse';
   documents: EncryptedDocIndexEntry[];
+}
+
+/**
+ * Ack: this socket's `docIndexRegister` is committed to `document_index`.
+ *
+ * Sent only to the registering socket (the index broadcast deliberately
+ * excludes it, so registration was otherwise unobservable to its author).
+ * A client that is about to write into the new document's room must wait for
+ * this: `DocumentRoom` binds the id through `document_index` and 404s an id
+ * that isn't there yet, so seeding before the ack is a race (NIM-2472).
+ */
+export interface TeamDocIndexRegisteredMessage {
+  type: 'docIndexRegistered';
+  documentId: string;
 }
 
 /** Broadcast: document registered or updated */

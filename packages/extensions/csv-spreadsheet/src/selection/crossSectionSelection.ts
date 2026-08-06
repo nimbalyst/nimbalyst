@@ -44,12 +44,27 @@ export interface GridSections {
   rows: AxisSection<DimensionRowType>[];
 }
 
+/**
+ * Sides on which a clipped range continues into a neighbouring section.
+ *
+ * Each section paints its own border, so an open side is a seam: a line drawn
+ * straight through the middle of what the user sees as one rectangle. The paint
+ * step marks these sides on the DOM so the stylesheet can drop those edges.
+ */
+export interface OpenEdges {
+  top: boolean;
+  right: boolean;
+  bottom: boolean;
+  left: boolean;
+}
+
 /** A range expressed in one section's local coordinates. */
 export interface LocalRange {
   storeX: number;
   storeY: number;
   start: { x: number; y: number };
   end: { x: number; y: number };
+  open: OpenEdges;
 }
 
 /**
@@ -117,13 +132,15 @@ export function toLocalRanges(
   const out: LocalRange[] = [];
 
   for (const rowSection of sections.rows) {
+    const rowLast = rowSection.offset + rowSection.count - 1;
     const rowStart = Math.max(range.startRow, rowSection.offset);
-    const rowEnd = Math.min(range.endRow, rowSection.offset + rowSection.count - 1);
+    const rowEnd = Math.min(range.endRow, rowLast);
     if (rowStart > rowEnd) continue;
 
     for (const colSection of sections.cols) {
+      const colLast = colSection.offset + colSection.count - 1;
       const colStart = Math.max(range.startCol, colSection.offset);
-      const colEnd = Math.min(range.endCol, colSection.offset + colSection.count - 1);
+      const colEnd = Math.min(range.endCol, colLast);
       if (colStart > colEnd) continue;
 
       out.push({
@@ -131,6 +148,12 @@ export function toLocalRanges(
         storeY: rowSection.storeIndex,
         start: { x: colStart - colSection.offset, y: rowStart - rowSection.offset },
         end: { x: colEnd - colSection.offset, y: rowEnd - rowSection.offset },
+        open: {
+          top: range.startRow < rowSection.offset,
+          bottom: range.endRow > rowLast,
+          left: range.startCol < colSection.offset,
+          right: range.endCol > colLast,
+        },
       });
     }
   }
@@ -180,9 +203,43 @@ interface RevoProviders {
   selection: RevoSelectionConnector;
 }
 
+/** The one column-definition field that decides which section a column is in. */
+export interface PinnableColumn {
+  pin?: string;
+}
+
 /** Minimal shape of the `revo-grid` element we depend on. */
 export interface SectionAwareGrid extends HTMLElement {
   getProviders(): Promise<RevoProviders | undefined>;
+  columns?: PinnableColumn[];
+}
+
+/**
+ * Reconstruct which column store holds which section, from the column
+ * definitions.
+ *
+ * RevoGrid's own `storesXToType` cannot be trusted after a runtime freeze:
+ * `registerColumn` early-returns for an already-registered store index without
+ * updating its type, so freezing a column leaves store 0 still labelled
+ * `rgCol` even though it now holds the frozen section -- and every lookup by
+ * type then misses. Column stores are indexed in canonical order across the
+ * sections that have at least one column, which is exactly what the pins say.
+ */
+export function colTypesFromColumns(
+  columns: readonly PinnableColumn[]
+): Record<number, DimensionColType> {
+  const counts: Record<DimensionColType, number> = { colPinStart: 0, rgCol: 0, colPinEnd: 0 };
+  for (const column of columns) {
+    const pin = column?.pin;
+    counts[pin === 'colPinStart' || pin === 'colPinEnd' ? pin : 'rgCol']++;
+  }
+
+  const typeByStoreIndex: Record<number, DimensionColType> = {};
+  let storeIndex = 0;
+  for (const type of COL_TYPE_ORDER) {
+    if (counts[type] > 0) typeByStoreIndex[storeIndex++] = type;
+  }
+  return typeByStoreIndex;
 }
 
 /**
@@ -190,7 +247,10 @@ export interface SectionAwareGrid extends HTMLElement {
  *
  * Section cell counts come from each store's `lastCell`, which RevoGrid keeps
  * in sync with the dimension stores, so this reflects live freeze/unfreeze and
- * header-row changes without us tracking them separately.
+ * header-row changes without us tracking them separately. Row store types are
+ * read straight off the connector: all three row sections are registered once
+ * at mount and never re-registered, so they can't go stale the way the column
+ * ones can.
  */
 export async function resolveGridSections(grid: SectionAwareGrid): Promise<GridSections | null> {
   const providers = await grid.getProviders();
@@ -213,10 +273,43 @@ export async function resolveGridSections(grid: SectionAwareGrid): Promise<GridS
     }
   }
 
+  const colTypes = grid.columns?.length
+    ? colTypesFromColumns(grid.columns)
+    : connector.storesXToType;
+
   return {
-    cols: buildAxisSections(connector.storesXToType, colCounts, COL_TYPE_ORDER),
+    cols: buildAxisSections(colTypes, colCounts, COL_TYPE_ORDER),
     rows: buildAxisSections(connector.storesYToType, rowCounts, ROW_TYPE_ORDER),
   };
+}
+
+/** Attribute set on a section's overlay for each side that is a seam. */
+const OPEN_EDGE_ATTRIBUTES: Record<keyof OpenEdges, string> = {
+  top: 'data-csv-open-top',
+  right: 'data-csv-open-right',
+  bottom: 'data-csv-open-bottom',
+  left: 'data-csv-open-left',
+};
+
+/**
+ * The overlay element that paints a given section's selection border. Located
+ * through its cell canvas, which is the only node carrying both section types.
+ */
+function overlayForSection(
+  grid: SectionAwareGrid,
+  colType: string,
+  rowType: string
+): HTMLElement | null {
+  const data = grid.querySelector(`revogr-data[col-type="${colType}"][type="${rowType}"]`);
+  return data?.closest('revogr-overlay-selection') ?? null;
+}
+
+/** Mark (or clear) the sides on which this section's border would be a seam. */
+function markOpenEdges(overlay: HTMLElement | null, open: OpenEdges | null): void {
+  if (!overlay) return;
+  for (const [side, attribute] of Object.entries(OPEN_EDGE_ATTRIBUTES)) {
+    overlay.toggleAttribute(attribute, !!open?.[side as keyof OpenEdges]);
+  }
 }
 
 /**
@@ -236,15 +329,25 @@ export async function paintCrossSectionRange(
 
   const wanted = range ? toLocalRanges(sections, range) : [];
   const wantedByStore = new Map(wanted.map(r => [`${r.storeY}:${r.storeX}`, r]));
+  const colTypeByStore = new Map(sections.cols.map(s => [s.storeIndex, s.type]));
+  const rowTypeByStore = new Map(sections.rows.map(s => [s.storeIndex, s.type]));
 
   for (const [yKey, row] of Object.entries(connector.stores)) {
+    const y = Number(yKey);
     for (const [xKey, store] of Object.entries(row)) {
       if (!store) continue;
-      const local = wantedByStore.get(`${Number(yKey)}:${Number(xKey)}`);
+      const x = Number(xKey);
+      const local = wantedByStore.get(`${y}:${x}`);
       if (local) {
         store.setRange(local.start, local.end);
       } else {
         store.setRangeArea(null);
+      }
+
+      const colType = colTypeByStore.get(x);
+      const rowType = rowTypeByStore.get(y);
+      if (colType && rowType) {
+        markOpenEdges(overlayForSection(grid, colType, rowType), local?.open ?? null);
       }
     }
   }
@@ -280,6 +383,90 @@ export function cellFromPoint(
   if (!Number.isFinite(localCol) || !Number.isFinite(localRow)) return null;
 
   return toAbsoluteCell(sections, colType, rowType, localCol, localRow);
+}
+
+/** The column section an element belongs to, read off the DOM. */
+function sectionColType(element: Element): string | null {
+  const data = element.closest('revogr-data') ?? element.querySelector('revogr-data');
+  if (data) return data.getAttribute('col-type');
+
+  const viewport = element.closest('revogr-viewport-scroll');
+  return COL_TYPE_ORDER.find(type => viewport?.classList.contains(type)) ?? null;
+}
+
+/**
+ * Absolute column index for a section-local one.
+ *
+ * `data-rgcol`, RevoGrid's focus events and its range events all report the
+ * index *within a section*: with two frozen columns the first scrollable column
+ * is 0, not 2. Taking those at face value addresses the wrong column entirely,
+ * so every DOM- or event-sourced column index has to come through here.
+ *
+ * `element` is anything inside the section -- a cell, a header cell, or the
+ * overlay that emitted the event. This editor only ever pins to the start, so
+ * anything outside the pinned section is offset by the full frozen width.
+ */
+export function toAbsoluteColumn(
+  element: Element | null,
+  localCol: number,
+  frozenColumnCount: number
+): number {
+  if (!element) return localCol;
+  return sectionColType(element) === 'colPinStart' ? localCol : localCol + frozenColumnCount;
+}
+
+/**
+ * Everything {@link resolveHeaderColumnIndex} needs about a column header,
+ * lifted off the DOM in one place so the resolver itself stays pure.
+ */
+export interface HeaderColumnTarget {
+  /** `data-rgcol`, verbatim. Section-local, like every other RevoGrid index. */
+  readonly sectionColumn: string | null;
+  readonly isPinnedColumn: boolean;
+}
+
+/** Read a column header's structured column identity. */
+export function readHeaderColumnTarget(header: Element): HeaderColumnTarget {
+  return {
+    sectionColumn: header.getAttribute('data-rgcol'),
+    isPinnedColumn: sectionColType(header) === 'colPinStart',
+  };
+}
+
+/**
+ * Sheet column index for a clicked or right-clicked column header.
+ *
+ * The header's rendered text is *not* a source of truth. `columnTemplate`
+ * appends a filter funnel glyph, so a header's `textContent` reads `A▼`, and
+ * parsing that as a column letter yields column 9621 -- which is how a
+ * "Delete Column" on A once deleted a different column entirely. The index
+ * comes from `data-rgcol`, which no decoration can reach.
+ */
+export function resolveHeaderColumnIndex(
+  target: HeaderColumnTarget,
+  frozenColumnCount: number
+): number | null {
+  if (target.sectionColumn === null || target.sectionColumn.trim() === '') return null;
+  const sectionColumn = Number(target.sectionColumn);
+  if (!Number.isInteger(sectionColumn) || sectionColumn < 0) return null;
+  return target.isPinnedColumn ? sectionColumn : sectionColumn + frozenColumnCount;
+}
+
+/**
+ * The inverse of {@link toAbsoluteColumn}: split a sheet column index back into
+ * the section-local pair RevoGrid's own write APIs expect.
+ *
+ * `grid.setDataAt({ col, colType })` resolves `col` *within* `colType`, so
+ * passing a sheet-wide index with a hardcoded `colType: 'rgCol'` writes
+ * `frozenColumnCount` columns to the right of the intended one.
+ */
+export function toSectionColumn(
+  absoluteCol: number,
+  frozenColumnCount: number
+): { col: number; colType: DimensionColType } {
+  return absoluteCol < frozenColumnCount
+    ? { col: absoluteCol, colType: 'colPinStart' }
+    : { col: absoluteCol - frozenColumnCount, colType: 'rgCol' };
 }
 
 /**

@@ -44,6 +44,7 @@ vi.mock('../StytchAuthService', () => ({
   refreshPersonalSessionForAccount: vi.fn(async () => null),
   onAuthStateChange: vi.fn(() => () => {}),
   updateSessionToken: vi.fn(),
+  updateSessionTokenForAccount: vi.fn(),
   getUserEmail: vi.fn(() => 'user@test.com'),
   getPersonalOrgId: vi.fn(() => 'personal-1'),
   getPersonalUserId: vi.fn(() => 'user-1'),

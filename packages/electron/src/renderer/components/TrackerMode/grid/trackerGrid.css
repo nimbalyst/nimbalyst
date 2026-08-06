@@ -82,6 +82,17 @@
   background: color-mix(in srgb, var(--nim-primary) 12%, transparent);
 }
 
+/*
+ * Drag-to-clone is removed: the handle sits a few pixels from the cell you reach
+ * for when extending a selection, and one stray drag rewrites a whole column of
+ * tracker items with no undo. Hiding it also stops the drag, since
+ * AutoFillService.selectionStart only arms on this element as the pointer target.
+ * The `beforeautofill` guard in TrackerGridView is the belt to this suspenders.
+ */
+.tracker-grid-view revogr-overlay-selection .autofill-handle {
+  display: none;
+}
+
 /* Readonly cells read as inert rather than merely uneditable */
 .tracker-grid-view .rgCell[data-readonly='true'] {
   color: var(--nim-text-muted);

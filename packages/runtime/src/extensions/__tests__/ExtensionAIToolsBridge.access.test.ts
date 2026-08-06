@@ -6,7 +6,12 @@ import {
   setEnsureEditorCallback,
   unregisterExtensionTools,
 } from '../ExtensionAIToolsBridge';
-import { registerEditorAPI, unregisterEditorAPI } from '../ExtensionEditorAPIRegistry';
+import {
+  createEditorAPIOwnerToken,
+  getEditorAPI,
+  registerEditorAPI,
+  unregisterEditorAPI,
+} from '../ExtensionEditorAPIRegistry';
 import type { LoadedExtension } from '../types';
 
 function makeExtension(tools: LoadedExtension['module']['aiTools']): LoadedExtension {
@@ -214,5 +219,41 @@ describe('ExtensionAIToolsBridge access modes', () => {
 
     expect(result.success).toBe(true);
     expect(flushCalls).toBe(1);
+  });
+});
+
+describe('ExtensionEditorAPIRegistry ownership', () => {
+  const filePath = '/workspace/owned.fixture';
+
+  afterEach(() => {
+    unregisterEditorAPI(filePath);
+  });
+
+  it('ignores stale teardown and gives visible owners priority with hidden fallback', () => {
+    const staleHiddenOwner = createEditorAPIOwnerToken('stale-hidden');
+    const visibleOwner = createEditorAPIOwnerToken('visible');
+    const currentHiddenOwner = createEditorAPIOwnerToken('current-hidden');
+    const visibleAPI = { owner: 'visible' };
+    const hiddenAPI = { owner: 'hidden' };
+
+    registerEditorAPI(filePath, { owner: 'stale-hidden' }, undefined, {
+      ownerToken: staleHiddenOwner,
+      priority: 'hidden',
+    });
+    registerEditorAPI(filePath, visibleAPI, undefined, {
+      ownerToken: visibleOwner,
+      priority: 'visible',
+    });
+    unregisterEditorAPI(filePath, staleHiddenOwner);
+    expect(getEditorAPI(filePath)).toBe(visibleAPI);
+
+    registerEditorAPI(filePath, hiddenAPI, undefined, {
+      ownerToken: currentHiddenOwner,
+      priority: 'hidden',
+    });
+    expect(getEditorAPI(filePath)).toBe(visibleAPI);
+
+    unregisterEditorAPI(filePath, visibleOwner);
+    expect(getEditorAPI(filePath)).toBe(hiddenAPI);
   });
 });

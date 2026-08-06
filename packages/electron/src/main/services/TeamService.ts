@@ -22,6 +22,8 @@
 import { BrowserWindow, net } from 'electron';
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
+import { basename } from 'path';
+import { mkdir, stat } from 'fs/promises';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getNormalizedGitRemote } from '../utils/gitUtils';
@@ -29,6 +31,7 @@ import { resolveTeamForRemoteHash } from './teamProjectResolver';
 import { getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
 import { assertJwtMatchesOrg, getJwtExp, AuthContextMismatchError } from './jwtOrg';
 import { createSingleFlight } from '../utils/asyncCache';
+import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
 import { setHasOrganizationsForMenu } from '../menu/organizationMenuState';
 import {
   getAccounts,
@@ -41,6 +44,7 @@ import {
   refreshPersonalSessionForAccount,
   onAuthStateChange,
   updateSessionToken,
+  updateSessionTokenForAccount,
   getUserEmail,
   getPersonalOrgId,
   getPersonalUserId,
@@ -69,6 +73,7 @@ import {
   applyProjectGrant,
   applyProjectRevoke,
   upsertProject,
+  upsertOrg,
   type OrgWithRoster,
   type MemberInput,
   type ProjectionDb,
@@ -84,6 +89,7 @@ import { ensureTrackerSyncForWorkspace } from './TrackerSyncManager';
 import { getCollabBackupService } from './CollabBackupService';
 import { createTeamAuthBootstrap } from './TeamAuthBootstrap';
 import {
+  findBindingsWithMissingOrg,
   repairAccountOrgBindingFromEmail,
   resolveTeamOrgAccountBinding,
   upsertAccountOrgBinding,
@@ -94,6 +100,7 @@ import { windowReferencesWorkspace, windowStates } from '../window/windowState';
 import {
   resolveOrgProjectLocalStates,
   type OrgProjectLocalState,
+  type WorkspaceBindingState,
   type WorkspaceRemoteState,
 } from './orgProjectLocalState';
 
@@ -458,10 +465,20 @@ async function exchangeOrgScopedJwt(
   // Stytch session exchange replaces the session token -- the old one is now
   // invalid. We MUST persist the new token so that refreshSession() and
   // getSessionToken() continue to work.
-  // Only update the singleton token when operating under the sync account.
-  // Secondary account exchanges must NOT overwrite the primary's token.
-  if (data.sessionToken && !accountOrgId) {
-    updateSessionToken(data.sessionToken);
+  //
+  // NIM-2466: persisting only for the singleton dropped the replacement token
+  // whenever the exchange named an account explicitly, which the org-creation
+  // wizard always does. That account was then holding a revoked token, so
+  // /api/teams 401'd, listTeams returned nothing, the account menu read back
+  // "No organization", and the org projection could never backfill. Route the
+  // token to its owning account instead -- a secondary account's exchange still
+  // never touches the sync account's singleton.
+  if (data.sessionToken) {
+    if (accountOrgId) {
+      updateSessionTokenForAccount(accountOrgId, data.sessionToken);
+    } else {
+      updateSessionToken(data.sessionToken);
+    }
   }
 
   // Derive cache TTL from the actual JWT exp claim (with 60s buffer).
@@ -1115,7 +1132,67 @@ async function getTeamByOrgId(orgId: string): Promise<TeamDetails | null> {
 }
 
 /**
- * Find a team matching a workspace's git remote.
+ * The org recorded against a workspace that cannot be identified by git remote.
+ * See `WorkspaceState.localOrgBinding`.
+ */
+function getLocalOrgBinding(workspacePath: string): { orgId: string; teamProjectId?: string } | null {
+  try {
+    return getWorkspaceState(workspacePath).localOrgBinding ?? null;
+  } catch (err) {
+    logger.main.warn('[TeamService] Could not read the local org binding:', err);
+    return null;
+  }
+}
+
+function setLocalOrgBinding(workspacePath: string, orgId: string, teamProjectId?: string): void {
+  updateWorkspaceState(workspacePath, (state) => {
+    state.localOrgBinding = teamProjectId ? { orgId, teamProjectId } : { orgId };
+  });
+}
+
+/**
+ * Point a bound team at the project the workspace was actually added as.
+ *
+ * Mirrors the secondary-project branch of `resolveTeamForRemoteHash`: the team
+ * carries its PRIMARY project's routing key, so a workspace that joined as a
+ * secondary project has to override it or its tracker items land in another
+ * project's room. A binding whose project has since left the registry resolves
+ * to nothing rather than silently falling back to the primary.
+ */
+function pinBoundProject(team: TeamDetails, teamProjectId?: string): TeamDetails | null {
+  if (!teamProjectId || teamProjectId === team.teamProjectId) return team;
+  const project = team.projects?.find(p => p.teamProjectId === teamProjectId);
+  if (!project) {
+    if (!team.projects) return { ...team, teamProjectId };
+    logger.main.warn('[TeamService] Bound project is no longer in the org registry', {
+      orgId: team.orgId,
+      teamProjectId,
+    });
+    return null;
+  }
+  return {
+    ...team,
+    name: project.name || project.slug || team.name,
+    teamProjectId,
+  };
+}
+
+/**
+ * Tell every window that a workspace's organization may have changed.
+ *
+ * The surfaces that show it resolve once per workspace, so without this only
+ * the window that ran the creation wizard learns about the new org -- any other
+ * project window keeps offering "Set up" for an org that already exists.
+ */
+export function broadcastWorkspaceOrgChanged(payload: { orgId: string; workspacePath?: string }): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('team:workspace-org-changed', payload);
+  }
+}
+
+/**
+ * Find a team matching a workspace's git remote, or the org recorded locally
+ * when the workspace has no remote to match on.
  * Pass precomputedRemote to skip the git spawn when the caller already has it.
  */
 export async function findTeamForWorkspace(workspacePath: string, precomputedRemote?: string): Promise<TeamDetails | null> {
@@ -1125,12 +1202,13 @@ export async function findTeamForWorkspace(workspacePath: string, precomputedRem
   }
 
   const remote = precomputedRemote ?? await getNormalizedGitRemote(workspacePath);
-  if (!remote) {
+  const binding = getLocalOrgBinding(workspacePath);
+  if (!remote && !binding) {
     // logger.main.info('[TeamService] findTeamForWorkspace: no git remote for', workspacePath);
     return null;
   }
 
-  const remoteHash = hashGitRemote(remote);
+  const remoteHash = remote ? hashGitRemote(remote) : null;
 
   try {
     const teams = await listTeams();
@@ -1138,10 +1216,21 @@ export async function findTeamForWorkspace(workspacePath: string, precomputedRem
     // so a workspace whose remote matches a SECONDARY project routes to that
     // project's tracker room. The project registry rides along on listTeams
     // (cached), so this adds no extra fetch. See teamProjectResolver.ts.
-    const match = resolveTeamForRemoteHash(teams, remoteHash);
+    const match = remoteHash ? resolveTeamForRemoteHash(teams, remoteHash) : null;
     if (match) {
       // logger.main.info('[TeamService] findTeamForWorkspace: matched', match.orgId, match.teamProjectId);
       return match;
+    }
+
+    // The remote is the shared identifier and always wins. Fall back to the
+    // local binding only once it has failed to match -- membership still gates
+    // the result, so leaving the org drops the binding's resolution with it.
+    if (binding) {
+      const bound = teams.find(t => (
+        t.orgId === binding.orgId
+        && (!t.membershipType || t.membershipType === 'active_member')
+      ));
+      if (bound) return pinBoundProject(bound, binding.teamProjectId);
     }
 
     if (teams.length > 0) {
@@ -1248,6 +1337,12 @@ const findForWorkspaceSingleFlight = createSingleFlight<string, FindForWorkspace
  * Create a new team (Stytch org + D1 metadata + encryption key setup).
  * Returns the new team details. Does NOT modify global auth state.
  */
+/** Email of the account performing an org operation, for the local roster row. */
+function creatorEmailForAccount(accountOrgId?: string): string | null {
+  if (!accountOrgId) return getUserEmail();
+  return getAccounts().find((account) => account.personalOrgId === accountOrgId)?.email ?? null;
+}
+
 async function createTeam(name: string, workspacePath?: string, accountOrgId?: string): Promise<TeamDetails> {
   let gitRemoteHash: string | undefined;
   if (workspacePath) {
@@ -1289,6 +1384,38 @@ async function createTeam(name: string, workspacePath?: string, accountOrgId?: s
       orgId: result.orgId,
       sourcePersonalOrgId,
     });
+  }
+
+  // NIM-2466: mint the local catalog rows with the create rather than leaving
+  // them to a later sync. The binding alone is not enough -- `canAccess` and the
+  // org projection resolve through `orgs`/`org_members`, and an install whose
+  // sync could not run was left with a binding pointing at rows that never
+  // existed. 'admin' mirrors the role the server records for a creator, so the
+  // next roster sync is a no-op instead of a role flip.
+  {
+    const db = getDatabase() as ProjectionDb | null;
+    const creatorMemberId = result.teamMemberId ?? result.creatorMemberId;
+    if (db && creatorMemberId) {
+      try {
+        await upsertOrg(db, { orgId: result.orgId, name: result.name, flavor: 'team', gitOriginHash: gitRemoteHash ?? null });
+        await applyMemberUpserted(db, result.orgId, {
+          userId: creatorMemberId,
+          email: creatorEmailForAccount(accountOrgId),
+          role: 'admin',
+        });
+      } catch (err) {
+        // A create that cannot be seen locally is a broken setup, not a success.
+        logger.main.error('[TeamService] Failed to write the local org projection after create:', err);
+        throw err instanceof Error ? err : new Error(String(err));
+      }
+    }
+  }
+
+  // A project with no git remote produces no hash for the server to key on, so
+  // nothing would ever match this workspace back to the org it just created.
+  // Record it locally, which is as far as the association can reach anyway.
+  if (workspacePath && !gitRemoteHash) {
+    setLocalOrgBinding(workspacePath, result.orgId);
   }
 
   // Team collaboration is server-managed, and only server-managed. Mark the
@@ -1337,12 +1464,24 @@ async function addProjectToOrg(
     }
   }
 
+  // With no remote the name is the only thing that identifies the project in
+  // the org's registry, so fall back to the folder name rather than minting a
+  // nameless row.
+  const projectName = name
+    ?? (!gitRemoteHash && workspacePath ? basename(workspacePath) || null : null);
+
   const result = await fetchTeamApi(`/api/teams/${orgId}/projects`, 'POST', {
-    name: name ?? null,
+    name: projectName,
     gitRemoteHash,
   }, orgId) as { projectId: string; teamProjectId: string };
 
   logger.main.info('[TeamService] Project added to org:', orgId, 'project:', result.projectId);
+
+  // Nothing can match a remote-less workspace back to the project the server
+  // just minted; record which project it is so this machine still routes there.
+  if (workspacePath && !gitRemoteHash) {
+    setLocalOrgBinding(workspacePath, orgId, result.teamProjectId);
+  }
 
   // Mirror into the local projection so canAccess + UI see the new project
   // without waiting for a full re-sync. Best-effort (server is authoritative).
@@ -1401,6 +1540,30 @@ async function getRecentWorkspaceRemoteStates(
   return states;
 }
 
+/**
+ * Recent workspaces bound to one of `teamProjectIds` by name rather than by
+ * remote. Without this a folder opened through the shared-project flow keeps
+ * reporting "not local" in the org's Projects list even while it is open.
+ */
+function getRecentWorkspaceBindingStates(
+  orgId: string,
+  teamProjectIds: ReadonlySet<string>,
+): WorkspaceBindingState[] {
+  const states: WorkspaceBindingState[] = [];
+  for (const workspace of getRecentItems('workspaces')) {
+    if (!workspace.path || !existsSync(workspace.path)) continue;
+    const binding = getLocalOrgBinding(workspace.path);
+    if (!binding || binding.orgId !== orgId) continue;
+    if (!binding.teamProjectId || !teamProjectIds.has(binding.teamProjectId)) continue;
+    states.push({
+      workspacePath: workspace.path,
+      teamProjectId: binding.teamProjectId,
+      open: isWorkspaceOpen(workspace.path),
+    });
+  }
+  return states;
+}
+
 async function resolveLocalProjectStatesForOrg(
   orgId: string,
 ): Promise<OrgProjectLocalState[]> {
@@ -1413,8 +1576,84 @@ async function resolveLocalProjectStatesForOrg(
       .map((project) => project.gitRemoteHash)
       .filter((hash): hash is string => !!hash),
   );
+  const teamProjectIds = new Set(
+    projects
+      .map((project) => project.teamProjectId)
+      .filter((id): id is string => !!id),
+  );
   const workspaces = await getRecentWorkspaceRemoteStates(hashes);
-  return resolveOrgProjectLocalStates(projects, workspaces);
+  const bound = getRecentWorkspaceBindingStates(orgId, teamProjectIds);
+  return resolveOrgProjectLocalStates(projects, workspaces, bound);
+}
+
+/**
+ * Attach a local directory to a shared project that has no git remote.
+ *
+ * This is the join half of the git-free flow: the creator's machine records the
+ * binding when the org is made, and every other member records it here. The
+ * guards are the important part -- rebinding a directory that already belongs
+ * to another project is the one destructive outcome available, so both the
+ * recorded binding and the directory's own remote are checked first.
+ */
+export async function bindWorkspaceToSharedProject(input: {
+  orgId: string;
+  teamProjectId: string;
+  directoryPath: string;
+}): Promise<void> {
+  const { orgId, teamProjectId, directoryPath } = input;
+  if (!orgId) throw new Error('Opening a shared project requires orgId');
+  if (!teamProjectId) throw new Error('Opening a shared project requires teamProjectId');
+  if (!directoryPath) throw new Error('Opening a shared project requires a directory');
+  if (!isAuthenticated()) throw new Error('Sign in to open a shared project');
+
+  const teams = await listTeams();
+  const team = teams.find(t => (
+    t.orgId === orgId && (!t.membershipType || t.membershipType === 'active_member')
+  ));
+  if (!team) {
+    throw new Error('You are not a member of that organization');
+  }
+
+  // The registry is the authority when present; an org whose listing predates
+  // per-project rows can still name its primary project.
+  const project = team.projects?.find(p => p.teamProjectId === teamProjectId)
+    ?? (team.teamProjectId === teamProjectId ? { gitRemoteHash: team.gitRemoteHash } : undefined);
+  if (!project) {
+    throw new Error('That project is no longer part of this organization');
+  }
+  if (project.gitRemoteHash) {
+    throw new Error(
+      'That project is matched to teammates by its git remote. Clone the repository and open it instead.',
+    );
+  }
+
+  const existingBinding = getLocalOrgBinding(directoryPath);
+  if (existingBinding && (
+    existingBinding.orgId !== orgId || existingBinding.teamProjectId !== teamProjectId
+  )) {
+    throw new Error('That folder already belongs to a different project');
+  }
+
+  if (existsSync(directoryPath)) {
+    const stats = await stat(directoryPath);
+    if (!stats.isDirectory()) {
+      throw new Error('That path is a file, not a folder');
+    }
+    const remote = await getNormalizedGitRemote(directoryPath);
+    if (remote) {
+      const remoteMatch = resolveTeamForRemoteHash(teams, hashGitRemote(remote));
+      if (remoteMatch && remoteMatch.teamProjectId !== teamProjectId) {
+        throw new Error(
+          "That folder's git remote already connects it to a different project",
+        );
+      }
+    }
+  } else {
+    await mkdir(directoryPath, { recursive: true });
+  }
+
+  setLocalOrgBinding(directoryPath, orgId, teamProjectId);
+  logger.main.info('[TeamService] Bound workspace to shared project:', directoryPath, orgId, teamProjectId);
 }
 
 /** Epic H3 P3: read-only pre-flight for the "Move to another org" wizard.
@@ -1507,6 +1746,69 @@ async function acceptInvite(orgId: string): Promise<TeamDetails> {
 
   logger.main.info('[TeamService] Accepted invite for team:', team.name, 'orgId:', orgId);
   return team;
+}
+
+/**
+ * Outcome of following a `nimbalyst://invite/{orgId}` deep link.
+ *
+ * `sign-in-required` is the expected first-run case: the invitee installed the
+ * app because of the invitation email, so no account owns the invite yet.
+ */
+export type InviteDeepLinkOutcome =
+  | { status: 'accepted'; orgId: string; teamName: string }
+  | { status: 'already-member'; orgId: string; teamName: string }
+  | { status: 'sign-in-required'; orgId: string; email?: string }
+  | { status: 'not-found'; orgId: string; email?: string }
+  | { status: 'error'; orgId: string; message: string };
+
+/**
+ * Resolve a team-invitation deep link against the signed-in accounts.
+ *
+ * The link carries no token, so this re-derives everything from the server's
+ * team directory: an invitation is acceptable only when some signed-in account
+ * can already see the pending membership. An `email` that no signed-in account
+ * owns is reported as `sign-in-required` rather than silently accepting under a
+ * different account — following a link must never join the wrong identity to a
+ * team.
+ */
+export async function resolveInviteDeepLink(
+  orgId: string,
+  email?: string,
+): Promise<InviteDeepLinkOutcome> {
+  // Normalize here rather than trusting the caller: this is exported, and a
+  // casing mismatch must not be the difference between accepting an invitation
+  // and telling the user to sign in again.
+  const normalizedEmail = email?.trim().toLowerCase() || undefined;
+
+  if (!isAuthenticated()) return { status: 'sign-in-required', orgId, email: normalizedEmail };
+
+  if (normalizedEmail) {
+    const ownsEmail = getAccounts().some((account) => (
+      account.sessionStatus === 'active'
+      && account.email?.trim().toLowerCase() === normalizedEmail
+    ));
+    if (!ownsEmail) return { status: 'sign-in-required', orgId, email: normalizedEmail };
+  }
+
+  try {
+    // The console already flipped this membership to active when it accepted
+    // the invitation in the browser, so a stale directory would report a team
+    // the user "isn't in" moments after they joined it.
+    invalidateListTeamsCache();
+    const team = (await listTeams()).find((candidate) => candidate.orgId === orgId);
+    if (!team) return { status: 'not-found', orgId, email: normalizedEmail };
+
+    if (team.membershipType && team.membershipType !== 'active_member') {
+      const joined = await acceptInvite(orgId);
+      return { status: 'accepted', orgId, teamName: joined.name };
+    }
+
+    return { status: 'already-member', orgId, teamName: team.name };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.main.error('[TeamService] resolveInviteDeepLink failed:', message);
+    return { status: 'error', orgId, message };
+  }
 }
 
 /**
@@ -1731,6 +2033,16 @@ export async function syncOrgProjectionFromServer(knownTeams?: TeamDetails[]): P
         );
       }
     }
+    // A binding pointing at an org the projection never wrote is the NIM-2466
+    // signature. The sync is the only place that can see it, and it went by in
+    // silence there -- the binding looked healthy, so nothing else ever looked.
+    const dangling = await findBindingsWithMissingOrg(db);
+    if (dangling.length > 0) {
+      logger.main.error('[TeamService] Account/org bindings reference orgs missing from the local projection', {
+        bindings: dangling,
+      });
+    }
+
     // logger.main.info('[TeamService] org projection synced:', counts);
     return { success: true, counts };
   } catch (err) {
@@ -1962,6 +2274,7 @@ export function registerTeamHandlers(): void {
   safeHandle('team:create', async (_event, name: string, workspacePath?: string, accountOrgId?: string) => {
     try {
       const team = await createTeam(name, workspacePath, accountOrgId);
+      broadcastWorkspaceOrgChanged({ orgId: team.orgId, workspacePath });
       return { success: true, team };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -1974,6 +2287,7 @@ export function registerTeamHandlers(): void {
       // The new project changes the org's registry; drop the listTeams cache so
       // findTeamForWorkspace can resolve the new project's room on the next open.
       invalidateListTeamsCache();
+      broadcastWorkspaceOrgChanged({ orgId, workspacePath });
       return { success: true, project };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -2028,6 +2342,7 @@ export function registerTeamHandlers(): void {
   safeHandle('team:accept-invite', async (_event, orgId: string) => {
     try {
       const team = await acceptInvite(orgId);
+      broadcastWorkspaceOrgChanged({ orgId });
       return { success: true, team };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };

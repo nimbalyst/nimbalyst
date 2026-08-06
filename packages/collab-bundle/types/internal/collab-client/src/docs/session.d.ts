@@ -133,6 +133,10 @@ export interface CollabDocsSession {
     persistViewPreferences(): void;
     hydrateViewPreferences(state?: Partial<CollabDiscoveryState> | null): void;
     hydratePersonalState(): Promise<void>;
+    /**
+     * Resolves `true` when the server confirmed the index row is committed.
+     * `false` means unconfirmed, not failed — see `TeamSync.registerDocument`.
+     */
     registerDocument(input: {
         documentId: string;
         title: string;
@@ -143,7 +147,7 @@ export interface CollabDocsSession {
             fileExtension: string;
             editorId: string;
         };
-    }): Promise<void>;
+    }): Promise<boolean>;
     updateDocumentTitle(documentId: string, title: string): Promise<void>;
     removeDocument(documentId: string): void;
     trashDocument(documentId: string): void;

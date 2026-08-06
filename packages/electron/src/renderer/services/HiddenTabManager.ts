@@ -16,7 +16,15 @@
 import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { EditorHost, ExtensionStorage } from '@nimbalyst/runtime';
-import { getExtensionLoader, createExtensionStorage, registerEditorAPI, unregisterEditorAPI, hasExtensionEditorAPI } from '@nimbalyst/runtime';
+import {
+  createEditorAPIOwnerToken,
+  createExtensionStorage,
+  getExtensionLoader,
+  hasExtensionEditorAPI,
+  registerEditorAPI,
+  unregisterEditorAPI,
+  type EditorAPIOwnerToken,
+} from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { DocumentModelRegistry } from './document-model/DocumentModelRegistry';
 import type { DocumentModelEditorHandle } from './document-model/types';
@@ -40,6 +48,7 @@ interface HiddenEditorInstance {
   documentModelHandle: DocumentModelEditorHandle | null;
   /** Cleanup for the file-deleted atom subscription */
   fileDeletedUnsub: (() => void) | null;
+  editorAPIOwnerToken: EditorAPIOwnerToken;
 }
 
 class HiddenTabManager {
@@ -216,7 +225,14 @@ class HiddenTabManager {
     });
 
     // Create EditorHost
-    const host = this.createEditorHost(filePath, workspacePath, editorInfo.extensionId, documentModelHandle);
+    const editorAPIOwnerToken = createEditorAPIOwnerToken(`hidden:${filePath}`);
+    const host = this.createEditorHost(
+      filePath,
+      workspacePath,
+      editorInfo.extensionId,
+      documentModelHandle,
+      editorAPIOwnerToken,
+    );
 
     // Create React root and mount
     const root = createRoot(container);
@@ -243,6 +259,7 @@ class HiddenTabManager {
       extensionId: editorInfo.extensionId,
       documentModelHandle,
       fileDeletedUnsub,
+      editorAPIOwnerToken,
     });
 
     // Wait for the editor API to register, then move offscreen
@@ -271,7 +288,7 @@ class HiddenTabManager {
     // console.log(`${LOG_PREFIX} Unmounting hidden editor for ${filePath}`);
 
     // Clean up the central editor API registry
-    unregisterEditorAPI(filePath);
+    unregisterEditorAPI(filePath, instance.editorAPIOwnerToken);
 
     // Release DocumentModel handle
     if (instance.documentModelHandle) {
@@ -321,7 +338,13 @@ class HiddenTabManager {
    * Create an EditorHost for a hidden editor.
    * This creates a functional host with file I/O and auto-save support.
    */
-  private createEditorHost(filePath: string, workspacePath: string, extensionId: string, documentModelHandle?: DocumentModelEditorHandle | null): EditorHost {
+  private createEditorHost(
+    filePath: string,
+    workspacePath: string,
+    extensionId: string,
+    documentModelHandle: DocumentModelEditorHandle | null | undefined,
+    editorAPIOwnerToken: EditorAPIOwnerToken,
+  ): EditorHost {
     const fileName = filePath.split('/').pop() || filePath;
     const electronAPI = (window as any).electronAPI;
 
@@ -535,9 +558,12 @@ class HiddenTabManager {
 
       registerEditorAPI(api: unknown | null): void {
         if (api) {
-          registerEditorAPI(filePath, api, conflictAwareFlush);
+          registerEditorAPI(filePath, api, conflictAwareFlush, {
+            ownerToken: editorAPIOwnerToken,
+            priority: 'hidden',
+          });
         } else {
-          unregisterEditorAPI(filePath);
+          unregisterEditorAPI(filePath, editorAPIOwnerToken);
         }
       },
 

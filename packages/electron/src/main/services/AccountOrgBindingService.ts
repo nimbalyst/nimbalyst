@@ -108,6 +108,31 @@ export async function resolveTeamOrgAccountBinding(
 }
 
 /**
+ * Bindings whose team org has no local `orgs` row.
+ *
+ * The repair path below only asks whether a binding exists. A binding can be
+ * present and current while the catalog rows it points at were never written,
+ * which is invisible to every other check: `resolveTeamOrgAccountBinding`
+ * answers happily and only `canAccess` and the org UI come up empty (NIM-2466).
+ * Plain columns and a LEFT JOIN, so PGLite and better-sqlite3 agree.
+ */
+export async function findBindingsWithMissingOrg(
+  db: ProjectionDb,
+): Promise<Array<{ personalOrgId: string; teamOrgId: string }>> {
+  const result = await db.query<{ personal_org_id: string; team_org_id: string }>(
+    `SELECT b.personal_org_id, b.team_org_id
+       FROM account_org_bindings b
+       LEFT JOIN orgs o ON o.id = b.team_org_id
+      WHERE o.id IS NULL
+      ORDER BY b.team_org_id ASC`,
+  );
+  return result.rows.map((row) => ({
+    personalOrgId: row.personal_org_id,
+    teamOrgId: row.team_org_id,
+  }));
+}
+
+/**
  * One-time repair for installs that predate explicit bindings.
  *
  * Email is consulted at most once per account/team pair. Exactly one roster

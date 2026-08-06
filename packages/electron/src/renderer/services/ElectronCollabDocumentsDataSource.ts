@@ -171,15 +171,16 @@ export class ElectronCollabDocumentsDataSource implements CollabDocsDataSource {
   async command(command: CollabDocsCommand): Promise<CollabDocsCommandResult> {
     await this.ensureConnected();
     switch (command.type) {
-      case 'register-document':
-        await this.provider.registerDocument(
+      case 'register-document': {
+        const registrationAcked = await this.provider.registerDocument(
           command.documentId,
           command.title,
           command.documentType,
           command.parentFolderId,
           command.metadata,
         );
-        return { ok: true };
+        return { ok: true, registrationAcked };
+      }
       case 'update-document-title':
         await this.provider.updateDocumentTitle(command.documentId, command.title);
         return { ok: true };

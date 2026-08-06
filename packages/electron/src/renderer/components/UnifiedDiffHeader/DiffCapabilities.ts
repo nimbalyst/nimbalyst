@@ -56,4 +56,10 @@ export interface UnifiedDiffHeaderProps {
   capabilities: DiffCapabilities;
   /** Editor type for analytics */
   editorType: 'monaco' | 'lexical' | 'custom';
+  /**
+   * Set when the editor refuses edits until the review is resolved, so the
+   * header can say why. Only pass it for editors that actually lock -- the
+   * user will read it as a promise.
+   */
+  readOnlyWhileReviewing?: boolean;
 }

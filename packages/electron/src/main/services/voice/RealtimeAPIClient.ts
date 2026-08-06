@@ -275,6 +275,16 @@ export class RealtimeAPIClient {
   // (create_response/interrupt_response=false) so residual echo cannot make
   // the server act on its own voice; the client keeps barge-in control.
   private serverResponsesGated: boolean = false;
+  // The gate state the server actually has, plus whether a toggle is waiting
+  // for the active response to finish. session.update is never sent while a
+  // response is generating -- see flushOrDeferGateUpdate().
+  private sentGateState: boolean = false;
+  private gateUpdatePending: boolean = false;
+  // Responses the user barged in on. Generation runs far ahead of realtime, so
+  // the server has usually already emitted audio deltas past the cancel point;
+  // those must not be forwarded to the renderer, whose queue has no response
+  // identity and would play them in front of the next response's audio.
+  private abandonedResponseIds: Set<string> = new Set();
   // Probation timer for an echo-suspect VAD trigger (min-duration heuristic):
   // fires onDeferredInterruptTimeout to decide whether the speech outlived
   // the window (real barge-in) or was an echo blip.
@@ -800,15 +810,29 @@ export class RealtimeAPIClient {
             });
           }
         }
+        // Terminal for this response: no further audio deltas can arrive for
+        // it, so stop suppressing its id.
+        const doneId = response?.id as string | undefined;
+        if (doneId) this.abandonedResponseIds.delete(doneId);
         this.currentResponseId = null;
         this.hasActiveResponse = false;
         this.hasPendingFunctionCall = false;
         this.isOutputtingAudio = false;
+        // A gate toggle held back during generation applies now.
+        if (this.gateUpdatePending) this.flushOrDeferGateUpdate();
         break;
 
       // GA event is response.output_audio.delta; the beta name is kept for safety.
       case 'response.output_audio.delta':
-      case 'response.audio.delta':
+      case 'response.audio.delta': {
+        // Drop the tail of a response the user already barged in on. The
+        // renderer cleared its queue at the interrupt; replaying these late
+        // chunks would stitch the abandoned utterance onto the front of the
+        // next one, which is heard as the agent's voice changing mid-answer.
+        const audioResponseId = (event as any).response_id as string | undefined;
+        if (audioResponseId && this.abandonedResponseIds.has(audioResponseId)) {
+          break;
+        }
         // Received audio chunk from OpenAI
         this.isOutputtingAudio = true;
         // Remember which conversation item is speaking so a barge-in during
@@ -822,6 +846,7 @@ export class RealtimeAPIClient {
           this.onAudioCallback(audioDelta);
         }
         break;
+      }
 
       case 'response.output_audio.done':
       case 'response.audio.done':
@@ -942,6 +967,16 @@ export class RealtimeAPIClient {
     // so the model's context matches reality.
     if (msSincePlaybackStarted !== null) {
       this.truncatePlayedAudio(msSincePlaybackStarted);
+    }
+    // Abandon this response's audio regardless of whether the cancel below
+    // actually goes out (it is deliberately skipped while function-call args
+    // stream, and is a no-op once response.done landed). The renderer stops
+    // playback either way, so any further audio for this response is stale.
+    if (this.currentResponseId) {
+      // Safety valve: the set is drained by response.done, but never let a
+      // missing terminal event grow it without bound.
+      if (this.abandonedResponseIds.size > 16) this.abandonedResponseIds.clear();
+      this.abandonedResponseIds.add(this.currentResponseId);
     }
     this.cancelCurrentResponse();
     if (this.onInterruptionCallback) {
@@ -1112,6 +1147,10 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
 
     console.log(`[RealtimeAPIClient] session.update: voice=${config.audio.output.voice} model=${this.model} reasoning=${this.reasoningEffort} transcription=${TRANSCRIPTION_MODEL}`);
     this.ws.send(JSON.stringify(event));
+    // This full update carries turn_detection too, so the server's gate state
+    // is now whatever we just sent (matters after a reconnect re-applies it).
+    this.sentGateState = this.serverResponsesGated;
+    this.gateUpdatePending = false;
   }
 
   /**
@@ -1988,13 +2027,37 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
 
   /**
    * Gate or un-gate server VAD responses while the agent's audio plays.
-   * Sends a partial session.update touching only turn_detection. No-ops in
-   * push_to_talk mode (no turn detection) and when the state is unchanged.
+   * No-ops in push_to_talk mode (no turn detection) and when unchanged.
    */
   private setServerResponsesGated(gated: boolean): void {
     if (gated === this.serverResponsesGated) return;
     this.serverResponsesGated = gated;
+    this.flushOrDeferGateUpdate();
+  }
+
+  /**
+   * Apply the desired gate state, but NEVER while a response is generating.
+   *
+   * Playback starts a few hundred ms into a turn, so gating on playback-active
+   * used to push a session.update into the middle of the model's audio render.
+   * Mutating the session mid-generation perturbs the render, and the second
+   * half of a long answer comes back in a noticeably different register --
+   * the "the voice changes partway through" report. Deferring costs nothing:
+   * while a response is active the server cannot start another one, which is
+   * the only thing the gate prevents. response.done flushes whatever is
+   * pending, and a toggle that flips back before then collapses to no update
+   * at all (sentGateState tracks what the server actually has).
+   */
+  private flushOrDeferGateUpdate(): void {
     if (!this.ws || !this.connected || this.turnDetection.mode === 'push_to_talk') return;
+    if (this.hasActiveResponse) {
+      this.gateUpdatePending = true;
+      return;
+    }
+    this.gateUpdatePending = false;
+    if (this.serverResponsesGated === this.sentGateState) return;
+    const gated = this.serverResponsesGated;
+    this.sentGateState = gated;
     this.ws.send(JSON.stringify({
       type: 'session.update',
       session: {
@@ -2186,6 +2249,9 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       this.hasActiveResponse = false;
       this.currentAssistantItemId = null;
       this.serverResponsesGated = false;
+      this.sentGateState = false;
+      this.gateUpdatePending = false;
+      this.abandonedResponseIds.clear();
       this.playbackActive = false;
     }
   }

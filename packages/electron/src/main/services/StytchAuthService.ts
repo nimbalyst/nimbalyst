@@ -1457,6 +1457,30 @@ export function updateSessionToken(newSessionToken: string): void {
 }
 
 /**
+ * Persist an exchanged session token against the account that owns it.
+ *
+ * Stytch's `sessions/exchange` revokes the token it consumes, so the token
+ * `/switch` hands back is that account's only live one. Routing by owner keeps
+ * the two rules from fighting: a secondary account's exchange must never
+ * overwrite the sync account's singleton token, but it must still land in
+ * `stytch-accounts.enc` -- dropping it entirely left the account holding a
+ * revoked token and 401ing on every later call (NIM-2466).
+ */
+export function updateSessionTokenForAccount(personalOrgId: string, newSessionToken: string): void {
+  if (!personalOrgId || personalOrgId === syncAccountId) {
+    updateSessionToken(newSessionToken);
+    return;
+  }
+  if (!accounts.has(personalOrgId)) {
+    logger.main.warn('[StytchAuthService] Cannot persist exchanged session token: unknown account', {
+      personalOrgId,
+    });
+    return;
+  }
+  updateAccountCredentials(personalOrgId, { sessionToken: newSessionToken });
+}
+
+/**
  * Start Google OAuth sign-in flow.
  * Opens the collabv3 server's Google OAuth URL in the browser.
  * The server handles the callback and redirects to this instance's loopback listener.

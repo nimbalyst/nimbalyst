@@ -589,13 +589,17 @@ export interface CollabDocsSession {
   persistViewPreferences(): void;
   hydrateViewPreferences(state?: Partial<CollabDiscoveryState> | null): void;
   hydratePersonalState(): Promise<void>;
+  /**
+   * Resolves `true` when the server confirmed the index row is committed.
+   * `false` means unconfirmed, not failed — see `TeamSync.registerDocument`.
+   */
   registerDocument(input: {
     documentId: string;
     title: string;
     documentType: string;
     parentFolderId: string | null;
     metadata?: { metadataVersion: 2; fileExtension: string; editorId: string };
-  }): Promise<void>;
+  }): Promise<boolean>;
   updateDocumentTitle(documentId: string, title: string): Promise<void>;
   removeDocument(documentId: string): void;
   trashDocument(documentId: string): void;
@@ -721,7 +725,7 @@ class CollabDocsSessionImpl implements CollabDocsSession {
     );
   }
 
-  async registerDocument(input: Parameters<CollabDocsSession['registerDocument']>[0]): Promise<void> {
+  async registerDocument(input: Parameters<CollabDocsSession['registerDocument']>[0]): Promise<boolean> {
     const now = Date.now();
     store.set(documentsByScope(this.scope.scopeKey), (current) => [{
       ...input,
@@ -731,7 +735,8 @@ class CollabDocsSessionImpl implements CollabDocsSession {
       createdAt: now,
       updatedAt: now,
     }, ...current.filter((document) => document.documentId !== input.documentId)]);
-    await this.dataSource.command({ type: 'register-document', ...input });
+    const result = await this.dataSource.command({ type: 'register-document', ...input });
+    return result.registrationAcked === true;
   }
 
   async updateDocumentTitle(documentId: string, title: string): Promise<void> {

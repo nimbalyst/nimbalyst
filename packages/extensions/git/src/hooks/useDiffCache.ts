@@ -6,7 +6,8 @@ const ipc = (window as unknown as {
   };
 }).electronAPI;
 
-export type DiffGroup = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
+/** `working` is the combined HEAD-vs-working-tree diff used by the flat change list. */
+export type DiffGroup = 'staged' | 'unstaged' | 'untracked' | 'conflicted' | 'working';
 
 interface DiffCacheEntry {
   diff: string;

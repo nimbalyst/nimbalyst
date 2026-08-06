@@ -226,9 +226,9 @@ function GitRemoteNotice({ gitRemote }: { gitRemote: string }) {
     <div className="project-sharing-no-remote flex items-start gap-2 px-3 py-2.5 bg-[var(--nim-bg-secondary)] rounded-md" data-testid="project-sharing-no-remote">
       <MaterialSymbol icon="link_off" size={16} className="mt-0.5 shrink-0 text-[var(--nim-warning)]" />
       <span className="text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
-        This workspace has no git remote. A shared project is matched to teammates by its git remote, so
-        without one nobody else will connect to it automatically. Add a remote
-        (<span className="font-mono">git remote add origin …</span>), then come back here.
+        This workspace has no git remote. You can still share it, but a teammate&apos;s copy is matched to a
+        project by its git remote — without one, only this computer connects to it. Add a remote
+        (<span className="font-mono">git remote add origin …</span>) if others need to work in it too.
       </span>
     </div>
   );
@@ -265,11 +265,6 @@ export function UnsharedProjectSharingState({
   const canChooseExisting = entry.state === 'choose-existing-or-new';
 
   const confirming = choice === 'new' || (choice === 'existing' && !!selectedOrg);
-  // Adding to an existing org keys the project by its git remote hash. With no
-  // remote the server would mint a nameless, unreachable project and the panel
-  // would silently fall back to these choices — so the confirm action is
-  // blocked (and says why) rather than letting each retry orphan another one.
-  const blockedByMissingRemote = choice === 'existing' && !gitRemote;
 
   return (
     <div className="unshared-project-sharing-state" data-testid="unshared-project-sharing-state">
@@ -364,32 +359,17 @@ export function UnsharedProjectSharingState({
               <li>
                 {gitRemote
                   ? <>Teammates who clone <span className="font-mono select-text">{gitRemote}</span> connect to it automatically.</>
-                  : 'Without a git remote, teammates will not connect to this project automatically.'}
+                  : 'With no git remote, only this computer connects to the project — a teammate’s copy has nothing to match it by.'}
               </li>
               <li>Nothing on your disk moves or changes.</li>
             </ul>
-            {blockedByMissingRemote && (
-              <div
-                className="project-sharing-blocked flex items-start gap-2 mb-3 rounded-md bg-[var(--nim-bg)] px-3 py-2.5"
-                data-testid="project-sharing-blocked"
-              >
-                <MaterialSymbol icon="link_off" size={16} className="mt-0.5 shrink-0 text-[var(--nim-warning)]" />
-                <span className="text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
-                  This project needs a git remote before it can be added. An organization finds a project by its
-                  remote, so adding it now would create an empty project nobody could open. Run
-                  <span className="font-mono"> git remote add origin …</span>, push once, then come back here.
-                </span>
-              </div>
-            )}
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => (choice === 'existing' ? onAddToOrg(selectedOrgId) : onCreateOrganization())}
-                disabled={loading || addingProject || blockedByMissingRemote}
-                className={`rounded-md border-none px-4 py-2 text-[12px] font-medium ${
-                  blockedByMissingRemote
-                    ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-faint)] cursor-not-allowed'
-                    : `bg-[var(--nim-primary)] text-white ${loading || addingProject ? 'cursor-wait opacity-70' : 'cursor-pointer'}`
+                disabled={loading || addingProject}
+                className={`rounded-md border-none px-4 py-2 text-[12px] font-medium bg-[var(--nim-primary)] text-white ${
+                  loading || addingProject ? 'cursor-wait opacity-70' : 'cursor-pointer'
                 }`}
                 data-testid="project-sharing-confirm-action"
               >

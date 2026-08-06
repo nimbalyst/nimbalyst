@@ -11,6 +11,7 @@ import type { TrackerRecord } from '../../../core/TrackerRecord';
 import type { TrackerSchemaRole, FieldDefinition } from '../models/TrackerDataModel';
 import { globalRegistry } from '../models';
 import { defaultTrackerTypeColor, defaultTrackerTypeIcon } from '../models/trackerTypeIdentity';
+import { isDateOnlyValue, parseDate } from '../models/dateUtils';
 import { resolveRoleFieldName, getFieldByRole, getItemShareState } from '../trackerRecordAccessors';
 import { resolveCellEditor, READONLY_STRUCTURAL_COLUMNS, type CellEditorKind } from './trackerCellEditors';
 
@@ -257,20 +258,108 @@ export function getTypeIcon(type: string): string {
   return defaultTrackerTypeIcon(type);
 }
 
-export function formatRelativeDate(date: Date): string {
+/**
+ * Elapsed-time label for an instant, e.g. `3h ago` / `in 3d`.
+ *
+ * Future instants get their own labels rather than falling into the
+ * `minutes < 1` branch, which used to render every future date as "Just now"
+ * (nimbalyst#1156). For a calendar day use `formatRelativeCalendarDay`.
+ */
+export function formatRelativeDate(date: Date, now: Date = new Date()): string {
   if (!date || date.getTime() === 0 || isNaN(date.getTime())) return '';
-  const now = new Date();
   const diff = now.getTime() - date.getTime();
-  const minutes = Math.floor(diff / (1000 * 60));
-  const hours = Math.floor(diff / (1000 * 60 * 60));
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  const isFuture = diff < 0;
+  const elapsed = Math.abs(diff);
+  const minutes = Math.floor(elapsed / (1000 * 60));
+  const hours = Math.floor(elapsed / (1000 * 60 * 60));
+  const days = Math.floor(elapsed / (1000 * 60 * 60 * 24));
   if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days === 1) return 'Yesterday';
-  if (days < 7) return `${days}d ago`;
-  if (days < 30) return `${Math.floor(days / 7)}w ago`;
+  if (minutes < 60) return isFuture ? `in ${minutes}m` : `${minutes}m ago`;
+  if (hours < 24) return isFuture ? `in ${hours}h` : `${hours}h ago`;
+  if (days === 1) return isFuture ? 'Tomorrow' : 'Yesterday';
+  if (days < 7) return isFuture ? `in ${days}d` : `${days}d ago`;
+  if (days < 30) {
+    const weeks = Math.floor(days / 7);
+    return isFuture ? `in ${weeks}w` : `${weeks}w ago`;
+  }
   return date.toLocaleDateString();
+}
+
+/** Local midnight of the day `date` falls on. */
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function pluralDays(count: number): string {
+  return count === 1 ? '1 day' : `${count} days`;
+}
+
+function pluralWeeks(count: number): string {
+  return count === 1 ? '1 week' : `${count} weeks`;
+}
+
+/**
+ * Relative label for a calendar day, compared by local date rather than by
+ * elapsed milliseconds.
+ *
+ * A due date entered as today should read "Today" all day long, not "20h ago"
+ * once the evening arrives, and a date a few days out should name the distance
+ * rather than collapsing to a timestamp label.
+ */
+export function formatRelativeCalendarDay(date: Date, now: Date = new Date()): string {
+  if (!date || isNaN(date.getTime())) return '';
+  const dayMs = 1000 * 60 * 60 * 24;
+  // Positive is in the future. Round because DST makes some local days 23 or 25 hours.
+  const days = Math.round(
+    (startOfLocalDay(date).getTime() - startOfLocalDay(now).getTime()) / dayMs,
+  );
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Tomorrow';
+  if (days === -1) return 'Yesterday';
+  const distance = Math.abs(days);
+  if (distance >= 30) return date.toLocaleDateString();
+  const label = distance < 7 ? pluralDays(distance) : pluralWeeks(Math.floor(distance / 7));
+  return days > 0 ? `in ${label}` : `${label} ago`;
+}
+
+/**
+ * Display text and hover title for a tracker date cell.
+ *
+ * Dispatches on the *stored* value: a calendar day (`YYYY-MM-DD`) is compared
+ * by local date, anything else is treated as an instant. The title always
+ * carries the exact value so the relative label never hides the real date.
+ */
+export function formatTrackerDateCell(
+  value: unknown,
+  now: Date = new Date(),
+): { display: string; title: string } {
+  if (value === undefined || value === null || value === '') return { display: '', title: '' };
+
+  const date = parseDate(value);
+  if (!date) return { display: String(value), title: '' };
+
+  if (isDateOnlyValue(value)) {
+    return {
+      display: formatRelativeCalendarDay(date, now),
+      title: date.toLocaleDateString(undefined, {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      }),
+    };
+  }
+
+  return {
+    display: formatRelativeDate(date, now),
+    title: date.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    }),
+  };
 }
 
 function parseValidDate(value: string | undefined): Date | undefined {
@@ -279,17 +368,10 @@ function parseValidDate(value: string | undefined): Date | undefined {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }
 
-function isDateOnlyOrMidnightUtc(value: string | undefined): boolean {
-  if (!value) return false;
-  const trimmed = value.trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
-    || /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.000)?Z$/.test(trimmed);
-}
-
 export function getEffectiveUpdatedDate(record: TrackerRecord): Date | undefined {
   const lastIndexed = parseValidDate(record.system.lastIndexed);
   const dateSource = record.system.updatedAt || record.system.createdAt;
-  if (record.source === 'frontmatter' && lastIndexed && isDateOnlyOrMidnightUtc(dateSource)) {
+  if (record.source === 'frontmatter' && lastIndexed && isDateOnlyValue(dateSource)) {
     return lastIndexed;
   }
   return parseValidDate(dateSource) ?? lastIndexed;

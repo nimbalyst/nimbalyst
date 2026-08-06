@@ -90,4 +90,25 @@ describe('AccountInspectorPopover', () => {
     fireEvent.click(screen.getByTestId('account-inspector-organization-row'));
     expect(onManageOrganization).toHaveBeenCalledWith(undefined);
   });
+
+  // An unresolved lookup used to render as "No organization -- Set up", which
+  // offered org creation to a user who had just finished it.
+  it('does not offer org setup while the organization lookup is still running', () => {
+    render(
+      <AccountInspectorPopover
+        accounts={[]}
+        projectOrg={null}
+        projectOrgLoading
+        anchorEl={anchor()}
+        onClose={vi.fn()}
+        onOpenAccount={vi.fn()}
+        onManageOrganization={vi.fn()}
+        onOpenApplicationSettings={vi.fn()}
+        onOpenProjectSettings={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('account-inspector-organization-row')).toBeNull();
+    screen.getByTestId('account-inspector-organization-loading');
+  });
 });

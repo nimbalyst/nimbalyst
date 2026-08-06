@@ -85,12 +85,40 @@ export function OrgProjectsSidebarSection({
   error: string | null;
   onReload: () => void;
 }) {
+  const [openError, setOpenError] = useState<string | null>(null);
+
   const openProject = useCallback((workspacePath: string | null) => {
     if (!workspacePath) return;
     void window.electronAPI.team.openProjectWorkspace(workspacePath).catch((reason) => {
       console.error('[OrgProjectsSidebarSection] Failed to open project:', reason);
     });
   }, []);
+
+  /**
+   * A project with no git remote has nothing for this machine to match it by,
+   * so opening it means choosing the folder it lives in. The native panel
+   * allows creating one, which covers "I don't have a folder for this yet".
+   */
+  const openSharedProject = useCallback(async (project: OrgProjectLocalState) => {
+    setOpenError(null);
+    const selection = await window.electronAPI.invoke('dialog:openDirectory', {
+      title: `Choose a folder for ${project.name || project.slug || 'this project'}`,
+      buttonLabel: 'Open Project',
+    });
+    const directoryPath = selection?.filePaths?.[0];
+    if (!directoryPath) return;
+
+    const result = await window.electronAPI.team.openSharedProject({
+      orgId,
+      teamProjectId: project.teamProjectId,
+      directoryPath,
+    });
+    if (!result?.success) {
+      setOpenError(result?.error ?? 'Could not open that project');
+      return;
+    }
+    onReload();
+  }, [orgId, onReload]);
 
   return (
     // A section of the sidebar rather than a panel pinned under it: Projects
@@ -136,8 +164,17 @@ export function OrgProjectsSidebarSection({
             key={project.projectId}
             project={project}
             onOpen={openProject}
+            onOpenShared={openSharedProject}
           />
         ))}
+        {openError && (
+          <div
+            className="org-projects-sidebar-open-error px-3 py-1 text-[11px] text-[var(--nim-error)]"
+            data-testid="org-projects-sidebar-open-error"
+          >
+            {openError}
+          </div>
+        )}
       </div>
     </section>
   );
@@ -146,17 +183,26 @@ export function OrgProjectsSidebarSection({
 function ProjectRow({
   project,
   onOpen,
+  onOpenShared,
 }: {
   project: OrgProjectLocalState;
   onOpen: (workspacePath: string | null) => void;
+  onOpenShared: (project: OrgProjectLocalState) => void;
 }) {
   const name = project.name || project.slug || 'Untitled project';
-  const disabled = project.localStatus === 'notLocal' || !project.workspacePath;
+  const isLocal = project.localStatus !== 'notLocal' && !!project.workspacePath;
+  // A project with no git remote can be attached to any folder on this machine.
+  // One backed by a remote cannot: cloning the repository is what connects it,
+  // and binding some other folder would give the project two answers.
+  const canAttachFolder = !isLocal && !project.gitRemoteHash;
+  const disabled = !isLocal && !canAttachFolder;
   const label = project.localStatus === 'open'
     ? 'Open locally'
     : project.localStatus === 'closed'
       ? 'Cloned locally'
-      : 'Not local';
+      : canAttachFolder
+        ? 'Choose a folder for this project'
+        : 'Not local';
   const dotClass = project.localStatus === 'open'
     ? 'bg-[var(--nim-success)] border-[var(--nim-success)]'
     : project.localStatus === 'closed'
@@ -175,21 +221,25 @@ function ProjectRow({
       data-project-id={project.projectId}
       data-local-status={project.localStatus}
       disabled={disabled}
-      title={disabled ? 'Clone flow is not available in this slice.' : label}
-      onClick={() => onOpen(project.workspacePath)}
+      title={disabled
+        ? 'Clone this project’s repository, then open it to work in it here.'
+        : label}
+      onClick={() => (canAttachFolder ? onOpenShared(project) : onOpen(project.workspacePath))}
     >
       <span className={`org-projects-sidebar-dot size-2 shrink-0 rounded-full border ${dotClass}`} aria-hidden="true" />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12px]">{name}</span>
         {project.localStatus === 'notLocal' && (
-          <span className="block truncate text-[10px] text-[var(--nim-text-faint)]">not local</span>
+          <span className="block truncate text-[10px] text-[var(--nim-text-faint)]">
+            {canAttachFolder ? 'open locally…' : 'not local'}
+          </span>
         )}
       </span>
       {/* Revealed on hover/focus: the affordance is the same on every row, so
           showing it always was just noise down the list. */}
       {!disabled && (
         <MaterialSymbol
-          icon="open_in_new"
+          icon={canAttachFolder ? 'create_new_folder' : 'open_in_new'}
           size={13}
           className="org-projects-sidebar-open shrink-0 opacity-0 transition-opacity group-hover:opacity-70 group-focus-visible:opacity-70"
         />

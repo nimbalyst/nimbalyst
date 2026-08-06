@@ -54,33 +54,32 @@ function getGitCommitErrorMessage(error: unknown): string {
 }
 
 /**
- * Convert a proposal path to a literal path inside the session's repository.
+ * Convert an IPC-supplied path to a literal path inside one repository.
  *
- * MCP commit proposals are deliberately scoped to their session worktree. Do
- * not let an absolute path, `..`, or Git pathspec magic widen that scope. The
- * returned path is always repository-relative and is passed to Git with its
- * literal-pathspec mode enabled below.
+ * Commit and discard both operate on concrete selected files, never Git query
+ * pathspecs. Keep this validation shared so neither destructive path can widen
+ * beyond the selected repository-relative filenames.
  */
-function toRepositoryRelativePath(workspacePath: string, filePath: string): string {
+export function toRepositoryRelativePath(workspacePath: string, filePath: string): string {
   if (!filePath || filePath.includes('\0')) {
-    throw new Error('Invalid file path in commit proposal');
+    throw new Error('Invalid file path');
   }
 
-  const resolvedPath = resolve(workspacePath, filePath);
-  const relativePath = relative(workspacePath, resolvedPath);
-  const escapesWorkspace =
+  const resolvedWorkspacePath = resolve(workspacePath);
+  const resolvedPath = resolve(resolvedWorkspacePath, filePath);
+  const relativePath = relative(resolvedWorkspacePath, resolvedPath);
+  const escapesRepository =
     relativePath === '..' ||
     relativePath.startsWith(`..${sep}`) ||
     isAbsolute(relativePath);
 
-  if (escapesWorkspace || relativePath.length === 0) {
-    throw new Error('Commit proposal file is outside the session workspace');
+  if (escapesRepository || relativePath.length === 0) {
+    throw new Error('File is outside the repository');
   }
 
-  // Git interprets a leading ':' as pathspec magic, even after '--'. The
-  // proposal contract is a list of concrete files, not a Git query language.
+  // `--` ends option parsing but does not disable a leading `:` pathspec.
   if (relativePath.startsWith(':')) {
-    throw new Error('Commit proposal file must be a literal path');
+    throw new Error('File must be a literal path, not a Git pathspec');
   }
 
   return relativePath.replace(/\\/g, '/');

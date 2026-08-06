@@ -32,7 +32,6 @@ describe('organization wizard persistence', () => {
     const state = {
       ...createOrgWizardState({ orgName: 'Acme Robotics' }),
       emails: ['member@example.com'],
-      selectedRoomIds: ['dev'],
     };
 
     expect(await persistOrgWizardDraft(state)).toBe(true);
@@ -40,7 +39,6 @@ describe('organization wizard persistence', () => {
     await expect(readOrgWizardDraft(null)).resolves.toMatchObject({
       orgName: 'Acme Robotics',
       emails: ['member@example.com'],
-      selectedRoomIds: ['dev'],
     });
   });
 

@@ -41,6 +41,7 @@
         "displayName": "Spreadsheet Editor",
         "component": "SpreadsheetEditor",
         "supportsDiffMode": true,
+        "readOnlyDuringDiff": true,
         "supportsSourceMode": true,
         "supportsTranscriptEmbed": true,
         "collaboration": {
@@ -48,6 +49,10 @@
           "awarenessFields": ["selectedCell", "editingCell"]
         }
       }
+    ],
+    "aiTools": [
+      "csv-spreadsheet.analyze_data",
+      "csv-spreadsheet.apply_formula"
     ],
     "fileIcons": {
       "*.csv": "table",

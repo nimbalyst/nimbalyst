@@ -186,7 +186,7 @@ describe('GitCommitService', () => {
       const result = await executeGitCommit(tmpRoot, 'must not commit outside path', [outsidePath]);
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('outside the session workspace');
+      expect(result.error).toContain('outside the repository');
     } finally {
       await fs.rm(outsidePath, { force: true });
     }

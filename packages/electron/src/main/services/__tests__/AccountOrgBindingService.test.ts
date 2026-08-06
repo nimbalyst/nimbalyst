@@ -22,6 +22,7 @@ vi.mock('../../utils/logger', () => ({
 
 import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
 import {
+  findBindingsWithMissingOrg,
   repairAccountOrgBindingFromEmail,
   resolveAccountOrgBinding,
   resolveTeamOrgAccountBinding,
@@ -143,5 +144,30 @@ describe('AccountOrgBindingService', () => {
     // A signed-out account is never eligible, even when it is the sync account.
     await expect(resolveTeamOrgAccountBinding(db, 'team', ['org-a-sorts-first'], 'org-b-sorts-second'))
       .resolves.toEqual({ personalOrgId: 'org-a-sorts-first', teamMemberId: 'member-a' });
+  });
+
+  /**
+   * NIM-2466. A binding row can look perfectly healthy while the rows it points
+   * at are absent — that install had `server-create`, `server-exchange` and
+   * `server-sync` bindings for an org with no `orgs` row at all, and nothing
+   * anywhere noticed. "A binding exists" is not the same as "the org resolves".
+   */
+  it('reports bindings whose team org has no local orgs row', async () => {
+    await upsertAccountOrgBinding(db, {
+      personalOrgId: 'personal-1',
+      teamOrgId: 'team',
+      teamMemberId: 'member-healthy',
+      source: 'server-sync',
+    });
+    await upsertAccountOrgBinding(db, {
+      personalOrgId: 'personal-1',
+      teamOrgId: 'team-never-projected',
+      teamMemberId: 'member-dangling',
+      source: 'server-exchange',
+    });
+
+    await expect(findBindingsWithMissingOrg(db)).resolves.toEqual([
+      { personalOrgId: 'personal-1', teamOrgId: 'team-never-projected' },
+    ]);
   });
 });

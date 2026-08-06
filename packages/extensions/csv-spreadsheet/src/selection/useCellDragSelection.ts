@@ -23,15 +23,30 @@ import {
   type GridSections,
   type SectionAwareGrid,
 } from './crossSectionSelection';
+import {
+  autoScrollDelta,
+  clampPointToBounds,
+  measureCellArea,
+  scrollGridBy,
+  type Bounds,
+  type Point,
+} from './autoScroll';
 
 /** Pointer travel before we treat a press as a drag rather than a click. */
 const DRAG_THRESHOLD_PX = 3;
 
 interface DragState {
   anchor: { row: number; col: number };
-  anchorPoint: { clientX: number; clientY: number };
+  anchorPoint: Point;
   last: { row: number; col: number };
   sections: GridSections;
+  /**
+   * The visible cell region, measured once at drag start. Fixed geometry for
+   * the life of the drag -- scrolling moves the cells through it, not it.
+   */
+  bounds: Bounds | null;
+  /** Latest pointer position, so the autoscroll loop can re-probe it. */
+  point: Point;
   active: boolean;
 }
 
@@ -76,6 +91,7 @@ export function useCellDragSelection({
   suppressGridRangeRef,
 }: UseCellDragSelectionOptions): void {
   const dragRef = useRef<DragState | null>(null);
+  const autoScrollFrameRef = useRef<number | null>(null);
 
   const applyRange = useCallback(
     (range: NormalizedSelectionRange, sections: GridSections) => {
@@ -102,6 +118,55 @@ export function useCellDragSelection({
     [applyRange]
   );
 
+  /**
+   * Extend the selection to whatever cell the current pointer position names.
+   * A pointer outside the cell area is pulled back onto the nearest edge first,
+   * so an overshooting drag selects the last visible row/column instead of
+   * stalling -- and, once the autoscroll loop starts moving the grid under it,
+   * keeps picking up rows and columns as they come into view.
+   */
+  const extendToPointer = useCallback(() => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const probe = drag.bounds ? clampPointToBounds(drag.point, drag.bounds) : drag.point;
+    extendTo(nearestCellFromPoint(drag.sections, probe, drag.anchorPoint, drag.last));
+  }, [extendTo]);
+
+  const stopAutoScroll = useCallback(() => {
+    if (autoScrollFrameRef.current === null) return;
+    cancelAnimationFrame(autoScrollFrameRef.current);
+    autoScrollFrameRef.current = null;
+  }, []);
+
+  /**
+   * One autoscroll frame: extend to where the pointer now points (the grid has
+   * moved since the last frame), then scroll further if it is still outside.
+   * Extending before scrolling gives RevoGrid a frame to render the rows the
+   * previous scroll brought in.
+   */
+  const autoScrollStep = useCallback(() => {
+    autoScrollFrameRef.current = null;
+
+    const drag = dragRef.current;
+    const grid = gridRef.current;
+    if (!drag || !drag.active || !drag.bounds || !grid) return;
+
+    const delta = autoScrollDelta(drag.point, drag.bounds);
+    if (delta.x === 0 && delta.y === 0) return;
+
+    extendToPointer();
+    scrollGridBy(grid, delta);
+    autoScrollFrameRef.current = requestAnimationFrame(autoScrollStep);
+  }, [gridRef, extendToPointer]);
+
+  const startAutoScroll = useCallback(() => {
+    const drag = dragRef.current;
+    if (!drag?.bounds || autoScrollFrameRef.current !== null) return;
+    const delta = autoScrollDelta(drag.point, drag.bounds);
+    if (delta.x === 0 && delta.y === 0) return;
+    autoScrollFrameRef.current = requestAnimationFrame(autoScrollStep);
+  }, [autoScrollStep]);
+
   const handlePointerDown = useCallback(
     async (event: PointerEvent) => {
       if (!enabled || event.button !== 0) return;
@@ -122,12 +187,15 @@ export function useCellDragSelection({
 
       const shiftExtend = event.shiftKey && dragRef.current;
       const anchor = shiftExtend ? dragRef.current!.anchor : cell;
+      const point = { clientX: event.clientX, clientY: event.clientY };
 
       dragRef.current = {
         anchor,
-        anchorPoint: { clientX: event.clientX, clientY: event.clientY },
+        anchorPoint: point,
         last: cell,
         sections,
+        bounds: measureCellArea(grid),
+        point,
         // Shift+click is a completed gesture, not a pending drag.
         active: !!shiftExtend,
       };
@@ -155,18 +223,15 @@ export function useCellDragSelection({
         suppressGridRangeRef.current = true;
       }
 
-      const target = nearestCellFromPoint(
-        drag.sections,
-        { clientX: event.clientX, clientY: event.clientY },
-        drag.anchorPoint,
-        drag.last
-      );
-      extendTo(target);
+      drag.point = { clientX: event.clientX, clientY: event.clientY };
+      extendToPointer();
+      startAutoScroll();
     },
-    [extendTo, suppressGridRangeRef]
+    [extendToPointer, startAutoScroll, suppressGridRangeRef]
   );
 
   const handlePointerUp = useCallback(() => {
+    stopAutoScroll();
     const drag = dragRef.current;
     if (!drag) return;
     // Keep the anchor for a subsequent shift+click, but stop tracking motion.
@@ -176,7 +241,7 @@ export function useCellDragSelection({
     setTimeout(() => {
       suppressGridRangeRef.current = false;
     }, 0);
-  }, [suppressGridRangeRef]);
+  }, [stopAutoScroll, suppressGridRangeRef]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -185,11 +250,22 @@ export function useCellDragSelection({
     container.addEventListener('pointerdown', handlePointerDown);
     document.addEventListener('pointermove', handlePointerMove);
     document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointercancel', handlePointerUp);
 
     return () => {
       container.removeEventListener('pointerdown', handlePointerDown);
       document.removeEventListener('pointermove', handlePointerMove);
       document.removeEventListener('pointerup', handlePointerUp);
+      document.removeEventListener('pointercancel', handlePointerUp);
+      // A drag interrupted by unmount would otherwise leave the loop running.
+      stopAutoScroll();
     };
-  }, [containerRef, enabled, handlePointerDown, handlePointerMove, handlePointerUp]);
+  }, [
+    containerRef,
+    enabled,
+    handlePointerDown,
+    handlePointerMove,
+    handlePointerUp,
+    stopAutoScroll,
+  ]);
 }

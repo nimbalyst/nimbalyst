@@ -319,6 +319,16 @@ function validateManifest(
               });
             }
             if (
+              editorRecord.readOnlyDuringDiff !== undefined &&
+              typeof editorRecord.readOnlyDuringDiff !== 'boolean'
+            ) {
+              errors.push({
+                error: `customEditors[${index}] has invalid 'readOnlyDuringDiff'`,
+                field: `contributions.customEditors[${index}].readOnlyDuringDiff`,
+                suggestion: 'Use "readOnlyDuringDiff": true or false',
+              });
+            }
+            if (
               editorRecord.showDocumentHeader !== undefined &&
               typeof editorRecord.showDocumentHeader !== 'boolean'
             ) {

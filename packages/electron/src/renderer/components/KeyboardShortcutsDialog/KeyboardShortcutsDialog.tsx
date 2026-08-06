@@ -210,6 +210,8 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Open focused item details', shortcut: 'Enter' },
         { label: 'Commit edit / next row', shortcut: 'Enter (while editing)' },
         { label: 'Cancel edit / close details', shortcut: 'Escape' },
+        { label: 'Undo last grid edit', shortcut: IS_MAC ? '⌘+Z' : 'Ctrl+Z' },
+        { label: 'Redo grid edit', shortcut: IS_MAC ? '⌘+Shift+Z' : 'Ctrl+Shift+Z' },
       ],
     },
   ];

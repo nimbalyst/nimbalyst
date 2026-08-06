@@ -1,7 +1,7 @@
 /**
  * Organization creation wizard.
  *
- * All five steps — account, name, invite, rooms, done — run in a single
+ * All four steps — account, name, invite, done — run in a single
  * main-window dialog. The wizard never opens the organization window itself;
  * it only queues the "land on #general" route for whenever the user opens it.
  * Everything stateful lives in `orgWizardModel.ts` and every remote side effect
@@ -26,10 +26,8 @@ import {
   queueOrgWindowGeneralRoute,
   readOrgWizardDraft,
 } from './orgOnboardingStorage';
-import { GENERAL_ROOM_ID } from './orgWizardModel';
 import {
   ORG_WIZARD_STEP_LABELS,
-  STARTER_ROOM_OPTIONS,
   addEmails,
   advance,
   canAdvance,
@@ -44,7 +42,6 @@ import {
   resolveAuthenticatedAccount,
   resolveSourcePersonalOrgId,
   stepStatus,
-  toggleStarterRoom,
   type OrgWizardPersonalAccount,
   type OrgWizardState,
 } from './orgWizardModel';
@@ -53,8 +50,6 @@ import { OrgWizardAccountStep } from './OrgWizardAccountStep';
 import { stytchAuthAtom, type StytchAuthSnapshot } from '../../../store/atoms/stytchAuth';
 import {
   runCreateOrganization,
-  runCreateStarterRooms,
-  runPostWelcomeMessage,
   runSendInvites,
   type OrgWizardApi,
 } from './orgWizardRunner';
@@ -490,27 +485,9 @@ export function OrgCreationWizard({
     });
   }, [emailDraft, entryPoint, runStep, wizardApi]);
 
-  const handleCreateRooms = useCallback(async () => {
-    await runStep(async (current) => {
-      const next = await runCreateStarterRooms(current, wizardApi);
-      if (next.error) return next;
-      const posted = await runPostWelcomeMessage(next, wizardApi, GENERAL_ROOM_ID);
-      return advance(posted);
-    });
-  }, [runStep, wizardApi]);
-
-  const handleSkip = useCallback(async () => {
-    if (state.step === 'invite') {
-      update((current) => advance(current));
-      return;
-    }
-    // Skipping the rooms step still posts the welcome message: it is what makes
-    // #general readable when the creator lands there.
-    await runStep(async (current) => {
-      const posted = await runPostWelcomeMessage(current, wizardApi, GENERAL_ROOM_ID);
-      return advance(posted);
-    });
-  }, [runStep, state.step, wizardApi]);
+  const handleSkip = useCallback(() => {
+    update((current) => advance(current));
+  }, [update]);
 
   /**
    * Two ways out, and they mean different things.
@@ -636,7 +613,7 @@ export function OrgCreationWizard({
               state.busy
                 ? 'Finishing the current step…'
                 : state.createdOrgId
-                  ? 'Close setup — the organization stays, and you can invite people and add rooms any time'
+                  ? 'Close setup — the organization stays, and you can invite people any time'
                   : 'Close and discard this setup'
             }
             onClick={() => void dismiss('discard')}
@@ -836,49 +813,6 @@ export function OrgCreationWizard({
             </section>
           )}
 
-          {state.step === 'rooms' && (
-            <section className="org-wizard-rooms-step mt-4" data-testid="org-wizard-rooms-step">
-              <h2 className="m-0 text-base font-semibold text-[var(--nim-text)]">Starting rooms</h2>
-              <p className="m-0 mt-1 text-[12px] text-[var(--nim-text-muted)]">
-                Every organization has #general. Add any of these to start with — rooms can be created and archived at any time.
-              </p>
-              <div className="org-wizard-room-chips mt-3 flex flex-wrap gap-2">
-                <span
-                  className="org-wizard-room-chip org-wizard-room-chip-included flex items-center gap-1.5 rounded-full border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3 py-1.5 text-[12px] text-[var(--nim-text-muted)]"
-                  data-testid="org-wizard-room-chip-general"
-                >
-                  <span className="text-[var(--nim-text-disabled)]">#</span>
-                  {GENERAL_ROOM_ID}
-                  <span className="text-[10px] text-[var(--nim-success)]">included</span>
-                </span>
-                {STARTER_ROOM_OPTIONS.map((option) => {
-                  const selected = state.selectedRoomIds.includes(option.id);
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      role="checkbox"
-                      aria-checked={selected}
-                      title={option.topic}
-                      className={`org-wizard-room-chip flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] ${
-                        selected
-                          ? 'border-[var(--nim-primary)] bg-[color-mix(in_srgb,var(--nim-primary)_12%,transparent)] text-[var(--nim-text)]'
-                          : 'border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text-muted)]'
-                      }`}
-                      data-testid={`org-wizard-room-chip-${option.id}`}
-                      data-selected={selected}
-                      onClick={() => update((current) => toggleStarterRoom(current, option.id))}
-                    >
-                      <MaterialSymbol icon={selected ? 'check_box' : 'check_box_outline_blank'} size={14} />
-                      <span className="text-[var(--nim-text-disabled)]">#</span>
-                      {option.title}
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-
           {state.step === 'done' && (
             <section className="org-wizard-done-step mt-4" data-testid="org-wizard-done-step">
               <h2 className="m-0 text-base font-semibold text-[var(--nim-text)]">
@@ -895,15 +829,9 @@ export function OrgCreationWizard({
                     ? `${state.invitedEmails.length} ${state.invitedEmails.length === 1 ? 'invitation' : 'invitations'} sent`
                     : 'No invitations sent yet'}
                 </li>
-                <li className="flex items-center gap-2">
-                  <MaterialSymbol icon="check_circle" size={14} className="text-[var(--nim-success)]" />
-                  {state.createdRoomIds.length > 0
-                    ? `#general plus ${state.createdRoomIds.map((roomId) => `#${roomId}`).join(', ')}`
-                    : '#general is ready'}
-                </li>
               </ul>
               <p className="m-0 mt-3 text-[12px] text-[var(--nim-text-muted)]">
-                Open the organization from the org switcher whenever you're ready — it starts on #general, where a note explains the Inbox, rooms and admin sections.
+                Open the organization from the org switcher whenever you're ready.
               </p>
             </section>
           )}
@@ -936,7 +864,7 @@ export function OrgCreationWizard({
                 type="button"
                 className="org-wizard-skip rounded-md border border-[var(--nim-border)] px-3 py-1.5 text-[12px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
                 data-testid="org-wizard-skip"
-                onClick={() => void handleSkip()}
+                onClick={handleSkip}
               >
                 Skip for now
               </button>
@@ -967,17 +895,6 @@ export function OrgCreationWizard({
                 onClick={() => void handleSendInvites()}
               >
                 {state.busy ? 'Sending…' : 'Send invites and continue'}
-              </button>
-            )}
-            {state.step === 'rooms' && (
-              <button
-                type="button"
-                disabled={state.busy}
-                className="org-wizard-primary rounded-md bg-[var(--nim-primary)] px-4 py-1.5 text-[12px] font-semibold text-[var(--nim-on-primary)] disabled:opacity-50"
-                data-testid="org-wizard-primary"
-                onClick={() => void handleCreateRooms()}
-              >
-                {state.busy ? 'Creating…' : 'Create rooms and continue'}
               </button>
             )}
             {state.step === 'done' && (

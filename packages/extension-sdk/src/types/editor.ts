@@ -530,6 +530,20 @@ export interface EditorHost {
    */
   onDiffCleared?(callback: () => void): () => void;
 
+  // ============ FIND (OPTIONAL) ============
+
+  /**
+   * Subscribe to the app's Find command (Cmd+F).
+   *
+   * Cmd+F is a native menu accelerator, so the renderer never sees the
+   * keystroke -- an extension cannot bind it itself. The command arrives over
+   * IPC and the host routes it to whichever editor owns the active file, so an
+   * editor with its own find UI opens it from here.
+   *
+   * Returns an unsubscribe function.
+   */
+  onFindRequested?(callback: () => void): () => void;
+
   // ============ SOURCE MODE (OPTIONAL) ============
 
   /**

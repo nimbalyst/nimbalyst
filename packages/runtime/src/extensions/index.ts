@@ -108,10 +108,16 @@ export type { CollectVoiceContextOptions } from './VoiceContextProviderRegistry'
 export {
   registerEditorAPI,
   unregisterEditorAPI,
+  createEditorAPIOwnerToken,
   getEditorAPI as getExtensionEditorAPI,
   hasEditorAPI as hasExtensionEditorAPI,
   flushEditorSave,
   getRegisteredPaths as getRegisteredEditorPaths,
+} from './ExtensionEditorAPIRegistry';
+export type {
+  EditorAPIOwnerToken,
+  EditorAPIRegistrationPriority,
+  RegisterEditorAPIOptions,
 } from './ExtensionEditorAPIRegistry';
 
 // Editor Host

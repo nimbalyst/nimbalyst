@@ -14,7 +14,20 @@ import type { TrackerRecord } from '../../../core/TrackerRecord';
 import type { TrackerItemType } from '../../../core/DocumentService';
 import { globalRegistry } from '../models';
 import { getMembersField, addMembersValue } from '../models/trackerCollections';
-import { resolveRoleFieldName } from '../trackerRecordAccessors';
+import { getRecordTitle, resolveRoleFieldName } from '../trackerRecordAccessors';
+import {
+  applyClear,
+  applyRecord,
+  applyRedo,
+  applyUndo,
+  areTrackerUndoValuesEqual,
+  createEmptyHistory,
+  mergeUndoChanges,
+  MAX_UNDO_CHANGES_PER_ENTRY,
+  type TrackerUndoChange,
+  type TrackerUndoEntry,
+  type TrackerUndoHistory,
+} from './trackerUndoStack';
 
 export type EditingField = 'status' | 'priority' | 'title';
 
@@ -33,10 +46,31 @@ export interface UseTrackerRowsOptions {
   onItemSelect?: (itemId: string) => void;
   /** Bulk delete callback. */
   onDeleteItems?: (itemIds: string[]) => void;
-  /** Bulk archive callback. */
-  onArchiveItems?: (itemIds: string[], archive: boolean) => void;
+  /**
+   * Bulk archive callback. `options.record === false` marks a replay, so a
+   * recorder wrapped around this callback must not push a fresh undo entry for
+   * a write the history is already tracking.
+   */
+  onArchiveItems?: (
+    itemIds: string[],
+    archive: boolean,
+    options?: { record?: boolean },
+  ) => void | Promise<void>;
   /** Files-mode switcher used when opening an item that lives in a document. */
   onSwitchToFilesMode?: () => void;
+  /**
+   * Fallback lookup for records this surface can write but does not render.
+   * "Add to Collection" targets a milestone drawn from the all-types set, so
+   * under a type filter the collection is absent from `items` and its undo
+   * would otherwise be reported as drift it never suffered.
+   */
+  resolveRecordById?: (itemId: string) => TrackerRecord | undefined;
+}
+
+export interface TrackerUndoReplayResult {
+  label: string;
+  applied: number;
+  skipped: number;
 }
 
 export interface UseTrackerRowsResult {
@@ -67,6 +101,20 @@ export interface UseTrackerRowsResult {
   handleItemUpdate: (item: TrackerRecord, updates: Record<string, unknown>) => Promise<void>;
   /** Apply the same field/value pair across many items (bulk edit, fill-down, paste). */
   handleBulkFieldUpdate: (items: TrackerRecord[], field: string, value: unknown) => Promise<void>;
+
+  // Undo history
+  runUndoable: <T>(label: string, fn: () => Promise<T>) => Promise<T>;
+  /**
+   * Record an entry supplied by a write path outside handleItemUpdate (archive).
+   * Pass the `captureUndoGeneration()` value read *before* the write started so
+   * a history clear that lands mid-write discards the entry instead of dropping
+   * it into a history that no longer describes this view.
+   */
+  recordUndoEntry: (entry: TrackerUndoEntry, generation?: number) => void;
+  /** Current history generation; bumped by every clear. */
+  captureUndoGeneration: () => number;
+  undo: () => Promise<TrackerUndoReplayResult | null>;
+  redo: () => Promise<TrackerUndoReplayResult | null>;
 
   // Row interaction
   isItemEditable: (item: TrackerRecord) => boolean;
@@ -114,7 +162,9 @@ export function useTrackerRows({
   activeTypeFilter,
   onItemSelect,
   onDeleteItems,
+  onArchiveItems,
   onSwitchToFilesMode,
+  resolveRecordById,
 }: UseTrackerRowsOptions): UseTrackerRowsResult {
   const posthog = usePostHog();
 
@@ -140,6 +190,71 @@ export function useTrackerRows({
   // Keyboard focus (independent of selection)
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
 
+  // Ref-only: nothing renders off the history, so putting it in state would
+  // re-render every row on each recorded edit for no observable difference.
+  const undoHistoryRef = useRef<TrackerUndoHistory>(createEmptyHistory());
+  const undoBatchRef = useRef<{
+    label: string;
+    generation: number;
+    changes: TrackerUndoChange[];
+  } | null>(null);
+  const undoGenerationRef = useRef(0);
+  const replayInFlightRef = useRef(false);
+
+  const captureUndoGeneration = useCallback(() => undoGenerationRef.current, []);
+
+  const recordUndoEntry = useCallback((entry: TrackerUndoEntry, generation?: number) => {
+    if (entry.changes.length === 0) return;
+    // A clear between the write starting and this call means the entry belongs
+    // to a history that no longer exists.
+    if (generation !== undefined && generation !== undoGenerationRef.current) return;
+
+    const batch = undoBatchRef.current;
+    if (batch) {
+      // Past the cap the entry is doomed anyway (applyRecord drops it whole), so
+      // stop growing it -- one change beyond the cap already records the overflow.
+      if (batch.changes.length > MAX_UNDO_CHANGES_PER_ENTRY) return;
+      batch.changes = mergeUndoChanges(batch.changes, entry.changes);
+      return;
+    }
+    undoHistoryRef.current = applyRecord(undoHistoryRef.current, {
+      label: entry.label,
+      changes: mergeUndoChanges([], entry.changes),
+    });
+  }, []);
+
+  const runUndoable = useCallback(async <T,>(
+    label: string,
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    // An open batch is joined rather than nested. Two independent gestures can
+    // only overlap inside the window of a single durable write, and merging them
+    // costs a coarser label -- never a lost inverse. JS has no async-context
+    // hook to tell that apart from real nesting, so it is not worth machinery.
+    if (undoBatchRef.current) {
+      return await fn();
+    }
+
+    const batch = { label, generation: undoGenerationRef.current, changes: [] as TrackerUndoChange[] };
+    undoBatchRef.current = batch;
+    try {
+      return await fn();
+    } finally {
+      if (undoBatchRef.current === batch) {
+        undoBatchRef.current = null;
+        // Durable writes cannot be rolled back as a group. If fn throws after
+        // some writes land, keep those inverses so the user can still undo them.
+        recordUndoEntry({ label: batch.label, changes: batch.changes }, batch.generation);
+      }
+    }
+  }, [recordUndoEntry]);
+
+  const clearUndoHistory = useCallback(() => {
+    undoGenerationRef.current += 1;
+    undoBatchRef.current = null;
+    undoHistoryRef.current = applyClear();
+  }, []);
+
   // Context menu state
   const [contextAnchor, setContextAnchor] = useState<DOMRect | null>(null);
 
@@ -158,7 +273,8 @@ export function useTrackerRows({
   useEffect(() => {
     setSelectedIds(new Set());
     lastClickedIndexRef.current = -1;
-  }, [activeTypeFilter]);
+    clearUndoHistory();
+  }, [activeTypeFilter, clearUndoHistory]);
 
   // Track sorted items in a ref so event handlers can access them
   const itemsRef = useRef<TrackerRecord[]>(items);
@@ -179,32 +295,215 @@ export function useTrackerRows({
    * document-backed and native paths take a full `updates` map, so a multi-field
    * cell commit costs one write (and one sync message) rather than one per field.
    */
-  const handleItemUpdate = useCallback(async (item: TrackerRecord, updates: Record<string, unknown>) => {
+  const updateItem = useCallback(async (
+    item: TrackerRecord,
+    updates: Record<string, unknown>,
+    options?: { record?: boolean },
+  ): Promise<boolean> => {
     const electronAPI = (window as any).electronAPI;
-    if (!electronAPI?.documentService) return;
-    if (Object.keys(updates).length === 0) return;
+    if (!electronAPI?.documentService) return false;
+    const fields = Object.keys(updates);
+    if (fields.length === 0) return false;
+
+    const generation = undoGenerationRef.current;
+    const changes: TrackerUndoChange[] = fields.map(field => ({
+      kind: 'field',
+      itemId: item.id,
+      field,
+      previousValue: item.fields[field],
+      nextValue: updates[field],
+    }));
 
     try {
+      // Both IPC calls resolve `{success, error}` rather than rejecting, so a
+      // main-process failure looks exactly like a success until it is read.
+      let result: { success?: boolean; error?: string } | undefined;
       if ((item.source === 'frontmatter' || item.source === 'import' || item.source === 'inline') && item.system.documentPath) {
         if (electronAPI.documentService.updateTrackerItemInFile) {
-          await electronAPI.documentService.updateTrackerItemInFile({
+          result = await electronAPI.documentService.updateTrackerItemInFile({
             itemId: item.id,
             updates,
           });
+        } else {
+          return false;
         }
       } else if (!item.system.documentPath || item.source === 'native') {
         const tracker = globalRegistry.get(item.primaryType);
         const syncMode = tracker?.sync?.mode || 'local';
-        await electronAPI.documentService.updateTrackerItem({
+        result = await electronAPI.documentService.updateTrackerItem({
           itemId: item.id,
           updates,
           syncMode,
         });
+      } else {
+        return false;
       }
+
+      if (result?.success === false) {
+        console.error('[useTrackerRows] Tracker item update rejected:', result.error);
+        return false;
+      }
+
+      // Provenance, not timing: only the caller knows whether this write is the
+      // user's own edit or a replay of one already in the history. A replay in
+      // flight must not suppress recording for an unrelated edit beside it.
+      if (options?.record !== false) {
+        const label = fields.length === 1
+          ? `Edit ${fields[0].replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase())}`
+          : `Edit ${fields.length} fields`;
+        recordUndoEntry({ label, changes }, generation);
+      }
+      return true;
     } catch (err) {
       console.error('[useTrackerRows] Failed to update item:', err);
+      return false;
     }
-  }, []);
+  }, [recordUndoEntry]);
+
+  const handleItemUpdate = useCallback(async (
+    item: TrackerRecord,
+    updates: Record<string, unknown>,
+  ): Promise<void> => {
+    await updateItem(item, updates);
+  }, [updateItem]);
+
+  const replayEntry = useCallback(async (
+    entry: TrackerUndoEntry,
+    direction: 'undo' | 'redo',
+  ): Promise<TrackerUndoReplayResult> => {
+    const changesByItem = new Map<string, TrackerUndoChange[]>();
+    for (const change of entry.changes) {
+      const group = changesByItem.get(change.itemId) ?? [];
+      group.push(change);
+      changesByItem.set(change.itemId, group);
+    }
+
+    let applied = 0;
+    let skipped = 0;
+    for (const [itemId, changes] of changesByItem) {
+      // `find` may miss: archiving an item drops it out of the loaded set, and
+      // that absence is the very thing an archive undo exists to reverse.
+      const item = itemsRef.current.find(candidate => candidate.id === itemId)
+        ?? resolveRecordById?.(itemId)
+        ?? null;
+      const fieldChanges = changes.filter(
+        (change): change is Extract<TrackerUndoChange, { kind: 'field' }> => change.kind === 'field',
+      );
+      const archiveChanges = changes.filter(
+        (change): change is Extract<TrackerUndoChange, { kind: 'archive' }> => change.kind === 'archive',
+      );
+
+      if (fieldChanges.length > 0) {
+        // A field write needs the live record: it is the write's `item`
+        // argument and the only source for the drift comparison.
+        if (!item || !isItemEditable(item)) {
+          skipped += fieldChanges.length;
+        } else {
+          const fieldUpdates: Record<string, unknown> = {};
+          let eligibleFieldChanges = 0;
+
+          for (const change of fieldChanges) {
+            const expectedValue = direction === 'undo' ? change.nextValue : change.previousValue;
+            if (!areTrackerUndoValuesEqual(item.fields[change.field], expectedValue)) {
+              skipped += 1;
+              continue;
+            }
+
+            fieldUpdates[change.field] = direction === 'undo'
+              ? change.previousValue
+              : change.nextValue;
+            eligibleFieldChanges += 1;
+          }
+
+          if (eligibleFieldChanges > 0) {
+            // All eligible fields for an item share the normal durable update
+            // path, preserving its one-write-per-row behavior during replay.
+            // `record: false` marks the write as a replay by provenance, so a
+            // user edit landing alongside it still records its own inverse.
+            if (await updateItem(item, fieldUpdates, { record: false })) {
+              applied += eligibleFieldChanges;
+            } else {
+              skipped += eligibleFieldChanges;
+            }
+          }
+        }
+      }
+
+      if (archiveChanges.length > 0) {
+        if (!onArchiveItems) {
+          skipped += archiveChanges.length;
+          continue;
+        }
+
+        // One entry holds at most one archive change per item -- the recorder
+        // emits a single change per id, so there is no direction to reconcile.
+        const change = archiveChanges[0];
+        const expectedArchived = direction === 'undo'
+          ? change.nextArchived
+          : change.previousArchived;
+        // Drift is only checkable while the record is still loaded. Once it is
+        // gone the archive flag is unreadable, and replaying is safe anyway:
+        // `archiveTrackerItem` is an absolute set, not a toggle.
+        if (item && item.archived !== expectedArchived) {
+          skipped += archiveChanges.length;
+          continue;
+        }
+
+        try {
+          await onArchiveItems(
+            [itemId],
+            direction === 'undo' ? change.previousArchived : change.nextArchived,
+            { record: false },
+          );
+          // A rejection is the only failure this path can see: the callback
+          // returns void, and the host's archive loop logs and swallows per-item
+          // IPC failures. A resolved call therefore means "attempted", not
+          // "applied" -- see the Risks section of the plan.
+          applied += archiveChanges.length;
+        } catch (err) {
+          console.error('[useTrackerRows] Failed to replay archive change:', err);
+          skipped += archiveChanges.length;
+        }
+      }
+    }
+
+    return { label: entry.label, applied, skipped };
+  }, [isItemEditable, onArchiveItems, resolveRecordById, updateItem]);
+
+  /**
+   * Replay the top of the stack, one at a time.
+   *
+   * A second Cmd+Z pressed while the first is still writing is **dropped, not
+   * queued**. Both entries would otherwise be consumed against the same record
+   * snapshot: the first replay writes B, the second still reads C and skips its
+   * change as drift -- two entries gone, one write done. Queuing does not fix
+   * that, because what the second replay has to wait for is the rendered record
+   * catching up (IPC -> main -> tracker atom -> re-render), and the hook has no
+   * handle on that round trip; it can only await its own IPC call. Dropping is
+   * the fail-safe half: the history is untouched and the keystroke is the same
+   * no-op as Cmd+Z on an empty stack, so pressing again works.
+   */
+  const replayTop = useCallback(async (
+    direction: 'undo' | 'redo',
+  ): Promise<TrackerUndoReplayResult | null> => {
+    if (replayInFlightRef.current) return null;
+    replayInFlightRef.current = true;
+    try {
+      const result = direction === 'undo'
+        ? applyUndo(undoHistoryRef.current)
+        : applyRedo(undoHistoryRef.current);
+      if (!result.entry) return null;
+      // Consume before replay. Even an entirely stale entry must not remain at
+      // the top of the stack and trap the user on repeated no-op undos.
+      undoHistoryRef.current = result.history;
+      return await replayEntry(result.entry, direction);
+    } finally {
+      replayInFlightRef.current = false;
+    }
+  }, [replayEntry]);
+
+  const undo = useCallback(() => replayTop('undo'), [replayTop]);
+  const redo = useCallback(() => replayTop('redo'), [replayTop]);
 
   const handleFieldUpdate = useCallback(async (item: TrackerRecord, field: string, value: unknown) => {
     await handleItemUpdate(item, { [field]: value });
@@ -286,11 +585,14 @@ export function useTrackerRows({
   ) => {
     closeContextMenu();
     const itemsToUpdate = itemsRef.current.filter(i => selectedIds.has(i.id) && isItemEditable(i));
-    await Promise.all(itemsToUpdate.map(item =>
-      handleItemUpdate(item, { [resolveRoleFieldName(item.primaryType, role)]: value })
-    ));
+    const roleLabel = role === 'workflowStatus' ? 'Status' : 'Priority';
+    await runUndoable(`Set ${roleLabel} on ${itemsToUpdate.length} items`, async () => {
+      await Promise.all(itemsToUpdate.map(item =>
+        handleItemUpdate(item, { [resolveRoleFieldName(item.primaryType, role)]: value })
+      ));
+    });
     setEditingCell(null);
-  }, [selectedIds, closeContextMenu, isItemEditable, handleItemUpdate]);
+  }, [selectedIds, closeContextMenu, isItemEditable, handleItemUpdate, runUndoable]);
 
   /** Bulk status update for selected items */
   const handleBulkStatusUpdate = useCallback(
@@ -314,10 +616,13 @@ export function useTrackerRows({
 
     // One write on the collection rather than one per member: the inverse edge
     // on each member is propagated by the main process.
-    await handleItemUpdate(collection, {
-      [membersField.name]: addMembersValue(collection, selected),
+    const collectionTitle = getRecordTitle(collection) || collection.id;
+    await runUndoable(`Add ${selected.length} items to ${collectionTitle}`, async () => {
+      await handleItemUpdate(collection, {
+        [membersField.name]: addMembersValue(collection, selected),
+      });
     });
-  }, [selectedIds, closeContextMenu, handleItemUpdate]);
+  }, [selectedIds, closeContextMenu, handleItemUpdate, runUndoable]);
 
   /** Open a document-backed tracker item in the editor */
   const openItemInEditor = useCallback((item: TrackerRecord) => {
@@ -542,6 +847,11 @@ export function useTrackerRows({
     handleFieldUpdate,
     handleItemUpdate,
     handleBulkFieldUpdate,
+    runUndoable,
+    recordUndoEntry,
+    captureUndoGeneration,
+    undo,
+    redo,
     isItemEditable,
     handleRowClick,
     openItemInEditor,

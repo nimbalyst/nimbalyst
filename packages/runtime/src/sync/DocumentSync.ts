@@ -175,6 +175,16 @@ export class DocumentSyncProvider {
    * cached (wrong-org / expired) token that just got rejected.
    */
   private forceJwtRefreshNextConnect = false;
+  /**
+   * Upgrade-rejection status from the most recent close, or null if the last
+   * close wasn't an auth rejection.
+   *
+   * Lets a caller that connects for one bounded operation (the headless seed)
+   * distinguish "the server refused this room" from "still connecting" instead
+   * of polling `getStatus()` until its timeout expires. A 404 here means the
+   * document id is not in the org's index yet (NIM-2472).
+   */
+  private lastAuthRejectionStatus: number | null = null;
   private queuedPendingUpdate: Uint8Array | null = null;
   private inflightPendingUpdate: Uint8Array | null = null;
   private pendingPersistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -429,6 +439,8 @@ export class DocumentSyncProvider {
       // so we don't re-present the same rejected (wrong-org / expired) token.
       if (typeof event.reason === 'string' && event.reason.startsWith('auth-rejected')) {
         this.forceJwtRefreshNextConnect = true;
+        const status = Number.parseInt(event.reason.split(':')[1] ?? '', 10);
+        this.lastAuthRejectionStatus = Number.isFinite(status) ? status : 0;
       }
       this.handleDisconnect();
     });
@@ -532,6 +544,16 @@ export class DocumentSyncProvider {
   /** Get current connection status. */
   getStatus(): DocumentSyncStatus {
     return this.status;
+  }
+
+  /**
+   * HTTP status of the most recent upgrade rejection, or null when the last
+   * close wasn't one. 404 means the server does not consider this document to
+   * exist for this user -- for a freshly created document, that its index row
+   * has not landed yet (NIM-2472).
+   */
+  getLastAuthRejectionStatus(): number | null {
+    return this.lastAuthRejectionStatus;
   }
 
   /** Get the last known server sequence number. */

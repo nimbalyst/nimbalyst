@@ -864,14 +864,21 @@ export class WindowedTreeMatcher {
       }
     }
 
-    // WARNING: No anchor found - defaulting to append at document end
-    // This can cause content duplication if matching quality is poor
-    console.error(
-      `[TreeMatcher] CRITICAL: No insertion anchor found for targetIdx=${targetIdx}. ` +
-      `Tree matcher failed to find any matched nodes before or after this position. ` +
-      `Defaulting to insert at document end (sourceLength=${sourceLength}). ` +
-      `This WILL cause content duplication if this node should have matched existing content.`
-    );
+    // No anchor found - default to appending at document end. Appending into a
+    // blank document (nothing matched because there was nothing to match) is the
+    // only correct answer, so stay quiet there. Every other shape still warns:
+    // nodes that matched but none bracketing this position, or nothing matching
+    // against a document that did have content, both mean poor match quality.
+    const matchedNothingInBlankDocument =
+      targetToSource.size === 0 && sourceLength <= 1;
+    if (!matchedNothingInBlankDocument) {
+      console.error(
+        `[TreeMatcher] CRITICAL: No insertion anchor found for targetIdx=${targetIdx}. ` +
+        `Tree matcher failed to find any matched nodes before or after this position. ` +
+        `Defaulting to insert at document end (sourceLength=${sourceLength}). ` +
+        `This WILL cause content duplication if this node should have matched existing content.`
+      );
+    }
     return sourceLength;
   }
 

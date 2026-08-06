@@ -1384,16 +1384,16 @@ export function $applyNodeDiff(
       // Don't require similarity === 1.0 because normalized content (like table separators) may have different text
       const isExactMatch = diff.matchType === 'exact';
 
-      if (diff.sourceMarkdown?.includes('|---') || diff.targetMarkdown?.includes('|---')) {
-        console.log('[diffUtils] Table separator diff:', {
-          matchType: diff.matchType,
-          similarity: diff.similarity,
-          isExactMatch,
-          willMark: !isExactMatch,
-          source: diff.sourceMarkdown?.substring(0, 50),
-          target: diff.targetMarkdown?.substring(0, 50),
-        });
-      }
+      // if (diff.sourceMarkdown?.includes('|---') || diff.targetMarkdown?.includes('|---')) {
+      //   console.log('[diffUtils] Table separator diff:', {
+      //     matchType: diff.matchType,
+      //     similarity: diff.similarity,
+      //     isExactMatch,
+      //     willMark: !isExactMatch,
+      //     source: diff.sourceMarkdown?.substring(0, 50),
+      //     target: diff.targetMarkdown?.substring(0, 50),
+      //   });
+      // }
 
       if (!isExactMatch) {
         // Mark the node as modified using NodeState for actual content changes

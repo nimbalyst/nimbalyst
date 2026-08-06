@@ -4,7 +4,6 @@ import { Provider, createStore } from 'jotai';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ConversationDirectoryEntry } from '../../../../../shared/conversationDirectory';
 import { stytchAuthAtom } from '../../../../store/atoms/stytchAuth';
 import { OrgCreationWizard } from '../OrgCreationWizard';
 import { createOrgWizardState } from '../orgWizardModel';
@@ -26,10 +25,6 @@ function fakeApi(overrides: Partial<OrgWizardApi> = {}): OrgWizardApi {
     acceptInvitation: vi.fn(async (orgId: string) => ({ orgId })),
     createOrganization: vi.fn(async () => ({ orgId: 'org-1' })),
     inviteMember: vi.fn(async () => {}),
-    listConversations: vi.fn(async () => [] as ConversationDirectoryEntry[]),
-    createConversation: vi.fn(async () => {}),
-    resolveViewerUserId: vi.fn(async () => 'member-1'),
-    postMessage: vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -71,13 +66,13 @@ afterEach(() => cleanup());
 
 /**
  * The wizard is the only place an organization can be created now, so the walk
- * from an empty name to "#general is ready" is exercised end to end. All five
- * steps run in the one dialog, and the org window is never opened by the
- * wizard — finishing only queues the "land on #general" route for whenever the
- * user opens it themselves.
+ * from an empty name to the done step is exercised end to end. Every step runs
+ * in the one dialog, and the org window is never opened by the wizard —
+ * finishing only queues the "land on #general" route for whenever the user
+ * opens it themselves.
  */
 describe('OrgCreationWizard', () => {
-  it('walks create, invite, rooms and done in one dialog without opening the org window', async () => {
+  it('walks create, invite and done in one dialog without opening the org window', async () => {
     const api = fakeApi();
     const onOrganizationCreated = vi.fn();
     const onClose = vi.fn();
@@ -104,14 +99,8 @@ describe('OrgCreationWizard', () => {
     });
     expect(screen.getAllByTestId('org-wizard-email-chip')).toHaveLength(2);
     fireEvent.click(screen.getByTestId('org-wizard-primary'));
-    await screen.findByTestId('org-wizard-rooms-step');
-    expect(api.inviteMember).toHaveBeenCalledTimes(2);
-
-    fireEvent.click(screen.getByTestId('org-wizard-room-chip-dev'));
-    fireEvent.click(screen.getByTestId('org-wizard-primary'));
     await screen.findByTestId('org-wizard-done-step');
-    expect(api.createConversation).toHaveBeenCalledWith('org-1', expect.objectContaining({ id: 'dev' }));
-    expect(api.postMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'general' }));
+    expect(api.inviteMember).toHaveBeenCalledTimes(2);
 
     fireEvent.click(screen.getByTestId('org-wizard-primary'));
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
@@ -165,14 +154,8 @@ describe('OrgCreationWizard', () => {
     );
 
     fireEvent.click(screen.getByTestId('org-wizard-skip'));
-    await screen.findByTestId('org-wizard-rooms-step');
-    expect(api.inviteMember).not.toHaveBeenCalled();
-
-    // Skipping the rooms step still leaves #general readable.
-    fireEvent.click(screen.getByTestId('org-wizard-skip'));
     await screen.findByTestId('org-wizard-done-step');
-    expect(api.createConversation).not.toHaveBeenCalled();
-    expect(api.postMessage).toHaveBeenCalledTimes(1);
+    expect(api.inviteMember).not.toHaveBeenCalled();
   });
 
   it('stays on the first step and reports a failed creation', async () => {
@@ -275,9 +258,6 @@ describe('OrgCreationWizard', () => {
       createdOrgId: 'org-1',
       emails: [],
       invitedEmails: [],
-      selectedRoomIds: [],
-      createdRoomIds: [],
-      welcomePosted: false,
     });
 
     renderWithStore(<OrgCreationWizard isOpen onClose={vi.fn()} api={api} />);
@@ -298,11 +278,11 @@ describe('OrgCreationWizard', () => {
     renderWithStore(<OrgCreationWizard isOpen onClose={() => {}} api={api} />);
 
     fireEvent.change(await screen.findByTestId('org-wizard-name-input'), { target: { value: 'Acme' } });
-    expect(screen.getByTestId('org-wizard-step-count').textContent).toBe('Step 1 of 4');
+    expect(screen.getByTestId('org-wizard-step-count').textContent).toBe('Step 1 of 3');
     fireEvent.click(screen.getByTestId('org-wizard-primary'));
 
     await screen.findByTestId('org-wizard-invite-step');
-    expect(screen.getByTestId('org-wizard-step-count').textContent).toBe('Step 2 of 4');
+    expect(screen.getByTestId('org-wizard-step-count').textContent).toBe('Step 2 of 3');
   });
 
   /**
@@ -458,9 +438,6 @@ describe('OrgCreationWizard', () => {
       createdOrgId: null,
       emails: [],
       invitedEmails: [],
-      selectedRoomIds: [],
-      createdRoomIds: [],
-      welcomePosted: false,
     });
     (window.electronAPI.stytch.getAccounts as ReturnType<typeof vi.fn>).mockResolvedValue([
       { personalOrgId: 'work', email: 'work@example.com', isSyncAccount: false, sessionStatus: 'active' },
@@ -485,9 +462,6 @@ describe('OrgCreationWizard', () => {
       createdOrgId: null,
       emails: ['their-team@example.com'],
       invitedEmails: [],
-      selectedRoomIds: [],
-      createdRoomIds: [],
-      welcomePosted: false,
     });
     const api = fakeApi();
     renderWithStore(<OrgCreationWizard isOpen onClose={vi.fn()} api={api} />);

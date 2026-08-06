@@ -171,6 +171,11 @@ interface ElectronAPI {
       error?: string;
     }>;
     openProjectWorkspace: (workspacePath: string) => Promise<{ success: boolean; error?: string }>;
+    openSharedProject: (payload: {
+      orgId: string;
+      teamProjectId: string;
+      directoryPath: string;
+    }) => Promise<{ success: boolean; workspacePath?: string; error?: string }>;
     [method: string]: any;
   };
   organization: {

@@ -38,9 +38,11 @@ import {
   activeCollabScopeAtom,
   buildSharedDocumentDeepLink,
   pendingCollabDocumentAtom,
+  type SharedDocument,
   type SharedFolder,
 } from '../store/atoms/collabDocuments';
 import { setWindowModeAtom } from '../store/atoms/windowMode';
+import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
 import { store } from '../store';
 
 const SOURCE = DOCUMENT_LINK_SOURCE;
@@ -108,6 +110,28 @@ function buildFolderBreadcrumbs(folders: SharedFolder[]): Map<string, string> {
   return cache;
 }
 
+/**
+ * File extension for a shared document, used to decide whether an `@`
+ * reference to it should become a live embed. Documents shared before the
+ * metadata existed carry no `fileExtension`, so fall back to the title (docs
+ * shared from a local file keep their basename) and then to the document
+ * type's default extension.
+ */
+function sharedDocumentFileExtension(doc: SharedDocument): string | undefined {
+  if (doc.fileExtension) return doc.fileExtension;
+  const catalog = getCollaborativeDocumentTypeCatalog();
+  const inferred = catalog.inferFileExtension(doc.documentType, doc.title || '');
+  if (inferred) return inferred;
+  const resolution = catalog.resolveMetadata(
+    doc.documentType,
+    undefined,
+    doc.editorId,
+  );
+  return resolution.state === 'ready'
+    ? resolution.descriptor.defaultExtension
+    : undefined;
+}
+
 function DocumentLinkPluginWrapper() {
   const triggerFn = useMemo(
     () => createDocumentLinkTrigger('@', { minLength: 0, maxLength: 75 }),
@@ -148,6 +172,9 @@ function DocumentLinkPluginWrapper() {
             folderPath: doc.parentFolderId
               ? breadcrumbs.get(doc.parentFolderId) || undefined
               : undefined,
+            // Lets the plugin insert a shared mockup/diagram as a live embed
+            // rather than a plain reference.
+            embedType: sharedDocumentFileExtension(doc),
           })),
       openReference: (target: string) => {
         const targetDocumentId = parseCollabReferenceDocumentId(target);

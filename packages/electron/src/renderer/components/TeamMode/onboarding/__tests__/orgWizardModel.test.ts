@@ -8,11 +8,9 @@ import {
   canSkip,
   createOrgWizardState,
   defaultSourcePersonalOrgId,
-  deriveRoomId,
   draftOwnerMatches,
   isLikelyEmail,
   markInvited,
-  markRoomsCreated,
   orgAvatarColor,
   orgAvatarInitials,
   orgWizardSteps,
@@ -22,13 +20,8 @@ import {
   serializeOrgWizardDraft,
   parseEmailInput,
   pendingInvites,
-  pendingStarterRooms,
   removeEmail,
-  shouldPostWelcome,
-  starterRoomCreateInput,
   stepStatus,
-  toggleStarterRoom,
-  welcomeMessageText,
   type OrgWizardState,
 } from '../orgWizardModel';
 
@@ -47,20 +40,18 @@ describe('step machine', () => {
       'account',
       'identity',
       'invite',
-      'rooms',
       'done',
     ]);
     expect(orgWizardSteps(true)).toEqual([
       'identity',
       'invite',
-      'rooms',
       'done',
     ]);
     expect(createOrgWizardState({ isAuthenticated: false }).step).toBe('account');
     expect(createOrgWizardState({ isAuthenticated: true }).step).toBe('identity');
   });
 
-  it('walks the five steps in order and stops at the end', () => {
+  it('walks the steps in order and stops at the end', () => {
     let state = createOrgWizardState({ orgName: 'Acme', isAuthenticated: false });
     expect(state.step).toBe('account');
     for (const step of ORG_WIZARD_STEPS.slice(1)) {
@@ -71,10 +62,9 @@ describe('step machine', () => {
   });
 
   it('reports each step as completed, active or upcoming', () => {
-    const state = created({ step: 'rooms' });
+    const state = created({ step: 'invite' });
     expect(stepStatus(state, 'identity')).toBe('completed');
-    expect(stepStatus(state, 'invite')).toBe('completed');
-    expect(stepStatus(state, 'rooms')).toBe('active');
+    expect(stepStatus(state, 'invite')).toBe('active');
     expect(stepStatus(state, 'done')).toBe('upcoming');
   });
 
@@ -90,16 +80,15 @@ describe('step machine', () => {
     expect(canSkip({ ...created(), busy: true })).toBe(false);
   });
 
-  it('offers a skip on the optional steps only', () => {
+  it('offers a skip on the optional step only', () => {
     expect(canSkip(createOrgWizardState({ orgName: 'Acme' }))).toBe(false);
     expect(canSkip(created({ step: 'invite' }))).toBe(true);
-    expect(canSkip(created({ step: 'rooms' }))).toBe(true);
     expect(canSkip(created({ step: 'done' }))).toBe(false);
   });
 
   it('requires the organization to exist before the later steps act', () => {
     // Closing the wizard after step 1 leaves a valid org; the inverse — being
-    // past step 1 without one — must never let an invite or room fire.
+    // past step 1 without one — must never let an invite fire.
     expect(canAdvance({ ...createOrgWizardState({ orgName: 'Acme' }), step: 'invite' })).toBe(false);
   });
 });
@@ -139,13 +128,11 @@ describe('draft persistence', () => {
     const draft = serializeOrgWizardDraft({
       ...createOrgWizardState({ orgName: 'Acme Robotics' }),
       emails: ['member@example.com'],
-      selectedRoomIds: ['dev'],
     });
 
     expect(rehydrateOrgWizardDraft(draft)).toMatchObject({
       orgName: 'Acme Robotics',
       emails: ['member@example.com'],
-      selectedRoomIds: ['dev'],
     });
   });
 
@@ -186,9 +173,6 @@ describe('draft persistence', () => {
       createdOrgId: null,
       emails: [],
       invitedEmails: [],
-      selectedRoomIds: [],
-      createdRoomIds: [],
-      welcomePosted: false,
     });
 
     expect(state?.owner).toBeNull();
@@ -196,9 +180,9 @@ describe('draft persistence', () => {
   });
 
   /**
-   * Invite, rooms and done are entirely about an organization. A draft that
-   * names one of them without an id would render a screen whose every action
-   * needs an org that does not exist.
+   * Invite and done are entirely about an organization. A draft that names one
+   * of them without an id would render a screen whose every action needs an org
+   * that does not exist.
    */
   it('rewinds a post-create step that has no created organization', () => {
     const base = {
@@ -209,9 +193,6 @@ describe('draft persistence', () => {
       createdOrgId: null,
       emails: [],
       invitedEmails: [],
-      selectedRoomIds: [],
-      createdRoomIds: [],
-      welcomePosted: false,
     };
 
     for (const step of ['invite', 'rooms', 'done'] as const) {
@@ -225,7 +206,7 @@ describe('draft persistence', () => {
   it('keeps a post-create step that does have its organization', () => {
     const state = rehydrateOrgWizardDraft({
       version: 1,
-      step: 'rooms',
+      step: 'invite',
       orgName: 'Acme',
       owner: 'me@example.com',
       sourcePersonalOrgId: '',
@@ -233,13 +214,36 @@ describe('draft persistence', () => {
       createdOrgId: 'org-1',
       emails: [],
       invitedEmails: [],
+    });
+
+    expect(state?.step).toBe('invite');
+    expect(state?.createdOrgId).toBe('org-1');
+  });
+
+  /**
+   * The retired starter-rooms step sat between invite and done, so a draft
+   * paused there has an organization already and nothing left to do — dropping
+   * the draft would offer to create a second one.
+   */
+  it('resumes a draft paused on the retired rooms step at done', () => {
+    const state = rehydrateOrgWizardDraft({
+      version: 1,
+      step: 'rooms',
+      orgName: 'Acme',
+      owner: 'me@example.com',
+      sourcePersonalOrgId: '',
+      workspacePath: null,
+      createdOrgId: 'org-1',
+      emails: [],
+      invitedEmails: ['karl@example.com'],
       selectedRoomIds: ['dev'],
       createdRoomIds: [],
       welcomePosted: false,
     });
 
-    expect(state?.step).toBe('rooms');
+    expect(state?.step).toBe('done');
     expect(state?.createdOrgId).toBe('org-1');
+    expect(state?.invitedEmails).toEqual(['karl@example.com']);
   });
 });
 
@@ -340,52 +344,6 @@ describe('email entry', () => {
   });
 });
 
-describe('starter rooms', () => {
-  it('toggles a selection on and off', () => {
-    const state = toggleStarterRoom(created(), 'dev');
-    expect(state.selectedRoomIds).toEqual(['dev']);
-    expect(toggleStarterRoom(state, 'dev').selectedRoomIds).toEqual([]);
-  });
-
-  it('only creates the rooms that were selected', () => {
-    const state = created({ selectedRoomIds: ['dev', 'releases'] });
-    expect(pendingStarterRooms(state).map((room) => room.id)).toEqual(['dev', 'releases']);
-  });
-
-  it('skips rooms this run already created', () => {
-    const state = created({ selectedRoomIds: ['dev', 'design'], createdRoomIds: ['dev'] });
-    expect(pendingStarterRooms(state).map((room) => room.id)).toEqual(['design']);
-  });
-
-  it('skips rooms the organization already has, including #general', () => {
-    const state = created({ selectedRoomIds: ['dev', 'design'] });
-    expect(pendingStarterRooms(state, ['general', 'design']).map((room) => room.id))
-      .toEqual(['dev']);
-  });
-
-  it('records created rooms once', () => {
-    let state = markRoomsCreated(created(), ['dev']);
-    state = markRoomsCreated(state, ['dev']);
-    expect(state.createdRoomIds).toEqual(['dev']);
-  });
-
-  it('builds a public org room from a starter option', () => {
-    const input = starterRoomCreateInput({ id: 'dev', title: 'dev', topic: 'Engineering' });
-    expect(input).toEqual({
-      id: 'dev',
-      kind: 'orgRoom',
-      visibility: 'public',
-      title: 'dev',
-      topic: 'Engineering',
-    });
-  });
-
-  it('derives a server-legal room id from a label', () => {
-    expect(deriveRoomId('#Release Chatter!')).toBe('release-chatter');
-    expect(deriveRoomId('  design  ')).toBe('design');
-  });
-});
-
 describe('identity preview', () => {
   it('takes initials from the first two words', () => {
     expect(orgAvatarInitials('Acme Research Labs')).toBe('AR');
@@ -396,21 +354,5 @@ describe('identity preview', () => {
   it('picks a stable colour for a given name', () => {
     expect(orgAvatarColor('Acme')).toBe(orgAvatarColor('acme '));
     expect(orgAvatarColor('')).toBe(orgAvatarColor(''));
-  });
-});
-
-describe('welcome message', () => {
-  it('names the organization and explains the window', () => {
-    const text = welcomeMessageText('Acme');
-    expect(text).toContain('Welcome to Acme.');
-    expect(text).toContain('#general');
-    expect(text).toContain('Inbox');
-  });
-
-  it('posts once per organization', () => {
-    const state = created();
-    expect(shouldPostWelcome(state)).toBe(true);
-    expect(shouldPostWelcome({ ...state, welcomePosted: true })).toBe(false);
-    expect(shouldPostWelcome(createOrgWizardState())).toBe(false);
   });
 });

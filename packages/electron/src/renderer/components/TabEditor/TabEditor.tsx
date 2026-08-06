@@ -193,6 +193,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   // Check if the custom editor supports source mode (from registry)
   const customEditorSupportsSourceMode = customEditorRegistration?.supportsSourceMode || false;
   const customEditorSupportsDiffMode = customEditorRegistration?.supportsDiffMode === true;
+  const customEditorReadOnlyDuringDiff = customEditorRegistration?.readOnlyDuringDiff === true;
   // A host may already present one registered header (Tracker Mode presents the
   // tracker chips). Preserve every other provider rather than hiding the whole
   // document-header region.
@@ -341,6 +342,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   const isClearingDiffTagRef = useRef<boolean>(false); // Guard against pending-cleared reload race
   const editorHostFileChangeCallbackRef = useRef<((newContent: string) => void) | null>(null); // For EditorHost file change subscription
   const diffRequestCallbackRef = useRef<((config: DiffConfig) => void) | null>(null); // For EditorHost diff request subscription
+  const customEditorFindCallbackRef = useRef<(() => void) | null>(null); // Custom editor's own find UI (see EditorHost.onFindRequested)
   const diffClearedCallbackRef = useRef<(() => void) | null>(null); // For EditorHost diff cleared subscription
   const editorHostSaveRequestCallbackRef = useRef<(() => void | Promise<void>) | null>(null); // For EditorHost save request subscription
   const sourceModeChangedCallbackRef = useRef<((isSourceMode: boolean) => void) | null>(null); // For EditorHost source mode subscription
@@ -427,6 +429,13 @@ export const TabEditor: React.FC<TabEditorProps> = ({
 
   useEffect(() => {
     return registerEditorFindHandler(filePath, () => {
+      // A custom editor never populates editorRef, so its own find UI is
+      // reached through the host callback it registered instead.
+      const customEditorFind = customEditorFindCallbackRef.current;
+      if (customEditorFind) {
+        customEditorFind();
+        return;
+      }
       const editor = editorRef.current;
       if (hasEditorFind(editor)) {
         editor.openFind();
@@ -2407,6 +2416,18 @@ export const TabEditor: React.FC<TabEditorProps> = ({
         : undefined,
 
       // ============ SOURCE MODE ============
+      // Cmd+F never reaches the renderer (native menu accelerator), so a custom
+      // editor with its own find UI registers here and the find-command effect
+      // below calls it.
+      subscribeToFindRequests: (callback: () => void): (() => void) => {
+        customEditorFindCallbackRef.current = callback;
+        return () => {
+          if (customEditorFindCallbackRef.current === callback) {
+            customEditorFindCallbackRef.current = null;
+          }
+        };
+      },
+
       // Unified source mode handling for both markdown and custom editors
       // Source mode = Monaco with raw content; Rich mode = Lexical or custom editor
 
@@ -2775,6 +2796,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                         sessionInfo={diffSessionInfo || undefined}
                         onGoToSession={onOpenSessionInChat ? handleGoToSession : undefined}
                         editorType="custom"
+                        readOnlyWhileReviewing={customEditorReadOnlyDuringDiff}
                       />
                     )}
                     <CustomEditorWrapper
@@ -2814,6 +2836,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                       sessionInfo={diffSessionInfo || undefined}
                       onGoToSession={onOpenSessionInChat ? handleGoToSession : undefined}
                       editorType="custom"
+                      readOnlyWhileReviewing={customEditorReadOnlyDuringDiff}
                     />
                   )}
                   <CustomEditor

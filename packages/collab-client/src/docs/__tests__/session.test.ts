@@ -18,6 +18,7 @@ import {
   pruneCollabDocsSession,
   setDocUnreadAtom,
   sharedDocumentsAtom,
+  workspaceHasTeamAtom,
   type CollabDocsCommand,
   type CollabDocsDataSource,
   type SharedDocument,
@@ -385,6 +386,46 @@ describe('CollabDocsSession', () => {
     expect(store.get(activeCollabScopeAtom)).toBeNull();
     expect(changes.at(-1)).toBeNull();
     expect(first.dataSource.dispose).toHaveBeenCalled();
+  });
+
+  it('recovers from a non-retryable resolution failure when the host invalidates', async () => {
+    const harness = createHarness(LIFECYCLE_SCOPE);
+    const scopeListener: { current?: (scope: CollabScope | null) => void } = {};
+    // "Not authenticated" and "No team found" are non-retryable on purpose, so
+    // a window opened before sign-in stops resolving entirely. Signing in has
+    // to push it back through resolution via the scope-changed contract.
+    const resolveScope = vi.fn()
+      .mockRejectedValueOnce(
+        new CollabScopeResolutionError('Not authenticated. Sign in first.', { retryable: false }),
+      )
+      .mockImplementation(async () => LIFECYCLE_SCOPE);
+    const host = {
+      ...harness.host,
+      resolveScope,
+      onScopeChanged: (listener: (scope: CollabScope | null) => void) => {
+        scopeListener.current = listener;
+        return () => { scopeListener.current = undefined; };
+      },
+    } as unknown as CollabHost;
+    const changes: Array<string | null> = [];
+    const onError = vi.fn();
+    const lifecycle = createCollabDocsScopeLifecycle(host as never, {
+      retryDelaysMs: [0],
+      onSessionChanged: (session) => changes.push(session?.scope.scopeKey ?? null),
+      onError,
+    });
+
+    lifecycle.start();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(resolveScope).toHaveBeenCalledTimes(1);
+    expect(changes).not.toContain(LIFECYCLE_SCOPE.scopeKey);
+
+    scopeListener.current?.(null);
+
+    await vi.waitFor(() => expect(changes.at(-1)).toBe(LIFECYCLE_SCOPE.scopeKey));
+    expect(store.get(workspaceHasTeamAtom)).toBe(true);
+
+    lifecycle.dispose();
   });
 
   it('prunes unread family state for a closed scope', () => {
