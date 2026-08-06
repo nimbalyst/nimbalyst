@@ -37,7 +37,9 @@
     "build:win": "npm run build && npm run build:extensions && npm run validate:win-updater-config && npm run validate:extra-resources && electron-builder --win --x64",
     "build:win:arm64": "npm run build && npm run build:extensions && npm run validate:win-updater-config && npm run validate:extra-resources && electron-builder --win --arm64",
     "build:win:all": "npm run build && npm run build:extensions && npm run validate:win-updater-config && npm run validate:extra-resources && electron-builder --win --x64 --arm64",
-    "build:linux": "npm run build && npm run build:extensions && npm run validate:extra-resources && electron-builder --linux",
+    "build:linux": "npm run build && npm run build:extensions && npm run validate:extra-resources && electron-builder --linux --x64",
+    "build:linux:arm64": "npm run build && npm run build:extensions && npm run validate:extra-resources && electron-builder --linux --arm64",
+    "build:linux:all": "npm run build && npm run build:extensions && npm run validate:extra-resources && electron-builder --linux --x64 --arm64",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:watch": "vitest watch",
@@ -469,7 +471,7 @@
     },
     "linux": {
       "target": "AppImage",
-      "artifactName": "${productName}-Linux.${ext}"
+      "artifactName": "${productName}-Linux-${arch}.${ext}"
     },
     "buildVersion": "0.36.5"
   }
