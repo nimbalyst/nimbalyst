@@ -217,7 +217,13 @@ export class OpenAIProvider extends BaseAIProvider {
     // Log the input message
     // CRITICAL: Must await to ensure user message is persisted before proceeding
     if (sessionId) {
-      await this.logAgentMessage(sessionId, 'openai', 'input', message);
+      await this.logAgentMessage(
+        sessionId,
+        'openai',
+        'input',
+        message,
+        this.withPromptProvenanceMetadata(documentContext),
+      );
     }
 
     try {

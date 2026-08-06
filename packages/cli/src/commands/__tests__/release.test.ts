@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * `nim release` is what the release script calls, so its two dangerous edges are
  * pinned here: it must never invent a release record, and it must never guess

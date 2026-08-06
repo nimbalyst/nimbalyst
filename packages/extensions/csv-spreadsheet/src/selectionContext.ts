@@ -1,6 +1,7 @@
 import type { EditorContextItem } from '@nimbalyst/extension-sdk';
 import type { NormalizedSelectionRange } from './types';
 import { columnIndexToLetter } from './utils/csvParser';
+import { createRowIndexMapping, logicalRowsForSelection, type RowIndexMapping } from './filter/rowIndexMapping';
 
 const MAX_INDEX = 1_000_000;
 const MAX_PREVIEW_ROWS = 8;
@@ -58,9 +59,11 @@ function rangeReference(range: NormalizedSelectionRange): string {
 export function buildSpreadsheetSelectionContextItem(
   selection: NormalizedSelectionRange,
   rows: readonly GridRow[],
+  mapping: RowIndexMapping = createRowIndexMapping({ rowCount: rows.length }),
 ): EditorContextItem {
   const range = normalizeRange(selection);
-  const rowCount = range.endRow - range.startRow + 1;
+  const logicalRows = logicalRowsForSelection(mapping, range).logicalRows;
+  const rowCount = logicalRows.length;
   const columnCount = range.endCol - range.startCol + 1;
   const cellCount = rowCount * columnCount;
   const previewRowCount = Math.min(rowCount, MAX_PREVIEW_ROWS);
@@ -68,7 +71,7 @@ export function buildSpreadsheetSelectionContextItem(
   const preview: SafeCellValue[][] = [];
 
   for (let rowOffset = 0; rowOffset < previewRowCount; rowOffset += 1) {
-    const row = rows[range.startRow + rowOffset];
+    const row = rows[logicalRows[rowOffset]];
     const values: SafeCellValue[] = [];
     for (let colOffset = 0; colOffset < previewColumnCount; colOffset += 1) {
       const column = columnIndexToLetter(range.startCol + colOffset);
@@ -106,6 +109,7 @@ export function buildSpreadsheetSelectionContextItem(
         endColumn: range.endCol,
       },
       rowCount,
+      logicalRows,
       columnCount,
       cellCount,
       preview,

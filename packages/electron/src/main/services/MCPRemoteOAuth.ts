@@ -55,6 +55,7 @@ export type MCPRemoteOAuthErrorType =
   | 'port_conflict'
   | 'command_unavailable'
   | 'provider_rejected'
+  | 'dynamic_registration_unsupported'
   | 'callback_validation'
   | 'token_exchange'
   | 'network'
@@ -439,6 +440,18 @@ export function classifyMcpRemoteOAuthFailure(
     return { outcome: 'rejected', errorType: 'provider_rejected' };
   }
 
+  // mcp-remote always attempts RFC 7591 dynamic client registration, so a provider
+  // that only accepts pre-registered clients kills the helper before any browser
+  // opens. Must stay ahead of the generic `exited` fallback, which reported this as
+  // `process_exit` and pointed users at cache-clearing remedies that cannot help.
+  if (
+    diagnostic.includes('invalidclientmetadataerror')
+    || diagnostic.includes('dynamic client registration')
+    || diagnostic.includes('dynamic registration is not available')
+  ) {
+    return { outcome: 'failed', errorType: 'dynamic_registration_unsupported' };
+  }
+
   if (
     diagnostic.includes('state mismatch')
     || diagnostic.includes('invalid state')
@@ -544,6 +557,8 @@ function getMcpRemoteOAuthErrorMessage(
       return 'The OAuth helper could not be started because a required command is unavailable.';
     case 'provider_rejected':
       return 'The provider did not approve authorization.';
+    case 'dynamic_registration_unsupported':
+      return 'This provider does not support dynamic client registration, so it cannot be authorized from here. Add a pre-registered OAuth client ID for this server (oauth.staticClientInfo) and try again. Clearing the auth cache will not help.';
     case 'callback_validation':
       return 'The OAuth callback could not be validated. Please try again.';
     case 'token_exchange':

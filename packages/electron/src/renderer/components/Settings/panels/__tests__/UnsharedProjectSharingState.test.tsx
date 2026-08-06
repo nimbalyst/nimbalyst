@@ -1,21 +1,41 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+
+const openDialog = vi.hoisted(() => vi.fn());
+// `organizationCreationEnabled` is a build-time constant (dev true, packaged
+// false); a getter lets one suite exercise both packaging branches.
+const flags = vi.hoisted(() => ({ organizationCreationEnabled: true }));
 
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
+vi.mock('../../../../utils/teamAnalytics', () => ({ trackTeamAnalyticsEvent: vi.fn() }));
 vi.mock('../SecurityEncryptionSection', () => ({ SecurityEncryptionSection: () => null }));
 vi.mock('../MoveProjectWizard', () => ({ MoveProjectWizard: () => null }));
 vi.mock('../MergeOrgWizard', () => ({ MergeOrgWizard: () => null }));
 vi.mock('../ProjectAccessEditor', () => ({ ProjectAccessEditor: () => null }));
 vi.mock('../../../common/AlphaBadge', () => ({ AlphaBadge: () => null, SETTINGS_ALPHA_TOOLTIP: '' }));
 vi.mock('../../../../contexts/DialogContext', () => ({
-  useDialogState: () => ({ open: vi.fn(), close: vi.fn(), isOpen: false, data: null }),
+  useDialogState: (id: string) => ({
+    open: (data: unknown) => openDialog(id, data),
+    close: vi.fn(),
+    isOpen: false,
+    data: null,
+  }),
 }));
-vi.mock('../../../../dialogs/registry', () => ({ DIALOG_IDS: { CREATE_TEAM: 'create-team' } }));
+vi.mock('../../../../dialogs/registry', () => ({
+  DIALOG_IDS: { ORG_CREATION_WIZARD: 'org-creation-wizard', ACCOUNT_LOGIN: 'account-login' },
+}));
+vi.mock('../../../../store/atoms/settingsDomains', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  get organizationCreationEnabled() { return flags.organizationCreationEnabled; },
+}));
 
-import { UnsharedProjectSharingState } from '../WorkspaceProjectSharingPanel';
+import {
+  UnsharedProjectSharingState,
+  WorkspaceProjectSharingPanel,
+} from '../WorkspaceProjectSharingPanel';
 
 const remote = 'git@example.com:acme/app.git';
 
@@ -41,7 +61,7 @@ describe('UnsharedProjectSharingState', () => {
   it('asks one question first and only acts after the confirm step', () => {
     const { onAddToOrg } = renderFlow();
 
-    expect(screen.getByTestId('project-sharing-choices')).toBeTruthy();
+    screen.getByTestId('project-sharing-choices');
     expect(screen.queryByTestId('project-sharing-confirm')).toBeNull();
 
     fireEvent.change(screen.getByTestId('project-sharing-org-picker'), { target: { value: 'org-1' } });
@@ -68,26 +88,26 @@ describe('UnsharedProjectSharingState', () => {
     renderFlow({ gitRemote: '' });
 
     expect(screen.getByTestId('project-sharing-no-remote').textContent).toContain('no git remote');
-    expect(screen.getByTestId('project-sharing-choose-existing')).toBeTruthy();
-    expect(screen.getByTestId('project-sharing-choose-new')).toBeTruthy();
+    screen.getByTestId('project-sharing-choose-existing');
+    screen.getByTestId('project-sharing-choose-new');
   });
 
-  // Adding without a remote POSTs a nameless, remote-less project that no
-  // workspace can ever resolve to, and the panel then falls back to these
-  // choices with no error — so every retry would orphan another one.
-  it('blocks the add-to-existing confirm action when the workspace has no git remote', () => {
+  // Adding without a remote used to be blocked, because nothing could match the
+  // workspace back to the project the server minted. The workspace now records
+  // which project it was added as, so the flow goes through and only says what
+  // the missing remote costs.
+  it('allows adding to an existing organization without a git remote', () => {
     const { onAddToOrg } = renderFlow({ gitRemote: '' });
 
     fireEvent.change(screen.getByTestId('project-sharing-org-picker'), { target: { value: 'org-1' } });
     fireEvent.click(screen.getByTestId('project-sharing-choose-existing'));
 
     const confirmAction = screen.getByTestId('project-sharing-confirm-action') as HTMLButtonElement;
-    expect(confirmAction.disabled).toBe(true);
-    expect(screen.getByTestId('project-sharing-blocked').textContent).toContain('needs a git remote');
-    expect(screen.getByTestId('project-sharing-blocked').textContent).toContain('git remote add origin');
+    expect(confirmAction.disabled).toBe(false);
+    expect(screen.getByTestId('project-sharing-confirm').textContent).toContain('only this computer connects');
 
     fireEvent.click(confirmAction);
-    expect(onAddToOrg).not.toHaveBeenCalled();
+    expect(onAddToOrg).toHaveBeenCalledWith('org-1');
   });
 
   it('still allows creating an organization without a git remote', () => {
@@ -96,7 +116,6 @@ describe('UnsharedProjectSharingState', () => {
     fireEvent.click(screen.getByTestId('project-sharing-choose-new'));
     const confirmAction = screen.getByTestId('project-sharing-confirm-action') as HTMLButtonElement;
     expect(confirmAction.disabled).toBe(false);
-    expect(screen.queryByTestId('project-sharing-blocked')).toBeNull();
 
     fireEvent.click(confirmAction);
     expect(onCreateOrganization).toHaveBeenCalled();
@@ -108,6 +127,85 @@ describe('UnsharedProjectSharingState', () => {
     fireEvent.click(screen.getByTestId('project-sharing-choose-new'));
     fireEvent.click(screen.getByTestId('project-sharing-back'));
 
-    expect(screen.getByTestId('project-sharing-choices')).toBeTruthy();
+    screen.getByTestId('project-sharing-choices');
+  });
+});
+
+/**
+ * Organization creation has one surface now — the wizard — and the panel's
+ * signed-out arm is an entry point into it rather than a sentence telling the
+ * user to go find another panel.
+ */
+describe('WorkspaceProjectSharingPanel entry points', () => {
+  beforeEach(() => {
+    openDialog.mockClear();
+    flags.organizationCreationEnabled = true;
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        stytch: {
+          getAuthState: vi.fn(async () => ({ isAuthenticated: false, user: null })),
+          refreshSession: vi.fn(),
+          subscribeAuthState: vi.fn(),
+          onAuthStateChange: vi.fn(() => () => {}),
+          getAccounts: vi.fn(async () => []),
+        },
+        team: {
+          getGitRemote: vi.fn(async () => ({ success: true, remote: 'git@example.com:acme/app.git' })),
+          list: vi.fn(async () => ({ success: true, teams: [] })),
+          findForWorkspace: vi.fn(async () => ({ success: true, team: null })),
+        },
+      },
+    });
+  });
+
+  afterEach(() => cleanup());
+
+  it('gives a signed-out user a button into the wizard, not instructions', async () => {
+    render(<WorkspaceProjectSharingPanel workspacePath="/tmp/acme-app" />);
+
+    const signedOut = await screen.findByTestId('project-sharing-signed-out');
+    expect(signedOut.textContent).not.toContain('Account & Sync');
+
+    fireEvent.click(screen.getByTestId('project-sharing-sign-in'));
+    await waitFor(() => expect(openDialog).toHaveBeenCalled());
+    expect(openDialog.mock.calls[0][0]).toBe('org-creation-wizard');
+    expect(openDialog.mock.calls[0][1]).toMatchObject({
+      workspacePath: '/tmp/acme-app',
+      suggestedName: 'acme-app',
+      entryPoint: 'project_sharing',
+    });
+  });
+
+  /**
+   * With creation switched off, the wizard's only destination past sign-in is a
+   * create step that cannot run — so the signed-out button signs the user in
+   * instead of walking them into that dead end. The signed-in card already
+   * hides its create choice the same way.
+   */
+  it('signs a packaged-build user in rather than into a create it cannot finish', async () => {
+    flags.organizationCreationEnabled = false;
+    render(<WorkspaceProjectSharingPanel workspacePath="/tmp/acme-app" />);
+
+    fireEvent.click(await screen.findByTestId('project-sharing-sign-in'));
+    await waitFor(() => expect(openDialog).toHaveBeenCalled());
+    expect(openDialog.mock.calls[0][0]).toBe('account-login');
+    expect(openDialog.mock.calls[0][1]).toMatchObject({ mode: 'first-sign-in' });
+  });
+
+  it('routes the signed-in create action into the same wizard', async () => {
+    (window as any).electronAPI.stytch.getAuthState = vi.fn(async () => ({
+      isAuthenticated: true,
+      user: { user_id: 'u1', emails: [{ email: 'a@example.com' }] },
+    }));
+
+    render(<WorkspaceProjectSharingPanel workspacePath="/tmp/acme-app" />);
+
+    fireEvent.click(await screen.findByTestId('project-sharing-choose-new'));
+    fireEvent.click(screen.getByTestId('project-sharing-confirm-action'));
+
+    await waitFor(() => expect(openDialog).toHaveBeenCalled());
+    expect(openDialog.mock.calls[0][0]).toBe('org-creation-wizard');
+    expect(openDialog.mock.calls[0][1]).toMatchObject({ workspacePath: '/tmp/acme-app' });
   });
 });

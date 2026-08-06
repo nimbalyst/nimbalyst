@@ -1,5 +1,6 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { formatCellValue } from '../formatters';
+import { formatCellValue, isNumericCellValue } from '../formatters';
 import type { ColumnFormat } from '../../types';
 
 describe('formatCellValue (cellTemplate wire path for #329 sub-bug 4)', () => {
@@ -100,5 +101,33 @@ describe('formatCellValue (cellTemplate wire path for #329 sub-bug 4)', () => {
     it('coerces a number to string', () => {
       expect(formatCellValue(42, text)).toBe('42');
     });
+  });
+});
+
+/**
+ * Alignment is inferred from the value, so the predicate has to reject the
+ * strings `parseFloat` would happily accept a numeric prefix of -- an ISO date
+ * right-aligned as if it were the year 2026 is the visible form of issue #329.
+ */
+describe('isNumericCellValue', () => {
+  it.each([
+    [100, true],
+    ['100', true],
+    ['-1.5', true],
+    ['+3', true],
+    ['1,234', true],
+    ['12%', true],
+    ['1.5e3', true],
+    ['  42  ', true],
+    ['2026-05-15', false],
+    ['12 apples', false],
+    ['steady', false],
+    ['', false],
+    ['   ', false],
+    [null, false],
+    [undefined, false],
+    [Number.NaN, false],
+  ])('%o -> %s', (value, expected) => {
+    expect(isNumericCellValue(value)).toBe(expected);
   });
 });

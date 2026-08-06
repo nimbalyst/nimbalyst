@@ -1,5 +1,5 @@
 import React from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 import { formatRelativeTimestamp } from './inboxViewModel';
 import type { InboxStatus } from './inboxTypes';

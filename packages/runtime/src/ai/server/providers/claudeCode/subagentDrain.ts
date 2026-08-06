@@ -15,6 +15,12 @@ export interface SubagentTaskLike {
   status: string;
 }
 
+/** A tracked task as `activeTasks` holds it — status is written in place. */
+export interface MutableSubagentTask extends SubagentTaskLike {
+  description?: string;
+  taskId?: string;
+}
+
 // The immediate tool_result the SDK returns when a command/sub-agent is
 // launched in (or moved to) the background. It is a launch acknowledgement,
 // not a completion: the task is still running and will settle later via a
@@ -198,6 +204,33 @@ export function hasRunningTasks(tasks: Iterable<SubagentTaskLike>): boolean {
     if (t.status === 'running') return true;
   }
   return false;
+}
+
+/**
+ * Mark every still-running task stopped and return their labels. Called when
+ * the transport those tasks were running on is gone — the drain loop exiting
+ * with stragglers, or abort() killing the subprocess — so no further
+ * task_notification can settle them. Leaving one 'running' makes the next
+ * turn's `result` defer teardown for nothing (NIM-2458).
+ */
+export function reapRunningTasks(tasks: Iterable<MutableSubagentTask>): string[] {
+  const stranded: string[] = [];
+  for (const task of tasks) {
+    if (task.status === 'running') {
+      task.status = 'stopped';
+      stranded.push(task.description || task.taskId || 'unknown task');
+    }
+  }
+  return stranded;
+}
+
+/** Count of tasks still running — what the drain gate actually keys off. */
+export function countRunningTasks(tasks: Iterable<SubagentTaskLike>): number {
+  let count = 0;
+  for (const t of tasks) {
+    if (t.status === 'running') count++;
+  }
+  return count;
 }
 
 /**

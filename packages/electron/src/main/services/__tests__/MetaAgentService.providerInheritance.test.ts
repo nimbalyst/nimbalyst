@@ -192,6 +192,40 @@ describe('MetaAgentService child-spawn provider inheritance', () => {
     expect(created.model).toBe('openai-codex:gpt-5.4');
   });
 
+  it('marks a child initial prompt as agent-authored by the spawning session', async () => {
+    const service = MetaAgentService.getInstance();
+    const queuePromptForSession = vi.fn().mockResolvedValue({ id: 'queued-1' });
+    const triggerQueuedPromptProcessingForSession = vi.fn().mockResolvedValue(true);
+    (service as any).aiService = {
+      queuePromptForSession,
+      triggerQueuedPromptProcessingForSession,
+    };
+    const originalShouldBypass = (service as any).shouldBypassChildAgentExecutionForTests;
+    (service as any).shouldBypassChildAgentExecutionForTests = () => false;
+    vi.mocked(AISessionsRepository.get).mockResolvedValue(CLAUDE_PARENT as any);
+
+    try {
+      await (service as any).createChildSessionInternal('parent-claude-session', '/workspace/path', {
+        prompt: 'Implement the delegated slice',
+      });
+    } finally {
+      (service as any).shouldBypassChildAgentExecutionForTests = originalShouldBypass;
+    }
+
+    expect(queuePromptForSession).toHaveBeenCalledWith(
+      expect.any(String),
+      'Implement the delegated slice',
+      undefined,
+      {
+        promptProvenance: {
+          actor: 'agent',
+          origin: 'session-orchestration',
+          originSessionId: 'parent-claude-session',
+        },
+      },
+    );
+  });
+
   it('still lets an explicit model arg win over the inherited parent', async () => {
     const service = MetaAgentService.getInstance();
     (service as any).aiService = { queuePromptForSession: vi.fn() };

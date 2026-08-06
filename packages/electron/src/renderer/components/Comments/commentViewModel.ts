@@ -321,6 +321,9 @@ export function buildCommentView(comment: Comment, ctx: BuildCommentViewContext)
         directory,
         viewerUserId: ctx.viewerUserId,
         pills,
+        // A message's attachments live in the conversation's asset namespace,
+        // which is what `sourceId` names for every conversation-backed source.
+        assetDocumentId: comment.ref.sourceId,
       });
 
   const actor = buildActorView(comment, directory, ctx.viewerUserId);
@@ -429,6 +432,7 @@ function buildReplyParent(
       directory,
       viewerUserId: ctx.viewerUserId,
       pills: parentPills,
+      assetDocumentId: parent.ref.sourceId,
     }),
   );
 
@@ -527,7 +531,12 @@ export function validateDraft(draft: DraftState): DraftValidation {
     ...validateMentionLimits(draft.mentionedUserIds, draft.mentionedAgentSessionIds).errors,
   ];
 
-  const isEmpty = draft.body.text.trim().length === 0 && draft.resourceRefs.length === 0;
+  // A screenshot with no caption is a message. Emptiness is "nothing to
+  // deliver", not "no text".
+  const isEmpty =
+    draft.body.text.trim().length === 0
+    && draft.resourceRefs.length === 0
+    && (draft.body.attachments?.length ?? 0) === 0;
 
   return {
     errors,

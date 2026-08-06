@@ -227,7 +227,7 @@ describe('MemoryToolWidget', () => {
       result: JSON.stringify({ facts: [] }),
     });
 
-    expect(screen.getByTestId('memory-tool-empty')).toBeTruthy();
+    screen.getByTestId('memory-tool-empty');
     expect(screen.queryByTestId('memory-tool-source')).toBeNull();
   });
 
@@ -238,7 +238,7 @@ describe('MemoryToolWidget', () => {
       result: JSON.stringify({ chunks: [] }),
     });
 
-    expect(screen.getByTestId('memory-tool-empty')).toBeTruthy();
+    screen.getByTestId('memory-tool-empty');
     expect(screen.queryByTestId('memory-tool-source')).toBeNull();
   });
 

@@ -2,7 +2,7 @@
  * CommonFileActions - Shared menu items for file operations.
  *
  * Renders the common file action items (Open in Default App, Open in External Editor,
- * Show in Finder, Copy Path, Share Link, Share to Team) used across multiple context menus:
+ * Show in system file browser, Copy Path, Share Link, Share to Team) used across multiple context menus:
  * - FileContextMenu (file tree right-click)
  * - TabBar context menu (tab right-click)
  * - UnifiedEditorHeaderBar (header actions dropdown)
@@ -11,13 +11,20 @@
  */
 
 import React, { useCallback, useMemo, useSyncExternalStore } from 'react';
-import { getEmbeddableExtensions, MaterialSymbol } from '@nimbalyst/runtime';
+import {
+  copyToClipboard,
+  getEmbeddableExtensions,
+  getShowInFileBrowserLabel,
+  MaterialSymbol,
+} from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { useAtomValue } from 'jotai';
 import { useFileActions } from '../hooks/useFileActions';
 import {
   activeTeamOrgIdAtom,
+  buildSharedDocumentDeepLink,
   trashSharedDocument,
+  resolveDesktopCollabScope,
   workspaceHasTeamAtom,
 } from '../store/atoms/collabDocuments';
 import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
@@ -169,6 +176,17 @@ export function CommonFileActions({
     // base64 images, mindmap's no-attachments) are handled differently or
     // not at all; we skip the markdown rewriter for them entirely.
     const workspacePath = store.get(activeWorkspacePathAtom);
+    const scope = workspacePath
+      ? (await resolveDesktopCollabScope(workspacePath)).scope
+      : null;
+    if (!scope) {
+      trackShareFailure('Collaboration scope is unavailable.');
+      errorNotificationService.showError(
+        'Could not share to team',
+        'The active team collaboration scope is unavailable.',
+      );
+      return;
+    }
     const normalizedFolder = normalizeCollabPath(folderPath);
     const trimmedName = sharedName.trim() || fileName;
     // joinCollabPath handles empty parent -> root and normalizes separators.
@@ -270,7 +288,7 @@ export function CommonFileActions({
         parentFolderId: folderId,
         readSourceContent: candidate =>
           readShareToTeamSourceContent(candidate.absolutePath, candidate.descriptor),
-        createDocument: createCollaborativeDocument,
+        createDocument: input => createCollaborativeDocument({ ...input, scope }),
         generateId: () => crypto.randomUUID(),
         resolveOrgId: async () => {
           const orgId = store.get(activeTeamOrgIdAtom);
@@ -292,6 +310,7 @@ export function CommonFileActions({
     let createdDocument;
     try {
       createdDocument = await createCollaborativeDocument({
+        scope,
         descriptor,
         requestedName: trimmedName,
         parentFolderId: folderId,
@@ -319,7 +338,7 @@ export function CommonFileActions({
       // team is left with orphaned embeds whose parent never existed.
       for (const orphanId of embeddedShareResult.createdDocumentIds) {
         try {
-          trashSharedDocument(orphanId);
+          trashSharedDocument(scope, orphanId);
         } catch (rollbackError) {
           console.warn('[CommonFileActions] Could not roll back linked document:', rollbackError);
         }
@@ -335,6 +354,22 @@ export function CommonFileActions({
       return;
     }
     const finalTitle = createdDocument.title;
+    const teamOrgId = store.get(activeTeamOrgIdAtom);
+    const copyLinkAction = teamOrgId
+      ? {
+          label: 'Copy Link',
+          onClick: () => {
+            const deepLink = buildSharedDocumentDeepLink(createdDocument.documentId, teamOrgId);
+            void copyToClipboard(deepLink).catch((error: unknown) => {
+              console.error('[CommonFileActions] Failed to copy shared document link:', error);
+              errorNotificationService.showError(
+                'Copy failed',
+                'Could not write the link to the clipboard.',
+              );
+            });
+          },
+        }
+      : undefined;
     const linkedCount = embeddedShareResult.sharedReferences.size;
     const linkedFailureCount = embeddedShareResult.failures.length;
     const assetCount = (migrationToast.okCount ?? 0) + (migrationToast.failedCount ?? 0);
@@ -397,10 +432,14 @@ export function CommonFileActions({
           errorNotificationService.showWarning(
             'Shared with missing linked documents',
             body,
-            { details: linkedDetails, duration: 10000 },
+            { details: linkedDetails, duration: 10000, action: copyLinkAction },
           );
         } else {
-          errorNotificationService.showInfo('Shared to team', body, { duration: 4000 });
+          errorNotificationService.showInfo(
+            'Shared to team',
+            body,
+            { duration: 4000, action: copyLinkAction },
+          );
         }
         break;
       }
@@ -408,14 +447,14 @@ export function CommonFileActions({
         errorNotificationService.showWarning(
           'Shared with missing attachments',
           `"${finalTitle}" was shared but ${migrationToast.failedCount} attachment${migrationToast.failedCount === 1 ? '' : 's'} failed to upload.${linkedSummary}`,
-          { details: linkedDetails, duration: 8000 },
+          { details: linkedDetails, duration: 8000, action: copyLinkAction },
         );
         break;
       case 'unavailable':
         errorNotificationService.showWarning(
           'Shared to team',
           `"${finalTitle}" is now collaborative, but image attachments could not be migrated${migrationToast.message ? `: ${migrationToast.message}` : '.'}${linkedSummary}`,
-          { details: linkedDetails, duration: 8000 },
+          { details: linkedDetails, duration: 8000, action: copyLinkAction },
         );
         break;
     }
@@ -508,13 +547,13 @@ export function CommonFileActions({
         </Item>
       )}
 
-      {/* Show in Finder */}
+      {/* Show in system file browser */}
       <Item
         className={menuItemClass}
         onClick={() => { actions.revealInFinder(); onClose(); }}
       >
         {showIcons && <MaterialSymbol icon="folder_open" size={iconSize} />}
-        <span>Show in Finder</span>
+        <span>{getShowInFileBrowserLabel()}</span>
       </Item>
 
       {/* Copy Path */}

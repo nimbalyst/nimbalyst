@@ -5,13 +5,167 @@
  * All operations work directly with RevoGrid as the single source of truth.
  */
 
-import type { DimensionRows } from '@revolist/revogrid';
+import type { DimensionCols, DimensionRows } from '@revolist/revogrid';
 import type { RevoGridElement } from '../revogrid-types';
-import type { NormalizedSelectionRange, ColumnFormat, CSVMetadata, FormulaEvalData } from '../types';
+import type {
+  NormalizedSelectionRange,
+  ColumnFormat,
+  CSVMetadata,
+  SpreadsheetData,
+  CellValue,
+  TrimmedRows,
+} from '../types';
 import { copyToClipboard } from '@nimbalyst/extension-sdk';
-import { columnIndexToLetter, columnLetterToIndex, serializeMetadata } from './csvParser';
-import { isFormula, evaluateFormula } from './formulaEngine';
+import {
+  columnIndexToLetter,
+  columnLetterToIndex,
+  createCell,
+  serializeMetadata,
+} from './csvParser';
+import { isFormula, recalculateFormulas as recalculateFormulaData } from './formulaEngine';
 import type { UndoRedoPlugin } from '../plugins/UndoRedoPlugin';
+import { getAppliedTrimmedRows } from '../filter/filterEngine';
+import { createRowIndexMapping, logicalRowsForPaste, logicalRowsForSelection } from '../filter/rowIndexMapping';
+
+export interface GridSourceData {
+  source: Record<string, string | number>[];
+  pinnedTop: Record<string, string | number>[];
+}
+
+export interface GridCellUpdate {
+  row: number;
+  column: number;
+  value: string;
+}
+
+export interface GridCellUpdateResult extends GridCellUpdate {
+  raw: string;
+  displayed: string | number | null;
+}
+
+/**
+ * Derived formula display values keyed by the actual RevoGrid row models.
+ * Raw values remain in the source models, so editing and CSV serialization
+ * never need to reconstruct formulas from display text.
+ */
+export class FormulaViewState {
+  private displayByModel = new WeakMap<object, Map<string, CellValue>>();
+
+  getDisplayValue(model: object, prop: string): CellValue | undefined {
+    return this.displayByModel.get(model)?.get(prop);
+  }
+
+  recalculate(data: SpreadsheetData, gridData: GridSourceData): number {
+    const startedAt = globalThis.performance?.now() ?? Date.now();
+    const recalculated = recalculateFormulaData(data);
+    const nextDisplayByModel = new WeakMap<object, Map<string, CellValue>>();
+
+    recalculated.rows.forEach((row, rowIndex) => {
+      const model = rowIndex < recalculated.headerRowCount
+        ? gridData.pinnedTop[rowIndex]
+        : gridData.source[rowIndex - recalculated.headerRowCount];
+      if (!model) return;
+
+      row.forEach((cell, colIndex) => {
+        if (!isFormula(cell.raw)) return;
+        const prop = columnIndexToLetter(colIndex);
+        const displays = nextDisplayByModel.get(model) ?? new Map<string, CellValue>();
+        displays.set(prop, cell.error ?? cell.computed);
+        nextDisplayByModel.set(model, displays);
+      });
+    });
+
+    this.displayByModel = nextDisplayByModel;
+    return (globalThis.performance?.now() ?? Date.now()) - startedAt;
+  }
+}
+
+/** Convert parsed cells into RevoGrid rows while keeping formulas raw. */
+export function spreadsheetDataToGridSource(
+  data: SpreadsheetData,
+  bufferRows = 20,
+  bufferColumns = 20,
+): GridSourceData {
+  const columnCount = Math.max(data.columnCount, data.rows[0]?.length ?? 0);
+
+  const convertRow = (row: SpreadsheetData['rows'][number] | undefined) => {
+    const model: Record<string, string | number> = {};
+    for (let colIndex = 0; colIndex < columnCount + bufferColumns; colIndex += 1) {
+      const cell = row?.[colIndex];
+      model[columnIndexToLetter(colIndex)] = cell
+        ? (isFormula(cell.raw) ? cell.raw : (cell.computed ?? cell.raw))
+        : '';
+    }
+    return model;
+  };
+
+  const pinnedTop = data.rows
+    .slice(0, data.headerRowCount)
+    .map((row) => ({ ...convertRow(row), _rowClass: 'header-row' }));
+  const source = data.rows
+    .slice(data.headerRowCount)
+    .map(convertRow);
+
+  for (let index = 0; index < bufferRows; index += 1) {
+    source.push(convertRow(undefined));
+  }
+
+  return { source, pinnedTop };
+}
+
+function rowHasContent(row: Record<string, unknown>): boolean {
+  return Object.entries(row).some(([key, value]) => (
+    /^[A-Z]+$/.test(key) && value !== undefined && value !== null && value !== ''
+  ));
+}
+
+function splitTrailingBufferRows(source: Record<string, unknown>[]): {
+  contentRows: Record<string, unknown>[];
+  bufferRows: Record<string, unknown>[];
+} {
+  let contentRowCount = source.length;
+  while (contentRowCount > 0 && !rowHasContent(source[contentRowCount - 1])) {
+    contentRowCount -= 1;
+  }
+  return {
+    contentRows: source.slice(0, contentRowCount),
+    bufferRows: source.slice(contentRowCount),
+  };
+}
+
+function spreadsheetDataFromGridSources(
+  pinnedTop: Record<string, unknown>[],
+  source: Record<string, unknown>[],
+  options: Pick<
+    GridOperationsOptions,
+    'getHeaderRowCount' | 'getColumnCount' | 'getColumnFormats' | 'getFrozenColumnCount'
+  >,
+): SpreadsheetData {
+  const headerRowCount = Math.min(options.getHeaderRowCount(), pinnedTop.length);
+  const { contentRows } = splitTrailingBufferRows(source);
+  const rowsToConvert = [...pinnedTop.slice(0, headerRowCount), ...contentRows];
+  let columnCount = Math.max(1, options.getColumnCount());
+
+  for (const row of rowsToConvert) {
+    for (const [key, value] of Object.entries(row)) {
+      if (/^[A-Z]+$/.test(key) && value !== undefined && value !== null && value !== '') {
+        columnCount = Math.max(columnCount, columnLetterToIndex(key) + 1);
+      }
+    }
+  }
+
+  return {
+    rows: rowsToConvert.map((row) => Array.from(
+      { length: columnCount },
+      (_, colIndex) => createCell(String(row[columnIndexToLetter(colIndex)] ?? '')),
+    )),
+    columnCount,
+    hasHeaders: headerRowCount > 0,
+    headerRowCount,
+    frozenColumnCount: options.getFrozenColumnCount(),
+    columnFormats: options.getColumnFormats(),
+  };
+}
 
 export interface GridOperationsOptions {
   getHeaderRowCount: () => number;
@@ -23,14 +177,18 @@ export interface GridOperationsOptions {
   getFrozenColumnCount: () => number;
   onDirty: () => void;
   getUndoPlugin: () => UndoRedoPlugin | null;
+  getTrimmedRows?: () => TrimmedRows;
+  formulaViewState?: FormulaViewState;
 }
 
 export interface GridOperations {
   // Cell operations
   updateCell: (row: number, col: number, value: string) => Promise<void>;
+  updateCells: (updates: readonly GridCellUpdate[]) => Promise<readonly GridCellUpdateResult[]>;
   clearCells: (range: NormalizedSelectionRange) => Promise<void>;
   getCellValue: (row: number, col: number) => Promise<string | number | null>;
   getCellRawValue: (row: number, col: number) => Promise<string>;
+  recalculateFormulas: () => Promise<number>;
 
   // Row operations
   addRow: (index?: number) => Promise<void>;
@@ -74,7 +232,36 @@ export function createGridOperations(
     getFrozenColumnCount,
     onDirty,
     getUndoPlugin,
+    getTrimmedRows,
+    formulaViewState,
   } = options;
+
+  const recalculateGridFormulas = async (): Promise<number> => {
+    const grid = gridRef.current;
+    if (!grid || !formulaViewState) return 0;
+
+    const [source, pinnedTop] = await Promise.all([
+      grid.getSource('rgRow'),
+      grid.getSource('rowPinStart'),
+    ]);
+    const gridData = {
+      source: (source ?? []) as Record<string, string | number>[],
+      pinnedTop: (pinnedTop ?? []) as Record<string, string | number>[],
+    };
+    const data = spreadsheetDataFromGridSources(gridData.pinnedTop, gridData.source, options);
+    const durationMs = formulaViewState.recalculate(data, gridData);
+    await grid.refresh('all');
+    return durationMs;
+  };
+
+  function rowMapping(grid: RevoGridElement, sourceRowCount: number) {
+    const headerRowCount = getHeaderRowCount();
+    return createRowIndexMapping({
+      rowCount: headerRowCount + sourceRowCount,
+      headerRowCount,
+      trimmedRows: getTrimmedRows?.() ?? getAppliedTrimmedRows(grid),
+    });
+  }
 
   /**
    * Translate logical row index to RevoGrid row index and type
@@ -87,53 +274,139 @@ export function createGridOperations(
     return { gridRow: logicalRow - headerRowCount, rowType: 'rgRow' };
   }
 
+  /** Translate an absolute sheet column into its RevoGrid viewport section. */
+  function translateColumnIndex(logicalCol: number): { gridCol: number; colType: DimensionCols } {
+    const frozenColumnCount = getFrozenColumnCount();
+    if (logicalCol < frozenColumnCount) {
+      return { gridCol: logicalCol, colType: 'colPinStart' };
+    }
+    return { gridCol: logicalCol - frozenColumnCount, colType: 'rgCol' };
+  }
+
   /**
-   * Update a single cell value
+   * Apply a validated cell batch as one source replacement. Formula derivation
+   * happens against cloned rows before the live grid changes; a failed repaint
+   * restores both the original source and formula view before rejecting.
    */
-  const updateCell = async (row: number, col: number, value: string): Promise<void> => {
+  const updateCells = async (
+    updates: readonly GridCellUpdate[],
+  ): Promise<readonly GridCellUpdateResult[]> => {
     const grid = gridRef.current;
     if (!grid) throw new Error('Grid not available');
+    if (updates.length === 0) return [];
 
-    const { gridRow, rowType } = translateRowIndex(row);
-    const prop = columnIndexToLetter(col);
+    const [sourceValue, pinnedTopValue] = await Promise.all([
+      grid.getSource('rgRow'),
+      grid.getSource('rowPinStart'),
+    ]);
+    const source = (sourceValue ?? []) as Record<string, string | number>[];
+    const pinnedTop = (pinnedTopValue ?? []) as Record<string, string | number>[];
+    const nextSource = [...source];
+    const nextPinnedTop = [...pinnedTop];
+    const clonedSourceRows = new Set<number>();
+    const clonedPinnedRows = new Set<number>();
+    const seen = new Set<string>();
+    const changes: Array<{
+      rowIndex: number;
+      colIndex: number;
+      prop: string;
+      oldValue: unknown;
+      newValue: unknown;
+      rowType: DimensionRows;
+      colType: DimensionCols;
+    }> = [];
+    let sourceChanged = false;
+    let pinnedTopChanged = false;
 
-    // Get old value for undo tracking
-    const source = await grid.getSource(rowType);
-    const oldValue = source?.[gridRow]?.[prop] ?? '';
+    for (const update of updates) {
+      if (!Number.isInteger(update.row) || update.row < 0) {
+        throw new Error(`Row index ${String(update.row)} is out of bounds`);
+      }
+      if (!Number.isInteger(update.column) || update.column < 0 || update.column >= getColumnCount()) {
+        throw new Error(`Column index ${String(update.column)} is out of bounds`);
+      }
+      const key = `${update.row}:${update.column}`;
+      if (seen.has(key)) throw new Error(`Duplicate cell update for ${key}`);
+      seen.add(key);
 
-    // Handle formulas
-    let displayValue: string | number = value;
-    if (isFormula(value)) {
-      // For formulas, we need to evaluate them
-      // Store raw formula and display computed result
-      const data = await getAllGridData(grid);
-      const { value: computed, error } = evaluateFormula(value, data, row, col);
-      displayValue = error ? error : (computed ?? value);
+      const { gridRow, rowType } = translateRowIndex(update.row);
+      const { gridCol, colType } = translateColumnIndex(update.column);
+      const rows = rowType === 'rowPinStart' ? nextPinnedTop : nextSource;
+      const originalRows = rowType === 'rowPinStart' ? pinnedTop : source;
+      if (!originalRows[gridRow]) {
+        throw new Error(`Row index ${String(update.row)} is out of bounds`);
+      }
+      const clonedRows = rowType === 'rowPinStart' ? clonedPinnedRows : clonedSourceRows;
+      if (!clonedRows.has(gridRow)) {
+        rows[gridRow] = { ...originalRows[gridRow] };
+        clonedRows.add(gridRow);
+      }
+
+      const prop = columnIndexToLetter(update.column);
+      const oldValue = originalRows[gridRow][prop] ?? '';
+      rows[gridRow][prop] = update.value;
+      if (rowType === 'rowPinStart') pinnedTopChanged = true;
+      else sourceChanged = true;
+      if (oldValue !== update.value) {
+        changes.push({
+          rowIndex: gridRow,
+          colIndex: gridCol,
+          prop,
+          oldValue,
+          newValue: update.value,
+          rowType,
+          colType,
+        });
+      }
     }
 
-    // Update the cell
-    await grid.setDataAt({
-      row: gridRow,
-      col,
-      val: displayValue,
-      rowType,
-      colType: 'rgCol',
-    });
+    const nextGridData = { source: nextSource, pinnedTop: nextPinnedTop };
+    const previousGridData = { source, pinnedTop };
 
-    // Record for undo
+    try {
+      if (formulaViewState) {
+        const nextData = spreadsheetDataFromGridSources(nextPinnedTop, nextSource, options);
+        formulaViewState.recalculate(nextData, nextGridData);
+      }
+      if (sourceChanged) grid.source = nextSource;
+      if (pinnedTopChanged) grid.pinnedTopSource = nextPinnedTop;
+      await grid.refresh('all');
+    } catch (error) {
+      if (sourceChanged) grid.source = source;
+      if (pinnedTopChanged) grid.pinnedTopSource = pinnedTop;
+      try {
+        if (formulaViewState) {
+          const previousData = spreadsheetDataFromGridSources(pinnedTop, source, options);
+          formulaViewState.recalculate(previousData, previousGridData);
+        }
+        await grid.refresh('all');
+      } catch (rollbackError) {
+        console.error('[CSV] Failed to repaint after rolling back a cell batch:', rollbackError);
+      }
+      throw error;
+    }
+
     const undoPlugin = getUndoPlugin();
-    if (undoPlugin && oldValue !== displayValue) {
-      undoPlugin.recordManualChange([{
-        rowIndex: gridRow,
-        colIndex: col,
-        prop,
-        oldValue,
-        newValue: displayValue,
-        rowType,
-      }]);
-    }
+    if (undoPlugin && changes.length > 0) undoPlugin.recordManualChange(changes);
+    if (changes.length > 0) onDirty();
 
-    onDirty();
+    return updates.map((update) => {
+      const { gridRow, rowType } = translateRowIndex(update.row);
+      const rows = rowType === 'rowPinStart' ? nextPinnedTop : nextSource;
+      const model = rows[gridRow];
+      const prop = columnIndexToLetter(update.column);
+      const raw = String(model[prop] ?? '');
+      return {
+        ...update,
+        raw,
+        displayed: formulaViewState?.getDisplayValue(model, prop) ?? model[prop] ?? null,
+      };
+    });
+  };
+
+  /** Update a single cell through the same transactional path. */
+  const updateCell = async (row: number, col: number, value: string): Promise<void> => {
+    await updateCells([{ row, column: col, value }]);
   };
 
   /**
@@ -150,6 +423,7 @@ export function createGridOperations(
       oldValue: unknown;
       newValue: unknown;
       rowType: DimensionRows;
+      colType: DimensionCols;
     }> = [];
 
     // Get current data for undo tracking
@@ -160,9 +434,11 @@ export function createGridOperations(
 
     const promises: Promise<void | undefined>[] = [];
 
-    for (let r = range.startRow; r <= range.endRow; r++) {
+    const logicalRows = logicalRowsForSelection(rowMapping(grid, source?.length ?? 0), range).logicalRows;
+    for (const r of logicalRows) {
       for (let c = range.startCol; c <= range.endCol; c++) {
         const { gridRow, rowType } = translateRowIndex(r);
+        const { gridCol, colType } = translateColumnIndex(c);
         const prop = columnIndexToLetter(c);
 
         // Get old value
@@ -172,7 +448,8 @@ export function createGridOperations(
         if (oldValue !== '') {
           changes.push({
             rowIndex: gridRow,
-            colIndex: c,
+            colIndex: gridCol,
+            colType,
             prop,
             oldValue,
             newValue: '',
@@ -182,15 +459,16 @@ export function createGridOperations(
 
         promises.push(grid.setDataAt({
           row: gridRow,
-          col: c,
+          col: gridCol,
           val: '',
           rowType,
-          colType: 'rgCol',
+          colType,
         }));
       }
     }
 
     await Promise.all(promises);
+    await recalculateGridFormulas();
 
     // Record for undo
     const undoPlugin = getUndoPlugin();
@@ -212,7 +490,9 @@ export function createGridOperations(
     const source = await grid.getSource(rowType);
     const prop = columnIndexToLetter(col);
 
-    return source?.[gridRow]?.[prop] ?? null;
+    const model = source?.[gridRow];
+    if (!model) return null;
+    return formulaViewState?.getDisplayValue(model, prop) ?? model[prop] ?? null;
   };
 
   /**
@@ -225,13 +505,6 @@ export function createGridOperations(
     const { gridRow, rowType } = translateRowIndex(row);
     const source = await grid.getSource(rowType);
     const prop = columnIndexToLetter(col);
-
-    // Check for raw value property (used for formulas)
-    const rawProp = `_raw_${prop}`;
-    const rawValue = source?.[gridRow]?.[rawProp];
-    if (rawValue !== undefined) {
-      return String(rawValue);
-    }
 
     return String(source?.[gridRow]?.[prop] ?? '');
   };
@@ -274,6 +547,7 @@ export function createGridOperations(
       grid.source = newSource;
     }
 
+    await recalculateGridFormulas();
     onDirty();
   };
 
@@ -308,6 +582,7 @@ export function createGridOperations(
       grid.source = newSource;
     }
 
+    await recalculateGridFormulas();
     onDirty();
   };
 
@@ -353,6 +628,7 @@ export function createGridOperations(
 
     grid.pinnedTopSource = newPinned;
     grid.source = newSource;
+    await recalculateGridFormulas();
     onDirty();
   };
 
@@ -408,6 +684,7 @@ export function createGridOperations(
 
     // Update column count
     setColumnCount(currentColumnCount + 1);
+    await recalculateGridFormulas();
     onDirty();
   };
 
@@ -462,6 +739,7 @@ export function createGridOperations(
 
     // Update column count
     setColumnCount(currentColumnCount - 1);
+    await recalculateGridFormulas();
     onDirty();
   };
 
@@ -479,7 +757,8 @@ export function createGridOperations(
 
     const values: string[][] = [];
 
-    for (let r = range.startRow; r <= range.endRow; r++) {
+    const logicalRows = logicalRowsForSelection(rowMapping(grid, source?.length ?? 0), range).logicalRows;
+    for (const r of logicalRows) {
       const row: string[] = [];
       for (let c = range.startCol; c <= range.endCol; c++) {
         const { gridRow, rowType } = translateRowIndex(r);
@@ -538,15 +817,21 @@ export function createGridOperations(
       grid.getSource('rowPinStart'),
     ]);
 
-    // Calculate required row count after paste
-    const requiredLastRow = targetRow + pasteRowCount - 1;
-    const requiredDataRows = requiredLastRow >= headerRowCount
-      ? requiredLastRow - headerRowCount + 1
-      : 0;
     const currentDataRows = source?.length ?? 0;
+    const totalLogicalRows = headerRowCount + currentDataRows;
+    const destinationRows = logicalRowsForPaste(
+      rowMapping(grid, currentDataRows),
+      targetRow,
+      pasteRowCount,
+      totalLogicalRows,
+    ).logicalRows;
 
     // Expand grid source if needed
     let newSource = [...(source || [])];
+    const requiredLastRow = Math.max(...destinationRows);
+    const requiredDataRows = requiredLastRow >= headerRowCount
+      ? requiredLastRow - headerRowCount + 1
+      : 0;
     if (requiredDataRows > currentDataRows) {
       // Add empty rows to accommodate pasted data
       const rowsToAdd = requiredDataRows - currentDataRows;
@@ -568,15 +853,17 @@ export function createGridOperations(
       oldValue: unknown;
       newValue: unknown;
       rowType: DimensionRows;
+      colType: DimensionCols;
     }> = [];
 
     const promises: Promise<void | undefined>[] = [];
 
     for (let r = 0; r < values.length; r++) {
       for (let c = 0; c < values[r].length; c++) {
-        const destRow = targetRow + r;
+        const destRow = destinationRows[r];
         const destCol = targetCol + c;
         const { gridRow, rowType } = translateRowIndex(destRow);
+        const { gridCol, colType } = translateColumnIndex(destCol);
         const prop = columnIndexToLetter(destCol);
         const value = values[r][c];
 
@@ -587,7 +874,8 @@ export function createGridOperations(
         if (oldValue !== value) {
           changes.push({
             rowIndex: gridRow,
-            colIndex: destCol,
+            colIndex: gridCol,
+            colType,
             prop,
             oldValue,
             newValue: value,
@@ -597,15 +885,16 @@ export function createGridOperations(
 
         promises.push(grid.setDataAt({
           row: gridRow,
-          col: destCol,
+          col: gridCol,
           val: value,
           rowType,
-          colType: 'rgCol',
+          colType,
         }));
       }
     }
 
     await Promise.all(promises);
+    await recalculateGridFormulas();
 
     // Record for undo
     const undoPlugin = getUndoPlugin();
@@ -615,55 +904,6 @@ export function createGridOperations(
 
     onDirty();
   };
-
-  /**
-   * Get all grid data for formula evaluation
-   */
-  async function getAllGridData(grid: RevoGridElement): Promise<FormulaEvalData> {
-    const [source, pinnedTop] = await Promise.all([
-      grid.getSource('rgRow'),
-      grid.getSource('rowPinStart'),
-    ]);
-
-    const rows: Array<{ raw: string; computed: string | number | null }[]> = [];
-    let columnCount = 0;
-
-    // Add pinned (header) rows first
-    if (pinnedTop) {
-      for (const rowData of pinnedTop) {
-        const row: { raw: string; computed: string | number | null }[] = [];
-        const keys = Object.keys(rowData).filter(k => !k.startsWith('_'));
-        columnCount = Math.max(columnCount, keys.length);
-        for (const key of keys) {
-          const value = rowData[key];
-          row.push({
-            raw: String(value ?? ''),
-            computed: value ?? null,
-          });
-        }
-        rows.push(row);
-      }
-    }
-
-    // Add regular rows
-    if (source) {
-      for (const rowData of source) {
-        const row: { raw: string; computed: string | number | null }[] = [];
-        const keys = Object.keys(rowData).filter(k => !k.startsWith('_'));
-        columnCount = Math.max(columnCount, keys.length);
-        for (const key of keys) {
-          const value = rowData[key];
-          row.push({
-            raw: String(value ?? ''),
-            computed: value ?? null,
-          });
-        }
-        rows.push(row);
-      }
-    }
-
-    return { rows, columnCount };
-  }
 
   /**
    * Serialize grid data to CSV
@@ -829,10 +1069,11 @@ export function createGridOperations(
 
     const prop = columnIndexToLetter(columnIndex);
 
-    // Sort the source array
-    const sorted = [...source].sort((a, b) => {
-      const aVal = a[prop];
-      const bVal = b[prop];
+    // Buffer rows stay trailing and are not part of spreadsheet sorting.
+    const { contentRows, bufferRows } = splitTrailingBufferRows(source);
+    const sorted = [...contentRows].sort((a, b) => {
+      const aVal = formulaViewState?.getDisplayValue(a, prop) ?? a[prop];
+      const bVal = formulaViewState?.getDisplayValue(b, prop) ?? b[prop];
 
       // Handle empty values
       const aEmpty = aVal === null || aVal === undefined || aVal === '';
@@ -852,15 +1093,18 @@ export function createGridOperations(
       return direction === 'asc' ? result : -result;
     });
 
-    grid.source = sorted;
+    grid.source = [...sorted, ...bufferRows];
+    await recalculateGridFormulas();
     onDirty();
   };
 
   return {
     updateCell,
+    updateCells,
     clearCells,
     getCellValue,
     getCellRawValue,
+    recalculateFormulas: recalculateGridFormulas,
     addRow,
     deleteRow,
     addColumn,

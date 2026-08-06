@@ -259,6 +259,13 @@ const store = new Store<{ loggerConfig: LoggerConfig }>({
 // Load configuration from store or use defaults
 let config: LoggerConfig = store.get('loggerConfig', defaultConfig);
 
+// Under vitest, `app.getPath('userData')` is the mocked '/mock/path', so the
+// file transport tries to mkdir a directory that will never exist and emits an
+// ENOENT plus a ~15-frame electron-log stack trace on the first log call in
+// every test file. Both transports are pure noise in a test run -- nothing
+// asserts on them -- so keep them off entirely.
+const IS_TEST = !!process.env.VITEST;
+
 // Configure electron-log
 function configureLogger() {
   // Set log file location
@@ -266,14 +273,14 @@ function configureLogger() {
     const path = app.getPath('userData');
     return `${path}/logs/main.log`;
   };
-  
+
   // Set file size limit (10MB)
   log.transports.file.maxSize = 10 * 1024 * 1024;
-  
+
   // Enable/disable transports based on config
-  log.transports.file.level = config.fileLogging ? config.globalLevel : false;
-  log.transports.console.level = config.consoleLogging ? config.globalLevel : false;
-  
+  log.transports.file.level = !IS_TEST && config.fileLogging ? config.globalLevel : false;
+  log.transports.console.level = !IS_TEST && config.consoleLogging ? config.globalLevel : false;
+
   // Clean, readable format
   log.transports.console.format = '[{h}:{i}:{s}] {scope}: {text}';
   log.transports.file.format = '[{y}-{m}-{d} {h}:{i}:{s}.{ms}] {scope}: {text}';

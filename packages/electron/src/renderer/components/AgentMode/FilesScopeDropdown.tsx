@@ -9,7 +9,7 @@
  */
 
 import React from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { AgentFileScopeMode } from '../../store/atoms/projectState';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 

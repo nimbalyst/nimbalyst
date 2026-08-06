@@ -1,0 +1,83 @@
+{
+  "session": {
+    "provider": "claude-code",
+    "model": "claude-code:sonnet",
+    "title": "Triage the launch bug",
+    "agentRole": "standard",
+    "metadata": {
+      "linkedTrackerItemIds": ["{{TRACKER_ID:EXAMPLE_BUG}}"]
+    }
+  },
+  "messages": [
+    {
+      "direction": "input",
+      "source": "claude-code",
+      "content": "{\"prompt\":\"Triage the export-control example bug in Tracker mode, link this session to it, and delegate a focused review of the related product brief.\",\"options\":{\"cwd\":\"{{TUTORIAL_ROOT}}\"}}",
+      "messageKind": "user",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"I found a focused reproduction in the example bug. I’ll link this investigation and ask a sibling session to check the product context.\"}]}}",
+      "messageKind": "assistant",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tutorial-tracker-create\",\"name\":\"mcp__nimbalyst-trackers__tracker_create\",\"input\":{\"type\":\"bug\",\"title\":\"Export remains disabled after changing the date range\",\"status\":\"to-do\",\"priority\":\"medium\",\"description\":\"The dashboard export control does not refresh after a custom date range is selected.\",\"tags\":[\"tutorial\",\"dashboard\"]}}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tutorial-tracker-create\",\"content\":\"{\\\"structured\\\":{\\\"action\\\":\\\"created\\\",\\\"item\\\":{\\\"id\\\":\\\"{{TRACKER_ID:EXAMPLE_BUG}}\\\",\\\"issueKey\\\":\\\"{{TRACKER_ISSUE_KEY:EXAMPLE_BUG}}\\\",\\\"type\\\":\\\"bug\\\",\\\"title\\\":\\\"Export remains disabled after changing the date range\\\",\\\"status\\\":\\\"to-do\\\",\\\"priority\\\":\\\"medium\\\",\\\"tags\\\":[\\\"tutorial\\\",\\\"dashboard\\\"]}},\\\"summary\\\":\\\"Created the tutorial example bug.\\\"}\"}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tutorial-tracker-link\",\"name\":\"mcp__nimbalyst-trackers__tracker_link_session\",\"input\":{\"trackerId\":\"{{TRACKER_ID:EXAMPLE_BUG}}\",\"sessionId\":\"{{SESSION_ID:TRIAGE_THE_LAUNCH_BUG}}\"}}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tutorial-tracker-link\",\"content\":\"{\\\"structured\\\":{\\\"action\\\":\\\"linked\\\",\\\"trackerId\\\":\\\"{{TRACKER_ID:EXAMPLE_BUG}}\\\",\\\"type\\\":\\\"bug\\\",\\\"title\\\":\\\"Export remains disabled after changing the date range\\\",\\\"linkedCount\\\":1},\\\"summary\\\":\\\"Linked this session to the tutorial launch bug.\\\"}\"}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tutorial-spawn-review\",\"name\":\"mcp__nimbalyst-host__spawn_session\",\"input\":{\"prompt\":\"Review product-brief.md and identify the product expectation that this export-control regression violates.\",\"mode\":\"sibling\"}}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tutorial-spawn-review\",\"content\":\"{\\\"sessionId\\\":\\\"{{SESSION_ID:DRAFT_THE_PRODUCT_BRIEF}}\\\",\\\"status\\\":\\\"completed\\\",\\\"title\\\":\\\"Draft the product brief\\\"}\"}]}}",
+      "messageKind": "tool",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"The regression is now linked on both sides of the tracker/session relationship. The failure contradicts the traceability and immediate-readiness goals in [product-brief.md](product-brief.md); the exact reproduction remains in [{{TRACKER_ISSUE_KEY:EXAMPLE_BUG}}](nimbalyst://{{TRACKER_ISSUE_KEY:EXAMPLE_BUG}}).\"}]}}",
+      "messageKind": "assistant",
+      "hidden": false
+    },
+    {
+      "direction": "output",
+      "source": "claude-code",
+      "content": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"Note to the user: You can type into the window below and continue this session or start a new one\"}]}}",
+      "messageKind": "assistant",
+      "hidden": false
+    }
+  ]
+}

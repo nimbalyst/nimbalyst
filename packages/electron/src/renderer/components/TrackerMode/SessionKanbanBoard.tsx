@@ -55,6 +55,7 @@ import {
   sessionListWorkspaceAtom,
 } from '../../store/atoms/sessions';
 import { SessionContextMenu } from '../AgenticCoding/SessionContextMenu';
+import { WorktreeIcon } from '../common/WorktreeIcon';
 import { SessionTranscriptPeek } from '../AgenticCoding/SessionTranscriptPeek';
 import { ArchiveWorktreeDialog } from '../AgentMode/ArchiveWorktreeDialog';
 import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
@@ -120,13 +121,7 @@ function ChildRunStateBar({ sessionId }: { sessionId: string }) {
 function CardTypeIcon({ type, provider }: { type: KanbanCardType; provider?: string }) {
   if (type === 'worktree') {
     return (
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0 mt-px text-[#a78bfa]">
-        <rect x="3" y="2" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-        <rect x="10" y="2" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-        <rect x="3" y="11" width="3" height="3" rx="0.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-        <path d="M4.5 5v3.5a1.5 1.5 0 0 0 1.5 1.5h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-        <path d="M11.5 5v5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-      </svg>
+      <WorktreeIcon size={14} className="shrink-0 mt-px text-[#a78bfa]" />
     );
   }
   if (type === 'workstream') {

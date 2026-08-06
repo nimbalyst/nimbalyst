@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_MENTIONED_AGENTS_PER_MESSAGE,
+  MAX_MESSAGE_ATTACHMENT_BYTES,
+  MAX_MESSAGE_ATTACHMENT_FILE_NAME_LENGTH,
+  type MessageAttachment,
+  type RichCommentBody,
   MAX_MENTIONED_USERS_PER_MESSAGE,
   MAX_REACTION_EMOJI_PER_MESSAGE,
   MAX_RESOURCE_REFS_PER_MESSAGE,
@@ -22,6 +27,16 @@ import {
   validateConversationClientMutationIds,
   validateConversationHistoryPage,
 } from "../conversation.js";
+import type {
+  ConversationAppendAckMessage,
+  ConversationHistoryResponseMessage,
+} from "../conversationRoom.js";
+import type {
+  PresenceDeltaMessage,
+  PresenceHeartbeatMessage,
+  PresenceRosterMessage,
+  PresenceStatusSetMessage,
+} from "../teamInbox.js";
 import { COMMENT_BODY_CONTRACT_CORPUS } from "./commentBodyContractCorpus.js";
 
 const actor = {
@@ -55,7 +70,116 @@ function refs(count: number): ResourceRef[] {
   }));
 }
 
+function attachment(
+  overrides: Partial<MessageAttachment> = {}
+): MessageAttachment {
+  return {
+    assetId: "asset-1",
+    fileName: "screenshot.png",
+    mimeType: "image/png",
+    byteSize: 2048,
+    width: 800,
+    height: 600,
+    ...overrides,
+  };
+}
+
 describe("Teams messaging protocol validation", () => {
+  it("carries team presence over the organization inbox socket with camelCase discriminators", () => {
+    const heartbeat: PresenceHeartbeatMessage = {
+      type: "presenceHeartbeat",
+      status: "online",
+      sentAt: 1,
+    };
+    const statusSet: PresenceStatusSetMessage = {
+      type: "presenceStatusSet",
+      status: "away",
+      sentAt: 2,
+    };
+    const roster: PresenceRosterMessage = {
+      type: "presenceRoster",
+      orgId: "org-1",
+      members: [
+        {
+          teamMemberId: "member-1",
+          status: "away",
+          lastHeartbeatAt: 2,
+          updatedAt: 2,
+        },
+        {
+          teamMemberId: "member-2",
+          status: "offline",
+          updatedAt: 3,
+        },
+      ],
+    };
+    const delta: PresenceDeltaMessage = {
+      type: "presenceDelta",
+      orgId: "org-1",
+      member: {
+        teamMemberId: "member-1",
+        status: "online",
+        lastHeartbeatAt: 4,
+        updatedAt: 4,
+      },
+    };
+
+    const wireRoundTrip = JSON.parse(
+      JSON.stringify({ heartbeat, statusSet, roster, delta }),
+    ) as {
+      heartbeat: PresenceHeartbeatMessage;
+      statusSet: PresenceStatusSetMessage;
+      roster: PresenceRosterMessage;
+      delta: PresenceDeltaMessage;
+    };
+
+    expect(wireRoundTrip).toMatchObject({
+      heartbeat: { type: "presenceHeartbeat", status: "online" },
+      statusSet: { type: "presenceStatusSet", status: "away" },
+      roster: {
+        type: "presenceRoster",
+        members: [
+          { teamMemberId: "member-1", status: "away" },
+          { teamMemberId: "member-2", status: "offline" },
+        ],
+      },
+      delta: {
+        type: "presenceDelta",
+        member: { teamMemberId: "member-1", status: "online" },
+      },
+    });
+  });
+
+  it("carries canonical delivery hints in append acknowledgements and history", () => {
+    const canonical = event(1, {
+      deliveryHints: {
+        mentionedUserIds: ["user-2"],
+        mentionedAgentSessionIds: [],
+        assignedUserIds: ["user-3"],
+      },
+    });
+    const append: ConversationAppendAckMessage = {
+      type: "conversationAppendAck",
+      event: canonical,
+      replayed: false,
+    };
+    const history: ConversationHistoryResponseMessage = {
+      type: "conversationHistoryResponse",
+      events: [canonical],
+    };
+
+    const wireRoundTrip = JSON.parse(JSON.stringify({ append, history })) as {
+      append: ConversationAppendAckMessage;
+      history: ConversationHistoryResponseMessage;
+    };
+    expect(wireRoundTrip.append.event.deliveryHints).toEqual(
+      canonical.deliveryHints
+    );
+    expect(wireRoundTrip.history.events[0].deliveryHints).toEqual(
+      canonical.deliveryHints
+    );
+  });
+
   it.each(COMMENT_BODY_CONTRACT_CORPUS)(
     "matches the shared comment body corpus: $name",
     ({
@@ -356,6 +480,179 @@ describe("Teams messaging protocol validation", () => {
         },
       ],
     });
+  });
+
+  it("accepts a body carrying an image attachment", () => {
+    const body: RichCommentBody = {
+      version: 1,
+      format: "nimbalystMarkdown",
+      text: "here it is",
+      attachments: [attachment()],
+    };
+
+    expect(validateRichCommentBody(body)).toEqual({ valid: true, errors: [] });
+  });
+
+  it("accepts 8 attachments and rejects 9", () => {
+    const within = {
+      version: 1,
+      format: "nimbalystMarkdown",
+      text: "",
+      attachments: Array.from(
+        { length: MAX_ATTACHMENTS_PER_MESSAGE },
+        (_, index) => attachment({ assetId: `asset-${index}` })
+      ),
+    } as const;
+    expect(validateRichCommentBody(within)).toEqual({ valid: true, errors: [] });
+
+    const over = {
+      ...within,
+      attachments: [
+        ...within.attachments,
+        attachment({ assetId: "asset-extra" }),
+      ],
+    };
+    expect(validateRichCommentBody(over)).toMatchObject({
+      valid: false,
+      errors: [
+        {
+          code: "tooManyAttachments",
+          path: "body.attachments",
+          limit: MAX_ATTACHMENTS_PER_MESSAGE,
+          actual: MAX_ATTACHMENTS_PER_MESSAGE + 1,
+        },
+      ],
+    });
+  });
+
+  it("accepts an attachment at 10 MiB and rejects one byte more", () => {
+    const at: RichCommentBody = {
+      version: 1,
+      format: "nimbalystMarkdown",
+      text: "",
+      attachments: [attachment({ byteSize: MAX_MESSAGE_ATTACHMENT_BYTES })],
+    };
+    expect(validateRichCommentBody(at)).toEqual({ valid: true, errors: [] });
+
+    const over = {
+      ...at,
+      attachments: [attachment({ byteSize: MAX_MESSAGE_ATTACHMENT_BYTES + 1 })],
+    };
+    expect(validateRichCommentBody(over)).toMatchObject({
+      valid: false,
+      errors: [
+        {
+          code: "attachmentTooLarge",
+          path: "body.attachments[0].byteSize",
+          limit: MAX_MESSAGE_ATTACHMENT_BYTES,
+          actual: MAX_MESSAGE_ATTACHMENT_BYTES + 1,
+        },
+      ],
+    });
+  });
+
+  it("rejects the same asset attached twice to one message", () => {
+    expect(
+      validateRichCommentBody({
+        version: 1,
+        format: "nimbalystMarkdown",
+        text: "",
+        attachments: [attachment(), attachment()],
+      })
+    ).toMatchObject({
+      valid: false,
+      errors: [
+        {
+          code: "duplicateAttachmentAssetId",
+          path: "body.attachments[1].assetId",
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ["assetId", { assetId: "" }, "body.attachments[0].assetId"],
+    ["fileName", { fileName: "" }, "body.attachments[0].fileName"],
+    [
+      "an over-long fileName",
+      { fileName: "a".repeat(MAX_MESSAGE_ATTACHMENT_FILE_NAME_LENGTH + 1) },
+      "body.attachments[0].fileName",
+    ],
+    ["mimeType", { mimeType: "" }, "body.attachments[0].mimeType"],
+    ["byteSize", { byteSize: -1 }, "body.attachments[0].byteSize"],
+    ["a fractional byteSize", { byteSize: 1.5 }, "body.attachments[0].byteSize"],
+    ["width", { width: 0 }, "body.attachments[0].width"],
+    ["height", { height: -4 }, "body.attachments[0].height"],
+  ])("rejects an attachment with an invalid %s", (_label, overrides, path) => {
+    expect(
+      validateRichCommentBody({
+        version: 1,
+        format: "nimbalystMarkdown",
+        text: "",
+        attachments: [attachment(overrides as Partial<MessageAttachment>)],
+      })
+    ).toMatchObject({
+      valid: false,
+      errors: [{ code: expect.stringMatching(/^attachment/), path }],
+    });
+  });
+
+  it("accepts an attachment without pixel dimensions", () => {
+    const { width: _width, height: _height, ...withoutDimensions } =
+      attachment();
+    expect(
+      validateRichCommentBody({
+        version: 1,
+        format: "nimbalystMarkdown",
+        text: "report.pdf",
+        attachments: [{ ...withoutDimensions, mimeType: "application/pdf" }],
+      })
+    ).toEqual({ valid: true, errors: [] });
+  });
+
+  it("round-trips an attachment body through JSON unchanged", () => {
+    const body = {
+      version: 1,
+      format: "nimbalystMarkdown",
+      text: "see this",
+      attachments: [attachment(), attachment({ assetId: "asset-2" })],
+    } as const;
+
+    expect(JSON.parse(JSON.stringify(body))).toEqual(body);
+  });
+
+  it("leaves a body without attachments byte-identical on the wire", () => {
+    // Old clients and old servers must see exactly what they saw before: the
+    // field is absent, not present-and-empty.
+    const body = {
+      version: 1,
+      format: "nimbalystMarkdown",
+      text: "no files here",
+    } as const;
+
+    expect(JSON.stringify(body)).toBe(
+      '{"version":1,"format":"nimbalystMarkdown","text":"no files here"}'
+    );
+    expect(validateRichCommentBody(body)).toEqual({ valid: true, errors: [] });
+  });
+
+  it("accepts attachments alongside inline entities", () => {
+    expect(
+      validateRichCommentBody(
+        {
+          version: 1,
+          format: "nimbalystMarkdown",
+          text: "[Doc](nimbalyst://document/doc-1)",
+          entities: [{ start: 0, end: 33, kind: "resource", refIndex: 0 }],
+          attachments: [attachment()],
+        },
+        {
+          resourceRefs: [
+            { orgId: "org-1", kind: "document", sourceId: "doc-1" },
+          ],
+        }
+      )
+    ).toEqual({ valid: true, errors: [] });
   });
 
   it("accepts agent mention hop depth 4 and rejects 5", () => {

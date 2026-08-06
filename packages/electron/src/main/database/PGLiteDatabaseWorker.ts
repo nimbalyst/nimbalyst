@@ -14,6 +14,13 @@ import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import type { SQLiteDatabase } from './sqlite/SQLiteDatabase';
 import { DatabaseBackupService } from '../services/database/DatabaseBackupService';
 import { deserializeWorkerError } from './workerErrorSerialization';
+import {
+  buildDatabaseOperationErrorProperties,
+  classifyDatabaseOperation,
+  DatabaseErrorTelemetryLimiter,
+  extractDatabaseTableName,
+  type DatabaseTelemetryOperation,
+} from './DatabaseErrorTelemetry';
 
 /**
  * Error that has already been shown to the user via a dialog.
@@ -64,17 +71,6 @@ export function raceWithTimeout<T>(work: Promise<T>, timeoutMs: number): Promise
  * Exported so unit tests can pin the value if reasoning ever shifts.
  */
 export const INIT_TIMEOUT_MS = 120_000;
-
-// Helper to categorize database errors
-function categorizeDBError(error: any): string {
-  const message = error?.message?.toLowerCase() || String(error).toLowerCase();
-  if (message.includes('permission') || message.includes('eacces')) return 'permission';
-  if (message.includes('disk') || message.includes('enospc')) return 'disk_full';
-  if (message.includes('lock') || message.includes('busy')) return 'lock';
-  if (message.includes('corrupt')) return 'corruption';
-  if (message.includes('syntax')) return 'syntax';
-  return 'unknown';
-}
 
 interface PendingRequest {
   resolve: (value: any) => void;
@@ -833,12 +829,8 @@ export class PGLiteDatabaseWorker {
       this.lastExecMs = undefined;
       // Record stats even for failures
       this.stats.record(tableName, operation, duration, execMs);
-      // Track database error
-      this.analytics.sendEvent('database_error', {
-        operation,
-        errorType: categorizeDBError(error),
-        tableName
-      });
+      // `database_error` is emitted once, in ActiveDatabaseFacade, so the
+      // SQLite backend reports the same failures this one does.
       // Also log slow failed queries
       if (duration >= PGLiteDatabaseWorker.SLOW_QUERY_THRESHOLD_MS) {
         logger.main.warn(`[PGLite] Slow query failed (${duration.toFixed(0)}ms): table=${tableName}`);
@@ -934,12 +926,7 @@ export class PGLiteDatabaseWorker {
       this.lastExecMs = undefined;
       // Record stats even for failures
       this.stats.record(tableName, 'write', duration, execMs);
-      // Track database error
-      this.analytics.sendEvent('database_error', {
-        operation: 'write',
-        errorType: categorizeDBError(error),
-        tableName
-      });
+      // Emitted once in ActiveDatabaseFacade -- see the note in query().
       // Also log slow failed exec operations
       if (duration >= PGLiteDatabaseWorker.SLOW_QUERY_THRESHOLD_MS) {
         logger.main.warn(`[PGLite] Slow exec failed (${duration.toFixed(0)}ms): table=${tableName}`);
@@ -956,27 +943,11 @@ export class PGLiteDatabaseWorker {
   }
 
   /**
-   * Extract table name from SQL query (simple heuristic)
+   * Extract a table name for local performance stats. Attribution is
+   * deliberately narrow -- see `extractDatabaseTableName`.
    */
   private extractTableName(sql: string): string {
-    // Normalize whitespace for easier matching
-    const normalized = sql.replace(/\s+/g, ' ').trim();
-    // Try specific DML patterns in priority order
-    const patterns = [
-      /^SELECT\b.+?\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)/i,    // SELECT ... FROM table
-      /^INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)/i,          // INSERT INTO table
-      /^UPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)/i,                  // UPDATE table
-      /^DELETE\s+FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)/i,           // DELETE FROM table
-      /^CREATE\s+(?:TABLE|INDEX)\b.*?\bON\s+([a-zA-Z_][a-zA-Z0-9_]*)/i, // CREATE INDEX ... ON table
-      /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z_][a-zA-Z0-9_]*)/i, // CREATE TABLE table
-      /^ALTER\s+TABLE\s+([a-zA-Z_][a-zA-Z0-9_]*)/i,           // ALTER TABLE table
-      /^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([a-zA-Z_][a-zA-Z0-9_]*)/i, // DROP TABLE table
-    ];
-    for (const pattern of patterns) {
-      const match = normalized.match(pattern);
-      if (match) return match[1];
-    }
-    return 'unknown';
+    return extractDatabaseTableName(sql);
   }
 
   /**
@@ -984,11 +955,7 @@ export class PGLiteDatabaseWorker {
    * Parameterized DML goes through query(), so infer from the leading verb.
    */
   private classifySqlOperation(sql: string): 'read' | 'write' {
-    const normalized = sql.replace(/^\s+/, '');
-    if (/^(INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|TRUNCATE|BEGIN|COMMIT|ROLLBACK)\b/i.test(normalized)) {
-      return 'write';
-    }
-    return 'read';
+    return classifyDatabaseOperation(sql);
   }
 
   /**
@@ -1191,6 +1158,7 @@ export interface AppDatabase {
 class ActiveDatabaseFacade implements AppDatabase {
   private active: AppDatabase;
   private engine: DatabaseEngine;
+  private errorTelemetryLimiter = new DatabaseErrorTelemetryLimiter();
 
   constructor(initial: AppDatabase, engine: DatabaseEngine) {
     this.active = initial;
@@ -1234,20 +1202,40 @@ class ActiveDatabaseFacade implements AppDatabase {
     return this.active.isInitialized();
   }
 
-  query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }> {
-    return this.active.query<T>(sql, params);
+  async query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }> {
+    try {
+      return await this.active.query<T>(sql, params);
+    } catch (error) {
+      this.reportOperationError(error, sql);
+      throw error;
+    }
   }
 
-  queryReadOnly<T = any>(sql: string, params?: any[], timeoutMs?: number): Promise<{ rows: T[] }> {
-    return this.active.queryReadOnly<T>(sql, params, timeoutMs);
+  async queryReadOnly<T = any>(sql: string, params?: any[], timeoutMs?: number): Promise<{ rows: T[] }> {
+    try {
+      return await this.active.queryReadOnly<T>(sql, params, timeoutMs);
+    } catch (error) {
+      this.reportOperationError(error, sql, 'read');
+      throw error;
+    }
   }
 
-  exec(sql: string, timeoutMs?: number): Promise<void> {
-    return this.active.exec(sql, timeoutMs);
+  async exec(sql: string, timeoutMs?: number): Promise<void> {
+    try {
+      await this.active.exec(sql, timeoutMs);
+    } catch (error) {
+      this.reportOperationError(error, sql);
+      throw error;
+    }
   }
 
-  runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void> {
-    return this.active.runTransaction(statements);
+  async runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void> {
+    try {
+      await this.active.runTransaction(statements);
+    } catch (error) {
+      this.reportOperationError(error, statements[0]?.sql ?? '', 'write');
+      throw error;
+    }
   }
 
   close(): Promise<void> {
@@ -1287,6 +1275,42 @@ class ActiveDatabaseFacade implements AppDatabase {
   async showRecoveryDialog(): Promise<void> {
     if (typeof this.active.showRecoveryDialog === 'function') {
       await this.active.showRecoveryDialog();
+    }
+  }
+
+  /**
+   * The single `database_error` emit site, for whichever backend is live.
+   *
+   * Two things are deliberate here. The raw error and SQL go to the local log
+   * only -- they can quote row values, and rows here hold the user's prose --
+   * so PostHog receives just the fixed category/code taxonomy. And the emit is
+   * rate limited: on 2026-08-03 a wedged database produced ~62,000 events in
+   * two hours, none of which said more than the first one did.
+   */
+  private reportOperationError(
+    error: unknown,
+    sql: string,
+    operation?: DatabaseTelemetryOperation,
+  ): void {
+    const properties = buildDatabaseOperationErrorProperties({
+      backend: this.engine,
+      error,
+      sql,
+      operation,
+    });
+
+    logger.main.error('[Database] operation failed', { ...properties, sql, error });
+
+    const suppressedSinceLastReport = this.errorTelemetryLimiter.admit(properties);
+    if (suppressedSinceLastReport === null) return;
+    try {
+      AnalyticsService.getInstance().sendEvent('database_error', {
+        ...properties,
+        suppressedSinceLastReport,
+      });
+    } catch (analyticsError) {
+      // Telemetry must never turn a database failure into a second one.
+      logger.main.warn('[Database] failed to report database_error', analyticsError);
     }
   }
 }

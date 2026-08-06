@@ -2,8 +2,8 @@
  * Session Shares State
  *
  * Tracks which sessions have been shared (have active share links).
- * Used by SessionListItem context menu and AgentSessionHeader to show
- * share state and enable copy/unshare actions.
+ * Used by the SessionListItem context menu to show share state and enable
+ * copy/unshare actions.
  *
  * Also tracks encryption keys (URL-safe base64) so that "Copy share link"
  * can reconstruct the full URL including the #key= fragment.

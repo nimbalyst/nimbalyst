@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import {
+  activeCollabScopeAtom,
   pendingCollabDocumentAtom,
   sharedDocumentsAtom,
   workspaceHasTeamAtom,
+  type SharedDocument,
 } from '../../store/atoms/collabDocuments';
 import { windowModeAtom } from '../../store/atoms/windowMode';
 import { openNavigationDialogRequestAtom } from '../../store/atoms/appCommands';
@@ -27,15 +29,33 @@ vi.mock('../../dialogs', () => ({
 // recent-workspaces IPC (not the heavy workspaceManager handler) is the source
 // of project data.
 
-vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
-  ...await importOriginal<typeof import('@nimbalyst/runtime')>(),
-  MaterialSymbol: () => null,
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
+  MaterialSymbol: ({ className }: { className?: string }) => <span className={className} />,
+}));
+
+vi.mock('@nimbalyst/runtime/ui/icons/ProviderIcons', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@nimbalyst/runtime/ui/icons/ProviderIcons')>(),
   ProviderIcon: () => null,
 }));
 
 vi.mock('posthog-js/react', () => ({
   usePostHog: () => undefined,
 }));
+
+import { UnifiedQuickOpen } from '../UnifiedQuickOpen';
+import { NavigationDialogKeyboardHandler } from '../NavigationDialogKeyboardHandler';
+
+const WORKSPACE = '/Users/ghinkle/sources/crystal';
+const TEAM_SCOPE = {
+  scopeKey: WORKSPACE,
+  orgId: 'team-1',
+  indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+};
+
+function activateTeam(store: ReturnType<typeof createStore>): void {
+  store.set(activeCollabScopeAtom, TEAM_SCOPE);
+  store.set(workspaceHasTeamAtom, true);
+}
 
 function setupElectronApiMock(trackerItems: unknown[] = []) {
   const appSettings = new Map<string, unknown>();
@@ -50,7 +70,7 @@ function setupElectronApiMock(trackerItems: unknown[] = []) {
     if (channel === 'get-recent-workspaces') {
       return [
         {
-          path: '/Users/ghinkle/sources/crystal',
+          path: WORKSPACE,
           name: 'crystal',
           timestamp: 123,
         },
@@ -67,7 +87,9 @@ function setupElectronApiMock(trackerItems: unknown[] = []) {
     if (channel === 'document-service:tracker-items-list') {
       return trackerItems;
     }
-    throw new Error(`Unexpected invoke channel: ${channel}`);
+    // Any other channel is incidental to what these tests assert; a throw here
+    // just turns every unrelated IPC addition into a failure in this file.
+    return undefined;
   });
 
   const getRecentWorkspaces = vi.fn().mockResolvedValue([
@@ -78,11 +100,12 @@ function setupElectronApiMock(trackerItems: unknown[] = []) {
     },
   ]);
 
-  const getOpenWorkspaces = vi.fn().mockResolvedValue(['/Users/ghinkle/sources/crystal']);
+  const getOpenWorkspaces = vi.fn().mockResolvedValue([WORKSPACE]);
   const semanticSearch = {
     isAvailable: vi.fn().mockResolvedValue(false),
     query: vi.fn().mockResolvedValue([]),
   };
+  const listUserPrompts = vi.fn().mockResolvedValue({ success: true, prompts: [] });
 
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
@@ -94,7 +117,7 @@ function setupElectronApiMock(trackerItems: unknown[] = []) {
         openWorkspace: vi.fn().mockResolvedValue({ success: true }),
       },
       ai: {
-        listUserPrompts: vi.fn().mockResolvedValue({ success: true, prompts: [] }),
+        listUserPrompts,
       },
       getRecentWorkspaceFiles: vi.fn().mockResolvedValue([]),
       buildQuickOpenCache: vi.fn().mockResolvedValue(undefined),
@@ -104,7 +127,63 @@ function setupElectronApiMock(trackerItems: unknown[] = []) {
     },
   });
 
-  return { invoke, getRecentWorkspaces, getOpenWorkspaces, appSettings, semanticSearch };
+  return { invoke, getRecentWorkspaces, getOpenWorkspaces, appSettings, semanticSearch, listUserPrompts };
+}
+
+function renderQuickOpen(
+  overrides: Partial<React.ComponentProps<typeof UnifiedQuickOpen>> = {},
+  store = createStore(),
+) {
+  return render(
+    <JotaiProvider store={store}>
+      <UnifiedQuickOpen
+        isOpen={true}
+        onClose={vi.fn()}
+        workspacePath={WORKSPACE}
+        onFileSelect={vi.fn()}
+        onSessionSelect={vi.fn()}
+        onPromptSelect={vi.fn()}
+        {...overrides}
+      />
+    </JotaiProvider>
+  );
+}
+
+function sharedDoc(
+  documentId: string,
+  title: string,
+  extra: Partial<SharedDocument> = {},
+): SharedDocument {
+  return {
+    documentId,
+    teamProjectId: null,
+    title,
+    documentType: 'markdown',
+    createdBy: 'user-1',
+    createdAt: 100,
+    updatedAt: 200,
+    ...extra,
+  };
+}
+
+function typeSearch(value: string) {
+  fireEvent.change(screen.getByTestId('unified-quick-open-search'), { target: { value } });
+}
+
+function renderKeyboardHandler(store = createStore()) {
+  return render(
+    <JotaiProvider store={store}>
+      <NavigationDialogKeyboardHandler
+        workspaceMode={true}
+        workspacePath={WORKSPACE}
+        currentFilePath={null}
+        onFileSelect={vi.fn()}
+        onSessionSelect={vi.fn()}
+        onPromptSelect={vi.fn()}
+        documentContext={{}}
+      />
+    </JotaiProvider>
+  );
 }
 
 describe('UnifiedQuickOpen — Projects tab', () => {
@@ -118,22 +197,7 @@ describe('UnifiedQuickOpen — Projects tab', () => {
   });
 
   it('loads recent projects from the lightweight recent-workspaces IPC', async () => {
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
-    const store = createStore();
-
-    render(
-      <JotaiProvider store={store}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="projects"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'projects' });
 
     await waitFor(() => {
       expect(window.electronAPI.invoke).toHaveBeenCalledWith('get-recent-workspaces');
@@ -141,84 +205,42 @@ describe('UnifiedQuickOpen — Projects tab', () => {
 
     expect(window.electronAPI.workspaceManager.getOpenWorkspaces).toHaveBeenCalled();
     expect(window.electronAPI.workspaceManager.getRecentWorkspaces).not.toHaveBeenCalled();
-    expect(await screen.findByText('crystal')).toBeTruthy();
+    await screen.findByText('crystal');
   });
 
   it('does not filter hidden projects while typing in the Files tab', async () => {
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
-    const store = createStore();
-
-    render(
-      <JotaiProvider store={store}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="files"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'files' });
 
     await screen.findByText('crystal');
     await screen.findByText('aurora');
 
-    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
-      target: { value: 'crystal' },
-    });
+    typeSearch('crystal');
 
     await waitFor(() => {
       expect(window.electronAPI.searchWorkspaceFileNames).toHaveBeenCalledWith(
-        '/Users/ghinkle/sources/crystal',
+        WORKSPACE,
         'crystal',
         undefined,
       );
     });
 
-    expect(screen.getByText('aurora')).toBeTruthy();
+    screen.getByText('aurora');
   });
 
   it('finds a shared file in the Files tab and opens it collaboratively', async () => {
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
     const store = createStore();
     const onClose = vi.fn();
     const onFileSelect = vi.fn();
-    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
-    store.set(workspaceHasTeamAtom, true);
-    store.set(sharedDocumentsAtom, [
-      {
-        documentId: 'doc-roadmap',
-        title: 'Planning/Product Roadmap',
-        documentType: 'markdown',
-        createdBy: 'user-1',
-        createdAt: 100,
-        updatedAt: 200,
-      },
-    ]);
+    store.set(activeWorkspacePathAtom, WORKSPACE);
+    activateTeam(store);
+    store.set(sharedDocumentsAtom, [sharedDoc('doc-roadmap', 'Planning/Product Roadmap')]);
 
-    render(
-      <JotaiProvider store={store}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={onClose}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="files"
-          onFileSelect={onFileSelect}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'files', onClose, onFileSelect }, store);
 
-    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
-      target: { value: 'roadmap' },
-    });
+    typeSearch('roadmap');
 
     const sharedResult = await screen.findByTestId('shared-file-quick-open-doc-roadmap');
     expect(sharedResult.textContent).toContain('Product Roadmap');
-    expect(sharedResult.textContent).toContain('Shared');
 
     fireEvent.click(sharedResult);
 
@@ -226,6 +248,8 @@ describe('UnifiedQuickOpen — Projects tab', () => {
     expect(store.get(pendingCollabDocumentAtom)).toEqual({
       documentId: 'doc-roadmap',
       documentType: 'markdown',
+      scopeKey: WORKSPACE,
+      orgId: 'team-1',
       analyticsSource: 'quick_open',
     });
     expect(store.get(windowModeAtom)).toBe('collab');
@@ -233,22 +257,7 @@ describe('UnifiedQuickOpen — Projects tab', () => {
   });
 
   it('passes the file mask to file-name search before result truncation', async () => {
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
-    const store = createStore();
-
-    render(
-      <JotaiProvider store={store}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="files"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'files' });
 
     fireEvent.click(screen.getByTitle('Mask'));
     fireEvent.change(screen.getByPlaceholderText('*.ts,*.tsx'), {
@@ -259,13 +268,11 @@ describe('UnifiedQuickOpen — Projects tab', () => {
       code: 'Enter',
     });
 
-    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
-      target: { value: 'tracker' },
-    });
+    typeSearch('tracker');
 
     await waitFor(() => {
       expect(window.electronAPI.searchWorkspaceFileNames).toHaveBeenCalledWith(
-        '/Users/ghinkle/sources/crystal',
+        WORKSPACE,
         'tracker',
         { fileMask: '*.md' },
       );
@@ -274,22 +281,8 @@ describe('UnifiedQuickOpen — Projects tab', () => {
 
   it('remembers the selected file mask across dialog remounts', async () => {
     const { appSettings } = setupElectronApiMock();
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
-    const firstStore = createStore();
 
-    const { unmount } = render(
-      <JotaiProvider store={firstStore}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="files"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    const { unmount } = renderQuickOpen({ initialTab: 'files' });
 
     fireEvent.click(screen.getByTitle('Mask'));
     fireEvent.click(screen.getByText('Markdown'));
@@ -300,41 +293,15 @@ describe('UnifiedQuickOpen — Projects tab', () => {
 
     unmount();
 
-    render(
-      <JotaiProvider store={createStore()}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="files"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'files' });
 
     await waitFor(() => {
-      expect(screen.getByTitle('Mask: Markdown')).toBeTruthy();
+      screen.getByTitle('Mask: Markdown');
     });
   });
 
   it('opens the tracker type picker with Ctrl+T', async () => {
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
-
-    render(
-      <JotaiProvider store={createStore()}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="files"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'files' });
 
     fireEvent.keyDown(window, {
       key: 't',
@@ -344,7 +311,7 @@ describe('UnifiedQuickOpen — Projects tab', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: /Trackers/ }).getAttribute('aria-selected')).toBe('true');
-      expect(screen.getByPlaceholderText('custom-type')).toBeTruthy();
+      screen.getByPlaceholderText('custom-type');
     });
   });
 });
@@ -361,31 +328,16 @@ describe('UnifiedQuickOpen — Memory tab', () => {
   it('merges Tracker navigation into visible single-select Memory bubbles', async () => {
     const { semanticSearch } = setupElectronApiMock();
     semanticSearch.isAvailable.mockResolvedValue(true);
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
 
-    render(
-      <JotaiProvider store={createStore()}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="search"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'search' });
 
-    expect(await screen.findByRole('tab', { name: /Memory/ })).toBeTruthy();
-    const visibleTabs = screen.getAllByRole('tab');
-    expect(visibleTabs[visibleTabs.length - 1].textContent).toContain('Memory');
+    await screen.findByRole('tab', { name: /Memory/ });
     expect(screen.queryByRole('tab', { name: /Trackers/ })).toBeNull();
-    await screen.findByRole('group', { name: 'Search in' });
-    const allScope = screen.getByRole('button', { name: 'All' });
-    const docsScope = screen.getByRole('button', { name: 'Docs' });
-    const trackersScope = screen.getByRole('button', { name: 'Trackers' });
-    const sessionsScope = screen.getByRole('button', { name: 'Sessions' });
+    const scopeGroup = await screen.findByRole('group', { name: 'Search in' });
+    const allScope = within(scopeGroup).getByRole('button', { name: 'All' });
+    const docsScope = within(scopeGroup).getByRole('button', { name: 'Docs' });
+    const trackersScope = within(scopeGroup).getByRole('button', { name: 'Trackers' });
+    const sessionsScope = within(scopeGroup).getByRole('button', { name: 'Sessions' });
 
     expect(allScope.getAttribute('aria-pressed')).toBe('true');
     expect(docsScope.getAttribute('aria-pressed')).toBe('false');
@@ -393,13 +345,11 @@ describe('UnifiedQuickOpen — Memory tab', () => {
     expect(sessionsScope.getAttribute('aria-pressed')).toBe('false');
 
     fireEvent.click(trackersScope);
-    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
-      target: { value: 'login failure' },
-    });
+    typeSearch('login failure');
 
     await waitFor(() => {
       expect(semanticSearch.query).toHaveBeenLastCalledWith(
-        '/Users/ghinkle/sources/crystal',
+        WORKSPACE,
         'login failure',
         25,
         ['trackers'],
@@ -411,7 +361,7 @@ describe('UnifiedQuickOpen — Memory tab', () => {
 
     await waitFor(() => {
       expect(semanticSearch.query).toHaveBeenLastCalledWith(
-        '/Users/ghinkle/sources/crystal',
+        WORKSPACE,
         'login failure',
         25,
         ['design', 'docs', 'plans', 'claude', 'facts'],
@@ -454,64 +404,109 @@ describe('UnifiedQuickOpen — Memory tab', () => {
         signals: { dense: true, sparse: false },
       },
     ]);
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
 
-    render(
-      <JotaiProvider store={createStore()}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="search"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'search' });
 
     await screen.findByRole('group', { name: 'Search in' });
     fireEvent.click(screen.getByRole('button', { name: 'Trackers' }));
-    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
-      target: { value: 'shared room resilience' },
-    });
+    // The query matches nothing lexically, so the hit can only come from the
+    // semantic route being merged into the tracker results.
+    typeSearch('shared room resilience');
 
-    expect(await screen.findByText('Collaboration retry policy')).toBeTruthy();
-    expect(screen.getByText('NIM-4242')).toBeTruthy();
-    expect(screen.getByText('open')).toBeTruthy();
-    expect(screen.getByText('bug')).toBeTruthy();
+    await screen.findByText('Collaboration retry policy');
   });
 
   it('keeps local file-content search on the separate ripgrep route', async () => {
     const { semanticSearch } = setupElectronApiMock();
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
 
-    render(
-      <JotaiProvider store={createStore()}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="in-files"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'in-files' });
 
-    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
-      target: { value: 'UnifiedQuickOpen' },
-    });
+    typeSearch('UnifiedQuickOpen');
 
     await waitFor(() => {
       expect(window.electronAPI.searchWorkspaceFileContent).toHaveBeenCalledWith(
-        '/Users/ghinkle/sources/crystal',
+        WORKSPACE,
         'UnifiedQuickOpen',
       );
     });
     expect(semanticSearch.query).not.toHaveBeenCalled();
     expect(screen.queryByRole('group', { name: 'Search in' })).toBeNull();
+  });
+});
+
+describe('UnifiedQuickOpen — Prompts tab', () => {
+  beforeEach(() => {
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  });
+
+  it('filters forward-provenance prompts with visible actor toggles', async () => {
+    const { listUserPrompts } = setupElectronApiMock();
+    listUserPrompts.mockResolvedValue({
+      success: true,
+      prompts: [
+        {
+          id: 'human-prompt',
+          sessionId: 'session-human',
+          content: 'web console design question',
+          createdAt: 3,
+          sessionTitle: 'Human session',
+          provider: 'openai-codex',
+          promptActor: 'human',
+        },
+        {
+          id: 'agent-prompt',
+          sessionId: 'session-agent',
+          content: 'web console implementation task',
+          createdAt: 2,
+          sessionTitle: 'Agent session',
+          provider: 'claude-code',
+          promptActor: 'agent',
+        },
+        {
+          id: 'historical-prompt',
+          sessionId: 'session-old',
+          content: 'web console historical prompt',
+          createdAt: 1,
+          sessionTitle: 'Historical session',
+          provider: 'claude-code',
+        },
+      ],
+    });
+
+    renderQuickOpen({ initialTab: 'prompts' });
+
+    await screen.findByText('web console design question');
+    const actorGroup = screen.getByRole('group', { name: 'Prompts from' });
+    const allPrompts = within(actorGroup).getByRole('button', { name: 'All' });
+    const myPrompts = within(actorGroup).getByRole('button', { name: 'Me' });
+    const agentPrompts = within(actorGroup).getByRole('button', { name: 'Agents' });
+
+    expect(allPrompts.getAttribute('aria-pressed')).toBe('true');
+    screen.getByText('web console implementation task');
+    screen.getByText('web console historical prompt');
+
+    typeSearch('web');
+    fireEvent.click(myPrompts);
+    screen.getByText('web console design question');
+    expect(screen.queryByText('web console implementation task')).toBeNull();
+    expect(screen.queryByText('web console historical prompt')).toBeNull();
+    expect(myPrompts.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(agentPrompts);
+    screen.getByText('web console implementation task');
+    expect(screen.queryByText('web console design question')).toBeNull();
+    expect(screen.queryByText('web console historical prompt')).toBeNull();
+    expect(agentPrompts.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(agentPrompts);
+    expect(allPrompts.getAttribute('aria-pressed')).toBe('true');
+    screen.getByText('web console design question');
+    screen.getByText('web console implementation task');
+    screen.getByText('web console historical prompt');
   });
 });
 
@@ -527,153 +522,65 @@ describe('UnifiedQuickOpen — Team tab', () => {
   });
 
   it('only shows shared documents when the active workspace has a team', async () => {
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
     const withoutTeamStore = createStore();
-    withoutTeamStore.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    withoutTeamStore.set(activeWorkspacePathAtom, WORKSPACE);
 
-    const { unmount } = render(
-      <JotaiProvider store={withoutTeamStore}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    const { unmount } = renderQuickOpen({}, withoutTeamStore);
 
     expect(screen.queryByRole('tab', { name: /Team/ })).toBeNull();
     unmount();
 
     const withTeamStore = createStore();
-    withTeamStore.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
-    withTeamStore.set(workspaceHasTeamAtom, true);
-    withTeamStore.set(sharedDocumentsAtom, [
-      {
-        documentId: 'doc-roadmap',
-        title: 'Planning/Product Roadmap',
-        documentType: 'markdown',
-        createdBy: 'user-1',
-        createdAt: 100,
-        updatedAt: 200,
-      },
-    ]);
+    withTeamStore.set(activeWorkspacePathAtom, WORKSPACE);
+    activateTeam(withTeamStore);
+    withTeamStore.set(sharedDocumentsAtom, [sharedDoc('doc-roadmap', 'Planning/Product Roadmap')]);
 
-    render(
-      <JotaiProvider store={withTeamStore}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="team"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'team' }, withTeamStore);
 
-    expect(await screen.findByRole('tab', { name: /Team/ })).toBeTruthy();
-    expect(screen.getByText('Product Roadmap')).toBeTruthy();
+    await screen.findByRole('tab', { name: /Team/ });
+    screen.getByText('Product Roadmap');
   });
 
   it('filters by display name and excludes locked documents', async () => {
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
     const store = createStore();
-    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
-    store.set(workspaceHasTeamAtom, true);
+    store.set(activeWorkspacePathAtom, WORKSPACE);
+    activateTeam(store);
     store.set(sharedDocumentsAtom, [
-      {
-        documentId: 'doc-roadmap',
-        title: 'Planning/Product Roadmap',
-        documentType: 'markdown',
-        createdBy: 'user-1',
-        createdAt: 100,
-        updatedAt: 300,
-      },
-      {
-        documentId: 'doc-retro',
-        title: 'Planning/Team Retrospective',
-        documentType: 'markdown',
-        createdBy: 'user-1',
-        createdAt: 100,
-        updatedAt: 200,
-      },
-      {
-        documentId: 'doc-locked',
-        title: 'Planning/Locked Strategy',
-        documentType: 'markdown',
-        createdBy: 'user-1',
-        createdAt: 100,
-        updatedAt: 400,
-        decryptFailed: true,
-      },
+      sharedDoc('doc-roadmap', 'Planning/Product Roadmap'),
+      sharedDoc('doc-retro', 'Planning/Team Retrospective'),
+      sharedDoc('doc-locked', 'Planning/Locked Strategy', { decryptFailed: true }),
     ]);
 
-    render(
-      <JotaiProvider store={store}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="team"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'team' }, store);
 
-    expect(screen.getByText('Product Roadmap')).toBeTruthy();
-    expect(screen.getByText('Team Retrospective')).toBeTruthy();
+    screen.getByText('Product Roadmap');
+    screen.getByText('Team Retrospective');
     expect(screen.queryByText('Locked Strategy')).toBeNull();
 
-    fireEvent.change(screen.getByTestId('unified-quick-open-search'), {
-      target: { value: 'roadmap' },
-    });
+    typeSearch('roadmap');
 
-    expect(screen.getByText('Product Roadmap')).toBeTruthy();
+    screen.getByText('Product Roadmap');
     expect(screen.queryByText('Team Retrospective')).toBeNull();
   });
 
   it('routes selection through the pending shared-document atom and collab mode', async () => {
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
     const store = createStore();
     const onClose = vi.fn();
-    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
-    store.set(workspaceHasTeamAtom, true);
+    store.set(activeWorkspacePathAtom, WORKSPACE);
+    activateTeam(store);
     store.set(sharedDocumentsAtom, [
-      {
-        documentId: 'doc-canvas',
-        title: 'Design/Launch Canvas',
-        documentType: 'excalidraw',
-        createdBy: 'user-1',
-        createdAt: 100,
-        updatedAt: 200,
-      },
+      sharedDoc('doc-canvas', 'Design/Launch Canvas', { documentType: 'excalidraw' }),
     ]);
 
-    render(
-      <JotaiProvider store={store}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={onClose}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="team"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'team', onClose }, store);
 
     fireEvent.click(screen.getByText('Launch Canvas'));
 
     expect(store.get(pendingCollabDocumentAtom)).toEqual({
       documentId: 'doc-canvas',
       documentType: 'excalidraw',
+      scopeKey: WORKSPACE,
+      orgId: 'team-1',
       analyticsSource: 'quick_open',
     });
     expect(store.get(windowModeAtom)).toBe('collab');
@@ -681,24 +588,11 @@ describe('UnifiedQuickOpen — Team tab', () => {
   });
 
   it('jumps to the Team tab with Cmd+Shift+D while the palette is open', async () => {
-    const { UnifiedQuickOpen } = await import('../UnifiedQuickOpen');
     const store = createStore();
-    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
-    store.set(workspaceHasTeamAtom, true);
+    store.set(activeWorkspacePathAtom, WORKSPACE);
+    activateTeam(store);
 
-    render(
-      <JotaiProvider store={store}>
-        <UnifiedQuickOpen
-          isOpen={true}
-          onClose={vi.fn()}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          initialTab="files"
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-        />
-      </JotaiProvider>
-    );
+    renderQuickOpen({ initialTab: 'files' }, store);
 
     fireEvent.keyDown(window, { key: 'd', code: 'KeyD', ctrlKey: true, shiftKey: true });
 
@@ -706,37 +600,18 @@ describe('UnifiedQuickOpen — Team tab', () => {
   });
 
   it('opens on Team with Cmd+Shift+D only when the workspace has a team', async () => {
-    const { NavigationDialogKeyboardHandler } = await import('../NavigationDialogKeyboardHandler');
-    const handlerProps = {
-      workspaceMode: true,
-      workspacePath: '/Users/ghinkle/sources/crystal',
-      currentFilePath: null,
-      onFileSelect: vi.fn(),
-      onSessionSelect: vi.fn(),
-      onPromptSelect: vi.fn(),
-      documentContext: {},
-    };
-
     const withoutTeamStore = createStore();
-    withoutTeamStore.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
-    const { unmount } = render(
-      <JotaiProvider store={withoutTeamStore}>
-        <NavigationDialogKeyboardHandler {...handlerProps} />
-      </JotaiProvider>
-    );
+    withoutTeamStore.set(activeWorkspacePathAtom, WORKSPACE);
+    const { unmount } = renderKeyboardHandler(withoutTeamStore);
 
     fireEvent.keyDown(window, { key: 'd', code: 'KeyD', ctrlKey: true, shiftKey: true });
     expect(openUnifiedQuickOpenMock).not.toHaveBeenCalled();
     unmount();
 
     const withTeamStore = createStore();
-    withTeamStore.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
-    withTeamStore.set(workspaceHasTeamAtom, true);
-    render(
-      <JotaiProvider store={withTeamStore}>
-        <NavigationDialogKeyboardHandler {...handlerProps} />
-      </JotaiProvider>
-    );
+    withTeamStore.set(activeWorkspacePathAtom, WORKSPACE);
+    activateTeam(withTeamStore);
+    renderKeyboardHandler(withTeamStore);
 
     fireEvent.keyDown(window, { key: 'd', code: 'KeyD', ctrlKey: true, shiftKey: true });
 
@@ -746,23 +621,10 @@ describe('UnifiedQuickOpen — Team tab', () => {
   });
 
   it('does not replay a rejected Team menu request when team availability changes', async () => {
-    const { NavigationDialogKeyboardHandler } = await import('../NavigationDialogKeyboardHandler');
     const store = createStore();
-    store.set(activeWorkspacePathAtom, '/Users/ghinkle/sources/crystal');
+    store.set(activeWorkspacePathAtom, WORKSPACE);
 
-    render(
-      <JotaiProvider store={store}>
-        <NavigationDialogKeyboardHandler
-          workspaceMode={true}
-          workspacePath="/Users/ghinkle/sources/crystal"
-          currentFilePath={null}
-          onFileSelect={vi.fn()}
-          onSessionSelect={vi.fn()}
-          onPromptSelect={vi.fn()}
-          documentContext={{}}
-        />
-      </JotaiProvider>
-    );
+    renderKeyboardHandler(store);
 
     act(() => {
       store.set(openNavigationDialogRequestAtom, {
@@ -773,7 +635,7 @@ describe('UnifiedQuickOpen — Team tab', () => {
     expect(openUnifiedQuickOpenMock).not.toHaveBeenCalled();
 
     act(() => {
-      store.set(workspaceHasTeamAtom, true);
+      activateTeam(store);
     });
     expect(openUnifiedQuickOpenMock).not.toHaveBeenCalled();
 

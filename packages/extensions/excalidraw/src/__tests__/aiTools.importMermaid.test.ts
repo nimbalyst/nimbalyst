@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // aiTools imports these two @excalidraw value exports at module load. Mock them

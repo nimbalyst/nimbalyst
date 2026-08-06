@@ -34,9 +34,9 @@ describe('AccountInspectorPopover', () => {
     );
 
     // The active (sync) account's email appears, not a list of every account/project.
-    expect(screen.getByText('me@example.com')).toBeTruthy();
+    screen.getByText('me@example.com');
     expect(screen.queryByText('other@example.com')).toBeNull();
-    expect(screen.getByText('Work Team')).toBeTruthy();
+    screen.getByText('Work Team');
 
     fireEvent.click(screen.getByTestId('account-inspector-account-row'));
     expect(onOpenAccount).toHaveBeenCalledTimes(1);
@@ -83,11 +83,32 @@ describe('AccountInspectorPopover', () => {
       />,
     );
 
-    expect(screen.getByText('Sign in')).toBeTruthy();
-    expect(screen.getByText('No organization')).toBeTruthy();
+    screen.getByText('Sign in');
+    screen.getByText('No organization');
 
     // With no project org, the org row opens the window with no target (create flow).
     fireEvent.click(screen.getByTestId('account-inspector-organization-row'));
     expect(onManageOrganization).toHaveBeenCalledWith(undefined);
+  });
+
+  // An unresolved lookup used to render as "No organization -- Set up", which
+  // offered org creation to a user who had just finished it.
+  it('does not offer org setup while the organization lookup is still running', () => {
+    render(
+      <AccountInspectorPopover
+        accounts={[]}
+        projectOrg={null}
+        projectOrgLoading
+        anchorEl={anchor()}
+        onClose={vi.fn()}
+        onOpenAccount={vi.fn()}
+        onManageOrganization={vi.fn()}
+        onOpenApplicationSettings={vi.fn()}
+        onOpenProjectSettings={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('account-inspector-organization-row')).toBeNull();
+    screen.getByTestId('account-inspector-organization-loading');
   });
 });

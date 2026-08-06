@@ -7,7 +7,7 @@
 
 import React, { ReactNode, useEffect, useMemo } from 'react';
 import { useAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
   workspaceAISettingsAtomFamily,
   loadWorkspaceAISettings,

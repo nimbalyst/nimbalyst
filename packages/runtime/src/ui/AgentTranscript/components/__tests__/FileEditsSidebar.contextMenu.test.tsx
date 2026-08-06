@@ -1,5 +1,5 @@
 import React from 'react';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { FileEditsSidebar } from '../FileEditsSidebar';
 import type { FileEditSummary } from '../../types';
@@ -13,6 +13,7 @@ const fileEdits: FileEditSummary[] = [
     operation: 'edit',
   } as FileEditSummary,
 ];
+const originalNavigatorPlatform = navigator.platform;
 
 function renderSidebar() {
   return render(
@@ -25,6 +26,14 @@ function renderSidebar() {
   );
 }
 
+afterEach(() => {
+  cleanup();
+  Object.defineProperty(navigator, 'platform', {
+    configurable: true,
+    value: originalNavigatorPlatform,
+  });
+});
+
 describe('FileEditsSidebar context menu positioning', () => {
   it('renders the context menu in a portal outside the sidebar so it escapes overflow containers', () => {
     const { container } = renderSidebar();
@@ -35,8 +44,6 @@ describe('FileEditsSidebar context menu positioning', () => {
     expect(menu).not.toBeNull();
     // FloatingPortal renders to document.body, not inside the sidebar subtree.
     expect(container.contains(menu!)).toBe(false);
-
-    cleanup();
   });
 
   it('positions via floating-ui instead of hardcoding the cursor coordinates', () => {
@@ -52,7 +59,20 @@ describe('FileEditsSidebar context menu positioning', () => {
     expect(menu.style.top).not.toBe('4000px');
     // floating-ui drives placement through its own positioning strategy.
     expect(menu.style.position).toBe('absolute');
+  });
+});
 
-    cleanup();
+describe('FileEditsSidebar file browser label', () => {
+  it.each([
+    ['MacIntel', 'Show in Finder'],
+    ['Win32', 'Show in Explorer'],
+    ['Linux x86_64', 'Show in Folder'],
+  ])('uses the platform-appropriate wording on %s', (platform, expectedLabel) => {
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: platform });
+    renderSidebar();
+
+    fireEvent.contextMenu(screen.getByText('app.ts'), { clientX: 120, clientY: 200 });
+
+    screen.getByText(expectedLabel);
   });
 });

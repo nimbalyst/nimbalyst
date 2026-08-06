@@ -10,8 +10,10 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol, getProviderIcon } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { getProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { isAgentProvider, shouldBlockStartedSessionProviderSwitch } from '@nimbalyst/runtime/ai/server/types';
 import { getClaudeCodeModelLabel } from '../../utils/modelUtils';
 import { advancedSettingsAtom, aiProviderSettingsAtom } from '../../store/atoms/appSettings';
@@ -89,6 +91,7 @@ export function ModelSelector({
       offset(4),
       flip({ fallbackPlacements: ['bottom-start', 'top-end', 'bottom-end'], padding: 8 }),
       shift({ padding: 8 }),
+      windowControlsClearance(),
     ],
   });
   const dismiss = useDismiss(context, {

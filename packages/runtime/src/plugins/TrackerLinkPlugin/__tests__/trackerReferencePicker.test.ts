@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * V2 `#` reference-picker tests.
  *

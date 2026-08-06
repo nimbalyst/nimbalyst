@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test for nested list addition bug
  * When adding a sublist under an existing list item, subsequent items appear out of position

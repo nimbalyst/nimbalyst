@@ -20,6 +20,7 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../../floating/windowControlsClearance';
 import type { PromptMarker } from '../types';
 import { formatShortTime } from '../../../utils/dateUtils';
 import { MaterialSymbol } from '../../icons/MaterialSymbol';
@@ -59,6 +60,7 @@ export const PromptsMenuButton: React.FC<PromptsMenuButtonProps> = ({
       offset(8),
       flip({ fallbackPlacements: ['top-end', 'bottom-start', 'top-start'], padding: 8 }),
       shift({ padding: 8 }),
+      windowControlsClearance(),
     ],
   });
   const dismiss = useDismiss(context, {
@@ -195,6 +197,7 @@ export const FloatingTranscriptActions: React.FC<FloatingTranscriptActionsProps>
       offset(8),
       flip({ fallbackPlacements: ['top-end', 'bottom-start', 'top-start'], padding: 8 }),
       shift({ padding: 8 }),
+      windowControlsClearance(),
     ],
   });
   const dismiss = useDismiss(context, {

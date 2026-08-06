@@ -7,9 +7,10 @@
  * runtime uses, so it catches the failure class where build is green but
  * the feature is broken because runtime resolution would fail.
  *
- * Why this exists: validate-extra-resources.js only checks INPUTS (do the
- * source paths exist before electron-builder runs). That answers "did the
- * config look right" but NOT "did the packaging actually work". Every
+ * Why this exists: the pre-pack validation in validate-extra-resources.js
+ * checks INPUTS (do the source paths exist before electron-builder runs).
+ * That answers "did the config look right" but NOT "did the SDK packaging
+ * actually work". Every
  * recurring "build green, feature broken in production" bug we've shipped
  * has been a packaging-output failure that input validation cannot catch.
  *

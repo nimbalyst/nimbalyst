@@ -1,8 +1,17 @@
 import React from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import {
+  TrackerReferenceChip,
+} from '@nimbalyst/runtime/plugins/TrackerLinkPlugin';
 
 import { ResourcePill } from './ResourcePill';
-import type { BodySegment, ResourcePillView } from './commentTypes';
+import type {
+  BodySegment,
+  MessageAttachmentView,
+  ResourceOpenHandler,
+  ResourcePillView,
+} from './commentTypes';
+import { parseResourceUrn } from './resourceUrn';
 
 /**
  * Segment renderer.
@@ -18,7 +27,7 @@ export function CommentBody({
   onOpenSession,
 }: {
   segments: readonly BodySegment[];
-  onOpenResource?: (pill: ResourcePillView) => void;
+  onOpenResource?: ResourceOpenHandler;
   onOpenMention?: (userId: string) => void;
   onOpenSession?: (sessionId: string) => void;
 }) {
@@ -44,7 +53,7 @@ function Segment({
   onOpenSession,
 }: {
   segment: BodySegment;
-  onOpenResource?: (pill: ResourcePillView) => void;
+  onOpenResource?: ResourceOpenHandler;
   onOpenMention?: (userId: string) => void;
   onOpenSession?: (sessionId: string) => void;
 }) {
@@ -126,9 +135,123 @@ function Segment({
       );
 
     case 'resource':
-      return <ResourcePill pill={segment.pill} onOpen={onOpenResource} />;
+      return (
+        <MessageResourceReference
+          pill={segment.pill}
+          label={segment.label}
+          onOpenResource={onOpenResource}
+        />
+      );
+
+    case 'attachments':
+      return <AttachmentBlock attachments={segment.attachments} />;
 
     default:
       return null;
   }
+}
+
+/**
+ * Tracker references reuse the canonical live chip. A project window resolves
+ * its title and status from the tracker atom; a dedicated organization window
+ * can still render the stable reference and route it to the owning project.
+ *
+ * The generic redacted pill remains the fallback for unavailable resources.
+ */
+function MessageResourceReference({
+  pill,
+  label,
+  onOpenResource,
+}: {
+  pill: ResourcePillView;
+  label?: string;
+  onOpenResource?: ResourceOpenHandler;
+}) {
+  const trackerReferenceKey =
+    pill.kind === 'tracker'
+      ? parseResourceUrn(pill.urn, 'message-resource')?.sourceId ?? null
+      : null;
+  if (
+    trackerReferenceKey
+    && pill.availability !== 'unavailable'
+    && pill.availability !== 'notInWorkspace'
+  ) {
+    const unresolvedLabel = label === 'Plan' ? 'Plan' : 'Tracker';
+    return (
+      <TrackerReferenceChip
+        referenceKey={trackerReferenceKey}
+        unresolvedLabel={unresolvedLabel}
+        onNavigate={
+          onOpenResource
+            ? () => onOpenResource(
+                pill,
+                label === 'Plan' ? { trackerView: 'document' } : undefined,
+              )
+            : undefined
+        }
+      />
+    );
+  }
+
+  return <ResourcePill pill={pill} onOpen={onOpenResource} />;
+}
+
+/**
+ * The message's files, below its text.
+ *
+ * Images are shown, not linked: an attached screenshot that has to be clicked
+ * to be seen is a worse conversation. They are bounded rather than laid out at
+ * their natural size, so one large paste cannot take over the thread, and the
+ * full-size view is one click away.
+ *
+ * `collab-asset://` is served by the main-process protocol handler, decrypted,
+ * so both the `<img>` and the link are ordinary URLs with no shim in between.
+ */
+function AttachmentBlock({ attachments }: { attachments: readonly MessageAttachmentView[] }) {
+  return (
+    <div
+      className="comment-body-attachments mt-1.5 flex flex-col items-start gap-1.5"
+      data-testid="comment-body-attachments"
+    >
+      {attachments.map((attachment) =>
+        attachment.isImage ? (
+          <button
+            key={attachment.assetId}
+            type="button"
+            className="comment-body-attachment-image block max-w-full overflow-hidden rounded-md border border-[var(--nim-border)]"
+            data-testid="comment-body-attachment-image"
+            data-asset-id={attachment.assetId}
+            title={`${attachment.fileName} (${attachment.sizeLabel})`}
+            onClick={() => window.open(attachment.src)}
+          >
+            <img
+              src={attachment.src}
+              alt={attachment.fileName}
+              width={attachment.width}
+              height={attachment.height}
+              className="max-h-[320px] max-w-full object-contain"
+            />
+          </button>
+        ) : (
+          <a
+            key={attachment.assetId}
+            href={attachment.src}
+            download={attachment.fileName}
+            className="comment-body-attachment-file flex max-w-full items-center gap-2 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-2 py-1.5 text-[12px] text-[var(--nim-text)] no-underline hover:bg-[var(--nim-bg-hover)]"
+            data-testid="comment-body-attachment-file"
+            data-asset-id={attachment.assetId}
+          >
+            <MaterialSymbol icon="draft" size={16} className="shrink-0 text-[var(--nim-text-muted)]" />
+            <span className="min-w-0">
+              <span className="block max-w-[280px] truncate">{attachment.fileName}</span>
+              <span className="block text-[11px] text-[var(--nim-text-faint)]">
+                {attachment.sizeLabel}
+              </span>
+            </span>
+            <MaterialSymbol icon="download" size={14} className="shrink-0 text-[var(--nim-text-muted)]" />
+          </a>
+        ),
+      )}
+    </div>
+  );
 }

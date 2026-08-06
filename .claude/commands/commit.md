@@ -29,8 +29,11 @@ Prepare a git commit following these steps:
   include the tracker reference on its own line in the proposed message
 - Prefer that system's canonical closing syntax, such as `Fixes #123`,
   `Closes ABC-123`, or similar
-- If the correct auto-close syntax is unclear, include a neutral reference
-  line (for example `Refs ABC-123`) rather than omitting the tracker
+- This applies to local Nimbalyst tracker items too, not just GitHub issues:
+  a session-linked item closes on `Fixes NIM-123` and the session is marked
+  complete. Omitting it strands the finished item in `in-review`
+- Use a neutral reference (`Refs ABC-123`) only when the commit does NOT
+  finish the item — a work-in-progress commit should not close it
 
 **Important:**
 - Do NOT add "Co-Authored-By" or any attribution lines

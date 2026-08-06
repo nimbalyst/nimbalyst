@@ -60,7 +60,6 @@ describe('Activity mode semantics for hidden modes', () => {
     rerender(<Harness visible={false} />);
     expect(effectLog).toEqual(['mount', 'cleanup']);
     const hiddenEl = screen.getByTestId('counter');
-    expect(hiddenEl).toBeTruthy();
     expect(hiddenEl.textContent).toBe('2');
 
     // Reveal: state preserved, effect remounted

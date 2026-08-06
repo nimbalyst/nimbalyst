@@ -411,3 +411,36 @@ describe('document-sync:replica-append-local fan-out', () => {
     expect(siblingSend).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The asset route refuses anything over 25 MiB. Queuing such a blob anyway
+ * spends the local upload budget on bytes that can only ever 413, so the
+ * ceiling is applied before the durable outbox sees them.
+ */
+describe('document-sync:upload-asset size ceiling', () => {
+  const MAX_COLLAB_ASSET_BYTES = 25 * 1024 * 1024;
+
+  beforeEach(() => {
+    handlers.clear();
+    registerDocumentSyncHandlers();
+  });
+
+  it('refuses a payload above the asset route ceiling', async () => {
+    const result = await handlers.get('document-sync:upload-asset')!(
+      { sender: { id: 1, isDestroyed: () => false, once: vi.fn() } },
+      {
+        orgId: 'org-a',
+        documentId: 'conversation-a',
+        fileBytes: new ArrayBuffer(MAX_COLLAB_ASSET_BYTES + 1),
+        mimeType: 'video/quicktime',
+        fileName: 'capture.mov',
+      },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      errorCode: 'asset_too_large',
+    });
+    expect(result.error).toContain('25 MB');
+  });
+});

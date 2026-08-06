@@ -189,3 +189,53 @@ describe('SessionManager (runtime server)', () => {
   });
 
 });
+
+// NIM-2308 / GH #1098: when a provider reports its session expired, the dead
+// provider session id must actually leave the database. The real store guards
+// every column with `!== undefined`, so a clear expressed as `undefined` is
+// dropped on the floor -- and the next prompt resumes the dead id again,
+// looping the "conversation session has expired" error forever.
+describe('SessionManager.updateProviderSessionData clears', () => {
+  /** Mirrors PGLiteSessionStore.updateMetadata's `!== undefined` column guard. */
+  class GuardedSessionStore extends InMemorySessionStore {
+    readonly payloads: UpdateSessionMetadataPayload[] = [];
+
+    async updateMetadata(sessionId: string, metadata: UpdateSessionMetadataPayload): Promise<void> {
+      this.payloads.push(metadata);
+      const applied = { ...metadata };
+      for (const key of Object.keys(applied) as Array<keyof UpdateSessionMetadataPayload>) {
+        if (applied[key] === undefined) delete applied[key];
+      }
+      await super.updateMetadata(sessionId, applied);
+    }
+  }
+
+  let store: GuardedSessionStore;
+  let manager: SessionManager;
+
+  beforeEach(async () => {
+    store = new GuardedSessionStore();
+    manager = new SessionManager(store);
+    await manager.initialize();
+  });
+
+  it('sends an explicit null so the column is actually written', async () => {
+    const session = await manager.createSession('claude-code', { content: 'text' }, 'ws');
+    await manager.updateProviderSessionData(session.id, 'claude-session-abc');
+
+    await manager.updateProviderSessionData(session.id, undefined);
+
+    const clearPayload = store.payloads.at(-1);
+    expect(clearPayload).toEqual({ providerSessionId: null });
+  });
+
+  it('leaves no provider session id behind for the next turn to resume', async () => {
+    const session = await manager.createSession('claude-code', { content: 'text' }, 'ws');
+    await manager.updateProviderSessionData(session.id, 'claude-session-abc');
+
+    await manager.updateProviderSessionData(session.id, undefined);
+
+    const persisted = await store.get(session.id);
+    expect(persisted?.metadata?.providerSessionId ?? null).toBeNull();
+  });
+});

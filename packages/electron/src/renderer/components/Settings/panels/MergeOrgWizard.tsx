@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { bucketMemberCount, bucketProjectCount, categorizeTeamAnalyticsError } from '../../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
 

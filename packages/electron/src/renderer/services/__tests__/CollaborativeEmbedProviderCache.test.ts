@@ -35,7 +35,7 @@ vi.mock('../../store/atoms/documentSyncRegistry', () => ({
   documentSyncRegistry: { register: vi.fn(), unregister: vi.fn() },
 }));
 vi.mock('../../utils/collabDocumentOpener', () => ({
-  resolveCollabConfigForUri: vi.fn(),
+  resolveDesktopCollabConfigForUri: vi.fn(),
 }));
 vi.mock('../ElectronLocalReplicaStore', () => ({
   ElectronLocalReplicaStore: class {
@@ -49,13 +49,13 @@ import {
   createDefaultResource,
   parseCollaborativeEmbedReference,
 } from '../CollaborativeEmbedProviderCache';
-import { resolveCollabConfigForUri } from '../../utils/collabDocumentOpener';
+import { resolveDesktopCollabConfigForUri } from '../../utils/collabDocumentOpener';
 
 beforeEach(() => {
   syncMocks.providerOptions.length = 0;
   syncMocks.replicaOptions.length = 0;
   syncMocks.replicaDestroy.mockClear();
-  vi.mocked(resolveCollabConfigForUri).mockReset();
+  vi.mocked(resolveDesktopCollabConfigForUri).mockReset();
 });
 
 afterEach(() => {
@@ -149,8 +149,12 @@ describe('CollaborativeEmbedProviderCache', () => {
   });
 
   it('backs a default child provider with the durable workspace replica store', async () => {
-    vi.mocked(resolveCollabConfigForUri).mockResolvedValue({
-      workspacePath: '/workspace',
+    vi.mocked(resolveDesktopCollabConfigForUri).mockResolvedValue({
+      scope: {
+        scopeKey: '/workspace',
+        orgId: 'team-1',
+        indexConfig: { serverUrl: 'ws://collab.test', userId: 'user-1' },
+      },
       orgId: 'team-1',
       documentId: 'mockup-1',
       title: 'Wireframe',

@@ -11,6 +11,7 @@ import path from 'path';
 import { app } from 'electron';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
+import { hasEnterpriseManagedMcpConfig } from './enterpriseMcpConfig';
 import { type ThinkingMode } from '../../effortLevels';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
@@ -44,6 +45,11 @@ export interface BuildSdkOptionsDeps {
   sessions: { getSessionId: (sessionId: string) => string | null | undefined };
   config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode };
   abortController: AbortController;
+  /**
+   * True when an enterprise `managed-mcp.json` forbids passing MCP servers at
+   * all (NIM-2372). Injectable for tests; defaults to the real filesystem probe.
+   */
+  hasEnterpriseMcpLockdown?: () => boolean;
 }
 
 export interface BuildSdkOptionsParams {
@@ -166,7 +172,10 @@ export async function buildSdkOptions(
     sessions,
     config,
     abortController,
+    hasEnterpriseMcpLockdown = hasEnterpriseManagedMcpConfig,
   } = deps;
+
+  const mcpLockdown = hasEnterpriseMcpLockdown();
 
   const {
     message,
@@ -249,20 +258,22 @@ export async function buildSdkOptions(
     // server appearing/disappearing here would force a tools_changed miss over
     // the whole cached conversation. Do not move the live McpConfigService read
     // back into this per-turn builder; ClaudeCodeProvider freezes it once.
-    mcpServers: await getMcpServersSnapshot({
-      sessionId,
-      workspacePath: mcpConfigWorkspacePath || workspacePath,
-      profile: isMetaAgent ? 'meta-agent' : 'standard',
-    }),
-    // NIM-843 (SDK path): use ONLY the mcpServers we pass above and ignore the
-    // SDK's own discovery (~/.claude.json, project .mcp.json, user settings,
-    // claude.ai connectors). settingSources includes 'user'/'project' to load
-    // slash commands/skills/hooks, but that also re-merges their mcpServers on
-    // top of our filtered list — leaking user-disabled third-party servers into
-    // sessions, ignoring the `disabled`/`enabledForProviders` toggle. strictMcpConfig
-    // gates MCP only, so commands/skills/hooks from settingSources still load.
-    // This mirrors the CLI path's `--strict-mcp-config` (claudeCliSpawnConfig.ts).
-    strictMcpConfig: true,
+    // NIM-2372: no `strictMcpConfig`. It made the SDK ignore its own discovery
+    // (~/.claude.json, project .mcp.json, enterprise config, claude.ai
+    // connectors), which silently stripped every account connector and hard-
+    // failed on managed machines. Nimbalyst's off-toggle is written into Claude
+    // Code's own `disabledMcpServers` instead — see claudeCodeDisabledServers.ts.
+    //
+    // Under an enterprise MCP lockdown the binary rejects ANY dynamically-passed
+    // server (the SDK serializes this map into `--mcp-config`), so we pass none
+    // and the session runs on the enterprise's servers alone.
+    mcpServers: mcpLockdown
+      ? {}
+      : await getMcpServersSnapshot({
+          sessionId,
+          workspacePath: mcpConfigWorkspacePath || workspacePath,
+          profile: isMetaAgent ? 'meta-agent' : 'standard',
+        }),
     cwd: workspacePath,
     abortController,
     model: resolvedModel,

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
   advancedSettingsAtom,
   setAdvancedSettingsAtom,
@@ -9,6 +9,7 @@ import {
   setAIDebugSettingsAtom,
 } from '../../store/atoms/appSettings';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
+import { settingAtom } from '../../store/atoms/settingAtomFamily';
 import { ALPHA_FEATURES, type AlphaFeatureTag } from '../../../shared/alphaFeatures';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
 import { SettingsToggle } from '../GlobalSettings/SettingsToggle';
@@ -31,6 +32,8 @@ interface WorkflowExportSettings {
   claudeGeneratedExtensionWorkflowsEnabled: boolean;
 }
 
+type AttachmentStagingMode = 'temp' | 'workspace' | 'custom';
+
 export function AgentFeaturesPanel() {
   const posthog = usePostHog();
   const [settings] = useAtom(advancedSettingsAtom);
@@ -40,6 +43,10 @@ export function AgentFeaturesPanel() {
   const autoCommitEnabled = useAtomValue(autoCommitEnabledAtom);
   const setAutoCommitEnabled = useSetAtom(setAutoCommitEnabledAtom);
 
+  const [showMcpSessionStatus, setShowMcpSessionStatus] = useAtom(
+    settingAtom('ai.showMcpSessionStatus'),
+  ) as [boolean, (value: boolean) => void];
+
   const [aiDebugSettings] = useAtom(aiDebugSettingsAtom);
   const [, updateAIDebugSettings] = useAtom(setAIDebugSettingsAtom);
   const { showToolCalls, chatShowToolCalls, aiDebugLogging, showPromptAdditions } = aiDebugSettings;
@@ -47,6 +54,13 @@ export function AgentFeaturesPanel() {
   const [preferredAgentLanguage, setPreferredAgentLanguage] = useState<string>('');
   const [apiUpstreamUrl, setApiUpstreamUrl] = useState<string>('');
   const [apiUpstreamError, setApiUpstreamError] = useState<string | null>(null);
+  const [attachmentStagingMode, setAttachmentStagingMode] = useState<AttachmentStagingMode>('temp');
+  const [persistedAttachmentStagingMode, setPersistedAttachmentStagingMode] = useState<AttachmentStagingMode>('temp');
+  const [attachmentCustomPath, setAttachmentCustomPath] = useState('');
+  const [attachmentStagingError, setAttachmentStagingError] = useState<string | null>(null);
+  const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(null);
+  const [offerAttachmentGitignore, setOfferAttachmentGitignore] = useState(false);
+  const [addAttachmentGitignore, setAddAttachmentGitignore] = useState(true);
   const [workflowSourceSettings, setWorkflowSourceSettings] = useState<WorkflowSourceSettings>({
     workspaceClaudeCompatibilityEnabled: false,
     includeProjectClaudeSources: false,
@@ -95,6 +109,57 @@ export function AgentFeaturesPanel() {
 
     loadAgentWorkflowSettings();
   }, []);
+
+  useEffect(() => {
+    const loadAttachmentSettings = async () => {
+      try {
+        const [config, workspace] = await Promise.all([
+          window.electronAPI.invoke('attachment-staging:get-settings'),
+          window.electronAPI.invoke('workspace:get-current'),
+        ]) as [
+          { mode: AttachmentStagingMode; customPath?: string },
+          { path?: string } | null,
+        ];
+        setAttachmentStagingMode(config.mode);
+        setPersistedAttachmentStagingMode(config.mode);
+        setAttachmentCustomPath(config.customPath ?? '');
+        const workspacePath = workspace?.path ?? null;
+        setCurrentWorkspacePath(workspacePath);
+        if (workspacePath) {
+          const status = await window.electronAPI.invoke(
+            'attachment:workspace-staging-status',
+            workspacePath,
+          ) as { shouldOffer: boolean };
+          setOfferAttachmentGitignore(status.shouldOffer);
+        }
+      } catch (err) {
+        console.error('Failed to load attachment staging settings:', err);
+      }
+    };
+    void loadAttachmentSettings();
+  }, []);
+
+  const saveAttachmentStaging = useCallback(async (
+    mode: AttachmentStagingMode,
+    customPath = attachmentCustomPath,
+  ) => {
+    setAttachmentStagingError(null);
+    try {
+      const saved = await window.electronAPI.invoke('attachment-staging:set-settings', {
+        mode,
+        ...(mode === 'custom' ? { customPath } : {}),
+      }) as { mode: AttachmentStagingMode; customPath?: string };
+      setAttachmentStagingMode(saved.mode);
+      setPersistedAttachmentStagingMode(saved.mode);
+      setAttachmentCustomPath(saved.customPath ?? customPath);
+      if (mode === 'workspace' && addAttachmentGitignore && offerAttachmentGitignore && currentWorkspacePath) {
+        await window.electronAPI.invoke('attachment:append-workspace-gitignore', currentWorkspacePath);
+        setOfferAttachmentGitignore(false);
+      }
+    } catch (err) {
+      setAttachmentStagingError(err instanceof Error ? err.message : String(err));
+    }
+  }, [addAttachmentGitignore, attachmentCustomPath, currentWorkspacePath, offerAttachmentGitignore]);
 
   useEffect(() => {
     const loadPreferredAgentLanguage = async () => {
@@ -185,6 +250,14 @@ export function AgentFeaturesPanel() {
           description="Automatically approve when Claude proposes git commits."
         />
 
+        <SettingsToggle
+          checked={showMcpSessionStatus}
+          onChange={(checked) => setShowMcpSessionStatus(checked)}
+          name="Show MCP Server Status"
+          description="Show a chip in the session header listing this session's MCP servers, which are connected, and which never reached it."
+          testId="show-mcp-session-status-toggle"
+        />
+
         <div className="agent-preferred-language flex items-start justify-between gap-4 py-3">
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-[var(--nim-text)] leading-tight">
@@ -202,6 +275,76 @@ export function AgentFeaturesPanel() {
             className="w-40 py-1.5 px-3 rounded-md text-sm bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] text-[var(--nim-text)] outline-none focus:border-[var(--nim-primary)]"
             data-testid="preferred-agent-language-input"
           />
+        </div>
+
+        <div
+          className="attachment-staging-settings mt-3 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3"
+          data-testid="attachment-staging-settings"
+        >
+          <div className="text-sm font-semibold text-[var(--nim-text)]">Attachment staging directory</div>
+          <p className="mb-3 mt-1 text-xs leading-relaxed text-[var(--nim-text-muted)]">
+            Choose where files are placed before an agent reads them. OS temporary storage keeps current behavior; workspace storage avoids broad AppData deny rules.
+          </p>
+          <div className="flex flex-col gap-2">
+            {([
+              ['temp', 'OS temporary directory'],
+              ['workspace', 'nimbalyst-local/attachments/ in each workspace'],
+              ['custom', 'Custom absolute directory'],
+            ] as Array<[AttachmentStagingMode, string]>).map(([mode, label]) => (
+              <label key={mode} className="flex cursor-pointer items-center gap-2 text-sm text-[var(--nim-text)]">
+                <input
+                  type="radio"
+                  name="attachment-staging-mode"
+                  checked={attachmentStagingMode === mode}
+                  onChange={() => {
+                    setAttachmentStagingMode(mode);
+                    if (mode === 'temp') {
+                      void saveAttachmentStaging(mode);
+                    } else if (mode === 'custom' && attachmentCustomPath.trim()) {
+                      void saveAttachmentStaging(mode);
+                    } else if (mode === 'workspace' && !offerAttachmentGitignore) {
+                      void saveAttachmentStaging(mode);
+                    }
+                  }}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          {attachmentStagingMode === 'custom' && (
+            <input
+              type="text"
+              value={attachmentCustomPath}
+              onChange={(event) => setAttachmentCustomPath(event.target.value)}
+              onBlur={() => { if (attachmentCustomPath.trim()) void saveAttachmentStaging('custom', attachmentCustomPath); }}
+              placeholder="C:\\Nimbalyst\\attachments or /path/to/attachments"
+              spellCheck={false}
+              className="mt-3 w-full rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-1.5 text-sm text-[var(--nim-text)] outline-none focus:border-[var(--nim-primary)]"
+            />
+          )}
+          {attachmentStagingMode === 'workspace' && offerAttachmentGitignore && currentWorkspacePath && (
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-[var(--nim-text-muted)]">
+              <input
+                type="checkbox"
+                checked={addAttachmentGitignore}
+                onChange={(event) => setAddAttachmentGitignore(event.target.checked)}
+              />
+              Add nimbalyst-local/attachments/ to this workspace&apos;s .gitignore
+            </label>
+          )}
+          {attachmentStagingMode === 'workspace' &&
+            (persistedAttachmentStagingMode !== 'workspace' || offerAttachmentGitignore) && (
+              <button
+                type="button"
+                className="nim-btn-primary mt-3"
+                onClick={() => void saveAttachmentStaging('workspace')}
+              >
+                Apply workspace staging
+              </button>
+            )}
+          {attachmentStagingError && (
+            <p className="select-text mb-0 mt-2 text-xs text-[var(--nim-error)]">{attachmentStagingError}</p>
+          )}
         </div>
       </div>
 

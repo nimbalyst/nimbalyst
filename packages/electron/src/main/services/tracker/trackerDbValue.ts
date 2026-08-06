@@ -12,3 +12,6 @@
 export function toDbBoolean(value: unknown): boolean {
   return value === true || value === 1;
 }
+
+/** Read-side counterpart to `toDbBoolean`. See NIM-2280. */
+export { fromDbBoolean } from '@nimbalyst/runtime/core/TrackerRecord';

@@ -16,6 +16,7 @@ import { createRoot, Root } from 'react-dom/client';
 import { Provider as JotaiProvider, useAtomValue } from 'jotai';
 import { fileSaveRequestAtom } from '../../store/atoms/appCommands';
 import type { TextReplacement } from '@nimbalyst/runtime';
+import type { CollabScope } from '@nimbalyst/collab-client/core';
 import type { Tab } from '../TabManager/TabManager';
 import { TabEditor } from '../TabEditor/TabEditor';
 import { CollaborativeTabEditor } from '../TabEditor/CollaborativeTabEditor';
@@ -23,17 +24,20 @@ import { TabEditorErrorBoundary } from '../TabEditorErrorBoundary';
 import { logger } from '../../utils/logger';
 import { useTabsActions, type TabData, notifyDirtyStateChange, isTrackerTabPath } from '../../contexts/TabsContext';
 import { TrackerResourceEditor } from '../AgentMode/TrackerResourceEditor';
-import { SharedDocsListView } from '../CollabMode/SharedDocsListView';
+import { SharedDocsListView } from '@nimbalyst/collab-client/docs-ui';
+import { ElectronCollabDocsUIRoot } from '../CollabMode/ElectronCollabDocsUIProvider';
 import { isSharedHomeTab } from '../CollabMode/sharedHomeTab';
 import { isCollabUri, parseCollabUri } from '../../utils/collabUri';
 import {
   getCollabConfig,
+  getCollabConfigForScopeKey,
   removeCollabConfig,
   resolveCollabConfigForUri,
 } from '../../utils/collabDocumentOpener';
 import { getPersistedCollabDocMetadata } from '../../utils/collabOpenDocsPersistence';
 import { store, editorDirtyAtom, editorHasUnacceptedChangesAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { clearMockupAnnotationsForFile, getMockupFilePath } from '../UnifiedAI/MockupAnnotationIndicator';
+import { resolveDesktopCollabScope } from '../../store/atoms/collabDocuments';
 
 interface TabContentProps {
   textReplacements?: TextReplacement[];
@@ -62,6 +66,7 @@ interface TabContentProps {
 
   // Document metadata
   workspaceId?: string;
+  collabScope?: CollabScope;
 }
 
 interface TabEditorInstance {
@@ -84,6 +89,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
   onOpenTracker,
   workstreamId,
   workspaceId,
+  collabScope,
 }) => {
   // Debug: trace re-renders - THIS SHOULD ONLY LOG ONCE ON MOUNT
   // if (import.meta.env.DEV) console.log('[TabContent] render - THIS SHOULD ONLY HAPPEN ONCE');
@@ -116,6 +122,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     onOpenTracker,
     workstreamId,
     workspaceId,
+    collabScope,
   });
   propsRef.current = {
     textReplacements,
@@ -129,6 +136,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     onOpenTracker,
     workstreamId,
     workspaceId,
+    collabScope,
   };
 
   // Load content for a file
@@ -148,11 +156,17 @@ const TabContentComponent: React.FC<TabContentProps> = ({
 
     // Collaborative documents don't load from disk -- content comes via Y.Doc
     if (isCollabUri(filePath)) {
-      if (!getCollabConfig(filePath)) {
-        if (!propsRef.current.workspaceId) {
-          logger.ui.warn('[TabContent] Cannot restore collab tab without workspace path:', filePath);
-          return '';
-        }
+      if (!propsRef.current.workspaceId) {
+        logger.ui.warn('[TabContent] Cannot restore collab tab without a scope key:', filePath);
+        return '';
+      }
+      const scope = propsRef.current.collabScope
+        ?? (await resolveDesktopCollabScope(propsRef.current.workspaceId)).scope;
+      if (!scope) {
+        logger.ui.warn('[TabContent] Cannot resolve collab scope:', filePath);
+        return '';
+      }
+      if (!getCollabConfig(scope, filePath)) {
         try {
           const { documentId } = parseCollabUri(filePath);
           // Persisted documentType is the only source of truth on a cold
@@ -161,11 +175,11 @@ const TabContentComponent: React.FC<TabContentProps> = ({
           // routes a shared .excalidraw / .mockup.html Y.Doc through the
           // markdown editor and the canvas comes back blank.
           const persistedMetadata = await getPersistedCollabDocMetadata(
-            propsRef.current.workspaceId,
+            scope,
             documentId,
           );
           await resolveCollabConfigForUri(
-            propsRef.current.workspaceId,
+            scope,
             filePath,
             documentId,
             title,
@@ -303,7 +317,15 @@ const TabContentComponent: React.FC<TabContentProps> = ({
               propsRef.current.onTabClose?.(tab.id);
             }}
           >
-            <SharedDocsListView workspacePath={propsRef.current.workspaceId ?? ''} />
+            {propsRef.current.collabScope
+              ? (
+                // Own React root: context does not cross, so the Shared Docs
+                // context has to be re-established here or the view throws.
+                <ElectronCollabDocsUIRoot scope={propsRef.current.collabScope}>
+                  <SharedDocsListView />
+                </ElectronCollabDocsUIRoot>
+              )
+              : null}
           </TabEditorErrorBoundary>
         </JotaiProvider>
       );
@@ -383,7 +405,9 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     // Wrap in JotaiProvider so TabEditor can subscribe to theme atom
     // (separate React roots need their own provider to access the shared store)
     const isCollab = isCollabUri(tab.filePath);
-    const collabConfig = isCollab ? getCollabConfig(tab.filePath) : undefined;
+    const collabConfig = isCollab && propsRef.current.workspaceId
+      ? getCollabConfigForScopeKey(propsRef.current.workspaceId, tab.filePath)
+      : undefined;
 
     // Guard: collab tabs without config can't connect (e.g., restored from
     // workspace state after restart/HMR when the in-memory registry is empty).
@@ -468,7 +492,10 @@ const TabContentComponent: React.FC<TabContentProps> = ({
 
     // Clean up collab config registry for collaborative tabs
     if (isCollabUri(instance.tabData.filePath)) {
-      removeCollabConfig(instance.tabData.filePath);
+      const config = propsRef.current.workspaceId
+        ? getCollabConfigForScopeKey(propsRef.current.workspaceId, instance.tabData.filePath)
+        : undefined;
+      if (config) removeCollabConfig(config.scope, instance.tabData.filePath);
     }
 
     // Defer root.unmount() to avoid "synchronously unmount a root while React

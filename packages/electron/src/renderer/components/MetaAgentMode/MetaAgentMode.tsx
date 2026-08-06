@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { atom } from 'jotai';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { store } from '@nimbalyst/runtime/store';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
 import { sessionRegistryAtom } from '../../store';

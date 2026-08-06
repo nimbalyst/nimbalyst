@@ -1,3 +1,4 @@
+// @vitest-environment node
 import type { ConversationEvent } from '@nimbalyst/collab-protocol';
 import { describe, expect, it, vi } from 'vitest';
 

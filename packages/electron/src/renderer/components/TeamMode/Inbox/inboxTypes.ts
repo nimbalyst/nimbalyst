@@ -53,6 +53,22 @@ export interface InboxBoundedPreview extends BoundedPreview {
 }
 
 /**
+ * What kind of thing a row points at, as the row is allowed to show it.
+ *
+ * This is the row's primary identity — it answers "what am I about to click"
+ * before the reason does. A tracker delivery resolves all the way down to the
+ * item type when the delivery carried one, so a bug reads as a bug.
+ */
+export interface InboxTypeIdentity {
+  /** Material symbol name. */
+  icon: string;
+  /** Accent color for the icon and label. A CSS variable or a hex value. */
+  accent: string;
+  /** Short word the row leads with, e.g. `BUG`, `ROOM`, `DIRECT`. */
+  label: string;
+}
+
+/**
  * Result of rechecking source access at hydration time.
  * - `accessRemoved` — the recipient lost access. Reveal nothing.
  * - `deletedSource` — the recipient was authorized; the source is gone.
@@ -131,7 +147,12 @@ export interface InboxRowView {
   commentId?: string;
   threadId?: string;
   sourceKind?: InboxSourceKind;
-  sourceIcon: string;
+  /**
+   * Tracker item type, when the delivery carried one and the reader may still
+   * see it. Redacted along with the rest of the source on `accessRemoved`.
+   */
+  itemType?: string;
+  type: InboxTypeIdentity;
   sourceTitle?: string;
   actor?: InboxActorView;
   preview?: string;
@@ -151,7 +172,12 @@ export interface InboxRowView {
   searchText: string;
 }
 
-export type InboxFilterId = 'all' | 'mentions' | 'assigned' | 'unread' | 'follows';
+/**
+ * The reason axis only. Read state is a separate, independent axis
+ * (`unreadOnly`) so "unread mentions" is expressible; when unread was one of
+ * these ids, choosing it meant giving up whichever reason you were looking at.
+ */
+export type InboxFilterId = 'all' | 'mentions' | 'assigned' | 'follows';
 
 /** `null` on an axis means "no restriction on this axis". */
 export interface InboxScope {

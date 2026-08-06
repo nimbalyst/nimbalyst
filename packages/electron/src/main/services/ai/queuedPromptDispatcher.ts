@@ -141,6 +141,7 @@ interface TryClaimAndDispatchNextQueuedPromptOptions {
   sessionId: string;
   source: string;
   startSession: DispatchClaimedQueuedPromptOptions['startSession'];
+  resolveLiveWindow?: (workspacePath: string) => Electron.BrowserWindow | null;
   targetWindow: Electron.BrowserWindow | null;
   workspacePath: string;
 }
@@ -161,11 +162,17 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     sessionId,
     source,
     startSession,
+    resolveLiveWindow,
     targetWindow,
     workspacePath,
   } = options;
 
-  if (!targetWindow || targetWindow.isDestroyed()) {
+  const liveWindow =
+    targetWindow && !targetWindow.isDestroyed()
+      ? targetWindow
+      : resolveLiveWindow?.(workspacePath) ?? null;
+
+  if (!liveWindow || liveWindow.isDestroyed()) {
     logInfo(`[AIService] ${source}: no live window available to continue queued prompts for session ${sessionId}`);
     return false;
   }
@@ -209,7 +216,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     sessionId,
     source,
     startSession,
-    targetWindow,
+    targetWindow: liveWindow,
     workspacePath,
   });
 

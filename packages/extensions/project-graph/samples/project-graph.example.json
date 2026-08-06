@@ -1,0 +1,53 @@
+{
+  "$schema": "https://docs.nimbalyst.com/extensions/project-graph/config.schema.json",
+  "categories": [
+    { "id": "compliance", "label": "Compliance" },
+    { "id": "research", "label": "Research" }
+  ],
+  "types": [
+    {
+      "type": "module",
+      "color": "#88e3ff",
+      "label": "Service"
+    },
+    {
+      "type": "risk",
+      "label": "Risk",
+      "category": "compliance",
+      "color": "#5ad4d4",
+      "shape": "dot",
+      "quickActions": ["open", "reveal-in-tracker"]
+    },
+    {
+      "type": "okr",
+      "label": "OKR",
+      "category": "strategy",
+      "color": "#9be37a",
+      "shape": "pill",
+      "childTypes": ["initiative", "feature"],
+      "quickActions": ["open", "add-feature"]
+    },
+    {
+      "type": "experiment",
+      "label": "Experiment",
+      "category": "research",
+      "color": "#e8a3ff",
+      "shape": "card",
+      "quickActions": ["open", "launch-session"]
+    }
+  ],
+  "views": [
+    {
+      "id": "compliance-overview",
+      "name": "Compliance",
+      "description": "Risks, decisions, incidents, and the modules they touch",
+      "includedTypes": ["risk", "decision", "incident", "module", "architecture-doc"]
+    },
+    {
+      "id": "okrs",
+      "name": "OKRs",
+      "description": "OKRs, initiatives, and their delivery",
+      "includedTypes": ["okr", "initiative", "feature", "task", "plan"]
+    }
+  ]
+}

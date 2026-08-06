@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test case from user's screenshot showing full paragraph replacement
  * instead of inline diff

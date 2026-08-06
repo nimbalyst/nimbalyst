@@ -6,7 +6,14 @@
  */
 
 import { BasePlugin } from '@revolist/revogrid';
-import type { PluginProviders, DimensionRows, BeforeSaveDataDetails, AfterEditEvent, BeforeRangeSaveDataDetails } from '@revolist/revogrid';
+import type {
+  PluginProviders,
+  DimensionCols,
+  DimensionRows,
+  BeforeSaveDataDetails,
+  AfterEditEvent,
+  BeforeRangeSaveDataDetails,
+} from '@revolist/revogrid';
 
 interface CellChange {
   rowIndex: number;
@@ -15,6 +22,7 @@ interface CellChange {
   oldValue: unknown;
   newValue: unknown;
   rowType: DimensionRows;
+  colType: DimensionCols;
 }
 
 export interface SelectionState {
@@ -61,7 +69,14 @@ export class UndoRedoPlugin extends BasePlugin {
   private batchTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   // Track the value before edit starts
-  private pendingOldValue: { rowIndex: number; colIndex: number; prop: string; value: unknown; rowType: DimensionRows } | null = null;
+  private pendingOldValue: {
+    rowIndex: number;
+    colIndex: number;
+    prop: string;
+    value: unknown;
+    rowType: DimensionRows;
+    colType: DimensionCols;
+  } | null = null;
 
   // Track selection state before changes
   private selectionBeforeChange: SelectionState | null = null;
@@ -72,6 +87,9 @@ export class UndoRedoPlugin extends BasePlugin {
   // Callback for state change notifications (canUndo/canRedo changed)
   private onStateChange?: () => void;
 
+  // Callback after undo/redo has finished applying source values
+  private onDataChange?: () => void | Promise<void>;
+
   // Callback to restore selection after undo/redo
   private onRestoreSelection?: (selection: SelectionState) => void;
 
@@ -81,12 +99,14 @@ export class UndoRedoPlugin extends BasePlugin {
     options?: {
       onStateChange?: () => void;
       onRestoreSelection?: (selection: SelectionState) => void;
+      onDataChange?: () => void | Promise<void>;
     }
   ) {
     super(revogrid, providers);
 
     this.onStateChange = options?.onStateChange;
     this.onRestoreSelection = options?.onRestoreSelection;
+    this.onDataChange = options?.onDataChange;
 
     // Listen for cell edit events
     this.addEventListener('beforeedit', this.handleBeforeEdit.bind(this));
@@ -134,6 +154,7 @@ export class UndoRedoPlugin extends BasePlugin {
     const prop = String(detail.prop ?? '');
     const model = detail.model;
     const type = detail.type;
+    const colType = detail.colType;
 
     // Capture selection state before the edit
     if (this.selectionBeforeChange === null) {
@@ -150,6 +171,7 @@ export class UndoRedoPlugin extends BasePlugin {
       prop,
       value: oldValue,
       rowType,
+      colType,
     };
   }
 
@@ -166,6 +188,7 @@ export class UndoRedoPlugin extends BasePlugin {
     const prop = String(detail.prop ?? '');
     const val = detail.val;
     const type = detail.type;
+    const colType = detail.colType;
     const rowType: DimensionRows = (type as DimensionRows) || 'rgRow';
 
     // Get the old value from our pending capture
@@ -190,6 +213,7 @@ export class UndoRedoPlugin extends BasePlugin {
       oldValue,
       newValue: val,
       rowType,
+      colType,
     });
   }
 
@@ -215,7 +239,7 @@ export class UndoRedoPlugin extends BasePlugin {
 
     // The data contains the old values before clearing
     // We need to record these for undo
-    const { data, range, type } = e.detail;
+    const { data, range, type, colType = 'rgCol' } = e.detail;
     const rowType: DimensionRows = (type as DimensionRows) || 'rgRow';
 
     // Capture selection before the clear
@@ -245,6 +269,7 @@ export class UndoRedoPlugin extends BasePlugin {
             oldValue,
             newValue: '',
             rowType,
+            colType,
           });
         }
       }
@@ -329,50 +354,30 @@ export class UndoRedoPlugin extends BasePlugin {
 
   /**
    * Undo the last change
-   * @returns true if undo was performed, false if nothing to undo
+   * @returns true after every write and recalculation succeeds, otherwise false
    */
-  public undo(): boolean {
+  public async undo(): Promise<boolean> {
     // Commit any pending changes first
     this.commitBatch();
 
-    const entry = this.undoStack.pop();
-    if (!entry) return false;
+    const entry = this.undoStack[this.undoStack.length - 1];
+    if (!entry || this.isUndoRedoOperation) return false;
 
     this.isUndoRedoOperation = true;
 
     try {
-      // Revert changes in reverse order
-      for (const change of [...entry.changes].reverse()) {
-        this.revogrid.setDataAt({
-          row: change.rowIndex,
-          col: change.colIndex,
-          val: change.oldValue,
-          rowType: change.rowType,
-          colType: 'rgCol',
-        });
-      }
+      const succeeded = await this.applyEntry(entry, 'undo');
+      if (!succeeded) return false;
 
-      // Restore selection to before state
-      if (entry.selectionBefore && this.onRestoreSelection) {
-        this.onRestoreSelection(entry.selectionBefore);
-      } else if (entry.changes.length > 0) {
-        // Fallback: focus on the first changed cell
-        const firstChange = entry.changes[0];
-        this.revogrid.setCellsFocus(
-          { x: firstChange.colIndex, y: firstChange.rowIndex },
-          { x: firstChange.colIndex, y: firstChange.rowIndex },
-          undefined,
-          firstChange.rowType
-        );
-      }
-
-      // Move to redo stack
+      // Commit the history transition only after writes and recalculation have landed.
+      this.undoStack.pop();
       this.redoStack.push({
         ...entry,
         timestamp: Date.now(),
       });
 
       this.notifyStateChange();
+      this.restoreEntrySelection(entry, 'undo');
       return true;
     } finally {
       this.isUndoRedoOperation = false;
@@ -381,50 +386,97 @@ export class UndoRedoPlugin extends BasePlugin {
 
   /**
    * Redo the last undone change
-   * @returns true if redo was performed, false if nothing to redo
+   * @returns true after every write and recalculation succeeds, otherwise false
    */
-  public redo(): boolean {
-    const entry = this.redoStack.pop();
-    if (!entry) return false;
+  public async redo(): Promise<boolean> {
+    const entry = this.redoStack[this.redoStack.length - 1];
+    if (!entry || this.isUndoRedoOperation) return false;
 
     this.isUndoRedoOperation = true;
 
     try {
-      // Re-apply changes in original order
-      for (const change of entry.changes) {
-        this.revogrid.setDataAt({
-          row: change.rowIndex,
-          col: change.colIndex,
-          val: change.newValue,
-          rowType: change.rowType,
-          colType: 'rgCol',
-        });
-      }
+      const succeeded = await this.applyEntry(entry, 'redo');
+      if (!succeeded) return false;
 
-      // Restore selection to after state
-      if (entry.selectionAfter && this.onRestoreSelection) {
-        this.onRestoreSelection(entry.selectionAfter);
-      } else if (entry.changes.length > 0) {
-        // Fallback: focus on the last changed cell
-        const lastChange = entry.changes[entry.changes.length - 1];
-        this.revogrid.setCellsFocus(
-          { x: lastChange.colIndex, y: lastChange.rowIndex },
-          { x: lastChange.colIndex, y: lastChange.rowIndex },
-          undefined,
-          lastChange.rowType
-        );
-      }
-
-      // Move back to undo stack
+      // Commit the history transition only after writes and recalculation have landed.
+      this.redoStack.pop();
       this.undoStack.push({
         ...entry,
         timestamp: Date.now(),
       });
 
       this.notifyStateChange();
+      this.restoreEntrySelection(entry, 'redo');
       return true;
     } finally {
       this.isUndoRedoOperation = false;
+    }
+  }
+
+  private async applyEntry(entry: UndoEntry, direction: 'undo' | 'redo'): Promise<boolean> {
+    const changes = direction === 'undo' ? [...entry.changes].reverse() : entry.changes;
+    const applied: CellChange[] = [];
+
+    try {
+      for (const change of changes) {
+        await this.revogrid.setDataAt({
+          row: change.rowIndex,
+          col: change.colIndex,
+          val: direction === 'undo' ? change.oldValue : change.newValue,
+          rowType: change.rowType,
+          colType: change.colType,
+        });
+        applied.push(change);
+      }
+      await this.onDataChange?.();
+      return true;
+    } catch (error) {
+      console.error(`[CSV] Failed to apply ${direction}:`, error);
+      await this.rollbackAppliedChanges(applied, direction);
+      return false;
+    }
+  }
+
+  private async rollbackAppliedChanges(
+    applied: CellChange[],
+    direction: 'undo' | 'redo'
+  ): Promise<void> {
+    try {
+      for (const change of [...applied].reverse()) {
+        await this.revogrid.setDataAt({
+          row: change.rowIndex,
+          col: change.colIndex,
+          val: direction === 'undo' ? change.newValue : change.oldValue,
+          rowType: change.rowType,
+          colType: change.colType,
+        });
+      }
+      await this.onDataChange?.();
+    } catch (rollbackError) {
+      console.error('[CSV] Failed to roll back partial undo/redo:', rollbackError);
+    }
+  }
+
+  private restoreEntrySelection(entry: UndoEntry, direction: 'undo' | 'redo'): void {
+    try {
+      const selection = direction === 'undo' ? entry.selectionBefore : entry.selectionAfter;
+      if (selection && this.onRestoreSelection) {
+        this.onRestoreSelection(selection);
+        return;
+      }
+      if (entry.changes.length === 0) return;
+
+      const change = direction === 'undo'
+        ? entry.changes[0]
+        : entry.changes[entry.changes.length - 1];
+      this.revogrid.setCellsFocus(
+        { x: change.colIndex, y: change.rowIndex },
+        { x: change.colIndex, y: change.rowIndex },
+        change.colType,
+        change.rowType
+      );
+    } catch (error) {
+      console.error(`[CSV] Failed to restore selection after ${direction}:`, error);
     }
   }
 
@@ -469,6 +521,7 @@ export class UndoRedoPlugin extends BasePlugin {
       oldValue: unknown;
       newValue: unknown;
       rowType?: DimensionRows;
+      colType?: DimensionCols;
     }>,
     selectionBefore?: SelectionState | null
   ): void {
@@ -481,6 +534,7 @@ export class UndoRedoPlugin extends BasePlugin {
       .map(c => ({
         ...c,
         rowType: c.rowType || 'rgRow',
+        colType: c.colType || 'rgCol',
       }));
 
     if (normalizedChanges.length > 0) {

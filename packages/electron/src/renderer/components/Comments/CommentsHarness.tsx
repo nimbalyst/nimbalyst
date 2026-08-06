@@ -9,6 +9,7 @@ import {
   createFixtureCommentAdapter,
   createFixtureResolver,
 } from './commentFixtures';
+import type { CommentDensity } from './CommentRow';
 import type { Actor, CommentCapabilities, ConversationContext } from './commentTypes';
 
 /**
@@ -36,10 +37,18 @@ interface PaneSpec {
   capabilities: CommentCapabilities;
   supportsReactions: boolean;
   context?: Partial<ConversationContext>;
+  density?: CommentDensity;
 }
 
 const PANES: PaneSpec[] = [
   { label: 'Room · 760px · full capabilities', width: 760, capabilities: FULL_CAPABILITIES, supportsReactions: true },
+  {
+    label: 'Room · 760px · compact',
+    width: 760,
+    capabilities: FULL_CAPABILITIES,
+    supportsReactions: true,
+    density: 'compact',
+  },
   {
     label: 'Tracker comments · 320px · adapter omits react()',
     width: 320,
@@ -97,6 +106,7 @@ function Harness() {
               viewerActor={viewerActor}
               resolver={resolver}
               resourceCandidates={fixtures.candidates}
+              density={pane.density}
               onCopyLink={(urn) => {
                 (window as unknown as { __lastCopiedUrn?: string }).__lastCopiedUrn = urn;
               }}

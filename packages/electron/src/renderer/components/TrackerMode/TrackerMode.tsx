@@ -9,6 +9,7 @@ import type { TrackerIdentity, TrackerItemType } from '@nimbalyst/runtime';
 import {
   trackerModeLayoutAtom,
   setTrackerModeLayoutAtom,
+  trackerModeDocumentItemIdAtom,
   allTrackerSavedViewsAtom,
   saveTrackerViewAtom,
   removeTrackerViewAtom,
@@ -113,6 +114,7 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
   // Persisted layout state from atoms
   const modeLayout = useAtomValue(trackerModeLayoutAtom);
   const setModeLayout = useSetAtom(setTrackerModeLayoutAtom);
+  const documentItemId = useAtomValue(trackerModeDocumentItemIdAtom);
   const [activeSavedViewId, setActiveSavedViewId] = React.useState<string | null>(null);
 
   const selectedType = modeLayout.selectedType;
@@ -376,8 +378,15 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
     />
   );
 
+  // Document view brings its own slim list pane, so the type/saved-view sidebar
+  // stands down for it -- otherwise the focused document competes with two
+  // navigation columns. Collapsing it (rather than returning a different tree)
+  // keeps the main view -- and the body editor inside it -- mounted across the
+  // presentation switch (plan: tracker-document-mode, checkbox 24).
   return (
-    <div className="tracker-mode flex-1 flex flex-row overflow-hidden min-h-0">
+    <div
+      className={`tracker-mode flex-1 flex flex-row overflow-hidden min-h-0${documentItemId ? ' tracker-mode-document' : ''}`}
+    >
       <ResizablePanel
         leftPanel={sidebarContent}
         rightPanel={mainContent}
@@ -385,6 +394,7 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
         minWidth={160}
         maxWidth={350}
         onWidthChange={handleSidebarWidthChange}
+        collapsed={Boolean(documentItemId)}
       />
     </div>
   );

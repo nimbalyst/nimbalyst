@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { ThinkingMode } from '../../utils/modelUtils';
 import { DEFAULT_THINKING_MODE } from '../../utils/modelUtils';
 

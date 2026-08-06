@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { createStore } from 'jotai';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { trackerPersonalStateService } from '../../../services/RendererTrackerPersonalStateService';
@@ -67,5 +68,21 @@ describe('tracker personal state atoms', () => {
       lastOpenedAt: 200,
       updatedAt: 200,
     });
+  });
+
+  it('ignores document-namespaced rows sharing the personal-state transport', async () => {
+    getForScope.mockResolvedValue({
+      scope: 'org:org-1:tracker:project-1',
+      rows: [{
+        userEmail: 'me@example.com', scope: 'org:org-1:tracker:project-1', itemId: 'document:doc-1',
+        isFavorite: true, favoriteUpdatedAt: 100, lastOpenedAt: 50, snoozedUntil: null, updatedAt: 100,
+      }],
+    });
+    const state = createStore();
+    await state.set(hydrateTrackerPersonalStateAtom, {
+      workspacePath: '/machine-a/repo', identityEmail: 'me@example.com',
+    });
+
+    expect(state.get(trackerPersonalStateAtom).rowsByItemId).toEqual(new Map());
   });
 });

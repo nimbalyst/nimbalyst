@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  *

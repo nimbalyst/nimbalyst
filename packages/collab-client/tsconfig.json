@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@nimbalyst/collab-protocol": ["../collab-protocol/src/index.ts"],
+      "@nimbalyst/collab-protocol/*": ["../collab-protocol/src/*"],
+      "@nimbalyst/runtime": ["../runtime/src/index.ts"],
+      "@nimbalyst/runtime/*": ["../runtime/src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}

@@ -26,7 +26,8 @@ import {
   flip,
   shift,
 } from '@floating-ui/react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 export interface FilterChipOption {
   /** Stored / submitted value, e.g. ".ts" or "bug". */
@@ -102,7 +103,7 @@ export const FilterChip = forwardRef<FilterChipHandle, FilterChipProps>(
     onOpenChange: setOpen,
     placement: 'bottom-start',
     whileElementsMounted: autoUpdate,
-    middleware: [offset(4), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(4), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const dismiss = useDismiss(context, { escapeKey: true, outsidePress: true });
   const { getReferenceProps, getFloatingProps } = useInteractions([dismiss]);

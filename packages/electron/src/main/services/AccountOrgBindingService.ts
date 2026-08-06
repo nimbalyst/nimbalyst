@@ -67,14 +67,20 @@ export interface ResolvedTeamOrgAccountBinding {
 }
 
 /**
- * Resolve the signed-in account assigned to a team org without consulting the
- * sync-account singleton. The stable ordering makes the result independent of
- * account switching if legacy data contains more than one local binding.
+ * Resolve the signed-in account assigned to a team org.
+ *
+ * When two signed-in accounts both bind the same team org, lexicographic
+ * ordering alone picks an arbitrary identity: the app would act as whichever
+ * personal org id happened to sort first, so messages addressed to the other
+ * account never reached this install's Inbox and never notified (NIM-2459).
+ * `preferredPersonalOrgId` (the sync account) breaks that tie; stable ordering
+ * still decides when the preference has no binding here.
  */
 export async function resolveTeamOrgAccountBinding(
   db: ProjectionDb,
   teamOrgId: string,
   signedInPersonalOrgIds: readonly string[],
+  preferredPersonalOrgId?: string | null,
 ): Promise<ResolvedTeamOrgAccountBinding | null> {
   const eligible = new Set(signedInPersonalOrgIds);
   const result = await db.query<{ personal_org_id: string; team_member_id: string }>(
@@ -84,16 +90,46 @@ export async function resolveTeamOrgAccountBinding(
     [teamOrgId],
   );
   const matches = result.rows.filter((row) => eligible.has(row.personal_org_id));
+  const preferred = preferredPersonalOrgId
+    ? matches.find((row) => row.personal_org_id === preferredPersonalOrgId)
+    : undefined;
   if (matches.length > 1) {
-    logger.main.warn('[AccountOrgBinding] Multiple signed-in accounts bind the same team org; using stable binding order', {
+    logger.main.warn('[AccountOrgBinding] Multiple signed-in accounts bind the same team org', {
       teamOrgId,
       personalOrgIds: matches.map((row) => row.personal_org_id),
+      resolvedBy: preferred ? 'sync-account preference' : 'stable binding order',
+      resolvedPersonalOrgId: (preferred ?? matches[0]).personal_org_id,
     });
   }
-  const match = matches[0];
+  const match = preferred ?? matches[0];
   return match
     ? { personalOrgId: match.personal_org_id, teamMemberId: match.team_member_id }
     : null;
+}
+
+/**
+ * Bindings whose team org has no local `orgs` row.
+ *
+ * The repair path below only asks whether a binding exists. A binding can be
+ * present and current while the catalog rows it points at were never written,
+ * which is invisible to every other check: `resolveTeamOrgAccountBinding`
+ * answers happily and only `canAccess` and the org UI come up empty (NIM-2466).
+ * Plain columns and a LEFT JOIN, so PGLite and better-sqlite3 agree.
+ */
+export async function findBindingsWithMissingOrg(
+  db: ProjectionDb,
+): Promise<Array<{ personalOrgId: string; teamOrgId: string }>> {
+  const result = await db.query<{ personal_org_id: string; team_org_id: string }>(
+    `SELECT b.personal_org_id, b.team_org_id
+       FROM account_org_bindings b
+       LEFT JOIN orgs o ON o.id = b.team_org_id
+      WHERE o.id IS NULL
+      ORDER BY b.team_org_id ASC`,
+  );
+  return result.rows.map((row) => ({
+    personalOrgId: row.personal_org_id,
+    teamOrgId: row.team_org_id,
+  }));
 }
 
 /**

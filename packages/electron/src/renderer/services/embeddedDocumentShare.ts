@@ -76,7 +76,7 @@ export interface ShareEmbeddedDocumentsInput {
     candidate: EmbeddedDocumentCandidate,
   ): Promise<string | Uint8Array>;
   createDocument(
-    input: CreateCollaborativeDocumentInput,
+    input: Omit<CreateCollaborativeDocumentInput, 'scope'>,
   ): Promise<{ documentId: string; title: string }>;
   generateId(): string;
   resolveOrgId(): Promise<string>;

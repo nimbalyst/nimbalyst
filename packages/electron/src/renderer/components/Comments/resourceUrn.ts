@@ -97,6 +97,63 @@ export function parseResourceUrn(urn: string, orgId: string): ResourceRef | null
   return { orgId, kind, sourceId };
 }
 
+export interface PastedResourceLink {
+  ref: ResourceRef;
+  label: string;
+}
+
+/**
+ * Turn the shareable tracker URLs copied by Tracker Mode into the canonical
+ * resource reference messaging stores.
+ *
+ * Tracker links carry their organization in the query string because they can
+ * be opened from outside Nimbalyst. A message is already organization-scoped,
+ * so a foreign-org link must stay literal text rather than being authorized as
+ * a resource reference in the current conversation.
+ */
+export function parsePastedResourceLink(
+  rawValue: string,
+  orgId: string,
+): PastedResourceLink | null {
+  const value = rawValue.trim();
+  if (!value) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+
+  if (parsed.protocol !== 'nimbalyst:') return null;
+
+  const routeIsTracker =
+    parsed.host === 'tracker'
+    || (parsed.host === '' && parsed.pathname.startsWith('/tracker/'));
+  if (!routeIsTracker) return null;
+
+  const linkOrgId = parsed.searchParams.get('orgId');
+  if (linkOrgId !== null && linkOrgId !== orgId) return null;
+
+  const rawView = parsed.searchParams.get('view');
+  if (rawView !== null && rawView !== 'document') return null;
+
+  const encodedSourceId = parsed.host === 'tracker'
+    ? parsed.pathname.replace(/^\//, '')
+    : parsed.pathname.replace(/^\/tracker\//, '');
+  const sourceId = safeDecode(encodedSourceId);
+  if (sourceId === null || sourceId === '') return null;
+
+  return {
+    ref: {
+      orgId,
+      kind: 'tracker',
+      sourceId,
+    },
+    label: rawView === 'document' ? 'Plan' : 'Tracker',
+  };
+}
+
 /** `nimbalyst://user/<userId>`. Not a ResourceRef -- see the module header. */
 export function mentionUrn(userId: string): string {
   return `${SCHEME}user/${encodeURIComponent(userId)}`;

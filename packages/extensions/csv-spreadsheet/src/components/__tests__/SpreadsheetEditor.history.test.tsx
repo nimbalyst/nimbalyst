@@ -1,10 +1,19 @@
 import { forwardRef } from 'react';
-import { render, waitFor } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EditorHostProps } from '../../types';
+import type { DiffConfig } from '@nimbalyst/extension-sdk';
 
-const { getProviders } = vi.hoisted(() => ({
+const { getProviders, lifecycleOptions } = vi.hoisted(() => ({
   getProviders: vi.fn(async () => ({})),
+  // The editor drives diff mode entirely through the lifecycle callbacks, so
+  // capturing them is how a test gets to drive it.
+  lifecycleOptions: {
+    current: null as null | {
+      onDiffRequested: (config: DiffConfig) => void;
+      onSave: () => Promise<void>;
+    },
+  },
 }));
 
 vi.mock('@revolist/react-datagrid', async () => {
@@ -36,12 +45,15 @@ vi.mock('@revolist/react-datagrid', async () => {
 });
 
 vi.mock('@nimbalyst/extension-sdk', () => ({
-  useEditorLifecycle: () => ({
-    isLoading: false,
-    error: null,
-    theme: 'light',
-    markDirty: vi.fn(),
-  }),
+  useEditorLifecycle: (_host: unknown, options: unknown) => {
+    lifecycleOptions.current = options as typeof lifecycleOptions.current;
+    return {
+      isLoading: false,
+      error: null,
+      theme: 'light',
+      markDirty: vi.fn(),
+    };
+  },
   useCollaborativeEditor: () => ({ isCollaborative: false }),
   readClipboard: vi.fn(async () => ''),
 }));
@@ -57,8 +69,17 @@ function createHost(): EditorHostProps['host'] {
     setDirty: vi.fn(),
     setEditorContextItems: vi.fn(),
     registerEditorAPI: vi.fn(),
+    saveContent: vi.fn(async () => {}),
+    loadContent: vi.fn(async () => ''),
   } as unknown as EditorHostProps['host'];
 }
+
+const DIFF: DiffConfig = {
+  originalContent: 'Region,Total\nNorth,1\nSouth,2\n',
+  modifiedContent: 'Region,Total\nNorth,9\n',
+  tagId: 'tag-1',
+  sessionId: 'session-1',
+};
 
 describe('SpreadsheetEditor history lifecycle', () => {
   beforeEach(() => {
@@ -74,5 +95,44 @@ describe('SpreadsheetEditor history lifecycle', () => {
     rerender(<SpreadsheetEditor host={{ ...host }} />);
 
     await waitFor(() => expect(getProviders).toHaveBeenCalledTimes(1));
+  });
+});
+
+/**
+ * A diff splices phantom rows into the grid for the AI's deletions, so grid
+ * indices stop matching the file's and every write lands on the wrong row --
+ * and is discarded anyway when accept/reject reloads from disk.
+ */
+describe('SpreadsheetEditor diff review', () => {
+  beforeEach(() => {
+    lifecycleOptions.current = null;
+  });
+
+  async function renderInDiffMode() {
+    const host = createHost();
+    const { container } = render(<SpreadsheetEditor host={host} />);
+    await waitFor(() => expect(lifecycleOptions.current).not.toBeNull());
+    act(() => {
+      lifecycleOptions.current!.onDiffRequested(DIFF);
+    });
+    return { host, container };
+  }
+
+  it('makes the formula bar read-only while a diff is under review', async () => {
+    const { container } = await renderInDiffMode();
+
+    const input = container.querySelector<HTMLInputElement>('.csv-formula-bar input');
+    expect(input?.readOnly).toBe(true);
+  });
+
+  it('refuses to save while a diff is under review', async () => {
+    const { host } = await renderInDiffMode();
+
+    await act(async () => {
+      await lifecycleOptions.current!.onSave();
+    });
+
+    // Saving here would write the phantom deleted rows back out as real ones.
+    expect(host.saveContent).not.toHaveBeenCalled();
   });
 });

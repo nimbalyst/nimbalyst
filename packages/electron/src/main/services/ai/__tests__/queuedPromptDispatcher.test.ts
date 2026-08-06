@@ -131,6 +131,128 @@ describe('queuedPromptDispatcher', () => {
     });
   });
 
+  it('dispatches once to a replacement window when the original window is destroyed', async () => {
+    vi.useFakeTimers();
+
+    // Regression: a long guarded/streaming prompt retains its original
+    // BrowserWindow. If that renderer dies or reloads, FIFO continuation must
+    // not bail just because the passed window is gone — a replacement window
+    // for the same workspace should receive the next queued prompt exactly once.
+    const claimedPrompt: ClaimedQueuedPrompt = {
+      id: 'prompt-1',
+      prompt: 'continue',
+      attachments: null,
+      documentContext: null,
+    };
+
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [claimedPrompt]),
+      claim: vi.fn(async () => claimedPrompt),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+
+    const processingSet = new Set<string>();
+
+    // The original window is destroyed (renderer died/reloaded mid-stream).
+    const destroyedWindow = {
+      isDestroyed: () => true,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+
+    // The replacement window for the same workspace is live.
+    const replacementWindow = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+
+    let dispatchedSender: Electron.WebContents | undefined;
+    const sendMessageHandler = vi.fn(async (event: Electron.IpcMainInvokeEvent) => {
+      dispatchedSender = event.sender;
+      return { content: 'ok' };
+    });
+    const resolveLiveWindow = vi.fn((_workspacePath: string) => replacementWindow);
+
+    const processed = await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: () => {},
+      processingSet,
+      queueStore,
+      sendMessageHandler,
+      resolveLiveWindow,
+      sessionId: 'session-1',
+      source: 'test queue',
+      startSession: vi.fn(async () => {}),
+      targetWindow: destroyedWindow,
+      workspacePath: '/workspace/project',
+    });
+
+    // Without the fix the dispatcher bails on the destroyed window and never
+    // resolves a replacement, so nothing is dispatched.
+    expect(processed).toBe(true);
+    expect(resolveLiveWindow).toHaveBeenCalledWith('/workspace/project');
+
+    await vi.runAllTimersAsync();
+
+    // Exactly-once after the deferred dispatch settles. The replacement
+    // window's webContents, not the destroyed original, is the IPC sender.
+    expect(sendMessageHandler).toHaveBeenCalledTimes(1);
+    expect(dispatchedSender).toBe(replacementWindow.webContents);
+    expect(queueStore.complete).toHaveBeenCalledTimes(1);
+    expect(queueStore.fail).not.toHaveBeenCalled();
+    expect(processingSet.has('session-1')).toBe(false);
+  });
+
+  it('bails (without dispatching) when the window is destroyed and no replacement exists', async () => {
+    vi.useFakeTimers();
+
+    const claimedPrompt: ClaimedQueuedPrompt = {
+      id: 'prompt-1',
+      prompt: 'continue',
+      attachments: null,
+      documentContext: null,
+    };
+
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [claimedPrompt]),
+      claim: vi.fn(async () => claimedPrompt),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+
+    const processingSet = new Set<string>();
+
+    const destroyedWindow = {
+      isDestroyed: () => true,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+
+    const sendMessageHandler = vi.fn(async () => ({ content: 'ok' }));
+
+    const processed = await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: () => {},
+      processingSet,
+      queueStore,
+      sendMessageHandler,
+      resolveLiveWindow: vi.fn(() => null),
+      sessionId: 'session-1',
+      source: 'test queue',
+      startSession: vi.fn(async () => {}),
+      targetWindow: destroyedWindow,
+      workspacePath: '/workspace/project',
+    });
+
+    expect(processed).toBe(false);
+    expect(sendMessageHandler).not.toHaveBeenCalled();
+    expect(queueStore.claim).not.toHaveBeenCalled();
+    expect(processingSet.has('session-1')).toBe(false);
+  });
+
   it('does NOT fire onChainSettled when a follow-on prompt is dispatched', async () => {
     vi.useFakeTimers();
 

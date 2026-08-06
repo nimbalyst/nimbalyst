@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Reproduce the production "doesn't stop thinking" hang at the transport layer.

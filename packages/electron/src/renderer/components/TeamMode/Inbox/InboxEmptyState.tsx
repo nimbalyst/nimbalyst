@@ -1,5 +1,5 @@
 import React from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 import type { InboxFilterId } from './inboxTypes';
 
@@ -34,11 +34,6 @@ const FILTER_EMPTY: Record<InboxFilterId, EmptyCopy> = {
     body: 'Tracker assignments and equivalent actionable deliveries collect here.',
     actionLabel: 'Open trackers',
   },
-  unread: {
-    icon: 'mark_email_read',
-    title: 'Nothing unread',
-    body: 'You are caught up on deliveries and on the conversations you follow.',
-  },
   follows: {
     icon: 'visibility',
     title: 'You are not following anything',
@@ -47,8 +42,20 @@ const FILTER_EMPTY: Record<InboxFilterId, EmptyCopy> = {
   },
 };
 
+/**
+ * Read state is its own axis, so it gets its own empty copy — and it wins over
+ * the reason's, because "nothing unread" is the more useful thing to hear when
+ * the reason itself does have rows sitting in it.
+ */
+const UNREAD_EMPTY: EmptyCopy = {
+  icon: 'mark_email_read',
+  title: 'Nothing unread',
+  body: 'You are caught up on deliveries and on the conversations you follow.',
+};
+
 export function InboxEmptyState({
   filter,
+  unreadOnly = false,
   query,
   scopeActive,
   onClearFilters,
@@ -56,15 +63,17 @@ export function InboxEmptyState({
   children,
 }: {
   filter: InboxFilterId;
+  unreadOnly?: boolean;
   query: string;
   scopeActive: boolean;
   onClearFilters: () => void;
-  onBrowse: () => void;
+  /** Absent when the host has no rooms directory to send the user to. */
+  onBrowse?: () => void;
   /** Slot for the `Search all messages` escalation when a query is active. */
   children?: React.ReactNode;
 }) {
-  const copy = FILTER_EMPTY[filter];
-  const narrowed = !!query || scopeActive || filter !== 'all';
+  const copy = unreadOnly ? UNREAD_EMPTY : FILTER_EMPTY[filter];
+  const narrowed = !!query || scopeActive || unreadOnly || filter !== 'all';
 
   return (
     <div
@@ -96,7 +105,7 @@ export function InboxEmptyState({
             Clear filters
           </button>
         )}
-        {!query && copy.actionLabel && (
+        {!query && copy.actionLabel && onBrowse && (
           <button
             type="button"
             className="inbox-empty-browse rounded-md border border-[var(--nim-border)] px-2.5 py-1 text-[12px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"

@@ -7,7 +7,7 @@
  */
 
 import type { JSX } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { PullRequestRow as PullRequestRowData } from '../../services/RendererPullRequestService';
 import { formatRelative } from './prFormat';

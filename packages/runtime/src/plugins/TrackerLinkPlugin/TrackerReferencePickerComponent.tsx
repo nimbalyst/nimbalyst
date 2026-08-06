@@ -13,6 +13,7 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../../ui/floating/windowControlsClearance';
 import { useAtomValue } from 'jotai';
 
 import { trackerItemsArrayAtom } from '../TrackerPlugin/trackerDataAtoms';
@@ -61,9 +62,11 @@ export function TrackerReferencePicker({
       offset(6),
       flip({ padding: 8 }),
       shift({ padding: 8 }),
+      windowControlsClearance(),
       size({
         padding: 8,
-        apply({ rects, elements, availableHeight, availableWidth }) {
+        apply({ rects, elements, availableHeight, availableWidth, middlewareData }) {
+          const pushed = middlewareData.windowControlsClearance?.pushed ?? 0;
           const width = Math.max(
             rects.reference.width,
             Math.min(420, Math.max(280, availableWidth)),
@@ -71,7 +74,7 @@ export function TrackerReferencePicker({
           Object.assign(elements.floating.style, {
             width: `${width}px`,
             maxWidth: 'calc(100vw - 16px)',
-            maxHeight: `${Math.max(160, Math.min(360, availableHeight))}px`,
+            maxHeight: `${Math.max(160, Math.min(360, availableHeight - pushed))}px`,
           });
         },
       }),

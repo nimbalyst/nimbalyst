@@ -133,6 +133,7 @@ function mapDelivery(
           preview: {
             sourceTitle: preview.sourceTitle,
             snippet: preview.snippet,
+            itemType: preview.itemType,
             capturedAt: delivery.createdAt,
           },
         }

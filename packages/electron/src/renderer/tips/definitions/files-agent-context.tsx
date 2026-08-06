@@ -1,5 +1,5 @@
 import React from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { TipDefinition } from '../types';
 
 const AgentContextIcon = <MaterialSymbol icon="auto_awesome" size={20} />;

@@ -57,6 +57,13 @@ export function registerNotificationHandlers(): void {
     }
   });
 
+  safeHandle('notifications:consume-pending-navigation', async (_event, workspacePath: string) => {
+    if (!workspacePath || typeof workspacePath !== 'string') {
+      throw new Error('notifications:consume-pending-navigation requires workspacePath');
+    }
+    return notificationService.consumePendingNavigation(workspacePath);
+  });
+
   // Get OS notifications enabled status
   safeHandle('notifications:get-enabled', async () => {
     try {

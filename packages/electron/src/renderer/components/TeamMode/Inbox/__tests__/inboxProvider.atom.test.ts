@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import type { TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import { createStore } from 'jotai';
 import { describe, expect, it, vi } from 'vitest';

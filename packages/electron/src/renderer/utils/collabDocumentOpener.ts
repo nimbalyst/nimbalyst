@@ -6,11 +6,13 @@
  * which stores the connection config and adds a tab with a collab:// URI.
  *
  * The collab config registry is a module-level Map that TabContent reads
- * when creating a CollaborativeTabEditor instance.
+ * when creating a CollaborativeTabEditor instance. Every key includes the
+ * host scope so identical document URIs in two mounted scopes cannot alias.
  */
 
 import { buildCollabUri } from './collabUri';
 import { logger } from './logger';
+import { createProxiedWebSocket } from './proxiedWebSocket';
 import {
   getSharedDocumentDisplayName,
   normalizeCollabPath,
@@ -18,13 +20,15 @@ import {
 } from '../components/CollabMode/collabTree';
 import { toStableAnalyticsCategory } from '../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from './teamAnalytics';
+import type { CollabOpenSource, CollabScope } from '@nimbalyst/collab-client/core';
+import { resolveDesktopCollabScope } from '../store/atoms/collabDocuments';
 
 /**
  * Configuration for opening a collaborative document.
  * Stored in the registry and passed to CollaborativeTabEditor.
  */
 export interface CollabDocumentConfig {
-  workspacePath: string;
+  scope: CollabScope;
   orgId: string;
   documentId: string;
   title: string;
@@ -72,24 +76,37 @@ export interface CollabDocumentConfig {
 
 /**
  * Module-level registry of collab document configurations.
- * Keyed by collab:// URI. TabContent reads from this when creating
- * CollaborativeTabEditor instances.
+ * Keyed by opaque host scope plus collab:// URI. TabContent reads from this
+ * when creating CollaborativeTabEditor instances.
  */
 const collabConfigRegistry = new Map<string, CollabDocumentConfig>();
+
+function collabConfigRegistryKey(scopeKey: string, uri: string): string {
+  return `${scopeKey.length}:${scopeKey}${uri}`;
+}
 
 /**
  * Get the collab config for a URI. Returns undefined if not registered.
  */
-export function getCollabConfig(uri: string): CollabDocumentConfig | undefined {
-  return collabConfigRegistry.get(uri);
+export function getCollabConfig(scope: CollabScope, uri: string): CollabDocumentConfig | undefined {
+  return getCollabConfigForScopeKey(scope.scopeKey, uri);
+}
+
+/** Host bridge for tab containers that already carry their opaque scope key. */
+export function getCollabConfigForScopeKey(
+  scopeKey: string,
+  uri: string,
+): CollabDocumentConfig | undefined {
+  return collabConfigRegistry.get(collabConfigRegistryKey(scopeKey, uri));
 }
 
 /** Keep the connection config's warm display metadata current across index gaps. */
 export function updateCollabConfigDisplayMetadata(
+  scope: CollabScope,
   uri: string,
   metadata: { title?: string | null; displayPath?: string | null },
 ): void {
-  const config = collabConfigRegistry.get(uri);
+  const config = getCollabConfig(scope, uri);
   if (!config) return;
 
   const resolvedTitle = getSharedDocumentDisplayName(metadata.title, config.documentId);
@@ -106,18 +123,18 @@ export function updateCollabConfigDisplayMetadata(
 /**
  * Remove a collab config when the tab is closed.
  */
-export function removeCollabConfig(uri: string): void {
-  collabConfigRegistry.delete(uri);
+export function removeCollabConfig(scope: CollabScope, uri: string): void {
+  collabConfigRegistry.delete(collabConfigRegistryKey(scope.scopeKey, uri));
 }
 
 /** Remove every synthetic/real URI alias created for one document. */
 export function removeCollabConfigsForDocument(
-  workspacePath: string,
+  scope: CollabScope,
   documentId: string,
 ): void {
-  for (const [uri, config] of collabConfigRegistry) {
-    if (config.workspacePath === workspacePath && config.documentId === documentId) {
-      collabConfigRegistry.delete(uri);
+  for (const [registryKey, config] of collabConfigRegistry) {
+    if (config.scope.scopeKey === scope.scopeKey && config.documentId === documentId) {
+      collabConfigRegistry.delete(registryKey);
     }
   }
 }
@@ -130,7 +147,7 @@ export function removeCollabConfigsForDocument(
  */
 export function registerCollabConfig(config: CollabDocumentConfig): string {
   const uri = buildCollabUri(config.orgId, config.documentId);
-  collabConfigRegistry.set(uri, config);
+  collabConfigRegistry.set(collabConfigRegistryKey(config.scope.scopeKey, uri), config);
   return uri;
 }
 
@@ -142,11 +159,11 @@ export function registerCollabConfig(config: CollabDocumentConfig): string {
  * factory -- is directly reusable.
  */
 export function findCollabConfigByDocumentId(
-  workspacePath: string,
+  scope: CollabScope,
   documentId: string,
 ): CollabDocumentConfig | undefined {
   for (const config of collabConfigRegistry.values()) {
-    if (config.documentId === documentId && config.workspacePath === workspacePath) {
+    if (config.documentId === documentId && config.scope.scopeKey === scope.scopeKey) {
       return config;
     }
   }
@@ -185,7 +202,8 @@ export function openCollabDocument(options: CollabDocumentConfig & {
   const uri = buildCollabUri(config.orgId, config.documentId);
 
   // Store config for TabContent to retrieve
-  collabConfigRegistry.set(uri, config);
+  const registryKey = collabConfigRegistryKey(config.scope.scopeKey, uri);
+  collabConfigRegistry.set(registryKey, config);
 
   try {
     // Add the tab with its display name in the same store transaction. Content
@@ -202,178 +220,18 @@ export function openCollabDocument(options: CollabDocumentConfig & {
     }
     return tabId;
   } catch (error) {
-    collabConfigRegistry.delete(uri);
+    collabConfigRegistry.delete(registryKey);
     throw error;
   }
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket proxy: single global IPC listener, dispatches by wsId
+// WebSocket proxy
 // ---------------------------------------------------------------------------
 
-type WsEvent = { wsId: string; type: string; data?: string; code?: number; reason?: string; error?: string };
-type WsEventHandler = (event: WsEvent) => void;
-
-/** Map of wsId -> handler. A single IPC listener dispatches to the right handler. */
-const wsEventHandlers = new Map<string, WsEventHandler>();
-/** Buffer for events that arrive before their wsId handler is registered (IPC race). */
-const wsPendingEvents = new Map<string, WsEvent[]>();
-let globalWsListenerInstalled = false;
-
-function ensureGlobalWsListener(): void {
-  if (globalWsListenerInstalled) return;
-  const api = window.electronAPI?.documentSync;
-  if (!api?.onWsEvent) return;
-
-  api.onWsEvent((event: WsEvent) => {
-    const handler = wsEventHandlers.get(event.wsId);
-    if (handler) {
-      handler(event);
-    } else {
-      // Handler not yet registered (wsConnect IPC hasn't resolved yet).
-      // Buffer the event for flush when the handler is registered.
-      let pending = wsPendingEvents.get(event.wsId);
-      if (!pending) {
-        pending = [];
-        wsPendingEvents.set(event.wsId, pending);
-      }
-      pending.push(event);
-    }
-  });
-  globalWsListenerInstalled = true;
-}
-
-/** Register a handler for a wsId and flush any buffered events. */
-function registerWsHandler(id: string, handler: WsEventHandler): void {
-  wsEventHandlers.set(id, handler);
-  const pending = wsPendingEvents.get(id);
-  if (pending) {
-    wsPendingEvents.delete(id);
-    for (const event of pending) {
-      handler(event);
-    }
-  }
-}
-
-/**
- * Create a browser-compatible WebSocket that proxies through the Electron
- * main process via IPC. This works around Cloudflare blocking WebSocket
- * upgrades from browser/Chromium clients.
- *
- * Returns an object that implements the browser WebSocket interface
- * (enough for DocumentSyncProvider to use).
- */
-export function createProxiedWebSocket(url: string): WebSocket {
-  const api = window.electronAPI?.documentSync;
-  if (!api?.wsConnect) {
-    throw new Error('WebSocket proxy API not available');
-  }
-
-  ensureGlobalWsListener();
-
-  // Create a fake WebSocket that proxies through IPC
-  const eventTarget = new EventTarget();
-  let wsId: string | null = null;
-  let readyState: number = WebSocket.CONNECTING;
-  let closedBeforeConnected = false;
-
-  function cleanup(): void {
-    if (wsId) {
-      wsEventHandlers.delete(wsId);
-    }
-  }
-
-  function dispatchWsEvent(event: WsEvent): void {
-    switch (event.type) {
-      case 'open':
-        if (readyState === WebSocket.CLOSING || readyState === WebSocket.CLOSED) break;
-        readyState = WebSocket.OPEN;
-        eventTarget.dispatchEvent(new Event('open'));
-        break;
-      case 'message':
-        if (readyState === WebSocket.CLOSING || readyState === WebSocket.CLOSED) break;
-        readyState = WebSocket.OPEN;
-        eventTarget.dispatchEvent(new MessageEvent('message', { data: event.data }));
-        break;
-      case 'close':
-        readyState = WebSocket.CLOSED;
-        eventTarget.dispatchEvent(new CloseEvent('close', {
-          code: event.code ?? 1000,
-          reason: event.reason ?? '',
-        }));
-        cleanup();
-        break;
-      case 'error':
-        eventTarget.dispatchEvent(new Event('error'));
-        break;
-    }
-  }
-
-  const ws = {
-    get readyState() { return readyState; },
-    get CONNECTING() { return WebSocket.CONNECTING; },
-    get OPEN() { return WebSocket.OPEN; },
-    get CLOSING() { return WebSocket.CLOSING; },
-    get CLOSED() { return WebSocket.CLOSED; },
-
-    addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
-      eventTarget.addEventListener(type, listener);
-    },
-    removeEventListener(type: string, listener: EventListenerOrEventListenerObject) {
-      eventTarget.removeEventListener(type, listener);
-    },
-
-    send(data: string) {
-      if (wsId && readyState === WebSocket.OPEN) {
-        api.wsSend(wsId, data);
-      }
-    },
-
-    close() {
-      if (readyState === WebSocket.CLOSING || readyState === WebSocket.CLOSED) {
-        return;
-      }
-      readyState = WebSocket.CLOSING;
-      if (wsId) {
-        api.wsClose(wsId);
-      } else {
-        // close() called before wsConnect() resolved (e.g., React StrictMode teardown).
-        // Flag it so the connect resolution can close the main-process socket.
-        closedBeforeConnected = true;
-      }
-    },
-  } as unknown as WebSocket;
-
-  // Initiate the connection asynchronously
-  api.wsConnect(url).then((result) => {
-    if (result.success && result.wsId) {
-      wsId = result.wsId;
-
-      // If close() was called before wsConnect resolved (React StrictMode),
-      // register first so the main-process close event reaches the caller.
-      if (closedBeforeConnected) {
-        registerWsHandler(wsId, dispatchWsEvent);
-        api.wsClose(wsId);
-        return;
-      }
-
-      // Register handler for events on this wsId (flushes any buffered events)
-      registerWsHandler(wsId, dispatchWsEvent);
-    } else {
-      console.error('[createProxiedWebSocket] Failed to connect:', result.error);
-      readyState = WebSocket.CLOSED;
-      eventTarget.dispatchEvent(new Event('error'));
-      eventTarget.dispatchEvent(new CloseEvent('close', { code: 1006, reason: result.error ?? '' }));
-    }
-  }).catch((err: unknown) => {
-    console.error('[createProxiedWebSocket] IPC error:', err);
-    readyState = WebSocket.CLOSED;
-    eventTarget.dispatchEvent(new Event('error'));
-    eventTarget.dispatchEvent(new CloseEvent('close', { code: 1006, reason: String(err) }));
-  });
-
-  return ws;
-}
+// Re-exported for existing callers; the implementation lives in its own module
+// so collab providers can use it without importing this file (import cycle).
+export { createProxiedWebSocket };
 
 /**
  * Resolve a collab config from the main process and populate the registry.
@@ -383,7 +241,7 @@ export function createProxiedWebSocket(url: string): WebSocket {
  * Returns the config on success, or null if resolution fails.
  */
 export async function resolveCollabConfigForUri(
-  workspacePath: string,
+  scope: CollabScope,
   uri: string,
   documentId: string,
   title?: string,
@@ -406,9 +264,9 @@ export async function resolveCollabConfigForUri(
   if (options.forceRefresh && useCache) {
     // Key rotation must bypass both URI and document-id aliases. Otherwise a
     // freshly resolved cache key can still be populated with the old CryptoKey.
-    for (const [registeredUri, config] of collabConfigRegistry) {
+    for (const [registeredKey, config] of collabConfigRegistry) {
       if (
-        config.workspacePath === workspacePath &&
+        config.scope.scopeKey === scope.scopeKey &&
         config.documentId === documentId
       ) {
         if (
@@ -423,12 +281,12 @@ export async function resolveCollabConfigForUri(
             editorId: config.editorId,
           };
         }
-        collabConfigRegistry.delete(registeredUri);
+        collabConfigRegistry.delete(registeredKey);
       }
     }
   } else if (useCache) {
     // Already resolved
-    const existing = collabConfigRegistry.get(uri);
+    const existing = getCollabConfig(scope, uri);
     if (existing) {
       if (resolvedMetadata) Object.assign(existing, resolvedMetadata);
       return existing;
@@ -437,7 +295,7 @@ export async function resolveCollabConfigForUri(
     // A seed/export/re-upload caller may only know the documentId (its URI is
     // `collab://seed/<documentId>`); reuse the config resolved when the doc was
     // opened rather than re-running the IPC resolution.
-    const byDocument = findCollabConfigByDocumentId(workspacePath, documentId);
+    const byDocument = findCollabConfigByDocumentId(scope, documentId);
     if (byDocument) {
       if (resolvedMetadata) Object.assign(byDocument, resolvedMetadata);
       return byDocument;
@@ -446,7 +304,7 @@ export async function resolveCollabConfigForUri(
 
   try {
     const result = await window.electronAPI.documentSync.open(
-      workspacePath,
+      scope.scopeKey,
       documentId,
       title,
       documentType,
@@ -458,12 +316,20 @@ export async function resolveCollabConfigForUri(
     }
 
     const { orgId, title: resolvedTitle, serverUrl, accountId, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+    if (orgId !== scope.orgId) {
+      logger.ui.error('[collabDocumentOpener] Resolved document org does not match scope:', {
+        documentId,
+        expectedOrgId: scope.orgId,
+        resolvedOrgId: orgId,
+      });
+      return null;
+    }
     const urlExtraQuery = result.config.urlExtraQuery;
     const resolvedDocumentType = documentType ?? result.config.documentType;
     const hasWsProxy = !!window.electronAPI?.documentSync?.wsConnect;
 
     const config: CollabDocumentConfig = {
-      workspacePath,
+      scope,
       orgId,
       documentId,
       title: resolvedTitle,
@@ -495,10 +361,10 @@ export async function resolveCollabConfigForUri(
     // The URI in the tab may use the real orgId already, but double-check
     const realUri = buildCollabUri(orgId, documentId);
     if (useCache) {
-      collabConfigRegistry.set(realUri, config);
+      collabConfigRegistry.set(collabConfigRegistryKey(scope.scopeKey, realUri), config);
       // Also set with the passed-in URI in case it differs
       if (uri !== realUri) {
-        collabConfigRegistry.set(uri, config);
+        collabConfigRegistry.set(collabConfigRegistryKey(scope.scopeKey, uri), config);
       }
     }
 
@@ -507,6 +373,35 @@ export async function resolveCollabConfigForUri(
     logger.ui.error('[collabDocumentOpener] Failed to resolve collab config:', err);
     return null;
   }
+}
+
+/** Electron host bridge for legacy surfaces that begin with a project path. */
+export async function resolveDesktopCollabConfigForUri(
+  workspacePath: string,
+  uri: string,
+  documentId: string,
+  title?: string,
+  documentType?: string,
+  options: {
+    forceRefresh?: boolean;
+    metadata?: { metadataVersion: 2; fileExtension: string; editorId: string };
+    cache?: boolean;
+  } = {},
+): Promise<CollabDocumentConfig | null> {
+  const { scope } = await resolveDesktopCollabScope(workspacePath);
+  if (!scope) return null;
+  return resolveCollabConfigForUri(scope, uri, documentId, title, documentType, options);
+}
+
+/** Electron host bridge for open requests originating outside Shared Docs. */
+export async function openCollabDocumentViaIPCForDesktop(options: Omit<
+  Parameters<typeof openCollabDocumentViaIPC>[0],
+  'scope'
+> & { workspacePath: string }): Promise<string> {
+  const { workspacePath, ...rest } = options;
+  const { scope } = await resolveDesktopCollabScope(workspacePath);
+  if (!scope) throw new Error('Could not resolve collaboration scope for this project');
+  return openCollabDocumentViaIPC({ ...rest, scope });
 }
 
 /**
@@ -525,19 +420,10 @@ export async function resolveCollabConfigForUri(
  * unattributed open used to default to `home` and inflate the Shared Docs
  * adoption numbers.
  */
-export type CollabDocumentOpenSource =
-  | 'sidebar'
-  | 'home'
-  | 'quick_open'
-  | 'deep_link'
-  | 'restart_restore'
-  | 'history'
-  | 'agent_tool'
-  | 'share_to_team'
-  | 'embedded_document';
+export type CollabDocumentOpenSource = CollabOpenSource;
 
 export async function openCollabDocumentViaIPC(options: {
-  workspacePath: string;
+  scope: CollabScope;
   documentId: string;
   title?: string;
   displayPath?: string;
@@ -568,7 +454,7 @@ export async function openCollabDocumentViaIPC(options: {
   }
 
   const result = await window.electronAPI.documentSync.open(
-    options.workspacePath,
+    options.scope.scopeKey,
     options.documentId,
     options.title,
     options.documentType,
@@ -579,6 +465,9 @@ export async function openCollabDocumentViaIPC(options: {
   }
 
   const { orgId, documentId, title, serverUrl, accountId, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+  if (orgId !== options.scope.orgId) {
+    throw new Error('Resolved collaborative document belongs to a different scope');
+  }
   const documentType = options.documentType ?? result.config.documentType;
 
   // Build the real URI now that we have orgId
@@ -590,7 +479,7 @@ export async function openCollabDocumentViaIPC(options: {
   const hasWsProxy = !!window.electronAPI?.documentSync?.wsConnect;
 
   const tabId = openCollabDocument({
-    workspacePath: options.workspacePath,
+    scope: options.scope,
     orgId,
     documentId,
     title: getSharedDocumentDisplayName(options.title || title, documentId),

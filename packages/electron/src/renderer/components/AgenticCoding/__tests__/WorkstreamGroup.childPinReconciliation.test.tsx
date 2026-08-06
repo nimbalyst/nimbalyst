@@ -31,6 +31,7 @@ vi.mock('../../../store', () => {
     sessionUnreadAtom: () => value(false),
     sessionPendingPromptAtom: () => value(false),
     sessionHasPendingInteractivePromptAtom: () => value(false),
+    sessionListTitleAtom: () => value(null),
     groupSessionStatusAtom: () => value({
       hasPendingInteractivePrompt: false,
       hasProcessing: false,
@@ -222,7 +223,7 @@ describe('expanded workstream child pin reconciliation', () => {
     expect(childTitles()).toEqual(['Sibling', 'Target']);
     expect(childRows()[1].querySelector('[data-icon="push_pin"]')).toBeNull();
     fireEvent.contextMenu(childRows()[1]);
-    expect(screen.getByRole('button', { name: 'Pin' })).toBeTruthy();
+    screen.getByRole('button', { name: 'Pin' });
     expect(updateSessionStore).toHaveBeenCalledWith({
       sessionId: targetId,
       updates: { isPinned: false },
@@ -288,7 +289,7 @@ describe('expanded workstream child pin reconciliation', () => {
     expect(childTitles()).toEqual(['Target', 'Sibling']);
     expect(childRows()[0].querySelector('[data-icon="push_pin"]')).not.toBeNull();
     fireEvent.contextMenu(childRows()[0]);
-    expect(screen.getByRole('button', { name: 'Unpin' })).toBeTruthy();
+    screen.getByRole('button', { name: 'Unpin' });
   });
 
   it('does not require a children refetch for registry-only field updates', () => {

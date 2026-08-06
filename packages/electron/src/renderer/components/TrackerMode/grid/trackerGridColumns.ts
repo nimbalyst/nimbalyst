@@ -15,7 +15,7 @@ import {
   getPriorityColor,
   getTypeColor,
   getFieldForColumn,
-  formatRelativeDate,
+  formatTrackerDateCell,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { compareCellValues } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerRowData';
@@ -30,6 +30,8 @@ import {
 export const ROW_ITEM_ID = '__trackerItemId';
 /** Row key holding the primary tracker type for mixed-schema editor resolution. */
 export const ROW_ITEM_TYPE = '__trackerItemType';
+/** Structural pinned column that owns the row action trigger. */
+export const ROW_ACTIONS = '__trackerActions';
 
 function fieldNameForColumn(recordType: string, column: TrackerColumnDef): string {
   return column.role ? resolveRoleFieldName(recordType, column.role) : column.id;
@@ -52,8 +54,8 @@ export function buildGridSource(
   });
 }
 
-function textNode(createElement: HyperFunc<VNode>, text: string): VNode {
-  return createElement('span', { class: 'tracker-grid-cell-text' }, text);
+function textNode(createElement: HyperFunc<VNode>, text: string, title?: string): VNode {
+  return createElement('span', { class: 'tracker-grid-cell-text', ...(title ? { title } : {}) }, text);
 }
 
 function badgeNode(createElement: HyperFunc<VNode>, text: string, color: string): VNode {
@@ -72,10 +74,11 @@ function formatValue(col: TrackerColumnDef, value: unknown, trackerType: string)
   if (value === undefined || value === null || value === '') return '';
 
   switch (col.render) {
-    case 'date': {
-      const date = value instanceof Date ? value : new Date(String(value));
-      return Number.isNaN(date.getTime()) ? String(value) : formatRelativeDate(date);
-    }
+    case 'date':
+      // formatTrackerDateCell, not `new Date`: a calendar-day string is local
+      // midnight, not UTC midnight, and reads by day rather than by elapsed
+      // time (nimbalyst#1135, #1156).
+      return formatTrackerDateCell(value).display;
     case 'tags':
       return Array.isArray(value) ? value.join(', ') : String(value);
     case 'url': {
@@ -158,29 +161,73 @@ function favoriteNode(
   );
 }
 
+/** Discoverable trigger that reuses TrackerGridView's existing right-click path. */
+function contextMenuNode(
+  createElement: HyperFunc<VNode>,
+  placement: 'title' | 'column',
+): VNode {
+  return createElement(
+    'button',
+    {
+      type: 'button',
+      class: `tracker-grid-cell-menu tracker-grid-cell-menu-${placement}`,
+      title: 'Item actions',
+      'aria-label': 'Item actions',
+      // Preserve RevoGrid's current range so opening the menu can apply to the
+      // whole selection when this row is already inside it.
+      onPointerDown: (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+      },
+      onClick: (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const target = e.currentTarget as HTMLElement;
+        target.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          button: 2,
+        }));
+      },
+    },
+    createElement(
+      'span',
+      { class: 'material-symbols-outlined tracker-grid-cell-menu-icon' },
+      'more_horiz',
+    ),
+  );
+}
+
 /** Colored-badge columns get a pill; everything else renders as plain text. */
 function buildCellTemplate(
   col: TrackerColumnDef,
   trackerType: string,
   favorites?: FavoritesOptions,
+  rowActions = false,
 ) {
   return (createElement: HyperFunc<VNode>, props: CellTemplateProp): VNode => {
     const value = props.model?.[col.id];
     const rowType = trackerType || String(props.model?.[ROW_ITEM_TYPE] ?? '');
     const text = formatValue(col, value, rowType);
 
-    // The title column carries the favorite star, so it renders even when the
-    // title itself is empty.
-    if (favorites && col.role === 'title') {
+    // The title column carries its inline affordances, so it renders even when
+    // the title itself is empty.
+    if ((favorites || rowActions) && (col.role === 'title' || col.id === 'title')) {
       const itemId = String(props.model?.[ROW_ITEM_ID] ?? '');
       return createElement('span', { class: 'tracker-grid-cell-title' }, [
-        favoriteNode(
-          createElement,
-          itemId,
-          favorites.favoriteItemIds.has(itemId),
-          favorites.onToggleFavorite,
-        ),
+        ...(favorites
+          ? [favoriteNode(
+            createElement,
+            itemId,
+            favorites.favoriteItemIds.has(itemId),
+            favorites.onToggleFavorite,
+          )]
+          : []),
         textNode(createElement, text),
+        ...(rowActions ? [contextMenuNode(createElement, 'title')] : []),
       ]);
     }
 
@@ -202,6 +249,12 @@ function buildCellTemplate(
         { class: 'tracker-grid-cell-tags' },
         parts.map(p => badgeNode(createElement, p, '#6b7280')),
       );
+    }
+
+    // A relative label ("in 5 days") hides the real value, so keep the exact
+    // date reachable on hover.
+    if (col.render === 'date') {
+      return textNode(createElement, text, formatTrackerDateCell(value).title);
     }
 
     return textNode(createElement, text);
@@ -230,6 +283,23 @@ export interface BuildGridColumnsOptions {
   sortingEnabled?: boolean;
   /** Renders the favorite star in the title cell; omit to hide it. */
   favorites?: FavoritesOptions;
+  /** Also renders the overflow trigger inside the title cell. */
+  rowActions?: boolean;
+}
+
+/** Always-present trailing action column, separate from editable tracker fields. */
+export function buildGridActionsColumn(): ColumnRegular {
+  return {
+    prop: ROW_ACTIONS,
+    name: '',
+    size: 36,
+    minSize: 36,
+    maxSize: 36,
+    pin: 'colPinEnd',
+    sortable: false,
+    readonly: true,
+    cellTemplate: (createElement: HyperFunc<VNode>) => contextMenuNode(createElement, 'column'),
+  };
 }
 
 /**
@@ -292,6 +362,7 @@ export function buildGridColumns(
     onOpenFilter,
     sortingEnabled = false,
     favorites,
+    rowActions = false,
   }: BuildGridColumnsOptions,
 ): ColumnRegular[] {
   return columns.map((col): ColumnRegular => {
@@ -329,7 +400,7 @@ export function buildGridColumns(
         }
         return typeof itemId === 'string' ? !isRowEditable(itemId) : true;
       },
-      cellTemplate: buildCellTemplate(col, trackerType, favorites),
+      cellTemplate: buildCellTemplate(col, trackerType, favorites, rowActions),
       ...(onOpenFilter
         ? {
           columnTemplate: buildColumnTemplate(

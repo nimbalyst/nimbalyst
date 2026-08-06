@@ -1,11 +1,12 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const notifyDocumentComment = vi.fn();
-const getTeamSyncProvider = vi.fn();
+const getTeamSyncProviderForScopeKey = vi.fn();
 
 vi.mock('../../store/atoms/collabDocuments', () => ({
-  getTeamSyncProvider: (workspacePath: string) =>
-    getTeamSyncProvider(workspacePath),
+  getTeamSyncProviderForScopeKey: (scopeKey: string) =>
+    getTeamSyncProviderForScopeKey(scopeKey),
 }));
 
 import { notifyDocumentCommentRecipients } from '../documentCommentNotifier';
@@ -13,7 +14,7 @@ import { notifyDocumentCommentRecipients } from '../documentCommentNotifier';
 describe('notifyDocumentCommentRecipients', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getTeamSyncProvider.mockReturnValue({ notifyDocumentComment });
+    getTeamSyncProviderForScopeKey.mockReturnValue({ notifyDocumentComment });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
@@ -34,7 +35,7 @@ describe('notifyDocumentCommentRecipients', () => {
       },
     });
 
-    expect(getTeamSyncProvider).toHaveBeenCalledWith('/w');
+    expect(getTeamSyncProviderForScopeKey).toHaveBeenCalledWith('/w');
     expect(notifyDocumentComment).toHaveBeenCalledWith({
       documentId: 'doc-1',
       commentId: 'comment-1',
@@ -69,9 +70,9 @@ describe('notifyDocumentCommentRecipients', () => {
       recipientUserIds: [],
       payload: { commentId: 'comment-1' },
     });
-    expect(getTeamSyncProvider).not.toHaveBeenCalled();
+    expect(getTeamSyncProviderForScopeKey).not.toHaveBeenCalled();
 
-    getTeamSyncProvider.mockReturnValue(null);
+    getTeamSyncProviderForScopeKey.mockReturnValue(null);
     notifyDocumentCommentRecipients({
       workspacePath: '/w',
       documentId: 'doc-1',

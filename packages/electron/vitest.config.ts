@@ -39,6 +39,17 @@ export default defineConfig({
       { find: /^y-monaco$/, replacement: path.resolve(__dirname, './test-stubs/monaco-stub.ts') }
     ]
   },
+  server: {
+    fs: {
+      // This config's root is packages/electron, but renderer components pull in
+      // `@nimbalyst/runtime`, whose barrel reaches `?raw` imports over in
+      // packages/runtime. Vite gates `?raw` on the fs allow-list, and when that
+      // list is inferred rather than stated a worker can deny them ("Denied ID
+      // .../plan.yaml?raw") depending on which test files share the run. Naming
+      // the repo root makes it deterministic.
+      allow: [path.resolve(__dirname, '../..')]
+    }
+  },
   define: {
     'process.env.NODE_ENV': '"test"'
   }

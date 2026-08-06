@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * LiveGateway routes tracker writes through the in-app MCP server. NIM-857:
  * `defineType`/`deleteType` previously ignored `result.isError`, so when the

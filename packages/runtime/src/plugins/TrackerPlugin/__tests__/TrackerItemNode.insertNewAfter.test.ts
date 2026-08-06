@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Regression test for issue #263.
  *

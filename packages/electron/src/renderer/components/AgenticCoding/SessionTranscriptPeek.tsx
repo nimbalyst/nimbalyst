@@ -12,6 +12,7 @@ import {
   useRole,
   type Placement,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 import { RichTranscriptView } from '@nimbalyst/runtime/ui/AgentTranscript/components/RichTranscriptView';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import { getCardType } from '../../store/atoms/sessionKanban';
@@ -85,6 +86,7 @@ export function SessionTranscriptPeek({
       offset(4),
       flip({ padding: 8 }),
       shift({ padding: 8 }),
+      windowControlsClearance(),
     ],
     whileElementsMounted: autoUpdate,
   });

@@ -10,16 +10,15 @@
  * Security architecture:
  * - All authentication flows go through the collabv3 Cloudflare Worker
  * - The desktop app NEVER has access to the Stytch secret key
- * - OAuth flow: opens browser -> collabv3/auth/login/google -> Stytch -> collabv3/auth/callback -> nimbalyst:// deep link
- * - Magic links: collabv3 sends email (has secret key), callback to collabv3, then deep link to app
- * - Session tokens received via deep link are stored securely using Electron's safeStorage
+ * - OAuth flow: opens browser -> collabv3/auth/login/google -> Stytch -> collabv3/auth/callback -> per-instance loopback
+ * - Magic links: collabv3 sends email (has secret key), callback to collabv3, then per-instance loopback
+ * - Session tokens received via a nonce-protected loopback callback are stored securely using Electron's safeStorage
  * - JWT is used for sync server authentication, includes org context for B2B
  *
- * Deep link format: nimbalyst://auth/callback?session_token=...&session_jwt=...&user_id=...&email=...&org_id=...
+ * Callback format: http://127.0.0.1:<port>/auth/callback?state=...&session_token=...&user_id=...&org_id=...
  */
 
-import { safeStorage, shell, net } from 'electron';
-import { app } from 'electron';
+import { app, BrowserWindow, safeStorage, shell, net } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../utils/logger';
@@ -28,6 +27,25 @@ import { getSessionSyncConfig, setSessionSyncConfig } from '../utils/store';
 import { AnalyticsService } from './analytics/AnalyticsService';
 import { reconcilePersonalUserId } from './auth/personalUserIdReconcile';
 import { describeTransportError, isTransportError, type PersonalRefreshFailureReason } from './auth/personalJwtFailure';
+import {
+  AUTH_FLOW_TTL_MS,
+  PendingAuthFlowLedger,
+  type AuthFlowOptions,
+  type AuthMethod,
+} from './auth/PendingAuthFlowLedger';
+import {
+  startAuthCallbackLoopback,
+  type AuthCallbackLoopbackController,
+  type AuthCallbackOutcome,
+} from './auth/AuthCallbackLoopback';
+import {
+  routeAuthCallbackUrl,
+  type AuthCallbackEffect,
+  type AuthCallbackRouteResult,
+  type IntentAwareAuthCallbackParams,
+} from './auth/AuthCallbackRouting';
+
+export type { AuthFlowOptions, AuthIntent } from './auth/PendingAuthFlowLedger';
 
 // Stytch types
 interface StytchUser {
@@ -158,6 +176,10 @@ let authState: StytchAuthState = {
 // Multi-account state -- all accounts keyed by personalOrgId.
 const accounts = new Map<string, StoredStytchCredentials>();
 let syncAccountId: string | null = null;
+
+const pendingAuthFlows = new PendingAuthFlowLedger();
+const authCallbackListeners = new Map<string, AuthCallbackLoopbackController>();
+let authCallbackSuccessHandler: (() => void | Promise<void>) | null = null;
 
 let stytchConfig: StytchConfig | null = null;
 
@@ -543,18 +565,42 @@ export function initializeStytchAuth(config: StytchConfig): void {
 }
 
 /**
- * Handle auth callback from deep link (nimbalyst://auth/callback?...)
- * Called when user completes auth flow and is redirected back to the app.
+ * A callback that refreshes an account we already store has to be the same
+ * Stytch member. Stytch B2B issues a different member id per org, so an account
+ * is identified by (personal org, personal member); the same org with a
+ * different member id is another person's session and must never overwrite the
+ * stored credentials. Legacy rows with no bound member id are backfilled by the
+ * callback instead of rejected.
  */
-export async function handleAuthCallback(params: {
-  sessionToken: string;
-  sessionJwt?: string;
-  userId?: string;
-  email?: string;
-  expiresAt?: string;
-  orgId?: string;
-}): Promise<void> {
-  const { sessionToken, sessionJwt, userId, email, expiresAt, orgId } = params;
+function assertCallbackMemberMatchesStoredAccount(
+  personalOrgId: string,
+  incomingUserId: string | undefined,
+): void {
+  const stored = accounts.get(personalOrgId);
+  if (!stored || !stored.personalUserId) return;
+  if (incomingUserId === stored.personalUserId) return;
+  logger.main.error('[StytchAuthService] Rejected auth callback for a different member of a stored account:', {
+    personalOrgId,
+    storedPersonalUserId: stored.personalUserId,
+    incomingUserId: incomingUserId ?? null,
+  });
+  throw new Error('Auth callback member does not match the stored account');
+}
+
+/** Apply a validated callback after its single-use flow nonce has been consumed. */
+export async function handleAuthCallback(
+  params: IntentAwareAuthCallbackParams,
+): Promise<AuthCallbackEffect> {
+  const {
+    intent,
+    targetPersonalOrgId,
+    sessionToken,
+    sessionJwt,
+    userId,
+    email,
+    expiresAt,
+    orgId,
+  } = params;
 
   // Calculate expiry time
   let expiresAtMs = Date.now() + (7 * 24 * 60 * 60 * 1000); // Default: 1 week
@@ -574,77 +620,100 @@ export async function handleAuthCallback(params: {
 
   // Determine the personalOrgId for this callback.
   // On initial auth, orgId IS the personal org. On re-auth, preserve existing value.
-  const incomingPersonalOrgId = orgId || null;
-
-  // Only treat this as an additional account if the sync account is still valid.
-  // Otherwise the new login replaces the expired sync account.
-  const syncAccountIsActive = syncAccountId !== null && authState.isAuthenticated
-    && accounts.has(syncAccountId)
-    && (accounts.get(syncAccountId)!.expiresAt > Date.now());
-  const isAdditionalAccount = syncAccountIsActive && incomingPersonalOrgId !== null
-    && incomingPersonalOrgId !== syncAccountId;
+  const incomingPersonalOrgId = orgId;
+  const existingIncomingAccount = accounts.get(incomingPersonalOrgId);
 
   // Build credentials to persist
   const credsToSave: StoredStytchCredentials = {
     sessionToken,
     sessionJwt: validatedJwt || '',
-    userId: userId || '',
-    email: email || '',
+    userId: userId || existingIncomingAccount?.userId || '',
+    email: email || existingIncomingAccount?.email || '',
     expiresAt: expiresAtMs,
     orgId,
-    personalOrgId: incomingPersonalOrgId || undefined,
-    personalUserId: userId || undefined,
+    personalOrgId: incomingPersonalOrgId,
+    personalUserId: userId || existingIncomingAccount?.personalUserId,
   };
 
-  if (isAdditionalAccount) {
-    // Additional accounts do not change the singleton personal-sync lane.
-    accounts.set(incomingPersonalOrgId!, credsToSave);
-    saveAllAccounts();
-    logger.main.info('[StytchAuthService] Added account:', email, incomingPersonalOrgId);
-  } else {
-    // Sync account: first sign-in, re-auth, or replacement of an expired account.
-    // When the incoming org differs from the stored sync account,
-    // use the incoming values instead of preserving stale state.
-    const isReplacingSyncAccount = syncAccountId !== null && incomingPersonalOrgId !== syncAccountId;
-    if (isReplacingSyncAccount) {
-      logger.main.info('[StytchAuthService] Replacing expired sync account:', syncAccountId, '->', incomingPersonalOrgId);
-    }
-    const personalOrgId = isReplacingSyncAccount ? incomingPersonalOrgId : (authState.personalOrgId || incomingPersonalOrgId);
-    const personalUserId = isReplacingSyncAccount ? (userId || null) : (authState.personalUserId || userId || null);
-
-    // Update singleton auth state
+  const updateSyncAuthState = (): void => {
     updateAuthState({
       isAuthenticated: true,
-      user: userId ? {
-        user_id: userId,
-        emails: email ? [{ email_id: '', email, verified: true }] : [],
+      user: credsToSave.userId ? {
+        user_id: credsToSave.userId,
+        emails: credsToSave.email
+          ? [{ email_id: '', email: credsToSave.email, verified: true }]
+          : [],
         created_at: new Date().toISOString(),
         status: 'active',
       } : null,
       session: null,
-      sessionToken,
+      sessionToken: credsToSave.sessionToken,
       sessionJwt: validatedJwt,
-      orgId: orgId || null,
-      personalOrgId,
-      personalUserId,
+      orgId: credsToSave.orgId || null,
+      personalOrgId: credsToSave.personalOrgId || null,
+      personalUserId: credsToSave.personalUserId || null,
       personalSessionJwt: validatedJwt,
     });
+  };
 
-    // Update credentials with resolved personalOrgId/userId
-    credsToSave.personalOrgId = personalOrgId || undefined;
-    credsToSave.personalUserId = personalUserId || undefined;
+  /**
+   * Whether this callback changed the identity personal sync runs as. Only then
+   * may the app tear down and rebuild sync: a secondary account add leaves the
+   * sync account alone and must not interrupt a healthy session.
+   */
+  let affectsSyncIdentity: boolean;
 
-    // Save legacy file
-    saveStytchCredentials(credsToSave);
-
-    // Update multi-account store
-    if (personalOrgId) {
-      accounts.set(personalOrgId, credsToSave);
-      if (!syncAccountId || isReplacingSyncAccount) {
-        syncAccountId = personalOrgId;
-      }
-      saveAllAccounts();
+  if (intent === 'sign-in') {
+    if (accounts.size > 0) {
+      throw new Error('Sign-in intent is only valid when no accounts are stored');
     }
+    syncAccountId = incomingPersonalOrgId;
+    accounts.set(incomingPersonalOrgId, credsToSave);
+    updateSyncAuthState();
+    saveStytchCredentials(credsToSave);
+    saveAllAccounts();
+    affectsSyncIdentity = true;
+    logger.main.info('[StytchAuthService] Signed in sync account:', email, incomingPersonalOrgId);
+  } else if (intent === 'add-account') {
+    assertCallbackMemberMatchesStoredAccount(incomingPersonalOrgId, userId);
+    affectsSyncIdentity = incomingPersonalOrgId === syncAccountId;
+    accounts.set(incomingPersonalOrgId, credsToSave);
+    saveAllAccounts();
+    if (incomingPersonalOrgId === syncAccountId) {
+      // Signing back in as the sync account through an add-account path still
+      // has to refresh the singleton state, or the app keeps reading the stale
+      // expired session. The slot itself is never repointed: this branch only
+      // runs when the incoming account already *is* the sync account.
+      updateSyncAuthState();
+      saveStytchCredentials(credsToSave);
+    } else {
+      // The singleton auth state is intentionally untouched, but account-list
+      // consumers still need a change notification.
+      notifyAuthStateChange(true);
+    }
+    logger.main.info('[StytchAuthService] Added or refreshed account:', email, incomingPersonalOrgId);
+  } else {
+    if (!targetPersonalOrgId) {
+      throw new Error('Reauth callback requires targetPersonalOrgId');
+    }
+    if (incomingPersonalOrgId !== targetPersonalOrgId) {
+      throw new Error('Reauth callback account does not match its target');
+    }
+    if (!accounts.has(targetPersonalOrgId)) {
+      throw new Error('Reauth callback target is not a stored account');
+    }
+    assertCallbackMemberMatchesStoredAccount(targetPersonalOrgId, userId);
+
+    affectsSyncIdentity = targetPersonalOrgId === syncAccountId;
+    accounts.set(targetPersonalOrgId, credsToSave);
+    saveAllAccounts();
+    if (targetPersonalOrgId === syncAccountId) {
+      updateSyncAuthState();
+      saveStytchCredentials(credsToSave);
+    } else {
+      notifyAuthStateChange(true);
+    }
+    logger.main.info('[StytchAuthService] Reauthenticated account:', email, targetPersonalOrgId);
   }
 
   // Bootstrap sync config if it doesn't exist yet.
@@ -663,10 +732,146 @@ export async function handleAuthCallback(params: {
   AnalyticsService.getInstance().sendEvent('sync_auth_callback_completed');
 
   logger.main.info('[StytchAuthService] Auth callback processed:', {
+    intent,
     userId,
     email,
+    affectsSyncIdentity,
     expiresAt: new Date(expiresAtMs).toISOString(),
   });
+
+  return { affectsSyncIdentity };
+}
+
+export function setAuthCallbackSuccessHandler(
+  handler: (() => void | Promise<void>) | null,
+): void {
+  authCallbackSuccessHandler = handler;
+}
+
+function focusAppAfterAuth(): void {
+  const target = BrowserWindow.getFocusedWindow()
+    ?? BrowserWindow.getAllWindows().find((window) => !window.isDestroyed());
+  if (target) {
+    if (target.isMinimized()) target.restore();
+    target.show();
+    target.focus();
+  }
+  app.focus({ steal: true });
+}
+
+export async function handleAuthCallbackUrl(url: string): Promise<AuthCallbackOutcome> {
+  let result: AuthCallbackRouteResult;
+  try {
+    result = await routeAuthCallbackUrl(url, pendingAuthFlows, handleAuthCallback);
+  } catch (error) {
+    logger.main.error('[StytchAuthService] Auth callback failed after nonce validation:', error);
+    return { success: false, affectsSyncIdentity: false };
+  }
+  if (!result.success) {
+    logger.main.error('[StytchAuthService] Rejected auth callback:', {
+      reason: result.reason,
+      details: result.details,
+    });
+    return { success: false, affectsSyncIdentity: false };
+  }
+
+  logger.main.info('[StytchAuthService] Auth callback handled successfully');
+  return { success: true, affectsSyncIdentity: result.affectsSyncIdentity };
+}
+
+interface StartedAuthFlow {
+  nonce: string;
+  callbackBaseUrl: string;
+  callbackUrl: string;
+}
+
+function validateAuthFlowOptions(options: AuthFlowOptions): void {
+  if (options.intent === 'reauth') {
+    if (!options.targetPersonalOrgId) {
+      throw new Error('Reauth requires targetPersonalOrgId');
+    }
+    if (!accounts.has(options.targetPersonalOrgId)) {
+      throw new Error('Reauth target is not a stored account');
+    }
+  } else if (options.targetPersonalOrgId) {
+    throw new Error('targetPersonalOrgId is only valid for reauth');
+  }
+  if (options.intent === 'sign-in' && accounts.size > 0) {
+    throw new Error('Sign-in is only valid when no accounts are stored');
+  }
+  if (options.intent === 'add-account' && accounts.size === 0) {
+    throw new Error('Add-account requires an existing account');
+  }
+}
+
+async function startPendingAuthFlow(
+  method: AuthMethod,
+  options: AuthFlowOptions,
+): Promise<StartedAuthFlow> {
+  validateAuthFlowOptions(options);
+
+  if (method === 'magicLink') {
+    const reusable = pendingAuthFlows.find(method, options);
+    const listener = reusable ? authCallbackListeners.get(reusable.nonce) : undefined;
+    if (reusable && listener) {
+      pendingAuthFlows.renew(reusable.nonce);
+      listener.renew();
+      return {
+        nonce: reusable.nonce,
+        callbackBaseUrl: listener.callbackBaseUrl,
+        callbackUrl: listener.callbackUrl,
+      };
+    }
+    if (reusable) pendingAuthFlows.delete(reusable.nonce);
+  }
+
+  const nonce = pendingAuthFlows.createNonce();
+  const listener = await startAuthCallbackLoopback({
+    state: nonce,
+    ttlMs: AUTH_FLOW_TTL_MS,
+    onCallback: handleAuthCallbackUrl,
+    onSuccess: (outcome) => {
+      focusAppAfterAuth();
+      // The success handler rebuilds sync from the current config. Running it
+      // for a secondary account add would tear down a healthy personal sync
+      // session that this callback did not touch.
+      if (authCallbackSuccessHandler && outcome.affectsSyncIdentity) {
+        void Promise.resolve().then(() => authCallbackSuccessHandler?.()).catch((error) => {
+          logger.main.error('[StytchAuthService] Auth callback success handler failed:', error);
+        });
+      }
+    },
+    onClose: () => {
+      authCallbackListeners.delete(nonce);
+      pendingAuthFlows.delete(nonce);
+    },
+  });
+
+  pendingAuthFlows.register(nonce, {
+    ...options,
+    method,
+    port: listener.port,
+  });
+  authCallbackListeners.set(nonce, listener);
+  return {
+    nonce,
+    callbackBaseUrl: listener.callbackBaseUrl,
+    callbackUrl: listener.callbackUrl,
+  };
+}
+
+async function cancelPendingAuthFlow(nonce: string): Promise<void> {
+  pendingAuthFlows.delete(nonce);
+  const listener = authCallbackListeners.get(nonce);
+  authCallbackListeners.delete(nonce);
+  await listener?.close();
+}
+
+async function closeAllPendingAuthFlows(): Promise<void> {
+  const listeners = [...authCallbackListeners.values()];
+  authCallbackListeners.clear();
+  pendingAuthFlows.clear();
+  await Promise.all(listeners.map((listener) => listener.close()));
 }
 
 /**
@@ -1252,34 +1457,58 @@ export function updateSessionToken(newSessionToken: string): void {
 }
 
 /**
+ * Persist an exchanged session token against the account that owns it.
+ *
+ * Stytch's `sessions/exchange` revokes the token it consumes, so the token
+ * `/switch` hands back is that account's only live one. Routing by owner keeps
+ * the two rules from fighting: a secondary account's exchange must never
+ * overwrite the sync account's singleton token, but it must still land in
+ * `stytch-accounts.enc` -- dropping it entirely left the account holding a
+ * revoked token and 401ing on every later call (NIM-2466).
+ */
+export function updateSessionTokenForAccount(personalOrgId: string, newSessionToken: string): void {
+  if (!personalOrgId || personalOrgId === syncAccountId) {
+    updateSessionToken(newSessionToken);
+    return;
+  }
+  if (!accounts.has(personalOrgId)) {
+    logger.main.warn('[StytchAuthService] Cannot persist exchanged session token: unknown account', {
+      personalOrgId,
+    });
+    return;
+  }
+  updateAccountCredentials(personalOrgId, { sessionToken: newSessionToken });
+}
+
+/**
  * Start Google OAuth sign-in flow.
  * Opens the collabv3 server's Google OAuth URL in the browser.
- * The server handles the callback and redirects to nimbalyst://auth/callback
+ * The server handles the callback and redirects to this instance's loopback listener.
  */
-export async function signInWithGoogle(serverUrl?: string): Promise<{ success: boolean; error?: string }> {
+export async function signInWithGoogle(
+  serverUrl?: string,
+  options: AuthFlowOptions = { intent: 'sign-in' },
+): Promise<{ success: boolean; error?: string }> {
   if (!stytchConfig) {
     return { success: false, error: 'Stytch not initialized' };
   }
 
+  let flow: StartedAuthFlow | null = null;
   try {
-    // Use the collabv3 server to handle OAuth
+    flow = await startPendingAuthFlow('google', options);
     const syncServerUrl = serverUrl || 'https://collabv3.nimbalyst.workers.dev';
-    const oauthUrl = `${syncServerUrl}/auth/login/google`;
+    const oauthUrl = `${syncServerUrl.replace(/\/$/, '')}/auth/login/google?client_redirect=${encodeURIComponent(flow.callbackBaseUrl)}&state=${encodeURIComponent(flow.nonce)}`;
 
-    // Open in default browser
     await shell.openExternal(oauthUrl);
 
-    logger.main.info('[StytchAuthService] Opened Google OAuth flow via server:', oauthUrl);
-
-    // The flow is:
-    // 1. Browser opens collabv3/auth/login/google
-    // 2. Server redirects to Stytch OAuth
-    // 3. User authenticates with Google
-    // 4. Stytch redirects to collabv3/auth/callback
-    // 5. Server validates token and redirects to nimbalyst://auth/callback?session_token=...
-    // 6. App receives deep link and calls handleAuthCallback()
+    logger.main.info('[StytchAuthService] Opened Google OAuth flow via server:', {
+      server: syncServerUrl,
+      intent: options.intent,
+      callbackPort: new URL(flow.callbackBaseUrl).port,
+    });
     return { success: true };
   } catch (error) {
+    if (flow) await cancelPendingAuthFlow(flow.nonce);
     logger.main.error('[StytchAuthService] Google OAuth error:', error);
     return { success: false, error: String(error) };
   }
@@ -1288,67 +1517,44 @@ export async function signInWithGoogle(serverUrl?: string): Promise<{ success: b
 /**
  * Send a magic link to the user's email for passwordless authentication.
  * This calls our collabv3 server which has the secret key to send emails.
- * The magic link redirects to collabv3/auth/callback which then redirects to nimbalyst://auth/callback
+ * The magic link redirects through collabv3 to this instance's loopback listener.
  */
 export async function sendMagicLink(
   email: string,
-  serverUrl?: string
+  serverUrl?: string,
+  options: AuthFlowOptions = { intent: 'sign-in' },
 ): Promise<{ success: boolean; error?: string }> {
   if (!stytchConfig) {
     return { success: false, error: 'Stytch not initialized' };
   }
 
+  let flow: StartedAuthFlow | null = null;
   try {
-    // Get the sync server URL from settings or use default
+    flow = await startPendingAuthFlow('magicLink', options);
     const syncServerUrl = serverUrl || 'https://collabv3.nimbalyst.workers.dev';
-
-    // The magic link callback URL is the server's auth callback (not local)
-    const callbackUrl = `${syncServerUrl}/auth/callback`;
-
-    // Call our backend server which has the Stytch secret key
-    const response = await new Promise<{ success?: boolean; error?: string }>((resolve, reject) => {
-      const request = net.request({
-        method: 'POST',
-        url: `${syncServerUrl}/api/auth/magic-link`,
-      });
-
-      request.setHeader('Content-Type', 'application/json');
-
-      let responseData = '';
-
-      request.on('response', (res) => {
-        res.on('data', (chunk) => {
-          responseData += chunk.toString();
-        });
-
-        res.on('end', () => {
-          try {
-            const data = JSON.parse(responseData);
-            resolve(data);
-          } catch (e) {
-            reject(new Error(`Failed to parse response: ${responseData}`));
-          }
-        });
-      });
-
-      request.on('error', (error) => {
-        reject(error);
-      });
-
-      request.write(JSON.stringify({
+    const httpResponse = await net.fetch(`${syncServerUrl.replace(/\/$/, '')}/api/auth/magic-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         email,
-        redirect_url: callbackUrl,
-      }));
-      request.end();
+        redirect_url: flow.callbackUrl,
+      }),
     });
+    const response = await httpResponse.json() as { success?: boolean; error?: string };
 
-    if (response.error) {
+    if (!httpResponse.ok || response.error) {
+      await cancelPendingAuthFlow(flow.nonce);
       return { success: false, error: response.error };
     }
 
-    logger.main.info('[StytchAuthService] Magic link sent to:', email);
+    logger.main.info('[StytchAuthService] Magic link sent:', {
+      email,
+      intent: options.intent,
+      callbackPort: new URL(flow.callbackBaseUrl).port,
+    });
     return { success: true };
   } catch (error) {
+    if (flow) await cancelPendingAuthFlow(flow.nonce);
     logger.main.error('[StytchAuthService] Magic link error:', error);
     return { success: false, error: String(error) };
   }
@@ -1358,6 +1564,7 @@ export async function sendMagicLink(
  * Sign out the current user.
  */
 export async function signOut(): Promise<void> {
+  await closeAllPendingAuthFlows();
   // Clear local state
   clearStytchCredentials();
   accounts.clear();
@@ -1431,16 +1638,6 @@ export async function removeAccount(targetOrgId: string): Promise<void> {
 
   saveAllAccounts();
   logger.main.info('[StytchAuthService] Removed account:', targetOrgId);
-}
-
-/**
- * Initiate an "Add Account" OAuth flow.
- * Uses the same Google OAuth mechanism as sign-in, but the callback
- * will detect a new personalOrgId and store it as an additional account.
- */
-export async function addAccount(serverUrl?: string): Promise<{ success: boolean; error?: string }> {
-  // Same as signInWithGoogle -- the differentiation happens in handleAuthCallback
-  return signInWithGoogle(serverUrl);
 }
 
 /**
@@ -1870,8 +2067,8 @@ export async function validateAndRefreshSession(): Promise<boolean> {
  * Shutdown the auth service.
  * Call this when the app is closing.
  */
-export function shutdownStytchAuth(): void {
-  // Nothing to clean up - device tokens removed, auth state managed by Stytch
+export async function shutdownStytchAuth(): Promise<void> {
+  await closeAllPendingAuthFlows();
 }
 
 /**

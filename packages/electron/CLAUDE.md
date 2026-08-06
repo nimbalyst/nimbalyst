@@ -7,7 +7,8 @@ The Nimbalyst desktop app, built with Electron.
 - **Dev server**: `npm run dev` (user runs this — don't do it yourself)
 - **Dev with restart loop**: `npm run dev:loop` (enables restart button / `/restart` command)
 - **Build for Mac**: `npm run build:mac:local` or `npm run build:mac:notarized`
-- **Deep links in dev (macOS)**: `npm run dev:url-handler` (from the repo root) points `nimbalyst://` at this checkout. The dev app deliberately does *not* claim the scheme itself — in dev it runs inside `node_modules/electron/dist/Electron.app`, whose `com.github.Electron` bundle id is shared by every Electron copy on the machine, so macOS would launch an arbitrary one (blank Electron window) instead of Nimbalyst. See `scripts/install-dev-url-handler.sh` and `src/main/utils/protocolRegistration.ts`.
+- **Auth callbacks in dev**: no URL-handler setup is required, including for `npm run dev:user2`. Every sign-in flow uses a nonce-protected one-shot listener on `127.0.0.1` owned by the instance that started it.
+- **Other deep links in dev (macOS)**: `npm run dev:url-handler` (from the repo root) points non-auth `nimbalyst://` links at this checkout. The applet in `scripts/install-dev-url-handler.sh` is not part of authentication. The dev app deliberately does *not* claim the scheme itself because all development copies share Electron's `com.github.Electron` bundle id. See `src/main/utils/protocolRegistration.ts`.
 
 ### Testing
 

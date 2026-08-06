@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, type WebContents } from 'electron';
 import { safeHandle } from '../utils/ipcRegistry';
 import { MCPConfigService, TestProgressCallback } from '../services/MCPConfigService';
 import { MCPConfig, MCPServerConfig } from '@nimbalyst/runtime/types/MCPServerConfig';
@@ -11,8 +11,23 @@ import {
   triggerMcpRemoteOAuth,
 } from '../services/MCPRemoteOAuth';
 import { getToolBudgetSnapshot } from '../mcp/toolBudgetService';
+import { hasEnterpriseManagedMcpConfig } from '@nimbalyst/runtime/ai/server/providers/claudeCode/enterpriseMcpConfig';
+import { getWindowIdForWindow, resolveActiveWorkspacePathForWindowId } from '../window/windowState';
 
 const mcpConfigService = new MCPConfigService();
+
+/**
+ * The project a Settings write should project its disable state into (NIM-2372).
+ *
+ * `disabledMcpServers` is keyed by the session's cwd, so the toggle has to name a
+ * project even at user scope — the one the user is looking at. Other projects
+ * pick the change up when a Claude session next starts there.
+ */
+function senderWorkspacePath(event: { sender: WebContents }): string | undefined {
+  return resolveActiveWorkspacePathForWindowId(
+    getWindowIdForWindow(BrowserWindow.fromWebContents(event.sender))
+  );
+}
 
 export function registerMCPConfigHandlers() {
   safeHandle('mcp-config:read-user', async () => {
@@ -24,9 +39,10 @@ export function registerMCPConfigHandlers() {
     }
   });
 
-  safeHandle('mcp-config:write-user', async (_event, config: MCPConfig) => {
+  safeHandle('mcp-config:write-user', async (event, config: MCPConfig) => {
     try {
       await mcpConfigService.writeUserMCPConfig(config);
+      await mcpConfigService.projectClaudeCodeDisabledServers(senderWorkspacePath(event));
       return { success: true };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -55,6 +71,7 @@ export function registerMCPConfigHandlers() {
 
     try {
       await mcpConfigService.writeWorkspaceMCPConfig(workspacePath, config);
+      await mcpConfigService.projectClaudeCodeDisabledServers(workspacePath);
       return { success: true };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -92,6 +109,13 @@ export function registerMCPConfigHandlers() {
   });
 
   safeHandle('mcp-config:get-user-path', () => mcpConfigService.getUserConfigPath());
+
+  // NIM-2372: an enterprise `managed-mcp.json` makes the `claude` binary reject
+  // every MCP server a host application passes, so Claude sessions run without
+  // Nimbalyst's tools. The renderer shows a banner saying so.
+  safeHandle('mcp-config:enterprise-lockdown', () => ({
+    active: hasEnterpriseManagedMcpConfig(),
+  }));
 
   safeHandle('mcp-config:get-workspace-path', (_event, workspacePath: string) => {
     if (!workspacePath) {

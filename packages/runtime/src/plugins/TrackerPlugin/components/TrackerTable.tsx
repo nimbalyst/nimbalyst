@@ -28,6 +28,7 @@ import {
   getTypeColor as getTypeColorFromRegistry,
   getTypeIcon as getTypeIconFromRegistry,
   formatRelativeDate,
+  formatTrackerDateCell,
   getCellValue,
   getEffectiveUpdatedDate,
   type TrackerColumnDef,
@@ -38,10 +39,18 @@ import { TrackerUnreadDot } from '../../../readReceipts/TrackerUnreadDot';
 import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { useTrackerRows } from './useTrackerRows';
 import { TrackerFavoriteStar } from './TrackerFavoriteStar';
-import { groupTrackerRecords } from './trackerRowData';
+import { groupTrackerRecords, searchMatchesRecord } from './trackerRowData';
 
 export type SortColumn = 'title' | 'type' | 'status' | 'priority' | 'progress' | 'module' | 'lastIndexed' | (string & {});
 export type SortDirection = 'asc' | 'desc';
+
+/**
+ * Keep schema field names scoped so common names such as `progress` cannot
+ * collide with global utility or extension styles.
+ */
+export function getTrackerTableCellClassName(columnId: string): string {
+  return `tracker-table-cell tracker-table-cell-${columnId}`;
+}
 
 interface TrackerTableProps {
   filterType?: TrackerItemType | 'all';
@@ -66,6 +75,12 @@ interface TrackerTableProps {
    *  exactly one item is selected. Callers omit this when the workspace
    *  has no team configured. */
   onCopyDeepLink?: (itemId: string) => void;
+  /**
+   * Open a row's tracker item as a document (the focused document view). When
+   * the host offers it, double-clicking a row goes there instead of opening the
+   * backing file in the editor, and the row context menu gains the action.
+   */
+  onOpenDocument?: (itemId: string) => void;
   /** External search query from parent toolbar (replaces internal search input) */
   searchQuery?: string;
   /** Whether filters owned by the parent are active (for the filtered empty state). */
@@ -293,27 +308,6 @@ function getTypeIcon(type: TrackerItemType): string {
     'feature': 'rocket_launch',
   };
   return icons[type];
-}
-
-function formatDate(date: Date): string {
-  // If date is invalid or epoch (our placeholder for missing dates), show nothing
-  if (!date || date.getTime() === 0 || isNaN(date.getTime())) {
-    return '';
-  }
-
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  const minutes = Math.floor(diff / (1000 * 60));
-  const hours = Math.floor(diff / (1000 * 60 * 60));
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-  if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days === 1) return 'Yesterday';
-  if (days < 7) return `${days}d ago`;
-  if (days < 30) return `${Math.floor(days / 7)}w ago`;
-  return date.toLocaleDateString();
 }
 
 /**
@@ -668,13 +662,14 @@ export function renderCell(
             </div>
           );
 
-        case 'date':
-          if (value instanceof Date) return <span className="text-[var(--nim-text-faint)] text-xs">{formatRelativeDate(value)}</span>;
-          if (typeof value === 'string') {
-            const d = new Date(value);
-            return <span className="text-[var(--nim-text-faint)] text-xs">{isNaN(d.getTime()) ? value : formatRelativeDate(d)}</span>;
-          }
-          return null;
+        case 'date': {
+          // formatTrackerDateCell, not `new Date`: a calendar-day string is
+          // local midnight, not UTC midnight, and reads by day rather than by
+          // elapsed time (nimbalyst#1135, #1156).
+          const { display, title } = formatTrackerDateCell(value);
+          if (!display) return null;
+          return <span className="text-[var(--nim-text-faint)] text-xs" title={title || undefined}>{display}</span>;
+        }
 
         case 'badge': {
           const strVal = String(value);
@@ -758,6 +753,7 @@ export function TrackerTable({
   onArchiveItems,
   onDeleteItems,
   onCopyDeepLink,
+  onOpenDocument,
   searchQuery: externalSearchQuery,
   hasExternalFilters = false,
   onClearFilters,
@@ -905,18 +901,8 @@ export function TrackerTable({
 
   const filteredItems = items
     .filter(item => {
-      // Apply search filter
-      if (searchTerm) {
-        const searchLower = searchTerm.toLowerCase();
-        const matchesSearch =
-          item.issueKey?.toLowerCase().includes(searchLower) ||
-          String(item.issueNumber ?? '').includes(searchLower) ||
-          getRecordTitle(item).toLowerCase().includes(searchLower) ||
-          (item.system.documentPath ?? '').toLowerCase().includes(searchLower) ||
-          (String(getFieldByRole(item, 'assignee') ?? '')).toLowerCase().includes(searchLower) ||
-          (Array.isArray(getFieldByRole(item, 'tags')) && (getFieldByRole(item, 'tags') as string[]).some((tag: string) => tag.toLowerCase().includes(searchLower)));
-        if (!matchesSearch) return false;
-      }
+      // Apply search filter -- the same predicate the tracker's other views use.
+      if (!searchMatchesRecord(item, searchTerm)) return false;
 
       // Apply type filter
       if (activeTypeFilter !== 'all' && item.primaryType !== activeTypeFilter) {
@@ -997,6 +983,7 @@ export function TrackerTable({
     contextRefs,
     contextFloatingStyles,
     handleContextMenu,
+    openContextMenuForIds,
     closeContextMenu,
     handleBulkStatusUpdate,
     handleBulkPriorityUpdate,
@@ -1359,7 +1346,7 @@ export function TrackerTable({
                   </div>
                 )}
                 <div
-                  className={`tracker-table-row flex items-center gap-3 px-3 py-[7px] border-b border-[var(--nim-border)] cursor-pointer transition-colors duration-100 hover:bg-[var(--nim-bg-secondary)] select-none ${
+                  className={`tracker-table-row group flex items-center gap-3 px-3 py-[7px] border-b border-[var(--nim-border)] cursor-pointer transition-colors duration-100 hover:bg-[var(--nim-bg-secondary)] select-none ${
                     selectedIds.has(item.id) ? 'bg-[var(--nim-bg-secondary)]' : ''
                   } ${
                     selectedItemId && item.id === selectedItemId ? 'bg-[var(--nim-bg-secondary)]' : ''
@@ -1370,7 +1357,16 @@ export function TrackerTable({
                   data-item-id={item.id}
                   data-item-title={item.fields.title as string}
                   onClick={(e) => handleRowClick(item, index, e)}
-                  onDoubleClick={() => { if (item.system.documentPath) openItemInEditor(item); }}
+                  onDoubleClick={() => {
+                    // Double-click is the primary "open the document" gesture
+                    // where the host offers one; elsewhere it keeps opening the
+                    // backing file in the editor.
+                    if (onOpenDocument) {
+                      onOpenDocument(item.id);
+                      return;
+                    }
+                    if (item.system.documentPath) openItemInEditor(item);
+                  }}
                   onContextMenu={(e) => handleContextMenu(e, item, index)}
                 >
                 {/* Unread dot (nothing when read) */}
@@ -1416,16 +1412,42 @@ export function TrackerTable({
                 </div>
 
                 {/* Right-side metadata: render visible columns (except type/title which are already shown) */}
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="tracker-table-row-meta flex items-center gap-2 shrink-0">
                   {visibleColumnDefs.filter(col => col.id !== 'type' && col.id !== 'title').map(col => {
                     const value = getCellValue(item, col.id);
                     return (
-                      <div key={col.id} className={`tracker-table-cell ${col.id}`}>
+                      <div
+                        key={col.id}
+                        className={getTrackerTableCellClassName(col.id)}
+                        data-column-id={col.id}
+                      >
                         {renderCell(col, item, value, editingCell, isItemEditable, setEditingCell, editingTitle, setEditingTitle, titleInputRef, handleFieldUpdate)}
                       </div>
                     );
                   })}
                 </div>
+                <button
+                  type="button"
+                  aria-label={`Actions for ${item.issueKey ?? title}`}
+                  title="Item actions"
+                  data-testid="tracker-row-more-actions"
+                  className="tracker-row-more-actions shrink-0 inline-flex h-6 w-6 items-center justify-center rounded border-none bg-transparent p-0 text-[var(--nim-text-faint)] opacity-0 transition-opacity hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)] focus-visible:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--nim-border-focus)] group-hover:opacity-100"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    openContextMenuForIds(
+                      selectedIds.has(item.id) ? Array.from(selectedIds) : [item.id],
+                      { x: rect.right, y: rect.bottom },
+                    );
+                  }}
+                >
+                  <span className="material-symbols-outlined text-[17px] leading-none">more_horiz</span>
+                </button>
                 </div>
               </React.Fragment>
             );
@@ -1444,6 +1466,7 @@ export function TrackerTable({
         onSetStatus={handleBulkStatusUpdate}
         onSetPriority={handleBulkPriorityUpdate}
         onCopyDeepLink={onCopyDeepLink}
+        onOpenDocument={onOpenDocument}
         onArchiveItems={onArchiveItems}
         onDeleteItems={onDeleteItems}
         closeContextMenu={closeContextMenu}

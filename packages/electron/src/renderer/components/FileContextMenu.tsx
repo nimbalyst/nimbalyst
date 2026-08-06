@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { NewFileType, ExtensionFileType } from './NewFileMenu';
 import { CommonFileActions } from './CommonFileActions';
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../hooks/useFloatingMenu';

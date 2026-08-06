@@ -11,6 +11,11 @@ interface ClaudeForWindowsInstallation {
   claudeCodeVersion?: string;
 }
 
+interface StytchAuthFlowOptions {
+  intent: 'sign-in' | 'add-account' | 'reauth';
+  targetPersonalOrgId?: string;
+}
+
 interface HistoryTag {
   id: string;
   filePath: string;
@@ -131,6 +136,12 @@ interface PullRequestListFilters {
   search?: string;
 }
 
+interface TeamManagementWindowTarget {
+  orgId?: string;
+  workspacePath?: string;
+  conversationId?: string;
+}
+
 interface SemanticSearchResult {
   refType: string;
   refId: string;
@@ -145,12 +156,36 @@ interface SemanticSearchResult {
 interface ElectronAPI {
   team: {
     getKeyCustodyStatus: (orgId: string) => Promise<{ success: boolean; mode?: 'server-managed' | 'unmigrated'; error?: string }>;
+    openManagementWindow: (target?: TeamManagementWindowTarget) => Promise<{ success: boolean }>;
+    resolveOrgProjectsLocalState: (orgId: string) => Promise<{
+      success: boolean;
+      projects?: Array<{
+        projectId: string;
+        teamProjectId: string;
+        name: string | null;
+        slug: string | null;
+        gitRemoteHash: string | null;
+        localStatus: 'open' | 'closed' | 'notLocal';
+        workspacePath: string | null;
+      }>;
+      error?: string;
+    }>;
+    openProjectWorkspace: (workspacePath: string) => Promise<{ success: boolean; error?: string }>;
     [method: string]: any;
   };
   organization: {
     list: () => Promise<any>;
     get: (orgId: string) => Promise<any>;
+    rename: (
+      orgId: string,
+      name: string,
+    ) => Promise<{
+      success: boolean;
+      organization?: { orgId: string; name: string };
+      error?: string;
+    }>;
     create: (input: { name: string; workspacePath?: string; sourcePersonalOrgId?: string }) => Promise<any>;
+    findPendingInvitation: (email: string) => Promise<any>;
     acceptInvitation: (orgId: string) => Promise<any>;
     listMembers: (orgId: string) => Promise<any>;
     inviteMember: (orgId: string, email: string) => Promise<any>;
@@ -161,6 +196,19 @@ interface ElectronAPI {
     moveProject: (input: { sourceOrgId: string; projectId: string; destinationOrgId: string; dropMemberEmails?: string[] }) => Promise<any>;
     deleteOrganization: (orgId: string) => Promise<any>;
     getEncryptionStatus: (orgId: string) => Promise<any>;
+  };
+  conversation: {
+    setSubscription: (
+      request: import('../shared/conversationDirectory').ConversationSetSubscriptionRequest,
+    ) => Promise<import('@nimbalyst/collab-protocol').ConversationSubscription>;
+    registerAssets: (request: { orgId: string; conversationId: string }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    unregisterAssets: (request: { conversationId: string }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
   };
   // Global semantic search (nimbalyst-memory). Empty/false when memory is off.
   semanticSearch: {
@@ -275,6 +323,7 @@ interface ElectronAPI {
 
   setDocumentEdited: (edited: boolean) => void;
   setTitle: (title: string) => void;
+  openAccountSettings: () => Promise<{ success: boolean; error?: string }>;
   sendToMainWindow?: (channel: string, data: unknown) => Promise<void>;
   reportUserActivity?: () => void;
 
@@ -525,6 +574,17 @@ interface ElectronAPI {
     getOpenWorkspaces: () => Promise<string[]>;
   };
 
+  tutorial: {
+    getStatus: () => Promise<
+      | { success: true; exists: boolean; workspacePath?: string }
+      | { success: false; exists: false; error: string }
+    >;
+    start: () => Promise<
+      | { success: true; workspacePath: string; reused: boolean }
+      | { success: false; error: string }
+    >;
+  };
+
   // Project Migration (move/rename)
   projectMigration: {
     canMove: (oldPath: string) => Promise<{ canMove: boolean; reason?: string }>;
@@ -567,6 +627,13 @@ interface ElectronAPI {
       itemId: string;
       shared: boolean;
     }) => Promise<{ success: boolean; item?: any; error?: string }>;
+    migrateSharedFrontmatterIds: (payload?: { dryRun?: boolean }) => Promise<{
+      success: boolean;
+      dryRun?: boolean;
+      migrated?: Array<{ oldId: string; newId: string; issueKey?: string; bodySource: string }>;
+      skipped?: Array<{ id: string; reason: string }>;
+      error?: string;
+    }>;
     updateTrackerItemContent: (payload: {
       itemId: string;
       content: any;
@@ -671,8 +738,8 @@ interface ElectronAPI {
       sessionJwt: string | null;
     }>;
     isAuthenticated: () => Promise<boolean>;
-    signInWithGoogle: () => Promise<{ success: boolean; error?: string }>;
-    sendMagicLink: (email: string) => Promise<{ success: boolean; error?: string }>;
+    signInWithGoogle: (options?: StytchAuthFlowOptions) => Promise<{ success: boolean; error?: string }>;
+    sendMagicLink: (email: string, options?: StytchAuthFlowOptions) => Promise<{ success: boolean; error?: string }>;
     signOut: (forceOfflinePurge?: boolean) => Promise<{
       success: boolean;
       requiresOfflinePurgeConfirmation?: boolean;
@@ -701,7 +768,6 @@ interface ElectronAPI {
       sessionStatus: 'active' | 'expired';
     } | null>;
     setSyncAccount: (personalOrgId: string) => Promise<{ success: boolean }>;
-    addAccount: () => Promise<{ success: boolean; error?: string }>;
     removeAccount: (personalOrgId: string, forceOfflinePurge?: boolean) => Promise<{
       success: boolean;
       error?: string;

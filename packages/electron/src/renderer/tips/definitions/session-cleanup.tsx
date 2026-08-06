@@ -7,7 +7,7 @@
  */
 
 import React from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { FEATURE_USAGE_KEYS } from '../../../shared/featureUsage';
 import type { TipDefinition } from '../types';
 

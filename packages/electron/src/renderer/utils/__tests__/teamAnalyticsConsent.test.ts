@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('posthog-js', () => ({ default: { capture: vi.fn() } }));

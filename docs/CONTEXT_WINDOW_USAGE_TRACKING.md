@@ -97,6 +97,8 @@ The CLI path has no runtime `modelUsage` at all (`AssembledUsage` carries no win
 
 **Known limitation on the CLI path.** Nimbalyst points the CLI at its loopback observation proxy via `ANTHROPIC_BASE_URL`. Claude Code treats any custom base URL as an LLM gateway whose 1M support it cannot verify, so it **skips the plan-based 1M auto-upgrade** — a Max user whose direct `claude` session runs at 1M gets 200k through Nimbalyst's CLI provider (measured on CLI 2.1.220, GitHub #989). The explicit `[1m]` form is unaffected, so the fix is to select the **Opus 5 (1M)** or **Fable 5 (1M)** row in the model picker, which sends `opus[1m]` / `fable[1m]`. We deliberately do **not** append `[1m]` automatically: it is metered against usage credits on Pro plans, and silently opting a user into paid capacity is exactly the class of change [CLAUDE.md](../CLAUDE.md) forbids. With the header detection above, the meter reports the real window either way.
 
+**The proxy now declares itself first-party, but that does not move the 1M needle.** The CLI is spawned with `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` whenever the proxy forwards straight to `api.anthropic.com` (see [`proxyPassthroughEnv.ts`](../packages/electron/src/main/services/ai/claudeCliObservation/proxyPassthroughEnv.ts)), which restores the first-party-only behavior the gateway heuristic was withholding. Measured on CLI 2.1.220: it fixes the web-tool side query (the bug that motivated it), and the explicit `opus[1m]` request still carries `context-1m-2025-08-07`. Plain `opus` still does **not**, so the auto-upgrade above stays unavailable and the `[1m]` picker rows remain the answer.
+
 ## Data Flow
 
 ```

@@ -1,12 +1,13 @@
 import { createHash } from 'crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchMock, gitRemoteMock, safeHandleMock, handlers } = vi.hoisted(() => {
+const { fetchMock, gitRemoteMock, safeHandleMock, handlers, workspaceStates } = vi.hoisted(() => {
   const handlers = new Map<string, (...args: any[]) => any>();
   return {
     fetchMock: vi.fn(),
     gitRemoteMock: vi.fn(),
     handlers,
+    workspaceStates: new Map<string, any>(),
     safeHandleMock: vi.fn((channel: string, handler: (...args: any[]) => any) => {
       handlers.set(channel, handler);
     }),
@@ -25,6 +26,16 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 vi.mock('../../utils/gitUtils', () => ({ getNormalizedGitRemote: gitRemoteMock }));
+
+vi.mock('../../utils/store', () => ({
+  getWorkspaceState: (workspacePath: string) => workspaceStates.get(workspacePath) ?? {},
+  updateWorkspaceState: (workspacePath: string, updater: (state: any) => void) => {
+    const state = workspaceStates.get(workspacePath) ?? {};
+    updater(state);
+    workspaceStates.set(workspacePath, state);
+    return state;
+  },
+}));
 
 vi.mock('../teamProjectResolver', () => ({
   resolveTeamForRemoteHash: (teams: Array<{ gitRemoteHash: string | null }>, hash: string) =>
@@ -51,6 +62,7 @@ vi.mock('../StytchAuthService', () => ({
   refreshPersonalSessionForAccount: vi.fn(async () => null),
   onAuthStateChange: vi.fn(() => () => {}),
   updateSessionToken: vi.fn(),
+  updateSessionTokenForAccount: vi.fn(),
   getStytchUserId: vi.fn(() => 'user-1'),
   getUserEmail: vi.fn(() => 'user@test.com'),
   getPersonalOrgId: vi.fn(() => 'personal-1'),
@@ -156,6 +168,96 @@ describe('team:find-for-workspace single-flight (RC4)', () => {
     // underlying listTeams /api/teams fetch IS TTL-cached, so it stays at 1.
     expect(gitRemoteMock).toHaveBeenCalledTimes(2);
     expect(apiTeamsFetchCallCount()).toBe(1);
+  });
+});
+
+describe('workspace org resolution without a git remote', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock.mockReset();
+    gitRemoteMock.mockReset();
+    workspaceStates.clear();
+    handlers.clear();
+    invalidateListTeamsCache();
+
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        teams: [
+          { orgId: 'org-1', name: 'Widgets Team', gitRemoteHash: REMOTE_HASH, createdAt: new Date().toISOString(), role: 'admin' },
+          {
+            orgId: 'org-2',
+            name: 'Other Team',
+            gitRemoteHash: OTHER_REMOTE_HASH,
+            teamProjectId: 'tp-primary',
+            projects: [
+              { projectId: 'p-1', teamProjectId: 'tp-primary', gitRemoteHash: OTHER_REMOTE_HASH, slug: null, name: 'Other Team' },
+              { projectId: 'p-2', teamProjectId: 'tp-notes', gitRemoteHash: null, slug: 'notes', name: 'Notes' },
+            ],
+            createdAt: new Date().toISOString(),
+            role: 'admin',
+          },
+          { orgId: 'org-invited', name: 'Not Joined', gitRemoteHash: null, membershipType: 'invited', createdAt: new Date().toISOString(), role: 'member' },
+        ],
+      }),
+    }));
+
+    registerTeamHandlers();
+  });
+
+  it('resolves the org recorded for a workspace that has no git remote', async () => {
+    gitRemoteMock.mockResolvedValue(null);
+    workspaceStates.set('/projects/plain-folder', { localOrgBinding: { orgId: 'org-2' } });
+
+    await expect(findTeamForWorkspace('/projects/plain-folder')).resolves.toEqual(
+      expect.objectContaining({ orgId: 'org-2' }),
+    );
+  });
+
+  it('still reports no org for a remote-less workspace with no recorded binding', async () => {
+    gitRemoteMock.mockResolvedValue(null);
+
+    await expect(findTeamForWorkspace('/projects/unbound')).resolves.toBeNull();
+  });
+
+  it('never resolves a binding to an org the account has not actually joined', async () => {
+    gitRemoteMock.mockResolvedValue(null);
+    workspaceStates.set('/projects/plain-folder', { localOrgBinding: { orgId: 'org-invited' } });
+
+    await expect(findTeamForWorkspace('/projects/plain-folder')).resolves.toBeNull();
+  });
+
+  // A remote-less workspace added to an existing org belongs to the project it
+  // was added as, not to the org's primary project -- routing it to the primary
+  // would put its tracker items in another project's room.
+  it('routes a remote-less workspace to the project it was added as', async () => {
+    gitRemoteMock.mockResolvedValue(null);
+    workspaceStates.set('/projects/notes', {
+      localOrgBinding: { orgId: 'org-2', teamProjectId: 'tp-notes' },
+    });
+
+    await expect(findTeamForWorkspace('/projects/notes')).resolves.toEqual(
+      expect.objectContaining({ orgId: 'org-2', teamProjectId: 'tp-notes', name: 'Notes' }),
+    );
+  });
+
+  it('reports no org when the bound project is gone from the org registry', async () => {
+    gitRemoteMock.mockResolvedValue(null);
+    workspaceStates.set('/projects/deleted', {
+      localOrgBinding: { orgId: 'org-2', teamProjectId: 'tp-removed' },
+    });
+
+    await expect(findTeamForWorkspace('/projects/deleted')).resolves.toBeNull();
+  });
+
+  it('lets a matching git remote win over a stale local binding', async () => {
+    gitRemoteMock.mockResolvedValue(REMOTE);
+    workspaceStates.set('/projects/with-remote', { localOrgBinding: { orgId: 'org-2' } });
+
+    await expect(findTeamForWorkspace('/projects/with-remote')).resolves.toEqual(
+      expect.objectContaining({ orgId: 'org-1' }),
+    );
   });
 });
 

@@ -26,7 +26,13 @@ export interface PendingDocRegistration {
   editorId?: string;
 }
 
-/** The minimal provider surface the queue needs to flush a registration. */
+/**
+ * The minimal provider surface the queue needs to flush a registration.
+ *
+ * The resolved value is deliberately unconstrained: `TeamSync.registerDocument`
+ * resolves an ack flag, but a queue flush is a best-effort catch-up with no
+ * caller waiting on the room, so it only cares that the send didn't throw.
+ */
 export interface DocRegistrationSink {
   registerDocument(
     documentId: string,
@@ -34,7 +40,7 @@ export interface DocRegistrationSink {
     documentType: string,
     parentFolderId: string | null,
     metadata?: { metadataVersion: 2; fileExtension: string; editorId: string },
-  ): Promise<void>;
+  ): Promise<unknown>;
 }
 
 export interface FlushResult {

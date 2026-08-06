@@ -17,7 +17,7 @@ import type { SessionStore } from '@nimbalyst/runtime';
 import { asPersonalMemberId } from '@nimbalyst/runtime';
 import type { DeviceInfo } from '@nimbalyst/runtime/sync';
 import * as syncModule from '@nimbalyst/runtime/sync';
-import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, getPreferredAgentLanguage, store, type SessionSyncConfig } from '../utils/store';
+import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, getPreferredAgentLanguage, getAttachmentStagingConfig, store, type SessionSyncConfig } from '../utils/store';
 import { logger } from '../utils/logger';
 import { getCredentials } from './CredentialService';
 import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSessionDetailed } from './StytchAuthService';
@@ -35,6 +35,7 @@ import { reconnectAllTrackerSyncs } from './TrackerSyncManager';
 import { BrowserWindow } from 'electron';
 import { timeStartupPhase } from '../utils/startupTiming';
 import { compressImageIfNeeded } from '../mcp/mcpImageCompression';
+import { resolveWorkspaceAttachmentStagingDirectory } from './attachments/attachmentStagingRoot';
 
 // Screenshots taken by a desktop session are only viewable on mobile if their
 // bytes ride along in the synced message -- there is no desktop -> mobile
@@ -1405,8 +1406,9 @@ export async function decryptMobileAttachments(
   }
 
   const { AttachmentService } = await import('./AttachmentService');
-  const userDataPath = app.getPath('userData');
-  const attachmentService = new AttachmentService(workspacePath, userDataPath);
+  const stagingConfig = getAttachmentStagingConfig();
+  const stagingDirectory = resolveWorkspaceAttachmentStagingDirectory(workspacePath);
+  const attachmentService = new AttachmentService(workspacePath, stagingDirectory, stagingConfig.mode);
 
   const results: import('@nimbalyst/runtime').ChatAttachment[] = [];
 

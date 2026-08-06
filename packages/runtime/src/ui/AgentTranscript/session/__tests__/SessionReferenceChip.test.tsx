@@ -34,7 +34,7 @@ describe('SessionReferenceChip', () => {
     // `claude-code` is a custom brand SVG, not a material-symbols ligature.
     expect(icon?.querySelector('svg')).toBeTruthy();
     expect(icon?.textContent).not.toContain('forum');
-    expect(screen.getByText('PR 978 contribution review')).toBeTruthy();
+    screen.getByText('PR 978 contribution review');
   });
 
   it('falls back to the generic forum glyph when the provider is unknown', () => {

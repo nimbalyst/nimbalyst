@@ -1,0 +1,42 @@
+{
+  "id": "com.nimbalyst.project-graph",
+  "name": "Project Graph",
+  "version": "0.1.0",
+  "description": "Whole-project graph spanning strategy, plans, modules, trackers, AI sessions, commits, and files in one navigable surface",
+  "author": "Nimbalyst",
+  "main": "dist/index.js",
+  "styles": "dist/index.css",
+  "apiVersion": "1.0.0",
+  "requiredReleaseChannel": "alpha",
+  "defaultEnabled": false,
+  "marketplace": {
+    "categories": ["developer-tools"],
+    "tags": ["graph", "visualization", "tracker", "ai-sessions", "architecture", "project"],
+    "icon": "hub",
+    "tagline": "Strategy, plans, trackers, sessions, and files in one navigable graph",
+    "longDescription": "Project Graph turns your workspace into a living, navigable map. See objectives connect to modules, features connect to bugs and sessions, and AI sessions connect to the files they edited. Switch between curated views like PM Big Picture, Architecture, Quality, and Delivery — each is a projection over one canonical graph of your project.",
+    "highlights": [
+      "Typed nodes for strategy, plans, modules, features, bugs, AI sessions, commits, and files",
+      "Saved views: PM Big Picture, Architecture, Quality, Delivery, Customer Impact, Recent Execution",
+      "Per-type visibility, colors, and counts in the sidebar",
+      "Selected-node action ring with per-child-type drilldown and quick actions",
+      "Smooth pan/zoom with minimap and rollup legend"
+    ]
+  },
+  "permissions": {
+    "filesystem": true,
+    "catalog": ["nimbalyst-database-read"]
+  },
+  "contributions": {
+    "panels": [
+      {
+        "id": "graph",
+        "title": "Project Graph",
+        "icon": "hub",
+        "placement": "fullscreen",
+        "order": 55,
+        "tooltip": "Open the project graph: strategy, plans, modules, trackers, sessions, and files in one view."
+      }
+    ]
+  }
+}

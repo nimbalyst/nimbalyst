@@ -350,7 +350,13 @@ export function registerTerminalHandlers(): void {
         workspacePath: payload.workspacePath,
         prompt,
         attachments,
-        documentContext,
+        documentContext: {
+          ...(documentContext ?? {}),
+          promptProvenance: {
+            actor: 'human',
+            origin: 'composer',
+          },
+        },
       });
       return { success: true };
     }

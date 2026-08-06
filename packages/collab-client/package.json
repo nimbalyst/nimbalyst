@@ -1,0 +1,43 @@
+{
+  "name": "@nimbalyst/collab-client",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Shared headless and React collaboration client surfaces for Nimbalyst hosts.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./core": {
+      "types": "./src/core/index.ts",
+      "default": "./src/core/index.ts"
+    },
+    "./docs": {
+      "types": "./src/docs/index.ts",
+      "default": "./src/docs/index.ts"
+    },
+    "./docs-ui": {
+      "types": "./src/docs-ui/index.ts",
+      "default": "./src/docs-ui/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@floating-ui/react": "^0.27.19",
+    "@nimbalyst/collab-protocol": "*",
+    "@nimbalyst/runtime": "*",
+    "jotai": "^2.16.1",
+    "jotai-family": "^1.1.0"
+  },
+  "peerDependencies": {
+    "react": "^19.2.7",
+    "yjs": ">=13.5.42"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "react": "^19.2.7",
+    "typescript": "^5.0.0",
+    "yjs": ">=13.5.42"
+  }
+}

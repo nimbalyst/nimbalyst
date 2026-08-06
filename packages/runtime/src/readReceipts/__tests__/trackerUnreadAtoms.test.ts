@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { createStore } from 'jotai';
 import type { TrackerRecord } from '../../core/TrackerRecord';

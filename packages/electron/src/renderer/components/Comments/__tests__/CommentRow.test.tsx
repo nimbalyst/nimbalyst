@@ -3,7 +3,7 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CommentRow } from '../CommentRow';
+import { CommentRow, formatClockTime, type CommentDensity } from '../CommentRow';
 import { buildCommentView } from '../commentViewModel';
 import { createCommentFixtures, createFixtureResolver, FULL_CAPABILITIES } from '../commentFixtures';
 import { resourceRefToUrn } from '../resourceUrn';
@@ -11,6 +11,34 @@ import type { Comment, CommentCapabilities, ResourcePreviewState } from '../comm
 
 vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
+}));
+
+vi.mock('@nimbalyst/runtime/plugins/TrackerLinkPlugin', () => ({
+  useResolvedTrackerReference: (referenceKey: string) =>
+    referenceKey === 'itm-pasted-plan'
+      ? {
+          id: referenceKey,
+          issueKey: 'NIM-2299',
+          title: 'Messaging link chips',
+          type: 'plan',
+          status: 'in-progress',
+        }
+      : null,
+  TrackerReferenceChip: ({
+    referenceKey,
+    unresolvedLabel,
+  }: {
+    referenceKey: string;
+    unresolvedLabel?: string;
+  }) => (
+    <span
+      className="tracker-reference-chip"
+      data-testid="tracker-reference-chip"
+      data-reference-key={referenceKey}
+    >
+      {unresolvedLabel ?? referenceKey}
+    </span>
+  ),
 }));
 
 const NOW = Date.parse('2026-07-26T18:00:00.000Z');
@@ -29,6 +57,9 @@ function renderRow(
     previews?: Record<string, ResourcePreviewState>;
     reactionsSupported?: boolean;
     replyParent?: Comment | null;
+    density?: CommentDensity;
+    grouped?: boolean;
+    timestampMs?: number;
   } = {},
 ) {
   const fixtures = createCommentFixtures({ now: NOW });
@@ -46,7 +77,14 @@ function renderRow(
   const onAction = vi.fn();
   const onToggleReaction = vi.fn();
   const utils = render(
-    <CommentRow view={view} onAction={onAction} onToggleReaction={onToggleReaction} />,
+    <CommentRow
+      view={view}
+      onAction={onAction}
+      onToggleReaction={onToggleReaction}
+      density={options.density}
+      grouped={options.grouped}
+      timestampMs={options.timestampMs}
+    />,
   );
   return { fixtures, view, onAction, onToggleReaction, ...utils };
 }
@@ -70,7 +108,7 @@ describe('CommentRow capability-driven affordances', () => {
 
     expect(within(menu).queryByTestId('comment-action-edit')).toBeNull();
     expect(within(menu).queryByTestId('comment-action-delete')).toBeNull();
-    expect(within(menu).getByTestId('comment-action-copy-link')).toBeTruthy();
+    within(menu).getByTestId('comment-action-copy-link');
   });
 
   it('offers edit and delete on the viewer own comment when both capabilities are held', () => {
@@ -80,9 +118,9 @@ describe('CommentRow capability-driven affordances', () => {
     fireEvent.click(screen.getByTestId('comment-action-trigger'));
     const menu = screen.getByTestId('comment-action-menu');
 
-    expect(within(menu).getByTestId('comment-action-edit')).toBeTruthy();
-    expect(within(menu).getByTestId('comment-action-delete')).toBeTruthy();
-    expect(within(menu).getByTestId('comment-action-reply')).toBeTruthy();
+    within(menu).getByTestId('comment-action-edit');
+    within(menu).getByTestId('comment-action-delete');
+    within(menu).getByTestId('comment-action-reply');
   });
 
   it('grants a moderator delete on someone else comment but never edit', () => {
@@ -95,7 +133,7 @@ describe('CommentRow capability-driven affordances', () => {
     fireEvent.click(screen.getByTestId('comment-action-trigger'));
     const menu = screen.getByTestId('comment-action-menu');
 
-    expect(within(menu).getByTestId('comment-action-delete')).toBeTruthy();
+    within(menu).getByTestId('comment-action-delete');
     expect(within(menu).queryByTestId('comment-action-edit')).toBeNull();
   });
 
@@ -122,9 +160,64 @@ describe('CommentRow capability-driven affordances', () => {
     const [withReactions] = commentsOf();
     renderRow(withReactions, { capabilities: { ...FULL_CAPABILITIES, react: false } });
 
-    expect(screen.getByTestId('reaction-chip-eyes')).toBeTruthy();
+    screen.getByTestId('reaction-chip-eyes');
     expect(screen.getByTestId('reaction-chip-eyes').hasAttribute('disabled')).toBe(true);
     expect(screen.queryByTestId('reaction-add-trigger')).toBeNull();
+  });
+
+  it('renders no reaction row for a message with no reactions, keeping the add affordance in the row actions', () => {
+    const [, noReactions] = commentsOf();
+    renderRow(noReactions);
+
+    // Zero reactions must cost zero vertical space -- no reserved row.
+    expect(screen.queryByTestId('reaction-bar')).toBeNull();
+    expect(
+      within(screen.getByTestId('comment-row-actions')).getByTestId('reaction-add-trigger'),
+    ).toBeTruthy();
+  });
+
+  it('keeps the reaction bar chips-only and the add trigger in the hover actions', () => {
+    const [withReactions] = commentsOf();
+    renderRow(withReactions);
+
+    // Aggregates are content and always visible; the affordance is not in the bar.
+    const bar = screen.getByTestId('reaction-bar');
+    expect(within(bar).getByTestId('reaction-chip-eyes').className).not.toContain('opacity-0');
+    expect(within(bar).queryByTestId('reaction-add-trigger')).toBeNull();
+
+    // Revealed with the action menu, keyed off the row's `group`.
+    const actions = screen.getByTestId('comment-row-actions');
+    within(actions).getByTestId('reaction-add-trigger');
+    expect(actions.className).toContain('opacity-0');
+    expect(actions.className).toContain('group-hover:opacity-100');
+    expect(actions.className).toContain('focus-within:opacity-100');
+  });
+
+  it('keeps the row actions visible while the add-reaction picker is open', () => {
+    const [withReactions] = commentsOf();
+    renderRow(withReactions);
+
+    fireEvent.click(screen.getByTestId('reaction-add-trigger'));
+
+    // The picker autofocuses into a portal, so focus-within cannot hold the
+    // container open -- a popover anchored to an invisible element reads as a bug.
+    screen.getByTestId('reaction-emoji-picker');
+    const actions = screen.getByTestId('comment-row-actions');
+    expect(actions.className).not.toContain('opacity-0');
+    expect(actions.className).toContain('opacity-100');
+  });
+
+  it('adds a reaction through the hover-actions picker', () => {
+    const [withReactions] = commentsOf();
+    const { onToggleReaction, view } = renderRow(withReactions);
+
+    fireEvent.click(screen.getByTestId('reaction-add-trigger'));
+    fireEvent.click(screen.getByTestId('emoji-quick-rocket'));
+
+    expect(onToggleReaction).toHaveBeenCalledWith('rocket', true, view);
+    // Choosing closes the popover, which releases the actions container again.
+    expect(screen.queryByTestId('reaction-emoji-picker')).toBeNull();
+    expect(screen.getByTestId('comment-row-actions').className).toContain('opacity-0');
   });
 });
 
@@ -151,8 +244,8 @@ describe('CommentRow agent attribution', () => {
       />,
     );
 
-    expect(screen.getByTestId('comment-row-agent-glyph')).toBeTruthy();
-    expect(screen.getByTestId('comment-row-agent-badge')).toBeTruthy();
+    screen.getByTestId('comment-row-agent-glyph');
+    screen.getByTestId('comment-row-agent-badge');
     expect(screen.getByTestId('comment-row-agent-owner').textContent).toBe('for Rowan Petrie');
 
     const chip = screen.getByTestId('comment-row-session-chip');
@@ -176,7 +269,7 @@ describe('CommentRow agent attribution', () => {
     renderRow(agentMention);
     const agent = screen.getByTestId('comment-mention-agent');
     expect(agent.getAttribute('data-session-id')).toBe('session-sync-repro');
-    expect(within(agent).getByTestId('comment-mention-agent-glyph')).toBeTruthy();
+    within(agent).getByTestId('comment-mention-agent-glyph');
     expect(agent.textContent).toContain('Sync repro');
     expect(screen.queryByTestId('comment-mention-person')).toBeNull();
   });
@@ -242,6 +335,92 @@ describe('CommentRow states', () => {
   });
 });
 
+describe('CommentRow compact density', () => {
+  afterEach(() => cleanup());
+
+  const POSTED_AT = Date.parse('2026-07-26T17:35:00.000Z');
+
+  it('renders author and message on one line behind a clock gutter, with no avatar', () => {
+    const [first] = commentsOf();
+    renderRow(first, { density: 'compact', timestampMs: POSTED_AT });
+
+    const row = screen.getByRole('article');
+    expect(row.getAttribute('data-density')).toBe('compact');
+    expect(row.className).toContain('items-baseline');
+    expect(screen.queryByTestId('comment-row-avatar')).toBeNull();
+    expect(screen.queryByTestId('comment-row-agent-glyph')).toBeNull();
+
+    // The gutter carries a wall clock, not the relative label the comfortable
+    // header uses. It participates in the row's baseline alignment instead of
+    // compensating with top padding, which drifts below the sender and body.
+    const clock = screen.getByTestId('comment-row-clock');
+    expect(clock.parentElement?.className).not.toContain('pt-[3px]');
+    expect(clock.textContent).toBe(formatClockTime(POSTED_AT));
+    expect(clock.textContent).toMatch(/\d{1,2}:\d{2}/);
+
+    // Author and body are siblings on the single line, in that order.
+    const line = row.querySelector('.comment-row-compact-line')!;
+    expect(line).toBeTruthy();
+    const actor = line.querySelector('.comment-row-actor')!;
+    const body = line.querySelector('.comment-row-compact-body')!;
+    expect(actor.textContent).toBe('Dana Okafor');
+    expect(body.textContent).toBeTruthy();
+    expect(actor.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('drops the repeated author on a grouped row but keeps the gutter reserved', () => {
+    const [first] = commentsOf();
+    renderRow(first, { density: 'compact', grouped: true, timestampMs: POSTED_AT });
+
+    const row = screen.getByRole('article');
+    expect(row.querySelector('.comment-row-actor')).toBeNull();
+
+    // The time is revealed on hover rather than removed: a run of messages
+    // reads as one block, but every row can still be dated, and the gutter
+    // keeps its width so grouped and ungrouped bodies line up.
+    const clock = screen.getByTestId('comment-row-clock');
+    expect(clock.getAttribute('data-hover-only')).toBe('true');
+    expect(clock.className).toContain('group-hover:opacity-100');
+    expect(row.querySelector('.comment-row-clock-gutter')).toBeTruthy();
+    expect(row.querySelector('.comment-row-compact-body')!.textContent).toBeTruthy();
+  });
+
+  it('keeps agent attribution and the pending marker on the compact line', () => {
+    const agentComment = commentsOf().find((comment) => comment.actor.kind === 'agent')!;
+    renderRow(agentComment, { density: 'compact', timestampMs: POSTED_AT });
+
+    const line = screen.getByRole('article').querySelector('.comment-row-compact-line')!;
+    within(line as HTMLElement).getByTestId('comment-row-agent-badge');
+    within(line as HTMLElement).getByTestId('comment-row-agent-owner');
+    within(line as HTMLElement).getByTestId('comment-row-session-chip');
+  });
+
+  it('keeps the hover actions and reaction bar working in compact', () => {
+    const withReactions = commentsOf().find((comment) => (comment.reactions ?? []).length > 0)!;
+    const { onToggleReaction } = renderRow(withReactions, {
+      density: 'compact',
+      timestampMs: POSTED_AT,
+    });
+
+    screen.getByTestId('comment-row-actions');
+    const bar = screen.getByTestId('reaction-bar');
+    fireEvent.click(bar.querySelector<HTMLButtonElement>('.reaction-chip')!);
+    expect(onToggleReaction).toHaveBeenCalled();
+  });
+
+  it('defaults to comfortable: avatar, relative timestamp, no clock gutter', () => {
+    const [first] = commentsOf();
+    renderRow(first, { timestampMs: POSTED_AT });
+
+    const row = screen.getByRole('article');
+    expect(row.getAttribute('data-density')).toBe('comfortable');
+    screen.getByTestId('comment-row-avatar');
+    expect(screen.queryByTestId('comment-row-clock')).toBeNull();
+    expect(row.querySelector('.comment-row-compact-line')).toBeNull();
+    expect(row.querySelector('.comment-row-timestamp')).toBeTruthy();
+  });
+});
+
 describe('CommentRow copy link to message', () => {
   afterEach(() => cleanup());
 
@@ -287,10 +466,10 @@ describe('CommentRow resource pills', () => {
     expect(screen.getByTestId('resource-pill-commit').textContent).toContain('Release v0.71.2');
   });
 
-  it('marks a pill loading, not available, before the resolver answers', () => {
+  it('marks a generic resource pill loading, not available, before the resolver answers', () => {
     const comments = commentsOf();
     renderRow(comments[0], { previews: {} });
-    const pill = screen.getByTestId('resource-pill-tracker');
+    const pill = screen.getByTestId('resource-pill-file');
     expect(pill.getAttribute('data-availability')).toBe('loading');
     expect(pill.tagName).toBe('SPAN');
   });
@@ -303,5 +482,67 @@ describe('CommentRow resource pills', () => {
     expect(screen.getByRole('article').textContent).not.toContain(
       resourceRefToUrn({ orgId: 'org-nimbalyst', kind: 'tracker', sourceId: 'itm-2212' }),
     );
+  });
+
+  it('uses the live tracker reference chip when the pasted tracker is locally resolved', () => {
+    const [base] = commentsOf();
+    const trackerRef = {
+      orgId: 'org-nimbalyst',
+      kind: 'tracker' as const,
+      sourceId: 'itm-pasted-plan',
+    };
+    const token = '[Plan](nimbalyst://tracker/itm-pasted-plan)';
+    renderRow({
+      ...base,
+      body: {
+        version: 1,
+        format: 'nimbalystMarkdown',
+        text: token,
+        entities: [
+          {
+            start: 0,
+            end: new TextEncoder().encode(token).byteLength,
+            kind: 'resource',
+            refIndex: 0,
+          },
+        ],
+      },
+      resourceRefs: [trackerRef],
+    });
+
+    const chip = screen.getByTestId('tracker-reference-chip');
+    expect(chip.getAttribute('data-reference-key')).toBe('itm-pasted-plan');
+    expect(screen.queryByTestId('resource-pill-tracker')).toBeNull();
+  });
+
+  it('keeps a pasted plan as an actionable tracker chip when the org window cannot resolve it locally', () => {
+    const [base] = commentsOf();
+    const token = '[Plan](nimbalyst://tracker/itm-org-window-plan)';
+    renderRow({
+      ...base,
+      body: {
+        version: 1,
+        format: 'nimbalystMarkdown',
+        text: token,
+        entities: [
+          {
+            start: 0,
+            end: new TextEncoder().encode(token).byteLength,
+            kind: 'resource',
+            refIndex: 0,
+          },
+        ],
+      },
+      resourceRefs: [{
+        orgId: 'org-nimbalyst',
+        kind: 'tracker',
+        sourceId: 'itm-org-window-plan',
+      }],
+    });
+
+    const chip = screen.getByTestId('tracker-reference-chip');
+    expect(chip.getAttribute('data-reference-key')).toBe('itm-org-window-plan');
+    expect(chip.textContent).toBe('Plan');
+    expect(screen.queryByTestId('resource-pill-tracker')).toBeNull();
   });
 });

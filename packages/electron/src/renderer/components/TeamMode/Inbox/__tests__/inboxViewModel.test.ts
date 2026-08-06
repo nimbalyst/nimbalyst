@@ -1,13 +1,15 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 
 import { createInboxFixtures } from '../inboxFixtures';
 import {
-  activateRow,
   deriveScopeOptions,
   groupRows,
+  openRow,
   selectRows,
   toRowView,
   toggleScopeValue,
+  typeIdentity,
 } from '../inboxViewModel';
 import { EMPTY_INBOX_SCOPE, type HydratedInboxDelivery, type InboxRowView } from '../inboxTypes';
 
@@ -85,6 +87,78 @@ describe('toRowView — access removed', () => {
   });
 });
 
+describe('type identity', () => {
+  it('resolves a tracker delivery down to its item type', () => {
+    const bug = toRowView(
+      {
+        ...revoked,
+        availability: 'available',
+        capabilities: { comment: true },
+        source: { orgId: 'org-1', sourceKind: 'trackerComment', sourceId: 'NIM-1', commentId: 'c-1' },
+        preview: { sourceTitle: 'Barrel import cost', itemType: 'bug', capturedAt: NOW },
+      },
+      { now: NOW },
+    );
+
+    expect(bug.type.label).toBe('bug');
+    expect(bug.type.icon).toBe('bug_report');
+    // Not the generic tracker accent — the bug's own.
+    expect(bug.type.accent).not.toBe(typeIdentity('trackerComment').accent);
+  });
+
+  it('falls back to the generic tracker identity rather than guessing', () => {
+    // The item may live in a project this client has never synced, so an absent
+    // type is genuinely unknown, not an invitation to infer one.
+    expect(typeIdentity('trackerComment').label).toBe('Tracker');
+    expect(typeIdentity('trackerComment', { itemType: 'not-a-registered-type' }).icon).toBe('label');
+  });
+
+  it('shows a document delivery the document’s own icon, not a speech bubble', () => {
+    const inline = toRowView(
+      {
+        ...revoked,
+        availability: 'available',
+        capabilities: { comment: true },
+        source: { orgId: 'org-1', sourceKind: 'documentInlineComment', sourceId: 'doc-1', commentId: 'c-1' },
+        preview: { sourceTitle: 'shared-documents-mvp-plan.md', capturedAt: NOW },
+      },
+      { now: NOW },
+    );
+
+    expect(inline.type.label).toBe('Doc');
+    expect(inline.type.icon).toBe('description');
+
+    const drawing = toRowView(
+      {
+        ...revoked,
+        availability: 'available',
+        capabilities: { comment: true },
+        source: { orgId: 'org-1', sourceKind: 'documentDiscussion', sourceId: 'doc-2', commentId: 'c-2' },
+        preview: { sourceTitle: 'quarterly-metrics.csv', capturedAt: NOW },
+      },
+      { now: NOW },
+    );
+
+    // The file's own icon, the same one the file tree shows.
+    expect(drawing.type.icon).toBe('table_chart');
+  });
+
+  it('reveals no item type once access is removed', () => {
+    const row = toRowView(
+      {
+        ...revoked,
+        source: { orgId: 'org-1', sourceKind: 'trackerComment', sourceId: 'NIM-1', commentId: 'c-1' },
+        preview: { sourceTitle: 'Exec planning', itemType: 'decision', capturedAt: NOW },
+      },
+      { now: NOW },
+    );
+
+    expect(row.itemType).toBeUndefined();
+    expect(row.type.icon).toBe('block');
+    expect(JSON.stringify(row)).not.toContain('decision');
+  });
+});
+
 describe('filters', () => {
   it('Mentions admits human and agent mentions and nothing else', () => {
     const { rows } = select({ filter: 'mentions' });
@@ -110,14 +184,25 @@ describe('filters', () => {
     expect(rows.map((row) => row.id)).not.toContain('delivery-doc-discussion'); // muted
   });
 
-  it('Unread admits unread deliveries plus followed rooms whose watermark advanced', () => {
-    const { rows } = select({ filter: 'unread' });
+  it('unreadOnly admits unread deliveries plus followed rooms whose watermark advanced', () => {
+    const { rows } = select({ unreadOnly: true });
     const ids = rows.map((row) => row.id);
     // Already-read delivery with no new activity.
     expect(ids).not.toContain('delivery-dm');
     // Read, but the conversation advanced past the local receipt.
     expect(ids).toContain('delivery-follow-watermark');
     expect(rows.every((row) => row.unread)).toBe(true);
+  });
+
+  it('composes unreadOnly with the reason filter instead of replacing it', () => {
+    const mentions = select({ filter: 'mentions' });
+    const unreadMentions = select({ filter: 'mentions', unreadOnly: true });
+
+    // The whole point of splitting the axis: this query was unexpressible when
+    // unread was itself a reason chip.
+    expect(unreadMentions.rows.every((row) => row.unread)).toBe(true);
+    expect(unreadMentions.rows.every((row) => row.reason === 'mention' || row.reason === 'agentMention')).toBe(true);
+    expect(unreadMentions.rows.length).toBeLessThanOrEqual(mentions.rows.length);
   });
 
   it('drops dismissed deliveries from every filter', () => {
@@ -136,8 +221,13 @@ describe('counts', () => {
     expect(counts.all).toBe(unreadRows.length);
     expect(counts.mentions).toBe(unreadRows.filter((row) => row.reason === 'mention' || row.reason === 'agentMention').length);
     expect(counts.assigned).toBe(1);
-    expect(counts.unread).toBe(unreadRows.length);
     expect(counts.follows).toBe(unreadRows.filter((row) => row.subscription === 'following').length);
+  });
+
+  it('leaves the reason counts alone when the unread toggle is on', () => {
+    // The toggle refines what the list shows; it must not restate the badges as
+    // "unread among the unread", which would make every badge equal its filter.
+    expect(select({ unreadOnly: true }).counts).toEqual(select().counts);
   });
 
   it('narrows counts with the scope but not with the search query', () => {
@@ -229,26 +319,26 @@ describe('grouping', () => {
   });
 });
 
-describe('activateRow', () => {
+describe('openRow', () => {
   const row = { id: 'd-1', availability: 'available', unread: true } as InboxRowView;
 
   it('marks read only after navigation succeeds', async () => {
     const markRead = vi.fn().mockResolvedValue(undefined);
-    const result = await activateRow(row, { navigate: async () => true, markRead });
+    const result = await openRow(row, { navigate: async () => true, markRead });
     expect(result).toEqual({ outcome: 'opened', markedRead: true });
     expect(markRead).toHaveBeenCalledWith('d-1');
   });
 
   it('leaves the delivery unread when navigation fails', async () => {
     const markRead = vi.fn();
-    const result = await activateRow(row, { navigate: async () => false, markRead });
+    const result = await openRow(row, { navigate: async () => false, markRead });
     expect(result).toEqual({ outcome: 'navigationFailed', markedRead: false });
     expect(markRead).not.toHaveBeenCalled();
   });
 
   it('leaves the delivery unread when navigation throws', async () => {
     const markRead = vi.fn();
-    const result = await activateRow(row, { navigate: async () => { throw new Error('offline'); }, markRead });
+    const result = await openRow(row, { navigate: async () => { throw new Error('offline'); }, markRead });
     expect(result.outcome).toBe('navigationFailed');
     expect(markRead).not.toHaveBeenCalled();
   });
@@ -256,7 +346,7 @@ describe('activateRow', () => {
   it('does not navigate an unavailable row at all', async () => {
     const navigate = vi.fn();
     const markRead = vi.fn();
-    const result = await activateRow({ ...row, availability: 'accessRemoved' }, { navigate, markRead });
+    const result = await openRow({ ...row, availability: 'accessRemoved' }, { navigate, markRead });
     expect(result).toEqual({ outcome: 'unavailable', markedRead: false });
     expect(navigate).not.toHaveBeenCalled();
     expect(markRead).not.toHaveBeenCalled();
@@ -264,7 +354,7 @@ describe('activateRow', () => {
 
   it('does not re-mark an already-read row', async () => {
     const markRead = vi.fn();
-    const result = await activateRow({ ...row, unread: false }, { navigate: async () => true, markRead });
+    const result = await openRow({ ...row, unread: false }, { navigate: async () => true, markRead });
     expect(result).toEqual({ outcome: 'opened', markedRead: false });
     expect(markRead).not.toHaveBeenCalled();
   });

@@ -1,0 +1,122 @@
+[
+  {
+    "key": "PLAN_DASHBOARD_REFINEMENT",
+    "type": "plan",
+    "title": "Refine the launch dashboard",
+    "status": "in-development",
+    "priority": "high",
+    "description": "## Goal\n\nTurn the launch dashboard into a focused view of revenue momentum and readiness.\n\n## Next steps\n\n- Validate the headline metrics.\n- Review the mockup with the launch team.\n- Capture the remaining usability questions.",
+    "tags": ["tutorial", "dashboard"],
+    "fields": {
+      "planId": "tutorial-dashboard-refinement",
+      "planType": "feature",
+      "progress": 60
+    }
+  },
+  {
+    "key": "PLAN_CUSTOMER_HANDOFF",
+    "type": "plan",
+    "title": "Prepare the customer handoff",
+    "status": "draft",
+    "priority": "medium",
+    "description": "## Goal\n\nPrepare the support and success teams for the launch.\n\n## Scope\n\nDocument the rollout sequence, ownership, and customer communication checkpoints.",
+    "tags": ["tutorial", "launch"],
+    "fields": {
+      "planId": "tutorial-customer-handoff",
+      "planType": "feature",
+      "progress": 20
+    }
+  },
+  {
+    "key": "DECISION_LAUNCH_DATE",
+    "type": "decision",
+    "title": "Keep the current launch date",
+    "status": "decided",
+    "priority": "high",
+    "description": "## Context\n\nRevenue is close to target and the remaining work is understood.\n\n## Decision\n\nKeep the current launch date and focus the next review on churn and onboarding readiness.",
+    "tags": ["tutorial", "launch"],
+    "fields": {
+      "decisionId": "tutorial-launch-date",
+      "chosen": "Keep the current launch date"
+    }
+  },
+  {
+    "key": "DECISION_PRIMARY_METRIC",
+    "type": "decision",
+    "title": "Use monthly revenue as the primary metric",
+    "status": "decided",
+    "priority": "medium",
+    "description": "## Context\n\nThe dashboard needs one headline measure that is easy to trace to source data.\n\n## Decision\n\nLead with monthly revenue and keep customer growth as supporting context.",
+    "tags": ["tutorial", "metrics"],
+    "fields": {
+      "decisionId": "tutorial-primary-metric",
+      "chosen": "Monthly revenue"
+    }
+  },
+  {
+    "key": "DECISION_REVIEW_CADENCE",
+    "type": "decision",
+    "title": "Review launch readiness every Friday",
+    "status": "in-progress",
+    "priority": "medium",
+    "description": "## Question\n\nShould launch readiness be reviewed weekly or only at milestone boundaries?\n\n## Current direction\n\nUse a short Friday review until the launch is complete.",
+    "tags": ["tutorial", "process"],
+    "fields": {
+      "decisionId": "tutorial-review-cadence"
+    }
+  },
+  {
+    "key": "EXAMPLE_BUG",
+    "type": "bug",
+    "title": "Export remains disabled after changing the date range",
+    "status": "to-do",
+    "priority": "medium",
+    "description": "## What happened\n\nThe dashboard recognizes the new range and redraws the chart, but the export control remains disabled until the file is reopened.\n\n## Steps to reproduce\n\n1. Open the dashboard.\n2. Change the reporting period from the default six months to a custom range.\n3. Wait for the chart to refresh.\n4. Check the export control.\n\n## Expected\n\nThe export control becomes available as soon as the refreshed data is ready.\n\n## Actual\n\nThe chart updates, but the export control remains disabled.\n\n## Acceptance check\n\nChange the date range and verify the export control becomes available without reopening the file.",
+    "tags": ["tutorial", "dashboard"]
+  },
+  {
+    "key": "BUG_METRICS_ROUNDING",
+    "type": "bug",
+    "title": "Target gap rounds inconsistently in the summary",
+    "status": "in-progress",
+    "priority": "low",
+    "description": "## What happened\n\nThe target-gap card rounds to one decimal place while the supporting note uses a whole-dollar value.\n\n## Expected\n\nBoth surfaces use the same rounding rule.",
+    "tags": ["tutorial", "metrics"]
+  },
+  {
+    "key": "BUG_CHECKLIST_OWNER",
+    "type": "bug",
+    "title": "Launch checklist hides an unassigned owner",
+    "status": "to-do",
+    "priority": "medium",
+    "description": "## What happened\n\nA checklist row without an owner looks complete at a glance.\n\n## Expected\n\nUnassigned ownership is visible before the launch review.",
+    "tags": ["tutorial", "checklist"]
+  },
+  {
+    "key": "TASK_VALIDATE_REVENUE",
+    "type": "task",
+    "title": "Validate the June revenue total",
+    "status": "in-progress",
+    "priority": "high",
+    "description": "Compare the June total in the spreadsheet with the dashboard headline metric.",
+    "tags": ["tutorial", "data"]
+  },
+  {
+    "key": "TASK_REVIEW_BRIEF",
+    "type": "task",
+    "title": "Review the product brief with stakeholders",
+    "status": "in-progress",
+    "priority": "medium",
+    "description": "Confirm that the brief explains the audience, launch goal, and source artifacts clearly.",
+    "tags": ["tutorial", "brief"]
+  },
+  {
+    "key": "TASK_CAPTURE_FEEDBACK",
+    "type": "task",
+    "title": "Capture feedback from the dashboard review",
+    "status": "to-do",
+    "priority": "medium",
+    "description": "Record the design questions and turn the agreed changes into follow-up work.",
+    "tags": ["tutorial", "dashboard"]
+  }
+]

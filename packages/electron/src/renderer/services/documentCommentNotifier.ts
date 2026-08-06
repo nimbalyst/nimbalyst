@@ -17,7 +17,7 @@ import type {
   CommentReplyPayload,
 } from '@nimbalyst/runtime/editor';
 
-import { getTeamSyncProvider } from '../store/atoms/collabDocuments';
+import { getTeamSyncProviderForScopeKey } from '../store/atoms/collabDocuments';
 
 export interface DocumentCommentNotification {
   workspacePath: string;
@@ -45,7 +45,7 @@ export function notifyDocumentCommentRecipients(
     return;
   }
 
-  const teamProvider = getTeamSyncProvider(input.workspacePath);
+  const teamProvider = getTeamSyncProviderForScopeKey(input.workspacePath);
   if (!teamProvider) {
     console.warn(
       '[documentCommentNotifier] No team connection for workspace; mention not routed',

@@ -100,7 +100,7 @@ describe('SessionLaunchPopup', () => {
 
     act(() => testStore.set(sessionLaunchPopupRequestAtom, 1));
     const input = await screen.findByTestId('session-launch-popup-input');
-    expect(screen.getByText('Launch New Session')).toBeTruthy();
+    screen.getByText('Launch New Session');
     const backdropClass = document.querySelector('.session-launch-popup-backdrop')?.className;
     expect(backdropClass).toContain('bg-[var(--nim-bg)]');
     expect(backdropClass).not.toContain('bg-black');
@@ -111,7 +111,7 @@ describe('SessionLaunchPopup', () => {
     expect(screen.queryByTestId('session-launch-popup-input')).toBeNull();
 
     act(() => testStore.set(sessionLaunchPopupRequestAtom, 3));
-    expect(await screen.findByDisplayValue('Investigate the flaky test')).toBeTruthy();
+    await screen.findByDisplayValue('Investigate the flaky test');
 
     let resolveBackgroundLaunch: (result: { success: boolean }) => void = () => {};
     const backgroundLaunchPending = new Promise<{ success: boolean }>((resolve) => {

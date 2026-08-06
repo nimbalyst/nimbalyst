@@ -1,7 +1,7 @@
 import React, { useId, useMemo, useState, useRef, useCallback, useEffect } from 'react';
 import { useSetAtom } from 'jotai';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { getHelpContent } from '../../help';
 import { openSettingsCommandAtom } from '../../store';
 

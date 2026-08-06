@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Crash-recovery contract test for `applyAndEnqueueAtomically`.
  *

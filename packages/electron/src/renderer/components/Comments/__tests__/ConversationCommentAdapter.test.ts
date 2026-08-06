@@ -1,6 +1,9 @@
+// @vitest-environment node
 import type {
   Actor,
+  Comment,
   CommentCapabilities,
+  CommentDeliveryHints,
   ConversationEvent,
   CreateCommentInput,
 } from '@nimbalyst/collab-protocol';
@@ -9,6 +12,7 @@ import { createStore } from 'jotai';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createConversationCommentAdapter } from '../ConversationCommentAdapter';
+import { parseCommentBody, segmentsToPlainText } from '../commentBodyParser';
 
 const VIEWER: Actor = {
   kind: 'user',
@@ -25,6 +29,17 @@ const CAPABILITIES: CommentCapabilities = {
   moderate: false,
   manageRoom: false,
 };
+
+const LIVE_MENTION_USER_ID =
+  'member-live-e802cec4-f2d7-42ba-a30c-7d7179143ad7';
+const LIVE_MENTION_TEXT =
+  `First Test Message [@Karl Wirth](nimbalyst://user/${LIVE_MENTION_USER_ID})`;
+const LIVE_MENTION_HINTS: CommentDeliveryHints = {
+  mentionedUserIds: [LIVE_MENTION_USER_ID],
+  mentionedAgentSessionIds: [],
+  assignedUserIds: [],
+};
+const EDITED_MENTION_USER_ID = 'member-dana';
 
 function message(
   id: string,
@@ -48,6 +63,50 @@ function message(
   };
 }
 
+function liveMentionEvent(): ConversationEvent {
+  return {
+    ...message('message-live-mention', 1, LIVE_MENTION_TEXT, 'mention-mutation'),
+    payload: {
+      body: {
+        version: 1,
+        format: 'nimbalystMarkdown',
+        text: LIVE_MENTION_TEXT,
+      },
+      resourceRefs: [],
+    },
+    deliveryHints: LIVE_MENTION_HINTS,
+  };
+}
+
+function renderSegments(comment: Comment) {
+  return parseCommentBody(comment.body, {
+    resourceRefs: comment.resourceRefs,
+    mentionedUserIds: comment.deliveryHints?.mentionedUserIds ?? [],
+    mentionedAgentSessionIds:
+      comment.deliveryHints?.mentionedAgentSessionIds ?? [],
+    directory: {
+      people: [{
+        userId: LIVE_MENTION_USER_ID,
+        displayName: 'Karl Wirth',
+        handle: 'karl',
+        avatarInitials: 'KW',
+      }, {
+        userId: EDITED_MENTION_USER_ID,
+        displayName: 'Dana Okafor',
+        handle: 'dana',
+        avatarInitials: 'DO',
+      }],
+      agents: [],
+      displayNames: {
+        [LIVE_MENTION_USER_ID]: 'Karl Wirth',
+        [EDITED_MENTION_USER_ID]: 'Dana Okafor',
+      },
+    },
+    viewerUserId: VIEWER.onBehalfOfUserId,
+    pills: {},
+  });
+}
+
 function createAdapter(
   invoke: (channel: string, request: any) => Promise<unknown>,
 ) {
@@ -65,6 +124,108 @@ function createAdapter(
 }
 
 describe('ConversationCommentAdapter', () => {
+  it('renders the live legacy mention after canonical append replacement and history reload', async () => {
+    const canonicalEvent = liveMentionEvent();
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'conversation:append') return canonicalEvent;
+      if (channel === 'conversation:list') return { events: [canonicalEvent] };
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+    const adapter = createAdapter(invoke);
+
+    const created = await adapter.create({
+      actor: VIEWER,
+      body: canonicalEvent.payload!.body!,
+      clientMutationId: canonicalEvent.clientMutationId,
+      resourceRefs: [],
+      deliveryHints: LIVE_MENTION_HINTS,
+    });
+    const createdSegments = renderSegments(created);
+
+    expect(segmentsToPlainText(createdSegments)).toBe(
+      'First Test Message @Karl Wirth',
+    );
+    expect(createdSegments).toContainEqual(expect.objectContaining({
+      type: 'mention',
+      userId: LIVE_MENTION_USER_ID,
+      displayName: 'Karl Wirth',
+    }));
+
+    const reloaded = await createAdapter(invoke).list();
+    const reloadedSegments = renderSegments(reloaded.comments[0]);
+    expect(segmentsToPlainText(reloadedSegments)).toBe(
+      'First Test Message @Karl Wirth',
+    );
+    expect(reloadedSegments).toContainEqual(expect.objectContaining({
+      type: 'mention',
+      userId: LIVE_MENTION_USER_ID,
+      displayName: 'Karl Wirth',
+    }));
+  });
+
+  it('replaces mention hints with the canonical edit on send and reconnect history', async () => {
+    const createdEvent = liveMentionEvent();
+    const editedText = 'Updated for @Dana';
+    const editedEvent: ConversationEvent = {
+      ...message('edit-event', 2, editedText, 'generated-mutation'),
+      operation: 'messageEdited',
+      targetMessageId: createdEvent.id,
+      payload: {
+        body: {
+          version: 1,
+          format: 'nimbalystMarkdown',
+          text: editedText,
+          entities: [{
+            start: editedText.indexOf('@Dana'),
+            end: editedText.length,
+            kind: 'userMention',
+            userId: EDITED_MENTION_USER_ID,
+          }],
+        },
+      },
+      deliveryHints: {
+        mentionedUserIds: [EDITED_MENTION_USER_ID],
+        mentionedAgentSessionIds: [],
+        assignedUserIds: [],
+      },
+    };
+    const invoke = vi.fn(async (channel: string, request: any) => {
+      if (channel === 'conversation:append') {
+        return request.input.operation === 'messageEdited'
+          ? editedEvent
+          : createdEvent;
+      }
+      if (channel === 'conversation:list') {
+        return { events: [createdEvent, editedEvent] };
+      }
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+    const adapter = createAdapter(invoke);
+    const created = await adapter.create({
+      actor: VIEWER,
+      body: createdEvent.payload!.body!,
+      clientMutationId: createdEvent.clientMutationId,
+      resourceRefs: [],
+      deliveryHints: LIVE_MENTION_HINTS,
+    });
+
+    const edited = await adapter.edit(created.ref, editedEvent.payload!.body!);
+    expect(segmentsToPlainText(renderSegments(edited))).toBe(
+      'Updated for @Dana Okafor',
+    );
+    expect(edited.deliveryHints?.mentionedUserIds).toEqual([
+      EDITED_MENTION_USER_ID,
+    ]);
+
+    const reloaded = await createAdapter(invoke).list();
+    expect(segmentsToPlainText(renderSegments(reloaded.comments[0]))).toBe(
+      'Updated for @Dana Okafor',
+    );
+    expect(reloaded.comments[0].deliveryHints?.mentionedUserIds).toEqual([
+      EDITED_MENTION_USER_ID,
+    ]);
+  });
+
   it('posts a message through the adapter and observes the arriving comment', async () => {
     const appended = message(
       'message-1',

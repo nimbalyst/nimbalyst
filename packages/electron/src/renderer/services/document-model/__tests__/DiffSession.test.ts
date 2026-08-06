@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { DiffSession } from '../DiffSession';
 import { hashContent } from '../contentHash';

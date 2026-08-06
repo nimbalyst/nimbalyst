@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import {
   voiceModeSettingsAtom,

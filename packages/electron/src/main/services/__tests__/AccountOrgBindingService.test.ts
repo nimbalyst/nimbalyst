@@ -22,8 +22,11 @@ vi.mock('../../utils/logger', () => ({
 
 import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
 import {
+  findBindingsWithMissingOrg,
   repairAccountOrgBindingFromEmail,
   resolveAccountOrgBinding,
+  resolveTeamOrgAccountBinding,
+  upsertAccountOrgBinding,
 } from '../AccountOrgBindingService';
 
 const SCHEMA_DIR = path.resolve(__dirname, '..', '..', 'database', 'sqlite', 'schemas');
@@ -109,5 +112,62 @@ describe('AccountOrgBindingService', () => {
       'same@example.com',
     )).resolves.toEqual({ outcome: 'already-attempted', teamMemberId: null });
     expect(errorMock).toHaveBeenCalledTimes(1);
+  });
+
+  // NIM-2459: two accounts bound to one team org used to resolve by
+  // lexicographic personal org id, so the app acted as an arbitrary identity
+  // and messages sent to the other account never reached the Inbox.
+  it('prefers the sync account when two signed-in accounts bind the same team org', async () => {
+    await upsertAccountOrgBinding(db, {
+      personalOrgId: 'org-a-sorts-first',
+      teamOrgId: 'team',
+      teamMemberId: 'member-a',
+      source: 'server-exchange',
+    });
+    await upsertAccountOrgBinding(db, {
+      personalOrgId: 'org-b-sorts-second',
+      teamOrgId: 'team',
+      teamMemberId: 'member-b',
+      source: 'server-sync',
+    });
+    const signedIn = ['org-a-sorts-first', 'org-b-sorts-second'];
+
+    await expect(resolveTeamOrgAccountBinding(db, 'team', signedIn, 'org-b-sorts-second'))
+      .resolves.toEqual({ personalOrgId: 'org-b-sorts-second', teamMemberId: 'member-b' });
+
+    // A sync account with no binding here, or none at all, keeps stable order.
+    await expect(resolveTeamOrgAccountBinding(db, 'team', signedIn, 'org-unbound'))
+      .resolves.toEqual({ personalOrgId: 'org-a-sorts-first', teamMemberId: 'member-a' });
+    await expect(resolveTeamOrgAccountBinding(db, 'team', signedIn))
+      .resolves.toEqual({ personalOrgId: 'org-a-sorts-first', teamMemberId: 'member-a' });
+
+    // A signed-out account is never eligible, even when it is the sync account.
+    await expect(resolveTeamOrgAccountBinding(db, 'team', ['org-a-sorts-first'], 'org-b-sorts-second'))
+      .resolves.toEqual({ personalOrgId: 'org-a-sorts-first', teamMemberId: 'member-a' });
+  });
+
+  /**
+   * NIM-2466. A binding row can look perfectly healthy while the rows it points
+   * at are absent — that install had `server-create`, `server-exchange` and
+   * `server-sync` bindings for an org with no `orgs` row at all, and nothing
+   * anywhere noticed. "A binding exists" is not the same as "the org resolves".
+   */
+  it('reports bindings whose team org has no local orgs row', async () => {
+    await upsertAccountOrgBinding(db, {
+      personalOrgId: 'personal-1',
+      teamOrgId: 'team',
+      teamMemberId: 'member-healthy',
+      source: 'server-sync',
+    });
+    await upsertAccountOrgBinding(db, {
+      personalOrgId: 'personal-1',
+      teamOrgId: 'team-never-projected',
+      teamMemberId: 'member-dangling',
+      source: 'server-exchange',
+    });
+
+    await expect(findBindingsWithMissingOrg(db)).resolves.toEqual([
+      { personalOrgId: 'personal-1', teamOrgId: 'team-never-projected' },
+    ]);
   });
 });

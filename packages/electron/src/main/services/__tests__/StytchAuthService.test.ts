@@ -1,15 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { files, fetchMock } = vi.hoisted(() => ({
+const { files, fetchMock, openExternalMock } = vi.hoisted(() => ({
   files: new Map<string, Buffer>(),
   fetchMock: vi.fn(),
+  openExternalMock: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
-  app: { getPath: vi.fn(() => '/mock/user-data') },
+  app: { getPath: vi.fn(() => '/mock/user-data'), focus: vi.fn() },
+  BrowserWindow: { getFocusedWindow: vi.fn(() => null), getAllWindows: vi.fn(() => []) },
   net: { fetch: fetchMock },
   safeStorage: { isEncryptionAvailable: vi.fn(() => false) },
-  shell: { openExternal: vi.fn() },
+  shell: { openExternal: openExternalMock },
 }));
 
 vi.mock('fs', () => ({
@@ -48,6 +50,7 @@ vi.mock('../analytics/AnalyticsService', () => ({
 
 import {
   getAccounts,
+  getAuthState,
   getPersonalSessionJwt,
   getSyncAccount,
   handleAuthCallback,
@@ -60,7 +63,10 @@ import {
   refreshSession,
   refreshSessionForAccount,
   refreshSessionForAccountDetailed,
+  setAuthCallbackSuccessHandler,
   setSyncAccount,
+  sendMagicLink,
+  signInWithGoogle,
   signOut,
 } from '../StytchAuthService';
 
@@ -92,6 +98,7 @@ describe('StytchAuthService personal JWT refresh', () => {
     });
 
     await handleAuthCallback({
+      intent: 'sign-in',
       sessionToken: 'stale-session-token',
       sessionJwt: expiredPersonalJwt,
       userId: personalUserId,
@@ -137,6 +144,7 @@ describe('StytchAuthService personal JWT refresh', () => {
     });
 
     await handleAuthCallback({
+      intent: 'sign-in',
       sessionToken: 'initial-session-token',
       sessionJwt: expiredPersonalJwt,
       userId: personalUserId,
@@ -208,6 +216,7 @@ describe('StytchAuthService auth-state-change dedupe (NIM-1828)', () => {
     });
 
     await handleAuthCallback({
+      intent: 'sign-in',
       sessionToken: 'initial-session-token',
       sessionJwt: initialJwt,
       userId: personalUserId,
@@ -247,6 +256,7 @@ describe('StytchAuthService auth-state-change dedupe (NIM-1828)', () => {
       exp: Math.floor(Date.now() / 1000) + 300,
     });
     await handleAuthCallback({
+      intent: 'sign-in',
       sessionToken: 'token-a',
       sessionJwt: initialJwt,
       userId: 'member-a',
@@ -260,6 +270,501 @@ describe('StytchAuthService auth-state-change dedupe (NIM-1828)', () => {
     // Sign out is a real identity transition (authenticated -> not).
     await signOut();
     expect(listener).toHaveBeenCalled();
+  });
+});
+
+describe('StytchAuthService callback replay', () => {
+  beforeEach(async () => {
+    await signOut();
+    files.clear();
+    fetchMock.mockReset();
+  });
+
+  it('updates the existing account instead of creating duplicate onboarding identity', async () => {
+    const firstJwt = createJwt({
+      sub: 'member-personal',
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const replayedJwt = createJwt({
+      sub: 'member-personal',
+      exp: Math.floor(Date.now() / 1000) + 600,
+    });
+
+    await handleAuthCallback({
+      intent: 'sign-in',
+      sessionToken: 'first-token',
+      sessionJwt: firstJwt,
+      userId: 'member-personal',
+      email: 'member@example.com',
+      orgId: 'org-personal',
+    });
+    await handleAuthCallback({
+      intent: 'reauth',
+      targetPersonalOrgId: 'org-personal',
+      sessionToken: 'replayed-token',
+      sessionJwt: replayedJwt,
+      userId: 'member-personal',
+      email: 'member@example.com',
+      orgId: 'org-personal',
+    });
+
+    expect(getAccounts()).toHaveLength(1);
+    expect(getAccounts()[0]).toMatchObject({
+      personalOrgId: 'org-personal',
+      personalUserId: 'member-personal',
+      email: 'member@example.com',
+      isSyncAccount: true,
+    });
+    expect(getPersonalSessionJwt()).toBe(replayedJwt);
+  });
+});
+
+describe('StytchAuthService explicit add-account intent regression', () => {
+  beforeEach(async () => {
+    await signOut();
+    files.clear();
+    fetchMock.mockReset();
+  });
+
+  it('keeps the expired sync account selected when an add-account callback succeeds', async () => {
+    const expiredSyncAccount = {
+      sessionToken: 'expired-sync-token',
+      sessionJwt: createJwt({ sub: 'member-sync' }),
+      userId: 'member-sync',
+      email: 'sync@example.com',
+      expiresAt: Date.now() - 60_000,
+      orgId: 'personal-sync',
+      personalOrgId: 'personal-sync',
+      personalUserId: 'member-sync',
+    };
+    files.set(
+      '/mock/user-data/stytch-accounts.enc',
+      Buffer.from(JSON.stringify({
+        version: 3,
+        syncAccountId: 'personal-sync',
+        accounts: [expiredSyncAccount],
+      })),
+    );
+    initializeStytchAuth({
+      projectId: 'test',
+      publicToken: 'test',
+      apiBase: 'https://test.invalid',
+    });
+
+    const authStateBefore = getAuthState();
+    const syncAccountBefore = getSyncAccount();
+
+    await handleAuthCallback({
+      intent: 'add-account',
+      sessionToken: 'new-account-token',
+      sessionJwt: createJwt({ sub: 'member-new' }),
+      userId: 'member-new',
+      email: 'new@example.com',
+      orgId: 'personal-new',
+    });
+
+    expect(getAccounts()).toHaveLength(2);
+    expect(getAccounts()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ personalOrgId: 'personal-sync', isSyncAccount: true }),
+      expect.objectContaining({ personalOrgId: 'personal-new', isSyncAccount: false }),
+    ]));
+    expect(getSyncAccount()).toEqual(syncAccountBefore);
+    expect(getAuthState()).toEqual(authStateBefore);
+  });
+});
+
+describe('StytchAuthService auth callback intent matrix', () => {
+  beforeEach(async () => {
+    await signOut();
+    files.clear();
+    fetchMock.mockReset();
+  });
+
+  async function seedTwoAccounts() {
+    await handleAuthCallback({
+      intent: 'sign-in',
+      sessionToken: 'sync-token',
+      sessionJwt: createJwt({ sub: 'member-sync' }),
+      userId: 'member-sync',
+      email: 'sync@example.com',
+      orgId: 'personal-sync',
+    });
+    await handleAuthCallback({
+      intent: 'add-account',
+      sessionToken: 'secondary-token',
+      sessionJwt: createJwt({ sub: 'member-secondary' }),
+      userId: 'member-secondary',
+      email: 'secondary@example.com',
+      orgId: 'personal-secondary',
+    });
+  }
+
+  function persistedAccounts() {
+    return JSON.parse(files.get('/mock/user-data/stytch-accounts.enc')!.toString('utf8')) as {
+      syncAccountId: string;
+      accounts: Array<{ personalOrgId: string; sessionToken: string }>;
+    };
+  }
+
+  it('sign-in creates the first account and selects it for sync', async () => {
+    await handleAuthCallback({
+      intent: 'sign-in',
+      sessionToken: 'first-token',
+      sessionJwt: createJwt({ sub: 'member-first' }),
+      userId: 'member-first',
+      email: 'first@example.com',
+      orgId: 'personal-first',
+    });
+
+    expect(getAccounts()).toEqual([
+      expect.objectContaining({ personalOrgId: 'personal-first', isSyncAccount: true }),
+    ]);
+    expect(getAuthState()).toMatchObject({
+      isAuthenticated: true,
+      sessionToken: 'first-token',
+      personalOrgId: 'personal-first',
+    });
+    expect(persistedAccounts().syncAccountId).toBe('personal-first');
+    expect(files.has('/mock/user-data/stytch-credentials.enc')).toBe(true);
+  });
+
+  it('add-account appends a new org without changing singleton or sync stores', async () => {
+    await handleAuthCallback({
+      intent: 'sign-in',
+      sessionToken: 'sync-token',
+      sessionJwt: createJwt({ sub: 'member-sync' }),
+      userId: 'member-sync',
+      orgId: 'personal-sync',
+    });
+    const authBefore = getAuthState();
+    const legacyBefore = files.get('/mock/user-data/stytch-credentials.enc')!.toString('utf8');
+
+    await handleAuthCallback({
+      intent: 'add-account',
+      sessionToken: 'new-token',
+      sessionJwt: createJwt({ sub: 'member-new' }),
+      userId: 'member-new',
+      orgId: 'personal-new',
+    });
+
+    expect(getAccounts()).toHaveLength(2);
+    expect(getSyncAccount()?.personalOrgId).toBe('personal-sync');
+    expect(getAuthState()).toEqual(authBefore);
+    expect(files.get('/mock/user-data/stytch-credentials.enc')!.toString('utf8')).toBe(legacyBefore);
+  });
+
+  it('add-account refreshes an existing org in place without changing singleton stores', async () => {
+    await seedTwoAccounts();
+    const authBefore = getAuthState();
+    const legacyBefore = files.get('/mock/user-data/stytch-credentials.enc')!.toString('utf8');
+
+    await handleAuthCallback({
+      intent: 'add-account',
+      sessionToken: 'secondary-token-refreshed',
+      sessionJwt: createJwt({ sub: 'member-secondary' }),
+      userId: 'member-secondary',
+      email: 'secondary@example.com',
+      orgId: 'personal-secondary',
+    });
+
+    expect(getAccounts()).toHaveLength(2);
+    expect(getSyncAccount()?.personalOrgId).toBe('personal-sync');
+    expect(getAuthState()).toEqual(authBefore);
+    expect(files.get('/mock/user-data/stytch-credentials.enc')!.toString('utf8')).toBe(legacyBefore);
+    expect(persistedAccounts().accounts.find((account) => account.personalOrgId === 'personal-secondary'))
+      .toMatchObject({ sessionToken: 'secondary-token-refreshed' });
+  });
+
+  /**
+   * The Share dialog and Sync panel both render the primary sign-in form
+   * whenever the singleton session is gone, which includes a merely-expired
+   * sync account. Coming back in through that path must revive the sync
+   * account rather than leave the app looking signed out.
+   */
+  it('add-account on the sync account itself refreshes the singleton state without repointing sync', async () => {
+    await seedTwoAccounts();
+
+    await handleAuthCallback({
+      intent: 'add-account',
+      sessionToken: 'sync-token-refreshed',
+      sessionJwt: createJwt({ sub: 'member-sync' }),
+      userId: 'member-sync',
+      email: 'sync@example.com',
+      orgId: 'personal-sync',
+    });
+
+    expect(getAccounts()).toHaveLength(2);
+    expect(getSyncAccount()?.personalOrgId).toBe('personal-sync');
+    expect(getAuthState()).toMatchObject({
+      isAuthenticated: true,
+      sessionToken: 'sync-token-refreshed',
+      personalOrgId: 'personal-sync',
+    });
+    expect(persistedAccounts().syncAccountId).toBe('personal-sync');
+    expect(JSON.parse(files.get('/mock/user-data/stytch-credentials.enc')!.toString('utf8')))
+      .toMatchObject({ sessionToken: 'sync-token-refreshed' });
+    // The other account is untouched by the refresh.
+    expect(persistedAccounts().accounts.find((entry) => entry.personalOrgId === 'personal-secondary'))
+      .toMatchObject({ sessionToken: 'secondary-token' });
+  });
+
+  it('reauth updates singleton state only for the sync account', async () => {
+    await seedTwoAccounts();
+
+    await handleAuthCallback({
+      intent: 'reauth',
+      targetPersonalOrgId: 'personal-sync',
+      sessionToken: 'sync-token-refreshed',
+      sessionJwt: createJwt({ sub: 'member-sync' }),
+      userId: 'member-sync',
+      orgId: 'personal-sync',
+    });
+
+    expect(getSyncAccount()?.personalOrgId).toBe('personal-sync');
+    expect(getAuthState().sessionToken).toBe('sync-token-refreshed');
+    expect(JSON.parse(files.get('/mock/user-data/stytch-credentials.enc')!.toString('utf8')))
+      .toMatchObject({ sessionToken: 'sync-token-refreshed' });
+    expect(persistedAccounts().accounts.find((account) => account.personalOrgId === 'personal-secondary'))
+      .toMatchObject({ sessionToken: 'secondary-token' });
+  });
+
+  /**
+   * Stytch issues a different member id per org, so an account is identified by
+   * (personal org, personal member). A callback that carries the same org with
+   * another member is a different person's session: accepting it would silently
+   * repoint the stored account's credentials at them.
+   */
+  it('rejects a reauth callback from a different member of the target org', async () => {
+    await seedTwoAccounts();
+    const authBefore = getAuthState();
+    const persistedBefore = files.get('/mock/user-data/stytch-accounts.enc')!.toString('utf8');
+
+    await expect(handleAuthCallback({
+      intent: 'reauth',
+      targetPersonalOrgId: 'personal-secondary',
+      sessionToken: 'impostor-token',
+      sessionJwt: createJwt({ sub: 'member-impostor' }),
+      userId: 'member-impostor',
+      email: 'impostor@example.com',
+      orgId: 'personal-secondary',
+    })).rejects.toThrow(/does not match the stored account/);
+
+    expect(files.get('/mock/user-data/stytch-accounts.enc')!.toString('utf8')).toBe(persistedBefore);
+    expect(getAuthState()).toEqual(authBefore);
+    expect(getAccounts().find((account) => account.personalOrgId === 'personal-secondary'))
+      .toMatchObject({ personalUserId: 'member-secondary', email: 'secondary@example.com' });
+  });
+
+  it('rejects an add-account callback from a different member of a stored org', async () => {
+    await seedTwoAccounts();
+    const authBefore = getAuthState();
+    const persistedBefore = files.get('/mock/user-data/stytch-accounts.enc')!.toString('utf8');
+
+    await expect(handleAuthCallback({
+      intent: 'add-account',
+      sessionToken: 'impostor-token',
+      sessionJwt: createJwt({ sub: 'member-impostor' }),
+      userId: 'member-impostor',
+      email: 'impostor@example.com',
+      orgId: 'personal-sync',
+    })).rejects.toThrow(/does not match the stored account/);
+
+    expect(files.get('/mock/user-data/stytch-accounts.enc')!.toString('utf8')).toBe(persistedBefore);
+    expect(getAuthState()).toEqual(authBefore);
+    expect(getAuthState().sessionToken).toBe('sync-token');
+  });
+
+  // Credentials stored before the account -> member binding existed have no id
+  // to compare against, so the refresh is accepted and binds it.
+  it('accepts a refresh for a legacy account with no bound member and backfills it', async () => {
+    files.set(
+      '/mock/user-data/stytch-accounts.enc',
+      Buffer.from(JSON.stringify({
+        version: 3,
+        syncAccountId: 'personal-legacy',
+        accounts: [{
+          sessionToken: 'legacy-token',
+          sessionJwt: createJwt({ sub: 'member-legacy' }),
+          userId: '',
+          email: 'legacy@example.com',
+          expiresAt: Date.now() - 60_000,
+          orgId: 'personal-legacy',
+          personalOrgId: 'personal-legacy',
+        }],
+      })),
+    );
+    initializeStytchAuth({ projectId: 'test', publicToken: 'test', apiBase: 'https://test.invalid' });
+
+    await handleAuthCallback({
+      intent: 'reauth',
+      targetPersonalOrgId: 'personal-legacy',
+      sessionToken: 'legacy-token-refreshed',
+      sessionJwt: createJwt({ sub: 'member-legacy' }),
+      userId: 'member-legacy',
+      email: 'legacy@example.com',
+      orgId: 'personal-legacy',
+    });
+
+    expect(getAccounts()).toEqual([
+      expect.objectContaining({ personalOrgId: 'personal-legacy', personalUserId: 'member-legacy' }),
+    ]);
+    expect(getAuthState().sessionToken).toBe('legacy-token-refreshed');
+  });
+
+  it('reauth updates only the accounts map for a secondary account', async () => {
+    await seedTwoAccounts();
+    const authBefore = getAuthState();
+    const legacyBefore = files.get('/mock/user-data/stytch-credentials.enc')!.toString('utf8');
+
+    await handleAuthCallback({
+      intent: 'reauth',
+      targetPersonalOrgId: 'personal-secondary',
+      sessionToken: 'secondary-token-refreshed',
+      sessionJwt: createJwt({ sub: 'member-secondary' }),
+      userId: 'member-secondary',
+      orgId: 'personal-secondary',
+    });
+
+    expect(getSyncAccount()?.personalOrgId).toBe('personal-sync');
+    expect(getAuthState()).toEqual(authBefore);
+    expect(files.get('/mock/user-data/stytch-credentials.enc')!.toString('utf8')).toBe(legacyBefore);
+    expect(persistedAccounts().accounts.find((account) => account.personalOrgId === 'personal-secondary'))
+      .toMatchObject({ sessionToken: 'secondary-token-refreshed' });
+  });
+});
+
+describe('StytchAuthService outgoing auth flow URLs', () => {
+  beforeEach(async () => {
+    await signOut();
+    files.clear();
+    fetchMock.mockReset();
+    openExternalMock.mockReset();
+    initializeStytchAuth({ projectId: 'test', publicToken: 'test', apiBase: 'https://test.invalid' });
+  });
+
+  it('starts Google OAuth with a bare loopback client_redirect and separate state', async () => {
+    await expect(signInWithGoogle('https://sync.example')).resolves.toEqual({ success: true });
+
+    const openedUrl = new URL(openExternalMock.mock.calls[0][0]);
+    const callbackUrl = new URL(openedUrl.searchParams.get('client_redirect')!);
+    expect(openedUrl.origin + openedUrl.pathname).toBe('https://sync.example/auth/login/google');
+    expect(callbackUrl.hostname).toBe('127.0.0.1');
+    expect(callbackUrl.pathname).toBe('/auth/callback');
+    expect(callbackUrl.search).toBe('');
+    expect(openedUrl.searchParams.get('state')).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('posts a nonce-bearing loopback redirect and renews it on magic-link resend', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true }),
+    });
+
+    await expect(sendMagicLink('user@example.com', 'https://sync.example')).resolves.toEqual({ success: true });
+    await expect(sendMagicLink('user@example.com', 'https://sync.example')).resolves.toEqual({ success: true });
+
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as { redirect_url: string };
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body)) as { redirect_url: string };
+    const callbackUrl = new URL(firstBody.redirect_url);
+    expect(callbackUrl.hostname).toBe('127.0.0.1');
+    expect(callbackUrl.pathname).toBe('/auth/callback');
+    expect(callbackUrl.searchParams.get('state')).toMatch(/^[a-f0-9]{64}$/);
+    expect(secondBody.redirect_url).toBe(firstBody.redirect_url);
+  });
+});
+
+/**
+ * The success handler registered by main rebuilds sync from the current config.
+ * Every completed callback used to fire it, so adding a second account tore down
+ * a healthy personal sync session that the callback never touched.
+ */
+describe('StytchAuthService sync reinitialization gating', () => {
+  beforeEach(async () => {
+    await signOut();
+    files.clear();
+    fetchMock.mockReset();
+    openExternalMock.mockReset();
+    initializeStytchAuth({ projectId: 'test', publicToken: 'test', apiBase: 'https://test.invalid' });
+  });
+
+  afterEach(() => {
+    setAuthCallbackSuccessHandler(null);
+  });
+
+  async function signInSyncAccount() {
+    await handleAuthCallback({
+      intent: 'sign-in',
+      sessionToken: 'sync-token',
+      sessionJwt: createJwt({ sub: 'member-sync' }),
+      userId: 'member-sync',
+      email: 'sync@example.com',
+      orgId: 'personal-sync',
+    });
+  }
+
+  /** Deliver the callback to the loopback listener the flow just opened. */
+  async function deliverCallback(
+    params: Record<string, string>,
+    method: 'GET' | 'POST',
+  ): Promise<Response> {
+    const opened = new URL(String(openExternalMock.mock.calls.at(-1)![0]));
+    const callback = new URL(opened.searchParams.get('client_redirect')!);
+    callback.searchParams.set('state', opened.searchParams.get('state')!);
+    if (method === 'GET') {
+      for (const [key, value] of Object.entries(params)) {
+        callback.searchParams.set(key, value);
+      }
+      return fetch(callback.toString());
+    }
+    return fetch(callback.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  it('does not reinitialize sync when a secondary account is added', async () => {
+    await signInSyncAccount();
+    const reinitialize = vi.fn();
+    setAuthCallbackSuccessHandler(reinitialize);
+
+    await expect(signInWithGoogle('https://sync.example', { intent: 'add-account' }))
+      .resolves.toEqual({ success: true });
+    const response = await deliverCallback({
+      session_token: 'new-token',
+      session_jwt: createJwt({ sub: 'member-new' }),
+      user_id: 'member-new',
+      email: 'new@example.com',
+      org_id: 'personal-new',
+    }, 'POST');
+
+    expect(response.status).toBe(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(reinitialize).not.toHaveBeenCalled();
+    expect(getAccounts()).toHaveLength(2);
+    expect(getSyncAccount()?.personalOrgId).toBe('personal-sync');
+  });
+
+  it('reinitializes sync when the sync account itself reauthenticates', async () => {
+    await signInSyncAccount();
+    const reinitialize = vi.fn();
+    setAuthCallbackSuccessHandler(reinitialize);
+
+    await expect(signInWithGoogle('https://sync.example', {
+      intent: 'reauth',
+      targetPersonalOrgId: 'personal-sync',
+    })).resolves.toEqual({ success: true });
+    const response = await deliverCallback({
+      session_token: 'sync-token-refreshed',
+      session_jwt: createJwt({ sub: 'member-sync' }),
+      user_id: 'member-sync',
+      email: 'sync@example.com',
+      org_id: 'personal-sync',
+    }, 'GET');
+
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(reinitialize).toHaveBeenCalledOnce());
+    expect(getAuthState().sessionToken).toBe('sync-token-refreshed');
   });
 });
 
@@ -333,6 +838,7 @@ describe('StytchAuthService personal refresh outcome classification', () => {
     const personalUserId = 'member-personal';
     const personalOrgId = 'org-personal';
     await handleAuthCallback({
+      intent: 'sign-in',
       sessionToken: 'session-token',
       sessionJwt: createJwt({ sub: personalUserId, exp: Math.floor(Date.now() / 1000) - 60 }),
       userId: personalUserId,
@@ -525,6 +1031,7 @@ describe('StytchAuthService refresh failure does not clear credentials', () => {
 
   async function signInPersonal() {
     await handleAuthCallback({
+      intent: 'sign-in',
       sessionToken: 'session-token',
       sessionJwt: createJwt({ sub: 'member-personal', exp: Math.floor(Date.now() / 1000) - 60 }),
       userId: 'member-personal',

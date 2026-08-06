@@ -187,6 +187,24 @@ describe('handleTrackerList structured records', () => {
     expect(items.map((i: any) => i.id)).toEqual(['a']);
   });
 
+  // NIM-2072 / NIM-2280: on the SQLite backend `archived` reaches the handler as
+  // 0/1, so the old `=== true` / `!== true` pair listed archived items in the
+  // default view and returned nothing for `archived: true`.
+  it('splits archived from active items when the flag is a database integer', async () => {
+    const items = [
+      { id: 'active', type: 'bug', typeTags: ['bug'], title: 'Active', status: 'to-do', workspace: '/tmp/ws', archived: 0 },
+      { id: 'gone', type: 'bug', typeTags: ['bug'], title: 'Gone', status: 'to-do', workspace: '/tmp/ws', archived: 1 },
+    ];
+    mockDocService.listTrackerItems.mockResolvedValue(items);
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+
+    const active = await handleTrackerList({}, '/tmp/ws');
+    expect(JSON.parse(active.content[0].text!).structured.items.map((i: any) => i.id)).toEqual(['active']);
+
+    const archived = await handleTrackerList({ archived: true }, '/tmp/ws');
+    expect(JSON.parse(archived.content[0].text!).structured.items.map((i: any) => i.id)).toEqual(['gone']);
+  });
+
   it('registers workspace schemas before resolving roles', async () => {
     const { ensureWorkspaceTrackerSchemasLoaded } = await import('../../../services/TrackerSchemaService');
     vi.mocked(ensureWorkspaceTrackerSchemasLoaded).mockClear();

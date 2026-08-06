@@ -37,6 +37,18 @@ fields:
         label: Rejected
         icon: thumb_down
 
+  # Collection membership. Written directly, or by inverse propagation when an
+  # item is added to a milestone/release from the collection side.
+  - name: collection
+    type: relationship
+    relationshipTypeKey: in-collection
+    inverseRelationshipTypeKey: has-item
+    inverseFieldId: items
+    targetTrackerTypes:
+      - milestone
+      - release
+    multiValue: true
+
   - name: tags
     type: array
     itemType: string

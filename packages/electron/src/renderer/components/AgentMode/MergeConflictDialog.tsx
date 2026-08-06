@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { AgentModelPicker, type AgentModelOption } from './AgentModelPicker';
 
 interface MergeConflictDialogProps {

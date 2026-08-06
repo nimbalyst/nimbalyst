@@ -113,7 +113,10 @@ trackerStatus:
         return { rows: state.row && params?.[0] === canonicalId ? [state.row] : [] };
       }
 
-      if (normalized.includes("WHERE workspace = $1 AND source = 'frontmatter' AND source_ref = $2 AND type = $3")) {
+      // The file->row lookup deliberately does NOT filter on `source`: a shared
+      // file-backed item is promoted to `source = 'native'` but keeps its
+      // `source_ref`, and filtering it out would mint a duplicate projection.
+      if (normalized.includes('WHERE workspace = $1 AND source_ref = $2 AND type = $3')) {
         return { rows: state.row ? [state.row] : [] };
       }
 

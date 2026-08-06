@@ -5,7 +5,9 @@ import { globalRegistry, type TrackerDataModel } from '@nimbalyst/runtime/plugin
 import { resolveColumnsForType } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import {
   buildGridColumns,
+  buildGridActionsColumn,
   buildGridSource,
+  ROW_ACTIONS,
   ROW_ITEM_ID,
   ROW_ITEM_TYPE,
 } from '../grid/trackerGridColumns';
@@ -205,6 +207,64 @@ describe('buildGridColumns', () => {
       height: 0,
     }));
   });
+
+  it('opens the existing row context menu from the dedicated action column', () => {
+    const actionColumn = buildGridActionsColumn();
+    const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({
+      tag,
+      props,
+      children,
+    });
+    const action = (actionColumn.cellTemplate as any)(h, {
+      model: { [ROW_ITEM_ID]: '1', title: 'Alpha' },
+    });
+    const target = document.createElement('button');
+    const rowCell = document.createElement('div');
+    rowCell.dataset.rgrow = '0';
+    rowCell.appendChild(target);
+    const observed = vi.fn();
+    rowCell.addEventListener('contextmenu', observed);
+    const pointerEvent = { preventDefault: vi.fn(), stopPropagation: vi.fn() };
+
+    action.props.onPointerDown(pointerEvent);
+    action.props.onClick({
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      currentTarget: target,
+      clientX: 24,
+      clientY: 36,
+    });
+
+    expect(pointerEvent.preventDefault).toHaveBeenCalled();
+    expect(pointerEvent.stopPropagation).toHaveBeenCalled();
+    expect(actionColumn.prop).toBe(ROW_ACTIONS);
+    expect(actionColumn.pin).toBe('colPinEnd');
+    expect(observed).toHaveBeenCalledTimes(1);
+    const event = observed.mock.calls[0][0] as MouseEvent;
+    expect(event.clientX).toBe(24);
+    expect(event.clientY).toBe(36);
+  });
+
+  it('also keeps the overflow action inside the title cell', () => {
+    registerType();
+    const [title] = buildGridColumns(columnsFor(['title']), {
+      trackerType: gridType,
+      isRowEditable: () => true,
+      rowActions: true,
+    });
+    const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({
+      tag,
+      props,
+      children,
+    });
+    const cell = (title.cellTemplate as any)(h, {
+      model: { [ROW_ITEM_ID]: '1', title: 'Alpha' },
+    });
+
+    expect(cell.props.class).toBe('tracker-grid-cell-title');
+    expect(cell.children.at(-1).props.class).toContain('tracker-grid-cell-menu-title');
+  });
+
 });
 
 describe('buildGridColumns cellCompare', () => {

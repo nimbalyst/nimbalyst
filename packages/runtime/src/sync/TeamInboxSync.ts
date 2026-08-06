@@ -6,6 +6,8 @@ import type {
   InboxUnavailableDelivery,
   InboxWatermark,
   InboxWireDelivery,
+  PresenceDesiredStatus,
+  TeamPresenceMember,
   TeamInboxClientMessage,
   TeamInboxServerMessage,
 } from '@nimbalyst/collab-protocol';
@@ -22,6 +24,7 @@ const CUSTODY_ERROR_CODES = new Set([
   'ORG_SERVER_MANAGED_DEK_REQUIRED',
   'ORG_SERVER_MANAGED_DEK_MISSING',
 ]);
+const PROTOCOL_REJECTION_CODES = new Set(['unknownInboxMessage']);
 
 export interface TeamInboxOrgDescriptor {
   orgId: string;
@@ -33,6 +36,7 @@ export interface TeamInboxOrgDescriptor {
 export type TeamInboxWatermark = InboxWatermark;
 export type TeamInboxUnavailableDelivery = InboxUnavailableDelivery;
 export type TeamInboxWireDelivery = InboxWireDelivery;
+export type { PresenceDesiredStatus, TeamPresenceMember };
 
 export interface TeamInboxMaterializedDelivery {
   id: string;
@@ -78,6 +82,7 @@ export interface TeamInboxSnapshot {
     | 'reconnecting';
   deliveries: TeamInboxMaterializedDelivery[];
   organizations: TeamInboxOrganizationState[];
+  presence?: Record<string, Record<string, TeamPresenceMember>>;
   lastSyncedAt?: number;
 }
 
@@ -101,6 +106,14 @@ export type TeamInboxOrgEvent =
       subscription: ConversationSubscription;
     }
   | {
+      type: 'presenceRoster';
+      members: TeamPresenceMember[];
+    }
+  | {
+      type: 'presenceDelta';
+      member: TeamPresenceMember;
+    }
+  | {
       type: 'markRead';
       deliveryIds: string[];
       readAt: number;
@@ -120,6 +133,7 @@ export interface TeamInboxOrgClientLike {
   connect(): Promise<void>;
   markRead(deliveryIds: string[]): Promise<void>;
   dismiss(deliveryIds: string[]): Promise<void>;
+  setPresenceStatus?(status: PresenceDesiredStatus): void;
   subscribe(listener: (event: TeamInboxOrgEvent) => void): () => void;
   destroy(): void;
 }
@@ -129,6 +143,9 @@ export interface TeamInboxOrgClientConfig {
   org: TeamInboxOrgDescriptor;
   getTeamJwt: () => Promise<TeamJwt>;
   createWebSocket?: (url: string) => WebSocket;
+  heartbeatIntervalMs?: number;
+  getPresenceStatus?: () => PresenceDesiredStatus;
+  now?: () => number;
 }
 
 function isCustodyError(code: string): boolean {
@@ -152,6 +169,7 @@ export class TeamInboxOrgClient implements TeamInboxOrgClientLike {
   private custodyBlocked = false;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pendingMessages: TeamInboxClientMessage[] = [];
 
   constructor(config: TeamInboxOrgClientConfig) {
@@ -182,6 +200,7 @@ export class TeamInboxOrgClient implements TeamInboxOrgClientLike {
         this.reconnectAttempt = 0;
         const syncRequest: TeamInboxClientMessage = { type: 'inboxSyncRequest' };
         ws.send(JSON.stringify(syncRequest));
+        this.startHeartbeat();
         const pending = this.pendingMessages;
         this.pendingMessages = [];
         for (const message of pending) {
@@ -195,6 +214,7 @@ export class TeamInboxOrgClient implements TeamInboxOrgClientLike {
       ws.addEventListener('close', () => {
         if (this.ws !== ws) return;
         this.ws = null;
+        this.stopHeartbeat();
         this.emit({ type: 'disconnected' });
         this.scheduleReconnect();
       });
@@ -225,10 +245,19 @@ export class TeamInboxOrgClient implements TeamInboxOrgClientLike {
     this.sendOrQueue({ type: 'dismissInbox', deliveryIds });
   }
 
+  setPresenceStatus(status: PresenceDesiredStatus): void {
+    this.sendOrQueue({
+      type: 'presenceStatusSet',
+      status,
+      sentAt: this.config.now?.() ?? Date.now(),
+    });
+  }
+
   destroy(): void {
     this.destroyed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.stopHeartbeat();
     const ws = this.ws;
     this.ws = null;
     ws?.close();
@@ -251,6 +280,11 @@ export class TeamInboxOrgClient implements TeamInboxOrgClientLike {
           });
           return;
         case 'inboxDeliveryBroadcast':
+          // console.log('[TeamInboxSync] inboxDeliveryBroadcast received:', {
+          //   org: this.config.org.orgId,
+          //   hasDelivery: !!message.delivery,
+          //   id: message.delivery?.id,
+          // });
           if (message.delivery) {
             this.emit({ type: 'delivery', delivery: message.delivery });
           }
@@ -269,6 +303,17 @@ export class TeamInboxOrgClient implements TeamInboxOrgClientLike {
               type: 'subscription',
               subscription: message.subscription,
             });
+          }
+          return;
+        case 'presenceRoster':
+          this.emit({
+            type: 'presenceRoster',
+            members: message.members ?? [],
+          });
+          return;
+        case 'presenceDelta':
+          if (message.member) {
+            this.emit({ type: 'presenceDelta', member: message.member });
           }
           return;
         case 'markInboxReadResponse':
@@ -298,6 +343,8 @@ export class TeamInboxOrgClient implements TeamInboxOrgClientLike {
             const ws = this.ws;
             this.ws = null;
             ws?.close();
+          } else if (PROTOCOL_REJECTION_CODES.has(code)) {
+            this.ws?.close();
           }
           return;
         }
@@ -310,6 +357,7 @@ export class TeamInboxOrgClient implements TeamInboxOrgClientLike {
         code: 'TEAM_INBOX_PROTOCOL_ERROR',
         message: error instanceof Error ? error.message : String(error),
       });
+      this.ws?.close();
     }
   }
 
@@ -319,6 +367,31 @@ export class TeamInboxOrgClient implements TeamInboxOrgClientLike {
       return;
     }
     this.ws.send(JSON.stringify(message));
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.sendPresenceHeartbeat();
+    const interval = Math.max(
+      1_000,
+      this.config.heartbeatIntervalMs ?? 30_000,
+    );
+    this.heartbeatTimer = setInterval(() => {
+      this.sendPresenceHeartbeat();
+    }, interval);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
+  private sendPresenceHeartbeat(): void {
+    this.sendOrQueue({
+      type: 'presenceHeartbeat',
+      status: this.config.getPresenceStatus?.() ?? 'online',
+      sentAt: this.config.now?.() ?? Date.now(),
+    });
   }
 
   private emit(event: TeamInboxOrgEvent): void {
@@ -352,12 +425,18 @@ interface OrgMaterializedState {
   watermarks: Map<string, TeamInboxWatermark>;
   subscriptions: Map<string, ConversationSubscription>;
   readReceipts: Map<string, number>;
+  presence: Map<string, TeamPresenceMember>;
 }
 
 export interface TeamInboxFanInConfig {
   createClient: (org: TeamInboxOrgDescriptor) => TeamInboxOrgClientLike;
   connectConcurrency?: number;
   now?: () => number;
+  /**
+   * Fires only for a newly accepted realtime delivery broadcast. Initial sync,
+   * reconnect hydration, and duplicate broadcasts never reach this callback.
+   */
+  onDelivery?: (delivery: TeamInboxMaterializedDelivery) => void;
 }
 
 export class TeamInboxFanIn {
@@ -389,6 +468,7 @@ export class TeamInboxFanIn {
         watermarks: new Map(),
         subscriptions: new Map(),
         readReceipts: new Map(),
+        presence: new Map(),
       });
       const client = this.config.createClient(descriptor);
       this.clients.set(descriptor.orgId, client);
@@ -469,10 +549,11 @@ export class TeamInboxFanIn {
   private applyEvent(orgId: string, event: TeamInboxOrgEvent): void {
     const state = this.orgStates.get(orgId);
     if (!state) return;
+    let newDelivery: TeamInboxWireDelivery | null = null;
 
     switch (event.type) {
       case 'connecting':
-        state.status = state.deliveries.size > 0 ? 'offline' : 'connecting';
+        state.status = 'connecting';
         break;
       case 'sync':
         state.status = 'ready';
@@ -491,6 +572,14 @@ export class TeamInboxFanIn {
         this.lastSyncedAt = this.config.now?.() ?? Date.now();
         break;
       case 'delivery':
+        // console.log('[TeamInboxFanIn] delivery event applied:', {
+        //   orgId,
+        //   id: event.delivery.id,
+        //   alreadyKnown: state.deliveries.has(event.delivery.id),
+        // });
+        if (!state.deliveries.has(event.delivery.id)) {
+          newDelivery = event.delivery;
+        }
         state.deliveries.set(event.delivery.id, event.delivery);
         break;
       case 'watermark': {
@@ -509,6 +598,14 @@ export class TeamInboxFanIn {
           event.subscription.conversationId,
           event.subscription,
         );
+        break;
+      case 'presenceRoster':
+        state.presence = new Map(
+          event.members.map((member) => [member.teamMemberId, member]),
+        );
+        break;
+      case 'presenceDelta':
+        state.presence.set(event.member.teamMemberId, event.member);
         break;
       case 'markRead':
         this.applyMarkRead(state, event.deliveryIds, event.readAt);
@@ -536,6 +633,14 @@ export class TeamInboxFanIn {
         break;
     }
     this.rebuildSnapshot();
+    if (newDelivery) {
+      try {
+        this.config.onDelivery?.(materializeDelivery(state, newDelivery));
+      } catch {
+        // Notification-style observers are best-effort and must never break
+        // canonical Inbox materialization.
+      }
+    }
   }
 
   private inferReceiptsFromReadDeliveries(state: OrgMaterializedState): void {
@@ -590,7 +695,12 @@ export class TeamInboxFanIn {
         materializeDelivery(state, delivery)))
       .sort((left, right) =>
         right.createdAt - left.createdAt || right.id.localeCompare(left.id));
-
+    const presence = Object.fromEntries(
+      [...this.orgStates.values()].map((state) => [
+        state.descriptor.orgId,
+        Object.fromEntries(state.presence),
+      ]),
+    );
     const readyCount = organizations.filter(
       (org) => org.status === 'ready',
     ).length;
@@ -619,6 +729,7 @@ export class TeamInboxFanIn {
       status,
       deliveries,
       organizations,
+      presence,
       ...(this.lastSyncedAt ? { lastSyncedAt: this.lastSyncedAt } : {}),
     };
     for (const listener of this.listeners) listener();
@@ -651,6 +762,12 @@ export class TeamInboxFanIn {
     for (const client of this.clients.values()) client.destroy();
     this.clients.clear();
     this.orgStates.clear();
+  }
+
+  setPresenceStatus(status: PresenceDesiredStatus): void {
+    for (const client of this.clients.values()) {
+      client.setPresenceStatus?.(status);
+    }
   }
 }
 

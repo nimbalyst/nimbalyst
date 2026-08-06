@@ -25,8 +25,13 @@ import {
   createCommentFixtures,
   createFixtureResolver,
 } from '../commentFixtures';
-import { messageUrn, parseResourceUrn, resourceRefToUrn } from '../resourceUrn';
-import type { CommentRef, ResourceRef } from '../commentTypes';
+import {
+  messageUrn,
+  parsePastedResourceLink,
+  parseResourceUrn,
+  resourceRefToUrn,
+} from '../resourceUrn';
+import type { Comment, CommentRef, CommentView, ResourceRef } from '../commentTypes';
 
 const NOW = Date.parse('2026-07-26T18:00:00.000Z');
 const ORG = 'org-nimbalyst';
@@ -59,6 +64,47 @@ describe('resource URN round-trip', () => {
     expect(parseResourceUrn('nimbalyst://tracker', ORG)).toBeNull();
     expect(parseResourceUrn('nimbalyst://unknownkind/1', ORG)).toBeNull();
     expect(parseResourceUrn('nimbalyst://file/foo.ts', ORG)).toBeNull();
+  });
+});
+
+describe('pasted Nimbalyst resource links', () => {
+  it('recognizes copied tracker and plan-document links for this organization', () => {
+    expect(
+      parsePastedResourceLink(
+        'nimbalyst://tracker/tracker%2Fone?orgId=org-nimbalyst',
+        ORG,
+      ),
+    ).toEqual({
+      ref: {
+        orgId: ORG,
+        kind: 'tracker',
+        sourceId: 'tracker/one',
+      },
+      label: 'Tracker',
+    });
+
+    expect(
+      parsePastedResourceLink(
+        'nimbalyst://tracker/plan-42?orgId=org-nimbalyst&view=document',
+        ORG,
+      ),
+    ).toEqual({
+      ref: {
+        orgId: ORG,
+        kind: 'tracker',
+        sourceId: 'plan-42',
+      },
+      label: 'Plan',
+    });
+  });
+
+  it('does not authorize a tracker link copied from another organization', () => {
+    expect(
+      parsePastedResourceLink(
+        'nimbalyst://tracker/tracker-1?orgId=another-org',
+        ORG,
+      ),
+    ).toBeNull();
   });
 });
 
@@ -384,5 +430,51 @@ describe('draft bound enforcement at the validator limits', () => {
     const result = draft({ resourceRefs: [FIXTURE_REFS.tracker] });
     expect(result.isEmpty).toBe(false);
     expect(result.canSend).toBe(true);
+  });
+});
+
+describe('attachments in the comment view', () => {
+  const ATTACHMENT = {
+    assetId: 'asset-1',
+    fileName: 'screenshot.png',
+    mimeType: 'image/png',
+    byteSize: 2048,
+  };
+
+  function viewOf(overrides: Partial<Comment> = {}): CommentView {
+    const fixtures = createCommentFixtures({ now: NOW });
+    const base = fixtures.comments[0];
+    return buildCommentView(
+      {
+        ...base,
+        body: {
+          version: 1,
+          format: 'nimbalystMarkdown',
+          text: 'see this',
+          attachments: [ATTACHMENT],
+        },
+        ...overrides,
+      },
+      {
+        viewerUserId: fixtures.viewerUserId,
+        directory: fixtures.directory,
+        previews: {},
+        reactionsSupported: true,
+        now: NOW,
+      },
+    );
+  }
+
+  it('addresses an attachment against the message source, not a guess', () => {
+    const view = viewOf();
+    const segment = view.segments.find((entry) => entry.type === 'attachments');
+
+    expect(segment).toBeDefined();
+    expect(segment?.type === 'attachments' && segment.attachments[0].src)
+      .toBe(`collab-asset://doc/${encodeURIComponent(view.ref.sourceId)}/asset/asset-1`);
+  });
+
+  it('shows nothing for a deleted message, attachments included', () => {
+    expect(viewOf({ deletedAt: NOW }).segments).toEqual([]);
   });
 });

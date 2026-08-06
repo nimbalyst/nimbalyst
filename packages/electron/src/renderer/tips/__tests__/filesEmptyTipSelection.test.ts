@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { WalkthroughState } from '../../walkthroughs/types';
 import {

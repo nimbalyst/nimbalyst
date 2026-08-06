@@ -17,19 +17,35 @@
    RevoGrid Theme Overrides
    ======================================== */
 
-/* Map RevoGrid's internal variables to Nimbalyst theme variables */
+/**
+ * Map RevoGrid's internal variables to Nimbalyst theme variables.
+ *
+ * These must use the `--revo-grid-*` names RevoGrid 4.x actually reads. An
+ * earlier `--revo-bg-color` / `--revo-header-bg-color` naming exists nowhere in
+ * the shipped stylesheet, so those mappings were inert and RevoGrid kept its
+ * light defaults — most visibly `--revo-grid-header-bg: #f8f9fa` painting the
+ * row-header gutter below the last row white in dark themes.
+ */
 .spreadsheet-editor revo-grid {
-  --revo-bg-color: var(--nim-bg);
-  --revo-row-odd-color: var(--nim-bg);
-  --revo-row-even-color: var(--nim-bg);
-  --revo-header-bg-color: var(--nim-bg-secondary);
-  --revo-border-color: var(--nim-border);
-  --revo-text-color: var(--nim-text);
-  --revo-header-text-color: var(--nim-text-muted);
-  --revo-selected-bg-color: var(--nim-bg-selected);
-  --revo-focus-bg-color: var(--nim-bg-active);
+  --revo-grid-primary: var(--nim-primary);
+  --revo-grid-background: var(--nim-bg);
+  --revo-grid-foreground: var(--nim-text);
+  --revo-grid-text: var(--nim-text);
+  --revo-grid-divider: var(--nim-border);
+  --revo-grid-border: var(--nim-border);
   --revo-grid-cell-border: var(--nim-border);
+  --revo-grid-cell-disabled-bg: var(--nim-bg-secondary);
+  --revo-grid-header-bg: var(--nim-bg-secondary);
+  --revo-grid-header-color: var(--nim-text-muted);
   --revo-grid-header-border: var(--nim-border);
+  --revo-grid-row-headers-bg: var(--nim-bg-secondary);
+  --revo-grid-row-headers-color: var(--nim-text-muted);
+  --revo-grid-row-hover: var(--nim-bg-hover);
+  --revo-grid-focused-bg: var(--nim-bg-active);
+  --revo-grid-filter-panel-bg: var(--nim-bg);
+  --revo-grid-filter-panel-border: var(--nim-border);
+  --revo-grid-filter-panel-input-bg: var(--nim-bg-secondary);
+  --revo-grid-filter-panel-divider: var(--nim-border);
 }
 
 /* Disable full row highlighting on selection - only show cell selection border */
@@ -42,23 +58,155 @@
   background-color: var(--nim-bg-selected);
 }
 
-/* Selection range background fill */
+/**
+ * Selection range fill, and its border edge by edge.
+ *
+ * RevoGrid paints the range once per viewport section, so a selection crossing
+ * the frozen-column or pinned-row boundary gets a border drawn straight through
+ * its middle. The paint step (selection/crossSectionSelection.ts) marks each
+ * section's overlay on the sides where its range continues into a neighbouring
+ * section; those sides drop their edge, leaving one unbroken rectangle.
+ */
 .spreadsheet-editor revo-grid revogr-overlay-selection .selection-border-range {
+  --csv-selection-edge-top: 0 1px 0 var(--nim-primary) inset;
+  --csv-selection-edge-right: -1px 0 0 var(--nim-primary) inset;
+  --csv-selection-edge-bottom: 0 -1px 0 var(--nim-primary) inset;
+  --csv-selection-edge-left: 1px 0 0 var(--nim-primary) inset;
+
   background-color: var(--nim-bg-selected);
+  box-shadow:
+    var(--csv-selection-edge-top),
+    var(--csv-selection-edge-right),
+    var(--csv-selection-edge-bottom),
+    var(--csv-selection-edge-left);
 }
 
-/* Column header height - slightly taller than data rows (32px + 5px = 37px) */
+.spreadsheet-editor revo-grid revogr-overlay-selection[data-csv-open-top] .selection-border-range {
+  --csv-selection-edge-top: 0 0 0 transparent;
+}
+
+.spreadsheet-editor
+  revo-grid
+  revogr-overlay-selection[data-csv-open-right]
+  .selection-border-range {
+  --csv-selection-edge-right: 0 0 0 transparent;
+}
+
+.spreadsheet-editor
+  revo-grid
+  revogr-overlay-selection[data-csv-open-bottom]
+  .selection-border-range {
+  --csv-selection-edge-bottom: 0 0 0 transparent;
+}
+
+.spreadsheet-editor revo-grid revogr-overlay-selection[data-csv-open-left] .selection-border-range {
+  --csv-selection-edge-left: 0 0 0 transparent;
+}
+
+/**
+ * Column header strip.
+ *
+ * Kept close to the 27px data-row height: at 37px it read as a separate band
+ * sitting on top of the sheet rather than as the sheet's own header.
+ */
 .spreadsheet-editor revo-grid revogr-header {
-  line-height: 37px;
+  line-height: 28px;
 }
 .spreadsheet-editor revo-grid revogr-header .header-rgRow {
-  height: 37px;
+  height: 28px;
 }
 
 /* Column headers - explicit background color */
 .spreadsheet-editor revo-grid revogr-header .rgHeaderCell {
   cursor: pointer;
   background-color: var(--nim-bg-secondary) !important;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/**
+ * Column-header filter affordance.
+ *
+ * Rendered by the column template rather than by React, because RevoGrid owns
+ * the header DOM; the editor picks its clicks up through the header mousedown
+ * delegation it already runs.
+ */
+.spreadsheet-editor revo-grid .csv-header-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* Centred, like the column letters in any spreadsheet. `space-between` used
+     to push the label to the left edge to make room for the funnel; the funnel
+     is out of flow now, so the label can sit where it belongs. */
+  justify-content: center;
+  width: 100%;
+  padding: 0 14px;
+}
+
+.spreadsheet-editor revo-grid .csv-filter-affordance {
+  position: absolute;
+  right: 3px;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--nim-text-faint);
+  opacity: 0;
+  transition: opacity 150ms;
+}
+
+.spreadsheet-editor revo-grid .rgHeaderCell:hover .csv-filter-affordance,
+.spreadsheet-editor revo-grid .csv-filter-affordance-active {
+  opacity: 1;
+}
+
+.spreadsheet-editor revo-grid .csv-filter-affordance-active {
+  color: var(--nim-primary);
+}
+
+/**
+ * Find matches. The current match is the one the cursor is on, so it gets the
+ * stronger treatment; the rest stay legible under the selection fill.
+ *
+ * `!important` beats the diff tint below, which is also `!important`: while a
+ * search is open the hits are what the user is looking at, so they have to stay
+ * visible in a sheet under diff review rather than disappearing into the green.
+ */
+.spreadsheet-editor revo-grid revogr-data .rgCell.csv-find-match {
+  background-color: color-mix(in srgb, var(--nim-warning) 30%, transparent) !important;
+}
+
+.spreadsheet-editor revo-grid revogr-data .rgCell.csv-find-current {
+  background-color: color-mix(in srgb, var(--nim-warning) 60%, transparent) !important;
+  box-shadow: 0 0 0 1px var(--nim-primary) inset;
+}
+
+.spreadsheet-editor revo-grid revogr-data .rgCell.csv-ai-cell-flash {
+  animation: csv-ai-cell-flash 1.4s ease-out;
+}
+
+@keyframes csv-ai-cell-flash {
+  0%, 35% {
+    background-color: color-mix(in srgb, var(--nim-primary) 55%, transparent);
+    box-shadow: 0 0 0 2px var(--nim-primary) inset;
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+/**
+ * Find bar: drop the least essential action first when the editor is narrow
+ * (a spreadsheet in a split pane), rather than letting the row overflow.
+ */
+.spreadsheet-editor .csv-find-bar {
+  container-type: inline-size;
+}
+
+@container (max-width: 560px) {
+  .csv-find-replace-selection {
+    display: none;
+  }
 }
 
 /* Row headers - explicit background color */
@@ -88,21 +236,50 @@
   outline: none;
 }
 
-/* Cell content styling - use !important to override RevoGrid defaults */
-.spreadsheet-editor revogr-cell {
+/**
+ * Cell content.
+ *
+ * These have to hang off `.rgCell`, not `revogr-cell`: this version of RevoGrid
+ * renders cells as plain elements carrying `.rgCell`, so the older
+ * `revogr-cell` rules matched nothing and the sheet was quietly falling back to
+ * Helvetica at RevoGrid's own 12px rather than to the app font.
+ *
+ * `tabular-nums` is what makes a column of figures line up digit over digit --
+ * the single biggest reason a grid of numbers reads as a spreadsheet rather
+ * than as a table of strings.
+ */
+.spreadsheet-editor revo-grid .rgCell {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  font-size: 13px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
   color: var(--nim-text) !important;
 }
 
-/* Ensure all cells have correct text color */
-.spreadsheet-editor revo-grid .rgCell {
-  color: var(--nim-text) !important;
+/**
+ * Default alignment. RevoGrid centres every cell (`revogr-data{text-align:center}`),
+ * which no spreadsheet does: text belongs against the left edge and numbers
+ * against the right, so a column of figures can be scanned by magnitude.
+ * `cellProperties` adds `cell-align-right` per cell for values that read as
+ * numbers; this is the text default underneath it.
+ */
+.spreadsheet-editor revo-grid revogr-data {
+  text-align: left;
+}
+
+/**
+ * Row height. RevoGrid hardcodes `.rgRow{line-height:27px}` in its theme rather
+ * than deriving it, so this has to be kept in step with the `rowSize` prop in
+ * SpreadsheetEditor.tsx by hand.
+ */
+.spreadsheet-editor revo-grid revogr-data .rgRow {
+  line-height: 24px;
 }
 
 /* Row headers text color */
 .spreadsheet-editor revo-grid .rowHeaders .rgCell {
   color: var(--nim-text-muted) !important;
+  font-size: 11px;
+  text-align: center;
 }
 
 /* Column headers text color */
@@ -110,9 +287,9 @@
   color: var(--nim-text-muted) !important;
 }
 
-/* Cell padding - add space around content */
+/* Cell padding - enough of a gutter that left-aligned text clears the gridline */
 .spreadsheet-editor revo-grid revogr-data .rgCell {
-  padding: 0 6px;
+  padding: 0 8px;
 }
 
 /* Header row styling (row 0 when hasHeaders is enabled) */

@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test table separator normalization
  */

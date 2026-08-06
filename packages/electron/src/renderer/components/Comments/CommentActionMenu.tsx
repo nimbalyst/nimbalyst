@@ -1,5 +1,5 @@
 import React from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
 import type { CommentActionKind, CommentView } from './commentTypes';

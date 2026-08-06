@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Regression: rejecting added listitems that come AFTER a kept
  * nested-list-wrapper used to leave stray content behind, because

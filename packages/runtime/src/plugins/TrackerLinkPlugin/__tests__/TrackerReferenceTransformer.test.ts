@@ -123,4 +123,17 @@ describe('TrackerReferenceTransformer', () => {
 
     expect(exported).toContain('[tk_a1b2c3](nimbalyst://tk_a1b2c3)');
   });
+
+  it('does not claim app-action links', () => {
+    expect(
+      TrackerReferenceTransformer.importRegExp!.exec(
+        '[Open projects](nimbalyst://action/open-project-manager)',
+      ),
+    ).toBeNull();
+    expect(
+      TrackerReferenceTransformer.regExp.exec(
+        '[Open projects](nimbalyst://action/open-project-manager)',
+      ),
+    ).toBeNull();
+  });
 });

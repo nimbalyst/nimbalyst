@@ -27,19 +27,33 @@ describe('buildClaudeCliSpawnConfig', () => {
     expect(cfg.args[cfg.args.indexOf('--model') + 1]).toBe('opus');
   });
 
-  // NIM-843: without --strict-mcp-config the genuine `claude` binary merges its
-  // own MCP discovery (~/.claude.json, project .mcp.json, claude.ai connectors)
-  // on top of our --mcp-config snapshot and ignores the `disabled` flag we write,
-  // so user-disabled third-party servers leak into CLI sessions. Strict mode makes
-  // the binary use ONLY the snapshot (which already carries the enabled set,
-  // filtered by isMCPServerEnabledForProvider).
-  it('passes --strict-mcp-config alongside --mcp-config so the binary uses ONLY our snapshot', () => {
-    const cfg = buildClaudeCliSpawnConfig({ ...base, mcpConfigPath: '/tmp/mcp.json' });
-    expect(cfg.args).toContain('--strict-mcp-config');
+  // NIM-2372: strict mode is gone. It made the binary ignore its own ecosystem —
+  // which killed every claude.ai account connector (NIM-2240) and hard-failed on
+  // machines with an enterprise managed-mcp.json. "Off" is now expressed in the
+  // CLI's own `disabledMcpServers` (see MCPConfigService), not by overriding it.
+  it('never passes --strict-mcp-config (the binary keeps its own MCP discovery)', () => {
+    expect(buildClaudeCliSpawnConfig({ ...base, mcpConfigPath: '/tmp/mcp.json' }).args).not.toContain(
+      '--strict-mcp-config'
+    );
+    expect(buildClaudeCliSpawnConfig(base).args).not.toContain('--strict-mcp-config');
   });
 
-  it('omits --strict-mcp-config when there is no --mcp-config snapshot', () => {
-    expect(buildClaudeCliSpawnConfig(base).args).not.toContain('--strict-mcp-config');
+  // Enterprise MCP lockdown (NIM-2372): the binary rejects any --mcp-config when a
+  // managed-mcp.json is present, so the launcher drops the snapshot. Nothing may
+  // then point the model at MCP tools that cannot exist — and the built-in
+  // AskUserQuestion must be left alone, since our MCP replacement is gone.
+  it('under mcpToolsUnavailable: keeps the built-in AskUserQuestion and drops the MCP nudges', () => {
+    const cfg = buildClaudeCliSpawnConfig({
+      ...base,
+      mcpToolsUnavailable: true,
+      additionalDirectories: ['/tmp/attachments'],
+    });
+    expect(cfg.args).not.toContain('--disallowedTools');
+    const nudge = cfg.args[cfg.args.indexOf('--append-system-prompt') + 1] ?? '';
+    expect(nudge).not.toContain('mcp__nimbalyst');
+    // --add-dir is variadic; --append-system-prompt must still terminate it.
+    const addDir = cfg.args.indexOf('--add-dir');
+    expect(cfg.args[addDir + 2]).toBe('--append-system-prompt');
   });
 
   it('resumes a session with --resume <id>', () => {

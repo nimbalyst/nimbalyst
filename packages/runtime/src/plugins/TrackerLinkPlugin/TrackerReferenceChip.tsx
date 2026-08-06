@@ -23,6 +23,7 @@ import {
   useRole,
   useInteractions,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../../ui/floating/windowControlsClearance';
 
 import {
   useResolvedTrackerReference,
@@ -212,6 +213,16 @@ export interface TrackerReferenceChipProps {
   previewStateKey?: string;
   /** Compact chips omit the live title while retaining preview and navigation. */
   variant?: 'default' | 'compact';
+  /** Host-provided label while this renderer has no local tracker record. */
+  unresolvedLabel?: string;
+  /**
+   * Host navigation override.
+   *
+   * Dedicated windows without a local tracker store use this to hand the
+   * reference back to the desktop router. Receiving `null` is intentional:
+   * the host can still route the stable reference key to the owning workspace.
+   */
+  onNavigate?: (resolved: ResolvedTrackerReference | null) => void;
 }
 
 export function TrackerReferenceChip({
@@ -219,6 +230,8 @@ export function TrackerReferenceChip({
   nodeKey,
   previewStateKey,
   variant = 'default',
+  unresolvedLabel,
+  onNavigate,
 }: TrackerReferenceChipProps): JSX.Element {
   const resolved = useResolvedTrackerReference(referenceKey);
   const [open, setOpen] = React.useState(false);
@@ -245,7 +258,7 @@ export function TrackerReferenceChip({
     open,
     onOpenChange: handleOpenChange,
     placement: 'bottom-start',
-    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
     whileElementsMounted: autoUpdate,
   });
 
@@ -277,7 +290,7 @@ export function TrackerReferenceChip({
   const normalizedStatus = normalizeStatus(resolved?.status);
   const statusPresentation = getStatusPresentation(normalizedStatus);
   const isCompleted = statusPresentation?.tone === 'completed';
-  const label = resolved?.issueKey ?? referenceKey;
+  const label = resolved?.issueKey ?? unresolvedLabel ?? referenceKey;
   const title = resolved?.title;
   const typeColor = resolved?.type ? getTypeColor(resolved.type) : undefined;
   const typeIcon = resolved?.type ? getTypeIcon(resolved.type) : undefined;
@@ -292,7 +305,7 @@ export function TrackerReferenceChip({
     ? `${label}${resolved.status ? ` · ${resolved.status}` : ''}${
         resolved.title ? ` — ${resolved.title}` : ''
       }`
-    : `${label} (not resolved)`;
+    : `${label} (not resolved locally)`;
 
   return (
     <>
@@ -434,12 +447,16 @@ export function TrackerReferenceChip({
             <TrackerReferencePreview
               referenceKey={referenceKey}
               resolved={resolved}
-              onGoTo={() => {
-                if (resolved) {
-                  navigateToTrackerReference(resolved);
-                }
-                handleOpenChange(false);
-              }}
+              displayLabel={label}
+              onGoTo={
+                resolved || onNavigate
+                  ? () => {
+                      if (onNavigate) onNavigate(resolved);
+                      else if (resolved) navigateToTrackerReference(resolved);
+                      handleOpenChange(false);
+                    }
+                  : undefined
+              }
             />
           </div>
         </FloatingPortal>
@@ -451,12 +468,14 @@ export function TrackerReferenceChip({
 interface TrackerReferencePreviewProps {
   referenceKey: string;
   resolved: ResolvedTrackerReference | null;
-  onGoTo: () => void;
+  displayLabel: string;
+  onGoTo?: () => void;
 }
 
 function TrackerReferencePreview({
   referenceKey,
   resolved,
+  displayLabel: unresolvedDisplayLabel,
   onGoTo,
 }: TrackerReferencePreviewProps): JSX.Element {
   const typeColor = resolved?.type
@@ -595,34 +614,53 @@ function TrackerReferencePreview({
                 : 'Update time unavailable'}
               {resolved.owner ? ` · ${resolved.owner}` : ''}
             </div>
-            <button
-              type="button"
-              onClick={onGoTo}
-              style={{
-                marginLeft: 'auto',
-                flexShrink: 0,
-                fontSize: '11px',
-                fontWeight: 600,
-                padding: '5px 10px',
-                borderRadius: '6px',
-                border: '1px solid var(--nim-border)',
-                background: 'var(--nim-bg-secondary)',
-                color: 'var(--nim-text)',
-                cursor: 'pointer',
-              }}
-            >
-              Go to item
-            </button>
+            {onGoTo ? <GoToItemButton onClick={onGoTo} /> : null}
           </div>
         </>
       ) : (
         <div style={{ color: 'var(--nim-text-muted)' }}>
           <div style={{ fontWeight: 600, marginBottom: '4px' }}>
-            {referenceKey}
+            {unresolvedDisplayLabel}
           </div>
           <div>This tracker item couldn’t be resolved in this workspace.</div>
+          {onGoTo ? (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                marginTop: '10px',
+                paddingTop: '10px',
+                borderTop: '1px solid var(--nim-border)',
+              }}
+            >
+              <GoToItemButton onClick={onGoTo} />
+            </div>
+          ) : null}
         </div>
       )}
     </div>
+  );
+}
+
+function GoToItemButton({ onClick }: { onClick: () => void }): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        marginLeft: 'auto',
+        flexShrink: 0,
+        fontSize: '11px',
+        fontWeight: 600,
+        padding: '5px 10px',
+        borderRadius: '6px',
+        border: '1px solid var(--nim-border)',
+        background: 'var(--nim-bg-secondary)',
+        color: 'var(--nim-text)',
+        cursor: 'pointer',
+      }}
+    >
+      Go to item
+    </button>
   );
 }

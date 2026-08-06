@@ -110,6 +110,26 @@ function capOutput(existing: string, chunk: string, maxBytes: number): string {
   return head + ELISION_MARKER + tail;
 }
 
+// Git and the hooks it runs colour their output even when stdout is a pipe,
+// and the Output panel renders plain text -- so a failing pre-push test would
+// arrive as literal "[32m- Expected[39m" noise. Built from escape sequences
+// rather than a literal to keep raw control bytes out of this source file.
+const ANSI_ESCAPE_PATTERN = new RegExp(
+  "\\u001B\\[[0-9;?]*[ -/]*[@-~]" + // CSI (colour, cursor)
+    "|\\u001B\\][\\s\\S]*?(?:\\u0007|\\u001B\\\\)" + // OSC (title), BEL- or ST-terminated
+    "|\\u001B[@-Z\\\\^_]", // single-character escapes
+  "g"
+);
+
+function stripAnsi(value: string): string {
+  return value.replace(ANSI_ESCAPE_PATTERN, "");
+}
+
+/** Output/error text bound for the panel: colours removed, secrets masked. */
+function sanitizeOutputText(value: string): string {
+  return redactSensitiveText(stripAnsi(value));
+}
+
 function redactSensitiveText(value: string): string {
   let redacted = value.replace(/([a-z][a-z0-9+.-]*:\/\/)([^/@\s]+)@/gi, "$1***@");
   redacted = redacted.replace(
@@ -221,7 +241,7 @@ export class GitOperationLogService {
     const entry = state.entries.find((candidate) => candidate.id === id);
     if (!entry || entry.status !== "running") return;
 
-    const safeChunk = redactSensitiveText(chunk);
+    const safeChunk = sanitizeOutputText(chunk);
     const at = this.now();
     entry.updatedAt = at;
     entry.output = capOutput(entry.output, safeChunk, this.maxOutputBytes);
@@ -250,7 +270,7 @@ export class GitOperationLogService {
     entry.updatedAt = at;
     entry.status = result.success ? "success" : "error";
     entry.exitCode = result.exitCode;
-    entry.error = result.error ? redactSensitiveText(result.error) : undefined;
+    entry.error = result.error ? sanitizeOutputText(result.error) : undefined;
     entry.durationMs = Math.max(0, at - entry.timestamp);
     await this.queueEvent(
       workspacePath,
@@ -496,12 +516,12 @@ export async function runGitCommandStreaming(
     let settled = false;
 
     child.stdout.on("data", (data: Buffer | string) => {
-      const chunk = redactSensitiveText(data.toString());
+      const chunk = sanitizeOutputText(data.toString());
       stdout = capOutput(stdout, chunk, DEFAULT_MAX_OUTPUT_BYTES);
       service.appendOutput(workspacePath, entry.id, "stdout", chunk);
     });
     child.stderr.on("data", (data: Buffer | string) => {
-      const chunk = redactSensitiveText(data.toString());
+      const chunk = sanitizeOutputText(data.toString());
       stderr = capOutput(stderr, chunk, DEFAULT_MAX_OUTPUT_BYTES);
       service.appendOutput(workspacePath, entry.id, "stderr", chunk);
     });

@@ -19,7 +19,7 @@ import {
   setFileSystemServiceFor,
 } from '@nimbalyst/runtime';
 import { navigationHistoryService } from '../services/NavigationHistoryService';
-import { runWhenAppIsActive } from './AppActivationGuard';
+import { revealReadyWindow } from './revealReadyWindow';
 import { signalFirstWindowLoaded } from '../services/startupMaintenanceGate';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { FeatureTrackingService } from '../services/analytics/FeatureTrackingService';
@@ -27,6 +27,7 @@ import { ExtensionLogService } from '../services/ExtensionLogService';
 import { getMcpConfigService } from '../mcpConfigServiceRef';
 import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
 import { addNimPreviewWorkspaceRoot } from '../protocols/nimPreviewProtocol';
+import { scheduleAttachmentStagingCleanup } from '../services/attachments/attachmentStagingCleanup';
 import { windows, windowStates, anyWindowReferencesWorkspace, resolveDocumentServicePath, getWindowIdForWindow } from './windowState';
 import { shouldSaveSessionOnWindowClose } from './sessionSaveOnClose';
 import {
@@ -147,6 +148,12 @@ app.on('before-quit', () => {
   isQuitting = true;
 });
 
+/** True once `before-quit` has fired. Callers that create windows lazily
+ *  (e.g. auto-opening a project to deliver a queued prompt) must check this. */
+export function isAppQuitting(): boolean {
+  return isQuitting;
+}
+
 // Get focused window or create new one
 export function getFocusedOrNewWindow(): BrowserWindow {
     const focusedWindow = BrowserWindow.getFocusedWindow();
@@ -169,7 +176,7 @@ export function createWindow(
     isOpeningFile: boolean = false,
     isWorkspaceMode: boolean = false,
     workspacePath: string | null = null,
-    savedBounds?: { x: number; y: number; width: number; height: number },
+    savedBounds?: { x: number; y: number; width: number; height: number; isMaximized?: boolean },
     options?: CreateWindowOptions
 ): BrowserWindow {
     const startTime = Date.now();
@@ -299,6 +306,7 @@ export function createWindow(
         if (isWorkspaceMode && workspacePath) {
             addNimAssetRoot(workspacePath);
             addNimPreviewWorkspaceRoot(workspacePath);
+            scheduleAttachmentStagingCleanup(workspacePath);
         }
         if (isWorkspaceMode && workspacePath) {
             if (!documentServices.has(workspacePath)) {
@@ -588,16 +596,7 @@ export function createWindow(
         // Show window when ready
         window.once('ready-to-show', () => {
             // console.log('[MAIN] Window ready to show at', new Date().toISOString(), 'elapsed:', Date.now() - startTime, 'ms');
-            const showWindow = options?.showInactive
-                ? () => window.showInactive()
-                : () => window.show();
-
-            if (options?.deferShowUntilAppActive) {
-                runWhenAppIsActive(window, showWindow);
-                return;
-            }
-
-            showWindow();
+            revealReadyWindow(window, options, savedBounds);
         });
 
         // Handle renderer process crashes.

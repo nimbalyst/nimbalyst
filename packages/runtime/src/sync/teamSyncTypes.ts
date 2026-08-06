@@ -8,7 +8,9 @@
  */
 
 import type {
+  ConversationDescriptor,
   MemberInfo as ProtocolMemberInfo,
+  OrgSettings,
   TeamState as ProtocolTeamState,
   EncryptedDocIndexEntry as ProtocolEncryptedDocIndexEntry,
   EncryptedFolderNode as ProtocolEncryptedFolderNode,
@@ -72,6 +74,22 @@ export interface TeamSyncConfig {
 
   /** Called when full team state snapshot is received (initial sync) */
   onTeamStateLoaded?: (state: TeamState) => void;
+
+  /**
+   * Called with the organization's settings: once per sync snapshot that
+   * carries them, and again on every `orgSettingsUpdated` broadcast. Absent on
+   * pre-settings servers, which simply never invoke it.
+   */
+  onOrgSettingsUpdated?: (settings: OrgSettings) => void;
+
+  /**
+   * Called on every `conversationDescriptorUpdated` broadcast: a room was
+   * renamed, re-topiced, archived or had agent posting toggled. Absent on
+   * pre-conversation-registry servers, which never invoke it.
+   */
+  onConversationDescriptorUpdated?: (
+    descriptor: ConversationDescriptor,
+  ) => void;
 
   /** Called when a member is added */
   onMemberAdded?: (member: MemberInfo) => void;
@@ -157,6 +175,8 @@ export interface TeamState {
 /** Decrypted document index entry for UI consumption */
 export interface DocIndexEntry {
   documentId: string;
+  /** Owning project carried by the team document index. */
+  projectId?: string | null;
   title: string;
   documentType: string;
   /** Optional V2 type metadata; absent on legacy rows. */

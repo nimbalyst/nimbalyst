@@ -15,7 +15,7 @@
 
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
-import { getFileIcon } from '@nimbalyst/runtime';
+import { getFileIcon } from '@nimbalyst/runtime/ui/icons/fileIcons';
 import type { TypeaheadOption } from '../../components/Typeahead/GenericTypeahead';
 import { isPathInsideWorkspace } from './workspacePathPrefix';
 

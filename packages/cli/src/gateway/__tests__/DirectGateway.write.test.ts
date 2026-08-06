@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Phase 2b: offline guarded direct writes. Exercised against an on-disk SQLite
  * fixture built with the real tracker_items DDL so create/update/comment/archive

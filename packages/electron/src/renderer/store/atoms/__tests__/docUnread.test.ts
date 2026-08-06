@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { createStore } from 'jotai';
 import {
@@ -7,16 +8,29 @@ import {
   docUnreadByOrgAtom,
   recomputeDocUnreadAtom,
 } from '../docUnread';
-import type { SharedDocument } from '../collabDocuments';
+import { activeCollabScopeAtom, type SharedDocument } from '../collabDocuments';
+import type { CollabScope } from '@nimbalyst/collab-client/core';
 import type { ReadReceipt } from '@nimbalyst/runtime/readReceipts/readReceipts';
 
 const ORG = 'org-1';
 const ME = 'member-me';
 const TEAMMATE = 'member-teammate';
+const SCOPE: CollabScope = {
+  scopeKey: 'doc-unread-test',
+  orgId: ORG,
+  indexConfig: { serverUrl: 'ws://sync.test', userId: ME },
+};
+
+function createScopedStore() {
+  const scopedStore = createStore();
+  scopedStore.set(activeCollabScopeAtom, SCOPE);
+  return scopedStore;
+}
 
 function doc(documentId: string, updatedAt: number, lastWriterUserId: string | null): SharedDocument {
   return {
     documentId,
+    teamProjectId: null,
     title: documentId,
     documentType: 'markdown',
     createdBy: TEAMMATE,
@@ -28,7 +42,7 @@ function doc(documentId: string, updatedAt: number, lastWriterUserId: string | n
 
 describe('recomputeDocUnreadAtom', () => {
   it('marks a never-viewed teammate-written doc as unread', () => {
-    const store = createStore();
+    const store = createScopedStore();
     store.set(recomputeDocUnreadAtom, {
       orgId: ORG,
       docs: [doc('d1', 1000, TEAMMATE)],
@@ -40,7 +54,7 @@ describe('recomputeDocUnreadAtom', () => {
   });
 
   it('suppresses the user own most-recent edit', () => {
-    const store = createStore();
+    const store = createScopedStore();
     store.set(recomputeDocUnreadAtom, {
       orgId: ORG,
       docs: [doc('d1', 1000, ME)],
@@ -51,7 +65,7 @@ describe('recomputeDocUnreadAtom', () => {
   });
 
   it('is read once the receipt watermark reaches the doc updatedAt', () => {
-    const store = createStore();
+    const store = createScopedStore();
     const receipts = new Map<string, ReadReceipt>([
       ['d1', { lastSeenVersion: null, lastViewedAt: 1000 }],
     ]);
@@ -67,7 +81,7 @@ describe('recomputeDocUnreadAtom', () => {
 
 describe('applyDocReceiptAtom', () => {
   it('clears the dot and keeps it cleared on the next recompute', () => {
-    const store = createStore();
+    const store = createScopedStore();
     const docs = [doc('d1', 1000, TEAMMATE)];
 
     store.set(recomputeDocUnreadAtom, {
@@ -95,7 +109,7 @@ describe('applyDocReceiptAtom', () => {
   });
 
   it('does not let a stale renderer receipt replace a newer read watermark', () => {
-    const store = createStore();
+    const store = createScopedStore();
     store.set(docReceiptsAtom, new Map([
       ['d1', { lastSeenVersion: null, lastViewedAt: 3000 }],
     ]));

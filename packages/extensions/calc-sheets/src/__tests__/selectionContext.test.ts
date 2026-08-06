@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { evaluateCalcSheet } from '../evaluator';
 import { parseCalcSheetDocument } from '../parser';
 import {

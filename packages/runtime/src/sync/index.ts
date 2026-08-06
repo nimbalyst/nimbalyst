@@ -54,6 +54,10 @@ export type {
   SyncedTrackerPersonalStateChange,
   EncryptedTrackerPersonalStatePayload,
 } from './types';
+export {
+  filterSessionsForPersonalSync,
+  isSessionEligibleForPersonalSync,
+} from './types';
 
 export { createCollabV3Sync } from './CollabV3Sync';
 export { deriveTrackerPersonalStateKey } from './trackerPersonalStateKey';
@@ -86,6 +90,8 @@ export type {
   TeamInboxUnavailableDelivery,
   TeamInboxWatermark,
   TeamInboxWireDelivery,
+  TeamPresenceMember,
+  PresenceDesiredStatus,
 } from './TeamInboxSync';
 
 export {

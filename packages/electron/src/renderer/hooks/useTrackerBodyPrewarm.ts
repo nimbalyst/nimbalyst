@@ -26,7 +26,7 @@
 
 import { useEffect } from 'react';
 import { getBodyDocCache, type BodyDocConfigFactory } from '../services/BodyDocCache';
-import { resolveCollabConfigForUri } from '../utils/collabDocumentOpener';
+import { resolveDesktopCollabConfigForUri } from '../utils/collabDocumentOpener';
 
 /**
  * Debounce window before firing prewarm after `itemIds` settles. Tuned
@@ -85,7 +85,7 @@ export function useTrackerBodyPrewarm({
       const factory: BodyDocConfigFactory = async (id) => {
         const documentId = `tracker-content/${id}`;
         const uri = `collab://tracker-content/${id}`;
-        const config = await resolveCollabConfigForUri(
+        const config = await resolveDesktopCollabConfigForUri(
           workspacePath,
           uri,
           documentId,

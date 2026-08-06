@@ -1,11 +1,5 @@
 /* Document comments UI. Uses canonical --nim-* theme variables. */
 
-/* --- Composer popover ------------------------------------------------------ */
-.nim-comment-composer-popover {
-  z-index: 60;
-  width: 300px;
-}
-
 .nim-comment-composer {
   display: flex;
   flex-direction: column;

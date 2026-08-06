@@ -2,7 +2,7 @@ import { Dirent } from 'fs';
 import { readdir, stat } from 'fs/promises';
 import { join } from 'path';
 import { FileTreeItem } from '../types';
-import { shouldExcludeDir } from './fileFilters';
+import { shouldExcludeDir, shouldExcludePath } from './fileFilters';
 
 /**
  * Resolve a directory entry's type, following symlinks to their target.
@@ -87,7 +87,7 @@ export async function getFolderContents(dirPath: string, depth: number = 0): Pro
             const { isDir, isFile } = resolved;
 
             if (isDir) {
-                if (shouldExcludeDir(entry.name)) continue;
+                if (shouldExcludeDir(entry.name) || shouldExcludePath(fullPath)) continue;
                 const dirItem: FileTreeItem = {
                     name: entry.name,
                     type: 'directory',

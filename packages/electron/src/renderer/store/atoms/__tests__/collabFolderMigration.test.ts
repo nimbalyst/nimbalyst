@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import {
   buildMigratedFolderRows,
@@ -13,6 +14,7 @@ function doc(
 ): SharedDocument {
   return {
     documentId,
+    teamProjectId: null,
     title,
     documentType: 'markdown',
     createdBy: 'u1',

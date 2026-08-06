@@ -79,6 +79,19 @@ export interface DocumentSyncConfig {
   /** Called when connection status changes */
   onStatusChange?: (status: DocumentSyncStatus) => void;
 
+  /**
+   * Called when an update reached the Y.Doc but a listener threw while handling
+   * it -- in practice, the Lexical binding aborting.
+   *
+   * This is NOT a payload problem and deliberately does not stop sync, but the
+   * host has to know: the document is in the Y.Doc and did not paint, so an
+   * editor left on screen shows an empty document that looks blank rather than
+   * broken. That is exactly how an unregistered `tracker-reference` node
+   * reached production as "some docs still don't load" with nothing but a
+   * console error to show for it.
+   */
+  onEditorBindingError?: (error: unknown) => void;
+
   /** Structured, content-free desktop observability sink. */
   onOfflineMetric?: (event: {
     metric: string;
@@ -212,6 +225,12 @@ export type AwarenessState = Record<string, unknown> & {
    *  the extension path so the SDK hook can dedupe remote collaborators by
    *  stable user id rather than y-protocols clientID. */
   user: { name: string; color: string; id?: string; [k: string]: unknown };
+  /**
+   * Additive, ephemeral departure marker. Updated clients delete the sender's
+   * remote state immediately; older clients ignore it and fall back to their
+   * existing stale-state cleanup while retaining the required user block.
+   */
+  nimbalystDeparture?: { version: 1 };
   /** Lexical-style cursor block (markdown path only). */
   cursor?: {
     anchor: SerializedRelativePosition;

@@ -7,6 +7,19 @@ set -eu
 # after pushing (2026-07-07 incident: npm 10/11 override-shape mismatch).
 base=$(git merge-base HEAD origin/main 2>/dev/null || echo HEAD~1)
 
+# Fail fast, and accurately, when the hook is running under the wrong Node.
+# Every check below shells out to node/npm, and with engine-strict=true the
+# lockfile check reports an engine mismatch as lockfile drift.
+echo "[pre-push] Checking the Node/npm toolchain..."
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  echo "[pre-push] ERROR: node and npm are not both on PATH."
+  echo "[pre-push] PATH=$PATH"
+  echo "[pre-push] GUI git clients skip your shell config; push from a terminal, or point"
+  echo "[pre-push] your version manager's default alias at the version in .nvmrc."
+  exit 1
+fi
+node scripts/check-toolchain.mjs "$(npm -v)"
+
 # Refuse to push escaped unit-test fixture commits (2026-07-22 incident: the
 # pre-push vitest run leaked "Test User" commits onto public main).
 echo "[pre-push] Checking outgoing commits for test-fixture authors..."
@@ -36,12 +49,19 @@ fi
 echo "[pre-push] Checking override/dep sync..."
 npm run check:override-sync
 
+echo "[pre-push] Checking tracked text files for raw NUL bytes..."
+npm run check:text-nuls -- --ref HEAD
+
 echo "[pre-push] Building typecheck prerequisites and running the full typecheck..."
 npm run typecheck:prepush
 
 echo "[pre-push] Verifying platform test-gate behavior..."
 npm run test:prepush-gate
 
+# Every line printed here lands in the Git extension's Output panel, so the
+# prepush scripts use dot reporters, --silent=passed-only, and a quiet Vite
+# build. A passing push is ~84 lines instead of ~25500 (most of which was
+# console.log from the tests themselves). Failures still print in full.
 if [ "$(node scripts/prepush-test-gate.mjs)" = "run" ]; then
   echo "[pre-push] Running non-provider unit tests..."
   npm run test:prepush

@@ -23,8 +23,8 @@ describe('AccountExpiryBanner', () => {
       />,
     );
 
-    expect(screen.getByText(/work@example.com/)).toBeTruthy();
-    expect(screen.getByText(/Work Team/)).toBeTruthy();
+    screen.getByText(/work@example.com/);
+    screen.getByText(/Work Team/);
     fireEvent.click(screen.getByRole('button', { name: 'Reconnect work@example.com' }));
     expect(onReconnect).toHaveBeenCalledWith(expect.objectContaining({ personalOrgId: 'expired' }));
   });

@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { useFloating, offset, flip, shift, FloatingPortal, size } from '@floating-ui/react';
+import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import {MaterialSymbol} from "../../../ui";
 
 export interface SelectOption {
@@ -37,6 +38,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       offset(4),
       flip({ padding: 8 }),
       shift({ padding: 8 }),
+      windowControlsClearance(),
       size({
         apply({ rects, elements }) {
           Object.assign(elements.floating.style, {

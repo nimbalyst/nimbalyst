@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Simplified test for markdown list handling
  */

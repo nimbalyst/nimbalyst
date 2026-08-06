@@ -50,7 +50,7 @@ describe('DatabaseDashboard backup size rendering', () => {
 
     render(<DatabaseDashboard onTableSelect={vi.fn()} />);
 
-    expect(await screen.findByText('3 KB')).toBeTruthy();
+    await screen.findByText('3 KB');
   });
 
   it('renders legacy backup metadata that uses size', async () => {
@@ -58,6 +58,6 @@ describe('DatabaseDashboard backup size rendering', () => {
 
     render(<DatabaseDashboard onTableSelect={vi.fn()} />);
 
-    expect(await screen.findByText('2 KB')).toBeTruthy();
+    await screen.findByText('2 KB');
   });
 });

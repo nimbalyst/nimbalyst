@@ -1475,7 +1475,7 @@ export async function registerSessionHandlers() {
         // populated by the searchable-text extractor.
         const { database } = await import('../database/PGLiteDatabaseWorker');
         const { rows } = await database.query(`
-            SELECT t.id, t.session_id, t.searchable_text, t.created_at,
+            SELECT t.id, t.session_id, t.searchable_text, t.metadata, t.created_at,
                    s.title, s.provider, s.parent_session_id
             FROM ai_agent_messages t
             JOIN ai_sessions s ON t.session_id = s.id
@@ -1487,15 +1487,24 @@ export async function registerSessionHandlers() {
         `, [workspacePath, limit]);
         return {
             success: true,
-            prompts: rows.map((row: any) => ({
-                id: String(row.id),
-                sessionId: row.session_id,
-                content: row.searchable_text || '',
-                createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
-                sessionTitle: row.title || 'Untitled Session',
-                provider: row.provider,
-                parentSessionId: row.parent_session_id,
-            })),
+            prompts: rows.map((row: any) => {
+                const metadata = parseJsonObjectColumn(row.metadata);
+                const promptProvenance = metadata.promptProvenance;
+                const promptActor =
+                    promptProvenance?.actor === 'human' || promptProvenance?.actor === 'agent'
+                        ? promptProvenance.actor
+                        : undefined;
+                return {
+                    id: String(row.id),
+                    sessionId: row.session_id,
+                    content: row.searchable_text || '',
+                    createdAt: row.created_at instanceof Date ? row.created_at.getTime() : new Date(row.created_at).getTime(),
+                    sessionTitle: row.title || 'Untitled Session',
+                    provider: row.provider,
+                    parentSessionId: row.parent_session_id,
+                    promptActor,
+                };
+            }),
         };
     });
 

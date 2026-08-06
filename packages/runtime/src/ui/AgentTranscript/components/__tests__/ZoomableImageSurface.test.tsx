@@ -84,6 +84,6 @@ describe('ZoomableImageSurface', () => {
         filePath: '/tmp/test.png',
       });
     });
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined();
+    await screen.findByRole('button', { name: 'Copied' });
   });
 });

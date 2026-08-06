@@ -172,6 +172,30 @@ describe("GitOperationLogService", () => {
     expect(persisted.stderr).not.toContain("abc123");
   });
 
+  it("strips terminal colour codes from output and errors", async () => {
+    // Vitest and Git colour their output even when stdout is a pipe, and the
+    // Output panel renders plain text -- so a pre-push failure would otherwise
+    // arrive as literal "[32m- Expected[39m" noise.
+    const esc = String.fromCharCode(27);
+    const service = new GitOperationLogService({ rootDir: tmpRoot });
+    const entry = await service.start(workspacePath, ["push", "origin", "main"]);
+    service.appendOutput(
+      workspacePath,
+      entry.id,
+      "stderr",
+      `${esc}[32m- Expected${esc}[39m\n${esc}[31m+ Received${esc}[39m\n`
+    );
+    await service.finish(workspacePath, entry.id, {
+      success: false,
+      exitCode: 1,
+      error: `${esc}[31mfatal:${esc}[0m hook rejected the push`,
+    });
+
+    const [persisted] = await service.list(workspacePath);
+    expect(persisted.stderr).toBe("- Expected\n+ Received\n");
+    expect(persisted.error).toBe("fatal: hook rejected the push");
+  });
+
   it("streams real git stdout into the journal before finishing", async () => {
     const events: string[] = [];
     const service = new GitOperationLogService({

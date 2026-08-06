@@ -1,3 +1,9 @@
+import {
+  COLLAB_CONNECTION_DIAGNOSTICS_COMPILED,
+  emitCollabConnectionEvent,
+  getCollabConnectionInstanceId,
+  setCollabConnectionDiagnosticContext,
+} from '@nimbalyst/runtime/sync/collabConnectionDiagnostics';
 import type {
   DocumentSyncProvider,
   DocumentSyncStatus,
@@ -102,8 +108,15 @@ export class DocumentReplicaCache {
     listener?: DocumentReplicaCacheListener,
   ): Promise<DocumentReplicaAcquisition> {
     const entry = await this.ensureEntry(key, factory);
+    const previousRefCount = entry.refCount;
     entry.refCount += 1;
     entry.lastTouchedAt = Date.now();
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabConnectionEvent(entry.resources.syncProvider, 'DocumentReplicaCache', 'acquire', {
+        fromRefCount: previousRefCount,
+        refCount: entry.refCount,
+      });
+    }
     this.clearIdleTimer(entry);
     if (listener) {
       entry.listeners.add(listener);
@@ -127,9 +140,14 @@ export class DocumentReplicaCache {
         if (released) return;
         released = true;
         entry.superseded = true;
+        if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+          emitCollabConnectionEvent(entry.resources.syncProvider, 'DocumentReplicaCache', 'supersede', {
+            refCount: entry.refCount,
+          });
+        }
         if (listener) entry.listeners.delete(listener);
         this.releaseEntry(entry);
-        if (entry.refCount === 0) await this.destroyEntry(entry, true);
+        if (entry.refCount === 0) await this.destroyEntry(entry, true, 'superseded');
       },
       discardLocalCopy: async () => {
         if (released) throw new Error('Cannot discard a released replica acquisition');
@@ -141,7 +159,7 @@ export class DocumentReplicaCache {
 
   async dispose(): Promise<void> {
     const entries = [...this.entries.values()];
-    await Promise.all(entries.map((entry) => this.destroyEntry(entry, true)));
+    await Promise.all(entries.map((entry) => this.destroyEntry(entry, true, 'dispose')));
     this.pending.clear();
   }
 
@@ -151,12 +169,37 @@ export class DocumentReplicaCache {
   ): Promise<CacheEntry> {
     const existing = this.entries.get(key);
     if (existing) {
-      if (!existing.destroyPromise && !existing.superseded) return existing;
+      if (!existing.destroyPromise && !existing.superseded) {
+        if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+          emitCollabConnectionEvent(existing.resources.syncProvider, 'DocumentReplicaCache', 'warm-hit', {
+            refCount: existing.refCount,
+            idleTimerActive: existing.idleTimer !== null,
+          });
+        }
+        return existing;
+      }
       if (existing.destroyPromise) await existing.destroyPromise;
       if (this.entries.get(key) === existing) this.entries.delete(key);
     }
     const pending = this.pending.get(key);
-    if (pending) return pending;
+    if (pending) {
+      if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+        emitCollabConnectionEvent(this, 'DocumentReplicaCache', 'pending-hit', {
+          cache: 'document-replica',
+          cacheKey: key,
+          documentId: key.split('\u0000')[2],
+        });
+      }
+      return pending;
+    }
+
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabConnectionEvent(this, 'DocumentReplicaCache', 'cold-construct-start', {
+        cache: 'document-replica',
+        cacheKey: key,
+        documentId: key.split('\u0000')[2],
+      });
+    }
 
     const promise = this.createEntry(key, factory).finally(() => {
       this.pending.delete(key);
@@ -208,6 +251,22 @@ export class DocumentReplicaCache {
       onRemoteUpdate: (origin) => fanOut('onRemoteUpdate', origin),
     });
 
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      setCollabConnectionDiagnosticContext(resources.syncProvider, {
+        cache: 'document-replica',
+        cacheKey: key,
+        documentId: key.split('\u0000')[2],
+        shared: true,
+      });
+      emitCollabConnectionEvent(resources.syncProvider, 'DocumentReplicaCache', 'cold-construct', {
+        refCount: 0,
+        syncProviderId: getCollabConnectionInstanceId(
+          resources.syncProvider,
+          'DocumentSyncProvider',
+        ),
+      });
+    }
+
     entry = {
       key,
       resources,
@@ -228,15 +287,22 @@ export class DocumentReplicaCache {
   }
 
   private releaseEntry(entry: CacheEntry): void {
+    const previousRefCount = entry.refCount;
     entry.refCount = Math.max(0, entry.refCount - 1);
     entry.lastTouchedAt = Date.now();
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabConnectionEvent(entry.resources.syncProvider, 'DocumentReplicaCache', 'release', {
+        fromRefCount: previousRefCount,
+        refCount: entry.refCount,
+      });
+    }
     if (entry.refCount !== 0) return;
     if (entry.superseded) {
-      void this.destroyEntry(entry, true);
+      void this.destroyEntry(entry, true, 'superseded');
       return;
     }
     if (entry.discardOnRelease) {
-      void this.destroyEntry(entry, true);
+      void this.destroyEntry(entry, true, 'discard-local-copy');
       return;
     }
     this.scheduleIdleEviction(entry);
@@ -244,9 +310,20 @@ export class DocumentReplicaCache {
 
   private scheduleIdleEviction(entry: CacheEntry): void {
     this.clearIdleTimer(entry);
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabConnectionEvent(entry.resources.syncProvider, 'DocumentReplicaCache', 'idle-timer-start', {
+        refCount: entry.refCount,
+        timeoutMs: this.idleTimeoutMs,
+      });
+    }
     entry.idleTimer = setTimeout(() => {
       entry.idleTimer = null;
-      void this.destroyEntry(entry, false).then((destroyed) => {
+      if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+        emitCollabConnectionEvent(entry.resources.syncProvider, 'DocumentReplicaCache', 'idle-timer-expire', {
+          refCount: entry.refCount,
+        });
+      }
+      void this.destroyEntry(entry, false, 'idle-timeout').then((destroyed) => {
         if (
           !destroyed &&
           entry.refCount === 0 &&
@@ -265,7 +342,14 @@ export class DocumentReplicaCache {
         .sort((left, right) => left.lastTouchedAt - right.lastTouchedAt);
       const oldest = candidates[0];
       if (!oldest) return;
-      await this.destroyEntry(oldest, false);
+      if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+        emitCollabConnectionEvent(oldest.resources.syncProvider, 'DocumentReplicaCache', 'lru-evict', {
+          refCount: oldest.refCount,
+          cacheSize: this.entries.size,
+          lruCap: this.lruCap,
+        });
+      }
+      await this.destroyEntry(oldest, false, 'lru-cap');
     }
   }
 
@@ -277,9 +361,20 @@ export class DocumentReplicaCache {
     );
   }
 
-  private async destroyEntry(entry: CacheEntry, force: boolean): Promise<boolean> {
+  private async destroyEntry(
+    entry: CacheEntry,
+    force: boolean,
+    reason: string,
+  ): Promise<boolean> {
     if (entry.destroyPromise) return entry.destroyPromise;
     if (!force && !this.isEvictable(entry)) return false;
+    if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+      emitCollabConnectionEvent(entry.resources.syncProvider, 'DocumentReplicaCache', 'destroy', {
+        reason,
+        refCount: entry.refCount,
+        force,
+      });
+    }
     entry.destroying = true;
     this.clearIdleTimer(entry);
     entry.destroyPromise = (async () => {
@@ -309,6 +404,11 @@ export class DocumentReplicaCache {
 
   private clearIdleTimer(entry: CacheEntry): void {
     if (entry.idleTimer !== null) {
+      if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
+        emitCollabConnectionEvent(entry.resources.syncProvider, 'DocumentReplicaCache', 'idle-timer-cancel', {
+          refCount: entry.refCount,
+        });
+      }
       clearTimeout(entry.idleTimer);
       entry.idleTimer = null;
     }

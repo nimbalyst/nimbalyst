@@ -26,7 +26,7 @@ import {
   type DocumentSyncConfig,
   type DocumentSyncStatus,
 } from '@nimbalyst/runtime/sync';
-import { convertFromFileIntoDoc, convertRecoveryPlaintext } from './CollabConversionClient';
+import { convertExportToFile, convertFromFileIntoDoc, convertRecoveryPlaintext } from './CollabConversionClient';
 import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
@@ -230,6 +230,35 @@ export async function applyHeadlessBodyMarkdown(
       { itemId, workspacePath, error: err instanceof Error ? err.message : String(err) },
     );
     return false;
+  }
+}
+
+/**
+ * Read the markdown body currently in the live Y.Doc for `itemId`. Returns null
+ * if the workspace has no team or the room cannot be reached.
+ *
+ * The inverse of `applyHeadlessBodyMarkdown`, used when an item's body has to be
+ * carried from one room to another: the room is the authoritative copy there,
+ * not the local PGLite row and not the markdown file it was seeded from, so
+ * re-seeding from either would drop every edit made since the share.
+ */
+export async function readHeadlessBodyMarkdown(
+  workspacePath: string,
+  itemId: string,
+): Promise<string | null> {
+  try {
+    const entry = await acquireEntry(workspacePath, itemId);
+    if (!entry) return null;
+    await entry.ready;
+    const exported = await convertExportToFile('markdown', entry.provider.getYDoc(), { workspacePath });
+    return typeof exported === 'string' ? exported : new TextDecoder().decode(exported);
+  } catch (err) {
+    logger.main.error('[MainBodyDocService] Headless body read failed', {
+      itemId,
+      workspacePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
   }
 }
 

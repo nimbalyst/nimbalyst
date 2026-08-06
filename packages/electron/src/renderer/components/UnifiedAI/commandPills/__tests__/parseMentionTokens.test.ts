@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { parseMentionTokens } from '../parseMentionTokens';
 import { parseCommandTokens } from '../parseCommandTokens';

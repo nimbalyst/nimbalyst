@@ -22,6 +22,8 @@ import {
   $getRoot,
   DecoratorNode,
   type EditorConfig,
+  type Klass,
+  type LexicalNode,
   type NodeKey,
   type SerializedLexicalNode,
 } from 'lexical';
@@ -30,6 +32,10 @@ import * as Y from 'yjs';
 
 import { MarkdownCollabContentAdapter } from '../MarkdownCollabContentAdapter';
 import HeadlessBodyNodes from '../../editor/nodes/headlessBodyNodes';
+import {
+  $createDocumentReferenceNode,
+  DocumentReferenceNode,
+} from '../../plugins/DocumentLinkPlugin/DocumentLinkNode';
 // Side-effect: populate the transformer set (core + built-in extensions) so
 // getEditorTransformers() returns the same list the main process uses.
 import '../../editor/extensions/registerBuiltinExtensions';
@@ -101,7 +107,12 @@ function $createRendererTrackerReferenceNode(
   );
 }
 
-function trackerReferenceSharedDoc(referenceKey: string): Y.Doc {
+function rendererAuthoredSharedDoc(
+  namespace: string,
+  nodeType: string,
+  nodeClass: Klass<LexicalNode>,
+  createNode: () => LexicalNode,
+): Y.Doc {
   const doc = new Y.Doc();
   const provider = {
     awareness: {
@@ -114,12 +125,12 @@ function trackerReferenceSharedDoc(referenceKey: string): Y.Doc {
     getYDoc: () => doc,
   } as any;
   const writer = createHeadlessEditor({
-    namespace: 'tracker-reference-shared-doc-writer',
+    namespace,
     nodes: [
       ...HeadlessBodyNodes.filter(
-        (nodeClass) => nodeClass.getType() !== 'tracker-reference',
+        (registeredNodeClass) => registeredNodeClass.getType() !== nodeType,
       ),
-      RendererTrackerReferenceNode,
+      nodeClass,
     ],
     onError: (error: Error) => {
       throw error;
@@ -158,7 +169,7 @@ function trackerReferenceSharedDoc(referenceKey: string): Y.Doc {
     () => {
       $getRoot().append(
         $createParagraphNode().append(
-          $createRendererTrackerReferenceNode(referenceKey),
+          createNode(),
         ),
       );
     },
@@ -167,6 +178,15 @@ function trackerReferenceSharedDoc(referenceKey: string): Y.Doc {
   removeListener();
 
   return doc;
+}
+
+function trackerReferenceSharedDoc(referenceKey: string): Y.Doc {
+  return rendererAuthoredSharedDoc(
+    'tracker-reference-shared-doc-writer',
+    'tracker-reference',
+    RendererTrackerReferenceNode,
+    () => $createRendererTrackerReferenceNode(referenceKey),
+  );
 }
 
 describe('MarkdownCollabContentAdapter node set', () => {
@@ -248,5 +268,53 @@ describe('MarkdownCollabContentAdapter node set', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('exports renderer-authored document references without a headless node error', () => {
+    const target = 'nimbalyst://doc/shared-roadmap?orgId=org-123';
+    const yDoc = rendererAuthoredSharedDoc(
+      'document-reference-shared-doc-writer',
+      'document-reference',
+      DocumentReferenceNode,
+      () => $createDocumentReferenceNode('shared-roadmap', 'Roadmap', target),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const exported = MarkdownCollabContentAdapter.exportToFile(yDoc);
+      const markdown =
+        typeof exported === 'string'
+          ? exported
+          : new TextDecoder('utf-8').decode(exported as Uint8Array);
+
+      expect(markdown).toContain(`[Roadmap](${target})`);
+      expect(
+        warn.mock.calls.some((call) =>
+          call.some((value) =>
+            String(value).includes('Node document-reference is not registered'),
+          ),
+        ),
+      ).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('imports collaborative document links as document references headlessly', () => {
+    const target = 'nimbalyst://doc/shared-roadmap?orgId=org-123';
+    const yDoc = new Y.Doc();
+
+    MarkdownCollabContentAdapter.seedFromFile(
+      yDoc,
+      `[Roadmap](${target})`,
+    );
+
+    const exported = MarkdownCollabContentAdapter.exportToFile(yDoc);
+    const markdown =
+      typeof exported === 'string'
+        ? exported
+        : new TextDecoder('utf-8').decode(exported as Uint8Array);
+
+    expect(markdown).toContain(`[Roadmap](${target})`);
   });
 });

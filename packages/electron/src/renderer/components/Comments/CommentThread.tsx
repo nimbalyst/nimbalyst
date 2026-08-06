@@ -1,9 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { useAtomValue, useSetAtom } from 'jotai';
 
 import { ActivityRow, shouldGroupWithPrevious, suppressDuplicateActivity } from './ActivityRow';
 import { CommentComposer, type ComposerSubmission } from './CommentComposer';
-import { CommentRow } from './CommentRow';
+import { CommentRow, type CommentDensity } from './CommentRow';
 import { buildCommentView } from './commentViewModel';
 import { segmentsToPlainText } from './commentBodyParser';
 import { EMPTY_POOL, type DraftPool } from './composerDraft';
@@ -12,6 +20,7 @@ import { mentionUrn, agentMentionUrn, resourceRefToUrn } from './resourceUrn';
 import type {
   ActivityView,
   Actor,
+  AttachmentComposerHost,
   Comment,
   CommentActionKind,
   CommentAdapter,
@@ -22,14 +31,27 @@ import type {
   ConversationContext,
   MentionDirectory,
   ResourceCandidate,
-  ResourcePillView,
+  ResourceOpenHandler,
   ResourcePreviewResolver,
   ResourceRef,
   TimelineEntry,
 } from './commentTypes';
+import {
+  conversationDraftHydratedAtomFamily,
+  conversationDraftInputAtomFamily,
+  hydrateConversationDraftInputAtom,
+  setConversationDraftInputAtom,
+} from '../../store/atoms/conversations';
 
 /** Stable identity, so an absent `activity` prop does not churn the timeline memo. */
 const NO_ACTIVITY: ActivityView[] = [];
+
+/**
+ * How far off the bottom still counts as "following the conversation". A couple
+ * of rows of slack, so a reader who nudged the wheel one notch keeps getting new
+ * messages rather than silently falling out of the live view.
+ */
+const FOLLOW_THRESHOLD_PX = 64;
 
 type PendingSend = {
   tempId: string;
@@ -55,6 +77,7 @@ export function CommentThread({
   viewerActor,
   resolver = null,
   resourceCandidates = [],
+  attachmentHost = null,
   activity = NO_ACTIVITY,
   now,
   onCopyLink,
@@ -62,6 +85,8 @@ export function CommentThread({
   onOpenSession,
   onOpenMention,
   emptyLabel = 'No messages yet.',
+  autoFocusComposer = false,
+  density = 'comfortable',
 }: {
   adapter: CommentAdapter;
   /** Surface-level capabilities, used for the composer. Rows use their own. */
@@ -73,17 +98,41 @@ export function CommentThread({
   viewerActor: Actor;
   resolver?: ResourcePreviewResolver | null;
   resourceCandidates?: ResourceCandidate[];
+  /**
+   * Uploads for pasted, dropped and picked files. Absent on surfaces with no
+   * asset store, which is what removes the affordance rather than a flag.
+   */
+  attachmentHost?: AttachmentComposerHost | null;
   activity?: ActivityView[];
   now?: number;
   /** Defaults to the system clipboard. Overridden in tests. */
   onCopyLink?: (urn: string) => void;
-  onOpenResource?: (pill: ResourcePillView) => void;
+  onOpenResource?: ResourceOpenHandler;
   onOpenSession?: (sessionId: string) => void;
   onOpenMention?: (userId: string) => void;
   emptyLabel?: string;
+  /**
+   * Put the caret in the composer as soon as the thread mounts. Set by chat
+   * surfaces (rooms and DMs), where opening a conversation means you are about
+   * to write in it; left off for tracker and document comments, where stealing
+   * focus from the thing being read would be wrong.
+   */
+  autoFocusComposer?: boolean;
+  /**
+   * Row density. Chosen by the surface, not by the thread: the org window
+   * passes the user's message-display preference, and document comments leave
+   * it alone so a margin discussion stays comfortable regardless.
+   */
+  density?: CommentDensity;
 }) {
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seeded from whatever the adapter already holds, so a conversation the
+  // window showed a moment ago paints its history on the first frame. The
+  // `list()` below still runs and merges over it — this is stale-while-
+  // revalidate, not a replacement for the fetch.
+  const [comments, setComments] = useState<Comment[]>(
+    () => adapter.snapshot?.() ?? [],
+  );
+  const [loading, setLoading] = useState(comments.length === 0);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
@@ -93,14 +142,72 @@ export function CommentThread({
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
   const [pendingSends, setPendingSends] =
     useState<Map<string, PendingSend>>(new Map());
+  const draftTarget = useMemo(() => ({
+    orgId,
+    conversationId: context.conversationId ?? '',
+  }), [context.conversationId, orgId]);
+  const draftInput = useAtomValue(conversationDraftInputAtomFamily(draftTarget));
+  const draftHydrated = useAtomValue(
+    conversationDraftHydratedAtomFamily(draftTarget),
+  );
+  const hydrateDraft = useSetAtom(hydrateConversationDraftInputAtom);
+  const setDraftInput = useSetAtom(setConversationDraftInputAtom);
+
+  useEffect(() => {
+    if (!draftTarget.conversationId) return;
+    void hydrateDraft(draftTarget);
+  }, [draftTarget, hydrateDraft]);
+
+  const handleDraftChange = useCallback((text: string) => {
+    if (!draftTarget.conversationId) return;
+    setDraftInput({ target: draftTarget, text });
+  }, [draftTarget, setDraftInput]);
+
+  const handleDraftCleared = useCallback(() => {
+    if (!draftTarget.conversationId) return;
+    setDraftInput({ target: draftTarget, text: '', flush: true });
+  }, [draftTarget, setDraftInput]);
 
   // Reactions are absent, not disabled, when the adapter does not implement
   // them -- tracker comments and inline document comments in V1.
   const reactionsSupported = typeof adapter.react === 'function';
 
+  const listRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Whether the reader is following the live end of the conversation. The
+   * timeline is bottom-anchored -- newest last -- so this is what decides
+   * between pinning the view to a new message and leaving someone reading
+   * history exactly where they are.
+   */
+  const followingRef = useRef(true);
+  /**
+   * The scroll height captured just before "Load earlier messages" prepends a
+   * page, used to hold the reader on the message they were looking at.
+   */
+  const prependAnchorRef = useRef<number | null>(null);
+
+  const handleListScroll = useCallback(() => {
+    const list = listRef.current;
+    if (!list) return;
+    followingRef.current =
+      list.scrollHeight - list.scrollTop - list.clientHeight <= FOLLOW_THRESHOLD_PX;
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const list = listRef.current;
+    if (!list) return;
+    list.scrollTop = list.scrollHeight;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    const cached = adapter.snapshot?.() ?? [];
+    if (cached.length > 0) {
+      setComments((current) => mergeComments(current, cached));
+    }
+    // A cached page is shown while the fetch below revalidates; only an empty
+    // one is worth a skeleton.
+    setLoading(cached.length === 0);
     setLoadFailed(false);
     void adapter.list().then((page) => {
       if (cancelled) return;
@@ -184,6 +291,45 @@ export function CommentThread({
     );
   }, [activity, views]);
 
+  const lastCommentKey = views[views.length - 1]?.key ?? '';
+
+  /**
+   * The one place the timeline's scroll position is decided. Runs before paint
+   * so the first frame of a room is already at the newest message rather than
+   * at the oldest one it happened to load.
+   */
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const anchor = prependAnchorRef.current;
+    if (anchor !== null) {
+      prependAnchorRef.current = null;
+      // A prepended page pushes everything down by exactly the height it added.
+      // Give that back, or "Load earlier" throws the reader forward in time.
+      list.scrollTop += list.scrollHeight - anchor;
+      return;
+    }
+    if (!followingRef.current) return;
+    list.scrollTop = list.scrollHeight;
+  }, [lastCommentKey, views.length, visibleActivity.length, loading]);
+
+  /**
+   * Rows grow after they first paint -- an attachment thumbnail decodes, a
+   * resource pill resolves its preview. While the reader is following, that
+   * growth has to keep the newest message on screen instead of pushing it under
+   * the composer.
+   */
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (followingRef.current) scrollToBottom();
+    });
+    observer.observe(list);
+    for (const child of Array.from(list.children)) observer.observe(child);
+    return () => observer.disconnect();
+  }, [lastCommentKey, scrollToBottom]);
+
   const copyLink = useCallback(
     (urn: string) => {
       if (onCopyLink) {
@@ -265,7 +411,7 @@ export function CommentThread({
   );
 
   const submit = useCallback(
-    async (submission: ComposerSubmission) => {
+    (submission: ComposerSubmission) => {
       const clientMutationId = createClientMutationId();
       const tempId = `pending:${clientMutationId}`;
       const input: CreateCommentInput = {
@@ -300,10 +446,17 @@ export function CommentThread({
         capabilities,
         deliveryHints: input.deliveryHints,
       };
+      // Posting is an unconditional jump to the end: you always get to see the
+      // message you just sent, even if you were reading history when you wrote
+      // it.
+      followingRef.current = true;
       setComments((current) => mergeComments(current, [optimistic]));
       setPendingSends((current) => new Map(current).set(tempId, pending));
       setReplyTo(null);
-      await attemptSend(pending);
+      // The optimistic row now owns the message and its retry state. Let the
+      // composer clear immediately instead of holding the submitted draft
+      // until the durable append round trip completes.
+      void attemptSend(pending);
     },
     [
       attemptSend,
@@ -319,12 +472,16 @@ export function CommentThread({
   const loadEarlier = useCallback(async () => {
     if (!nextCursor || loadingEarlier) return;
     setLoadingEarlier(true);
+    prependAnchorRef.current = listRef.current?.scrollHeight ?? null;
     try {
       const page = await adapter.list(nextCursor);
       setComments((current) => mergeComments(current, page.comments));
       setNextCursor(page.nextCursor);
       setLoadFailed(false);
     } catch {
+      // Nothing was prepended, so a stale anchor would only misplace the next
+      // message that does arrive.
+      prependAnchorRef.current = null;
       setLoadFailed(true);
     } finally {
       setLoadingEarlier(false);
@@ -336,7 +493,13 @@ export function CommentThread({
 
   return (
     <div className="comment-thread [container-type:inline-size] [container-name:comment-surface] flex h-full min-h-0 flex-col" data-testid="comment-thread">
-      <div className="comment-thread-list min-h-0 flex-1 overflow-y-auto py-2" role="list" data-testid="comment-thread-list">
+      <div
+        ref={listRef}
+        className="comment-thread-list min-h-0 flex-1 overflow-y-auto py-2"
+        role="list"
+        data-testid="comment-thread-list"
+        onScroll={handleListScroll}
+      >
         {loading && (
           <p className="m-0 px-3 py-4 text-[13px] text-[var(--nim-text-faint)]" data-testid="comment-thread-loading">
             Loading conversation…
@@ -382,10 +545,12 @@ export function CommentThread({
                 orgId={orgId}
                 resolver={resolver}
                 resourceCandidates={resourceCandidates}
+                attachmentHost={attachmentHost}
                 submitLabel="Save"
                 autoFocus
                 initialText={editingComment.body.text}
                 initialPool={poolForComment(editingComment, directory)}
+                initialAttachments={editingComment.body.attachments}
                 onCancel={() => setEditing(null)}
                 onSubmit={async (submission) => {
                   await adapter.edit(editingComment.ref, submission.body);
@@ -398,6 +563,10 @@ export function CommentThread({
               key={view.key}
               view={view}
               grouped={shouldGroupWithPrevious(comments[index], comments[index - 1])}
+              density={density}
+              // The view model's timestamp is relative; the compact gutter
+              // needs the wall clock, which only the raw comment carries.
+              timestampMs={comments[index]?.createdAt}
               onAction={handleAction}
               onToggleReaction={handleToggleReaction}
               onOpenResource={onOpenResource}
@@ -426,13 +595,16 @@ export function CommentThread({
         </p>
       )}
 
-      <CommentComposer
+      {(!draftTarget.conversationId || draftHydrated) && <CommentComposer
+        key={`composer:${orgId}:${draftTarget.conversationId || 'ephemeral'}`}
+        autoFocus={autoFocusComposer}
         capabilities={capabilities}
         context={context}
         directory={directory}
         orgId={orgId}
         resolver={resolver}
         resourceCandidates={resourceCandidates}
+        attachmentHost={attachmentHost}
         replyingTo={
           replyView
             ? {
@@ -444,7 +616,10 @@ export function CommentThread({
         }
         onCancelReply={() => setReplyTo(null)}
         onSubmit={submit}
-      />
+        initialText={draftTarget.conversationId ? draftInput : ''}
+        onDraftChange={draftTarget.conversationId ? handleDraftChange : undefined}
+        onDraftCleared={draftTarget.conversationId ? handleDraftCleared : undefined}
+      />}
     </div>
   );
 }

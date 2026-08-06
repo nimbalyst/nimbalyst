@@ -182,9 +182,24 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Content Search', shortcut: KeyboardShortcuts.window.contentSearch }, // shared/KeyboardShortcuts.ts:79 - Cmd+Shift+F
         { label: 'Memory Search', shortcut: KeyboardShortcuts.window.globalSearch }, // shared/KeyboardShortcuts.ts - Cmd+Shift+O
         { label: 'Team Quick Open', shortcut: KeyboardShortcuts.window.teamQuickOpen }, // shared/KeyboardShortcuts.ts - Cmd+Shift+D
+        { label: 'Organization Messages', shortcut: KeyboardShortcuts.window.organizationManager },
         { label: 'New Worktree', shortcut: KeyboardShortcuts.window.newWorktree }, // shared/KeyboardShortcuts.ts:81 - Cmd+Alt+W
         { label: 'Settings', shortcut: KeyboardShortcuts.window.aiModels }, // shared/KeyboardShortcuts.ts:82 - Cmd+,
         { label: 'Minimize', shortcut: KeyboardShortcuts.window.minimize }, // shared/KeyboardShortcuts.ts:83 - Cmd+M
+      ],
+    },
+    {
+      // Live only while the Organization window is focused — the application
+      // menu swaps them in and out with it, so Cmd+K and Cmd+F keep their
+      // project-window meanings everywhere else.
+      title: 'Organization Window — Messages',
+      shortcuts: [
+        { label: 'New Message', shortcut: KeyboardShortcuts.orgWindow.newMessage }, // shared/KeyboardShortcuts.ts - Cmd+K
+        { label: 'Go to Inbox', shortcut: KeyboardShortcuts.orgWindow.goToInbox }, // shared/KeyboardShortcuts.ts - Cmd+I
+        { label: 'Search Messages', shortcut: KeyboardShortcuts.orgWindow.searchMessages }, // shared/KeyboardShortcuts.ts - Cmd+F
+        { label: 'Next Conversation', shortcut: KeyboardShortcuts.orgWindow.nextConversation }, // shared/KeyboardShortcuts.ts - Cmd+Shift+]
+        { label: 'Previous Conversation', shortcut: KeyboardShortcuts.orgWindow.previousConversation }, // shared/KeyboardShortcuts.ts - Cmd+Shift+[
+        { label: 'Mark All as Read', shortcut: KeyboardShortcuts.orgWindow.markAllRead }, // shared/KeyboardShortcuts.ts - Cmd+Shift+U
       ],
     },
     {
@@ -195,6 +210,8 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Open focused item details', shortcut: 'Enter' },
         { label: 'Commit edit / next row', shortcut: 'Enter (while editing)' },
         { label: 'Cancel edit / close details', shortcut: 'Escape' },
+        { label: 'Undo last grid edit', shortcut: IS_MAC ? '⌘+Z' : 'Ctrl+Z' },
+        { label: 'Redo grid edit', shortcut: IS_MAC ? '⌘+Shift+Z' : 'Ctrl+Shift+Z' },
       ],
     },
   ];

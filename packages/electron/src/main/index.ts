@@ -1,4 +1,9 @@
 import { app, BrowserWindow, dialog, nativeImage, nativeTheme, session } from 'electron';
+import {
+    parseTrackerDeepLink,
+    type TrackerDeepLinkTarget,
+    type TrackerDeepLinkView,
+} from '../shared/trackerDeepLinks';
 import { safeHandle, safeOn } from './utils/ipcRegistry';
 import { installMicrophoneGate } from './mediaPermissionGate';
 import { markBootComplete } from './utils/bootState';
@@ -9,13 +14,23 @@ import * as path from 'path';
 import { join } from 'path';
 import * as fs from 'fs';
 import { appendFileSync, existsSync, renameSync, unlinkSync, writeFileSync } from 'fs';
-import { createWindow, findWindowByFilePath, findWindowByWorkspace, getMostRecentlyFocusedWorkspaceWindow } from './window/WindowManager';
+import {
+    createWindow,
+    documentServices,
+    findWindowByFilePath,
+    findWindowByWorkspace,
+    getMostRecentlyFocusedWorkspaceWindow,
+} from './window/WindowManager';
 import { loadFileIntoWindow } from './file/FileOperations';
 import { createApplicationMenu } from './menu/ApplicationMenu';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
 import { getRestartSignalPath } from './utils/appPaths';
 import { planProtocolRegistration } from './utils/protocolRegistration';
+import {
+    dispatchAppActionLink,
+    type AppAction,
+} from './utils/appActionLinks';
 import { createWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
 import { setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { showSplashScreen, closeSplashScreen } from './window/SplashScreen';
@@ -48,8 +63,15 @@ import { registerWorktreeHandlers } from './ipc/WorktreeHandlers';
 import { registerPullRequestHandlers, stopPullRequestPollScheduler } from './ipc/PullRequestHandlers';
 import { registerReadReceiptHandlers } from './ipc/ReadReceiptHandlers';
 import { registerTrackerPersonalStateHandlers } from './ipc/TrackerPersonalStateHandlers';
-import { registerTeamInboxHandlers } from './ipc/TeamInboxHandlers';
-import { registerConversationHandlers } from './ipc/ConversationHandlers';
+import {
+    registerTeamInboxHandlers,
+    shutdownTeamInboxHandlers,
+} from './ipc/TeamInboxHandlers';
+import {
+    registerConversationHandlers,
+    shutdownConversationHandlers,
+} from './ipc/ConversationHandlers';
+import { registerOrgSettingsHandlers } from './ipc/OrgSettingsHandlers';
 import { registerWakeupHandlers } from './ipc/WakeupHandlers';
 import { registerBlitzHandlers } from './ipc/BlitzHandlers';
 import { registerProjectMigrationHandlers } from './ipc/ProjectMigrationHandlers';
@@ -69,6 +91,8 @@ import {
     addToRecentItems,
     getTheme,
     hasCheckedClaudeCodeInstallation,
+    getLaunchCount,
+    getOnboardingState,
     incrementLaunchCount,
     wasCommunityPopupShownThisLaunch,
     markClaudeCodeInstallationChecked,
@@ -78,12 +102,15 @@ import {
     runMigrations,
     getAppSetting,
     getClaudeCodeSettings,
+    getAttachmentStagingConfig,
     isSettingsAgentToolsDisabled,
     isTrackersAgentToolsEnabled,
     store
 } from './utils/store';
+import { shouldShowFirstLaunchOnboarding } from './utils/firstLaunchOnboarding';
 import { getAIProviderOverridesWithWorktreeFallback } from './utils/aiSettingsMerge';
 import { registerMCPConfigHandlers } from './ipc/MCPConfigHandlers';
+import { registerMcpSessionStatusHandlers } from './ipc/McpSessionStatusHandlers';
 import { getOpenCodeConfigService, registerOpenCodeConfigHandlers } from './ipc/OpenCodeConfigHandlers';
 import { registerClaudeCodePluginHandlers } from './ipc/ClaudeCodePluginHandlers';
 import { registerExportHandlers } from './ipc/ExportHandlers';
@@ -99,6 +126,10 @@ import { registerMigrationHandlers } from './ipc/MigrationHandlers';
 import { registerTerminalHandlers, shutdownTerminalHandlers } from './ipc/TerminalHandlers';
 import { AIService } from './services/ai/AIService';
 import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesForWorkspace } from './utils/workspaceDetection';
+import {
+  getExternalAttachmentStagingDirectory,
+  resolveWorkspaceAttachmentStagingDirectory,
+} from './services/attachments/attachmentStagingRoot';
 import { cliManager, initEnhancedPath, getEnhancedPath, getShellEnvironment } from './services/CLIManager';
 import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState, getActiveExtensionShortNames } from './mcp/httpServer';
 import { writeMcpEndpointDescriptor, removeMcpEndpointDescriptor, type EndpointWorkspace } from './mcp/mcpEndpointDescriptor';
@@ -130,7 +161,7 @@ import {
 } from './protocols/collabAssetProtocol';
 import { SessionNamingService } from './services/SessionNamingService';
 import { SessionWakeupScheduler } from './services/SessionWakeupScheduler';
-import { getSessionWakeupsStore } from './services/RepositoryManager';
+import { getSessionWakeupsStore, repositoryManager } from './services/RepositoryManager';
 import { ExtensionDevService } from './services/ExtensionDevService';
 import { MetaAgentService } from './services/MetaAgentService';
 import { notificationService } from './services/NotificationService';
@@ -175,11 +206,19 @@ import { gitRefWatcher } from './file/GitRefWatcher';
 import { autoUpdaterService, AutoUpdaterService } from './services/autoUpdater';
 import { initializeDatabase } from './database/initialize';
 import { database, HandledError } from './database/PGLiteDatabaseWorker';
+import { buildDatabaseInitializationErrorProperties } from './database/DatabaseErrorTelemetry';
+import { resolveTrackerDeepLinkId } from './services/tracker/resolveTrackerDeepLinkId';
 import { AnalyticsService } from "./services/analytics/AnalyticsService.ts";
 import { registerAnalyticsHandlers } from "./ipc/AnalyticsHandlers.ts";
 import { registerFeatureUsageHandlers } from "./ipc/FeatureUsageHandlers.ts";
 import { FeatureUsageService, FEATURES } from "./services/FeatureUsageService.ts";
-import { shutdownStytchAuth, handleAuthCallback, isAuthenticated, getPersonalUserId } from './services/StytchAuthService';
+import {
+  shutdownStytchAuth,
+  handleAuthCallbackUrl,
+  isAuthenticated,
+  getPersonalUserId,
+  setAuthCallbackSuccessHandler,
+} from './services/StytchAuthService';
 import { registerTrackerSyncHandlers, initializeTrackerSync } from './services/TrackerSyncManager';
 import { initTrackerSchemaService, updateTrackerSchemaWorkspace } from './services/TrackerSchemaService';
 import { initTrackerNavigationService } from './services/TrackerNavigationService';
@@ -205,6 +244,15 @@ import { pathToFileURL } from 'url';
 import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
 import { installWindowOpenGuard } from './window/windowOpenGuard';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
+
+setAuthCallbackSuccessHandler(async () => {
+  try {
+    await repositoryManager.reinitializeSyncWithNewConfig();
+    logger.main.info('[AuthCallback] Sync reinitialized after auth');
+  } catch (error) {
+    logger.main.error('[AuthCallback] Failed to reinitialize sync after auth:', error);
+  }
+});
 
 // Register before any startup path can create a partition session. Browsed web
 // content stays microphone-denied even after Voice Mode receives an OS grant.
@@ -740,8 +788,9 @@ safeHandle('deep-link:consume-pending-shared-doc', (_event, workspacePath: strin
     return { ...pending, workspacePath };
 });
 
-// Same pattern for tracker deep links: nimbalyst://tracker/{trackerId}?orgId=...
-const pendingTrackerLinks = new Map<string, { trackerId: string; orgId: string }>();
+// Same pattern for tracker deep links:
+// nimbalyst://tracker/{trackerId}?orgId=...&view=document
+const pendingTrackerLinks = new Map<string, TrackerDeepLinkTarget>();
 
 safeHandle('deep-link:consume-pending-tracker', (_event, workspacePath: string) => {
     if (!workspacePath) return null;
@@ -762,14 +811,18 @@ safeHandle('deep-link:consume-pending-shared-folder', (_event, workspacePath: st
     return { ...pending, workspacePath };
 });
 
-safeHandle('deep-link:open-inbox-source', async (_event, rawUrl: string) => {
+async function openInboxSourceFromDeepLink(rawUrl: string): Promise<boolean> {
     try {
         const parsed = new URL(rawUrl);
         const orgId = parsed.searchParams.get('orgId');
         if (parsed.protocol !== 'nimbalyst:') return false;
         if (parsed.host === 'tracker' && orgId) {
-            const trackerId = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
-            return trackerId ? openTrackerFromDeepLink(trackerId, orgId) : false;
+            const trackerLink = parseTrackerDeepLink(rawUrl);
+            return openTrackerFromDeepLink(
+                trackerLink.trackerId,
+                trackerLink.orgId,
+                trackerLink.view,
+            );
         }
         if (parsed.host === 'doc' && orgId) {
             const documentId = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
@@ -782,6 +835,10 @@ safeHandle('deep-link:open-inbox-source', async (_event, rawUrl: string) => {
     } catch {
         return false;
     }
+}
+
+safeHandle('deep-link:open-inbox-source', async (_event, rawUrl: string) => {
+    return openInboxSourceFromDeepLink(rawUrl);
 });
 
 // Sensitive query params that must not be logged verbatim. Anything not in
@@ -827,77 +884,45 @@ app.on('open-url', (event, url) => {
     }
 });
 
+function handleAppActionLink(
+    url: string,
+    sourceWindow?: BrowserWindow | null,
+): AppAction | null {
+    const action = dispatchAppActionLink(url, {
+        openProjectManager: () => {
+            createWorkspaceManagerWindow();
+        },
+        openKeyboardShortcuts: () => {
+            const targetWindow =
+                sourceWindow && !sourceWindow.isDestroyed()
+                    ? sourceWindow
+                    : getMostRecentlyFocusedWorkspaceWindow();
+            if (!targetWindow || targetWindow.isDestroyed()) {
+                logger.main.warn('[AppAction] No workspace window available for keyboard shortcuts');
+                return;
+            }
+            targetWindow.webContents.send('open-keyboard-shortcuts');
+        },
+        recognizedNoop: (recognizedAction) => {
+            logger.main.info('[AppAction] Recognized action is not implemented yet:', recognizedAction);
+        },
+        unknownAction: (unknownUrl) => {
+            logger.main.warn('[AppAction] Unknown action link ignored:', summarizeDeepLink(unknownUrl));
+        },
+    });
+    return action;
+}
+
 // Handle deep link URL
 async function handleDeepLink(url: string): Promise<void> {
     try {
         const parsed = new URL(url);
 
-        // Handle auth callback: nimbalyst://auth/callback?session_token=...
+        // Legacy scheme callbacks are routed through the same validator, which
+        // rejects everything except a nonce-bearing 127.0.0.1 callback whose
+        // port matches the pending-flow ledger.
         if (parsed.host === 'auth' && parsed.pathname === '/callback') {
-            const sessionToken = parsed.searchParams.get('session_token');
-            const sessionJwt = parsed.searchParams.get('session_jwt');
-            const userId = parsed.searchParams.get('user_id');
-            const email = parsed.searchParams.get('email');
-            const expiresAt = parsed.searchParams.get('expires_at');
-
-            // Surface any worker-supplied error indicators before checking for
-            // session_token. The collabv3 worker may redirect back with
-            // `?error=...&error_description=...` instead of a session, and
-            // until now we silently fell into the "missing session_token"
-            // branch with no clue why.
-            const errorCode = parsed.searchParams.get('error');
-            const errorDescription = parsed.searchParams.get('error_description');
-            const stytchErrorType = parsed.searchParams.get('stytch_error_type');
-            if (errorCode || errorDescription || stytchErrorType) {
-                logger.main.error('[DeepLink] Auth callback returned error from server:', {
-                    error: errorCode,
-                    errorDescription,
-                    stytchErrorType,
-                    allParams: summarizeDeepLink(url),
-                });
-                return;
-            }
-
-            if (sessionToken) {
-                const orgId = parsed.searchParams.get('org_id');
-
-                // B2B auth requires org_id - reject callbacks without it
-                if (!orgId) {
-                    logger.main.error('[DeepLink] Auth callback missing org_id - B2B auth requires organization context');
-                    return;
-                }
-
-                logger.main.info('[DeepLink] Auth callback params:', {
-                    hasSessionToken: !!sessionToken,
-                    hasSessionJwt: !!sessionJwt,
-                    userId,
-                    email,
-                    orgId,
-                });
-
-                await handleAuthCallback({
-                    sessionToken,
-                    sessionJwt: sessionJwt || undefined,
-                    userId: userId || undefined,
-                    email: email || undefined,
-                    expiresAt: expiresAt || undefined,
-                    orgId,
-                });
-                logger.main.info('[DeepLink] Auth callback handled successfully');
-
-                // Reinitialize sync now that we're authenticated
-                try {
-                    const { repositoryManager } = await import('./services/RepositoryManager');
-                    await repositoryManager.reinitializeSyncWithNewConfig();
-                    logger.main.info('[DeepLink] Sync reinitialized after auth');
-                } catch (syncError) {
-                    logger.main.error('[DeepLink] Failed to reinitialize sync after auth:', syncError);
-                }
-            } else {
-                // No session_token and no recognized error param -- log everything
-                // we got so the worker's actual response shape is visible.
-                logger.main.error('[DeepLink] Auth callback missing session_token; full params:', summarizeDeepLink(url));
-            }
+            await handleAuthCallbackUrl(url);
         } else if (parsed.host === 'install' || parsed.pathname?.startsWith('/install/')) {
             // Handle extension install: nimbalyst://install/com.nimbalyst.excalidraw
             const extensionId = parsed.host === 'install'
@@ -950,26 +975,27 @@ async function handleDeepLink(url: string): Promise<void> {
             }
 
             await openSharedFolderFromDeepLink(folderId, orgId);
+        } else if (parsed.host === 'action') {
+            handleAppActionLink(url);
         } else if (parsed.host === 'tracker' || parsed.pathname?.startsWith('/tracker/')) {
-            // Handle tracker link: nimbalyst://tracker/{trackerId}?orgId={orgId}
-            const encoded = parsed.host === 'tracker'
-                ? parsed.pathname?.replace(/^\//, '')
-                : parsed.pathname?.replace('/tracker/', '');
-            let trackerId: string | undefined;
+            // Handle tracker link:
+            // nimbalyst://tracker/{trackerId}?orgId={orgId}&view=document
+            let trackerLink: TrackerDeepLinkTarget;
             try {
-                trackerId = encoded ? decodeURIComponent(encoded) : undefined;
-            } catch {
-                logger.main.warn('[DeepLink] Tracker link has malformed trackerId:', summarizeDeepLink(url));
-                return;
-            }
-            const orgId = parsed.searchParams.get('orgId');
-
-            if (!trackerId || !orgId) {
-                logger.main.warn('[DeepLink] Tracker link missing trackerId or orgId:', summarizeDeepLink(url));
+                trackerLink = parseTrackerDeepLink(url);
+            } catch (error) {
+                logger.main.warn('[DeepLink] Invalid tracker link:', {
+                    link: summarizeDeepLink(url),
+                    error: error instanceof Error ? error.message : String(error),
+                });
                 return;
             }
 
-            await openTrackerFromDeepLink(trackerId, orgId);
+            await openTrackerFromDeepLink(
+                trackerLink.trackerId,
+                trackerLink.orgId,
+                trackerLink.view,
+            );
         } else {
             logger.main.warn('[DeepLink] Unknown deep link:', summarizeDeepLink(url));
         }
@@ -1177,37 +1203,65 @@ async function openSharedFolderFromDeepLink(folderId: string, orgId: string): Pr
  * Route a tracker deep link to the matching team workspace. Mirrors the
  * shared-document flow, but targets tracker mode + tracker-item selection.
  */
-async function openTrackerFromDeepLink(trackerId: string, orgId: string): Promise<boolean> {
+async function openTrackerFromDeepLink(
+    trackerId: string,
+    orgId: string,
+    view?: TrackerDeepLinkView,
+): Promise<boolean> {
+    const trackerLink: TrackerDeepLinkTarget = {
+        trackerId,
+        orgId,
+        ...(view ? { view } : {}),
+    };
     const reason = !isAuthenticated() ? 'not-authenticated' : 'no-workspace';
     const workspacePath = isAuthenticated() ? await findWorkspaceForOrgId(orgId) : null;
 
     if (!workspacePath) {
-        logger.main.warn('[DeepLink] Cannot route tracker:', { reason, orgId, trackerId });
+        logger.main.warn('[DeepLink] Cannot route tracker:', { reason, ...trackerLink });
         const fallback = getMostRecentlyFocusedWorkspaceWindow();
         if (fallback) {
             if (fallback.isMinimized()) fallback.restore();
             fallback.focus();
-            fallback.webContents.send('deep-link:tracker-not-available', { trackerId, orgId, reason });
+            fallback.webContents.send('deep-link:tracker-not-available', {
+                ...trackerLink,
+                reason,
+            });
         }
         return false;
     }
 
-    pendingTrackerLinks.set(workspacePath, { trackerId, orgId });
+    // A link may address the item by an id it no longer has: `fm:<type>:<path>`
+    // links were minted before a shared plan was promoted to a stable id, and
+    // issue keys were never row ids to begin with. Resolve here, in main, so the
+    // renderer only ever receives an id it can actually select.
+    trackerLink.trackerId = await resolveTrackerDeepLinkId(database, workspacePath, trackerId);
+    if (trackerLink.trackerId !== trackerId) {
+        logger.main.info('[DeepLink] Resolved tracker id:', { from: trackerId, to: trackerLink.trackerId });
+    }
+
+    pendingTrackerLinks.set(workspacePath, trackerLink);
 
     const existing = findWindowByWorkspace(workspacePath);
     if (existing && !existing.isDestroyed()) {
         if (existing.isMinimized()) existing.restore();
         existing.focus();
         existing.webContents.send('deep-link:open-tracker', {
-            trackerId,
-            orgId,
+            ...trackerLink,
             workspacePath,
         });
-        logger.main.info('[DeepLink] Routed tracker to existing window:', { workspacePath, trackerId });
+        logger.main.info('[DeepLink] Routed tracker to existing window:', {
+            workspacePath,
+            trackerId,
+            view,
+        });
         return true;
     }
 
-    logger.main.info('[DeepLink] Opening new window for tracker workspace:', { workspacePath, trackerId });
+    logger.main.info('[DeepLink] Opening new window for tracker workspace:', {
+        workspacePath,
+        trackerId,
+        view,
+    });
     createWindow(false, true, workspacePath);
     return true;
 }
@@ -1515,23 +1569,22 @@ app.whenReady().then(async () => {
                                    errorMessage.includes('Aborted') ||
                                    errorMessage.includes('DATABASE_INIT_FAILED');
 
-        // Send analytics about the failure
+        // Send analytics about the failure. The detailed engine text stays in
+        // the local log above -- init failures name the database path, which
+        // carries the user's account name. PostHog gets fixed codes instead.
         try {
             const analytics = AnalyticsService.getInstance();
-            if (isWasmRuntimeCrash) {
-                // Track as a known error for monitoring specific failure patterns
-                analytics.sendEvent('known_error', {
-                    errorId: 'pglite_wasm_runtime_crash',
-                    context: 'database_initialization'
-                });
-            } else {
-                // Track generic database initialization failure
-                analytics.sendEvent('known_error', {
-                    errorId: 'database_initialization_failed',
-                    context: 'database_initialization',
-                    errorMessage: errorMessage.slice(0, 200) // Truncate for privacy
-                });
-            }
+            const initializationError = buildDatabaseInitializationErrorProperties(
+                error,
+                database.getEngine(),
+            );
+            analytics.sendEvent('known_error', {
+                errorId: isWasmRuntimeCrash
+                    ? 'pglite_wasm_runtime_crash'
+                    : 'database_initialization_failed',
+                context: 'database_initialization',
+                ...initializationError,
+            });
         } catch {
             // Analytics failure shouldn't block error handling
         }
@@ -1596,7 +1649,20 @@ app.whenReady().then(async () => {
     await registerSessionStateHandlers();
     await registerThemeHandlers();
     setupWorkspaceManagerHandlers();
-    setupTeamManagementHandlers();
+    safeOn('app-action:dispatch', (event, url: unknown) => {
+        if (typeof url !== 'string') {
+            logger.main.warn('[AppAction] Ignoring non-string renderer action link');
+            return;
+        }
+        handleAppActionLink(url, BrowserWindow.fromWebContents(event.sender));
+    });
+    setupTeamManagementHandlers({
+        listTrackerItemsForOrg: async (orgId) => {
+            const workspacePath = await findWorkspaceForOrgId(orgId);
+            if (!workspacePath) return [];
+            return documentServices.get(workspacePath)?.listTrackerItems() ?? [];
+        },
+    });
     setupSessionFileHandlers();
     registerSlashCommandHandlers();
     registerActionPromptHandlers();
@@ -1628,6 +1694,7 @@ app.whenReady().then(async () => {
     registerProjectMigrationHandlers();
     registerSuperLoopHandlers();
     registerMCPConfigHandlers();
+    registerMcpSessionStatusHandlers();
     registerOpenCodeConfigHandlers();
     registerClaudeCodePluginHandlers();
     const activeSqlite = database.getActiveSQLiteDatabase();
@@ -1659,8 +1726,11 @@ app.whenReady().then(async () => {
     gitRefWatcher.onCommitDetected((event) => commitTrackerLinker.handleCommitDetected(event));
 
     registerTeamHandlers();
-    registerTeamInboxHandlers();
+    registerTeamInboxHandlers({
+        openInboxSource: openInboxSourceFromDeepLink,
+    });
     registerConversationHandlers();
+    registerOrgSettingsHandlers();
     registerTeamCustodyHandlers();
     // Team custody is server-managed; drop the client key material the retired
     // lane left in userData (some of it plaintext where safeStorage was off).
@@ -1702,6 +1772,25 @@ app.whenReady().then(async () => {
         });
     });
 
+    // NIM-2372: Claude Code discovers its own MCP config again (no more
+    // `--strict-mcp-config`), so Nimbalyst's off-toggle has to be expressed in the
+    // CLI's own vocabulary. Both Claude loaders project it before handing back the
+    // enabled set. Servers skipped for a pending OAuth are deliberately NOT
+    // included — they're unauthorized, not user-disabled.
+    const syncClaudeDisabledServers = async (
+        workspacePath: string | undefined,
+        allServers: Record<string, MCPServerConfig>
+    ): Promise<void> => {
+        await mcpConfigService?.projectClaudeCodeDisabledServers(workspacePath, allServers);
+    };
+
+    // Servers the loader below withheld on its most recent pass, per workspace.
+    // The session status surface reads these so an unauthorized server shows up
+    // as "needs authorization" instead of vanishing with only a log line
+    // (GH #1057). Keyed by workspace because one main process serves several.
+    const claudeAgentWithheldServerNames = new Map<string, string[]>();
+    const withheldNamesKey = (workspacePath?: string) => workspacePath ?? '';
+
     ClaudeCodeProvider.setMCPConfigLoader(async (workspacePath?: string) => {
         if (!mcpConfigService) {
             throw new Error('MCP config service not initialized');
@@ -1712,18 +1801,34 @@ app.whenReady().then(async () => {
         // Filter to servers enabled for Claude Agent and process for runtime
         // (On Windows, converts npm/npx/etc commands to .cmd equivalents)
         const enabledServers: Record<string, any> = {};
+        const withheldServers: string[] = [];
         for (const [name, config] of Object.entries(allServers)) {
             if (isMCPServerEnabledForProvider(config as MCPServerConfig, MCP_PROVIDER_IDS.CLAUDE_AGENT)) {
-                const isAuthorized = await mcpConfigService.isOAuthAuthorized(config as MCPServerConfig);
+                // Claude Code speaks HTTP natively, so a server with no OAuth is
+                // passed through instead of being wrapped in npx mcp-remote.
+                // A server holding an mcp-remote token still gets the wrapper --
+                // the config alone cannot tell those two apart (NIM-2433).
+                const claudeHttp = await mcpConfigService.resolveMcpRemoteOptions(
+                    config as MCPServerConfig,
+                    { nativeHttpSupported: true }
+                );
+                const isAuthorized = await mcpConfigService.isOAuthAuthorized(config as MCPServerConfig, claudeHttp);
                 if (!isAuthorized) {
                     logger.mcp.info(`[MCP] Skipping unauthorized OAuth server for Claude Agent: ${name}`);
+                    withheldServers.push(name);
                     continue;
                 }
-                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any);
+                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any, claudeHttp);
             }
         }
+        claudeAgentWithheldServerNames.set(withheldNamesKey(workspacePath), withheldServers);
+        await syncClaudeDisabledServers(workspacePath, allServers);
         return enabledServers;
     });
+
+    ClaudeCodeProvider.setMcpWithheldNamesLoader(
+        (workspacePath?: string) => claudeAgentWithheldServerNames.get(withheldNamesKey(workspacePath)) ?? []
+    );
     OpenAICodexProvider.setMCPConfigLoader(async (workspacePath?: string) => {
         if (!mcpConfigService) {
             throw new Error('MCP config service not initialized');
@@ -1806,14 +1911,21 @@ app.whenReady().then(async () => {
         const enabledServers: Record<string, any> = {};
         for (const [name, config] of Object.entries(allServers)) {
             if (isMCPServerEnabledForProvider(config as MCPServerConfig, MCP_PROVIDER_IDS.CLAUDE_AGENT)) {
-                const isAuthorized = await mcpConfigService.isOAuthAuthorized(config as MCPServerConfig);
+                // Same as the Agent path: the CLI speaks HTTP natively, but a
+                // server with a cached mcp-remote token still needs the wrapper.
+                const claudeHttp = await mcpConfigService.resolveMcpRemoteOptions(
+                    config as MCPServerConfig,
+                    { nativeHttpSupported: true }
+                );
+                const isAuthorized = await mcpConfigService.isOAuthAuthorized(config as MCPServerConfig, claudeHttp);
                 if (!isAuthorized) {
                     logger.mcp.info(`[MCP] Skipping unauthorized OAuth server for Claude CLI: ${name}`);
                     continue;
                 }
-                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any);
+                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any, claudeHttp);
             }
         }
+        await syncClaudeDisabledServers(workspacePath, allServers);
         return enabledServers;
     });
 
@@ -1973,9 +2085,27 @@ app.whenReady().then(async () => {
     // copies of every project skill in the system prompt (~7K tokens wasted per
     // session). Claude has no Codex-style sandbox; cross-worktree file access
     // still works through the normal permission flow.
+    const withAttachmentStagingDirectory = (workspacePath: string, directories: string[]) => {
+      const attachmentDirectory = getExternalAttachmentStagingDirectory(workspacePath);
+      return attachmentDirectory
+        ? [...new Set([...directories, attachmentDirectory])]
+        : directories;
+    };
     ClaudeCodeProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
-      getAdditionalDirectoriesForWorkspace(workspacePath, { includeSiblingWorktrees: false }));
-    OpenAICodexProvider.setAdditionalDirectoriesLoader(getAdditionalDirectoriesForWorkspace);
+      withAttachmentStagingDirectory(
+        workspacePath,
+        getAdditionalDirectoriesForWorkspace(workspacePath, { includeSiblingWorktrees: false }),
+      ));
+    OpenAICodexProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
+      withAttachmentStagingDirectory(workspacePath, getAdditionalDirectoriesForWorkspace(workspacePath)));
+    ClaudeCodeProvider.setAttachmentStagingLoader((workspacePath: string) => ({
+      root: resolveWorkspaceAttachmentStagingDirectory(workspacePath),
+      mode: getAttachmentStagingConfig().mode,
+    }));
+    ClaudeCodeProvider.setAttachmentDenyRulesLoader(async (workspacePath: string) => {
+      const effective = await ClaudeSettingsManager.getInstance().getEffectiveSettings(workspacePath);
+      return effective.permissions.deny;
+    });
 
     // Wire the Codex PreToolUse hook (LEGACY -- only consulted by the SDK
     // transport, which is no longer the default). The hook script ships
@@ -2214,18 +2344,42 @@ app.whenReady().then(async () => {
     // re-sent on next launch (NIM-615).
     try {
       const { getQueuedPromptsStore } = await import('./services/RepositoryManager');
-      const { completed, failed, rolledBack } = await getQueuedPromptsStore().sweepExecutingOnBoot();
+      const queuedPromptsStore = getQueuedPromptsStore();
+      const { completed, failed, rolledBack } = await queuedPromptsStore.sweepExecutingOnBoot();
       if (completed > 0 || failed > 0 || rolledBack > 0) {
         logger.main.info(
           `[Main] Boot sweep: ${completed} answered prompt(s) marked completed, ${failed} delivered-but-unanswered prompt(s) marked failed, ${rolledBack} undelivered prompt(s) rolled back to pending`
         );
       }
+
     } catch (sweepErr) {
       logger.main.error('[Main] Boot sweep failed:', sweepErr);
     }
 
     // Check for pending restart continuations and queue continuation prompts
     await checkForRestartContinuation(aiService);
+
+    // The boot sweep normalizes rows to 'pending' but claims none of them, and
+    // restart continuation only queues — before this, both sat there until the
+    // user happened to open the session's transcript (#962). Hand every session
+    // with pending rows to the queue driver, which defers until a window for
+    // that workspace exists. Exactly-once is still the store's atomic claim.
+    try {
+      const { getQueuedPromptsStore } = await import('./services/RepositoryManager');
+      const { driveStrandedQueuesOnBoot } = await import('./services/ai/bootQueueRecovery');
+      const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+      const bootAiService = aiService;
+      await driveStrandedQueuesOnBoot({
+        listSessionIdsWithPending: () => getQueuedPromptsStore().listSessionIdsWithPending(),
+        getWorkspacePath: async (sessionId) => (await AISessionsRepository.get(sessionId))?.workspacePath,
+        requestDrive: (sessionId, workspacePath) =>
+          bootAiService.requestQueueDrive(sessionId, workspacePath, 'boot-recovery'),
+        logInfo: (message) => logger.main.info(message),
+        logWarn: (message) => logger.main.warn(message),
+      });
+    } catch (recoveryErr) {
+      logger.main.error('[Main] Boot queue recovery failed:', recoveryErr);
+    }
 
     // Recover any super loops that were running when the app last shut down
     await getSuperLoopService().recoverStaleLoopState();
@@ -2386,12 +2540,19 @@ app.whenReady().then(async () => {
                 if (!aiSvcRef) {
                     return { triggered: false };
                 }
-                await aiSvcRef.queuePromptForSession(sessionId, prompt, undefined, { promptOrigin: 'wakeup_resume' });
-                const triggered = await aiSvcRef.triggerQueuedPromptProcessingForSession(
-                    sessionId,
-                    workspacePath,
-                );
-                return { triggered };
+                await aiSvcRef.queuePromptForSession(sessionId, prompt, undefined, {
+                  promptOrigin: 'wakeup_resume',
+                  promptProvenance: {
+                    actor: 'system',
+                    origin: 'automation',
+                  },
+                });
+                const outcome = await aiSvcRef.driveQueuedPrompts(sessionId, workspacePath, 'wakeup');
+                // A deferred outcome still counts as triggered: the queue driver
+                // owns the retry from here. Reporting false would send the row
+                // back to waiting-for-workspace, and re-firing this executor
+                // would queue a second copy of the same prompt (#962).
+                return { triggered: outcome.kind !== 'failed' };
             },
             broadcastChanged: (row) => {
                 for (const window of BrowserWindow.getAllWindows()) {
@@ -2624,7 +2785,15 @@ app.whenReady().then(async () => {
         });
     } else if (!sessionRestored && !pendingFilePath) {
         // No session to restore and no file to open - show Workspace Manager
-        createWorkspaceManagerWindow();
+        const onboardingState = getOnboardingState();
+        if (shouldShowFirstLaunchOnboarding({
+            unifiedOnboardingCompleted: onboardingState.unifiedOnboardingCompleted,
+            launchCount: getLaunchCount(),
+        })) {
+            createWorkspaceManagerWindow({ showOnboarding: true });
+        } else {
+            createWorkspaceManagerWindow();
+        }
     } else if (pendingFilePath) {
         // Handle pending file with workspace detection
         const fileToOpen = pendingFilePath;
@@ -2897,9 +3066,20 @@ app.on('before-quit', async (event) => {
 
     // Shutdown Stytch auth service
     try {
-        shutdownStytchAuth();
+        await shutdownStytchAuth();
     } catch (error) {
         console.error('[QUIT] Error shutting down Stytch auth:', error);
+    }
+
+    try {
+        shutdownTeamInboxHandlers();
+    } catch (error) {
+        console.error('[QUIT] Error shutting down Teams inbox:', error);
+    }
+    try {
+        shutdownConversationHandlers();
+    } catch (error) {
+        console.error('[QUIT] Error shutting down Teams conversations:', error);
     }
 
     // Check if we can write to userData directory

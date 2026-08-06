@@ -18,6 +18,7 @@ export const MCP_OAUTH_ERROR_TYPES = [
   'port_conflict',
   'command_unavailable',
   'provider_rejected',
+  'dynamic_registration_unsupported',
   'callback_validation',
   'token_exchange',
   'network',

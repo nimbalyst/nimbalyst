@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseTrackerReferenceHref,
   resolveTranscriptFilePathFromHref,
   transcriptUrlTransform,
 } from '../MarkdownRenderer';
@@ -160,5 +161,16 @@ describe('transcriptUrlTransform', () => {
     expect(transcriptUrlTransform('nimbalyst://NIM-1315')).toBe(
       'nimbalyst://NIM-1315'
     );
+  });
+});
+
+describe('parseTrackerReferenceHref', () => {
+  it('accepts tracker issue-key and local-id URNs only', () => {
+    expect(parseTrackerReferenceHref('nimbalyst://NIM-123')).toBe('NIM-123');
+    expect(parseTrackerReferenceHref('nimbalyst://tk_a1b2c3')).toBe('tk_a1b2c3');
+    expect(
+      parseTrackerReferenceHref('nimbalyst://action/open-project-manager'),
+    ).toBeNull();
+    expect(parseTrackerReferenceHref('nimbalyst://doc/document-1')).toBeNull();
   });
 });

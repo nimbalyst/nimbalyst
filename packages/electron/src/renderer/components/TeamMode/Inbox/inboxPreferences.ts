@@ -14,15 +14,17 @@ export const INBOX_PREFERENCES_SETTING_KEY = 'inboxViewPreferences';
 
 export interface InboxPreferences {
   filter: InboxFilterId;
+  unreadOnly: boolean;
   scope: InboxScope;
 }
 
 export const DEFAULT_INBOX_PREFERENCES: InboxPreferences = {
   filter: 'all',
+  unreadOnly: false,
   scope: EMPTY_INBOX_SCOPE,
 };
 
-const FILTERS: InboxFilterId[] = ['all', 'mentions', 'assigned', 'unread', 'follows'];
+const FILTERS: InboxFilterId[] = ['all', 'mentions', 'assigned', 'follows'];
 const SOURCE_KINDS: InboxSourceKind[] = [
   'roomMessage',
   'documentDiscussion',
@@ -46,13 +48,21 @@ function stringArrayOrNull(value: unknown, allowed?: readonly string[]): string[
  */
 export function normalizeInboxPreferences(raw: unknown): InboxPreferences {
   const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-  const filter = FILTERS.includes(record.filter as InboxFilterId)
-    ? (record.filter as InboxFilterId)
-    : DEFAULT_INBOX_PREFERENCES.filter;
+  // Unread used to be a reason filter. Anyone whose last session ended on it
+  // gets what they were actually looking at — every reason, unread only — not
+  // silently reset to All, which would hide nothing and show everything.
+  const storedUnreadFilter = record.filter === 'unread';
+  const filter = storedUnreadFilter
+    ? 'all'
+    : FILTERS.includes(record.filter as InboxFilterId)
+      ? (record.filter as InboxFilterId)
+      : DEFAULT_INBOX_PREFERENCES.filter;
+  const unreadOnly = storedUnreadFilter || record.unreadOnly === true;
   const scopeRecord = (record.scope && typeof record.scope === 'object' ? record.scope : {}) as Record<string, unknown>;
 
   return {
     filter,
+    unreadOnly,
     scope: {
       orgIds: stringArrayOrNull(scopeRecord.orgIds),
       sourceKinds: stringArrayOrNull(scopeRecord.sourceKinds, SOURCE_KINDS) as InboxSourceKind[] | null,

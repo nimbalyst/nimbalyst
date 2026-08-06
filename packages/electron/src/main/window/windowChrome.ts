@@ -45,6 +45,21 @@ export function customTitleBarOptions(
   };
 }
 
+/**
+ * Opt a macOS `hiddenInset` window into the Window Controls Overlay API.
+ *
+ * This has no visual effect — the traffic lights are drawn either way. It
+ * exists so the renderer can read the region they occupy via
+ * `navigator.windowControlsOverlay.getTitlebarAreaRect()` and keep floating
+ * menus out from under them (GitHub #1096). Without it the API reports
+ * nothing and `windowControlsClearance()` is inert in that window.
+ */
+export function windowControlsOverlayOptions(
+  platform: NodeJS.Platform = process.platform,
+): Partial<BrowserWindowConstructorOptions> {
+  return platform === 'darwin' ? { titleBarOverlay: true } : {};
+}
+
 export function titleBarOptionsForWindow(
   input: WindowTitleBarOptionsInput,
 ): Partial<BrowserWindowConstructorOptions> {

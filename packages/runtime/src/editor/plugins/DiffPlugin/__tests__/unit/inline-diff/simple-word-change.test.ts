@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test for inline diff within a single paragraph
  * When only one word changes, we should show inline diff highlighting

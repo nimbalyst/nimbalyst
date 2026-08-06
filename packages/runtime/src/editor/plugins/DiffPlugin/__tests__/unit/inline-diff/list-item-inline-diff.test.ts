@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test inline diff for list items
  * Verify that list items use inline diff just like paragraphs

@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * OBSERVED integration test for the gemini-antigravity backend sendMessage
  * stream (the stretch claim).

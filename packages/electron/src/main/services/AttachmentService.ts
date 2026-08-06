@@ -8,6 +8,7 @@ import { shell } from 'electron';
 import { join, basename, extname } from 'path';
 import { createHash } from 'crypto';
 import type { ChatAttachment } from '@nimbalyst/runtime';
+import { stagedAttachmentRegistry } from '@nimbalyst/runtime/ai/server';
 import {AnalyticsService} from "./analytics/AnalyticsService.ts";
 import {
   compressImage,
@@ -16,6 +17,11 @@ import {
   HeicDecodeError,
   UnsupportedFormatError
 } from './ImageCompressor';
+import {
+  resolveSavedAttachmentDirectory,
+  workspacePathToAttachmentDir,
+  type AttachmentStagingMode,
+} from './attachments/attachmentStagingRoot';
 
 export interface AttachmentValidation {
   valid: boolean;
@@ -27,7 +33,7 @@ export interface AttachmentValidation {
  * e.g., /Users/ghinkle/sources/datamodellm -> -Users-ghinkle-sources-datamodellm
  */
 export function workspacePathToDir(workspacePath: string): string {
-  return workspacePath.replace(/[\/\\:]/g, '-');
+  return workspacePathToAttachmentDir(workspacePath);
 }
 
 export class AttachmentService {
@@ -148,12 +154,13 @@ export class AttachmentService {
   private static readonly MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB (will be compressed)
   private static readonly MAX_DOCUMENT_SIZE = 10 * 1024 * 1024; // 10MB
 
-  constructor(workspacePath: string, userDataPath: string) {
+  constructor(
+    workspacePath: string,
+    stagingDirectory: string,
+    private readonly stagingMode: AttachmentStagingMode = 'temp',
+  ) {
     this.workspacePath = workspacePath;
-    // Store attachments in app user data, organized by project
-    // e.g., ~/Library/Application Support/@nimbalyst/electron/chat-attachments/-Users-ghinkle-sources-datamodellm/
-    const workspaceDir = workspacePathToDir(workspacePath);
-    this.attachmentsDir = join(userDataPath, 'chat-attachments', workspaceDir);
+    this.attachmentsDir = resolveSavedAttachmentDirectory(stagingDirectory);
   }
 
   /**
@@ -248,6 +255,11 @@ export class AttachmentService {
 
       // Write file to disk
       await fs.writeFile(filepath, finalBuffer);
+      stagedAttachmentRegistry.register(sessionId, {
+        path: filepath,
+        filename: sanitizedName,
+        mode: this.stagingMode,
+      });
 
       // console.log('[AttachmentService] Saved attachment', {
       //   filename,

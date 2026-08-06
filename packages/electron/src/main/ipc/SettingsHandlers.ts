@@ -36,6 +36,8 @@ import {
     isFeatureWalkthroughCompleted, setFeatureWalkthroughCompleted,
     isWorktreeOnboardingShown, setWorktreeOnboardingShown,
     getClaudeCodeSettings,
+    getAttachmentStagingConfig,
+    setAttachmentStagingConfig,
     setClaudeCodeProjectCommandsEnabled, setClaudeCodeUserCommandsEnabled,
     setClaudeCodeApiUpstreamUrl,
     getAgentWorkflowSourceSettings, getAgentWorkflowExportSettings,
@@ -95,6 +97,33 @@ function ensureStytchInitialized(): void {
     });
 
     stytchInitialized = true;
+}
+
+function parseAuthFlowOptions(
+    value: unknown,
+    fallbackIntent: StytchAuth.AuthIntent,
+): StytchAuth.AuthFlowOptions {
+    if (value === undefined) return { intent: fallbackIntent };
+    if (!value || typeof value !== 'object') {
+        throw new Error('Auth flow options must be an object');
+    }
+    const options = value as { intent?: unknown; targetPersonalOrgId?: unknown };
+    if (!['sign-in', 'add-account', 'reauth'].includes(String(options.intent))) {
+        throw new Error('Auth flow intent must be sign-in, add-account, or reauth');
+    }
+    if (options.targetPersonalOrgId !== undefined && typeof options.targetPersonalOrgId !== 'string') {
+        throw new Error('targetPersonalOrgId must be a string');
+    }
+    if (options.intent === 'reauth' && !options.targetPersonalOrgId) {
+        throw new Error('Reauth requires targetPersonalOrgId');
+    }
+    if (options.intent !== 'reauth' && options.targetPersonalOrgId) {
+        throw new Error('targetPersonalOrgId is only valid for reauth');
+    }
+    return {
+        intent: options.intent as StytchAuth.AuthIntent,
+        targetPersonalOrgId: options.targetPersonalOrgId as string | undefined,
+    };
 }
 
 /**
@@ -715,6 +744,18 @@ export function registerSettingsHandlers() {
         return getClaudeCodeSettings();
     });
 
+    safeHandle('attachment-staging:get-settings', async () => {
+        return getAttachmentStagingConfig();
+    });
+
+    safeHandle('attachment-staging:set-settings', async (_event, config: {
+        mode: 'temp' | 'workspace' | 'custom';
+        customPath?: string;
+    }) => {
+        setAttachmentStagingConfig(config);
+        return getAttachmentStagingConfig();
+    });
+
     safeHandle('agentWorkflows:get-settings', async () => {
         return {
             sourceSettings: getAgentWorkflowSourceSettings(),
@@ -1318,8 +1359,9 @@ export function registerSettingsHandlers() {
     });
 
     // Sign in with Google OAuth
-    safeHandle('stytch:sign-in-google', async () => {
+    safeHandle('stytch:sign-in-google', async (_event, rawOptions?: unknown) => {
         ensureStytchInitialized();
+        const options = parseAuthFlowOptions(rawOptions, 'sign-in');
         // Get the sync server URL from settings
         const syncConfig = getSessionSyncConfig();
         const isDev = process.env.NODE_ENV !== 'production';
@@ -1339,15 +1381,16 @@ export function registerSettingsHandlers() {
         // Convert WebSocket URLs to HTTP: wss:// -> https://, ws:// -> http://
         const httpUrl = serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
         logger.main.info('[stytch:sign-in-google] Auth URL:', httpUrl, 'effectiveEnvironment:', effectiveEnvironment);
-        return StytchAuth.signInWithGoogle(httpUrl);
+        return StytchAuth.signInWithGoogle(httpUrl, options);
     });
 
     // Send magic link for passwordless authentication
-    safeHandle('stytch:send-magic-link', async (_event, email: string) => {
+    safeHandle('stytch:send-magic-link', async (_event, email: string, rawOptions?: unknown) => {
         ensureStytchInitialized();
         if (!email) {
             return { success: false, error: 'Email is required' };
         }
+        const options = parseAuthFlowOptions(rawOptions, 'sign-in');
         // Get the sync server URL from settings
         const syncConfig = getSessionSyncConfig();
         const isDev = process.env.NODE_ENV !== 'production';
@@ -1367,7 +1410,7 @@ export function registerSettingsHandlers() {
         // Convert WebSocket URLs to HTTP: wss:// -> https://, ws:// -> http://
         const httpUrl = serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
         logger.main.info('[stytch:send-magic-link] Sending to:', httpUrl, 'effectiveEnvironment:', effectiveEnvironment);
-        return StytchAuth.sendMagicLink(email, httpUrl);
+        return StytchAuth.sendMagicLink(email, httpUrl, options);
     });
 
     // Sign out (all accounts)
@@ -1394,23 +1437,6 @@ export function registerSettingsHandlers() {
         }
         await StytchAuth.signOut();
         return { success: true };
-    });
-
-    // Add a new account (opens OAuth flow)
-    safeHandle('stytch:add-account', async () => {
-        ensureStytchInitialized();
-        const syncConfig = getSessionSyncConfig();
-        const isDev = process.env.NODE_ENV !== 'production';
-        const effectiveEnvironment = isDev ? syncConfig?.environment : undefined;
-        let serverUrl: string;
-        if (effectiveEnvironment === 'development') {
-            serverUrl = 'http://localhost:8790';
-        } else if (syncConfig?.serverUrl) {
-            serverUrl = syncConfig.serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
-        } else {
-            serverUrl = 'https://sync.nimbalyst.com';
-        }
-        return StytchAuth.addAccount(serverUrl);
     });
 
     // Remove a specific account by personalOrgId

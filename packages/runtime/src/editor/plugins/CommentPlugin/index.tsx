@@ -2,8 +2,8 @@
  * CommentsPlugin
  *
  * Text-selection comments for collaborative Lexical documents. The floating
- * text toolbar contributes an "Add comment" action; selecting it opens a composer
- * with an `@`-mention picker (team members). Comments anchor to the text via
+ * text toolbar contributes an "Add comment" action; selecting it opens the
+ * comments panel with an `@`-mention composer. Comments anchor to the text via
  * `@lexical/mark` `MarkNode`s and persist in the document's shared Y.Doc
  * (top-level `comments` YArray) through the orphaned-upstream `CommentStore`.
  * A side panel lists threads, supports reply / resolve / delete, and clicking
@@ -13,9 +13,8 @@
  * invoked. It is currently unwired: the personal-index fanout lane was removed
  * and the org-scoped TeamInboxRoom replacement is not shipped.
  *
- * Positioning uses `@floating-ui/react` (project rule — never manual
- * `position: fixed`). The MarkNode + `INSERT_INLINE_COMMENT_COMMAND` live in
- * `CommentsExtension`; this component owns the React UI and store wiring.
+ * The MarkNode + `INSERT_INLINE_COMMENT_COMMAND` live in `CommentsExtension`;
+ * this component owns the React UI and store wiring.
  */
 
 import type { JSX } from 'react';
@@ -28,14 +27,6 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 
-import {
-  autoUpdate,
-  flip,
-  FloatingPortal,
-  offset,
-  shift,
-  useFloating,
-} from '@floating-ui/react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
@@ -50,12 +41,10 @@ import {
   $isRangeSelection,
   $isTextNode,
   COMMAND_PRIORITY_HIGH,
-  getDOMSelection,
   KEY_ENTER_COMMAND,
   type NodeKey,
 } from 'lexical';
 
-import { getDOMRangeRect } from '../../utils/getDOMRangeRect';
 import {
   CommentStore,
   createComment,
@@ -78,6 +67,7 @@ import type {
 } from '../../commenting/types';
 import { INSERT_INLINE_COMMENT_COMMAND } from '../../extensions/builtin/CommentsExtension';
 import { OPEN_COMMENT_COMPOSER_COMMAND } from './commands';
+import { scrollToCommentAnchor } from './scrollToCommentAnchor';
 import {
   TypeaheadMenuPlugin,
   type TypeaheadMenuOption,
@@ -507,13 +497,26 @@ function CommentsPanel({
                     >
                       <CommentComposer
                         getMembers={getMembers}
-                        submitLabel="Reply"
-                        placeholder="Reply..."
-                        autoFocus={false}
+                        submitLabel={
+                          thread.comments.length === 0 ? 'Comment' : 'Reply'
+                        }
+                        placeholder={
+                          thread.comments.length === 0
+                            ? 'Add a comment... use @ to mention'
+                            : 'Reply...'
+                        }
+                        autoFocus={
+                          thread.comments.length === 0 &&
+                          thread.id === activeThreadId
+                        }
                         onSubmit={(text, mentioned) =>
                           onReply(thread, text, mentioned)
                         }
-                        onCancel={() => {}}
+                        onCancel={() => {
+                          if (thread.comments.length === 0) {
+                            onDeleteThread(thread);
+                          }
+                        }}
                       />
                       <button
                         type="button"
@@ -572,9 +575,6 @@ export default function CommentsPlugin({
   );
   const [markVersion, setMarkVersion] = useState(0);
 
-  const [composer, setComposer] = useState<{ thread: Thread; rect: DOMRect } | null>(
-    null,
-  );
   const [panelOpen, setPanelOpen] = useState(false);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
 
@@ -761,17 +761,16 @@ export default function CommentsPlugin({
 
   const scrollToThread = useCallback(
     (id: string) => {
-      const keys = markNodeMapRef.current.get(id);
-      if (!keys) return;
-      for (const key of keys) {
-        const el = editor.getElementByKey(key);
-        if (el) {
-          el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          break;
-        }
-      }
+      const thread = threads.find((candidate) => candidate.id === id);
+      if (!thread) return;
+      scrollToCommentAnchor(
+        editor,
+        markNodeMapRef.current,
+        thread.id,
+        thread.quote,
+      );
     },
-    [editor],
+    [editor, threads],
   );
 
   const fanoutMention = useCallback(
@@ -806,17 +805,11 @@ export default function CommentsPlugin({
   const handleAddComment = useCallback(() => {
     let quote = '';
     let isBackward = false;
-    let selectionRect = new DOMRect();
     editor.getEditorState().read(() => {
       const selection = $getSelection();
       if ($isRangeSelection(selection)) {
         quote = selection.getTextContent();
         isBackward = selection.isBackward();
-        const nativeSelection = getDOMSelection(editor._window);
-        const rootElement = editor.getRootElement();
-        if (nativeSelection && rootElement) {
-          selectionRect = getDOMRangeRect(nativeSelection, rootElement);
-        }
       }
     });
     if (!quote.trim()) return;
@@ -828,7 +821,7 @@ export default function CommentsPlugin({
       isBackward,
     });
 
-    setComposer({ thread, rect: selectionRect });
+    setPanelOpen(true);
     setActiveThreadId(thread.id);
   }, [editor, commentStore]);
 
@@ -844,40 +837,6 @@ export default function CommentsPlugin({
       ),
     [editor, handleAddComment],
   );
-
-  const handleComposerSubmit = useCallback(
-    (text: string, mentionedUserIds: string[]) => {
-      const current = composer;
-      if (!current) return;
-      const actor: CommentActor = {
-        kind: 'user',
-        userId: config.currentUser.id,
-        displayName: config.currentUser.name,
-      };
-      const comment = createComment(text, config.currentUser.name, {
-        actor,
-        clientMutationId: createClientMutationId(),
-      });
-      commentStore.addComment(comment, current.thread);
-      fanoutMention(mentionedUserIds, text, current.thread.id, comment.id, actor);
-      setComposer(null);
-      setPanelOpen(true);
-      setActiveThreadId(current.thread.id);
-    },
-    [composer, commentStore, config.currentUser, fanoutMention],
-  );
-
-  const handleComposerCancel = useCallback(() => {
-    const current = composer;
-    if (!current) return;
-    // An empty new thread (the composer was opened but never submitted) is
-    // discarded along with its mark.
-    if (current.thread.comments.length === 0) {
-      commentStore.deleteCommentOrThread(current.thread);
-      removeMark(current.thread.id);
-    }
-    setComposer(null);
-  }, [composer, commentStore, removeMark]);
 
   const handleReply = useCallback(
     (thread: Thread, text: string, mentionedUserIds: string[]) => {
@@ -965,22 +924,6 @@ export default function CommentsPlugin({
 
   const getMembers = useCallback(() => config.getMembers(), [config]);
 
-  // -- Floating positioning --------------------------------------------------
-  const composerFloat = useFloating({
-    placement: 'bottom-start',
-    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
-    whileElementsMounted: autoUpdate,
-  });
-
-  const composerReference = useMemo(
-    () => ({ getBoundingClientRect: () => composer?.rect ?? new DOMRect() }),
-    [composer],
-  );
-
-  useEffect(() => {
-    composerFloat.refs.setReference(composerReference);
-  }, [composerFloat.refs, composerReference]);
-
   // Reserve room on the right of the editor pane while the panel is docked
   // open, so document text isn't hidden underneath it.
   useEffect(() => {
@@ -992,25 +935,6 @@ export default function CommentsPlugin({
 
   return (
     <>
-      {composer && (
-        <FloatingPortal>
-          <div
-            ref={composerFloat.refs.setFloating}
-            style={composerFloat.floatingStyles}
-            className="nim-comment-composer-popover"
-          >
-            <CommentComposer
-              getMembers={getMembers}
-              submitLabel="Comment"
-              placeholder="Add a comment... use @ to mention"
-              autoFocus
-              onSubmit={handleComposerSubmit}
-              onCancel={handleComposerCancel}
-            />
-          </div>
-        </FloatingPortal>
-      )}
-
       {/* Toggle + panel dock into the editor pane (not <body>) so they stay
           scoped to this tab. */}
       {!panelOpen &&

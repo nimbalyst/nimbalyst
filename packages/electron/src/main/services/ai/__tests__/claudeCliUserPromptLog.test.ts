@@ -75,6 +75,30 @@ describe('logClaudeCliUserPrompt', () => {
     });
   });
 
+  it('persists prompt provenance alongside the clean CLI prompt', async () => {
+    const h = harness();
+    const promptProvenance = {
+      actor: 'agent' as const,
+      origin: 'session-orchestration' as const,
+      originSessionId: 'parent-session',
+      queuedPromptId: 'meta-1',
+    };
+
+    await logClaudeCliUserPrompt(
+      {
+        sessionId: 'sess-1',
+        workspacePath: '/work',
+        prompt: 'continue the delegated task',
+        promptProvenance,
+      },
+      h.deps,
+    );
+
+    expect(h.createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { promptProvenance } }),
+    );
+  });
+
   it('persists an image-only submission (blank prompt + attachments)', async () => {
     const h = harness();
     const attachments = [

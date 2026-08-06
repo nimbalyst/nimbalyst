@@ -51,8 +51,9 @@ export const DIALOG_IDS = {
   ACCOUNT_LOGIN: 'account-login',
 
   // Collaboration group
-  CREATE_TEAM: 'create-team',
   SHARE_TO_TEAM: 'share-to-team',
+  ORG_CREATION_WIZARD: 'org-creation-wizard',
+  ORG_MANAGEMENT: 'org-management',
 } as const;
 
 export type DialogId = (typeof DIALOG_IDS)[keyof typeof DIALOG_IDS];

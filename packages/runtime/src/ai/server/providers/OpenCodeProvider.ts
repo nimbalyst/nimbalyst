@@ -286,7 +286,9 @@ export class OpenCodeProvider extends BaseAgentProvider {
     }
 
     if (sessionId) {
-      await this.logAgentMessageBestEffort(sessionId, 'input', messageWithContext);
+      await this.logAgentMessageBestEffort(sessionId, 'input', messageWithContext, {
+        metadata: this.withPromptProvenanceMetadata(documentContext),
+      });
     }
 
     const mcpConfigWorkspacePath = documentContext?.mcpConfigWorkspacePath || workspacePath;

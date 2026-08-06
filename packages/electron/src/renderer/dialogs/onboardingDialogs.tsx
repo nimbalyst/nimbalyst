@@ -10,7 +10,11 @@ import { registerDialog } from '../contexts/DialogContext';
 import type { DialogConfig } from '../contexts/DialogContext.types';
 import { WindowsClaudeCodeWarning } from '../components/WindowsClaudeCodeWarning/WindowsClaudeCodeWarning';
 import { RosettaWarning } from '../components/RosettaWarning/RosettaWarning';
-import { UnifiedOnboarding, type OnboardingData } from '../components/UnifiedOnboarding/UnifiedOnboarding';
+import {
+  UnifiedOnboarding,
+  type OnboardingData,
+  type OnboardingIntent,
+} from '../components/UnifiedOnboarding/UnifiedOnboarding';
 import { ExtensionProjectIntroModal } from '../components/ExtensionProjectIntroModal/ExtensionProjectIntroModal';
 import { DIALOG_IDS } from './registry';
 
@@ -29,7 +33,7 @@ export interface RosettaWarningData {
 }
 
 export interface UnifiedOnboardingData {
-  onComplete: (data: OnboardingData) => void;
+  onComplete: (data: OnboardingData, intent: OnboardingIntent) => void | Promise<void>;
   onSkip: () => void;
   forcedMode?: 'new' | 'existing' | null;
 }
@@ -85,8 +89,8 @@ function UnifiedOnboardingWrapper({
   return (
     <UnifiedOnboarding
       isOpen={isOpen}
-      onComplete={(onboardingData) => {
-        data.onComplete(onboardingData);
+      onComplete={(onboardingData, intent) => {
+        void data.onComplete(onboardingData, intent);
         onClose();
       }}
       onSkip={() => {

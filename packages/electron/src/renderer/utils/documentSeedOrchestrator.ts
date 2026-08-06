@@ -33,7 +33,7 @@
 import { DocumentSyncProvider } from '@nimbalyst/runtime/sync';
 import { COLLAB_INIT_ORIGIN } from '@nimbalyst/runtime';
 import { getCollabContentAdapter } from '@nimbalyst/collab-adapters';
-import { resolveCollabConfigForUri } from './collabDocumentOpener';
+import { resolveDesktopCollabConfigForUri } from './collabDocumentOpener';
 import { logger } from './logger';
 
 export type SeedStrategy =
@@ -70,10 +70,24 @@ interface SeedParams {
   documentType: string;
   title?: string;
   content: string | Uint8Array;
+  /**
+   * Treat a 404 upgrade rejection as transient and retry within
+   * `UNREGISTERED_RETRY_BUDGET_MS`.
+   *
+   * The document room 404s until the org index row for its id is committed
+   * (NIM-2472). When the caller has a confirmed registration this is a real
+   * error worth surfacing at once; when it does not -- a server predating the
+   * `docIndexRegistered` ack, or a registration queued offline -- the row may
+   * still be in flight and retrying is what makes the share succeed.
+   */
+  retryWhileUnregistered?: boolean;
 }
 
 const CONNECT_TIMEOUT_MS = 8_000;
 const FLUSH_TIMEOUT_MS = 8_000;
+/** Total wall-clock spent re-attempting a room whose index row may be in flight. */
+const UNREGISTERED_RETRY_BUDGET_MS = 6_000;
+const UNREGISTERED_RETRY_DELAY_MS = 400;
 
 /**
  * Authoritatively inspect a shared document after its DocumentRoom first sync.
@@ -85,7 +99,7 @@ export async function inspectSharedDocumentEmptiness(
   const codec = getCollabContentAdapter(params.documentType);
   if (!codec) return { status: 'unsupported' };
 
-  const config = await resolveCollabConfigForUri(
+  const config = await resolveDesktopCollabConfigForUri(
     params.workspacePath,
     `collab://cleanup/${params.documentId}`,
     params.documentId,
@@ -217,7 +231,7 @@ export async function exportSharedDocument(params: Omit<SeedParams, 'content'>):
     };
   }
 
-  const config = await resolveCollabConfigForUri(
+  const config = await resolveDesktopCollabConfigForUri(
     params.workspacePath,
     `collab://seed/${params.documentId}`,
     params.documentId,
@@ -307,15 +321,38 @@ async function seedViaRendererHeadless(params: SeedParams): Promise<SeedResult> 
 }
 
 /**
- * Shared harness for headless room writes: connect a throwaway provider, run
- * `write` against the synced Y.Doc, flush with a server-persisted ack, dispose.
+ * Shared harness for headless room writes, retrying a not-yet-registered room
+ * when the caller could not confirm its registration landed.
  */
 async function runHeadlessRoomWrite(
   params: SeedParams,
   write: (yDoc: import('yjs').Doc) => void | Record<string, unknown>,
 ): Promise<SeedResult & Record<string, unknown>> {
+  const deadline = params.retryWhileUnregistered
+    ? Date.now() + UNREGISTERED_RETRY_BUDGET_MS
+    : 0;
+  for (;;) {
+    const result = await attemptHeadlessRoomWrite(params, write);
+    if (result.ok || result.unregistered !== true || Date.now() >= deadline) {
+      return result;
+    }
+    logger.ui.info('[seedOrchestrator] room not registered yet, retrying', {
+      documentId: params.documentId,
+    });
+    await new Promise((r) => setTimeout(r, UNREGISTERED_RETRY_DELAY_MS));
+  }
+}
 
-  const config = await resolveCollabConfigForUri(
+/**
+ * One headless room write: connect a throwaway provider, run `write` against
+ * the synced Y.Doc, flush with a server-persisted ack, dispose.
+ */
+async function attemptHeadlessRoomWrite(
+  params: SeedParams,
+  write: (yDoc: import('yjs').Doc) => void | Record<string, unknown>,
+): Promise<SeedResult & Record<string, unknown>> {
+
+  const config = await resolveDesktopCollabConfigForUri(
     params.workspacePath,
     `collab://seed/${params.documentId}`,
     params.documentId,
@@ -345,11 +382,20 @@ async function runHeadlessRoomWrite(
     await provider.connect();
     const connected = await waitForConnected(provider, CONNECT_TIMEOUT_MS);
     if (!connected) {
+      const rejection = provider.getLastAuthRejectionStatus();
       return {
         ok: false,
         strategy: 'C-renderer-headless',
         hasRendererCodec: true,
-        error: 'Timed out connecting to the shared room for headless seed.',
+        // Retryable only for a 404: the index row may still be in flight.
+        unregistered: rejection === 404,
+        error: rejection === 404
+          // Naming the cause matters: this exact failure spent a release
+          // looking like a generic timeout (NIM-2472).
+          ? 'The shared document was not registered on the server before its content was written.'
+          : rejection !== null
+            ? `The server refused the shared room connection (status ${rejection}).`
+            : 'Timed out connecting to the shared room for headless seed.',
       };
     }
 
@@ -429,7 +475,14 @@ async function seedViaMainAdapter(params: SeedParams): Promise<SeedResult> {
   }
 }
 
-/** Poll the provider until it reaches a connected/synced status or times out. */
+/**
+ * Poll the provider until it reaches a connected/synced status, the server
+ * refuses the upgrade, or the timeout expires.
+ *
+ * Returning early on a refusal is what turns "seed timed out after 8s" into a
+ * reportable cause. The provider reconnects on its own, so without this check
+ * a definite rejection looks exactly like a slow connect (NIM-2472).
+ */
 async function waitForConnected(
   provider: DocumentSyncProvider,
   timeoutMs: number,
@@ -441,6 +494,12 @@ async function waitForConnected(
     return s === 'connected' || s === 'replaying';
   };
   while (!isReady()) {
+    if (provider.getLastAuthRejectionStatus() !== null) {
+      logger.ui.warn('[documentSeedOrchestrator] shared room refused the connection', {
+        status: provider.getLastAuthRejectionStatus(),
+      });
+      return false;
+    }
     if (Date.now() - start > timeoutMs) {
       logger.ui.warn('[documentSeedOrchestrator] waitForConnected timed out', {
         status: provider.getStatus(),

@@ -13,7 +13,7 @@ import {
 import { documentSyncRegistry } from '../store/atoms/documentSyncRegistry';
 import { buildCollabUri } from '../utils/collabUri';
 import {
-  resolveCollabConfigForUri,
+  resolveDesktopCollabConfigForUri,
   type CollabDocumentConfig,
 } from '../utils/collabDocumentOpener';
 import { ElectronLocalReplicaStore } from './ElectronLocalReplicaStore';
@@ -109,7 +109,7 @@ export async function createDefaultResource(
   request: CollaborativeEmbedProviderRequest,
 ): Promise<CollaborativeEmbedProviderResource> {
   const uri = buildCollabUri(request.orgId, request.documentId);
-  const config = await resolveCollabConfigForUri(
+  const config = await resolveDesktopCollabConfigForUri(
     request.workspacePath,
     uri,
     request.documentId,
@@ -140,7 +140,7 @@ export async function createDefaultResource(
     replica = new LocalDocumentReplica({
       identity: replicaIdentity,
       documentType: config.documentType ?? request.documentType,
-      store: new ElectronLocalReplicaStore(config.workspacePath),
+      store: new ElectronLocalReplicaStore(config.scope.scopeKey),
     });
     const attachReplica = window.electronAPI.documentSync.setReplicaProviderAttached(
       replicaIdentity,
@@ -167,7 +167,7 @@ export async function createDefaultResource(
       },
       onPendingUpdateChange: async pendingUpdateBase64 => {
         await window.electronAPI?.documentSync?.setPendingUpdate?.(
-          config.workspacePath,
+          config.scope.scopeKey,
           config.orgId,
           config.documentId,
           pendingUpdateBase64,

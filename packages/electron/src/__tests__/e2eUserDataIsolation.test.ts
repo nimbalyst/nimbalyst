@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Guard: the E2E launcher must never point Electron at the developer's real
  * userData directory.

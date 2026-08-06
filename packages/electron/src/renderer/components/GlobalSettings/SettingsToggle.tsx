@@ -42,7 +42,7 @@ export function SettingsToggle({
   }
 
   return (
-    <div className="flex items-center justify-between gap-4 py-3">
+    <div data-testid={testId} className="flex items-center justify-between gap-4 py-3">
       <div>
         <span className="text-sm font-medium text-[var(--nim-text)]">{name}</span>
         {description && (

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { CollaborativeDocumentTypeDescriptor } from '../../../services/CollaborativeDocumentTypeCatalog';
 import { splitShareFileName } from '../ShareToTeamDialog';

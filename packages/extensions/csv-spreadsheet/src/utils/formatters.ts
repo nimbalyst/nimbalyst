@@ -55,6 +55,26 @@ export function getDefaultFormatForType(type: ColumnType): ColumnFormat {
 }
 
 /**
+ * A cell value that reads as a number, and so should sit against the right edge
+ * of its column the way it does in every other spreadsheet.
+ *
+ * Deliberately stricter than {@link parseNumber}, which exists to coerce a value
+ * a user has already declared numeric via a column format. Alignment is inferred
+ * from the value alone, so it has to match the *whole* string: `parseFloat`
+ * happily reads `2026-05-15` as `2026` (issue #329) and `12 apples` as `12`, and
+ * right-aligning either of those would be wrong. Thousands separators, a
+ * trailing percent and exponent notation are all still numbers.
+ */
+const NUMERIC_CELL_PATTERN = /^[-+]?(\d+|\d{1,3}(,\d{3})+)(\.\d+)?([eE][-+]?\d+)?%?$/;
+
+export function isNumericCellValue(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return trimmed !== '' && NUMERIC_CELL_PATTERN.test(trimmed);
+}
+
+/**
  * Parse a value to a number, returning null if not a valid number
  */
 function parseNumber(value: string | number | null): number | null {

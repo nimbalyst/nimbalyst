@@ -12,7 +12,7 @@
  */
 
 import { atom } from 'jotai';
-import { atomFamily } from 'jotai/utils';
+import { atomFamily } from 'jotai-family';
 
 // -- Types (duplicated from document-model/types to avoid cross-package import) --
 

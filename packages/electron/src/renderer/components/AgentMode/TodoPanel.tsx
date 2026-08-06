@@ -8,7 +8,7 @@
 
 import React, { useCallback } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { sessionStoreAtom } from '../../store';
 import { todoPanelCollapsedAtom, toggleTodoPanelCollapsedAtom } from '../../store/atoms/agentMode';
 

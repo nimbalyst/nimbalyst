@@ -1,5 +1,5 @@
 import React from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { WorkspaceProjectSharingPanel } from './WorkspaceProjectSharingPanel';
 import { ProjectAccessEditor } from './ProjectAccessEditor';
 

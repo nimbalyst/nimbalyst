@@ -828,6 +828,17 @@ export const sessionTitleAtom = atomFamily((sessionId: string) =>
 );
 
 /**
+ * Derived: Session title for normalized list surfaces.
+ *
+ * Targeted `sessions:session-updated` metadata events patch the registry
+ * without reloading an already-open session store. List rows therefore read
+ * the registry first so a loaded store cannot mask a newer external rename.
+ */
+export const sessionListTitleAtom = atomFamily((sessionId: string) =>
+  atom((get) => get(sessionRegistryAtom).get(sessionId)?.title)
+);
+
+/**
  * Derived: Session provider from sessionData.
  * For use in tabs and lists where the provider icon is needed.
  * Falls back to sessionRegistryAtom when sessionStoreAtom hasn't been loaded yet.
@@ -2600,4 +2611,27 @@ export const workstreamTitleAtom = atomFamily((workstreamId: string) =>
     const meta = registry.get(workstreamId);
     return meta?.title || 'Untitled';
   })
+);
+
+/**
+ * Latest session pin toggle, published by whichever surface performed it.
+ *
+ * The session sidebar keeps its rendered list in local React state, so a pin
+ * toggled from another surface (the Agent mode header) has no way to reach it.
+ * Request-atom shape: each publish bumps `version`; consumers use the
+ * skip-initial-mount idiom and patch their own copy.
+ */
+export interface SessionPinnedUpdate {
+  version: number;
+  payload: { sessionId: string; isPinned: boolean };
+}
+
+export const sessionPinnedUpdateAtom = atom<SessionPinnedUpdate | null>(null);
+
+export const publishSessionPinnedUpdateAtom = atom(
+  null,
+  (get, set, payload: { sessionId: string; isPinned: boolean }) => {
+    const previous = get(sessionPinnedUpdateAtom);
+    set(sessionPinnedUpdateAtom, { version: (previous?.version ?? 0) + 1, payload });
+  }
 );

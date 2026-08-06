@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.71.3",
+  "version": "0.72.4",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -51,7 +51,7 @@
     "marketing:screenshots:grep": "playwright test --config=marketing/playwright.marketing.config.ts --grep"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.221",
     "@anthropic-ai/sdk": "^0.115.0",
     "@electric-sql/pglite": "0.3.14",
     "@electron-toolkit/utils": "^4.0.0",
@@ -96,6 +96,7 @@
     "ignore": "^7.0.5",
     "jimp": "^1.6.0",
     "jotai": "^2.16.1",
+    "jotai-family": "^1.1.0",
     "js-yaml": "^4.1.0",
     "json-schema-to-ts": "^3.1.1",
     "marked": "^16.4.0",
@@ -326,6 +327,10 @@
         "to": "claudeCliPermissionHook.cjs"
       },
       {
+        "from": "resources/tutorial-project",
+        "to": "tutorial-project"
+      },
+      {
         "from": "../extensions",
         "to": "extensions",
         "filter": [
@@ -444,8 +449,17 @@
         }
       ],
       "artifactName": "${productName}-Windows-${arch}.${ext}",
+      "signExts": [
+        ".exe",
+        ".dll",
+        ".node"
+      ],
       "signtoolOptions": {
-        "publisherName": "NIMBALYST, INC."
+        "publisherName": "NIMBALYST, INC.",
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "sign": "build/sign-windows.js"
       }
     },
     "nsis": {

@@ -53,7 +53,7 @@ describe('TrackerReferencePicker', () => {
 
     const selected = container.querySelector('.tracker-reference-picker-values');
     expect(selected).not.toBeNull();
-    expect(within(selected as HTMLElement).getByText('NIM-10')).toBeTruthy();
+    within(selected as HTMLElement).getByText('NIM-10');
     expect(within(selected as HTMLElement).queryByText('Add tracker picker')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove tracker reference NIM-10' }));
@@ -70,7 +70,7 @@ describe('TrackerReferencePicker', () => {
       </Provider>,
     );
 
-    expect(screen.getByText('NIM-404')).toBeTruthy();
+    screen.getByText('NIM-404');
     expect(screen.queryByRole('button', { name: 'Remove tracker reference NIM-404' })).toBeNull();
     expect((screen.getByRole('combobox', { name: 'Link tracker item' }) as HTMLButtonElement).disabled).toBe(true);
     expect(onChange).not.toHaveBeenCalled();
@@ -96,7 +96,7 @@ describe('TrackerReferencePicker', () => {
     fireEvent.click(screen.getByRole('combobox', { name: 'Link tracker item' }));
     fireEvent.click(screen.getByRole('option', { name: /First item.*NIM-10/ }));
 
-    expect(screen.getByText('NIM-10')).toBeTruthy();
+    screen.getByText('NIM-10');
     expect(screen.queryByText('NIM-OLD')).toBeNull();
     expect(screen.queryByRole('textbox', { name: 'Search tracker items' })).toBeNull();
   });

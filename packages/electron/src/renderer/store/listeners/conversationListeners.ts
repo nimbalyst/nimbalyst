@@ -3,8 +3,13 @@ import type { Store } from 'jotai/vanilla/store';
 import { store } from '..';
 import {
   conversationAtomKey,
+  conversationDraftHydratedAtomFamily,
+  conversationDraftInputAtomFamily,
+  conversationDraftUpdatedAtAtomFamily,
   conversationStateAtomFamily,
   mergeConversationEvents,
+  parseConversationDraftSnapshot,
+  parseConversationDraftStorageKey,
   type ConversationSyncIpcEvent,
 } from '../atoms/conversations';
 
@@ -28,7 +33,7 @@ function isConversationSyncIpcEvent(
 export function initConversationListeners(
   targetStore: Store = store,
 ): () => void {
-  return window.electronAPI.on(
+  const cleanupSync = window.electronAPI.on(
     'conversation:sync-event',
     (payload: unknown) => {
       if (!isConversationSyncIpcEvent(payload)) return;
@@ -78,4 +83,20 @@ export function initConversationListeners(
       }
     },
   );
+  const cleanupDrafts = window.electronAPI.onAppSettingsChanged?.(
+    ({ key, value }) => {
+      const target = parseConversationDraftStorageKey(key);
+      const snapshot = parseConversationDraftSnapshot(value);
+      if (!target || !snapshot) return;
+      const updatedAtAtom = conversationDraftUpdatedAtAtomFamily(target);
+      if (snapshot.updatedAt < targetStore.get(updatedAtAtom)) return;
+      targetStore.set(conversationDraftInputAtomFamily(target), snapshot.text);
+      targetStore.set(updatedAtAtom, snapshot.updatedAt);
+      targetStore.set(conversationDraftHydratedAtomFamily(target), true);
+    },
+  );
+  return () => {
+    cleanupSync();
+    cleanupDrafts?.();
+  };
 }

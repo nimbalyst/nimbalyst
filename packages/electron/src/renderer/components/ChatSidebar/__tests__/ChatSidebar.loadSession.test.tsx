@@ -65,7 +65,7 @@ describe('ChatSidebar loadSession vs auto-init', () => {
     });
 
     await waitFor(() => {
-      expect(view.getByTestId('chat-sidebar-panel')).toBeTruthy();
+      view.getByTestId('chat-sidebar-panel');
     });
     expect(view.getByTestId('session-transcript').getAttribute('data-session-id')).toBe(
       'pr-linked-session',

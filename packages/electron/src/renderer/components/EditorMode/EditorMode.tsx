@@ -424,8 +424,8 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         console.error('[openCollabDoc] No workspace path');
         return;
       }
-      const { openCollabDocumentViaIPC } = await import('../../utils/collabDocumentOpener');
-      const tabId = await openCollabDocumentViaIPC({
+      const { openCollabDocumentViaIPCForDesktop } = await import('../../utils/collabDocumentOpener');
+      const tabId = await openCollabDocumentViaIPCForDesktop({
         workspacePath,
         documentId,
         title,
@@ -491,7 +491,11 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         : undefined;
 
       const tabId = openCollabDocument({
-        workspacePath,
+        scope: {
+          scopeKey: workspacePath,
+          orgId: cfg.orgId,
+          indexConfig: { serverUrl: cfg.serverUrl, userId: cfg.userId },
+        },
         orgId: cfg.orgId,
         documentId: cfg.documentId,
         title: cfg.title,
@@ -556,7 +560,11 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
           }
         : undefined;
       return registerCollabConfig({
-        workspacePath,
+        scope: {
+          scopeKey: workspacePath,
+          orgId: cfg.orgId,
+          indexConfig: { serverUrl: cfg.serverUrl, userId: cfg.userId },
+        },
         orgId: cfg.orgId,
         documentId: cfg.documentId,
         title: cfg.title,

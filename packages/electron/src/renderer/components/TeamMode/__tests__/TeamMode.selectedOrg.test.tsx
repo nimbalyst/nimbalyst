@@ -5,6 +5,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
+import { organizationDirectoryAtom } from '../../../store/atoms/settingsDomains';
+import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { TeamMode } from '../TeamMode';
 
 vi.mock('@nimbalyst/runtime', () => ({
@@ -31,14 +33,27 @@ const otherTeam = {
   name: 'Other Org',
   boundPersonalOrgId: 'account-other',
   membershipType: 'active_member',
+  role: 'member',
 };
 
 function installApi() {
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
-      team: { findForWorkspace: vi.fn().mockResolvedValue({ success: true, team: workspaceTeam }) },
-      organization: { list: vi.fn().mockResolvedValue({ success: true, teams: [workspaceTeam, otherTeam] }) },
+      team: {
+        findForWorkspace: vi.fn().mockResolvedValue({ success: true, team: workspaceTeam }),
+        resolveOrgProjectsLocalState: vi.fn().mockResolvedValue({
+          success: true,
+          projects: [],
+        }),
+        openProjectWorkspace: vi.fn().mockResolvedValue({ success: true }),
+      },
+      organization: {
+        list: vi.fn().mockResolvedValue({ success: true, teams: [workspaceTeam, otherTeam] }),
+        listMembers: vi.fn().mockResolvedValue({ success: true, members: [], callerRole: 'owner' }),
+      },
+      invoke: vi.fn().mockResolvedValue([]),
+      on: vi.fn().mockReturnValue(() => {}),
       stytch: {
         getAccounts: vi.fn().mockResolvedValue([
           { personalOrgId: 'account-workspace', email: 'workspace@example.com' },
@@ -46,64 +61,127 @@ function installApi() {
         ]),
       },
       openExternal: vi.fn(),
+      openAccountSettings: vi.fn().mockResolvedValue({ success: true }),
     },
   });
+}
+
+// The org identity is the static sidebar header now; switching moved to the
+// org rail / unbound choice list.
+function orgIdentity(): string {
+  return screen.getByTestId('org-sidebar-header').textContent ?? '';
 }
 
 describe('TeamMode organization targeting', () => {
   afterEach(() => cleanup());
 
-  // A targeted open of an org you have since left (or one that vanished on a
-  // refetch) must not strand the user on the unbound "create an organization"
-  // surface with no way back to the orgs they do belong to.
-  it('recovers onto an active organization when the selected one is stale', async () => {
+  it('preserves an explicit destination instead of falling back to the first organization', async () => {
     installApi();
     const store = createStore();
     store.set(selectedOrgIdAtom, 'org-i-left');
     render(<Provider store={store}><TeamMode /></Provider>);
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Workspace Org' })).toBeTruthy());
-    expect(store.get(selectedOrgIdAtom)).toBe('org-workspace');
+    await waitFor(() => screen.getByTestId('team-mode-organization-recovery'));
+    expect(store.get(selectedOrgIdAtom)).toBe('org-i-left');
+    expect(screen.getAllByTestId('team-mode-organization-choice')).toHaveLength(2);
   });
 
-  it('keeps the target when the directory comes back empty rather than clearing it', async () => {
+  it('recovers the preserved target when central account/org hydration arrives later', async () => {
     installApi();
-    (window as any).electronAPI.organization.list = vi.fn().mockResolvedValue({ success: false });
+    (window as any).electronAPI.organization.list = vi.fn().mockResolvedValue({
+      success: true,
+      teams: [],
+    });
     const store = createStore();
     store.set(selectedOrgIdAtom, 'org-other');
     render(<Provider store={store}><TeamMode /></Provider>);
 
-    await waitFor(() => expect(screen.getByText(/Create an organization to collaborate/)).toBeTruthy());
+    await waitFor(() => screen.getByTestId('team-mode-organization-recovery'));
     expect(store.get(selectedOrgIdAtom)).toBe('org-other');
+
+    store.set(organizationDirectoryAtom, [otherTeam]);
+
+    await waitFor(() => expect(orgIdentity()).toContain('Other Org'));
   });
 
-  it('offers the switcher on the unbound surface when active organizations exist', async () => {
+  it('offers organization choices on the unbound surface when active organizations exist', async () => {
     installApi();
     const store = createStore();
     store.set(selectedOrgIdAtom, null);
     // No workspace and no selection: the unbound surface, but the user is in orgs.
     render(<Provider store={store}><TeamMode /></Provider>);
 
-    await waitFor(() => expect(screen.getByTestId('org-window-switcher')).toBeTruthy());
+    await waitFor(() => screen.getByTestId('team-mode-organization-choices'));
+    expect(screen.getAllByTestId('team-mode-organization-choice')).toHaveLength(2);
   });
 
-  it('administers the explicitly selected non-workspace organization', async () => {
+  it('targets the explicitly selected non-workspace organization', async () => {
     installApi();
     const store = createStore();
     store.set(selectedOrgIdAtom, 'org-other');
-    render(<Provider store={store}><TeamMode workspacePath="/workspace" isActive /></Provider>);
+    const { container } = render(
+      <Provider store={store}><TeamMode workspacePath="/workspace" isActive /></Provider>,
+    );
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Other Org' })).toBeTruthy());
-    // The window lands on Inbox; Members is one tab over.
-    fireEvent.click(screen.getByTestId('team-tab-members'));
-    // Members is the full editable roster (no read-only duplicate), scoped to the org.
-    expect(screen.getByTestId('admin-members').getAttribute('data-org-id')).toBe('org-other');
-    // Single left-nav layout: Inbox, Members, Projects, Billing, Danger.
-    expect(screen.getByTestId('team-tab-inbox')).toBeTruthy();
-    expect(screen.getByTestId('team-tab-members')).toBeTruthy();
-    expect(screen.getByTestId('team-tab-projects')).toBeTruthy();
-    expect(screen.getByTestId('team-tab-billing')).toBeTruthy();
-    expect(screen.getByTestId('team-tab-danger')).toBeTruthy();
+    await waitFor(() => expect(orgIdentity()).toContain('Other Org'));
+    const controlsInsideDragRegions = container.querySelectorAll(
+      '[data-window-drag-region] button, '
+      + '[data-window-drag-region] input, '
+      + '[data-window-drag-region] select, '
+      + '[data-window-drag-region] textarea, '
+      + '[data-window-drag-region] a[href]',
+    );
+    expect(controlsInsideDragRegions.length).toBeGreaterThan(0);
+    for (const control of controlsInsideDragRegions) {
+      expect(control.closest('.org-window-no-drag')).not.toBeNull();
+    }
+    // The window is scoped to that organization: its roster is the one read.
+    await waitFor(() => expect(
+      (window as any).electronAPI.organization.listMembers,
+    ).toHaveBeenCalledWith('org-other'));
+    // Messaging only since NIM-2322 — administration is the ORG_MANAGEMENT
+    // dialog, so the window offers Inbox and conversations and nothing else.
+    screen.getByTestId('team-tab-inbox');
+    for (const tab of ['members', 'projects', 'settings', 'billing', 'danger']) {
+      expect(screen.queryByTestId(`team-tab-${tab}`)).toBeNull();
+    }
+    expect(screen.queryByTestId('admin-members')).toBeNull();
+  });
+
+  it('hydrates canonical tracker records for chips in the dedicated org window', async () => {
+    installApi();
+    const invoke = (window as any).electronAPI.invoke as ReturnType<typeof vi.fn>;
+    invoke.mockImplementation(async (channel: string, payload?: { orgId?: string }) => {
+      if (channel === 'team-window:tracker-items-list') {
+        expect(payload).toEqual({ orgId: 'org-other' });
+        return [{
+          id: 'plan-1',
+          issueKey: 'NIM-2300',
+          type: 'plan',
+          typeTags: ['plan'],
+          title: 'Satellite apps',
+          status: 'in-progress',
+          workspace: '/workspace',
+          source: 'native',
+        }];
+      }
+      return [];
+    });
+    const store = createStore();
+    store.set(selectedOrgIdAtom, 'org-other');
+
+    render(<Provider store={store}><TeamMode /></Provider>);
+
+    await waitFor(() => expect(
+      store.get(trackerItemsMapAtom).get('plan-1'),
+    ).toMatchObject({
+      issueKey: 'NIM-2300',
+      primaryType: 'plan',
+      fields: {
+        title: 'Satellite apps',
+        status: 'in-progress',
+      },
+    }));
   });
 
   it('falls back to the workspace-bound organization when no organization is selected', async () => {
@@ -112,12 +190,13 @@ describe('TeamMode organization targeting', () => {
     store.set(selectedOrgIdAtom, null);
     render(<Provider store={store}><TeamMode workspacePath="/workspace" isActive /></Provider>);
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Workspace Org' })).toBeTruthy());
-    fireEvent.click(screen.getByTestId('team-tab-members'));
-    expect(screen.getByTestId('admin-members').getAttribute('data-org-id')).toBe('org-workspace');
+    await waitFor(() => expect(orgIdentity()).toContain('Workspace Org'));
+    await waitFor(() => expect(
+      (window as any).electronAPI.organization.listMembers,
+    ).toHaveBeenCalledWith('org-workspace'));
   });
 
-  it('renders org-only (no workspace) without a redundant project-sharing tab or a workspace lookup', async () => {
+  it('renders org-only (no workspace) without a workspace lookup', async () => {
     installApi();
     const findForWorkspace = (window as any).electronAPI.team.findForWorkspace;
     const store = createStore();
@@ -125,13 +204,10 @@ describe('TeamMode organization targeting', () => {
     // No workspacePath: the standalone org-management window targets the org only.
     render(<Provider store={store}><TeamMode /></Provider>);
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Other Org' })).toBeTruthy());
-    fireEvent.click(screen.getByTestId('team-tab-members'));
-    expect(screen.getByTestId('admin-members').getAttribute('data-org-id')).toBe('org-other');
-    // No workspace-scoped "Project sharing" tab; org projects live under Projects.
+    await waitFor(() => expect(orgIdentity()).toContain('Other Org'));
+    // No workspace-scoped sharing surface, and no workspace lookup at all: the
+    // window targets the organization only.
     expect(screen.queryByRole('button', { name: /project sharing/i })).toBeNull();
-    expect(screen.getByTestId('team-tab-projects')).toBeTruthy();
     expect(findForWorkspace).not.toHaveBeenCalled();
   });
 });
-

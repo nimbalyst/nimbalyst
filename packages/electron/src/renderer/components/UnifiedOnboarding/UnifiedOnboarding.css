@@ -508,10 +508,16 @@
   transition: all 0.15s ease;
 }
 
-.unified-onboarding-secondary-button:hover {
+.unified-onboarding-secondary-button:hover:not(:disabled) {
   background: var(--nim-bg-hover);
   color: var(--nim-text);
   border-color: var(--nim-text-faint);
+}
+
+.unified-onboarding-secondary-button:disabled {
+  color: var(--nim-text-faint);
+  background: var(--nim-bg-tertiary);
+  cursor: not-allowed;
 }
 
 .unified-onboarding-submit {

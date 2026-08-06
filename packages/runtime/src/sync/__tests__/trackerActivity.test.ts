@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Unit tests for tracker activity log and comment data structures.
  *

@@ -67,6 +67,7 @@ import {
   registerSettingsChangeListener,
 } from './store/atoms/settingAtomFamily';
 import { registerGutterCustomizationListener } from './store/listeners/gutterCustomizationListeners';
+import { waitForMaterialSymbols } from './utils/materialSymbolsReady';
 
 // console.log('[RENDERER] Imports complete at', new Date().toISOString());
 
@@ -111,6 +112,11 @@ if (isCaptureMode) {
   await registerExtensionSystem();
   console.log('[CaptureWindow] Ready - extensions and offscreen editor renderer initialized');
 } else {
+
+// Material Symbols uses text ligatures. Wait for the bundled font before any
+// React chrome can paint, otherwise Chromium exposes names such as
+// `progress_activity` through its fallback text font during startup.
+await waitForMaterialSymbols();
 
 // Initialize Monaco Editor before rendering any components
 initMonacoEditor();

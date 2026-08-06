@@ -144,6 +144,52 @@ export interface NormalizedSelectionRange {
   endCol: number;
 }
 
+/** Physical RevoGrid rgRow indexes hidden from the visible view. */
+export type TrimmedRows = Readonly<Record<number, boolean>>;
+
+/** Scalar values supported by column value filters. */
+export type FilterScalar = string | number | boolean | null;
+
+export type NumericFilterOperator =
+  | 'equals'
+  | 'notEquals'
+  | 'greaterThan'
+  | 'greaterThanOrEqual'
+  | 'lessThan'
+  | 'lessThanOrEqual';
+
+export type TextFilterOperator = 'contains' | 'equals' | 'startsWith';
+
+export type ColumnFilter =
+  | { kind: 'values'; values: ReadonlySet<FilterScalar> }
+  | { kind: 'number'; operator: NumericFilterOperator; value: number }
+  | { kind: 'text'; operator: TextFilterOperator; value: string; caseSensitive?: boolean }
+  | { kind: 'blank'; operator: 'isBlank' | 'isNotBlank' };
+
+/** Session-only filter state keyed by zero-based column index. */
+export type ColumnFilterState = ReadonlyMap<number, ColumnFilter>;
+
+export interface FindMatch {
+  logicalRow: number;
+  columnIndex: number;
+  start: number;
+  end: number;
+  value: string;
+}
+
+export interface FindCursor {
+  index: number;
+  count: number;
+  match: FindMatch | null;
+}
+
+export interface CellReplacement {
+  logicalRow: number;
+  columnIndex: number;
+  value: string;
+  replacementCount: number;
+}
+
 /**
  * Props for custom editor components (from Nimbalyst extension system)
  * Re-exported from runtime for convenience

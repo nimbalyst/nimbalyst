@@ -23,6 +23,7 @@ import type {
   CommentPage,
   CommentRef,
   CreateCommentInput,
+  MessageAttachment,
   ReactionAggregate,
   ResourceRef,
   RichCommentBody,
@@ -38,6 +39,7 @@ export type {
   CommentPage,
   CommentRef,
   CreateCommentInput,
+  MessageAttachment,
   ReactionAggregate,
   ResourceRef,
   RichCommentBody,
@@ -136,6 +138,29 @@ export interface ResourcePreviewResolver {
   resolve(refs: readonly ResourceRef[]): Promise<Record<string, ResourcePreviewState>>;
 }
 
+/** Optional presentation intent carried by the exact resource token clicked. */
+export interface ResourceOpenOptions {
+  /** A pasted plan-document link should reopen in tracker document view. */
+  trackerView?: 'document';
+}
+
+export type ResourceOpenHandler = (
+  pill: ResourcePillView,
+  options?: ResourceOpenOptions,
+) => void;
+
+/**
+ * The seam the composer uploads files through.
+ *
+ * Absent on a surface that cannot take files -- tracker comments, inline
+ * document comments -- and its absence is what removes the affordance and the
+ * paste handling, rather than a flag that has to agree with three call sites.
+ * A rejection is thrown with a message written for the author to read.
+ */
+export interface AttachmentComposerHost {
+  upload(file: File): Promise<MessageAttachment>;
+}
+
 /** An attachable reference offered by the composer's resource picker. */
 export interface ResourceCandidate {
   ref: ResourceRef;
@@ -159,6 +184,28 @@ export interface ResourcePillView {
   hint?: string;
 }
 
+/**
+ * A resolved attachment, ready to render.
+ *
+ * `src` is a `collab-asset://` URL the main-process protocol handler serves
+ * decrypted, so an image is an ordinary `<img>` and a file is an ordinary link.
+ * `isImage` is decided from the declared MIME type against a fixed list rather
+ * than trusted wholesale: the type travels in body text that another client
+ * wrote, and "render this as an image" is the one decision it must not make.
+ */
+export interface MessageAttachmentView {
+  assetId: string;
+  fileName: string;
+  mimeType: string;
+  byteSize: number;
+  /** Human size, e.g. "1.4 MB". */
+  sizeLabel: string;
+  isImage: boolean;
+  src: string;
+  width?: number;
+  height?: number;
+}
+
 /** One run of a parsed comment body. */
 export type BodySegment =
   | { type: 'text'; text: string }
@@ -168,7 +215,20 @@ export type BodySegment =
   | { type: 'emoji'; shortcode: string; glyph: string }
   | { type: 'mention'; userId: string; displayName: string; initials: string; isViewer: boolean }
   | { type: 'agentMention'; sessionId: string; sessionName: string; ownerDisplayName?: string }
-  | { type: 'resource'; pill: ResourcePillView };
+  | {
+      type: 'resource';
+      pill: ResourcePillView;
+      /** Display-only label from the exact markdown token, never resolver data. */
+      label?: string;
+    }
+  /**
+   * The message's files, as one trailing block rather than inline runs.
+   *
+   * Modelled as a segment so every existing consumer -- the row, the reply
+   * snippet, the inbox preview -- picks attachments up without a second
+   * channel to thread through. There is at most one, and it is always last.
+   */
+  | { type: 'attachments'; attachments: MessageAttachmentView[] };
 
 export interface ActorView {
   kind: 'user' | 'agent';

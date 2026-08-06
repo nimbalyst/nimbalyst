@@ -34,13 +34,35 @@ import type { DocumentSyncProvider, DocumentSyncStatus, ReviewGateState } from '
 import type { CollabLexicalProvider } from '@nimbalyst/runtime/collab-lexical';
 import type { Doc } from 'yjs';
 import type { Provider } from '@lexical/yjs';
-import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimbalyst/runtime/editor';
+import {
+  $convertFromEnhancedMarkdownString,
+  getEditorTransformers,
+  type CommentsConfig,
+} from '@nimbalyst/runtime/editor';
 import { $getRoot, $setSelection } from 'lexical';
-import { resolveCollabConfigForUri } from '../utils/collabDocumentOpener';
+import { resolveDesktopCollabConfigForUri } from '../utils/collabDocumentOpener';
 import { getBodyDocCache, type BodyDocAcquisition, type BodyDocConfigFactory } from '../services/BodyDocCache';
 import { exportCollabRecoveryPlaintext, getCollabContentAdapter } from '@nimbalyst/collab-adapters';
+import { store } from '@nimbalyst/runtime/store';
+import {
+  collabAwarenessAtom,
+  type RemoteUser,
+} from '../store/atoms/collabEditor';
+import {
+  markCollabDocumentTransportOnly,
+  publishCollabTransportState,
+  setCollabOutboxState,
+} from '../store/listeners/collabStateListeners';
+import { getTeamSyncProviderForScopeKey } from '../store/atoms/collabDocuments';
+import { buildCollabUri } from '../utils/collabUri';
+import { notifyDocumentCommentRecipients } from '../services/documentCommentNotifier';
+import { trackerContentCollabKey } from './trackerContentCollabKey';
 
 const TRACKER_CONTENT_TTL_MS = String(90 * 24 * 60 * 60 * 1000);
+
+// Re-exported so existing callers keep their import path; the definition lives
+// in its own module for consumers that must not pull this hook's dep graph.
+export { trackerContentCollabKey } from './trackerContentCollabKey';
 
 interface UseTrackerContentCollabOptions {
   itemId: string;
@@ -89,6 +111,7 @@ interface TrackerContentCollabResult {
   loading: boolean;
   status: DocumentSyncStatus;
   syncProvider: DocumentSyncProvider | null;
+  commentsConfig: CommentsConfig | null;
   reviewState: ReviewGateState | null;
   acceptRemoteChanges: () => void;
   rejectRemoteChanges: () => void;
@@ -153,12 +176,16 @@ export function useTrackerContentCollab({
   const [bodyCacheMarkdown, setBodyCacheMarkdown] = useState<string | null>(null);
   const syncProviderRef = useRef<DocumentSyncProvider | null>(null);
   const collabProviderRef = useRef<CollabLexicalProvider | null>(null);
+  const acquisitionConfigRef = useRef<BodyDocAcquisition['config'] | null>(null);
   const cursorColor = useMemo(() => randomCursorColor(), []);
+  const titleRef = useRef(title);
+  titleRef.current = title;
 
   // Caller-stable username for awareness. Captured from the resolved
   // collab config on the first successful acquire; future re-acquires
   // (same item, same window) reuse it.
   const userNameRef = useRef<string>('Anonymous');
+  const collabStateKey = useMemo(() => trackerContentCollabKey(itemId), [itemId]);
 
   // Acquire a shared DocumentSyncProvider from BodyDocCache. The cache
   // owns construction + lifecycle; we hand it a factory that materialises
@@ -167,6 +194,8 @@ export function useTrackerContentCollab({
   // so close → reopen hits the warm socket.
   useEffect(() => {
     if (isCollabPending) {
+      markCollabDocumentTransportOnly(collabStateKey);
+      publishCollabTransportState(collabStateKey, 'connecting');
       setLoading(true);
       return;
     }
@@ -205,7 +234,7 @@ export function useTrackerContentCollab({
     const factory: BodyDocConfigFactory = async (id) => {
       const documentId = `tracker-content/${id}`;
       const uri = `collab://tracker-content/${id}`;
-      const config = await resolveCollabConfigForUri(
+      const config = await resolveDesktopCollabConfigForUri(
         workspacePath,
         uri,
         documentId,
@@ -225,6 +254,8 @@ export function useTrackerContentCollab({
         getJwt: config.getJwt,
         orgId: config.orgId,
         userId: config.userId,
+        userName: config.userName,
+        userEmail: config.userEmail,
         documentId: config.documentId,
         createWebSocket: config.createWebSocket,
         onContentChanged: (yDoc) => {
@@ -237,7 +268,7 @@ export function useTrackerContentCollab({
               workspacePath,
               documentId,
               documentType: 'markdown',
-              title: title || id,
+              title: titleRef.current || id,
               plaintext,
               kind: 'body',
             });
@@ -254,10 +285,19 @@ export function useTrackerContentCollab({
 
     setLoading(true);
     const cache = getBodyDocCache();
+    markCollabDocumentTransportOnly(collabStateKey);
     cache.acquire(itemId, factory, {
       onStatusChange: (newStatus) => {
         if (cancelled) return;
         setStatus(newStatus);
+        publishCollabTransportState(collabStateKey, newStatus);
+        if (newStatus === 'offline-unsynced') {
+          setCollabOutboxState(collabStateKey, 'pending');
+        } else if (newStatus === 'replaying') {
+          setCollabOutboxState(collabStateKey, 'replaying');
+        } else if (newStatus === 'connected') {
+          setCollabOutboxState(collabStateKey, 'clean');
+        }
         collabProviderRef.current?.handleStatusChange(newStatus);
         if (newStatus === 'connected') {
           // Setting room metadata is idempotent on the server; do it on
@@ -272,6 +312,17 @@ export function useTrackerContentCollab({
       onReviewStateChange: (state) => {
         if (cancelled) return;
         setReviewState(state);
+      },
+      onAwarenessChange: (states) => {
+        if (cancelled) return;
+        const users = new Map<string, RemoteUser>();
+        for (const [userId, state] of states) {
+          users.set(userId, {
+            name: state.user.name,
+            color: state.user.color,
+          });
+        }
+        store.set(collabAwarenessAtom(collabStateKey), users);
       },
     }).then(async (acq) => {
       if (cancelled) {
@@ -296,6 +347,8 @@ export function useTrackerContentCollab({
       setBodyCacheMarkdown(cachedMarkdown);
       acquisition = acq;
       syncProviderRef.current = acq.syncProvider;
+      acquisitionConfigRef.current = acq.config;
+      userNameRef.current = acq.config.userName || acq.config.userEmail || acq.config.userId;
       // `deferInitialSync` suppresses the immediate `sync(true)` that
       // CollabLexicalProvider normally fires on listener registration.
       // Instead, sync(true) fires only when the DocumentSyncProvider reaches
@@ -323,11 +376,12 @@ export function useTrackerContentCollab({
       acquisition?.release();
       acquisition = null;
       syncProviderRef.current = null;
+      acquisitionConfigRef.current = null;
       collabProviderRef.current?.destroy();
       collabProviderRef.current = null;
       setStatus('disconnected');
     };
-  }, [itemId, workspacePath, isCollabActive, isCollabPending, isMultiUser, title]);
+  }, [itemId, workspacePath, isCollabActive, isCollabPending, isMultiUser, collabStateKey]);
 
   const acceptRemoteChanges = useCallback(() => {
     syncProviderRef.current?.acceptRemoteChanges();
@@ -345,6 +399,12 @@ export function useTrackerContentCollab({
 
     return {
       providerFactory: (id: string, yjsDocMap: Map<string, Doc>): Provider => {
+        // A config-identity change (notably right-panel -> focused document
+        // presentation) can replace CollaborationPlugin's binding while this
+        // adapter and its shared provider stay alive. Each replacement binding
+        // must receive a fresh editorDoc so connect-time replay is observable;
+        // reusing the already-populated claimed doc paints a blank editor.
+        provider.prepareForBinding();
         yjsDocMap.set(id, provider.getYDoc());
         return provider;
       },
@@ -369,12 +429,60 @@ export function useTrackerContentCollab({
     };
   }, [cursorColor, providerEpoch, bodyCacheMarkdown]);
 
+  const commentsConfig = useMemo<CommentsConfig | null>(() => {
+    const config = acquisitionConfigRef.current;
+    if (!config || providerEpoch === 0 || !workspacePath) return null;
+
+    const currentUser = {
+      id: config.userId,
+      name: config.userName || config.userEmail || config.userId,
+    };
+    const documentUri = buildCollabUri(config.orgId, config.documentId);
+    return {
+      getYDoc: () => syncProviderRef.current?.getYDoc() ?? null,
+      getCapabilities: () => ({ read: true, comment: true }),
+      isHydrated: () => syncProviderRef.current?.isSynced() ?? false,
+      currentUser,
+      getMembers: () => {
+        const teamProvider = getTeamSyncProviderForScopeKey(workspacePath);
+        return (teamProvider?.getTeamState()?.members ?? [])
+          .filter((member) => member.userId !== currentUser.id)
+          .map((member) => ({
+            userId: member.userId,
+            name: member.email || member.userId,
+            personalOrgId: member.personalOrgId,
+          }));
+      },
+      documentTitle: title || config.documentId,
+      documentId: config.documentId,
+      documentUri,
+      onMention: (recipientUserIds, payload) => {
+        notifyDocumentCommentRecipients({
+          workspacePath,
+          documentId: config.documentId,
+          reason: 'mention',
+          recipientUserIds,
+          payload,
+        });
+      },
+      onReply: (recipientUserIds, payload) => {
+        notifyDocumentCommentRecipients({
+          workspacePath,
+          documentId: config.documentId,
+          reason: 'reply',
+          recipientUserIds,
+          payload,
+        });
+      },
+    };
+  }, [providerEpoch, title, workspacePath]);
+
   // Local-only tracker, or team-synced tracker in a workspace with no team.
   // Either way: no collab, parent should render the local PGLite editor.
   if (!isCollabActive && !isCollabPending) {
     return {
       collaboration: null, loading: false, status: 'disconnected',
-      syncProvider: null, reviewState: null,
+      syncProvider: null, commentsConfig: null, reviewState: null,
       acceptRemoteChanges: () => {}, rejectRemoteChanges: () => {},
       providerEpoch: 0,
       bodyCacheMarkdown: null,
@@ -386,6 +494,7 @@ export function useTrackerContentCollab({
     loading,
     status,
     syncProvider: syncProviderRef.current,
+    commentsConfig,
     reviewState,
     acceptRemoteChanges,
     rejectRemoteChanges,

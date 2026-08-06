@@ -3,22 +3,25 @@
  * service and publish it as a renderer-contributed Lexical UI plugin.
  *
  * The plugin's headless concerns (markdown transformers, the
- * `DocumentReferenceNode` registration) flow through the extension
- * contributions stores instead of the deleted `pluginRegistry`.
+ * `DocumentReferenceNode` registration) come from
+ * `registerDocumentReferenceContributions`, shared with every other host that
+ * opens a document — a host missing the node class cannot decode a Y.Doc that
+ * contains one.
  */
 
 import React, { useMemo } from 'react';
-import { defineExtension } from 'lexical';
 import { useAtomValue } from 'jotai';
 import {
   TypeaheadMenuPlugin,
   registerExtensionEditorComponent,
-  setExtensionContributions,
-  setExtensionLexicalExtension,
   setWorkspaceFileLinkOpener,
   useAnchorElem,
   useDocumentPath,
 } from '@nimbalyst/runtime';
+import {
+  DOCUMENT_LINK_SOURCE,
+  registerDocumentReferenceContributions,
+} from '@nimbalyst/runtime/plugins/referenceNodeContributions';
 import {
   DocumentLinkPlugin,
   type CollabReferenceSource,
@@ -27,27 +30,22 @@ import {
   resolveDocumentLinkLookupPath,
   parseCollabReferenceDocumentId,
 } from '@nimbalyst/runtime/plugins/DocumentLinkPlugin/documentLinkPaths';
-import {
-  DocumentReferenceNode,
-  DocumentReferenceTransformer,
-  CollabDocumentReferenceTransformer,
-  LegacyDocumentReferenceTransformer,
-} from '@nimbalyst/runtime/plugins/DocumentLinkPlugin/DocumentLinkNode';
 import { ElectronRendererDocumentService } from '../services/ElectronDocumentService';
 import { isCollabUri, parseCollabUri } from '../utils/collabUri';
 import {
   sharedDocumentsAtom,
   sharedFoldersAtom,
-  activeTeamOrgIdAtom,
+  activeCollabScopeAtom,
   buildSharedDocumentDeepLink,
   pendingCollabDocumentAtom,
+  type SharedDocument,
   type SharedFolder,
 } from '../store/atoms/collabDocuments';
-import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
 import { setWindowModeAtom } from '../store/atoms/windowMode';
+import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
 import { store } from '../store';
 
-const SOURCE = 'document-link';
+const SOURCE = DOCUMENT_LINK_SOURCE;
 const documentService = new ElectronRendererDocumentService();
 
 // Custom trigger function that allows dots and hyphens in filenames so
@@ -112,6 +110,28 @@ function buildFolderBreadcrumbs(folders: SharedFolder[]): Map<string, string> {
   return cache;
 }
 
+/**
+ * File extension for a shared document, used to decide whether an `@`
+ * reference to it should become a live embed. Documents shared before the
+ * metadata existed carry no `fileExtension`, so fall back to the title (docs
+ * shared from a local file keep their basename) and then to the document
+ * type's default extension.
+ */
+function sharedDocumentFileExtension(doc: SharedDocument): string | undefined {
+  if (doc.fileExtension) return doc.fileExtension;
+  const catalog = getCollaborativeDocumentTypeCatalog();
+  const inferred = catalog.inferFileExtension(doc.documentType, doc.title || '');
+  if (inferred) return inferred;
+  const resolution = catalog.resolveMetadata(
+    doc.documentType,
+    undefined,
+    doc.editorId,
+  );
+  return resolution.state === 'ready'
+    ? resolution.descriptor.defaultExtension
+    : undefined;
+}
+
 function DocumentLinkPluginWrapper() {
   const triggerFn = useMemo(
     () => createDocumentLinkTrigger('@', { minLength: 0, maxLength: 75 }),
@@ -125,11 +145,10 @@ function DocumentLinkPluginWrapper() {
   const isCollab = documentPath ? isCollabUri(documentPath) : false;
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
   const sharedFolders = useAtomValue(sharedFoldersAtom);
-  const orgId = useAtomValue(activeTeamOrgIdAtom);
-  const workspacePath = useAtomValue(activeWorkspacePathAtom);
+  const scope = useAtomValue(activeCollabScopeAtom);
 
   const collabReferenceSource = useMemo<CollabReferenceSource | null>(() => {
-    if (!isCollab || !orgId || !workspacePath || !documentPath) {
+    if (!isCollab || !scope || !documentPath) {
       return null;
     }
 
@@ -149,10 +168,13 @@ function DocumentLinkPluginWrapper() {
           .map((doc) => ({
             documentId: doc.documentId,
             title: doc.title || 'Untitled',
-            target: buildSharedDocumentDeepLink(doc.documentId, orgId),
+            target: buildSharedDocumentDeepLink(doc.documentId, scope.orgId),
             folderPath: doc.parentFolderId
               ? breadcrumbs.get(doc.parentFolderId) || undefined
               : undefined,
+            // Lets the plugin insert a shared mockup/diagram as a live embed
+            // rather than a plain reference.
+            embedType: sharedDocumentFileExtension(doc),
           })),
       openReference: (target: string) => {
         const targetDocumentId = parseCollabReferenceDocumentId(target);
@@ -164,10 +186,15 @@ function DocumentLinkPluginWrapper() {
         // the pending atom. CollabMode consumes it, opening (or focusing) the
         // shared doc with its own tab context + dedup.
         store.set(setWindowModeAtom, 'collab');
-        store.set(pendingCollabDocumentAtom, { documentId: targetDocumentId, analyticsSource: 'deep_link' });
+        store.set(pendingCollabDocumentAtom, {
+          documentId: targetDocumentId,
+          scopeKey: scope.scopeKey,
+          orgId: scope.orgId,
+          analyticsSource: 'deep_link',
+        });
       },
     };
-  }, [isCollab, orgId, workspacePath, documentPath, sharedDocuments, sharedFolders]);
+  }, [isCollab, scope, documentPath, sharedDocuments, sharedFolders]);
 
   return (
     <DocumentLinkPlugin
@@ -206,24 +233,7 @@ export function registerDocumentLinkPlugin(): void {
     });
   });
 
-  setExtensionLexicalExtension(
-    SOURCE,
-    defineExtension({
-      name: '@nimbalyst/document-link',
-      nodes: [DocumentReferenceNode],
-    }),
-  );
-  setExtensionContributions(SOURCE, {
-    markdownTransformers: [
-      // Main transformer exports as markdown links; the collab transformer
-      // imports shared-doc references (`nimbalyst://doc/...` / `collab://...`);
-      // the legacy transformer imports the old `[[wikilink]]`-style format
-      // produced before the CommonMark migration.
-      DocumentReferenceTransformer,
-      CollabDocumentReferenceTransformer,
-      LegacyDocumentReferenceTransformer,
-    ],
-  });
+  registerDocumentReferenceContributions();
   registerExtensionEditorComponent({
     name: SOURCE,
     Component: DocumentLinkPluginWrapper as React.ComponentType<unknown>,

@@ -8,7 +8,7 @@
  * The atom name is resolved lazily from jotai's debugLabel (if a debug plugin is active)
  * or extracted from the call-site stack trace.
  */
-import { atomFamily as originalAtomFamily } from 'jotai/utils';
+import { atomFamily as originalAtomFamily } from 'jotai-family';
 
 interface FamilyEntry {
   family: { getParams(): Iterable<unknown>; debugLabel?: string };

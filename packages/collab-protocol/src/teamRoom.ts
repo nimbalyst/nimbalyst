@@ -6,7 +6,19 @@
  * is no client-held org key, so no envelope or identity-key traffic.
  */
 
-import type { BoundedPreview } from './conversation.js';
+import type {
+  BoundedPreview,
+  ConversationDescriptor,
+} from './conversation.js';
+
+export interface OrgSettings {
+  version: 1;
+  messaging: {
+    roomsEnabled: boolean;
+    dmsEnabled: boolean;
+    roomCreation: 'members' | 'admins';
+  };
+}
 
 // ============================================================================
 // Client -> Server Messages
@@ -187,10 +199,13 @@ export interface TeamDocumentCommentNotifyMessage {
 
 export type TeamServerMessage =
   | TeamSyncResponseMessage
+  | TeamOrgSettingsUpdatedMessage
+  | TeamConversationDescriptorUpdatedMessage
   | TeamMemberAddedMessage
   | TeamMemberRemovedMessage
   | TeamMemberRoleChangedMessage
   | TeamDocIndexSyncResponseMessage
+  | TeamDocIndexRegisteredMessage
   | TeamDocIndexBroadcastMessage
   | TeamDocIndexRemoveBroadcastMessage
   | TeamFolderIndexSyncResponseMessage
@@ -204,6 +219,18 @@ export type TeamServerMessage =
 export interface TeamSyncResponseMessage {
   type: 'teamSyncResponse';
   team: TeamState;
+}
+
+/** Broadcast: organization settings changed. */
+export interface TeamOrgSettingsUpdatedMessage {
+  type: 'orgSettingsUpdated';
+  settings: OrgSettings;
+}
+
+/** Broadcast: a conversation registry descriptor changed. */
+export interface TeamConversationDescriptorUpdatedMessage {
+  type: 'conversationDescriptorUpdated';
+  descriptor: ConversationDescriptor;
 }
 
 /** Broadcast: member added */
@@ -244,6 +271,20 @@ export interface TeamProjectAccessChangedMessage {
 export interface TeamDocIndexSyncResponseMessage {
   type: 'docIndexSyncResponse';
   documents: EncryptedDocIndexEntry[];
+}
+
+/**
+ * Ack: this socket's `docIndexRegister` is committed to `document_index`.
+ *
+ * Sent only to the registering socket (the index broadcast deliberately
+ * excludes it, so registration was otherwise unobservable to its author).
+ * A client that is about to write into the new document's room must wait for
+ * this: `DocumentRoom` binds the id through `document_index` and 404s an id
+ * that isn't there yet, so seeding before the ack is a race (NIM-2472).
+ */
+export interface TeamDocIndexRegisteredMessage {
+  type: 'docIndexRegistered';
+  documentId: string;
 }
 
 /** Broadcast: document registered or updated */
@@ -387,6 +428,8 @@ export interface TeamState {
   documents: EncryptedDocIndexEntry[];
   /** First-class folder nodes (omitted by pre-folders servers). */
   folders?: EncryptedFolderNode[];
+  /** Organization configuration (omitted by pre-settings servers). */
+  settings?: OrgSettings;
 }
 
 /** Information about a team member */

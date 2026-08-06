@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Integration test for list normalization with import/export
  */

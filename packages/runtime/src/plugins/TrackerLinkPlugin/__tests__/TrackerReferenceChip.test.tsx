@@ -69,6 +69,27 @@ describe('TrackerReferenceChip', () => {
     expect(button.style.color).toBe('var(--nim-text)');
   });
 
+  it('offers host navigation for an unresolved reference', () => {
+    const store = createStore();
+    const onNavigate = vi.fn();
+    const { container } = render(
+      <Provider store={store}>
+        <TrackerReferenceChip
+          referenceKey="plan_42"
+          unresolvedLabel="Plan"
+          onNavigate={onNavigate}
+        />
+      </Provider>,
+    );
+
+    expect(container.querySelector('.tracker-reference-chip')?.textContent)
+      .toBe('Plan');
+    fireEvent.click(container.querySelector<HTMLElement>('.tracker-reference-chip')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Go to item' }));
+
+    expect(onNavigate).toHaveBeenCalledWith(null);
+  });
+
   it('keeps the preview open when the transcript remounts the chip', () => {
     const store = createStore();
     store.set(

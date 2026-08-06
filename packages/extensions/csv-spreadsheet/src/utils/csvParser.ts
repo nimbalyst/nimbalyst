@@ -263,34 +263,6 @@ export function columnLetterToIndex(letter: string): number {
 }
 
 /**
- * Parse a cell reference like "A1" into column and row indices
- */
-export function parseCellReference(ref: string): { col: number; row: number } | null {
-  const match = ref.match(/^([A-Za-z]+)(\d+)$/);
-  if (!match) return null;
-
-  const col = columnLetterToIndex(match[1]);
-  const row = parseInt(match[2], 10) - 1; // Convert to 0-indexed
-
-  return { col, row };
-}
-
-/**
- * Parse a range reference like "A1:B5"
- */
-export function parseRangeReference(ref: string): { start: { col: number; row: number }; end: { col: number; row: number } } | null {
-  const parts = ref.split(':');
-  if (parts.length !== 2) return null;
-
-  const start = parseCellReference(parts[0]);
-  const end = parseCellReference(parts[1]);
-
-  if (!start || !end) return null;
-
-  return { start, end };
-}
-
-/**
  * Generate column headers (A, B, C, ..., Z, AA, AB, etc.)
  */
 export function generateColumnHeaders(count: number): string[] {

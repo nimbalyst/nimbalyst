@@ -32,6 +32,8 @@ import type {
   BodyEntity,
   BodySegment,
   MentionDirectory,
+  MessageAttachment,
+  MessageAttachmentView,
   ResourcePillView,
   ResourceRef,
   RichCommentBody,
@@ -86,9 +88,19 @@ export interface ParseBodyContext {
   viewerUserId: string;
   /** Redacted pill views keyed by URN, produced by the view model. */
   pills: Record<string, ResourcePillView>;
+  /**
+   * Asset namespace the body's attachments resolve against -- the conversation
+   * id for a message, the document id for a document discussion. Without it
+   * attachments have no address and are dropped rather than guessed at.
+   */
+  assetDocumentId?: string;
 }
 
 export function parseCommentBody(body: RichCommentBody, ctx: ParseBodyContext): BodySegment[] {
+  return withAttachments(parseTextSegments(body, ctx), body, ctx);
+}
+
+function parseTextSegments(body: RichCommentBody, ctx: ParseBodyContext): BodySegment[] {
   if (body.text.length === 0) return [];
   if (body.format === 'plainText') return [{ type: 'text', text: body.text }];
 
@@ -105,6 +117,66 @@ export function parseCommentBody(body: RichCommentBody, ctx: ParseBodyContext): 
   }
 
   return parseLegacyBody(body.text, ctx);
+}
+
+/**
+ * Attachments render after the text, as one block.
+ *
+ * Appended here rather than woven into either text path, so a body with no
+ * files produces exactly the segment list it produced before this existed --
+ * which is what keeps the parser's contract corpus meaningful.
+ */
+function withAttachments(
+  segments: BodySegment[],
+  body: RichCommentBody,
+  ctx: ParseBodyContext,
+): BodySegment[] {
+  const attachments = body.attachments;
+  if (attachments === undefined || attachments.length === 0) return segments;
+  if (!ctx.assetDocumentId) return segments;
+  const views = attachments.map((attachment) =>
+    toAttachmentView(attachment, ctx.assetDocumentId!),
+  );
+  return [...segments, { type: 'attachments', attachments: views }];
+}
+
+/**
+ * Types rendered inline as pictures.
+ *
+ * A fixed list, not a `startsWith('image/')` test: the MIME type is authored by
+ * another client, and `image/svg+xml` is a document that can carry script, so
+ * it renders as a file chip like anything else this list does not name.
+ */
+const INLINE_IMAGE_TYPES: ReadonlySet<string> = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/bmp',
+]);
+
+export function toAttachmentView(
+  attachment: MessageAttachment,
+  documentId: string,
+): MessageAttachmentView {
+  return {
+    assetId: attachment.assetId,
+    fileName: attachment.fileName,
+    mimeType: attachment.mimeType,
+    byteSize: attachment.byteSize,
+    sizeLabel: formatAttachmentSize(attachment.byteSize),
+    isImage: INLINE_IMAGE_TYPES.has(attachment.mimeType.toLowerCase()),
+    src: `collab-asset://doc/${encodeURIComponent(documentId)}/asset/${encodeURIComponent(attachment.assetId)}`,
+    ...(attachment.width !== undefined ? { width: attachment.width } : {}),
+    ...(attachment.height !== undefined ? { height: attachment.height } : {}),
+  };
+}
+
+export function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function parseLegacyBody(text: string, ctx: ParseBodyContext): BodySegment[] {
@@ -163,7 +235,11 @@ function parseEntityBody(body: RichCommentBody, ctx: ParseBodyContext): BodySegm
     const start = utf16Offsets.get(entity.start)!;
     const end = utf16Offsets.get(entity.end)!;
     appendSegments(segments, parseInlineText(body.text.slice(cursor, start)));
-    const resolved = resolveEntitySegment(entity, ctx);
+    const resolved = resolveEntitySegment(
+      entity,
+      body.text.slice(start, end),
+      ctx,
+    );
     if (resolved) segments.push(resolved);
     else appendText(segments, body.text.slice(start, end));
     cursor = end;
@@ -198,14 +274,20 @@ function parseInlineText(text: string): BodySegment[] {
   return segments;
 }
 
-function resolveEntitySegment(entity: BodyEntity, ctx: ParseBodyContext): BodySegment | null {
+function resolveEntitySegment(
+  entity: BodyEntity,
+  token: string,
+  ctx: ParseBodyContext,
+): BodySegment | null {
   if (entity.kind === 'userMention') return userMentionSegment(entity.userId, undefined, ctx);
   if (entity.kind === 'agentMention') return agentMentionSegment(entity.sessionId, undefined, ctx);
 
   const ref = ctx.resourceRefs[entity.refIndex];
   if (!ref) return null;
   const pill = ctx.pills[resourceRefToUrn(ref)];
-  return pill ? { type: 'resource', pill } : null;
+  return pill
+    ? { type: 'resource', pill, label: resourceTokenLabel(token) }
+    : null;
 }
 
 function resolveUrnSegment(
@@ -231,7 +313,12 @@ function resolveUrnSegment(
   if (!refUrns.has(urn)) return null;
   const pill = ctx.pills[urn];
   if (!pill) return null;
-  return { type: 'resource', pill };
+  return { type: 'resource', pill, label };
+}
+
+function resourceTokenLabel(token: string): string | undefined {
+  const match = /^\[([^\]\n]{1,160})\]\(nimbalyst:\/\/[^\s)]{1,512}\)$/.exec(token);
+  return match?.[1];
 }
 
 function userMentionSegment(
@@ -319,6 +406,11 @@ export function segmentsToPlainText(segments: readonly BodySegment[]): string {
           return `@${segment.sessionName}`;
         case 'resource':
           return segment.pill.label;
+        case 'attachments':
+          // A message that is only a screenshot must not preview as nothing.
+          return segment.attachments
+            .map((attachment) => (attachment.isImage ? '[image]' : '[file]'))
+            .join(' ');
         default:
           return '';
       }

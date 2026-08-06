@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { parsePrUrl, buildPrUrl, getRecordPrReferences } from '../prReferences';
 import { dbRowToRecord } from '../../../core/TrackerRecord';

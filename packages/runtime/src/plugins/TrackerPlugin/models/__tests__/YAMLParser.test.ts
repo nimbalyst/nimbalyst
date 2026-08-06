@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Tests for parseTrackerYAML — focused on relationship-field key fidelity
  * (NIM-870). The on-disk schema stores the relationship-extended keys; the

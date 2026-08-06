@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Last-writer attribution (NIM-953 / NIM-955).
  *

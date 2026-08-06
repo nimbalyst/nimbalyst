@@ -205,6 +205,31 @@ export interface InteractiveWidgetHost {
    */
   superLoopBlockedFeedback(feedback: string): Promise<{ success: boolean; error?: string }>;
 
+  /** Query whether the workspace can offer an opt-in gitignore entry. */
+  getAttachmentStagingGitignoreStatus?(): Promise<{
+    isGitRepo: boolean;
+    alreadyIgnored: boolean;
+    shouldOffer: boolean;
+  }>;
+
+  /** Switch to workspace staging, re-stage the attachments, and resend the prompt. */
+  retryAttachmentStaging?(
+    prompt: string,
+    attachments: Array<{
+      id: string;
+      filename: string;
+      filepath: string;
+      mimeType: string;
+      size: number;
+      type: string;
+      addedAt?: number;
+    }>,
+    addGitignore: boolean,
+  ): Promise<{ success: boolean; error?: string }>;
+
+  /** Open the application attachment staging settings. */
+  openAttachmentSettings?(): void;
+
   // ============================================================
   // Common Operations
   // ============================================================

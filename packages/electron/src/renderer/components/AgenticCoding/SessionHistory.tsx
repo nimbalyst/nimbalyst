@@ -16,7 +16,7 @@ import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
 import { getTimeGroupKey, TimeGroupKey } from '../../utils/dateFormatting';
 import { getFileName } from '../../utils/pathUtils';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../../shared/KeyboardShortcuts';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
   sessionListRootAtom,
   sessionListLoadingAtom,
@@ -33,7 +33,7 @@ import {
 } from '../../store';
 import { alphaFeatureEnabledAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
-import { activeSessionIdAtom as globalActiveSessionIdAtom } from '../../store/atoms/sessions';
+import { activeSessionIdAtom as globalActiveSessionIdAtom, sessionPinnedUpdateAtom } from '../../store/atoms/sessions';
 import { collapsedGroupsAtom, sortOrderAtom, setCollapsedGroupsAtom, setSortOrderAtom } from '../../store/atoms/agentMode';
 import {
   isGitRepoAtom,
@@ -50,7 +50,7 @@ import {
   openNewBlitzDialogActionAtom,
   requestSessionQuickOpenActionAtom,
 } from '../../store/actions/sessionHistoryActions';
-import { worktreeDisplayNameUpdateAtom } from '../../store/atoms/worktrees';
+import { worktreeDisplayNameUpdateAtom, worktreePinnedUpdateAtom } from '../../store/atoms/worktrees';
 import { blitzCreatedAtom, blitzDisplayNameUpdateAtom } from '../../store/atoms/blitz';
 import { superLoopListAtom, upsertSuperLoopAtom, removeSuperLoopAtom } from '../../store/atoms/superLoop';
 import { useSuperLoopDialog } from '../../hooks/useSuperLoop';
@@ -75,6 +75,7 @@ import { WorkspaceSummaryHeader, generateWorkspaceAccentColor } from '../Workspa
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
 import {
+  patchWorkstreamChildPin,
   reconcileSessionPinToggle,
   workstreamChildrenNeedRefresh,
 } from './workstreamChildPinReconciliation';
@@ -1096,6 +1097,37 @@ const SessionHistoryComponent: React.FC = () => {
       return updated;
     });
   }, [worktreeDisplayNameUpdate, workspacePath]);
+
+  // React to worktree pin updates broadcast by main (same central-listener
+  // route as display names) so pinning from the Agent mode header moves the
+  // group in this list.
+  const worktreePinnedUpdate = useAtomValue(worktreePinnedUpdateAtom);
+  const initialWorktreePinnedUpdateRef = useRef(worktreePinnedUpdate);
+  useEffect(() => {
+    if (!workspacePath) return;
+    if (worktreePinnedUpdate === initialWorktreePinnedUpdateRef.current) return;
+    if (!worktreePinnedUpdate) return;
+    const { worktreeId, isPinned } = worktreePinnedUpdate.payload;
+    setWorktreeCache(prev => {
+      const existing = prev.get(worktreeId);
+      if (!existing || existing.isPinned === isPinned) return prev;
+      const updated = new Map(prev);
+      updated.set(worktreeId, { ...existing, isPinned });
+      return updated;
+    });
+  }, [worktreePinnedUpdate, workspacePath]);
+
+  // React to session pin toggles performed on another surface (the Agent mode
+  // header). Renderer-only: this list is local state, not an atom.
+  const sessionPinnedUpdate = useAtomValue(sessionPinnedUpdateAtom);
+  const initialSessionPinnedUpdateRef = useRef(sessionPinnedUpdate);
+  useEffect(() => {
+    if (sessionPinnedUpdate === initialSessionPinnedUpdateRef.current) return;
+    if (!sessionPinnedUpdate) return;
+    const { sessionId, isPinned } = sessionPinnedUpdate.payload;
+    setSessions(prev => prev.map(session => session.id === sessionId ? { ...session, isPinned } : session));
+    setWorkstreamChildrenCache(prev => patchWorkstreamChildPin(prev, sessionId, isPinned));
+  }, [sessionPinnedUpdate]);
 
   // React to blitz display-name updates broadcast by main. The IPC event is
   // handled centrally in store/listeners/blitzListeners.ts which writes

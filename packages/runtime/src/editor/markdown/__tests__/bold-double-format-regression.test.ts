@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Regression test for bold markdown double formatting issue.
  *

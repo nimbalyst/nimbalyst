@@ -1,4 +1,5 @@
 import { store } from '@nimbalyst/runtime/store';
+import type { CollabScope } from '@nimbalyst/collab-client/core';
 import type { CollabDocumentConfig } from '../utils/collabDocumentOpener';
 import {
   removeCollabConfigsForDocument,
@@ -13,13 +14,13 @@ import {
 } from '../components/CollabMode/collabTree';
 import {
   pendingCollabDocumentAtom,
+  getSharedDocumentsForScope,
+  getSharedFoldersForScope,
   registerDocumentInIndex,
-  sharedDocumentsAtom,
-  sharedFoldersAtom,
+  trashSharedDocument,
   type SharedDocument,
   type SharedFolder,
 } from '../store/atoms/collabDocuments';
-import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
 import { setWindowModeAtom } from '../store/atoms/windowMode';
 import {
   getCollaborativeDocumentTypeCatalog,
@@ -43,6 +44,7 @@ export interface CollaborativeDocumentLocalOrigin {
 }
 
 export interface CreateCollaborativeDocumentInput {
+  scope: CollabScope;
   descriptor: CollaborativeDocumentTypeDescriptor;
   requestedName: string;
   parentFolderId: string | null;
@@ -105,11 +107,10 @@ interface FrozenOperation {
 
 export interface CollaborativeDocumentCreationDependencies {
   getCatalog(): CollaborativeDocumentTypeCatalog;
-  getWorkspacePath(): string | null;
-  getDocuments(): SharedDocument[];
-  getFolders(): SharedFolder[];
+  getDocuments(scope: CollabScope): SharedDocument[];
+  getFolders(scope: CollabScope): SharedFolder[];
   resolveConfig(
-    workspacePath: string,
+    scope: CollabScope,
     uri: string,
     documentId: string,
     title: string,
@@ -122,14 +123,23 @@ export interface CollaborativeDocumentCreationDependencies {
     documentType: string;
     title: string;
     content: string | Uint8Array;
+    /** Tolerate a room whose index row may still be in flight. */
+    retryWhileUnregistered?: boolean;
   }): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Resolves `true` when the server confirmed the index row is committed.
+   * The seed cannot connect until it is (NIM-2472).
+   */
   register(
+    scope: CollabScope,
     documentId: string,
     title: string,
     documentType: string,
     parentFolderId: string | null,
     metadata: { metadataVersion: 2; fileExtension: string; editorId: string },
-  ): Promise<void>;
+  ): Promise<boolean>;
+  /** Undo an announced registration when the seed that follows it fails. */
+  rollbackRegistration(scope: CollabScope, documentId: string): void;
   saveLocalOrigin?(payload: {
     workspacePath: string;
     documentId: string;
@@ -139,11 +149,12 @@ export interface CollaborativeDocumentCreationDependencies {
     lastCollabContentHash: string | null;
   }): Promise<{ success: boolean; error?: string }>;
   publishPending(
+    scope: CollabScope,
     document: SharedDocument,
     initialContent?: string,
     source?: CollabDocumentOpenSource,
   ): void;
-  cleanup(workspacePath: string, documentId: string): Promise<void>;
+  cleanup(scope: CollabScope, documentId: string): Promise<void>;
   generateId(): string;
   now(): number;
   hashContent(content: string | Uint8Array): Promise<string>;
@@ -226,6 +237,8 @@ function operationFingerprint(input: CreateCollaborativeDocumentInput): string {
     ? undefined
     : input.localOrigin?.sourceContent;
   return JSON.stringify([
+    input.scope.scopeKey,
+    input.scope.orgId,
     input.descriptor.documentType,
     input.descriptor.defaultExtension,
     input.descriptor.fileExtensions,
@@ -254,12 +267,11 @@ async function sha256Hex(content: string | Uint8Array): Promise<string> {
 function defaultDependencies(): CollaborativeDocumentCreationDependencies {
   return {
     getCatalog: getCollaborativeDocumentTypeCatalog,
-    getWorkspacePath: () => store.get(activeWorkspacePathAtom),
-    getDocuments: () => store.get(sharedDocumentsAtom),
-    getFolders: () => store.get(sharedFoldersAtom),
-    resolveConfig: (workspacePath, uri, documentId, title, documentType, metadata) =>
+    getDocuments: getSharedDocumentsForScope,
+    getFolders: getSharedFoldersForScope,
+    resolveConfig: (scope, uri, documentId, title, documentType, metadata) =>
       resolveCollabConfigForUri(
-        workspacePath,
+        scope,
         uri,
         documentId,
         title,
@@ -268,13 +280,16 @@ function defaultDependencies(): CollaborativeDocumentCreationDependencies {
       ),
     seed: seedSharedDocument,
     register: registerDocumentInIndex,
+    rollbackRegistration: trashSharedDocument,
     saveLocalOrigin: async payload => {
       const save = window.electronAPI?.documentSync?.saveLocalOrigin;
       if (!save) return { success: false, error: 'Local-origin persistence is unavailable.' };
       return save(payload);
     },
-    publishPending: (document, initialContent, source) => {
+    publishPending: (scope, document, initialContent, source) => {
       store.set(pendingCollabDocumentAtom, {
+        scopeKey: scope.scopeKey,
+        orgId: scope.orgId,
         documentId: document.documentId,
         documentType: document.documentType,
         metadataVersion: document.metadataVersion,
@@ -285,8 +300,8 @@ function defaultDependencies(): CollaborativeDocumentCreationDependencies {
       });
       store.set(setWindowModeAtom, 'collab');
     },
-    cleanup: async (workspacePath, documentId) => {
-      removeCollabConfigsForDocument(workspacePath, documentId);
+    cleanup: async (scope, documentId) => {
+      removeCollabConfigsForDocument(scope, documentId);
       await window.electronAPI?.documentSync?.closeDoc?.(documentId).catch(() => undefined);
     },
     generateId: () => crypto.randomUUID(),
@@ -343,7 +358,7 @@ export class CollaborativeDocumentCreationOrchestrator {
   ): Promise<SharedDocument> {
     const { operationId, documentId } = operation;
     let announced = false;
-    let workspacePath: string | null = null;
+    const { scope } = input;
     let configResolved = false;
     try {
       if (!operation.resolvedType) {
@@ -387,19 +402,8 @@ export class CollaborativeDocumentCreationOrchestrator {
       }
       const { descriptor, name, metadata } = operation.resolvedType;
 
-      workspacePath = this.dependencies.getWorkspacePath();
-      if (!workspacePath) {
-        throw new CollaborativeDocumentCreationError(
-          'workspace-unavailable',
-          'No active workspace is available for shared-document creation.',
-          operationId,
-          documentId,
-          false,
-        );
-      }
-
-      const documents = this.dependencies.getDocuments();
-      const folders = this.dependencies.getFolders();
+      const documents = this.dependencies.getDocuments(scope);
+      const folders = this.dependencies.getFolders(scope);
       const parentPath = folderPathForId(folders, input.parentFolderId);
       if (parentPath === null) {
         throw new CollaborativeDocumentCreationError(
@@ -452,7 +456,7 @@ export class CollaborativeDocumentCreationOrchestrator {
       const content = input.sourceContent ?? descriptor.creation?.defaultContent ?? '';
       if (!announced) {
         const config = await this.dependencies.resolveConfig(
-          workspacePath,
+          scope,
           `collab://create/${documentId}`,
           documentId,
           title,
@@ -470,29 +474,18 @@ export class CollaborativeDocumentCreationOrchestrator {
         }
         configResolved = true;
 
-        const requiresSeed = byteLength(content) > 0
-          || (descriptor.content.strategy !== 'lexical' && descriptor.content.strategy !== 'text');
-        if (requiresSeed) {
-          const seed = await this.dependencies.seed({
-            workspacePath,
-            documentId,
-            documentType: descriptor.documentType,
-            title,
-            content,
-          });
-          if (!seed.ok) {
-            throw new CollaborativeDocumentCreationError(
-              'seed-failed',
-              seed.error || 'The initial shared content was not acknowledged by the server.',
-              operationId,
-              documentId,
-              false,
-            );
-          }
-        }
-
+        // Announce BEFORE seeding. The server binds a document room's id
+        // through the org's index and 404s an id that isn't there yet, so a
+        // seed that runs first can never connect (NIM-2472). `register`
+        // resolves only once the row is confirmed committed.
+        //
+        // The cost is a window where teammates can see the document before its
+        // content lands. That is deliberate and bounded: the seed follows
+        // immediately, and a seed failure trashes the row below.
+        let registrationAcked = false;
         try {
-          await this.dependencies.register(
+          registrationAcked = await this.dependencies.register(
+            scope,
             documentId,
             title,
             descriptor.documentType,
@@ -510,11 +503,51 @@ export class CollaborativeDocumentCreationOrchestrator {
             { cause },
           );
         }
+
+        const requiresSeed = byteLength(content) > 0
+          || (descriptor.content.strategy !== 'lexical' && descriptor.content.strategy !== 'text');
+        if (requiresSeed) {
+          const seed = await this.dependencies.seed({
+            workspacePath: scope.scopeKey,
+            documentId,
+            documentType: descriptor.documentType,
+            title,
+            content,
+            // An unconfirmed registration (server predating the ack, or a
+            // queued offline mutation) means the row may still be in flight,
+            // so the room's 404 is transient and worth retrying. A confirmed
+            // one makes a 404 a real error to surface immediately.
+            retryWhileUnregistered: !registrationAcked,
+          });
+          if (!seed.ok) {
+            // The document is already announced. Roll it back into Trash so a
+            // failed share doesn't leave teammates an empty document, and
+            // report the failure as unannounced -- the caller's rollback path
+            // has nothing left to undo.
+            try {
+              this.dependencies.rollbackRegistration(scope, documentId);
+              announced = false;
+            } catch (rollbackError) {
+              logger.ui.warn(
+                '[collaborativeDocumentCreationOrchestrator] Failed to roll back registration',
+                rollbackError,
+              );
+            }
+            throw new CollaborativeDocumentCreationError(
+              'seed-failed',
+              seed.error || 'The initial shared content was not acknowledged by the server.',
+              operationId,
+              documentId,
+              false,
+            );
+          }
+        }
       }
 
       const now = existingById?.createdAt ?? this.dependencies.now();
       const document: SharedDocument = existingById ?? {
         documentId,
+        teamProjectId: scope.indexConfig.teamProjectId ?? null,
         title,
         documentType: descriptor.documentType,
         ...metadata,
@@ -540,7 +573,7 @@ export class CollaborativeDocumentCreationOrchestrator {
         }
         const originalContent = localOrigin.sourceContent ?? content;
         const result = await save({
-          workspacePath,
+          workspacePath: scope.scopeKey,
           documentId,
           documentType: descriptor.documentType,
           sourceFilePath: localOrigin.sourceFilePath,
@@ -559,7 +592,7 @@ export class CollaborativeDocumentCreationOrchestrator {
       }
 
       try {
-        await this.dependencies.cleanup(workspacePath, documentId);
+        await this.dependencies.cleanup(scope, documentId);
         configResolved = false;
       } catch (cleanupError) {
         logger.ui.warn(
@@ -580,6 +613,7 @@ export class CollaborativeDocumentCreationOrchestrator {
               ? 'embedded_document'
               : 'sidebar';
         this.dependencies.publishPending(
+          scope,
           document,
           typeof content === 'string' ? content : undefined,
           openSource,
@@ -597,9 +631,9 @@ export class CollaborativeDocumentCreationOrchestrator {
       });
       return document;
     } catch (cause) {
-      if (workspacePath && configResolved) {
+      if (configResolved) {
         try {
-          await this.dependencies.cleanup(workspacePath, documentId);
+          await this.dependencies.cleanup(scope, documentId);
         } catch (cleanupError) {
           logger.ui.warn('[collaborativeDocumentCreationOrchestrator] Cleanup failed', cleanupError);
         }

@@ -2,8 +2,14 @@
 @import '../../../runtime/src/editor/themes/NimbalystEditorTheme.css';
 @import '../../../runtime/src/editor/themes/NimbalystTheme.css';
 
-/* Material Symbols font */
-@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
+/* Material Symbols is bundled so startup icons never depend on network timing. */
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: block;
+  src: url('./assets/fonts/material-symbols-outlined.woff2') format('woff2');
+}
 
 /* Tailwind CSS - comes after theme variables so it can reference them */
 @tailwind base;

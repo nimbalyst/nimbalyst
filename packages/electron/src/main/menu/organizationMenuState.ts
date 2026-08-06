@@ -1,5 +1,5 @@
 /**
- * Visibility state for the "Organization Manager" menu item.
+ * Visibility state for the "Organization Messages" menu item.
  *
  * Organizations are invite-only while Teams is in alpha, so the menu entry only
  * shows once the account is known to belong to at least one org. TeamService

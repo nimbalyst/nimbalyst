@@ -7,7 +7,9 @@ import {
   shift,
   useFloating,
 } from '@floating-ui/react';
-import { MaterialSymbol, getProviderIcon } from '@nimbalyst/runtime';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { getProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
 import { TEAM_ALPHA_TOOLTIP } from '../common/TeamAlphaNotice';
 import { developerModeAtom } from '../../store/atoms/appSettings';
@@ -61,7 +63,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   const { refs, floatingStyles } = useFloating({
     open: tooltipText !== null,
     placement: 'right',
-    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
 
   useEffect(() => {

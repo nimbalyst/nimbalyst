@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { isIndexClientMetadataOnlyUpdateForTest } from '../CollabV3Sync';
 import type { SyncedSessionMetadata } from '../types';

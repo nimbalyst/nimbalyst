@@ -207,9 +207,13 @@ export const SharedLinksPanel: React.FC = () => {
                   </span>
                 </div>
                 <div className="flex items-center gap-2 text-[0.6875rem] text-[var(--nim-text-faint)]">
-                  <span className="select-text">
-                    Created by {accounts.find((account) => account.personalOrgId === share.owningPersonalOrgId)?.email ?? 'unknown account'}
-                  </span>
+                  {/* Attribution only distinguishes something when more than one
+                      account could have created the link. */}
+                  {accounts.length > 1 && (
+                    <span className="shared-link-owner select-text" data-testid="shared-link-owner">
+                      Created by {accounts.find((account) => account.personalOrgId === share.owningPersonalOrgId)?.email ?? 'unknown account'}
+                    </span>
+                  )}
                   <span className="truncate">share.nimbalyst.com/share/{share.shareId.slice(0, 8)}...</span>
                   <span>{formatDate(share.createdAt)}</span>
                   <span>{formatSize(share.sizeBytes)}</span>

@@ -13,7 +13,7 @@
 import type { JSX } from 'react';
 import { useMemo } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { getRecordStatus, getStatusOptions } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { prListAtom, type PrFilterChip } from '../../store/atoms/pullRequests';
 import { usePrTrackerReferences } from './usePrTrackerContext';

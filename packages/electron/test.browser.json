@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "mode": "url",
+  "title": "New Browser Session",
+  "url": "https://nimbalyst.com",
+  "viewportPreset": "desktop",
+  "autoReloadOnSave": false
+}

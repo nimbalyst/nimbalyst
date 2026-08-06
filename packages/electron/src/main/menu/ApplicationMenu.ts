@@ -29,7 +29,13 @@ import * as fs from 'fs';
 import { windowStates, createWindow, findWindowByFilePath, getWindowId } from '../window/WindowManager';
 import { createAboutWindow } from '../window/AboutWindow';
 import { createWorkspaceManagerWindow } from '../window/WorkspaceManagerWindow.ts';
-import { createTeamManagementWindow } from '../window/TeamManagementWindow';
+import { launchTutorialFromMenu } from './helpMenuActions';
+import {
+    createTeamManagementWindow,
+    isTeamManagementWindowFocused,
+    registerTeamManagementFocusChange,
+} from '../window/TeamManagementWindow';
+import { buildMessagesMenu } from './messagesMenu';
 import { createAIUsageReportWindow } from '../window/AIUsageReportWindow';
 import { createDatabaseBrowserWindow } from '../window/DatabaseBrowserWindow';
 import { createDeveloperDashboardWindow } from '../window/DeveloperDashboardWindow';
@@ -55,7 +61,7 @@ import {
 } from '../services/ExtensionProjectScaffolder';
 
 // Import shared SDK docs path function
-import { getExtensionSDKDocsPath } from '../utils/workspaceDetection';
+import { ensureExtensionSDKDocsTrusted, getExtensionSDKDocsPath } from '../utils/workspaceDetection';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { getRegisteredWalkthroughs, getRegisteredTips } from '../ipc/WalkthroughHandlers';
 
@@ -232,6 +238,9 @@ export async function createApplicationMenu() {
     // Get current theme from store
     const currentTheme = getTheme();
     const isDev = process.env.NODE_ENV !== 'production';
+    // Drives the Messages menu and the two accelerators it borrows. Rebuilt on
+    // every org-window focus transition (see registerTeamManagementFocusChange).
+    const orgWindowFocused = isTeamManagementWindowFocused();
 
     const template: any[] = [
         {
@@ -584,7 +593,9 @@ export async function createApplicationMenu() {
                 { type: 'separator' },
                 {
                     label: 'Find...',
-                    accelerator: KeyboardShortcuts.edit.find,
+                    // Yielded to Messages > Search Messages while the org
+                    // window is focused; there is nothing to find there.
+                    accelerator: orgWindowFocused ? undefined : KeyboardShortcuts.edit.find,
                     click: async () => {
                         const focused = getFocusedWindow();
                         if (focused) {
@@ -672,7 +683,9 @@ export async function createApplicationMenu() {
                 },
                 {
                     label: 'Agent Mode',
-                    accelerator: KeyboardShortcuts.view.agentMode,
+                    // Yielded to Messages > New Message while the org window is
+                    // focused; it has no content modes to switch between.
+                    accelerator: orgWindowFocused ? undefined : KeyboardShortcuts.view.agentMode,
                     click: async () => {
                         console.log('[Menu] Agent Mode clicked');
                         const focused = getFocusedWindow();
@@ -983,6 +996,7 @@ export async function createApplicationMenu() {
                 }
             ]
         },
+        ...(orgWindowFocused ? [buildMessagesMenu()] : []),
         {
             label: 'Window',
             submenu: [
@@ -1003,16 +1017,19 @@ export async function createApplicationMenu() {
                     // No orgId: the window opens on the last-selected organization
                     // (or the first one you belong to), same as the switcher's
                     // untargeted entry points.
-                    label: 'Organization Manager (Alpha)',
+                    // The window is messaging only since NIM-2322 —
+                    // administration is a dialog in whichever window you are in.
+                    label: 'Organization Messages',
                     // Orgs are invite-only during the alpha: hidden until
                     // listTeams reports a membership (dev builds always show it
                     // so the create flow stays reachable).
                     visible: isDev || getHasOrganizationsForMenu(),
+                    accelerator: KeyboardShortcuts.window.organizationManager,
                     click: async () => {
                         AnalyticsService.getInstance().sendEvent('menu_action_used', {
                             menu: 'window',
                             action: 'organization_manager',
-                            hasKeyboardEquivalent: false,
+                            hasKeyboardEquivalent: true,
                         });
                         createTeamManagementWindow();
                     }
@@ -1601,6 +1618,11 @@ export async function createApplicationMenu() {
                 //     }
                 // },
                 {
+                    label: 'Launch Tutorial',
+                    click: launchTutorialFromMenu
+                },
+                { type: 'separator' },
+                {
                     label: 'Documentation',
                     click: async () => {
                         // Track help accessed
@@ -1631,7 +1653,9 @@ export async function createApplicationMenu() {
                         });
                         const sdkDocsPath = getExtensionSDKDocsPath();
                         if (sdkDocsPath) {
-                            // Open as a workspace window
+                            // Open as a workspace window. The docs ship with the
+                            // app, so trust them rather than prompting.
+                            ensureExtensionSDKDocsTrusted(sdkDocsPath);
                             addToRecentItems('workspaces', sdkDocsPath, 'Extension SDK Docs');
                             createWindow(false, true, sdkDocsPath);
                         } else {
@@ -1748,6 +1772,11 @@ export async function createApplicationMenu() {
             label: 'Help',
             submenu: [
                 {
+                    label: 'Launch Tutorial',
+                    click: launchTutorialFromMenu
+                },
+                { type: 'separator' },
+                {
                     label: 'Welcome',
                     click: async () => {
                         // Track help accessed
@@ -1793,7 +1822,9 @@ export async function createApplicationMenu() {
                         });
                         const sdkDocsPath = getExtensionSDKDocsPath();
                         if (sdkDocsPath) {
-                            // Open as a workspace window
+                            // Open as a workspace window. The docs ship with the
+                            // app, so trust them rather than prompting.
+                            ensureExtensionSDKDocsTrusted(sdkDocsPath);
                             addToRecentItems('workspaces', sdkDocsPath, 'Extension SDK Docs');
                             createWindow(false, true, sdkDocsPath);
                         } else {
@@ -1926,8 +1957,12 @@ export async function createApplicationMenu() {
 }
 
 // Rebuild when TeamService learns whether the account belongs to any org, so
-// the Organization Manager item can appear/disappear without a restart.
+// the Organization Messages item can appear/disappear without a restart.
 registerOrganizationMenuRebuild(() => { void updateApplicationMenu(); });
+
+// Rebuild when the organization window gains or loses focus, so the Messages
+// menu (and the Cmd+K / Cmd+F accelerators it borrows) follows the key window.
+registerTeamManagementFocusChange(() => { void updateApplicationMenu(); });
 
 // Update application menu
 export async function updateApplicationMenu() {

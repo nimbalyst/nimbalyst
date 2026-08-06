@@ -238,3 +238,18 @@ packages/electron/memories.db
 # Local RAG/memory-tool artifacts (SQLite stores + caches created in the cwd)
 memories.db
 .rag-cache/
+
+# Generated .d.ts emitted next to its source. collab-bundle's declaration build
+# (tsconfig.types.json) compiles across package boundaries via rootDir ".."; drop
+# or mistype its outDir and tsc writes every .d.ts beside the .ts it came from,
+# where it silently rots against the source. 450 such files reached a commit this
+# way. Hand-written ambient declarations are negated below; any other intentional
+# .d.ts here needs `git add -f` and a comment saying why.
+packages/runtime/src/**/*.d.ts
+packages/runtime/src/**/*.d.ts.map
+packages/collab-client/src/**/*.d.ts
+packages/collab-client/src/**/*.d.ts.map
+!packages/runtime/src/**/env.d.ts
+!packages/runtime/src/**/*-env.d.ts
+!packages/runtime/src/types/*.d.ts
+!packages/runtime/src/editor/types/*.d.ts

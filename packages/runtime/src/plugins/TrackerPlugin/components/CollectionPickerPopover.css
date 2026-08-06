@@ -1,0 +1,197 @@
+/**
+ * Collection chip picker. Lives inside `.tracker-field-popover`, so it owns only
+ * its internal rhythm — the surface, border, and shadow come from the popover.
+ *
+ * Plain class names (no arbitrary Tailwind brackets) for the same reason as the
+ * chip popover: jsdom's selector engine chokes on bracket-heavy class names when
+ * tests inspect a portaled surface.
+ */
+
+.collection-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 240px;
+}
+
+.collection-picker-search {
+  width: 100%;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--nim-text);
+  background: var(--nim-bg);
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+}
+
+.collection-picker-search:focus {
+  outline: none;
+  border-color: var(--nim-primary);
+}
+
+.collection-picker-current {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.collection-picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 1px 4px 1px 8px;
+  font-size: 11px;
+  color: var(--nim-text);
+  background: var(--nim-bg-tertiary);
+  border-radius: 999px;
+}
+
+.collection-picker-chip-open {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.collection-picker-chip-open:hover {
+  text-decoration: underline;
+}
+
+.collection-picker-chip-remove {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 0;
+  color: var(--nim-text-faint);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.collection-picker-chip-remove:hover {
+  color: var(--nim-error);
+}
+
+.collection-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.collection-picker-option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--nim-text);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.collection-picker-option-active {
+  background: var(--nim-bg-hover);
+}
+
+.collection-picker-option-icon {
+  flex: none;
+  color: var(--nim-text-faint);
+}
+
+.collection-picker-option-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collection-picker-option-create .collection-picker-option-label {
+  color: var(--nim-text-muted);
+}
+
+.collection-picker-empty {
+  padding: 8px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--nim-text-faint);
+}
+
+.collection-picker-create-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.collection-picker-create-prompt {
+  font-size: 11px;
+  color: var(--nim-text-muted);
+}
+
+.collection-picker-type-toggle {
+  display: flex;
+  gap: 4px;
+}
+
+.collection-picker-type-option {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--nim-text);
+  background: var(--nim-bg);
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.collection-picker-type-option:hover {
+  background: var(--nim-bg-hover);
+}
+
+.collection-picker-type-option-selected {
+  color: var(--nim-primary);
+  border-color: var(--nim-primary);
+}
+
+.collection-picker-type-option:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.collection-picker-create-cancel {
+  align-self: flex-start;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--nim-text-faint);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.collection-picker-create-cancel:hover {
+  color: var(--nim-text);
+}
+
+.collection-picker-error {
+  font-size: 11px;
+  color: var(--nim-error);
+}

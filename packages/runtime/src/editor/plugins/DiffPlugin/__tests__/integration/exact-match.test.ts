@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Test to verify exact matches are correctly identified and skipped
  */

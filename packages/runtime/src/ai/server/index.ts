@@ -24,6 +24,8 @@ export {
 export type { SharedMcpServerConfig, PerProviderMcpDeps } from './services/mcpServerConfig';
 export * from './services/mcpTopology';
 export * from './services/mcpTokenBudget';
+export * from './attachments/attachmentDenyMatcher';
+export * from './attachments/stagedAttachmentRegistry';
 
 // Meta-agent persona builder. Re-exported here (rather than from the root
 // barrel which would collide with `buildSystemPrompt`) so the electron-main

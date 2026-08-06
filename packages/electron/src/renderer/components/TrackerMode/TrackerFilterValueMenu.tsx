@@ -1,7 +1,7 @@
 import type { JSX, RefObject } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FloatingPortal } from '@floating-ui/react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { TrackerFilterOp } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import type { TrackerFilterField } from './TrackerViewHeaderControls';
 
@@ -20,6 +20,7 @@ interface TrackerFilterValueMenuProps {
 
 function iconForField(field: TrackerFilterField): string {
   const key = `${field.id} ${field.label}`.toLowerCase();
+  if (key.includes('favorite') || key.includes('starred')) return 'star';
   if (key.includes('status')) return 'progress_activity';
   if (key.includes('priority')) return 'signal_cellular_alt';
   if (key.includes('assignee') || key.includes('owner') || field.type === 'user') return 'person';
@@ -48,6 +49,9 @@ export function TrackerFilterValueMenu({
 }: TrackerFilterValueMenuProps): JSX.Element {
   const [query, setQuery] = useState('');
   const [relativeDays, setRelativeDays] = useState('7');
+  // Arrow-key selection. Null means "nothing highlighted yet", so Enter keeps
+  // its old meaning (commit the only match) until the user starts navigating.
+  const [highlightIndex, setHighlightIndex] = useState<number | null>(null);
   const [pendingValues, setPendingValues] = useState<Set<string>>(
     () => new Set(selectedValues),
   );
@@ -56,7 +60,9 @@ export function TrackerFilterValueMenu({
     || field.type === 'multiselect'
     || field.multiValue === true;
   const options = useMemo(() => {
-    if (field.type === 'boolean') {
+    // A boolean field may name its own two values ("Starred" / "Not starred");
+    // otherwise it falls back to the generic pair.
+    if (field.type === 'boolean' && !field.options?.length) {
       return [
         { value: 'true', label: 'True' },
         { value: 'false', label: 'False' },
@@ -83,10 +89,54 @@ export function TrackerFilterValueMenu({
     [options],
   );
 
+  const toggleValue = (value: string): void => {
+    setPendingValues(current => {
+      const next = new Set(current);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  };
+
+  /**
+   * The rows Arrow keys walk, in the order they are painted: the relative
+   * person rows first (they are real filter choices, not decoration), then the
+   * matching values.
+   */
+  const navigableRows = useMemo(() => {
+    const rows: Array<{ key: string; activate: () => void }> = [];
+    if (field.type === 'user') {
+      rows.push({ key: 'relative-current-user', activate: () => onSelect('', 'is-current-user') });
+      rows.push({ key: 'relative-not-current-user', activate: () => onSelect('', 'is-not-current-user') });
+    }
+    for (const option of matchingOptionsWithIssues) {
+      rows.push({
+        key: `option-${option.value}`,
+        activate: () => (allowsMultiple ? toggleValue(option.value) : onSelect(option.value, '=')),
+      });
+    }
+    // Enter toggles a multi-select row, so Apply needs its own stop on the tour
+    // (Cmd/Ctrl+Enter is the shortcut for anyone who already knows it).
+    if (allowsMultiple && pendingValues.size > 0) {
+      rows.push({ key: 'apply', activate: () => onSelect(Array.from(pendingValues), 'in') });
+    }
+    return rows;
+  }, [allowsMultiple, field.type, matchingOptionsWithIssues, onSelect, pendingValues]);
+
+  const highlightedKey = highlightIndex === null ? null : navigableRows[highlightIndex]?.key ?? null;
+
   useEffect(() => {
     setQuery('');
     setRelativeDays('7');
+    setHighlightIndex(null);
   }, [field.id]);
+
+  // A narrowing query can strand the highlight past the end of the list.
+  useEffect(() => {
+    setHighlightIndex(current => (current === null
+      ? null
+      : navigableRows.length === 0 ? null : Math.min(current, navigableRows.length - 1)));
+  }, [navigableRows.length]);
 
   useEffect(() => {
     if (!dismissOnOutsideClick) return;
@@ -129,19 +179,43 @@ export function TrackerFilterValueMenu({
               onKeyDown={event => {
                 if (event.key === 'Escape') {
                   onClose();
-                } else if (event.key === 'Enter' && matchingOptionsWithIssues.length === 1) {
-                  const value = matchingOptionsWithIssues[0].value;
-                  if (allowsMultiple) {
-                    setPendingValues(current => {
-                      const next = new Set(current);
-                      if (next.has(value)) next.delete(value);
-                      else next.add(value);
-                      return next;
-                    });
-                  } else {
-                    onSelect(value, '=');
-                  }
+                  return;
                 }
+                if (event.key === 'ArrowDown' && navigableRows.length > 0) {
+                  event.preventDefault();
+                  setHighlightIndex(current => (current === null
+                    ? 0
+                    : Math.min(current + 1, navigableRows.length - 1)));
+                  return;
+                }
+                if (event.key === 'ArrowUp' && highlightIndex !== null) {
+                  event.preventDefault();
+                  setHighlightIndex(current => (current === null || current === 0 ? null : current - 1));
+                  return;
+                }
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                if ((event.metaKey || event.ctrlKey) && allowsMultiple && pendingValues.size > 0) {
+                  onSelect(Array.from(pendingValues), 'in');
+                  return;
+                }
+                if (highlightIndex !== null && navigableRows[highlightIndex]) {
+                  navigableRows[highlightIndex].activate();
+                  return;
+                }
+                if (allowsMultiple && pendingValues.size > 0) {
+                  onSelect(Array.from(pendingValues), 'in');
+                  return;
+                }
+                if (matchingOptionsWithIssues.length === 1) {
+                  const value = matchingOptionsWithIssues[0].value;
+                  if (allowsMultiple) toggleValue(value);
+                  else onSelect(value, '=');
+                  return;
+                }
+                // A field with no option list (free text, numbers) filters on
+                // exactly what was typed -- Enter used to do nothing there.
+                if (options.length === 0 && query.trim()) onSelect(query.trim(), '=');
               }}
               data-testid={`${testIdPrefix}-option-search`}
             />
@@ -205,8 +279,11 @@ export function TrackerFilterValueMenu({
                 <div className="mb-2 border-b border-nim pb-2">
                   <button
                     type="button"
-                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[14px] text-nim hover:bg-nim-tertiary"
+                    className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[14px] text-nim hover:bg-nim-tertiary ${
+                      highlightedKey === 'relative-current-user' ? 'bg-nim-tertiary' : ''
+                    }`}
                     onClick={() => onSelect('', 'is-current-user')}
+                    data-selected={highlightedKey === 'relative-current-user' ? 'true' : undefined}
                     data-testid={`${testIdPrefix}-relative-current-user`}
                   >
                     <MaterialSymbol icon="person" size={17} className="text-nim-muted" />
@@ -214,8 +291,11 @@ export function TrackerFilterValueMenu({
                   </button>
                   <button
                     type="button"
-                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[14px] text-nim hover:bg-nim-tertiary"
+                    className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[14px] text-nim hover:bg-nim-tertiary ${
+                      highlightedKey === 'relative-not-current-user' ? 'bg-nim-tertiary' : ''
+                    }`}
                     onClick={() => onSelect('', 'is-not-current-user')}
+                    data-selected={highlightedKey === 'relative-not-current-user' ? 'true' : undefined}
                     data-testid={`${testIdPrefix}-relative-not-current-user`}
                   >
                     <MaterialSymbol icon="person_off" size={17} className="text-nim-muted" />
@@ -231,21 +311,19 @@ export function TrackerFilterValueMenu({
                   <button
                     key={option.value}
                     type="button"
-                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[14px] text-nim hover:bg-nim-tertiary"
+                    className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[14px] text-nim hover:bg-nim-tertiary ${
+                      highlightedKey === `option-${option.value}` ? 'bg-nim-tertiary' : ''
+                    }`}
                     onClick={() => {
                       if (!allowsMultiple) {
                         onSelect(option.value, '=');
                         return;
                       }
-                      setPendingValues(current => {
-                        const next = new Set(current);
-                        if (next.has(option.value)) next.delete(option.value);
-                        else next.add(option.value);
-                        return next;
-                      });
+                      toggleValue(option.value);
                     }}
                     role={allowsMultiple ? 'checkbox' : 'radio'}
                     aria-checked={selected}
+                    data-selected={highlightedKey === `option-${option.value}` ? 'true' : undefined}
                     data-testid={`${testIdPrefix}-option-${option.value}`}
                   >
                     <span
@@ -297,7 +375,10 @@ export function TrackerFilterValueMenu({
                 {allowsMultiple && (
                   <button
                     type="button"
-                    className="ml-auto shrink-0 rounded bg-[var(--nim-primary)] px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+                    className={`ml-auto shrink-0 rounded bg-[var(--nim-primary)] px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-40 ${
+                      highlightedKey === 'apply' ? 'ring-2 ring-[var(--nim-primary)] ring-offset-1 ring-offset-[var(--nim-bg-secondary)]' : ''
+                    }`}
+                    data-selected={highlightedKey === 'apply' ? 'true' : undefined}
                     disabled={pendingValues.size === 0}
                     onClick={() => onSelect(Array.from(pendingValues), 'in')}
                     data-testid={`${testIdPrefix}-apply-multiple`}

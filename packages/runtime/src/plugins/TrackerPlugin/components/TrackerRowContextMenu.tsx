@@ -10,6 +10,7 @@
 import type { JSX } from 'react';
 import React, { useEffect, useRef, useState } from 'react';
 import { useFloating, offset, flip, shift, FloatingPortal } from '@floating-ui/react';
+import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import type { TrackerItemType } from '../../../core/DocumentService';
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import { getRecordTitle } from '../trackerRecordAccessors';
@@ -32,6 +33,8 @@ export interface TrackerRowContextMenuProps {
   onSetPriority: (priority: string) => void;
   onAddToCollection?: (collection: TrackerRecord) => void;
   onCopyDeepLink?: (itemId: string) => void;
+  /** Open the item as a document (focused document view); single selection only. */
+  onOpenDocument?: (itemId: string) => void;
   onArchiveItems?: (itemIds: string[], archive: boolean) => void;
   onDeleteItems?: (itemIds: string[]) => void;
   closeContextMenu: () => void;
@@ -50,6 +53,7 @@ export function TrackerRowContextMenu({
   onSetPriority,
   onAddToCollection,
   onCopyDeepLink,
+  onOpenDocument,
   onArchiveItems,
   onDeleteItems,
   closeContextMenu,
@@ -133,6 +137,21 @@ export function TrackerRowContextMenu({
 
         <div className="border-b border-[var(--nim-border)] my-1" />
 
+        {onOpenDocument && selectedIds.size === 1 && (
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
+            data-testid="tracker-row-context-open-document"
+            onClick={() => {
+              const [onlyId] = selectedIds;
+              closeContextMenu();
+              onOpenDocument(onlyId);
+            }}
+          >
+            <span className="material-symbols-outlined text-sm">article</span>
+            Open document
+          </button>
+        )}
+
         {onCopyDeepLink && selectedIds.size === 1 && (
           <button
             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
@@ -195,7 +214,7 @@ export const ContextSubmenu: React.FC<{
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { refs, floatingStyles } = useFloating({
     placement: 'right-start',
-    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
 
   useEffect(() => () => {

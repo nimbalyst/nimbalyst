@@ -1,5 +1,5 @@
 import log from 'electron-log/main';
-import { copyFileSync, existsSync, realpathSync, rmSync } from 'fs';
+import { readdirSync, realpathSync, rmSync, statSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import simpleGit, { SimpleGit } from 'simple-git';
 import { gitOperationLock } from './GitOperationLock';
@@ -12,6 +12,13 @@ export interface GitCommitExecutionResult {
   commitHash?: string;
   commitDate?: string;
   error?: string;
+  /**
+   * The commit is durable, but the repository's index still shows the committed
+   * files as pending changes because the post-commit refresh could not take
+   * .git/index.lock. Cosmetic and self-correcting on the next Git write, but
+   * callers should not report a spotless working tree.
+   */
+  indexRefreshFailed?: boolean;
 }
 
 export interface GitCommitProposalResponse {
@@ -61,15 +68,14 @@ function toRealPath(filePath: string): string {
 /**
  * Convert a proposal path to a literal path inside the session's repository.
  *
- * Commit proposals are deliberately scoped to the session's repository — the
- * git toplevel that owns the workspace. For Nimbalyst worktree sessions the
+ * MCP commit proposals are deliberately scoped to the session's repository --
+ * the git toplevel that owns the workspace. For a worktree session the
  * toplevel is the worktree itself, so cross-worktree rejection is unchanged;
- * for a workspace opened at a subfolder of a repository (#124) the boundary
- * is the containing repository. Do not let `..`, an outside absolute path,
- * or Git pathspec magic widen that scope. Relative inputs stay in the
- * caller's frame (workspace-relative). The returned path is always
- * repository-relative and is passed to Git with its literal-pathspec mode
- * enabled below.
+ * for a workspace opened at a subfolder of a repository (#124) the boundary is
+ * the containing repository. Do not let an absolute path, `..`, or Git
+ * pathspec magic widen that scope. Relative inputs stay in the caller's frame
+ * (workspace-relative). The returned path is always repository-relative and is
+ * passed to Git with its literal-pathspec mode enabled below.
  */
 function toRepositoryRelativePath(workspacePath: string, repoRoot: string, filePath: string): string {
   if (!filePath || filePath.includes('\0')) {
@@ -102,59 +108,124 @@ function toRepositoryRelativePath(workspacePath: string, repoRoot: string, fileP
   return relativePath.replace(/\\/g, '/');
 }
 
-interface GitIndexBackup {
-  hadIndex: boolean;
-  restore(): boolean;
-  dispose(): void;
+/**
+ * A commit proposal stages an approved subset, which used to mean mutating the
+ * repository's real index and repairing it afterwards from a byte-for-byte
+ * backup. That repair wrote `.git/index` outside Git's `index.lock` protocol,
+ * so no well-behaved concurrent Git process could defend against it: a
+ * concurrent `git add` was silently erased, and an index overwrite landing
+ * between the staged-set check and `git commit` could put an unapproved file
+ * into the commit. See NIM-2284.
+ *
+ * Everything up to and including `git commit` now runs against a private index
+ * named below, so the real index is never written outside Git's own locking.
+ */
+const TEMP_INDEX_PREFIX = 'nimbalyst-commit-';
+const TEMP_INDEX_SUFFIX = '.index';
+/** No commit runs for an hour, so anything older was abandoned by a crash. */
+const STALE_TEMP_INDEX_AGE_MS = 60 * 60 * 1000;
+
+async function resolveGitDir(git: SimpleGit): Promise<string> {
+  // Resolves a linked worktree to its own private git dir, which is where that
+  // worktree's index lives — so the temp index always lands beside the real one.
+  const gitDir = (await git.raw(['rev-parse', '--absolute-git-dir'])).trim();
+  if (!gitDir) {
+    throw new Error('Git did not resolve a repository directory');
+  }
+  return gitDir;
+}
+
+function createTempIndexPath(gitDir: string): string {
+  const unique = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return join(gitDir, `${TEMP_INDEX_PREFIX}${unique}${TEMP_INDEX_SUFFIX}`);
 }
 
 /**
- * `executeGitCommit` deliberately changes the index to commit an approved
- * subset. Keep a byte-for-byte backup so every rejected or failed proposal can
- * restore the caller's original staged state, including partial hunks.
+ * A killed process cannot run its own cleanup, so reclaim abandoned temp
+ * indexes here. Deliberately matches only this service's own naming: it must
+ * never remove one of Git's files, nor a legacy `.nimbalyst-index-backup-*`
+ * that a previous version wrote.
  */
-async function backupGitIndex(git: SimpleGit, repoRoot: string): Promise<GitIndexBackup | null> {
-  const rawIndexPath = (await git.raw(['rev-parse', '--git-path', 'index'])).trim();
-  if (!rawIndexPath) return null;
+function sweepStaleTempIndexes(gitDir: string, logContext: string): void {
+  try {
+    const now = Date.now();
+    for (const entry of readdirSync(gitDir)) {
+      const isTempIndex =
+        entry.startsWith(TEMP_INDEX_PREFIX) &&
+        (entry.endsWith(TEMP_INDEX_SUFFIX) || entry.endsWith(`${TEMP_INDEX_SUFFIX}.lock`));
+      if (!isTempIndex) continue;
 
-  const indexPath = isAbsolute(rawIndexPath)
-    ? rawIndexPath
-    : resolve(repoRoot, rawIndexPath);
-  if (!existsSync(indexPath)) {
-    // A new repository may not have an index yet. On a failed proposal, remove
-    // the index created by staging so its pre-proposal state is restored.
-    return {
-      hadIndex: false,
-      restore: () => {
-        try {
-          rmSync(indexPath, { force: true });
-          return !existsSync(indexPath);
-        } catch {
-          return false;
-        }
-      },
-      dispose: () => {},
-    };
-  }
-
-  const backupPath = join(
-    dirname(indexPath),
-    `.nimbalyst-index-backup-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  );
-  copyFileSync(indexPath, backupPath);
-
-  return {
-    hadIndex: true,
-    restore: () => {
+      const candidate = join(gitDir, entry);
       try {
-        copyFileSync(backupPath, indexPath);
-        return true;
+        if (now - statSync(candidate).mtimeMs < STALE_TEMP_INDEX_AGE_MS) continue;
+        rmSync(candidate, { force: true });
       } catch {
+        // Raced with another sweep or an in-flight commit; leave it.
+      }
+    }
+  } catch (error) {
+    log.warn(`${logContext} Could not sweep abandoned commit indexes:`, error);
+  }
+}
+
+function removeTempIndex(tempIndexPath: string): void {
+  try {
+    rmSync(tempIndexPath, { force: true });
+    rmSync(`${tempIndexPath}.lock`, { force: true });
+  } catch (error) {
+    log.warn(`[git:commit] Could not remove the temporary commit index:`, error);
+  }
+}
+
+/**
+ * Paths staged in the given index relative to HEAD. Compares index against HEAD
+ * only — never the worktree — because the temp index is built by `read-tree`
+ * and so carries no stat cache; a full `git status` would re-hash the entire
+ * checkout on every commit.
+ */
+async function readStagedPaths(git: SimpleGit, repoHasCommits: boolean): Promise<string[]> {
+  const raw = repoHasCommits
+    ? await git.raw(['diff', '--cached', '--name-only', '--no-renames', '-z', 'HEAD'])
+    : await git.raw(['ls-files', '--cached', '-z']);
+  return raw.split('\0').filter((entry) => entry.length > 0);
+}
+
+/**
+ * `git commit` moved HEAD, but the real index still holds the pre-commit blobs
+ * for the paths just committed — so without this they read as staged reverts,
+ * and brand-new files as staged deletions. This is the ONLY command in the
+ * workflow that writes the real index.
+ *
+ * Unlike the commit it is idempotent and has nothing to lose, so losing the
+ * lock costs only a retry. Failing it leaves a stale-looking index, which was
+ * the whole of NIM-2284; be patient, because by this point the commit is
+ * already durable and waiting is free.
+ */
+async function refreshCommittedPathsInRealIndex(
+  git: SimpleGit,
+  relativePaths: string[],
+  retry: { maxRetries: number; baseDelayMs: number },
+  logContext: string
+): Promise<boolean> {
+  for (let attempt = 0; attempt <= retry.maxRetries; attempt++) {
+    if (attempt > 0) {
+      await delay(retry.baseDelayMs * 2 ** (attempt - 1));
+    }
+    try {
+      await git.raw(['--literal-pathspecs', 'reset', 'HEAD', '--', ...relativePaths]);
+      return true;
+    } catch (error) {
+      if (!isIndexLockError(error)) {
+        log.error(`${logContext} Could not refresh the staging area after committing:`, error);
         return false;
       }
-    },
-    dispose: () => rmSync(backupPath, { force: true }),
-  };
+    }
+  }
+  log.error(
+    `${logContext} .git/index.lock stayed held after ${retry.maxRetries + 1} attempts; ` +
+    'the commit is durable but the staging area still shows the committed files as pending changes'
+  );
+  return false;
 }
 
 /**
@@ -179,6 +250,12 @@ function delay(ms: number): Promise<void> {
 
 const DEFAULT_LOCK_MAX_RETRIES = 5;
 const DEFAULT_LOCK_BASE_DELAY_MS = 100;
+/**
+ * Higher than the pre-commit budget: by the time the post-commit refresh runs
+ * the commit is durable, so waiting out a busy repository costs nothing while
+ * giving up leaves a stale-looking index.
+ */
+const DEFAULT_INDEX_REFRESH_MAX_RETRIES = 6;
 
 export async function executeGitCommit(
   workspacePath: string,
@@ -211,11 +288,11 @@ export async function executeGitCommit(
   if (!message) {
     return { success: false, error: 'message is required' };
   }
-  // Resolve the owning repository root; it may sit above the workspace when
-  // the opened folder is a subfolder of a repo (#124). Lock on the root so
-  // two windows open on subfolders of the same repo serialize their commits.
-  const { isRepo, gitRoot } = resolveGitContext(workspacePath);
-  if (!isRepo || !gitRoot) {
+  // The workspace may be a subfolder of the repository (#124); git commands and
+  // the lock key must both use the repository that owns it. When the workspace
+  // IS the repo root (including a linked worktree) this resolves to itself.
+  const { gitRoot } = resolveGitContext(workspacePath);
+  if (!gitRoot) {
     return { success: false, error: 'Not a git repository' };
   }
 
@@ -231,29 +308,22 @@ export async function executeGitCommit(
         );
         await delay(backoffMs);
       }
-      let indexBackup: GitIndexBackup | null = null;
-      let indexMutated = false;
+      let tempIndexPath: string | null = null;
       let successfulCommit: { hash: string; date?: string } | null = null;
-      const restoreOriginalIndex = (): boolean => {
-        if (!indexMutated || !indexBackup) return true;
-        const restored = indexBackup.restore();
-        if (!restored) {
-          log.error(`${logContext} Failed to restore the original staging area; preserving recovery backup`);
-        }
-        return restored;
-      };
       try {
         const gitEnv = sanitizeGitRepositoryEnv(options?.env ?? process.env);
-        const git: SimpleGit = simpleGit(
-          gitRoot,
-          { unsafe: GIT_INHERITED_ENV_UNSAFE }
-        ).env(gitEnv);
-        if (options?.onOutput) {
-          git.outputHandler((_command, stdout, stderr) => {
-            stdout.on('data', (chunk: Buffer | string) => options.onOutput?.('stdout', chunk.toString()));
-            stderr.on('data', (chunk: Buffer | string) => options.onOutput?.('stderr', chunk.toString()));
-          });
-        }
+        const withOutput = (instance: SimpleGit): SimpleGit => {
+          if (options?.onOutput) {
+            instance.outputHandler((_command, stdout, stderr) => {
+              stdout.on('data', (chunk: Buffer | string) => options.onOutput?.('stdout', chunk.toString()));
+              stderr.on('data', (chunk: Buffer | string) => options.onOutput?.('stderr', chunk.toString()));
+            });
+          }
+          return instance;
+        };
+        const git: SimpleGit = withOutput(
+          simpleGit(gitRoot, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(gitEnv)
+        );
         const repoHasCommits = await hasCommits(git);
         // log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
 
@@ -266,45 +336,25 @@ export async function executeGitCommit(
           };
         }
 
-        // Validate every submitted path before resetting the index. A rejected
-        // proposal must not be able to disturb the caller's existing staging
-        // state.
+        // Validate every submitted path before touching any index, so a rejected
+        // proposal cannot disturb the caller's existing staging state.
         const filesToStageRelative = filesToStage.map(toGitPath);
 
-        const initialStatus = await git.status();
-        const originallyStaged = new Set([...initialStatus.staged, ...initialStatus.created]);
-        // log.info(`${logContext} Originally staged files: ${originallyStaged.size}`);
+        const gitDir = await resolveGitDir(git);
+        sweepStaleTempIndexes(gitDir, logContext);
+        tempIndexPath = createTempIndexPath(gitDir);
 
-        try {
-          indexBackup = await backupGitIndex(git, gitRoot);
-        } catch (backupError) {
-          return {
-            success: false,
-            error: `Could not protect the existing staging area: ${getGitCommitErrorMessage(backupError)}`,
-          };
-        }
-        if (!indexBackup) {
-          return {
-            success: false,
-            error: 'Could not protect the existing staging area: Git did not resolve an index path.',
-          };
-        }
-        const failAfterIndexMutation = (error: string): GitCommitExecutionResult => {
-          const restored = restoreOriginalIndex();
-          if (restored) indexBackup?.dispose();
-          return {
-            success: false,
-            error: restored ? error : `${error} Original staging could not be restored; recovery backup was retained.`,
-          };
-        };
+        // `sanitizeGitRepositoryEnv` above already dropped any inherited
+        // GIT_INDEX_FILE, which would otherwise redirect the index the way a
+        // hook-launched process does. Only ours is injected, and only here.
+        const stagingGit: SimpleGit = withOutput(
+          simpleGit(gitRoot, { unsafe: GIT_INHERITED_ENV_UNSAFE })
+            .env({ ...gitEnv, GIT_INDEX_FILE: tempIndexPath })
+        );
 
-        // log.info(`${logContext} Resetting staging area before staging selected files`);
-        indexMutated = true;
-        if (repoHasCommits) {
-          await git.reset(['HEAD']);
-        } else if (originallyStaged.size > 0) {
-          await git.raw(['rm', '--cached', '-r', '.']);
-        }
+        // Seed the private index from HEAD so the commit carries the whole tree,
+        // not just the proposal's files.
+        await stagingGit.raw(repoHasCommits ? ['read-tree', 'HEAD'] : ['read-tree', '--empty']);
 
         // log.info(`${logContext} Staging files (raw): ${filesToStage.join(', ')}`);
         // log.info(`${logContext} Staging files (git-relative): ${filesToStageRelative.join(', ')}`);
@@ -312,15 +362,17 @@ export async function executeGitCommit(
         // `--literal-pathspecs` stops Git from interpreting globs or pathspec
         // magic in a proposal. Keep it before the command: it is a global Git
         // option, not an `add` option.
-        await git.raw(['--literal-pathspecs', 'add', '--all', '--', ...filesToStageRelative]);
+        await stagingGit.raw(['--literal-pathspecs', 'add', '--all', '--', ...filesToStageRelative]);
 
-        const status = await git.status();
-        const stagedFiles = new Set([...status.staged, ...status.created]);
-        // log.info(`${logContext} After staging - staged files: [${[...status.staged].join(', ')}], created files: [${[...status.created].join(', ')}]`);
+        // No longer a time-of-check/time-of-use gap: the index checked here is
+        // private to this operation, so nothing can restage between now and the
+        // commit below.
+        const stagedFiles = new Set(await readStagedPaths(stagingGit, repoHasCommits));
+        // log.info(`${logContext} After staging - staged files: [${[...stagedFiles].join(', ')}]`);
 
         if (stagedFiles.size === 0) {
           log.warn(`${logContext} No files were staged despite add() succeeding. Requested: [${filesToStage.join(', ')}], git-relative: [${filesToStageRelative.join(', ')}]`);
-          return failAfterIndexMutation('No files were staged. The files may not exist or have no changes.');
+          return { success: false, error: 'No files were staged. The files may not exist or have no changes.' };
         }
 
         const filesToStageRelSet = new Set(filesToStageRelative);
@@ -329,45 +381,38 @@ export async function executeGitCommit(
 
         if (unexpectedFiles.length > 0) {
           log.error(`${logContext} Unexpected files staged: ${unexpectedFiles.join(', ')}`);
-          return failAfterIndexMutation(`Unexpected files were staged: ${unexpectedFiles.join(', ')}. Commit aborted.`);
+          return { success: false, error: `Unexpected files were staged: ${unexpectedFiles.join(', ')}. Commit aborted.` };
         }
 
         if (missingFiles.length > 0) {
           log.warn(`${logContext} Some selected files were not staged: ${missingFiles.join(', ')}`);
-          return failAfterIndexMutation(`Some selected files were not staged: ${missingFiles.join(', ')}. Commit aborted.`);
+          return { success: false, error: `Some selected files were not staged: ${missingFiles.join(', ')}. Commit aborted.` };
         }
 
-        const result = await git.commit(message);
+        const result = await stagingGit.commit(message);
         // log.info(`${logContext} Commit result: hash=${result.commit || 'empty'}, changes=${result.summary?.changes || 0}`);
 
         if (!result.commit) {
           log.warn(`${logContext} Commit returned empty hash - nothing was committed`);
-          return failAfterIndexMutation('No changes were committed. Files may not have been staged correctly.');
+          return { success: false, error: 'No changes were committed. Files may not have been staged correctly.' };
         }
 
-        // From here on, the commit is durable. Post-commit bookkeeping must
-        // never restore the old index or retry the commit.
+        // From here on the commit is durable. Post-commit bookkeeping must never
+        // retry the commit.
         successfulCommit = { hash: result.commit };
 
-        // Restore the old index byte-for-byte so unrelated partial hunks stay
-        // staged exactly as they were, then set committed files to their new
-        // HEAD entries.
-        if (indexBackup?.hadIndex) {
-          if (indexBackup.restore()) {
-            try {
-              await git.raw(['--literal-pathspecs', 'reset', 'HEAD', '--', ...filesToStageRelative]);
-              indexBackup.dispose();
-            } catch (recoveryError) {
-              // The commit is durable. Preserve the byte-exact recovery copy
-              // rather than risk a second mutation or a duplicate commit.
-              log.error(`${logContext} Commit succeeded but staging recovery is incomplete; backup retained:`, recoveryError);
-            }
-          } else {
-            log.error(`${logContext} Commit succeeded but the original staging area could not be restored; backup retained`);
-          }
-        } else {
-          indexBackup?.dispose();
-        }
+        // The real index was never touched, so unrelated staged hunks — and any
+        // concurrent `git add` — are still intact. Only the committed paths need
+        // moving to their new HEAD entries.
+        const indexRefreshed = await refreshCommittedPathsInRealIndex(
+          git,
+          filesToStageRelative,
+          {
+            maxRetries: options?.lockRetry?.maxRetries ?? DEFAULT_INDEX_REFRESH_MAX_RETRIES,
+            baseDelayMs: lockBaseDelayMs,
+          },
+          logContext
+        );
 
         // log.info(`${logContext} Successfully committed: ${result.commit}`);
 
@@ -384,31 +429,23 @@ export async function executeGitCommit(
           success: true,
           commitHash: result.commit,
           commitDate,
+          ...(indexRefreshed ? {} : { indexRefreshFailed: true }),
         };
       } catch (error) {
         if (successfulCommit) {
           // A durable commit is never rolled back or retried. Post-commit
           // bookkeeping may be incomplete, but returning failure here would
           // invite a duplicate commit.
-          // Leave any recovery backup in place. A durable commit must never be
-          // retried or have its post-commit index reconstruction overwritten.
           log.warn(`${logContext} Commit succeeded but post-commit bookkeeping failed:`, error);
           return {
             success: true,
             commitHash: successfulCommit.hash,
             commitDate: successfulCommit.date,
+            indexRefreshFailed: true,
           };
         }
-        // The catch also covers hook failures after staging. Restore the exact
-        // pre-proposal index before returning or retrying a lock collision.
-        const restored = restoreOriginalIndex();
-        if (restored) indexBackup?.dispose();
-        if (!restored) {
-          return {
-            success: false,
-            error: `${getGitCommitErrorMessage(error)} Original staging could not be restored; recovery backup was retained.`,
-          };
-        }
+        // Also covers hook failures after staging. Nothing to unwind: every
+        // mutation so far landed in the temp index, which the `finally` removes.
         if (isIndexLockError(error)) {
           lastLockError = error;
           if (attempt < maxLockRetries) {
@@ -430,6 +467,10 @@ export async function executeGitCommit(
           success: false,
           error: getGitCommitErrorMessage(error),
         };
+      } finally {
+        // Every staging mutation lived here, so discarding it is the whole of
+        // the cleanup — on success, on failure, and between lock retries.
+        if (tempIndexPath) removeTempIndex(tempIndexPath);
       }
     }
 

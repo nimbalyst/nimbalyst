@@ -15,8 +15,6 @@
 
 import os from 'os';
 import { existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { app } from 'electron';
 import { McpConfigService, getMcpConfigService } from '@nimbalyst/runtime/ai/server';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getTerminalSessionManager } from '../TerminalSessionManager';
@@ -27,7 +25,7 @@ import { resolveClaudeCliWorktreeCwd } from './resolveClaudeCliWorktreeCwd';
 import { resolveClaudeExecutablePath, isClaudeExecutableInstalled } from './claudeExecutableResolver';
 import { resolveClaudeCliSupportsPluginDir } from './claudeCliPluginSupport';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
-import { workspacePathToDir } from '../AttachmentService';
+import { resolveAttachmentStagingAllowDirectories } from '../attachments/attachmentStagingRoot';
 import { resolveClaudePermissionHookScriptPath } from './claudeCliPermissionHookPath';
 import { getPermissionService } from '../PermissionService';
 import { startClaudeCliProxyObservation, fireClaudeCliTurnCompletion } from './claudeCliObservationSingleton';
@@ -85,8 +83,8 @@ export function isClaudeCliInstalled(): boolean {
 /**
  * Resolve (and create) the workspace's chat-attachments root and return it as the
  * `--add-dir` allow-list for the CLI. Mirrors `AttachmentService`'s storage
- * layout (`<userData>/chat-attachments/<workspaceDir>`) via the shared
- * `workspacePathToDir` so the path matches where pasted images actually land.
+ * layout through the same staging resolver used by AttachmentService, so the
+ * path matches where pasted images actually land.
  * Returns `undefined` on any failure so a directory-prep error never blocks the
  * CLI launch.
  */
@@ -103,16 +101,14 @@ export function claudeCliSessionSupportsPlugins(): boolean {
 
 function prepareAttachmentsAllowDir(workspacePath: string): string[] | undefined {
   try {
-    const attachmentsRoot = join(
-      app.getPath('userData'),
-      'chat-attachments',
-      workspacePathToDir(workspacePath),
-    );
+    const attachmentDirectories = resolveAttachmentStagingAllowDirectories(workspacePath);
     // Synchronous mkdir: one-time, fast op during session spawn. Keeps the launch
     // path free of an extra async tick (the SDK/CLI launch-coalescing logic relies
     // on a tight pre-launch microtask shape).
-    mkdirSync(attachmentsRoot, { recursive: true });
-    return [attachmentsRoot];
+    for (const attachmentsRoot of attachmentDirectories) {
+      mkdirSync(attachmentsRoot, { recursive: true });
+    }
+    return attachmentDirectories;
   } catch (err) {
     console.warn('[ClaudeCliLauncher] failed to prepare chat-attachments --add-dir:', err);
     return undefined;

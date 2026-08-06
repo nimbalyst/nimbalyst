@@ -618,6 +618,13 @@ export interface CustomEditorContribution {
   supportsDiffMode?: boolean;
 
   /**
+   * Whether this editor refuses edits while a diff is under review. Set it
+   * only if the editor actually locks -- the host tells the user so in the
+   * diff header, and the claim has to be true. Defaults to false.
+   */
+  readOnlyDuringDiff?: boolean;
+
+  /**
    * Whether to show the host-provided document header above the editor.
    * Defaults to true when omitted for backward compatibility.
    */

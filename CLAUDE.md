@@ -18,6 +18,16 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 **Any change to runtime behavior ships with a unit test** — a new test, or an extension of an existing one. Pure refactors already covered by tests, formatting, docs, and config-only changes are exempt. Before pushing, run the gate locally: `npm run typecheck && npm run test:prepush`. The repo's pre-push hook runs this automatically; it installs on `npm install` (or `npm run hooks:install`). Never push to `main` with a red suite — CI on `main` is a backstop, not the gate. For high-risk areas (sync/collab, main-process init, IPC, restart-to-verify bugs) the test comes **first** and must fail before the fix — see [end-to-end-verification.md](./.claude/rules/end-to-end-verification.md).
 
+**A test's job is to catch a regression a reader cannot see.** The test corpus is ~2M tokens, and every future session pays to read the tests next to the code it touches. A test that only re-states what is obvious on screen is pure cost. Write fewer, denser tests:
+
+- **No presentation-only tests** — icon names, exact title strings, tab ordering, hardcoded element counts. If a human would notice the breakage in one second of looking at the screen, it does not need a unit test. Purely visual changes (label, spacing, color) need no test at all.
+- **Never assert on component source text** via `readFileSync` + `toContain`/`toMatch`. Render it or don't test it. Genuine architectural invariants belong in a `scripts/` gate, not the vitest suite.
+- **Never assert CSS through jsdom by injecting the CSS you are about to assert on** — that is circular. Assert the `className`, or cover it in E2E where real styles load.
+- **Mock the narrowest module, never the `@nimbalyst/runtime` barrel.** Importing that barrel costs ~2.6s of module-import CPU per test file because it drags in the whole Lexical editor tree. `vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', …)` is cheap; `vi.mock('@nimbalyst/runtime', async (importOriginal) => ({ ...await importOriginal(), … }))` is the expensive shape — the spread forces the real barrel to load. Import from the deep path in source too, so the barrel never enters the graph. See NIM-2374.
+- **Prefer extending an existing test file** over creating a new one — but do not merge unrelated tests into a mega-file. Small and focused is correct; total volume is the enemy, not file count.
+- **Add `// @vitest-environment node` as the first line of any test that never touches the DOM.** The jsdom environment costs ~270ms per file for nothing.
+- **Don't write `expect(getBy*(...)).toBeTruthy()`** — `getBy*` already throws.
+
 ### Use @floating-ui/react for All Popover/Tooltip/Menu Positioning
 
 See [floating-ui.md](./.claude/rules/floating-ui.md). Never manually calculate `position: fixed` coordinates — always use `@floating-ui/react` with `FloatingPortal`.
@@ -233,7 +243,7 @@ See the Critical Rules block above ("Always Run Your Own Observation Commands").
 - **Don't `git reset` or `git add -A` without asking**
 - **Don't add `Co-Authored-By` lines to commit messages**
 - **Never restart Nimbalyst without explicit permission** — always ask before `restart_nimbalyst`
-- **Never mark work as done/completed without user approval** — set tracker items to a review state (e.g., `in-review`), session phase to `validating`, never `done` / `completed` / `complete`. Only the user can promote to those states.
+- **Never mark work done before the user approves it — but a commit IS their approval.** Until the work is committed, set tracker items to `in-review` and session phase to `validating`, never `done` / `complete`. Once the user commits the work, they have reviewed it and agreed it's finished: put a closing reference (`Fixes NIM-123`) in the commit message and the item closes itself; also set session phase to `complete`. Do not leave finished, committed work parked in `in-review`. `approved` on the review lane remains human-only.
 
 **Keyboard Shortcuts**: when adding or modifying shortcuts, update `KeyboardShortcutsDialog.tsx`.
 

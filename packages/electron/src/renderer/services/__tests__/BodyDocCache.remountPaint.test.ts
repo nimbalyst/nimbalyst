@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Tracker body remount paint (NIM-2005 follow-up).
  *

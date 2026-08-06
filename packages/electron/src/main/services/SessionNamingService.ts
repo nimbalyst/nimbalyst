@@ -71,21 +71,12 @@ export class SessionNamingService {
           this.applySessionTitle(sessionId, title)
         );
 
-        // Set the metadata update function (for tags, phase, etc.)
-        setUpdateSessionMetadataFn(async (sessionId: string, metadata: Record<string, unknown>) => {
-          const normalizedMetadata = normalizeSessionPhaseMetadataUpdate(metadata);
-          // SyncedSessionStore.updateMetadata is the single source of truth for
-          // what reaches other devices; phase/tags forwarding lives there now.
-          await AISessionsRepository.updateMetadata(sessionId, { metadata: normalizedMetadata });
-
-          // Notify renderer windows so UI updates in real time
-          const windows = BrowserWindow.getAllWindows();
-          for (const window of windows) {
-            if (!window.isDestroyed()) {
-              window.webContents.send('sessions:session-updated', sessionId, normalizedMetadata);
-            }
-          }
-        });
+        // Set the metadata update function (for tags, phase, etc.). The body
+        // lives in applySessionMetadata so the commit-proposal path can reuse
+        // the same persist/broadcast path when a commit closes a tracker item.
+        setUpdateSessionMetadataFn((sessionId: string, metadata: Record<string, unknown>) =>
+          this.applySessionMetadata(sessionId, metadata)
+        );
 
         // Set the session tags query function (for reading current tags)
         setGetSessionTagsFn(async (sessionId: string) => {
@@ -120,6 +111,30 @@ export class SessionNamingService {
     })();
 
     await this.starting;
+  }
+
+  /**
+   * Persist a session metadata patch (tags, phase, workflow preset) and tell
+   * every renderer window about it. Called by the naming MCP server for
+   * agent-driven updates, and by the commit-proposal path when an approved
+   * commit closes the session's tracker items.
+   */
+  public async applySessionMetadata(
+    sessionId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const normalizedMetadata = normalizeSessionPhaseMetadataUpdate(metadata);
+    // SyncedSessionStore.updateMetadata is the single source of truth for
+    // what reaches other devices; phase/tags forwarding lives there now.
+    await AISessionsRepository.updateMetadata(sessionId, { metadata: normalizedMetadata });
+
+    // Notify renderer windows so UI updates in real time
+    const windows = BrowserWindow.getAllWindows();
+    for (const window of windows) {
+      if (!window.isDestroyed()) {
+        window.webContents.send('sessions:session-updated', sessionId, normalizedMetadata);
+      }
+    }
   }
 
   /**

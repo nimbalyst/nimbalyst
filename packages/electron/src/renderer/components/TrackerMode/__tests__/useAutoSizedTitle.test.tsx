@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Renders a title field wired exactly like TrackerItemDetail's header so the
  * ref/observer plumbing of useAutoSizedTitle is covered, not just the math.

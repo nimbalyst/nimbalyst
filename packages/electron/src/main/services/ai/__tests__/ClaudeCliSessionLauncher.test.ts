@@ -15,6 +15,7 @@ describe('ClaudeCliSessionLauncher', () => {
     createClaudeCliTerminal?: ReturnType<typeof vi.fn<CreateClaudeCliTerminal>>;
     pathExists?: (p: string) => boolean;
     homedir?: () => string;
+    hasEnterpriseMcpLockdown?: () => boolean;
   } = {}) {
     const writes: Array<{ file: string; data: string }> = [];
     const createClaudeCliTerminal =
@@ -44,6 +45,8 @@ describe('ClaudeCliSessionLauncher', () => {
       // Default: jsonl absent → fresh `--session-id`. Tests override to simulate a relaunch.
       pathExists: opts.pathExists ?? (() => false),
       homedir: opts.homedir ?? (() => '/Users/me'),
+      // Pinned so the suite never reads the host machine's managed-settings dir.
+      hasEnterpriseMcpLockdown: opts.hasEnterpriseMcpLockdown ?? (() => false),
     });
 
     return { launcher, writes, createClaudeCliTerminal, getMcpServersConfig };
@@ -84,6 +87,27 @@ describe('ClaudeCliSessionLauncher', () => {
     expect(mcpArg).toBe(writes[0].file);
     expect(opts.spawnConfig.args).toContain('--model');
     expect(opts.spawnConfig.executable).toBe('/usr/local/bin/claude');
+  });
+
+  // NIM-2372: on a machine with an enterprise managed-mcp.json the binary exits 1
+  // on ANY --mcp-config we pass, so the launcher must not build one at all. The
+  // session then runs on the enterprise's own servers, without Nimbalyst's tools.
+  it('launches with no MCP config at all under an enterprise MCP lockdown', async () => {
+    const { launcher, writes, createClaudeCliTerminal, getMcpServersConfig } = makeHarness({
+      hasEnterpriseMcpLockdown: () => true,
+    });
+
+    const result = await launcher.launch(baseInput);
+
+    expect(getMcpServersConfig).not.toHaveBeenCalled();
+    expect(writes).toHaveLength(0);
+    expect(result.mcpConfigPath).toBeUndefined();
+
+    const args = createClaudeCliTerminal.mock.calls[0][1].spawnConfig.args;
+    expect(args).not.toContain('--mcp-config');
+    expect(args).not.toContain('--allowedTools');
+    // The built-in question tool is the only one left — do not deny it.
+    expect(args).not.toContain('--disallowedTools');
   });
 
   it('pre-allows the injected MCP servers by name (--allowedTools mcp__<server>) — NIM-806 BUG 2', async () => {
@@ -331,6 +355,41 @@ describe('ClaudeCliSessionLauncher', () => {
     expect(stop).not.toHaveBeenCalled();
     opts.onExit?.(0);
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards the observation env so the proxy is declared first-party', async () => {
+    // The proxy owns the "are we a faithful passthrough to Anthropic?" answer
+    // (it knows the configured upstream); the launcher only merges what it
+    // returns alongside ANTHROPIC_BASE_URL.
+    const startObservation = vi.fn(async () => ({
+      baseUrl: 'http://127.0.0.1:51234',
+      env: { _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: '1' },
+      stop: vi.fn(),
+    }));
+    const { launcher, createClaudeCliTerminal } = makeHarness({ startObservation });
+
+    await launcher.launch(baseInput);
+
+    const opts = createClaudeCliTerminal.mock.calls[0][1];
+    expect(opts.spawnConfig.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:51234');
+    expect(opts.spawnConfig.env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBe('1');
+  });
+
+  it('omits the first-party declaration when the proxy does not supply one', async () => {
+    // Custom upstream configured → the observation layer returns no env, and the
+    // CLI must keep treating the base URL as a gateway.
+    const startObservation = vi.fn(async () => ({
+      baseUrl: 'http://127.0.0.1:51234',
+      env: {},
+      stop: vi.fn(),
+    }));
+    const { launcher, createClaudeCliTerminal } = makeHarness({ startObservation });
+
+    await launcher.launch(baseInput);
+
+    const opts = createClaudeCliTerminal.mock.calls[0][1];
+    expect(opts.spawnConfig.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:51234');
+    expect(opts.spawnConfig.env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBeUndefined();
   });
 
   it('composes proxy teardown with the caller onExit callback', async () => {

@@ -43,6 +43,15 @@ export const COLLAB_ASSET_HEADER_ERROR_CODE = 'X-Collab-Asset-Error-Code';
 export const MAX_COLLAB_ASSET_FILE_NAME_LENGTH = 255;
 
 /**
+ * The asset route's own ceiling (`MAX_ASSET_SIZE_BYTES` in the collab server).
+ * Anything larger is refused before it reaches the durable outbox, so a file
+ * the server will never accept does not occupy the local upload budget and
+ * retry forever. Messaging enforces a smaller cap of its own
+ * (`MAX_MESSAGE_ATTACHMENT_BYTES`); this is the floor under every caller.
+ */
+export const MAX_COLLAB_ASSET_BYTES = 25 * 1024 * 1024;
+
+/**
  * Structured code for a blob this client cannot be served. Terminal: no retry
  * produces a key that no longer exists anywhere.
  */

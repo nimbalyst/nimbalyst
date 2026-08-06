@@ -10,6 +10,7 @@ import {
   useRole,
   useInteractions,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../floating/windowControlsClearance';
 import { UnifiedDiffView, diffStats } from './UnifiedDiffView';
 
 export type PopoverMode = 'peek' | 'pinned';
@@ -72,6 +73,7 @@ export function DiffPeekPopover({
       offset(8),
       flip({ fallbackPlacements: ['left-start', 'top-start', 'bottom-start'], padding: 8 }),
       shift({ padding: 8 }),
+      windowControlsClearance(),
     ],
   });
 

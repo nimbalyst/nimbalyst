@@ -13,7 +13,7 @@ import {
 import {
   inferSharedDocumentTypeMetadata,
   resolveSharedDocumentTypePresentation,
-} from '../../utils/sharedDocumentTypeMetadata';
+} from '@nimbalyst/collab-client/docs-ui';
 import {
   getMonacoLanguage,
   MONACO_LANGUAGE_BY_EXTENSION,
@@ -378,7 +378,7 @@ describe('shared document metadata and presentation', () => {
     expect(inferSharedDocumentTypeMetadata({
       title: 'types.d.ts',
       documentType: 'code',
-    }, catalog)).toEqual({
+    }, catalog.getDescriptors())).toEqual({
       metadataVersion: 2,
       fileExtension: '.d.ts',
       editorId: 'builtin.monaco',
@@ -392,19 +392,29 @@ describe('shared document metadata and presentation', () => {
       new MutableExtensionSource([structuredExtension]),
       new MutableCodecSource([
         codec('markdown', ['.md']),
-        codec('code', ['.ts']),
+        codec('code', ['.txt', '.ts']),
         codec('diagram', ['.diagram']),
       ]),
       true,
     );
 
     const presentation = (document: Parameters<typeof resolveSharedDocumentTypePresentation>[0]) =>
-      resolveSharedDocumentTypePresentation(document, catalog);
+      resolveSharedDocumentTypePresentation(document, catalog.getDescriptors());
 
     expect(presentation({
       title: 'Notes.md', documentType: 'markdown', metadataVersion: 2,
       fileExtension: '.md', editorId: 'builtin.lexical',
-    })).toMatchObject({ state: 'ready', icon: 'description', typeLabel: 'Markdown' });
+    })).toMatchObject({
+      state: 'ready',
+      icon: 'description',
+      typeLabel: 'Markdown',
+      metadata: {
+        metadataVersion: 2,
+        fileExtension: '.md',
+        editorId: 'builtin.lexical',
+        source: 'v2',
+      },
+    });
     expect(presentation({
       title: 'index.ts', documentType: 'code', metadataVersion: 2,
       fileExtension: '.ts', editorId: 'builtin.monaco',

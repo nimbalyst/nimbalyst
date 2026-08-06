@@ -11,7 +11,7 @@
 import type { JSX } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
 import {
   prListAtom,

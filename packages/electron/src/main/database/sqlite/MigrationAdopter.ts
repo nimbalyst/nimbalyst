@@ -34,6 +34,7 @@ import {
 import { MigrationProgressReporter } from './MigrationProgressReporter';
 import { commitMigrationToSqlite } from './BackendSelector';
 import { DRY_RUN_MANIFEST_FILENAME } from './MigrationDryRunner';
+import { classifyDatabaseError } from '../DatabaseErrorTelemetry';
 
 /**
  * Same single-statement read surface MigrationDryRunner uses — lets us pull
@@ -267,7 +268,7 @@ export class MigrationAdopter {
       reporter?.emitFailed({ phase, message, stack });
       this.opts.sendEvent?.('migration_adopt_failed', {
         phase,
-        message: message.slice(0, 500),
+        ...classifyDatabaseError(err),
       });
 
       // Best-effort cleanup. Leave the dry-run dir in place so the user can

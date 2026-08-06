@@ -18,7 +18,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ulid } from 'ulid';
 import log from 'electron-log/main';
-import { getUntrackedFilesInDirectory } from '../utils/gitUtils';
+import { getUntrackedFilesInDirectories } from '../utils/gitUtils';
+import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
 import { gitOperationLock } from './GitOperationLock';
 
 const logger = log.scope('GitWorktreeService');
@@ -2243,14 +2244,43 @@ ${newLines.map(line => '+' + line).join('\n')}`;
 
     // logger.info('Getting changed files', { worktreePath });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    // The unsafe flags are required because the .env() below makes simple-git
+    // scan the supplied (trusted, process-owned) environment for vars like
+    // GIT_EDITOR and otherwise refuse to spawn git at all.
+    const git: SimpleGit = simpleGit(worktreePath, { unsafe: GIT_INHERITED_ENV_UNSAFE });
 
     try {
       // Get only uncommitted changes from git status
-      // This shows files that need to be staged/committed, not the full branch diff
-      const gitStatus = await git.status();
+      // This shows files that need to be staged/committed, not the full branch diff.
+      // GIT_OPTIONAL_LOCKS=0 is the environment equivalent of the
+      // `--no-optional-locks` flag simple-git gives no way to pass: it stops
+      // this read-only status from refreshing (and so locking) `.git/index`,
+      // where it would contend with concurrent git writers (NIM-2285).
+      const gitStatus = await git.env({ ...process.env, GIT_OPTIONAL_LOCKS: '0' }).status();
 
       const changedFiles: Array<{ path: string; status: 'added' | 'modified' | 'deleted'; staged: boolean }> = [];
+
+      // git status collapses each untracked directory into a single entry, so
+      // they have to be re-expanded. Collect them first and expand them all in
+      // ONE async git call: the previous per-directory version spawned a
+      // synchronous child process each time, blocking the main thread once per
+      // untracked directory (NIM-2286).
+      const untrackedDirs = new Set<string>();
+      for (const file of gitStatus.files) {
+        if (file.working_dir !== '?') continue;
+        const absolutePath = path.join(worktreePath, file.path);
+        try {
+          if (fs.statSync(absolutePath).isDirectory()) {
+            untrackedDirs.add(absolutePath);
+          }
+        } catch {
+          // Not stattable - treated as a plain file below, as before.
+        }
+      }
+      const untrackedExpansions = await getUntrackedFilesInDirectories(
+        worktreePath,
+        Array.from(untrackedDirs)
+      );
 
       for (const file of gitStatus.files) {
         let status: 'added' | 'modified' | 'deleted';
@@ -2266,25 +2296,18 @@ ${newLines.map(line => '+' + line).join('\n')}`;
         // A file is staged if its index status is not ' ' (space) or '?' (untracked)
         const staged = file.index !== ' ' && file.index !== '?';
 
-        // For untracked entries (? in working_dir), check if it's a directory
-        // git status shows untracked directories as a single entry, not individual files
+        // Substitute the individual files git reported for a collapsed
+        // untracked directory. The expansion honors .gitignore so an installed
+        // node_modules/dist doesn't explode into tens of thousands of paths
+        // (NIM-1782). git ls-files emits worktree-relative, forward-slashed
+        // paths already.
         if (file.working_dir === '?') {
           const absolutePath = path.join(worktreePath, file.path);
-          try {
-            const stats = fs.statSync(absolutePath);
-            if (stats.isDirectory()) {
-              // Expand the untracked directory to individual files, honoring
-              // .gitignore so an installed node_modules/dist doesn't explode
-              // into tens of thousands of paths (NIM-1782). git ls-files emits
-              // worktree-relative, forward-slashed paths already.
-              const relFiles = getUntrackedFilesInDirectory(worktreePath, absolutePath);
-              for (const filePath of relFiles) {
-                changedFiles.push({ path: filePath, status: 'added', staged: false });
-              }
-              continue; // Skip adding the directory itself
+          if (untrackedDirs.has(absolutePath)) {
+            for (const filePath of untrackedExpansions.get(absolutePath) ?? []) {
+              changedFiles.push({ path: filePath, status: 'added', staged: false });
             }
-          } catch {
-            // If stat fails (file doesn't exist), just add the path as-is
+            continue; // Skip adding the directory itself
           }
         }
 

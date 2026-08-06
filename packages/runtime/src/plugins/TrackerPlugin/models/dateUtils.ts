@@ -22,6 +22,20 @@ export function formatLocalDateOnly(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/**
+ * True when a stored value names a calendar day rather than an instant.
+ *
+ * A schema `date` field stores `YYYY-MM-DD`; AI tools sometimes emit the
+ * `T00:00:00Z` form meaning the same thing. Display code needs this to know
+ * whether to reason in calendar days or in elapsed time.
+ */
+export function isDateOnlyValue(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return /^\d{4}-\d{1,2}-\d{1,2}$/.test(trimmed)
+    || /^\d{4}-\d{1,2}-\d{1,2}T00:00:00(?:\.000)?Z$/.test(trimmed);
+}
+
 export function parseDate(value: unknown): Date | null {
   if (value == null) return null;
   if (value instanceof Date) return isNaN(value.getTime()) ? null : value;

@@ -78,6 +78,12 @@ export async function processDescriptor(
         deniedReason: desc.deniedReason,
         deniedReasonType: desc.deniedReasonType,
         deniedInput: desc.deniedInput,
+        isAttachmentStagingDenied: desc.isAttachmentStagingDenied,
+        attachmentPath: desc.attachmentPath,
+        attachmentFilename: desc.attachmentFilename,
+        attachmentStagingMode: desc.attachmentStagingMode,
+        attachmentDenyRule: desc.attachmentDenyRule,
+        attachmentDetection: desc.attachmentDetection,
       });
     }
 

@@ -10,8 +10,8 @@ import {
 } from '@nimbalyst/runtime/editor';
 
 import {
-  getTeamSyncProvider,
-  getSharedDocumentsForWorkspace,
+  getTeamSyncProviderForScopeKey,
+  getSharedDocumentsForScopeKey,
 } from '../store/atoms/collabDocuments';
 import { parseCollabUri } from '../utils/collabUri';
 import { notifyDocumentCommentRecipients } from './documentCommentNotifier';
@@ -51,7 +51,7 @@ export async function acquireHeadlessCollabCommentController(
   workspacePath: string,
 ): Promise<HeadlessCollabCommentAcquisition> {
   const { orgId, documentId } = parseCollabUri(documentUri);
-  const document = getSharedDocumentsForWorkspace(workspacePath)
+  const document = getSharedDocumentsForScopeKey(workspacePath)
     .find((candidate) => candidate.documentId === documentId);
   if (!document) {
     throw new Error(
@@ -109,7 +109,7 @@ export async function acquireHeadlessCollabCommentController(
       id: config.userId,
       name: config.userName || config.userEmail || config.userId,
     };
-    const teamProvider = getTeamSyncProvider(workspacePath);
+    const teamProvider = getTeamSyncProviderForScopeKey(workspacePath);
     const getMembers = () =>
       (teamProvider?.getTeamState()?.members ?? [])
         .filter((member) => member.userId !== currentUser.id)

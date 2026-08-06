@@ -58,7 +58,7 @@ afterEach(cleanup);
 describe('SessionDropdown new-session affordance', () => {
   it('shows the current session name in the trigger', () => {
     render(<SessionDropdown {...baseProps} onNewSession={vi.fn()} />);
-    expect(screen.getByText('Agent trust popup review')).toBeTruthy();
+    screen.getByText('Agent trust popup review');
   });
 
   it('creates a new session from the menu row and closes the menu', () => {

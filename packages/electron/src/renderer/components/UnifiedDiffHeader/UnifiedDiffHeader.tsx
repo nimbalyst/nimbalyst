@@ -17,7 +17,8 @@
  */
 
 import React from 'react';
-import { MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { ProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { usePostHog } from 'posthog-js/react';
 import type { UnifiedDiffHeaderProps } from './DiffCapabilities';
 
@@ -51,6 +52,7 @@ export const UnifiedDiffHeader: React.FC<UnifiedDiffHeaderProps> = ({
   onGoToSession,
   capabilities,
   editorType,
+  readOnlyWhileReviewing = false,
 }) => {
   const posthog = usePostHog();
   const { changeGroups } = capabilities;
@@ -157,6 +159,20 @@ export const UnifiedDiffHeader: React.FC<UnifiedDiffHeaderProps> = ({
         {/* Left section: Session info */}
         <div className="unified-diff-header-info flex items-center gap-3 shrink min-w-0 overflow-hidden @[max-450px]/diff-header:flex-[1_1_100%] @[max-450px]/diff-header:order-1">
           {renderSessionInfo()}
+          {/* Editors that lock during review say so here rather than letting
+              the user discover it by typing into a dead cell. The lock icon
+              survives the narrow breakpoint; only the sentence is dropped. */}
+          {readOnlyWhileReviewing && (
+            <span
+              className="unified-diff-header-readonly-note flex items-center gap-1.5 text-[13px] text-[var(--nim-text-muted)] shrink-0"
+              title="This file is read-only while you review AI changes. Keep or Revert to edit it again."
+            >
+              <MaterialSymbol icon="lock" size={14} className="shrink-0" />
+              <span className="@[max-700px]/diff-header:hidden whitespace-nowrap">
+                Read-only while reviewing. Keep or Revert to edit.
+              </span>
+            </span>
+          )}
         </div>
 
         {/* Middle section: Navigation (only if change groups supported) */}

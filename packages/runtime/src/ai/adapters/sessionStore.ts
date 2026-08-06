@@ -87,7 +87,15 @@ export interface PersistedDocumentState {
   contentHash: string;
 }
 
-export interface UpdateSessionMetadataPayload extends Partial<CreateSessionPayload> {
+export interface UpdateSessionMetadataPayload
+  extends Omit<Partial<CreateSessionPayload>, 'providerSessionId'> {
+  /**
+   * Widened from `string` so a clear is expressible. Stores guard every column
+   * with `!== undefined`, so `undefined` means "leave this column alone" --
+   * clearing an expired provider session id requires an explicit null.
+   * NIM-2308 / GH #1098.
+   */
+  providerSessionId?: string | null;
   draftInput?: string;
   metadata?: Record<string, unknown>;
   isArchived?: boolean;

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { useTheme } from '../../../hooks/useTheme';
 import { marketplaceInstallProgressAtom } from '../../../store/atoms/appCommands';
 

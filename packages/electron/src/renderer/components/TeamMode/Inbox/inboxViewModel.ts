@@ -8,6 +8,12 @@
  * these functions and nothing else.
  */
 
+import { getFileIconName } from '@nimbalyst/runtime/ui/icons/fileIcons';
+import {
+  defaultTrackerTypeColor,
+  defaultTrackerTypeIcon,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerTypeIdentity';
+
 import type {
   HydratedInboxDelivery,
   InboxActorView,
@@ -17,16 +23,17 @@ import type {
   InboxScope,
   InboxScopeOptions,
   InboxSourceKind,
+  InboxTypeIdentity,
 } from './inboxTypes';
 
 /** Previews are bounded by contract; enforce it at render time too. */
 export const INBOX_PREVIEW_MAX_CHARS = 180;
 
+/** The reason axis. Read state and source type are their own axes. */
 export const INBOX_FILTERS: ReadonlyArray<{ id: InboxFilterId; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'mentions', label: 'Mentions' },
   { id: 'assigned', label: 'Assigned' },
-  { id: 'unread', label: 'Unread' },
   { id: 'follows', label: 'Follows' },
 ];
 
@@ -39,12 +46,39 @@ const REASON_LABELS: Record<string, string> = {
   follow: 'In a conversation you follow',
 };
 
-const SOURCE_ICONS: Record<InboxSourceKind, string> = {
-  roomMessage: 'forum',
-  documentDiscussion: 'description',
-  dmMessage: 'mail',
-  trackerComment: 'checklist',
-  documentInlineComment: 'chat_bubble',
+/**
+ * Identity per source kind. The accents are deliberately five different hues:
+ * a uniform gray glyph is what made every row look alike, and the type is the
+ * first thing a reader needs.
+ */
+const SOURCE_TYPES: Record<InboxSourceKind, InboxTypeIdentity> = {
+  roomMessage: { icon: 'forum', accent: 'var(--nim-primary)', label: 'Room' },
+  dmMessage: { icon: 'mail', accent: 'var(--nim-purple)', label: 'Direct' },
+  trackerComment: { icon: 'checklist', accent: 'var(--nim-warning)', label: 'Tracker' },
+  // Both document kinds are *documents*. A speech bubble here was the exact
+  // failure this redesign exists to fix: it described the delivery's shape
+  // (someone commented) instead of the thing you are about to open.
+  documentDiscussion: { icon: 'description', accent: 'var(--nim-success)', label: 'Doc' },
+  documentInlineComment: { icon: 'description', accent: 'var(--nim-success)', label: 'Doc' },
+};
+
+/**
+ * A document delivery's `sourceTitle` is the file name, so the row can show the
+ * document's own icon — a markdown file, a drawing, a spreadsheet — the same
+ * one the file tree shows. `getFileIconName` returns a custom marker rather
+ * than a symbol name for TypeScript, which this surface has no renderer for.
+ */
+function documentIcon(sourceTitle?: string): string {
+  if (!sourceTitle) return 'description';
+  const icon = getFileIconName(sourceTitle);
+  return icon === 'typescript' ? 'code' : icon;
+}
+
+/** Shown when the row may not identify its source at all. */
+const REDACTED_TYPE: InboxTypeIdentity = {
+  icon: 'block',
+  accent: 'var(--nim-text-faint)',
+  label: 'Unavailable',
 };
 
 export const SOURCE_KIND_LABELS: Record<InboxSourceKind, string> = {
@@ -55,11 +89,79 @@ export const SOURCE_KIND_LABELS: Record<InboxSourceKind, string> = {
   documentInlineComment: 'Inline comments',
 };
 
-/** Icon shown when the row may not identify its source at all. */
-const REDACTED_SOURCE_ICON = 'block';
+/**
+ * What kind of thing this row points at — resolved as specifically as the
+ * delivery allows, because "what am I about to open" is the first question a
+ * reader has and the one the old uniform gray glyph refused to answer.
+ *
+ * A tracker delivery resolves down to its item type when the delivery carried
+ * one — a bug gets the bug icon and reads BUG, and a type registered by an
+ * extension gets its own icon without the Inbox knowing about it. A document
+ * delivery resolves to that document's file icon. Anything unresolvable falls
+ * back to the generic identity for its kind rather than guessing; for trackers
+ * the delivery is the only source, because the item may live in a project this
+ * client has never synced.
+ */
+export function typeIdentity(
+  sourceKind: InboxSourceKind | undefined,
+  details: { itemType?: string; sourceTitle?: string } = {},
+): InboxTypeIdentity {
+  if (!sourceKind) return REDACTED_TYPE;
+
+  if (sourceKind === 'trackerComment' && details.itemType) {
+    return {
+      icon: defaultTrackerTypeIcon(details.itemType),
+      accent: defaultTrackerTypeColor(details.itemType),
+      label: details.itemType,
+    };
+  }
+
+  if (sourceKind === 'documentDiscussion' || sourceKind === 'documentInlineComment') {
+    return { ...SOURCE_TYPES[sourceKind], icon: documentIcon(details.sourceTitle) };
+  }
+
+  return SOURCE_TYPES[sourceKind];
+}
 
 export function reasonLabel(reason: string): string {
   return REASON_LABELS[reason] ?? 'New activity';
+}
+
+/**
+ * Reasons worth a chip. `dm` and `follow` are already carried by the type icon
+ * and the Follows filter, and stamping them on every row is what buried the
+ * rows that actually wanted attention.
+ */
+const CHIPPED_REASONS: Record<string, string> = {
+  mention: 'Mention',
+  agentMention: 'Agent mention',
+  assignment: 'Assigned',
+  reply: 'Reply',
+};
+
+export function reasonChipLabel(reason: string): string | undefined {
+  return CHIPPED_REASONS[reason];
+}
+
+/**
+ * What the open action promises. Naming the destination is the other half of
+ * making the click model legible: selecting is free, and the one control that
+ * does move you says where to.
+ */
+export function openActionLabel(row: Pick<InboxRowView, 'sourceKind' | 'itemType'>): string {
+  switch (row.sourceKind) {
+    case 'trackerComment':
+      return row.itemType ? `Open ${row.itemType}` : 'Open tracker item';
+    case 'documentDiscussion':
+    case 'documentInlineComment':
+      return 'Open document';
+    case 'roomMessage':
+      return 'Open room';
+    case 'dmMessage':
+      return 'Open conversation';
+    default:
+      return 'Open';
+  }
 }
 
 function truncatePreview(snippet: string): string {
@@ -126,6 +228,10 @@ export function toRowView(delivery: HydratedInboxDelivery, options: { now: numbe
 
   const actor = revoked ? undefined : toActorView(delivery);
   const sourceKind = revoked ? undefined : delivery.source.sourceKind;
+  // The item type identifies the source as surely as its title does, so it is
+  // redacted on the same terms — a revoked row keeps nothing, and a deleted
+  // source keeps the kind the reader already saw but not the specifics.
+  const itemType = unavailable ? undefined : delivery.preview?.itemType;
   const sourceTitle = unavailable ? undefined : delivery.preview?.sourceTitle;
   const preview = unavailable ? undefined : delivery.preview?.snippet ? truncatePreview(delivery.preview.snippet) : undefined;
   const projectName = revoked ? undefined : delivery.projectName;
@@ -134,6 +240,7 @@ export function toRowView(delivery: HydratedInboxDelivery, options: { now: numbe
     reasonLabel(delivery.reason),
     delivery.orgName,
     projectName ?? '',
+    itemType ?? '',
     sourceTitle ?? '',
     actor?.displayName ?? '',
     actor?.onBehalfOfDisplayName ?? '',
@@ -155,7 +262,8 @@ export function toRowView(delivery: HydratedInboxDelivery, options: { now: numbe
     commentId: revoked ? undefined : delivery.source.commentId,
     threadId: revoked ? undefined : delivery.source.threadId,
     sourceKind,
-    sourceIcon: sourceKind ? SOURCE_ICONS[sourceKind] : REDACTED_SOURCE_ICON,
+    itemType,
+    type: typeIdentity(sourceKind, { itemType, sourceTitle }),
     sourceTitle,
     actor,
     preview,
@@ -184,8 +292,6 @@ export function matchesFilter(row: InboxRowView, filter: InboxFilterId): boolean
       return row.reason === 'mention' || row.reason === 'agentMention';
     case 'assigned':
       return row.reason === 'assignment';
-    case 'unread':
-      return row.unread;
     case 'follows':
       return row.subscription === 'following';
     default:
@@ -221,6 +327,8 @@ export function matchesQuery(row: InboxRowView, query: string): boolean {
 export interface SelectRowsInput {
   deliveries: HydratedInboxDelivery[];
   filter: InboxFilterId;
+  /** Independent of `filter`, so "unread mentions" is expressible. */
+  unreadOnly?: boolean;
   scope: InboxScope;
   query: string;
   now: number;
@@ -228,16 +336,24 @@ export interface SelectRowsInput {
 }
 
 export interface SelectRowsResult {
-  /** Rows after filter + scope, before the search query. */
+  /**
+   * Rows after every axis except the search query. This is what "mark all
+   * read" acts on, so it has to respect the unread toggle too — otherwise the
+   * button silently reaches rows the list is not showing.
+   */
   scoped: InboxRowView[];
-  /** Rows the list renders: filter + scope + query. */
+  /** Rows the list renders: every axis plus the query. */
   rows: InboxRowView[];
-  /** Unread count per filter, within the active scope. */
+  /** Unread count per reason filter, within the active scope. */
   counts: Record<InboxFilterId, number>;
+  /** Unread count within the active scope, across every reason. */
+  unreadInScope: number;
+  /** Type counts within the active scope, for the type chips. */
+  typeCounts: Partial<Record<InboxSourceKind, number>>;
 }
 
 export function selectRows(input: SelectRowsInput): SelectRowsResult {
-  const { deliveries, filter, scope, query, now, stalePreviews } = input;
+  const { deliveries, filter, unreadOnly = false, scope, query, now, stalePreviews } = input;
 
   const all = deliveries
     .filter((delivery) => !delivery.dismissedAt)
@@ -245,19 +361,36 @@ export function selectRows(input: SelectRowsInput): SelectRowsResult {
     .sort((a, b) => b.createdAt - a.createdAt);
 
   const inScope = all.filter((row) => matchesScope(row, scope));
-  const scoped = inScope.filter((row) => matchesFilter(row, filter));
+  const scoped = inScope
+    .filter((row) => matchesFilter(row, filter))
+    .filter((row) => !unreadOnly || row.unread);
   const rows = scoped.filter((row) => matchesQuery(row, query));
 
-  // Badges show what is actionable — unread within each filter — computed from
+  // Badges show what is actionable — unread within each reason — computed from
   // the same normalized rows the list renders, inside the active scope but
-  // independent of the search query (search refines a filter, it does not
-  // redefine how much is waiting in it).
+  // independent of the search query and of the unread toggle (both refine a
+  // filter; neither redefines how much is waiting in it).
   const counts = INBOX_FILTERS.reduce((acc, { id }) => {
     acc[id] = inScope.filter((row) => matchesFilter(row, id) && row.unread).length;
     return acc;
   }, {} as Record<InboxFilterId, number>);
 
-  return { scoped, rows, counts };
+  // The type axis counts everything in scope, not just unread: the chips are a
+  // "how much of each kind is here" control, and a zeroed chip for a type that
+  // has rows would read as "none of those" rather than "none unread".
+  const typeCounts: Partial<Record<InboxSourceKind, number>> = {};
+  for (const row of inScope) {
+    if (!row.sourceKind) continue;
+    typeCounts[row.sourceKind] = (typeCounts[row.sourceKind] ?? 0) + 1;
+  }
+
+  return {
+    scoped,
+    rows,
+    counts,
+    unreadInScope: inScope.filter((row) => row.unread).length,
+    typeCounts,
+  };
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -340,11 +473,20 @@ export interface ActivationResult {
 }
 
 /**
- * Activating a row marks it read *only after navigation succeeds* (plan:
+ * Open a row's canonical source.
+ *
+ * Deliberately separate from selecting one. A single click only ever selects —
+ * it fills the context pane and nothing moves — because when the same click
+ * sometimes navigated and sometimes did not, which one you got depended on
+ * whether the row happened to have a deep link, which is invisible at click
+ * time. Opening is now always an explicit act: Enter, a double click, or the
+ * pane's open button, each of which names where it is going.
+ *
+ * Read state is still consumed *only after navigation succeeds* (plan:
  * "Activating a row marks that delivery read only after navigation succeeds").
  * A failed open must leave the row unread so the work is not silently lost.
  */
-export async function activateRow(
+export async function openRow(
   row: InboxRowView,
   deps: {
     navigate: (row: InboxRowView) => Promise<boolean>;

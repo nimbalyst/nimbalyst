@@ -961,7 +961,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     });
 
     if (sessionId) {
-      const metadataToLog: Record<string, unknown> = {};
+      const metadataToLog: Record<string, unknown> = this.withPromptProvenanceMetadata(documentContext);
       if (attachments && attachments.length > 0) {
         metadataToLog.attachments = attachments;
       }
