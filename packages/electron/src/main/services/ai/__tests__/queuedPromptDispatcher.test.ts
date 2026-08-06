@@ -297,3 +297,170 @@ describe('queuedPromptDispatcher token owner', () => {
     expect(store.beginDispatch).not.toHaveBeenCalled();
   });
 });
+
+describe('queuedPromptDispatcher reservation race fix (NIM-590)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('a second concurrent call for the same session fails the has() check without calling listPending or claim itself', async () => {
+    let resolveListPending!: (value: ClaimedQueuedPrompt[]) => void;
+    const listPendingGate = new Promise<ClaimedQueuedPrompt[]>((resolve) => {
+      resolveListPending = resolve;
+    });
+    const store = queueStoreFor(claimed());
+    vi.mocked(store.listPending).mockImplementation(() => listPendingGate);
+    const processingLeases = new Map<string, symbol>();
+    const options1 = optionsFor(store, { processingLeases });
+    const options2 = optionsFor(store, { processingLeases });
+
+    const call1 = tryClaimAndDispatchNextQueuedPrompt(options1);
+    await vi.waitFor(() => expect(store.listPending).toHaveBeenCalledTimes(1));
+    expect(processingLeases.has('session-1')).toBe(true);
+
+    const result2 = await tryClaimAndDispatchNextQueuedPrompt(options2);
+
+    expect(result2).toBe(false);
+    // Call 2 never reached listPending or claim itself -- the call count is
+    // still exactly the one call1 made before call2 even started.
+    expect(store.listPending).toHaveBeenCalledTimes(1);
+    expect(store.claim).not.toHaveBeenCalled();
+    expect(options2.logInfo).toHaveBeenCalledWith(
+      expect.stringContaining('already processing a queued prompt, skipping'),
+    );
+
+    resolveListPending([]);
+    await call1;
+  });
+
+  it('releases the reservation and propagates when preflight rejects', async () => {
+    const store = queueStoreFor(claimed());
+    const preflightError = new Error('preflight boom');
+    const options = optionsFor(store, {
+      preflight: vi.fn(async () => { throw preflightError; }),
+    });
+
+    await expect(tryClaimAndDispatchNextQueuedPrompt(options)).rejects.toThrow('preflight boom');
+    expect(options.processingLeases.has('session-1')).toBe(false);
+    expect(store.listPending).not.toHaveBeenCalled();
+  });
+
+  it('releases the reservation and propagates when listPending rejects', async () => {
+    const store = queueStoreFor(claimed());
+    const listPendingError = new Error('listPending boom');
+    vi.mocked(store.listPending).mockRejectedValue(listPendingError);
+    const options = optionsFor(store);
+
+    await expect(tryClaimAndDispatchNextQueuedPrompt(options)).rejects.toThrow('listPending boom');
+    expect(options.processingLeases.has('session-1')).toBe(false);
+    expect(store.claim).not.toHaveBeenCalled();
+  });
+
+  it('releases the reservation and propagates when claim rejects', async () => {
+    const store = queueStoreFor(claimed());
+    const claimError = new Error('claim boom');
+    vi.mocked(store.claim).mockRejectedValue(claimError);
+    const options = optionsFor(store);
+
+    await expect(tryClaimAndDispatchNextQueuedPrompt(options)).rejects.toThrow('claim boom');
+    expect(options.processingLeases.has('session-1')).toBe(false);
+  });
+
+  it('releases the reservation when there are no pending prompts', async () => {
+    const store = queueStoreFor(claimed());
+    vi.mocked(store.listPending).mockResolvedValue([]);
+    const options = optionsFor(store);
+
+    await expect(tryClaimAndDispatchNextQueuedPrompt(options)).resolves.toBe(false);
+    expect(options.processingLeases.has('session-1')).toBe(false);
+    expect(store.claim).not.toHaveBeenCalled();
+  });
+
+  it('releases the reservation when claim returns null', async () => {
+    const store = queueStoreFor(claimed());
+    vi.mocked(store.claim).mockResolvedValue(null);
+    const options = optionsFor(store);
+
+    await expect(tryClaimAndDispatchNextQueuedPrompt(options)).resolves.toBe(false);
+    expect(options.processingLeases.has('session-1')).toBe(false);
+  });
+
+  it('hands ownership to dispatchClaimedQueuedPrompt with a fresh lease on successful dispatch', async () => {
+    vi.useFakeTimers();
+    const store = queueStoreFor(claimed());
+    const processingLeases = new Map<string, symbol>();
+    const setSpy = vi.spyOn(processingLeases, 'set');
+    const options = optionsFor(store, { processingLeases });
+
+    const result = await tryClaimAndDispatchNextQueuedPrompt(options);
+    expect(result).toBe(true);
+
+    // processingLeases.set() is called exactly twice: once by
+    // tryClaimAndDispatchNextQueuedPrompt's own reservation, and once by
+    // dispatchClaimedQueuedPrompt's dispatch lease.
+    expect(setSpy).toHaveBeenCalledTimes(2);
+    const reservationSymbol = setSpy.mock.calls[0][1];
+    const dispatchLeaseSymbol = setSpy.mock.calls[1][1];
+
+    // Ownership was handed off, not released: the map still has an entry
+    // immediately after tryClaimAndDispatchNextQueuedPrompt resolves true.
+    expect(processingLeases.has('session-1')).toBe(true);
+    // ...and it's dispatchClaimedQueuedPrompt's OWN fresh lease, not the
+    // reservation tryClaimAndDispatchNextQueuedPrompt minted.
+    expect(processingLeases.get('session-1')).toBe(dispatchLeaseSymbol);
+    expect(dispatchLeaseSymbol).not.toBe(reservationSymbol);
+
+    await vi.runAllTimersAsync();
+  });
+
+  it('external clear-then-refill: a stale reservation release does not clobber a fresh reservation for the same session', async () => {
+    vi.useFakeTimers();
+    const sessionId = 'session-1';
+    const processingLeases = new Map<string, symbol>();
+
+    // T1: listPending is a deferred (manually controlled) promise, so T1
+    // stays parked mid-flight until we choose to unblock it.
+    let resolveT1ListPending!: (value: ClaimedQueuedPrompt[]) => void;
+    const t1ListPendingGate = new Promise<ClaimedQueuedPrompt[]>((resolve) => {
+      resolveT1ListPending = resolve;
+    });
+    const t1Store = queueStoreFor(claimed('t1-prompt'));
+    vi.mocked(t1Store.listPending).mockImplementation(() => t1ListPendingGate);
+    const t1Options = optionsFor(t1Store, { processingLeases });
+
+    const t1Call = tryClaimAndDispatchNextQueuedPrompt(t1Options);
+    // T1's reservation is set synchronously, before its first await, so it
+    // is already visible here.
+    expect(processingLeases.has(sessionId)).toBe(true);
+
+    // Simulate NIM-615's cancel/interrupt handler firing mid-flight: a
+    // blind delete that clears T1's reservation out from under it.
+    processingLeases.delete(sessionId);
+    expect(processingLeases.has(sessionId)).toBe(false);
+
+    // T2 starts fresh for the SAME session (the map is empty again), claims
+    // its own reservation, and completes a full successful dispatch -- so a
+    // lease symbol distinct from T1's original reservation ends up in the
+    // map, owned by dispatchClaimedQueuedPrompt.
+    const t2Store = queueStoreFor(claimed('t2-prompt'));
+    const t2Options = optionsFor(t2Store, { processingLeases });
+    const t2Result = await tryClaimAndDispatchNextQueuedPrompt(t2Options);
+    expect(t2Result).toBe(true);
+    expect(processingLeases.has(sessionId)).toBe(true);
+    const t2LeaseAfterDispatch = processingLeases.get(sessionId);
+    // Confirm T1 really is still parked awaiting its deferred listPending at
+    // this point (not finished, not short-circuited some other way).
+    expect(t1Store.listPending).toHaveBeenCalledTimes(1);
+
+    // Now let T1's long-deferred listPending resolve to empty. T1 resumes,
+    // finds nothing pending, and tries to release ITS OWN (now-stale, no
+    // longer present) reservation.
+    resolveT1ListPending([]);
+    await expect(t1Call).resolves.toBe(false);
+
+    // T1's identity-checked release must be a no-op: T2's lease survives
+    // untouched.
+    expect(processingLeases.has(sessionId)).toBe(true);
+    expect(processingLeases.get(sessionId)).toBe(t2LeaseAfterDispatch);
+
+    await vi.runAllTimersAsync();
+  });
+});

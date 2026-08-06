@@ -896,7 +896,7 @@ export class MessageStreamingHandler {
         // default, so by this point session.provider is statically narrowable
         // to AIProviderType. The cast makes the narrowing explicit since the
         // exhaustiveness sits inside a conditional block.
-        provider = ProviderFactory.createProvider(session.provider as AIProviderType, session.id);
+        provider = await ProviderFactory.createProviderAsync(session.provider as AIProviderType, session.id);
       }
 
       if (isProviderClaudeCode) {

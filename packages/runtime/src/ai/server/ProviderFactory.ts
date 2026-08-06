@@ -18,6 +18,11 @@ import { ProviderConfig, AIProviderType, assertExhaustiveProvider } from './type
 export class ProviderFactory {
   private static providers: Map<string, AIProvider> = new Map();
   private static providerOwners: Map<string, string> = new Map();
+  // In-flight creation guards. When concurrent dispatch calls race on the same
+  // session, the second caller must await the first caller's creation instead of
+  // independently calling createProvider() and producing a duplicate subprocess.
+  // See NIM-590 / _pending/nimbalyst_duplicate_resume_spawn_investigation.md.
+  private static inFlightCreations: Map<string, Promise<AIProvider>> = new Map();
 
   /**
    * Get an existing AI provider instance
@@ -95,6 +100,72 @@ export class ProviderFactory {
   }
 
   /**
+   * Create a provider instance with an in-flight-creation guard.
+   *
+   * If another caller is already creating a provider for this (type, sessionId)
+   * pair, this method awaits that creation instead of producing a second,
+   * independent instance. This closes the check-then-act race between
+   * getProvider() and createProvider() that otherwise results in duplicate
+   * claude.exe subprocesses for a single session.
+   *
+   * Callers that have already checked getProvider() and found null should call
+   * this instead of the synchronous createProvider(). If the provider was cached
+   * between the caller's getProvider() check and now (another caller finished
+   * creating it), the cached instance is returned directly.
+   */
+  static async createProviderAsync(
+    type: AIProviderType,
+    sessionId: string
+  ): Promise<AIProvider> {
+    const key = `${type}-${sessionId}`;
+
+    // If creation is already in flight for this key, await that promise.
+    // This is the fix: instead of each caller independently calling
+    // createProvider() and getting its own instance, concurrent callers
+    // share one creation and receive the same provider.
+    const inFlight = this.inFlightCreations.get(key);
+    if (inFlight) return inFlight;
+
+    // If the provider was cached between our caller's getProvider() check
+    // and now (another caller finished creating it), return the cached
+    // instance without creating a new one.
+    const existing = this.providers.get(key);
+    if (existing) return existing;
+
+    // Wrap the synchronous createProvider in Promise.resolve() so we can
+    // attach a .finally() cleanup that runs asynchronously (as a microtask).
+    // This ordering is load-bearing: the in-flight entry MUST be stored
+    // BEFORE the .finally() callback runs, otherwise the entry is deleted
+    // before concurrent callers can find it. .finally() callbacks are always
+    // scheduled as microtasks, even on already-resolved promises, so the
+    // entry is safely stored on the next line before cleanup runs.
+    //
+    // If createProvider throws synchronously (e.g. unknown provider type),
+    // the throw propagates before Promise.resolve() is reached — no stale
+    // entry is left in the map.
+    //
+    // The .finally() cleanup below is identity-checked (only clears OUR OWN
+    // entry): if destroyProvider() cleared this key and a new
+    // createProviderAsync() call already stored a fresh in-flight promise for
+    // the same key before this .finally() ran, deleting unconditionally would
+    // remove that NEWER entry out from under it. Unreachable today because
+    // createProvider() is synchronous (this promise is already resolved by
+    // the time it's stored, so there's no live window), but this is a
+    // zero-cost, zero-behavior-change guard against that ever becoming
+    // reachable (e.g. if createProvider() is ever made async). Added during
+    // NIM-590 pressure-test review (independently found by DeepSeek-Flash).
+    const creationPromise = Promise.resolve(this.createProvider(type, sessionId))
+      .finally(() => {
+        if (this.inFlightCreations.get(key) === creationPromise) {
+          this.inFlightCreations.delete(key);
+        }
+      });
+
+    this.inFlightCreations.set(key, creationPromise);
+    return creationPromise;
+  }
+
+  /**
    * Create a new extension-contributed agent provider.
    *
    * This is the 'extension-agent' branch of the factory: instead of a
@@ -154,6 +225,9 @@ export class ProviderFactory {
   static destroyProvider(sessionId: string, type?: AIProviderType): void {
     if (type) {
       const key = `${type}-${sessionId}`;
+      // Clean up any in-flight creation for this key so a subsequent
+      // retry doesn't await a stale promise.
+      this.inFlightCreations.delete(key);
       const provider = this.providers.get(key);
       if (provider) {
         this.destroyProviderEntry(key, provider);
@@ -162,6 +236,7 @@ export class ProviderFactory {
       // Destroy all providers for this session
       for (const [key, provider] of [...this.providers.entries()]) {
         if (this.providerOwners.get(key) === sessionId) {
+          this.inFlightCreations.delete(key);
           this.destroyProviderEntry(key, provider);
         }
       }
@@ -185,6 +260,10 @@ export class ProviderFactory {
    * Clean up all provider instances
    */
   static destroyAll(): void {
+    // Clean up in-flight creations — nothing should be awaiting these
+    // after a full teardown.
+    this.inFlightCreations.clear();
+
     // console.log(`[ProviderFactory] Destroying ${this.providers.size} providers`);
 
     // Try to destroy each provider individually with error handling

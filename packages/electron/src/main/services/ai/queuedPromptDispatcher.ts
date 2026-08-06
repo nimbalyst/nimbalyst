@@ -350,27 +350,76 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     return false;
   }
 
-  if (!(await preflight(sessionId))) {
+  // Reserve the slot synchronously, right after the check, before any
+  // await -- closes the check-then-act race where two concurrent calls
+  // both pass the check above before either has a chance to claim it
+  // (NIM-590). This is a DIFFERENT symbol from the one
+  // dispatchClaimedQueuedPrompt mints internally on the success path --
+  // that's fine and intentional: dispatchClaimedQueuedPrompt's own first
+  // line unconditionally overwrites whatever's here with ITS lease, in the
+  // same synchronous stretch of code as this reservation (no await
+  // between "we decide to call it" and "it stores its own lease"), so
+  // there is no gap where the map is empty on the success path. Every
+  // early-return / exception path below MUST release this reservation,
+  // and MUST do so identity-checked: a blind delete could remove a
+  // DIFFERENT caller's (newer) reservation or dispatch lease that has
+  // since taken the slot -- e.g. if the existing NIM-615 cancel/interrupt
+  // cleanup (AIService.ts ai:cancelRequest / interruptCurrentTurnForSession,
+  // both still do a blind queueProcessingLeases.delete(sessionId)) fires
+  // in between, clearing OUR reservation, and a fresh caller claims the
+  // now-empty slot before we reach our own cleanup.
+  const reservation = Symbol(`queued-prompt-claim:${sessionId}`);
+  processingLeases.set(sessionId, reservation);
+  const releaseReservation = (): void => {
+    if (processingLeases.get(sessionId) === reservation) {
+      processingLeases.delete(sessionId);
+    }
+  };
+
+  let preflightOk: boolean;
+  try {
+    preflightOk = await preflight(sessionId);
+  } catch (error) {
+    releaseReservation();
+    throw error;
+  }
+  if (!preflightOk) {
     logInfo(`[AIService] ${source}: durable model reconciliation blocks queued dispatch for session ${sessionId}`);
+    releaseReservation();
     return false;
   }
 
-  const pendingPrompts = await queueStore.listPending(sessionId);
+  let pendingPrompts: Awaited<ReturnType<typeof queueStore.listPending>>;
+  try {
+    pendingPrompts = await queueStore.listPending(sessionId);
+  } catch (error) {
+    releaseReservation();
+    throw error;
+  }
   if (pendingPrompts.length === 0) {
     logInfo(`[AIService] ${source}: no pending prompts for session ${sessionId}`);
+    releaseReservation();
     return false;
   }
 
   const nextPrompt = pendingPrompts[0];
   logInfo(`[AIService] ${source}: processing prompt ${nextPrompt.id} for session ${sessionId}`);
 
-  const claimed = await queueStore.claim(nextPrompt.id, sessionId, source);
+  let claimed: ClaimedQueuedPrompt | null;
+  try {
+    claimed = await queueStore.claim(nextPrompt.id, sessionId, source);
+  } catch (error) {
+    releaseReservation();
+    throw error;
+  }
   if (!claimed) {
     logInfo(`[AIService] ${source}: prompt ${nextPrompt.id} already claimed`);
+    releaseReservation();
     return false;
   }
 
   if (!sendMessageHandler) {
+    releaseReservation();
     if (!claimed.claimToken) {
       throw new Error(`Queued prompt ${claimed.id} was claimed without an ownership token`);
     }
@@ -385,21 +434,36 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     return false;
   }
 
+  // Before handing off, confirm nothing cleared OUR reservation while we
+  // were awaiting preflight/listPending/claim (e.g. NIM-615's cancel/
+  // interrupt handlers, which still do a blind queueProcessingLeases.delete
+  // -- a real finding from pressure-test review, not a hypothetical). If our
+  // reservation is gone, something already decided this session should not
+  // proceed right now; release the DB claim we're holding and bail rather
+  // than dispatching regardless.
+  if (processingLeases.get(sessionId) !== reservation) {
+    logInfo(`[AIService] ${source}: reservation for session ${sessionId} was cleared before dispatch (cancelled/interrupted?) -- releasing claim instead of dispatching`);
+    if (!claimed.claimToken) {
+      throw new Error(`Queued prompt ${claimed.id} was claimed without an ownership token`);
+    }
+    const release = await queueStore.releaseClaim(claimed.id, sessionId, claimed.claimToken);
+    if (!settlementAccepted(release)) {
+      logError(
+        `[AIService] Failed to release claim ${claimed.id} after reservation loss (${release.outcome})`,
+        new Error(release.outcome),
+      );
+    }
+    return false;
+  }
+
+  // Ownership transfers to dispatchClaimedQueuedPrompt from here -- do NOT
+  // release the reservation after this call. Its first line synchronously
+  // overwrites this reservation with its own dispatch lease and its
+  // existing (unchanged) fencing logic governs everything from that point.
   await dispatchClaimedQueuedPrompt({
-    claimed,
-    continueQueuedPromptChain,
-    logError,
-    onAfterSettled,
-    onChainSettled,
-    onPromptClaimed,
-    processingLeases,
-    queueStore,
-    sendMessageHandler,
-    sessionId,
-    source,
-    startSession,
-    targetWindow: liveWindow,
-    workspacePath,
+    claimed, continueQueuedPromptChain, logError, onAfterSettled, onChainSettled,
+    onPromptClaimed, processingLeases, queueStore, sendMessageHandler, sessionId,
+    source, startSession, targetWindow: liveWindow, workspacePath,
   });
 
   return true;
