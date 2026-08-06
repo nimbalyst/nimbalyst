@@ -332,7 +332,7 @@ export function extractSearchable(input: ExtractorInput): ExtractedSearchable {
   // Treat all "agent provider" output payloads through their SDK-shaped extractors;
   // chat providers write plainer rows and use the generic extractor.
   if (direction === 'input') {
-    if (source === 'claude-code' || source === 'openai-codex' || source === 'openai-codex-acp' || source === 'opencode' || source === 'copilot-cli') {
+    if (source === 'claude-code' || source === 'openai-codex' || source === 'openai-codex-acp' || source === 'opencode' || source === 'copilot-cli' || source === 'kimi-code') {
       const parsed = safeJsonParse(content);
       const result = extractClaudeCodeInput(parsed, content, metadata);
       return { searchableText: capLen(result.searchableText), messageKind: result.messageKind };
@@ -347,7 +347,7 @@ export function extractSearchable(input: ExtractorInput): ExtractedSearchable {
     const result = extractClaudeCodeOutput(parsed, content);
     return { searchableText: capLen(result.searchableText), messageKind: result.messageKind };
   }
-  if (source === 'openai-codex' || source === 'openai-codex-acp' || source === 'opencode' || source === 'copilot-cli') {
+  if (source === 'openai-codex' || source === 'openai-codex-acp' || source === 'opencode' || source === 'copilot-cli' || source === 'kimi-code') {
     const parsed = safeJsonParse(content);
     const result = extractCodexOutput(parsed, content);
     return { searchableText: capLen(result.searchableText), messageKind: result.messageKind };

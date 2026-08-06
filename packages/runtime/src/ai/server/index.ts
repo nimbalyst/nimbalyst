@@ -12,6 +12,7 @@ export * from './providers/ProviderPermissionMixin';
 export * from './providers/LMStudioProvider';
 export * from './providers/OpenCodeProvider';
 export * from './providers/CopilotCLIProvider';
+export * from './providers/KimiCodeProvider';
 export * from './utils/errorDetection';
 export * from './preferredAgentLanguageConfig';
 export { McpConfigService } from './services/McpConfigService';

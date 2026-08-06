@@ -1994,6 +1994,9 @@ export class AIService {
           case 'copilot-cli':
             // Copilot uses its own CLI auth (copilot auth login), no API key needed
             break;
+          case 'kimi-code':
+            // Kimi Code uses its own CLI auth (kimi login), no API key needed
+            break;
           case 'lmstudio':
             // LMStudio doesn't need an API key, just the base URL
             break;
@@ -3400,6 +3403,10 @@ export class AIService {
             // Copilot uses its own CLI auth, no API key needed
             apiKey = 'not-required';
             break;
+          case 'kimi-code':
+            // Kimi Code uses its own CLI auth, no API key needed
+            apiKey = 'not-required';
+            break;
           case 'lmstudio':
             // LMStudio doesn't need an API key, just test the connection
             apiKey = 'not-required';
@@ -3601,6 +3608,7 @@ export class AIService {
       if (providerSettings['openai']?.enabled === true && !!apiKeys['openai']) enabledSet.add('openai');
       if (providerSettings['openai-codex']?.enabled === true) enabledSet.add('openai-codex');
       if (providerSettings['opencode']?.enabled === true) enabledSet.add('opencode');
+      if (providerSettings['kimi-code']?.enabled === true) enabledSet.add('kimi-code');
       if (providerSettings['lmstudio']?.enabled === true) enabledSet.add('lmstudio');
 
       const modelsConfig = {
@@ -3761,6 +3769,10 @@ export class AIService {
         'copilot-cli': {
           // Copilot uses its own CLI auth (copilot auth login), no API key needed
           enabled: providerSettings['copilot-cli']?.enabled === true,
+        },
+        'kimi-code': {
+          // Kimi Code uses its own CLI auth (kimi login), no API key needed
+          enabled: providerSettings['kimi-code']?.enabled === true,
         },
         'lmstudio': {
           enabled: providerSettings['lmstudio']?.enabled === true,

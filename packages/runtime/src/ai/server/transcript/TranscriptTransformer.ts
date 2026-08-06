@@ -23,6 +23,7 @@ import { CodexRawParser } from './parsers/CodexRawParser';
 import { CodexRawParserDispatcher } from './parsers/CodexRawParserDispatcher';
 import { CodexACPRawParser } from './parsers/CodexACPRawParser';
 import { CopilotRawParser } from './parsers/CopilotRawParser';
+import { KimiCodeRawParser } from './parsers/KimiCodeRawParser';
 import { OpenCodeRawParser } from './parsers/OpenCodeRawParser';
 import { VoiceRawParser } from './parsers/VoiceRawParser';
 import type {
@@ -466,6 +467,9 @@ export class TranscriptTransformer {
   private createParser(provider: string): IRawMessageParser {
     if (provider === 'copilot-cli') {
       return new CopilotRawParser();
+    }
+    if (provider === 'kimi-code') {
+      return new KimiCodeRawParser();
     }
     if (provider === 'openai-codex') {
       // Dispatches per-message between the SDK parser (legacy default) and

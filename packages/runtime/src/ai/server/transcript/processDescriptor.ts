@@ -230,9 +230,12 @@ export async function processDescriptor(
 
 export function selectRawParser(
   provider: string,
-): 'codex' | 'codex-acp' | 'copilot' | 'claude-code' | 'opencode' | 'voice' {
+): 'codex' | 'codex-acp' | 'copilot' | 'claude-code' | 'opencode' | 'voice' | 'kimi-code' {
   if (provider === 'copilot-cli') {
     return 'copilot';
+  }
+  if (provider === 'kimi-code') {
+    return 'kimi-code';
   }
   if (provider === 'openai-codex') {
     return 'codex';

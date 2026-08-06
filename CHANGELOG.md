@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Kimi Code (alpha) agent provider: use Moonshot AI's Kimi Code CLI (K3 models) as a coding agent, with its own settings panel and CLI-based login.
 - Open a shared project that is not a git repository by choosing a folder for it in your organization's project list.
 
 ### Changed

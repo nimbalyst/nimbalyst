@@ -225,6 +225,25 @@ export function shouldSyncMessageForSessionRoom(
     return true;
   }
 
+  // Kimi Code streams the same ACP shape as Copilot: text arrives
+  // self-contained on the item.completed row, thought chunks are dropped by
+  // design, and usage_update snapshots are only cached locally.
+  if (source.startsWith('kimi-code')) {
+    if (
+      content
+      && (content.includes('"agent_message_chunk"') || content.includes('"agent_thought_chunk"') || content.includes('"usage_update"'))
+    ) {
+      try {
+        const parsed = JSON.parse(content) as { params?: { update?: { sessionUpdate?: string } } };
+        const updateType = parsed?.params?.update?.sessionUpdate;
+        if (updateType === 'agent_message_chunk' || updateType === 'agent_thought_chunk' || updateType === 'usage_update') return false;
+      } catch {
+        // Unparseable -- let it through.
+      }
+    }
+    return true;
+  }
+
   if (source.startsWith('opencode')) {
     const eventType = typeof metadata?.eventType === 'string' ? metadata.eventType : '';
     // Rows without an eventType are not SSE events (e.g. user input) -- sync.

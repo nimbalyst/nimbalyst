@@ -127,6 +127,11 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'providerSettings.copilot-cli' },
     { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   ),
+  'ai.provider.kimi-code': setting(
+    ProviderConfigSchema,
+    { store: 'ai-settings', path: 'providerSettings.kimi-code' },
+    { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
+  ),
   'ai.provider.lmstudio': setting(
     ProviderConfigSchema,
     { store: 'ai-settings', path: 'providerSettings.lmstudio' },
