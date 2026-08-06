@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Launched agent sessions now validate and display their model, reasoning, capability scope, and inheritance provenance before the first prompt runs.
 
 ### Removed
 <!-- Removed features go here -->
