@@ -44,9 +44,18 @@ test('derives future headless domains from package exports and excludes UI entri
     './trackers-ui': { default: './src/trackers-ui/index.ts' },
   }, '/repo/packages/collab-client');
 
-  assert.deepEqual(entries, {
-    core: '/repo/packages/collab-client/src/core/index.ts',
-    docs: '/repo/packages/collab-client/src/docs/index.ts',
-    trackers: '/repo/packages/collab-client/src/trackers/index.ts',
+  // Compare relative to the synthetic root, normalized to POSIX separators,
+  // rather than the absolute paths directly -- path.* resolves a leading
+  // '/' as drive-relative on Windows (e.g. D:\repo\...), so a hardcoded
+  // POSIX-absolute expected value only ever matched on POSIX CI. This keeps
+  // the real assertions (which domains are derived, -ui entries excluded)
+  // platform-agnostic without touching the implementation under test.
+  const rel = Object.fromEntries(
+    Object.entries(entries).map(([key, value]) => [key, path.relative('/repo/packages/collab-client', value).split(path.sep).join('/')]),
+  );
+  assert.deepEqual(rel, {
+    core: 'src/core/index.ts',
+    docs: 'src/docs/index.ts',
+    trackers: 'src/trackers/index.ts',
   });
 });
