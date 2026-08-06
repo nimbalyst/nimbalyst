@@ -378,6 +378,14 @@ export class BodyDocCache {
     // cache is the sole owner of the provider's lifecycle signals.
     const cacheConfig: DocumentSyncConfig = {
       ...config,
+      // Explicit even though the spread above already carries it: the
+      // renderer-sync-sockets checker (scripts/check-renderer-sync-sockets.mjs)
+      // only resolves one level of `{ ...other }` spread within the same file,
+      // and `config` arrives as a parameter from a factory defined elsewhere --
+      // so it can't see this field through the spread. Behavior-neutral
+      // (config.createWebSocket is always the same value at runtime); this
+      // just makes the invariant visible to the checker and to readers.
+      createWebSocket: config.createWebSocket,
       onStatusChange: (status) => {
         entry.lastStatus = status;
         for (const l of entry.listeners) {
