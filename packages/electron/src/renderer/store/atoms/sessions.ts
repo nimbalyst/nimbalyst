@@ -22,6 +22,10 @@ import type { SessionMeta } from '@nimbalyst/runtime';
 import deepEqual from 'fast-deep-equal';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
 import { aiInputHistoryAtom } from './aiInputUndo';
+import {
+  isStructuralWorkstreamContainer,
+  reconcileActiveSessionId,
+} from '../../../shared/sessionHierarchy';
 
 // SessionMeta is imported from @nimbalyst/runtime (canonical type).
 // Re-export for consumers that import from the store.
@@ -102,6 +106,16 @@ export const activeSessionIdAtom = atom<string | null>(null);
  */
 export const sessionProcessingAtom = atomFamily((_sessionId: string) =>
   atom(false)
+);
+
+export type SessionModelReconciliationGate =
+  | { status: 'idle' }
+  | { status: 'recovering'; message: string }
+  | { status: 'required'; message: string };
+
+/** Session-owned safety gate retained across transcript view remounts. */
+export const sessionModelReconciliationGateAtom = atomFamily(
+  (_sessionId: string) => atom<SessionModelReconciliationGate>({ status: 'idle' }),
 );
 
 /**
@@ -642,6 +656,20 @@ export const sessionStoreAtom = atomFamily((_sessionId: string) =>
   atom<SessionData | null>(null)
 );
 
+/** Narrow subscription to the durable recovery marker loaded with a session. */
+export const sessionModelReconciliationMarkerAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const metadata = get(sessionStoreAtom(sessionId))?.metadata;
+    if (metadata === null || metadata === undefined) {
+      return null;
+    }
+    // Preserve malformed loaded metadata as a non-null raw marker so the
+    // reconciliation owner fails closed and presents the bounded repair gate.
+    if (typeof metadata !== 'object' || Array.isArray(metadata)) return metadata;
+    return (metadata as Record<string, unknown>).modelChangeReconciliation ?? null;
+  }),
+);
+
 /**
  * @deprecated Use sessionStoreAtom instead
  */
@@ -943,6 +971,13 @@ export const sessionThinkingModeRawAtom = atomFamily((sessionId: string) =>
   })
 );
 
+export const sessionCatalogControlValuesRawAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const metadata = get(sessionStoreAtom(sessionId))?.metadata as Record<string, unknown> | undefined;
+    return metadata?.catalogControlValues ?? null;
+  })
+);
+
 // ============================================================
 // Hierarchical session support (workstreams)
 // These atoms enable parent-child session relationships for grouping
@@ -1158,16 +1193,24 @@ export const loadSessionChildrenAtom = atom(
         // console.log('[loadSessionChildrenAtom] Current workstream state:', currentState);
         // console.log('[loadSessionChildrenAtom] Current active child:', currentActive, 'childIds:', childIds);
 
-        // Determine the active child:
-        // - If has children: use current active if valid, else first child
-        // - If no children (single session): use the parent session itself
-        const newActiveChild = childIds.length > 0
-          ? (currentActive && childIds.includes(currentActive) ? currentActive : childIds[0])
-          : parentSessionId;
+        const parentMeta = get(sessionRegistryAtom).get(parentSessionId);
+        const parentData = get(sessionStoreAtom(parentSessionId));
+        const isStructuralContainer = isStructuralWorkstreamContainer({
+          id: parentSessionId,
+          sessionType: parentMeta?.sessionType ?? parentData?.sessionType,
+          childCount: parentMeta?.childCount,
+          metadata: parentData?.metadata,
+        }) || currentState.type === 'workstream';
+        const newActiveChild = reconcileActiveSessionId({
+          containerId: parentSessionId,
+          childSessionIds: childIds,
+          activeSessionId: currentActive,
+          isStructuralContainer,
+        });
         // console.log('[loadSessionChildrenAtom] Setting activeChildId to:', newActiveChild);
 
         set(workstreamStateAtom(parentSessionId), {
-          type: childIds.length > 0 ? 'workstream' : 'single',
+          type: isStructuralContainer ? 'workstream' : 'single',
           childSessionIds: childIds,
           activeChildId: newActiveChild,
         });
@@ -1326,6 +1369,30 @@ export const reparentSessionAtom = atom(
     }
 
     try {
+      const registry = get(sessionRegistryAtom);
+      const source = registry.get(sessionId);
+      const destination = newParentId ? registry.get(newParentId) : null;
+      if (
+        source && (
+          isStructuralWorkstreamContainer(source)
+          || Boolean(source.worktreeId)
+          || source.workspaceId !== workspacePath
+        )
+      ) {
+        return false;
+      }
+      if (
+        newParentId && (
+          sessionId === newParentId
+          || !destination
+          || destination.workspaceId !== workspacePath
+          || Boolean(destination.parentSessionId)
+          || Boolean(destination.worktreeId)
+        )
+      ) {
+        return false;
+      }
+
       // Call IPC to update database
       const result = await window.electronAPI.invoke(
         'sessions:set-parent',
@@ -1352,8 +1419,16 @@ export const reparentSessionAtom = atom(
         set(sessionChildrenAtom(oldParentId), newOldChildren);
 
         // Update old parent's workstream state
+        const oldState = get(workstreamStateAtom(oldParentId));
         set(workstreamStateAtom(oldParentId), {
+          type: 'workstream',
           childSessionIds: newOldChildren,
+          activeChildId: reconcileActiveSessionId({
+            containerId: oldParentId,
+            childSessionIds: newOldChildren,
+            activeSessionId: oldState.activeChildId,
+            isStructuralContainer: true,
+          }),
         });
       }
 
@@ -2491,11 +2566,16 @@ export const workstreamSessionsAtom = atomFamily((workstreamId: string) =>
       return filterArchived(worktreeSessions);
     }
 
-    // Check if this is a workstream root that hasn't had children loaded yet
-    // Look up childCount from the registry (more reliable than metadata)
+    // Check if this is a workstream root that hasn't had children loaded yet.
+    // Typed empty containers remain structural and must never route to self.
     const sessionMeta = registry.get(workstreamId);
     // console.log('[workstreamSessionsAtom]', workstreamId, 'sessionMeta:', sessionMeta?.id, 'childCount:', sessionMeta?.childCount);
-    if (sessionMeta?.childCount && sessionMeta.childCount > 0) {
+    if (isStructuralWorkstreamContainer({
+      id: workstreamId,
+      sessionType: sessionMeta?.sessionType ?? sessionData?.sessionType,
+      childCount: sessionMeta?.childCount,
+      metadata: sessionData?.metadata,
+    })) {
       // This is a workstream parent - find non-archived children from registry by parentSessionId
       // This works even before the workstream is opened
       const childrenFromRegistry = Array.from(registry.values())

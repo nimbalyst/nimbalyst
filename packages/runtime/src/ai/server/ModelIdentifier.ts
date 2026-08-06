@@ -13,9 +13,11 @@
 import { AIProviderType, AI_PROVIDER_TYPES, isClaudeCodeFamily } from './types';
 import {
   CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS,
+  CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES,
   DEFAULT_MODELS,
   normalizeClaudeCodeVariant,
 } from '../modelConstants';
+import { DEEPSEEK_CLAUDE_AGENT_MODEL_VARIANT } from './deepSeekClaudeAgent';
 
 /**
  * Valid Claude Code model suffixes (e.g., -1m for 1M context window)
@@ -163,6 +165,19 @@ export class ModelIdentifier {
     if (isClaudeCodeFamily(provider)) {
       const normalizedModel = model.toLowerCase();
 
+      // The Nimbalyst-created Ollama brain is a canonical persisted model
+      // identity, not an ordinary Claude variant plus mutable metadata. Keep
+      // the allowlist exact and SDK-only: the interactive claude-code-cli
+      // provider is not this programmatic route.
+      const ollamaIdentity = provider === 'claude-code'
+        ? CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES.find(
+          (identity) => identity.variant === normalizedModel
+        )
+        : undefined;
+      if (ollamaIdentity) {
+        return new ModelIdentifier(provider, ollamaIdentity.variant);
+      }
+
       // Strip known suffixes to get base variant
       let baseVariant = normalizedModel;
       let suffix = '';
@@ -172,6 +187,10 @@ export class ModelIdentifier {
           suffix = validSuffix;
           break;
         }
+      }
+
+      if (baseVariant === DEEPSEEK_CLAUDE_AGENT_MODEL_VARIANT) {
+        return new ModelIdentifier(provider, baseVariant);
       }
 
       const normalizedVariant = normalizeClaudeCodeVariant(baseVariant);

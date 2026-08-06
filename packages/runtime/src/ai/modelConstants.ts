@@ -252,6 +252,173 @@ export type ClaudeCodeVariant = 'fable' | 'opus' | 'sonnet' | 'haiku' | 'opus-4-
 export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5' | 'sonnet-5' | 'fable-5';
 
 /**
+ * Persisted identity for the one approved non-Anthropic Claude Agent route.
+ *
+ * This is intentionally not a visible picker variant. It is accepted only as
+ * this exact full identifier at the programmatic session-creation boundary.
+ * Similar `claude-code:ollama-*` strings remain invalid.
+ */
+export const CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL =
+  'claude-code:ollama-glm-5-2-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_VARIANT =
+  'ollama-glm-5-2-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS =
+  'claude-sonnet-4-5-20250929' as const;
+
+/**
+ * Remaining Ollama Cloud high-runner backends (Program 2 full-fleet build,
+ * 2026-07-29). Same shape as the GLM-5.2 entry above: a persisted model
+ * identity, a claudeCodeBackend variant id, and an SDK-facing alias routed
+ * through the same per-session LiteLLM proxy (tools/Ollala/nimbalyst-brainswap/
+ * litellm-ollama.yaml) to the real upstream Ollama Cloud model.
+ */
+export const CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_MODEL =
+  'claude-code:ollama-gpt-oss-20b-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_VARIANT =
+  'ollama-gpt-oss-20b-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_SDK_ALIAS =
+  'claude-ollama-gpt-oss-20b' as const;
+
+export const CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_MODEL =
+  'claude-code:ollama-nemotron-3-nano-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_VARIANT =
+  'ollama-nemotron-3-nano-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_SDK_ALIAS =
+  'claude-ollama-nemotron-3-nano' as const;
+
+export const CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_MODEL =
+  'claude-code:ollama-deepseek-v4-flash-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_VARIANT =
+  'ollama-deepseek-v4-flash-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_SDK_ALIAS =
+  'claude-ollama-deepseek-v4-flash' as const;
+
+export const CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_MODEL =
+  'claude-code:ollama-qwen3-5-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_VARIANT =
+  'ollama-qwen3-5-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_SDK_ALIAS =
+  'claude-ollama-qwen3-5' as const;
+
+export const CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_MODEL =
+  'claude-code:ollama-nemotron-3-super-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_VARIANT =
+  'ollama-nemotron-3-super-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_SDK_ALIAS =
+  'claude-ollama-nemotron-3-super' as const;
+
+export const CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_MODEL =
+  'claude-code:ollama-glm-5-1-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_VARIANT =
+  'ollama-glm-5-1-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_SDK_ALIAS =
+  'claude-ollama-glm-5-1' as const;
+
+export const CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_MODEL =
+  'claude-code:ollama-minimax-m2-7-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_VARIANT =
+  'ollama-minimax-m2-7-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_SDK_ALIAS =
+  'claude-ollama-minimax-m2-7' as const;
+
+export const CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_MODEL =
+  'claude-code:ollama-kimi-k2-6-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_VARIANT =
+  'ollama-kimi-k2-6-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_SDK_ALIAS =
+  'claude-ollama-kimi-k2-6' as const;
+
+export const CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_MODEL =
+  'claude-code:ollama-kimi-k2-7-code-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_VARIANT =
+  'ollama-kimi-k2-7-code-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_SDK_ALIAS =
+  'claude-ollama-kimi-k2-7-code' as const;
+
+export const CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_MODEL =
+  'claude-code:ollama-minimax-m3-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_VARIANT =
+  'ollama-minimax-m3-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_SDK_ALIAS =
+  'claude-ollama-minimax-m3' as const;
+
+export const CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_MODEL =
+  'claude-code:ollama-deepseek-v4-pro-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_VARIANT =
+  'ollama-deepseek-v4-pro-cloud' as const;
+export const CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_SDK_ALIAS =
+  'claude-ollama-deepseek-v4-pro' as const;
+
+/**
+ * Canonical persisted identity → backend variant → SDK alias bindings for
+ * every programmatic Ollama Claude Agent route. ModelIdentifier and the SDK
+ * option resolver consume this same allowlist so adding a backend cannot leave
+ * either boundary behind.
+ */
+export const CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES = [
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_GLM_5_2_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_GPT_OSS_20B_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_NANO_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_FLASH_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_QWEN3_5_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_NEMOTRON_3_SUPER_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_GLM_5_1_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M2_7_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_6_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_KIMI_K2_7_CODE_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_MINIMAX_M3_CLOUD_SDK_ALIAS,
+  },
+  {
+    persistedModel: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_MODEL,
+    variant: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_VARIANT,
+    sdkAlias: CLAUDE_CODE_OLLAMA_DEEPSEEK_V4_PRO_CLOUD_SDK_ALIAS,
+  },
+] as const;
+
+/**
  * Accepted input aliases for Claude Agent model identifiers.
  *
  * `opus-5` is intentionally accepted as an alias for the canonical `opus`

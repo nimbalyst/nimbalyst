@@ -14,6 +14,7 @@ import { getQueuedPromptsStore } from '../RepositoryManager';
 import { getSyncProvider } from '../SyncManager';
 import { submitClaudeCliPromptProduction } from './claudeCliSubmitSingleton';
 import { flushNextClaudeCliQueuedPrompt } from './claudeCliQueueFlush';
+import { preflightSessionPromptDispatch } from './queuedPromptDispatcher';
 import { publishQueuedPromptsToSync } from './queuedPromptSyncPublisher';
 
 /** Per-session guard so two close `idle` events can't double-flush. */
@@ -46,10 +47,14 @@ export async function flushNextClaudeCliQueuedPromptForSession(
     const flushed = await flushNextClaudeCliQueuedPrompt(
       { sessionId, workspacePath },
       {
+        preflight: preflightSessionPromptDispatch,
         listPending: (s) => store.listPending(s),
-        claim: (id) => store.claim(id),
-        complete: (id) => store.complete(id),
-        fail: (id, m) => store.fail(id, m),
+        claim: (id, expectedSessionId, claimTrigger) => store.claim(id, expectedSessionId, claimTrigger),
+        beginDispatch: (id, expectedSessionId, claimToken) => store.beginDispatch(id, expectedSessionId, claimToken),
+        completeAfterDispatch: (id, expectedSessionId, claimToken) =>
+          store.completeAfterDispatch(id, expectedSessionId, claimToken),
+        failAfterDispatch: (id, errorMessage, expectedSessionId, claimToken) =>
+          store.failAfterDispatch(id, errorMessage, expectedSessionId, claimToken),
         submit: (i) => submitClaudeCliPromptProduction(i),
         // The flush runs from the PID-idle transition with no originating IPC
         // event, so there is no single target window; broadcasting is safe

@@ -503,6 +503,12 @@ public final class SyncManager: ObservableObject {
            let data = try? JSONEncoder().encode(tags) {
             tagsJson = String(data: data, encoding: .utf8)
         }
+        let resolvedContext = resolveContextMeterMetadata(
+            clientMeta,
+            existingStateJson: existing?.contextMeterStateJson,
+            existingTokens: existing?.contextTokens,
+            existingWindow: existing?.contextWindow
+        )
 
         let session = Session(
             id: entry.sessionId,
@@ -533,8 +539,9 @@ public final class SyncManager: ObservableObject {
             branchedAt: entry.branchedAt ?? existing?.branchedAt,
             isExecuting: entry.isExecuting ?? existing?.isExecuting ?? false,
             hasQueuedPrompts: clientMeta?.hasPendingPrompt ?? entry.hasPendingPrompt ?? existing?.hasQueuedPrompts ?? false,
-            contextTokens: clientMeta?.currentContext?.tokens ?? existing?.contextTokens,
-            contextWindow: clientMeta?.currentContext?.contextWindow ?? existing?.contextWindow,
+            contextTokens: resolvedContext.tokens,
+            contextWindow: resolvedContext.window,
+            contextMeterStateJson: resolvedContext.stateJson,
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt,
             lastSyncedSeq: entry.messageCount ?? existing?.lastSyncedSeq ?? 0,
@@ -675,6 +682,12 @@ public final class SyncManager: ObservableObject {
            let data = try? JSONEncoder().encode(tags) {
             tagsJson = String(data: data, encoding: .utf8)
         }
+        let resolvedContext = resolveContextMeterMetadata(
+            clientMeta,
+            existingStateJson: existing?.contextMeterStateJson,
+            existingTokens: existing?.contextTokens,
+            existingWindow: existing?.contextWindow
+        )
 
         let session = Session(
             id: entry.sessionId,
@@ -701,8 +714,9 @@ public final class SyncManager: ObservableObject {
             branchedAt: entry.branchedAt ?? existing?.branchedAt,
             isExecuting: entry.isExecuting ?? existing?.isExecuting ?? false,
             hasQueuedPrompts: clientMeta?.hasPendingPrompt ?? entry.hasPendingPrompt ?? existing?.hasQueuedPrompts ?? false,
-            contextTokens: clientMeta?.currentContext?.tokens ?? existing?.contextTokens,
-            contextWindow: clientMeta?.currentContext?.contextWindow ?? existing?.contextWindow,
+            contextTokens: resolvedContext.tokens,
+            contextWindow: resolvedContext.window,
+            contextMeterStateJson: resolvedContext.stateJson,
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt,
             lastSyncedSeq: entry.messageCount ?? existing?.lastSyncedSeq ?? 0,
@@ -1291,10 +1305,15 @@ public final class SyncManager: ObservableObject {
                    let metaJson = crypto.decryptOrNil(encryptedBase64: encryptedMeta, ivBase64: metaIv),
                    let metaData = metaJson.data(using: .utf8),
                    let clientMeta = try? JSONDecoder().decode(ClientMetadata.self, from: metaData) {
-                    if let ctx = clientMeta.currentContext {
-                        session.contextTokens = ctx.tokens
-                        session.contextWindow = ctx.contextWindow
-                    }
+                    let resolvedContext = resolveContextMeterMetadata(
+                        clientMeta,
+                        existingStateJson: session.contextMeterStateJson,
+                        existingTokens: session.contextTokens,
+                        existingWindow: session.contextWindow
+                    )
+                    session.contextMeterStateJson = resolvedContext.stateJson
+                    session.contextTokens = resolvedContext.tokens
+                    session.contextWindow = resolvedContext.window
                     if let pending = clientMeta.hasPendingPrompt {
                         session.hasQueuedPrompts = pending
                     }
@@ -1381,6 +1400,7 @@ public final class SyncManager: ObservableObject {
         do {
             let clientMeta = ClientMetadata(
                 currentContext: nil,
+                contextMeterState: session.contextMeterState,
                 hasPendingPrompt: nil,
                 phase: session.phase,
                 tags: session.tags.isEmpty ? nil : session.tags,

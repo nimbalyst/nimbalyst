@@ -21,7 +21,15 @@ import {
   onAgentMessageBatch,
   buildMetaAgentSystemPrompt,
   buildDevAgentSystemPrompt,
+  createUnavailableContextMeterStateV1,
+  contextMeterIdentityEquals,
+  reduceContextMeterStateV1,
+  resolveClaudeCodeModelVariant,
   type AIProvider,
+  type ContextInvalidationReason,
+  type ContextMeterIdentityV1,
+  type ContextMeterStateV1,
+  type ContextObservationV1,
   type SessionManager,
 } from '@nimbalyst/runtime/ai/server';
 import {
@@ -45,6 +53,8 @@ import {
 import { toolRegistry } from './tools';
 import type { DriveReason } from './QueueDriveService';
 import { resolveExtensionAgentRef } from './providerResolution';
+import { createQueuedStreamTruthBinder } from './queuedPromptTruth';
+import { resolveClaudeCodeCatalogControlContext } from './ClaudeCodeTurnLifecycle';
 import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
 
 /**
@@ -121,18 +131,303 @@ import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import type { WorkspaceFileAttributionMode } from '../WorkspaceFileAttributionPolicy';
 
+/**
+ * The terminal streaming paths must project the durable prompt bit, rather
+ * than infer it from the turn having stopped. Kept here so normal and error
+ * completion share the exact same production predicate.
+ */
+export function hasPersistedPendingPrompt(metadata: unknown): boolean {
+  return Boolean(
+    metadata &&
+      typeof metadata === "object" &&
+      (metadata as Record<string, unknown>).hasPendingPrompt === true
+  );
+}
+
+type SessionTokenUsage = NonNullable<SessionData["tokenUsage"]>;
+
+function baseTokenUsage(current: SessionData["tokenUsage"]): SessionTokenUsage {
+  return current ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+}
+
+function projectContextMeterState(
+  current: SessionData["tokenUsage"],
+  contextMeterState: ContextMeterStateV1
+): SessionTokenUsage {
+  const usage = baseTokenUsage(current);
+  if (contextMeterState.confidence === "unavailable") {
+    return { ...usage, currentContext: undefined, contextMeterState };
+  }
+  return {
+    ...usage,
+    contextWindow: contextMeterState.effectiveWindowTokens,
+    currentContext: {
+      tokens: contextMeterState.fillTokens,
+      contextWindow: contextMeterState.effectiveWindowTokens,
+    },
+    contextMeterState,
+  };
+}
+
+export function applyContextObservationToTokenUsage(
+  current: SessionData["tokenUsage"],
+  observation: ContextObservationV1
+): SessionTokenUsage {
+  const prior =
+    current?.contextMeterState ??
+    createUnavailableContextMeterStateV1("no-observation");
+  const priorProvenance = prior.provenance;
+  let activeObservation = observation;
+  if (
+    priorProvenance &&
+    contextMeterIdentityEquals(
+      priorProvenance.identity,
+      observation.identity
+    ) &&
+    priorProvenance.order.processInstanceId !==
+      observation.order.processInstanceId &&
+    observation.order.lifecycleGeneration === 0
+  ) {
+    activeObservation = {
+      ...observation,
+      order: {
+        ...observation.order,
+        lifecycleGeneration: priorProvenance.order.lifecycleGeneration,
+      },
+    };
+  }
+  return projectContextMeterState(
+    current,
+    reduceContextMeterStateV1(prior, {
+      type: "observation",
+      observation: activeObservation,
+    })
+  );
+}
+
+export function transitionContextMeterTokenUsage(
+  current: SessionData["tokenUsage"],
+  identity: ContextMeterIdentityV1,
+  reason: ContextInvalidationReason
+): SessionTokenUsage {
+  const prior = current?.contextMeterState;
+  const provenance = prior?.provenance;
+  const lifecycleGeneration = (provenance?.order.lifecycleGeneration ?? -1) + 1;
+  return projectContextMeterState(
+    current,
+    reduceContextMeterStateV1(
+      prior ?? createUnavailableContextMeterStateV1("no-observation"),
+      {
+        type: "invalidate",
+        reason,
+        lifecycle: {
+          identity,
+          order: {
+            processInstanceId:
+              provenance?.order.processInstanceId ?? "host-lifecycle",
+            lifecycleGeneration,
+            sequence: 1,
+            observedAtMs: Date.now(),
+          },
+        },
+      }
+    )
+  );
+}
+
+export function expectedContextMeterIdentityForSession(
+  session: Pick<
+    SessionData,
+    | "id"
+    | "provider"
+    | "model"
+    | "providerConfig"
+    | "providerSessionId"
+    | "metadata"
+  >,
+  _persistedIdentity?: ContextMeterIdentityV1
+): ContextMeterIdentityV1 {
+  const snapshot = session.metadata?.providerRuntimeRouteSnapshotV1 as any;
+  const durableMain =
+    snapshot?.schemaVersion === 1 &&
+    snapshot?.main?.plan &&
+    typeof snapshot.main.plan === "object"
+      ? snapshot.main.plan
+      : undefined;
+  const routeModel = durableMain?.model;
+  const routeInterface = durableMain?.selectedInterface;
+  const persistedModelId =
+    (typeof routeModel?.persistedId === "string" && routeModel.persistedId) ||
+    session.model ||
+    session.providerConfig?.model ||
+    `${session.provider}:unknown`;
+  const fallbackModelPart = persistedModelId.includes(":")
+    ? persistedModelId.slice(persistedModelId.indexOf(":") + 1)
+    : persistedModelId;
+  const activeProviderModelId =
+    typeof routeModel?.providerModelId === "string"
+      ? routeModel.providerModelId
+      : session.provider === "claude-code"
+      ? resolveClaudeCodeModelVariant(fallbackModelPart, fallbackModelPart)
+      : fallbackModelPart;
+  const activeInterfaceId =
+    typeof routeInterface?.id === "string"
+      ? routeInterface.id
+      : session.provider === "claude-code"
+      ? "claude-agent-sdk-native"
+      : undefined;
+  return {
+    nimbalystSessionId: session.id,
+    providerId:
+      (typeof durableMain?.provider === "string" && durableMain.provider) ||
+      session.provider,
+    persistedModelId,
+    ...(activeProviderModelId
+      ? { providerModelId: activeProviderModelId }
+      : {}),
+    ...(typeof routeModel?.catalogEntryId === "string"
+      ? { catalogEntryId: routeModel.catalogEntryId }
+      : {}),
+    ...(activeInterfaceId ? { interfaceId: activeInterfaceId } : {}),
+    upstreamThreadId: session.providerSessionId || session.id,
+    producerRole: "lead",
+  };
+}
+
+export function contextMeterTransitionReason(
+  current: ContextMeterIdentityV1,
+  live: ContextMeterIdentityV1
+): ContextInvalidationReason | undefined {
+  if (current.persistedModelId !== live.persistedModelId)
+    return "model-changed";
+  if (
+    current.providerId !== live.providerId ||
+    current.providerModelId !== live.providerModelId ||
+    current.catalogEntryId !== live.catalogEntryId
+  )
+    return "route-changed";
+  if (current.interfaceId !== live.interfaceId) return "interface-changed";
+  if (current.upstreamThreadId !== live.upstreamThreadId) return "thread-reset";
+  return undefined;
+}
+
+export function invalidateContextMeterTokenUsage(
+  current: SessionData["tokenUsage"],
+  reason: ContextInvalidationReason
+): SessionTokenUsage {
+  const prior = current?.contextMeterState;
+  const provenance = prior?.provenance;
+  if (!provenance) {
+    return projectContextMeterState(
+      current,
+      createUnavailableContextMeterStateV1(reason)
+    );
+  }
+  return projectContextMeterState(
+    current,
+    reduceContextMeterStateV1(prior, {
+      type: "invalidate",
+      reason,
+      lifecycle: {
+        identity: provenance.identity,
+        order: {
+          ...provenance.order,
+          lifecycleGeneration: provenance.order.lifecycleGeneration + 1,
+          sequence: 1,
+          observedAtMs: Date.now(),
+        },
+      },
+    })
+  );
+}
+
+export function settleContextMeterTurn(
+  current: SessionData["tokenUsage"],
+  hadFreshObservation: boolean,
+  outcome: "completed" | "cancelled" | "error" = "completed"
+): SessionTokenUsage {
+  const prior = current?.contextMeterState;
+  const provenance = prior?.provenance;
+  if (!prior || !provenance) {
+    return projectContextMeterState(
+      current,
+      createUnavailableContextMeterStateV1("turn-missing-observation")
+    );
+  }
+  return projectContextMeterState(
+    current,
+    reduceContextMeterStateV1(
+      prior,
+      outcome === "completed"
+        ? {
+            type: "turn-completed",
+            hadFreshObservation,
+            lifecycle: {
+              identity: provenance.identity,
+              order: {
+                ...provenance.order,
+                sequence: provenance.order.sequence + 1,
+                observedAtMs: Date.now(),
+              },
+            },
+          }
+        : {
+            type: outcome === "cancelled" ? "turn-cancelled" : "turn-error",
+            lifecycle: {
+              identity: provenance.identity,
+              order: {
+                ...provenance.order,
+                sequence: provenance.order.sequence + 1,
+                observedAtMs: Date.now(),
+              },
+            },
+          }
+    )
+  );
+}
+
+export async function runTerminalPromptTransition(params: {
+  metadata: unknown;
+  hasActiveLease: boolean;
+  hasOtherDeferral?: boolean;
+  tryDispatch: () => Promise<boolean>;
+  endSession: () => Promise<void>;
+  sync?: (hasPendingPrompt: boolean) => void;
+}): Promise<{ deferred: boolean; hasPendingPrompt: boolean }> {
+  const hasPendingPrompt = hasPersistedPendingPrompt(params.metadata);
+  let dispatched = false;
+  if (!hasPendingPrompt && !params.hasActiveLease && !params.hasOtherDeferral) {
+    dispatched = await params.tryDispatch();
+  }
+  const deferred =
+    hasPendingPrompt ||
+    params.hasActiveLease ||
+    Boolean(params.hasOtherDeferral) ||
+    dispatched;
+  if (!deferred) await params.endSession();
+  if (!params.hasActiveLease) params.sync?.(hasPendingPrompt);
+  return { deferred, hasPendingPrompt };
+}
+
 function resolveWorkspaceFileAttributionMode(
   providerName: string,
   provider: AIProvider | null | undefined,
 ): WorkspaceFileAttributionMode {
-  if (providerName !== 'openai-codex') return 'fuzzy';
+  if (providerName !== "openai-codex") return "fuzzy";
 
-  const codexProvider = provider as (AIProvider & {
-    getTransport?: () => 'sdk' | 'app-server';
-  }) | null | undefined;
+  const codexProvider = provider as
+    | (AIProvider & {
+        getTransport?: () => "sdk" | "app-server";
+      })
+    | null
+    | undefined;
   const activeTransport = codexProvider?.getTransport?.();
-  const configuredTransport = getAppSetting<{ transport?: 'sdk' | 'app-server' }>('openaiCodex')?.transport;
-  return (activeTransport ?? configuredTransport) === 'sdk' ? 'fuzzy' : 'disabled';
+  const configuredTransport = getAppSetting<{
+    transport?: "sdk" | "app-server";
+  }>("openaiCodex")?.transport;
+  return (activeTransport ?? configuredTransport) === "sdk"
+    ? "fuzzy"
+    : "disabled";
 }
 
 export type SendMessageHandler = (
@@ -141,7 +436,14 @@ export type SendMessageHandler = (
   documentContext?: DocumentContext,
   sessionId?: string,
   workspacePath?: string,
-) => Promise<{ content: string }>;
+) => Promise<{
+  content: string;
+  queuedPromptTerminal?: {
+    lifecycle: 'completed' | 'failed';
+    terminalAt: number;
+    eventSequence: number;
+  };
+}>;
 
 /**
  * Structural view of the AIService members this handler needs. Keeping it
@@ -156,7 +458,7 @@ interface AIServiceInternal {
   sendMessageHandler: SendMessageHandler | null;
   processingQueuedPromptIds: Set<string>;
   matchDebounceTimers: Map<string, ReturnType<typeof setTimeout>>;
-  sessionsProcessingQueue: Set<string>;
+  hasActiveQueueLease(sessionId: string): boolean;
   documentContextService: DocumentContextService;
   hooklessWatcher: HooklessAgentFileWatcher;
 
@@ -327,6 +629,26 @@ export class MessageStreamingHandler {
   ) => {
     // Check for queued prompt deduplication - prevents duplicate execution from multiple renderer panels
     const queuedPromptId = (documentContext as any)?.queuedPromptId as string | undefined;
+    const queuedPromptTruth = (documentContext as any)?.queuedPromptTruth as Record<string, unknown> | undefined;
+    let queuedTerminalEmitted = false;
+    let queuedPromptTerminal: { lifecycle: 'completed' | 'failed'; terminalAt: number; eventSequence: number } | undefined;
+    const queueTruthMetadata = createQueuedStreamTruthBinder(queuedPromptTruth);
+    const queueStreamMetadata = (lifecycle: 'streaming' | 'completed' | 'failed') => {
+      const truth = queueTruthMetadata(lifecycle);
+      if (lifecycle !== 'streaming' && truth) {
+        queuedTerminalEmitted = true;
+        queuedPromptTerminal = {
+          lifecycle,
+          terminalAt: truth.terminalAt as number,
+          eventSequence: truth.eventSequence as number,
+        };
+      }
+      return truth ? { queuedPromptTruth: truth } : {};
+    };
+    const queueMessageMetadata = (lifecycle: 'streaming' | 'completed' | 'failed') => {
+      const truth = queueTruthMetadata(lifecycle);
+      return truth ? { metadata: { queuedPromptTruth: truth } } : {};
+    };
     if (queuedPromptId) {
       if (this.svc.processingQueuedPromptIds.has(queuedPromptId)) {
         logger.main.info(`[AIService] SKIPPING duplicate queued prompt: ${queuedPromptId}`);
@@ -334,7 +656,8 @@ export class MessageStreamingHandler {
       }
 
       // Mark prompt ID as processing
-      // Note: session lock is already set in claimQueuedPrompt handler, no need to check here
+      // Note: session lock is already set via the queue dispatcher's claim/lease
+      // path (queueProcessingLeases), no need to check here
       this.svc.processingQueuedPromptIds.add(queuedPromptId);
       logger.main.info(`[AIService] Processing queued prompt: ${queuedPromptId}, session: ${sessionId}, total prompts in progress: ${this.svc.processingQueuedPromptIds.size}`);
     }
@@ -447,6 +770,7 @@ export class MessageStreamingHandler {
       timestamp: Date.now(),
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
       mode: documentContext?.mode,
+      ...queueMessageMetadata('streaming'),
     };
     // logger.main.info(`[AIService] Adding user message to session ${session.id}: "${message.substring(0, 50)}..." (queuedPromptId: ${queuedPromptId || 'none'}, mode: ${documentContext?.mode})`);
     await this.svc.sessionManager.addMessage(userMessage, session.id);
@@ -579,6 +903,7 @@ export class MessageStreamingHandler {
       }
 
       const reinitEffortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+      const reinitCatalogControlValues = (session.metadata as any)?.catalogControlValues;
       const reinitConfig: any = {
         apiKey,
         maxTokens: (session.providerConfig as any)?.maxTokens,
@@ -586,6 +911,11 @@ export class MessageStreamingHandler {
         // Effort level: explicit session value, else the app-wide default the
         // selector displays (Opus 4.6 adaptive reasoning).
         ...(reinitEffortLevel && { effortLevel: reinitEffortLevel }),
+        ...(reinitCatalogControlValues
+          && typeof reinitCatalogControlValues === 'object'
+          && !Array.isArray(reinitCatalogControlValues)
+          ? { catalogControlValues: reinitCatalogControlValues }
+          : {}),
         ...(isProviderClaudeCode ? {
           thinkingMode: resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode()),
         } : {}),
@@ -662,7 +992,8 @@ export class MessageStreamingHandler {
         const errorMessage: Message = {
           role: 'assistant',
           content: `I encountered an error connecting to ${session.provider}:\n\n${initError.message || String(initError)}`,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          ...queueMessageMetadata('failed'),
         };
 
         await this.svc.sessionManager.addMessage(errorMessage, session.id);
@@ -672,7 +1003,9 @@ export class MessageStreamingHandler {
           this.svc.processingQueuedPromptIds.delete(queuedPromptId);
         }
 
-        // Return empty response instead of throwing - the error message is now in the conversation
+        // Direct submissions preserve the existing recoverable error result.
+        // A queued turn must reject so its exact claim settles failed.
+        if (queuedPromptId) throw initError;
         return { content: '' };
       }
 
@@ -1155,7 +1488,7 @@ export class MessageStreamingHandler {
         return;
       }
       // A queued/continuation turn may already be taking over; let it own the end.
-      if (this.svc.sessionsProcessingQueue.has(data.sessionId)) return;
+      if (this.svc.hasActiveQueueLease(data.sessionId)) return;
 
       logger.main.info(`[AIService] Sub-agent drain settled for session ${data.sessionId}, ending deferred session`);
       await stateManager.endSession(data.sessionId);
@@ -1262,6 +1595,7 @@ export class MessageStreamingHandler {
       if (isClaudeCode) {
         // Refresh provider config every turn so auth/key changes in settings apply immediately.
         const refreshedConfig = await this.svc.buildClaudeCodeRuntimeConfig(session, effectiveWorkspacePath);
+        refreshedConfig.catalogControlContext = resolveClaudeCodeCatalogControlContext(provider, session);
         await provider.initialize(refreshedConfig);
 
         //   messageLength: message.length,
@@ -1585,7 +1919,8 @@ export class MessageStreamingHandler {
             safeSend(event, 'ai:streamResponse', {
               sessionId: session.id,
               partial: fullResponse,  // Send the full accumulated text
-              isComplete: false
+              isComplete: false,
+              ...queueStreamMetadata('streaming'),
             });
             break;
 
@@ -2029,7 +2364,8 @@ export class MessageStreamingHandler {
                       arguments: chunk.toolCall.arguments as Record<string, unknown> | undefined,
                       result: chunk.toolCall.result as string | ToolResult | undefined
                     },
-                    ...(toolResult !== undefined ? { errorMessage: toolResult?.error, isError: toolResult?.success === false } : {})
+                    ...(toolResult !== undefined ? { errorMessage: toolResult?.error, isError: toolResult?.success === false } : {}),
+                    ...queueMessageMetadata('streaming'),
                   };
                   await this.svc.sessionManager.addMessage(toolMessage, session.id);
                 }
@@ -2065,7 +2401,8 @@ export class MessageStreamingHandler {
                     partial: '',
                     isComplete: false,
                     edits: [edit],
-                    toolCalls: [chunk.toolCall]  // Also send as toolCall so it displays in chat
+                    toolCalls: [chunk.toolCall],  // Also send as toolCall so it displays in chat
+                    ...queueStreamMetadata('streaming'),
                   });
                 } else if (chunk.toolCall.name === 'streamContent') {
                   // Mark that we used streamContent AND track the tool call
@@ -2077,7 +2414,8 @@ export class MessageStreamingHandler {
                     sessionId: session.id,
                     partial: '',
                     isComplete: false,
-                    toolCalls: [chunk.toolCall]
+                    toolCalls: [chunk.toolCall],
+                    ...queueStreamMetadata('streaming'),
                   });
                 } else {
                   // For other tools, just send the tool call
@@ -2085,7 +2423,8 @@ export class MessageStreamingHandler {
                     sessionId: session.id,
                     partial: '',
                     isComplete: false,
-                    toolCalls: [chunk.toolCall]
+                    toolCalls: [chunk.toolCall],
+                    ...queueStreamMetadata('streaming'),
                   });
                 }
               }
@@ -2109,7 +2448,8 @@ export class MessageStreamingHandler {
                   result: chunk.toolError.result as string | ToolResult | undefined
                 },
                 isError: true,
-                errorMessage: chunk.toolError.error
+                errorMessage: chunk.toolError.error,
+                ...queueMessageMetadata('streaming'),
               };
               await this.svc.sessionManager.addMessage(errorMessage, session.id);
 
@@ -2117,7 +2457,8 @@ export class MessageStreamingHandler {
                 sessionId: session.id,
                 partial: '',
                 isComplete: false,
-                toolError: chunk.toolError
+                toolError: chunk.toolError,
+                ...queueStreamMetadata('streaming'),
               });
             }
             break;
@@ -2236,7 +2577,7 @@ export class MessageStreamingHandler {
             if (
               isExtensionAgentSession
               && session?.id
-              && !this.svc.sessionsProcessingQueue.has(session.id)
+              && !this.svc.hasActiveQueueLease(session.id)
             ) {
               try {
                 await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
@@ -2518,7 +2859,8 @@ export class MessageStreamingHandler {
                 ...(edits.length > 0 && { edits }),  // Include edits if any
                 // CRITICAL: Don't include tokenUsage from chunk.usage for claude-code provider
                 // Token usage for claude-code comes ONLY from /context command below
-                ...(tokenUsage && session.provider !== 'claude-code' && { tokenUsage })
+                ...(tokenUsage && session.provider !== 'claude-code' && { tokenUsage }),
+                ...queueMessageMetadata(providerError ? 'failed' : 'completed'),
               };
               await this.svc.sessionManager.addMessage(assistantMessage, session.id);
             } else if (edits.length > 0) {
@@ -2530,7 +2872,8 @@ export class MessageStreamingHandler {
                 edits,
                 // CRITICAL: Don't include tokenUsage from chunk.usage for claude-code provider
                 // Token usage for claude-code comes ONLY from /context command below
-                ...(tokenUsage && session.provider !== 'claude-code' && { tokenUsage })
+                ...(tokenUsage && session.provider !== 'claude-code' && { tokenUsage }),
+                ...queueMessageMetadata(providerError ? 'failed' : 'completed'),
               };
               await this.svc.sessionManager.addMessage(assistantMessage, session.id);
             } else if (hasStreamingContent) {
@@ -2548,7 +2891,8 @@ export class MessageStreamingHandler {
                 },
                 // CRITICAL: Don't include tokenUsage from chunk.usage for claude-code provider
                 // Token usage for claude-code comes ONLY from /context command below
-                ...(tokenUsage && session.provider !== 'claude-code' && { tokenUsage })
+                ...(tokenUsage && session.provider !== 'claude-code' && { tokenUsage }),
+                ...queueMessageMetadata(providerError ? 'failed' : 'completed'),
               };
               await this.svc.sessionManager.addMessage(assistantMessage, session.id);
             } else if (toolCalls.length > 0) {
@@ -2559,7 +2903,8 @@ export class MessageStreamingHandler {
                 timestamp: Date.now(),
                 // CRITICAL: Don't include tokenUsage from chunk.usage for claude-code provider
                 // Token usage for claude-code comes ONLY from /context command below
-                ...(tokenUsage && session.provider !== 'claude-code' && { tokenUsage })
+                ...(tokenUsage && session.provider !== 'claude-code' && { tokenUsage }),
+                ...queueMessageMetadata(providerError ? 'failed' : 'completed'),
               };
               await this.svc.sessionManager.addMessage(assistantMessage, session.id);
             }
@@ -2616,7 +2961,8 @@ export class MessageStreamingHandler {
               lastTextSection: lastTextSection.trim() || prevTextSection,
               isComplete: true,
               error: providerError,
-              autoContextPending: session.provider === 'claude-code'
+              autoContextPending: session.provider === 'claude-code',
+              ...queueStreamMetadata(providerError ? 'failed' : 'completed'),
             });
 
             // Mark session as complete so UI shows agent is ready.
@@ -2633,7 +2979,7 @@ export class MessageStreamingHandler {
             const willResume = session.provider === 'claude-code'
               && typeof (provider as any).willResumeAfterCompletion === 'function'
               && (provider as any).willResumeAfterCompletion();
-            const queuedChainAlreadyActive = this.svc.sessionsProcessingQueue.has(session.id);
+            const queuedChainAlreadyActive = this.svc.hasActiveQueueLease(session.id);
             let queuedContinuationScheduled = false;
             if (!hasTeammates && !willResume && !queuedChainAlreadyActive) {
               queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
@@ -2810,7 +3156,7 @@ export class MessageStreamingHandler {
         sawComplete: sawCompleteChunk,
         providerError,
         alreadySettled: settledOnErrorChunk,
-        queuedChainActive: this.svc.sessionsProcessingQueue.has(session.id),
+        queuedChainActive: this.svc.hasActiveQueueLease(session.id),
       })) {
         logger.main.warn(
           `[AIService] Provider stream for ${session.id} ended on an error chunk without completing -- settling session`
@@ -2848,7 +3194,7 @@ export class MessageStreamingHandler {
       }
 
       // Clear executing and pending prompt flags for mobile sync
-      if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+      if (syncProvider && !this.svc.hasActiveQueueLease(session.id)) {
         syncProvider.pushChange(session.id, {
           type: 'metadata_updated',
           metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
@@ -2861,7 +3207,7 @@ export class MessageStreamingHandler {
         // logger.main.info(`[AIService] Cleared prompt tracking for ${queuedPromptId}`);
       }
 
-      return { content: fullResponse };
+      return { content: fullResponse, queuedPromptTerminal };
     } catch (error) {
       const errorTime = Date.now() - startTime;
       const isClaudeCode = session?.provider === 'claude-code';
@@ -2915,7 +3261,7 @@ export class MessageStreamingHandler {
         const willResumeOnError = session.provider === 'claude-code'
           && typeof (provider as any).willResumeAfterCompletion === 'function'
           && (provider as any).willResumeAfterCompletion();
-        const queuedChainAlreadyActiveOnError = this.svc.sessionsProcessingQueue.has(session.id);
+        const queuedChainAlreadyActiveOnError = this.svc.hasActiveQueueLease(session.id);
         let queuedContinuationScheduledOnError = false;
         if (!hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
           queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
@@ -2942,7 +3288,7 @@ export class MessageStreamingHandler {
         }
 
         // Clear executing and pending prompt flags for mobile sync on error
-        if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
+        if (syncProvider && !this.svc.hasActiveQueueLease(session.id)) {
           syncProvider.pushChange(session.id, {
             type: 'metadata_updated',
             metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
@@ -2972,6 +3318,28 @@ export class MessageStreamingHandler {
           sessionId: session?.id,
           message: error instanceof Error ? error.message : 'Unknown error occurred'
         });
+
+        // The queue driver settles this exact thrown path as failed. Emit one
+        // terminal boundary with the same durable association so a renderer
+        // never upgrades an earlier bound fragment into a completed response.
+        if (queuedPromptTruth && session?.id && !queuedTerminalEmitted) {
+          const errorContent = error instanceof Error ? error.message : 'Unknown error occurred';
+          await this.svc.sessionManager.addMessage({
+            role: 'assistant',
+            content: errorContent,
+            timestamp: Date.now(),
+            isError: true,
+            errorMessage: errorContent,
+            ...queueMessageMetadata('failed'),
+          }, session.id);
+          safeSend(event, 'ai:streamResponse', {
+            sessionId: session.id,
+            content: '',
+            isComplete: true,
+            error: errorContent,
+            ...queueStreamMetadata('failed'),
+          });
+        }
       }
 
       // Clean up queued prompt tracking on error
@@ -2980,6 +3348,11 @@ export class MessageStreamingHandler {
         logger.main.info(`[AIService] Cleared prompt tracking for ${queuedPromptId} (error path)`);
       }
 
+      if (queuedPromptTerminal) {
+        const terminalError = error instanceof Error ? error : new Error(String(error));
+        (terminalError as Error & { queuedPromptTerminal?: typeof queuedPromptTerminal }).queuedPromptTerminal = queuedPromptTerminal;
+        throw terminalError;
+      }
       throw error;
     }
   };

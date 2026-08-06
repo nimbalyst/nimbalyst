@@ -7,6 +7,51 @@ import {
 } from '../claudeCliSubmit';
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
 
+const productionMocks = vi.hoisted(() => ({
+  handlers: new Map<string, (...args: any[]) => unknown>(),
+  loadSession: vi.fn(),
+  writeToTerminal: vi.fn(),
+  logUserPrompt: vi.fn(async () => undefined),
+  sendEvent: vi.fn(),
+  reveal: vi.fn(),
+}));
+
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
+  AISessionsRepository: { get: productionMocks.loadSession },
+}));
+
+vi.mock('../../TerminalSessionManager', () => ({
+  getTerminalSessionManager: () => ({
+    writeToTerminal: productionMocks.writeToTerminal,
+  }),
+}));
+
+vi.mock('../claudeCliUserPromptLog', () => ({
+  logClaudeCliUserPrompt: productionMocks.logUserPrompt,
+}));
+
+vi.mock('../claudeCliRevealTerminal', () => ({
+  broadcastClaudeCliRevealTerminal: productionMocks.reveal,
+}));
+
+vi.mock('../../analytics/AnalyticsService', () => ({
+  AnalyticsService: {
+    getInstance: () => ({ sendEvent: productionMocks.sendEvent }),
+  },
+}));
+
+vi.mock('../../../utils/ipcRegistry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../utils/ipcRegistry')>()),
+  safeHandle: vi.fn((channel: string, handler: (...args: any[]) => unknown) => {
+    productionMocks.handlers.set(channel, handler);
+  }),
+}));
+
+vi.mock('../claudeCliLauncherSingleton', () => ({
+  ensureClaudeCliSession: vi.fn(),
+  isClaudeCliInstalled: vi.fn(),
+}));
+
 /** Bracketed-paste markers the composed path wraps its payload in. */
 const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
@@ -93,6 +138,37 @@ describe('submitClaudeCliPrompt', () => {
     );
   });
 
+  it('strips PTY-unsafe control bytes (e.g. an embedded ESC sequence) from the prompt before writing', async () => {
+    const h = harness();
+    await submitClaudeCliPrompt(
+      { sessionId: 's1', workspacePath: '/w', prompt: 'do it\x1b[31mnow\x07' },
+      h.deps,
+    );
+    // Non-slash-command prompts are wrapped in bracketed-paste markers so the
+    // CLI treats the write as one paste instead of one per PTY fragment
+    // (unrelated to control-byte stripping, added after this fix was written).
+    expect(h.writes).toEqual([
+      ['s1', '\x1b[200~do it[31mnow\x1b[201~'],
+      ['s1', '\r'],
+    ]);
+    expect(h.logUserPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: 'do it[31mnow' }),
+    );
+  });
+
+  it('keeps tab and embedded newline/carriage-return in the prompt (legitimate whitespace, not PTY-unsafe)', async () => {
+    const h = harness();
+    await submitClaudeCliPrompt(
+      { sessionId: 's1', workspacePath: '/w', prompt: 'line one\nline two\tindented' },
+      h.deps,
+    );
+    // The composer flattens a real newline to a literal '\n' before it ever
+    // reaches the PTY (a genuine newline is Enter to the CLI's readline and
+    // would submit mid-prompt) -- unrelated to control-byte stripping, this
+    // is the composer's own multi-line-prompt safety behavior.
+    expect(h.writes[0]).toEqual(['s1', '\x1b[200~line one\\nline two\tindented\x1b[201~']);
+  });
+
   it('no-ops (no write/log/analytics) when there is nothing to send', async () => {
     const h = harness();
     const res = await submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: '   ' }, h.deps);
@@ -100,6 +176,15 @@ describe('submitClaudeCliPrompt', () => {
     expect(h.writes).toHaveLength(0);
     expect(h.logUserPrompt).not.toHaveBeenCalled();
     expect(h.sendAnalytics).not.toHaveBeenCalled();
+  });
+
+  it('keeps provider entry non-terminal when post-write prompt logging fails', async () => {
+    const h = harness();
+    h.logUserPrompt.mockRejectedValueOnce(new Error('disk unavailable'));
+    await expect(submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: 'already entered' }, h.deps))
+      .resolves.toEqual({ submitted: true });
+    expect(h.writes).toHaveLength(2);
+    expect(h.sendAnalytics).toHaveBeenCalledTimes(1);
   });
 
   /**
@@ -142,12 +227,35 @@ describe('submitClaudeCliPrompt', () => {
       ]);
     });
 
-    it('does NOT add a menu-dismiss space when the slash command already has args (menu closed by its own space) (NIM-851)', async () => {
+    it('isolates the command name and sends its own menu-dismiss space BEFORE the arguments (NIM-XXXX, corrects NIM-851)', async () => {
+      // A bulk-written "track bug foo" let the autocomplete menu keep
+      // fuzzy-matching the WHOLE trailing text instead of locking onto
+      // "track" at the natural word boundary, so Enter could hijack the
+      // wrong highlighted row -- or land on no match and submit the raw
+      // text as a literal chat message. Fix: always resolve/dismiss the
+      // menu on the bare command name first, then send the argument text.
       const h = harness();
       await submitClaudeCliPrompt({ sessionId: 's1', workspacePath: '/w', prompt: '/track bug foo' }, h.deps);
       expect(h.writes).toEqual([
         ['s1', '/'],
-        ['s1', 'track bug foo'],
+        ['s1', 'track'],
+        ['s1', ' '],
+        ['s1', 'bug foo'],
+        ['s1', '\r'],
+      ]);
+    });
+
+    it('reliably submits "/compact focus on <text>" (the agent-triggered self-compaction case)', async () => {
+      const h = harness();
+      await submitClaudeCliPrompt(
+        { sessionId: 's1', workspacePath: '/w', prompt: '/compact focus on current task state' },
+        h.deps,
+      );
+      expect(h.writes).toEqual([
+        ['s1', '/'],
+        ['s1', 'compact'],
+        ['s1', ' '],
+        ['s1', 'focus on current task state'],
         ['s1', '\r'],
       ]);
     });
@@ -254,4 +362,61 @@ describe('submitClaudeCliPrompt', () => {
       expect(large.delays[0]).toBeGreaterThan(small.delays[0]);
     });
   });
+});
+
+describe('registered claude-cli:submit-prompt recovery boundary', () => {
+  it(
+    'keeps every production side effect at zero for fail-closed states, then submits exactly once after recovery',
+    async () => {
+      productionMocks.handlers.clear();
+      productionMocks.loadSession.mockReset();
+      productionMocks.writeToTerminal.mockClear();
+      productionMocks.logUserPrompt.mockClear();
+      productionMocks.sendEvent.mockClear();
+      productionMocks.reveal.mockClear();
+
+      const { registerTerminalHandlers } = await import('../../../ipc/TerminalHandlers');
+      registerTerminalHandlers();
+      const handler = productionMocks.handlers.get('claude-cli:submit-prompt');
+      expect(handler).toBeTypeOf('function');
+      const payload = {
+        sessionId: 'production-session',
+        workspacePath: '/workspace',
+        prompt: 'once',
+      };
+
+      const blockedStates: unknown[] = [
+        null,
+        { metadata: '{not-json' },
+        { metadata: [] },
+        { metadata: { modelChangeReconciliation: 'malformed' } },
+        { metadata: { modelChangeReconciliation: { status: 'pending' } } },
+      ];
+      for (const state of blockedStates) {
+        productionMocks.loadSession.mockResolvedValueOnce(state);
+        await expect(handler!({}, payload)).rejects.toThrow(
+          'Session model recovery is pending',
+        );
+      }
+      productionMocks.loadSession.mockRejectedValueOnce(new Error('session store unavailable'));
+      await expect(handler!({}, payload)).rejects.toThrow(
+        'Session model recovery is pending',
+      );
+
+      expect(productionMocks.writeToTerminal).not.toHaveBeenCalled();
+      expect(productionMocks.logUserPrompt).not.toHaveBeenCalled();
+      expect(productionMocks.sendEvent).not.toHaveBeenCalled();
+      expect(productionMocks.reveal).not.toHaveBeenCalled();
+
+      productionMocks.loadSession.mockResolvedValueOnce({
+        metadata: { modelChangeReconciliation: null },
+      });
+      await expect(handler!({}, payload)).resolves.toEqual({ success: true });
+      expect(productionMocks.writeToTerminal).toHaveBeenCalledTimes(2);
+      expect(productionMocks.logUserPrompt).toHaveBeenCalledTimes(1);
+      expect(productionMocks.sendEvent).toHaveBeenCalledTimes(1);
+      expect(productionMocks.reveal).toHaveBeenCalledTimes(1);
+    },
+    20_000,
+  );
 });

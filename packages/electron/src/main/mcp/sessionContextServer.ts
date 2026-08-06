@@ -18,6 +18,13 @@ import {
   appendPendingPromptSection,
   collectPendingPromptDescriptionsFromRawRows,
 } from "../services/sessionSummaryPrompt";
+import { resolveTargetWorkspaceBinding } from "./targetWorkspaceBinding";
+
+const TARGET_WORKSPACE_PATH_SCHEMA = {
+  type: "string",
+  description:
+    "Optional explicit workspace path for an operation in another project. If omitted, this call remains bound to the caller's workspace.",
+} as const;
 
 // ─── Utilities ──────────────────────────────────────────────────────
 
@@ -119,7 +126,10 @@ async function handleGetSessionSummary(
   const sessionId = targetSessionId || currentSessionId;
 
   const session = await AISessionsRepository.get(sessionId);
-  if (!session) {
+  // Workspace binding: a session belonging to another workspace is reported as
+  // not-found rather than leaked (cross-workspace reads go through their own
+  // explicitly-bound surfaces, never this default-bound one).
+  if (!session || session.workspacePath !== workspaceId) {
     return `Error: Session ${sessionId} not found`;
   }
 
@@ -564,6 +574,63 @@ async function handleGetWorkstreamEditedFiles(
   }
 }
 
+async function handleGetSessionVisibility(
+  targetSessionId: string | undefined,
+  currentSessionId: string,
+  workspaceId: string
+): Promise<string> {
+  const sessionId = targetSessionId || currentSessionId;
+
+  const session = await AISessionsRepository.get(sessionId);
+  // Workspace binding: a session belonging to another workspace is reported as
+  // not-found rather than leaked, matching get_session_summary.
+  if (!session || session.workspacePath !== workspaceId) {
+    return `Error: Session ${sessionId} not found`;
+  }
+
+  return JSON.stringify(
+    {
+      sessionId,
+      title: session.title || "Untitled",
+      pinned: session.isPinned === true,
+    },
+    null,
+    2
+  );
+}
+
+async function handleSetSessionVisibility(
+  sessionId: string,
+  pinned: boolean,
+  workspaceId: string
+): Promise<string> {
+  // Workspace binding: this is a WRITE against an arbitrary sessionId — verify
+  // the target exists and belongs to the resolved workspace before mutating.
+  // Bound to the caller's own workspace unless targetWorkspacePath opts in.
+  // This authorization boundary mirrors update_session_board and must never be
+  // weakened to make the tool easier to call.
+  const target = await AISessionsRepository.get(sessionId);
+  if (!target || target.workspacePath !== workspaceId) {
+    return `Error: Session ${sessionId} not found`;
+  }
+
+  await AISessionsRepository.updateMetadata(sessionId, { isPinned: pinned } as any);
+
+  // Notify renderer windows so the sessions list reflects the change without
+  // waiting for the next sync cycle, matching update_session_board.
+  const { BrowserWindow } = await import("electron");
+  BrowserWindow.getAllWindows().forEach((window) => {
+    if (!window.isDestroyed()) {
+      window.webContents.send("sessions:session-updated", sessionId, {
+        isPinned: pinned,
+      });
+    }
+  });
+
+  const title = target.title || sessionId;
+  return `Updated "${title}": pinned=${pinned}`;
+}
+
 async function handleScheduleWakeup(args: {
   sessionId: string;
   workspaceId: string;
@@ -574,7 +641,9 @@ async function handleScheduleWakeup(args: {
   const { sessionId, workspaceId, delaySeconds, prompt, reason } = args;
 
   const session = await AISessionsRepository.get(sessionId);
-  if (!session) {
+  // Workspace binding: scheduling a wakeup is a mutation — never allow it
+  // against a session bound to a different workspace.
+  if (!session || session.workspacePath !== workspaceId) {
     return `Error: Session ${sessionId} not found`;
   }
 
@@ -634,6 +703,7 @@ export const SESSION_CONTEXT_TOOL_SCHEMAS = [
           description:
             "ID of the session to summarize. If omitted, summarizes the current session. Use list_recent_sessions to find session IDs.",
         },
+        targetWorkspacePath: TARGET_WORKSPACE_PATH_SCHEMA,
       },
       required: [],
     },
@@ -650,6 +720,7 @@ export const SESSION_CONTEXT_TOOL_SCHEMAS = [
           description:
             "ID of the workstream parent session. If omitted, uses the current session's parent workstream.",
         },
+        targetWorkspacePath: TARGET_WORKSPACE_PATH_SCHEMA,
       },
       required: [],
     },
@@ -687,6 +758,7 @@ export const SESSION_CONTEXT_TOOL_SCHEMAS = [
           description:
             "If true, include archived sessions in the results. Defaults to false. Archived sessions are marked with [ARCHIVED] in the output.",
         },
+        targetWorkspacePath: TARGET_WORKSPACE_PATH_SCHEMA,
       },
       required: [],
     },
@@ -737,6 +809,45 @@ export const SESSION_CONTEXT_TOOL_SCHEMAS = [
     },
   },
   {
+    name: "session_get_visibility",
+    description:
+      "Get a session's visibility state (currently: whether it is pinned to the top of the sessions list). Workspace-scoped: a session outside the caller's (or opted-in target) workspace is reported as not found. If no sessionId is provided, reports the current session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description:
+            "ID of the session to inspect. If omitted, inspects the current session. Use list_recent_sessions to find session IDs.",
+        },
+        targetWorkspacePath: TARGET_WORKSPACE_PATH_SCHEMA,
+      },
+      required: [],
+    },
+  },
+  {
+    name: "session_set_visibility",
+    description:
+      "Set a session's visibility state (currently: pin/unpin it in the sessions list). Workspace-scoped: refuses to mutate a session outside the caller's (or opted-in target) workspace — this authorization boundary is never bypassed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description:
+            "ID of the session to update. Use list_recent_sessions to find session IDs.",
+        },
+        pinned: {
+          type: "boolean",
+          description:
+            "Whether the session should be pinned to the top of the sessions list.",
+        },
+        targetWorkspacePath: TARGET_WORKSPACE_PATH_SCHEMA,
+      },
+      required: ["sessionId", "pinned"],
+    },
+  },
+  {
     name: "update_session_board",
     description:
       "Update a session's kanban board metadata (phase and/or tags). Phase controls which column the session appears in on the Sessions Board. Tags are free-form strings for categorization. Either field can be provided independently.",
@@ -748,6 +859,7 @@ export const SESSION_CONTEXT_TOOL_SCHEMAS = [
           description:
             "ID of the session to update. Use list_recent_sessions to find session IDs.",
         },
+        targetWorkspacePath: TARGET_WORKSPACE_PATH_SCHEMA,
         phase: {
           type: ["string", "null"],
           enum: [
@@ -790,10 +902,11 @@ export async function dispatchSessionContextTool(
   try {
     switch (toolName) {
       case "get_session_summary": {
+        const targetWorkspaceId = resolveTargetWorkspaceBinding(workspaceId, args);
         const result = await handleGetSessionSummary(
           args?.sessionId as string | undefined,
           aiSessionId,
-          workspaceId
+          targetWorkspaceId
         );
         return {
           content: [{ type: "text", text: result }],
@@ -802,10 +915,11 @@ export async function dispatchSessionContextTool(
       }
 
       case "get_workstream_overview": {
+        const targetWorkspaceId = resolveTargetWorkspaceBinding(workspaceId, args);
         const result = await handleGetWorkstreamOverview(
           args?.workstreamId as string | undefined,
           aiSessionId,
-          workspaceId
+          targetWorkspaceId
         );
         return {
           content: [{ type: "text", text: result }],
@@ -814,6 +928,7 @@ export async function dispatchSessionContextTool(
       }
 
       case "list_recent_sessions": {
+        const targetWorkspaceId = resolveTargetWorkspaceBinding(workspaceId, args);
         const limit = Math.min(
           Math.max((args?.limit as number) || 10, 1),
           250
@@ -829,7 +944,7 @@ export async function dispatchSessionContextTool(
           args?.query as string | undefined,
           limit,
           offset,
-          workspaceId,
+          targetWorkspaceId,
           aiSessionId,
           includeArchived,
           searchField
@@ -895,6 +1010,44 @@ export async function dispatchSessionContextTool(
         };
       }
 
+      case "session_get_visibility": {
+        const targetWorkspaceId = resolveTargetWorkspaceBinding(workspaceId, args);
+        const result = await handleGetSessionVisibility(
+          args?.sessionId as string | undefined,
+          aiSessionId,
+          targetWorkspaceId
+        );
+        return {
+          content: [{ type: "text", text: result }],
+          isError: result.startsWith("Error:"),
+        };
+      }
+
+      case "session_set_visibility": {
+        const sessionId = args?.sessionId as string;
+        const pinned = args?.pinned as boolean | undefined;
+
+        if (!sessionId) {
+          return {
+            content: [{ type: "text", text: "Error: sessionId is required" }],
+            isError: true,
+          };
+        }
+        if (typeof pinned !== "boolean") {
+          return {
+            content: [{ type: "text", text: "Error: pinned is required and must be a boolean" }],
+            isError: true,
+          };
+        }
+
+        const targetWorkspaceId = resolveTargetWorkspaceBinding(workspaceId, args);
+        const result = await handleSetSessionVisibility(sessionId, pinned, targetWorkspaceId);
+        return {
+          content: [{ type: "text", text: result }],
+          isError: result.startsWith("Error:"),
+        };
+      }
+
       case "update_session_board": {
         const sessionId = args?.sessionId as string;
         const phase = args?.phase as string | null | undefined;
@@ -925,6 +1078,19 @@ export async function dispatchSessionContextTool(
         if (tags !== undefined && !Array.isArray(tags)) {
           return {
             content: [{ type: "text", text: "Error: tags must be an array of strings" }],
+            isError: true,
+          };
+        }
+
+        // Workspace binding: this is a WRITE against an arbitrary sessionId —
+        // verify the target exists and belongs to the resolved workspace before
+        // mutating (previously any workspace could update any session's board).
+        // Bound to the caller's own workspace unless targetWorkspacePath opts in.
+        const targetWorkspaceId = resolveTargetWorkspaceBinding(workspaceId, args);
+        const boardTarget = await AISessionsRepository.get(sessionId);
+        if (!boardTarget || boardTarget.workspacePath !== targetWorkspaceId) {
+          return {
+            content: [{ type: "text", text: `Error: Session ${sessionId} not found` }],
             isError: true,
           };
         }

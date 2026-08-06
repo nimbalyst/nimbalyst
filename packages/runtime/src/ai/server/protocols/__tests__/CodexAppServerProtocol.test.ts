@@ -294,6 +294,133 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
+  it('maps the frozen 0.144.1 tokenUsage.last pair to context while keeping total cumulative', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({
+      workspacePath: '/tmp/ws',
+      model: 'gpt-5.6-sol',
+    });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-context' } } });
+    const session = await sessionPromise;
+    const events: ProtocolEvent[] = [];
+    const collector = (async () => {
+      for await (const event of protocol.sendMessage(session, {
+        content: 'hi',
+        sessionId: 'nim-session-context',
+      })) {
+        events.push(event);
+      }
+    })();
+    const turnReq = await nextWrittenMatching(child, 'turn/start');
+    child.emitLine({ id: turnReq.id, result: { turn: { id: 'turn-context', items: [], status: 'inProgress' } } });
+    child.emitLine({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-context',
+        turnId: 'turn-context',
+        tokenUsage: {
+          last: {
+            inputTokens: 42_000,
+            cachedInputTokens: 1_000,
+            outputTokens: 100,
+            reasoningOutputTokens: 50,
+            totalTokens: 42_150,
+          },
+          total: {
+            inputTokens: 900_000,
+            cachedInputTokens: 400_000,
+            outputTokens: 50_000,
+            reasoningOutputTokens: 10_000,
+            totalTokens: 960_000,
+          },
+          modelContextWindow: 372_000,
+        },
+      },
+    });
+    child.emitLine({ method: 'turn/completed', params: { threadId: 'thread-context', turn: { id: 'turn-context', status: 'completed' } } });
+    await collector;
+
+    const complete = events.at(-1);
+    expect(complete).toMatchObject({
+      type: 'complete',
+      usage: {
+        input_tokens: 900_000,
+        output_tokens: 50_000,
+        total_tokens: 960_000,
+      },
+      contextObservation: {
+        schemaVersion: 1,
+        fillTokens: 42_000,
+        runtimeWindowTokens: 372_000,
+        adapterId: 'codex-app-server-thread-usage-v1',
+        windowPolicy: 'runtime-required',
+        identity: {
+          nimbalystSessionId: 'nim-session-context',
+          providerId: 'openai-codex',
+          persistedModelId: 'openai-codex:gpt-5.6-sol',
+          providerModelId: 'gpt-5.6-sol',
+          upstreamThreadId: 'thread-context',
+          producerRole: 'lead',
+        },
+        order: {
+          lifecycleGeneration: 0,
+          sequence: 1,
+          turnId: 'turn-context',
+        },
+      },
+    });
+    expect(complete?.contextObservation?.fillTokens).not.toBe(900_000);
+    protocol.cleanupSession(session);
+  });
+
+  it.each([
+    ['null window', 'thread-context', 'turn-context', null, 42_000],
+    ['missing current input', 'thread-context', 'turn-context', 372_000, undefined],
+    ['thread mismatch', 'stray-thread', 'turn-context', 372_000, 42_000],
+    ['turn mismatch', 'thread-context', 'stray-turn', 372_000, 42_000],
+  ])('keeps context unavailable for %s without promoting cumulative total', async (
+    _label,
+    notificationThreadId,
+    notificationTurnId,
+    modelContextWindow,
+    inputTokens,
+  ) => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws', model: 'gpt-5.6-sol' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-context' } } });
+    const session = await sessionPromise;
+    const events: ProtocolEvent[] = [];
+    const collector = (async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'hi', sessionId: 'nim-session-context' })) events.push(event);
+    })();
+    const turnReq = await nextWrittenMatching(child, 'turn/start');
+    child.emitLine({ id: turnReq.id, result: { turn: { id: 'turn-context', items: [], status: 'inProgress' } } });
+    child.emitLine({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: notificationThreadId,
+        turnId: notificationTurnId,
+        tokenUsage: {
+          last: { inputTokens, outputTokens: 10, totalTokens: 10 },
+          total: { inputTokens: 900_000, outputTokens: 50_000, totalTokens: 950_000 },
+          modelContextWindow,
+        },
+      },
+    });
+    child.emitLine({ method: 'turn/completed', params: { threadId: 'thread-context', turn: { id: 'turn-context', status: 'completed' } } });
+    await collector;
+    const complete = events.at(-1);
+    expect(complete?.usage?.input_tokens).toBe(900_000);
+    expect(complete?.contextObservation).toBeUndefined();
+    protocol.cleanupSession(session);
+  });
+
   it('translates fileChange item/completed into a tool_call event with diff-based baselines', async () => {
     const protocol = new CodexAppServerProtocol();
     const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });

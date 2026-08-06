@@ -55,7 +55,38 @@
       .about-version {
         font-size: 18px;
         color: #666;
-        margin: 0 0 35px 0;
+        margin: 0 0 8px 0;
+      }
+
+      .about-build-row {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin: 0 0 30px 0;
+        font-size: 12px;
+        color: #888;
+        font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      }
+
+      .build-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      }
+
+      .build-badge.official {
+        background: rgba(16, 185, 129, 0.12);
+        color: #0a8a5f;
+      }
+
+      .build-badge.custom {
+        background: rgba(245, 158, 11, 0.15);
+        color: #b45309;
       }
 
       .about-description {
@@ -172,6 +203,20 @@
           color: #aaa;
         }
 
+        .about-build-row {
+          color: #999;
+        }
+
+        .build-badge.official {
+          background: rgba(16, 185, 129, 0.18);
+          color: #34d399;
+        }
+
+        .build-badge.custom {
+          background: rgba(245, 158, 11, 0.2);
+          color: #fbbf24;
+        }
+
         .about-description {
           color: #ccc;
         }
@@ -226,6 +271,20 @@
         color: #aaa;
       }
 
+      body.dark-theme .about-build-row {
+        color: #999;
+      }
+
+      body.dark-theme .build-badge.official {
+        background: rgba(16, 185, 129, 0.18);
+        color: #34d399;
+      }
+
+      body.dark-theme .build-badge.custom {
+        background: rgba(245, 158, 11, 0.2);
+        color: #fbbf24;
+      }
+
       body.dark-theme .about-description {
         color: #ccc;
       }
@@ -269,6 +328,10 @@
         <img src="nimbalyst-logo.png" alt="Nimbalyst">
       </div>
       <p class="about-version" id="about-version">Version</p>
+      <div class="about-build-row" id="about-build-row">
+        <span class="build-badge" id="build-badge"></span>
+        <span id="build-meta"></span>
+      </div>
 
       <p class="about-description">
         Nimbalyst is the visual workspace for building with Codex and Claude Code
@@ -326,13 +389,26 @@
         document.body.dataset.theme = theme;
       });
 
-      // Populate version from main process
+      // Populate version + build identity (NIM-413) from main process
       (async () => {
         try {
-          const version = await window.electronAPI?.getAppVersion?.();
-          if (version) {
-            const el = document.getElementById('about-version');
-            if (el) el.textContent = `Version ${version}`;
+          const info = await window.electronAPI?.getBuildInfo?.();
+          if (!info) return;
+
+          const versionEl = document.getElementById('about-version');
+          if (versionEl) versionEl.textContent = `Version ${info.version}`;
+
+          const row = document.getElementById('about-build-row');
+          const badge = document.getElementById('build-badge');
+          const meta = document.getElementById('build-meta');
+          if (row && badge && meta) {
+            badge.textContent = info.isOfficialBuild ? 'Official Build' : 'Custom Build';
+            badge.className = `build-badge ${info.isOfficialBuild ? 'official' : 'custom'}`;
+            const buildDateLabel = info.buildDate === 'unknown'
+              ? 'unknown date'
+              : new Date(info.buildDate).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+            meta.textContent = `${info.commitHash} · ${buildDateLabel}`;
+            row.style.display = 'flex';
           }
         } catch {}
       })();

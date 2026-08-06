@@ -5,6 +5,7 @@ import viteNimbalystPlugin from '../shared/viteNimbalystPlugin.ts'
 import { viteStaticCopy } from 'vite-plugin-static-copy'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
 import fs from 'fs'
+import { execSync } from 'child_process'
 import { findMainBundleGraphViolations } from '../../scripts/main-bundle-graph-policy.mjs'
 
 // Plugin to optimize Shiki language imports
@@ -88,6 +89,19 @@ const isOfficialBuild = process.env.OFFICIAL_BUILD === 'true';
 // IS_DEV_MODE is true only when running `npm run dev`, not for any packaged builds
 const isDevMode = isDev;
 
+// Git commit hash + build timestamp, captured at build time for the About
+// window's build-identity display (NIM-413). A packaged app doesn't ship its
+// .git directory, so these must be baked into the bundle now via `define`
+// below rather than read at runtime.
+const buildCommitHash = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: __dirname }).toString().trim();
+  } catch {
+    return 'unknown';
+  }
+})();
+const buildTimestamp = new Date().toISOString();
+
 // Read Claude Agent SDK version at build time for display in settings.
 //
 // The bundled SDK may live in packages/electron/node_modules/ (when not
@@ -165,6 +179,8 @@ export default defineConfig({
     define: {
       'process.env.OFFICIAL_BUILD': JSON.stringify(isOfficialBuild ? 'true' : 'false'),
       'process.env.IS_DEV_MODE': JSON.stringify(isDevMode ? 'true' : 'false'),
+      'process.env.BUILD_COMMIT_HASH': JSON.stringify(buildCommitHash),
+      'process.env.BUILD_DATE': JSON.stringify(buildTimestamp),
       // Note: RUN_ONE_DEV_MODE is intentionally NOT defined here.
       // The main process reads it from the actual runtime environment via process.env.
       // This allows crystal-run.sh to set it at runtime without affecting normal dev mode.

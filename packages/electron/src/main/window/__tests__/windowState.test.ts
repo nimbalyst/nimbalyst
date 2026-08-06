@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   windowStates,
+  windows,
   resolveActiveWorkspacePath,
   resolveActiveWorkspacePathForWindowId,
   resolveDocumentServicePath,
   windowReferencesWorkspace,
   anyWindowReferencesWorkspace,
+  hasLiveWindowForWorkspace,
 } from '../windowState';
 import type { WindowState } from '../../types';
 
@@ -22,6 +24,7 @@ function makeState(partial: Partial<WindowState> = {}): WindowState {
 describe('windowState helpers', () => {
   beforeEach(() => {
     windowStates.clear();
+    windows.clear();
   });
 
   describe('resolveActiveWorkspacePath', () => {
@@ -177,6 +180,23 @@ describe('windowState helpers', () => {
     it('returns false when the only references are excluded', () => {
       windowStates.set(1, makeState({ workspacePath: '/ws/lone' }));
       expect(anyWindowReferencesWorkspace('/ws/lone', 1)).toBe(false);
+    });
+  });
+
+  describe('hasLiveWindowForWorkspace', () => {
+    it('returns true only when a non-destroyed window references the path', () => {
+      windows.set(1, { isDestroyed: () => false } as any);
+      windowStates.set(1, makeState({ workspacePath: '/ws/a' }));
+
+      expect(hasLiveWindowForWorkspace('/ws/a')).toBe(true);
+      expect(hasLiveWindowForWorkspace('/ws/b')).toBe(false);
+    });
+
+    it('ignores stale state owned by a destroyed window', () => {
+      windows.set(1, { isDestroyed: () => true } as any);
+      windowStates.set(1, makeState({ workspacePath: '/ws/a' }));
+
+      expect(hasLiveWindowForWorkspace('/ws/a')).toBe(false);
     });
   });
 });

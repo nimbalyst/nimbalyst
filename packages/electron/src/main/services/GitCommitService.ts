@@ -2,6 +2,11 @@ import log from 'electron-log/main';
 import { existsSync, readdirSync, rmSync, statSync } from 'fs';
 import { isAbsolute, join, relative, resolve, sep } from 'path';
 import simpleGit, { SimpleGit } from 'simple-git';
+import {
+  describeForbiddenGitAuthor,
+  resolveGitAuthorIdentity,
+  type ResolvedGitAuthor,
+} from './GitAuthorIdentityGuard';
 import { gitOperationLock } from './GitOperationLock';
 import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
 import { sanitizeGitRepositoryEnv } from './gitRepositoryEnv';
@@ -297,6 +302,31 @@ export async function executeGitCommit(
         const git: SimpleGit = withOutput(
           simpleGit(workspacePath, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(gitEnv)
         );
+
+        // Reject before touching the index at all: a fixture identity (the
+        // "Test User" denylist scripts/check-push-authors.mjs enforces at push
+        // time -- 2026-07-22 incident) must never reach a real commit in the
+        // first place. Resolve via `git var GIT_AUTHOR_IDENT` so an
+        // env-only override (GIT_AUTHOR_NAME/EMAIL) is caught too, not just
+        // repo/global config.
+        let authorIdentity: ResolvedGitAuthor;
+        try {
+          authorIdentity = await resolveGitAuthorIdentity(git);
+        } catch (identityError) {
+          return {
+            success: false,
+            error: `Could not resolve the git author identity for this commit: ${getGitCommitErrorMessage(identityError)}`,
+          };
+        }
+        const forbiddenAuthor = describeForbiddenGitAuthor(authorIdentity);
+        if (forbiddenAuthor) {
+          log.error(`${logContext} Refusing to commit with a test-fixture git identity: ${forbiddenAuthor}`);
+          return {
+            success: false,
+            error: `Refusing to commit as a test-fixture git identity (${forbiddenAuthor}). Set a real git user.name/user.email before committing.`,
+          };
+        }
+
         const repoHasCommits = await hasCommits(git);
         // log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
 

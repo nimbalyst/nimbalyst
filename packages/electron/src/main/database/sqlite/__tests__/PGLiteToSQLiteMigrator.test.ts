@@ -262,6 +262,9 @@ describe('PGLiteToSQLiteMigrator', () => {
         document_context JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         claimed_at TIMESTAMPTZ,
+        claim_token TEXT,
+        dispatch_started_at TIMESTAMPTZ,
+        settlement_provenance TEXT,
         completed_at TIMESTAMPTZ,
         error_message TEXT
       );
@@ -453,9 +456,16 @@ describe('PGLiteToSQLiteMigrator', () => {
 
     // queued_prompts
     await pglite.query(
-      `INSERT INTO queued_prompts(id, session_id, prompt, status)
-       VALUES ($1, $2, $3, $4)`,
-      ['qp-1', 'sess-1', 'rerun the auth check', 'pending'],
+      `INSERT INTO queued_prompts(
+         id, session_id, prompt, status, claimed_at, claim_token,
+         dispatch_started_at, settlement_provenance
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        'qp-1', 'sess-1', 'rerun the auth check', 'executing',
+        new Date('2026-07-15T04:00:00.000Z'), 'claim-token-1',
+        new Date('2026-07-15T04:00:01.000Z'), 'dispatch_started',
+      ],
     );
 
     // ai_session_wakeups
@@ -529,6 +539,21 @@ describe('PGLiteToSQLiteMigrator', () => {
     expect(new Date(migratedRetry.next_attempt_at).toISOString()).toBe(
       '2026-07-15T05:00:00.000Z',
     );
+    const migratedQueue = sqlite.getRawHandle()!
+      .prepare(
+        `SELECT claim_token, dispatch_started_at, settlement_provenance
+         FROM queued_prompts WHERE id = ?`,
+      )
+      .get('qp-1') as {
+        claim_token: string;
+        dispatch_started_at: string;
+        settlement_provenance: string;
+      };
+    expect(migratedQueue).toEqual({
+      claim_token: 'claim-token-1',
+      dispatch_started_at: '2026-07-15T04:00:01.000Z',
+      settlement_provenance: 'dispatch_started',
+    });
 
     // Progress events fired through every phase and ended at 100%.
     const phases = new Set(progressEvents.map((p) => p.phase));

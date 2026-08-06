@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES } from '../../../modelConstants';
 import { resolveClaudeCodeModelVariant } from '../../types';
 
 const DEFAULT_MODEL = 'claude-code:opus-1m';
@@ -39,6 +40,10 @@ describe('resolveClaudeCodeModelVariant', () => {
     it('uses default model when config model is empty string', () => {
       expect(resolveClaudeCodeModelVariant('', DEFAULT_MODEL)).toBe('opus[1m]');
     });
+
+    it('routes the DeepSeek picker model through the Sonnet harness', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:deepseek', DEFAULT_MODEL)).toBe('sonnet');
+    });
   });
 
   describe('extended context (1M) variants', () => {
@@ -74,6 +79,13 @@ describe('resolveClaudeCodeModelVariant', () => {
   });
 
   describe('SDK compatibility', () => {
+    it('resolves every programmatic Ollama identity to its exact proxy alias', () => {
+      for (const identity of CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES) {
+        expect(resolveClaudeCodeModelVariant(identity.persistedModel, DEFAULT_MODEL))
+          .toBe(identity.sdkAlias);
+      }
+    });
+
     it('standard variants are valid SDK model values', () => {
       const validSdkValues = ['sonnet', 'opus', 'haiku'];
       for (const variant of validSdkValues) {

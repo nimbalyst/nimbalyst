@@ -98,13 +98,13 @@ async function getMetaSessionId(page: Page, workspaceId: string): Promise<string
   return metaSession.id;
 }
 
-async function getMetaAgentServerPort(page: Page): Promise<number> {
+async function getMcpServerPort(page: Page): Promise<number> {
   const result = await invokeElectron<{ success: boolean; port: number | null }>(
     page,
-    'meta-agent:get-server-port'
+    'mcp:get-server-port'
   );
   if (!result.success || !result.port) {
-    throw new Error(`Meta-agent MCP server port unavailable: ${JSON.stringify(result)}`);
+    throw new Error(`Unified MCP server port unavailable: ${JSON.stringify(result)}`);
   }
   return result.port;
 }
@@ -125,7 +125,7 @@ async function initializeMetaAgentMcp(port: number, sessionId: string, workspace
   // it on every request via requestInit.headers, which streamableHttp.ts
   // merges into both the POST and the GET (SSE) calls.
   const transport = new StreamableHTTPClientTransport(
-    new URL(`http://127.0.0.1:${port}/mcp?sessionId=${encodeURIComponent(sessionId)}&workspaceId=${encodeURIComponent(workspaceId)}`),
+    new URL(`http://127.0.0.1:${port}/mcp/host?sessionId=${encodeURIComponent(sessionId)}&workspaceId=${encodeURIComponent(workspaceId)}`),
     {
       requestInit: {
         headers: { Authorization: `Bearer ${authToken}` },
@@ -152,7 +152,7 @@ async function reconnectMetaAgentClient(sessionId: string): Promise<void> {
     await metaAgentClient.client.close().catch(() => undefined);
   }
 
-  const port = await getMetaAgentServerPort(page);
+  const port = await getMcpServerPort(page);
   const token = await getMcpAuthToken(page);
   metaAgentClient = await initializeMetaAgentMcp(port, sessionId, workspacePath, token);
 }
@@ -300,7 +300,7 @@ test.beforeAll(async () => {
   await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.agentMode)).toBeVisible();
 
   metaSessionId = await createMetaAgentSession(page, workspacePath);
-  const port = await getMetaAgentServerPort(page);
+  const port = await getMcpServerPort(page);
   const token = await getMcpAuthToken(page);
   metaAgentClient = await initializeMetaAgentMcp(port, metaSessionId, workspacePath, token);
 });
@@ -390,7 +390,7 @@ test('surfaces delegated child sessions through the meta-agent MCP tools', async
   expect(result.editedFiles).toContain('src/parser.ts');
 });
 
-test('respond_to_prompt resolves child AskUserQuestion prompts when a real waiter exists', async () => {
+test('respond_to_prompt resolves canonical child AskUserQuestion prompts when a real waiter exists', async () => {
   const waitingSessionId = await createLinkedTestSession({
     title: 'Delegated release question',
     status: 'waiting_for_input',
@@ -403,10 +403,11 @@ test('respond_to_prompt resolves child AskUserQuestion prompts when a real waite
     waitingSessionId,
     'output',
     JSON.stringify({
-      type: 'ask_user_question_request',
-      questionId,
-      questions: [
-        {
+      type: 'nimbalyst_tool_use',
+      id: questionId,
+      name: 'AskUserQuestion',
+      input: {
+        questions: [{
           question: 'Which release should ship first?',
           header: 'Release Order',
           options: [
@@ -414,10 +415,8 @@ test('respond_to_prompt resolves child AskUserQuestion prompts when a real waite
             { label: 'UI', description: 'Ship the UI changes first' },
           ],
           multiSelect: false,
-        },
-      ],
-      timestamp: Date.now(),
-      status: 'pending',
+        }],
+      },
     }),
     { source: 'claude-code' }
   );
@@ -453,14 +452,6 @@ test('respond_to_prompt resolves child AskUserQuestion prompts when a real waite
     pendingPrompt: null | { promptId: string; promptType: string };
   }>(metaAgentClient, 'get_session_result', { sessionId: waitingSessionId });
   expect(resolvedResult.pendingPrompt).toBeNull();
-
-  const pendingPrompts = await invokeElectron<{ success: boolean; prompts: unknown[] }>(
-    page,
-    'messages:get-pending-prompts',
-    waitingSessionId
-  );
-  expect(pendingPrompts.success).toBe(true);
-  expect(pendingPrompts.prompts).toHaveLength(0);
 });
 
 test('creates worktree-backed child sessions and can attach new child sessions to an existing worktree', async () => {

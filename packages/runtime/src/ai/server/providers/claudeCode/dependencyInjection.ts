@@ -6,6 +6,8 @@
  * creating a direct dependency on Electron code.
  */
 
+import type { ProviderCatalogResolution } from "./providerCatalog";
+
 // ---- Type Definitions ----
 
 export type McpConfigLoader = (workspacePath?: string) => Promise<Record<string, any>>;
@@ -27,6 +29,11 @@ export type ImageCompressor = (
   options?: { targetSizeBytes?: number }
 ) => Promise<{ buffer: Buffer; mimeType: string; wasCompressed: boolean }>;
 export type ExtensionFileTypesLoader = () => Set<string>;
+export type ProviderCredentialResolver = (
+  credentialRef: string,
+  context?: Readonly<{ workspacePath?: string }>
+) => string | undefined;
+export type ProviderCatalogResolutionLoader = () => ProviderCatalogResolution;
 
 // ---- Dependency Store ----
 
@@ -110,6 +117,16 @@ export const ClaudeCodeDeps = {
   // Used in planning mode to allow editing extension-registered file types (e.g., .mockup.html)
   extensionFileTypesLoader: null as ExtensionFileTypesLoader | null,
 
+  // Resolves an already-reviewed named provider credential at the final
+  // per-spawn boundary. Catalogs, plans, receipts, and logs receive only the
+  // reference and presence bit, never the returned value.
+  providerCredentialResolver: null as ProviderCredentialResolver | null,
+
+  // Testable/process-reload boundary for the code-owned catalog snapshot.
+  // Production uses the module resolution when no loader is injected.
+  providerCatalogResolutionLoader:
+    null as ProviderCatalogResolutionLoader | null,
+
   // ---- Plan Tracking ----
 
   PLAN_TRACKING_DEFAULT: true as const,
@@ -184,6 +201,18 @@ export const ClaudeCodeDeps = {
 
   setExtensionFileTypesLoader(loader: ExtensionFileTypesLoader | null): void {
     this.extensionFileTypesLoader = loader;
+  },
+
+  setProviderCredentialResolver(
+    resolver: ProviderCredentialResolver | null
+  ): void {
+    this.providerCredentialResolver = resolver;
+  },
+
+  setProviderCatalogResolutionLoader(
+    loader: ProviderCatalogResolutionLoader | null
+  ): void {
+    this.providerCatalogResolutionLoader = loader;
   },
 
   setPlanTrackingEnabled(enabled: boolean): void {

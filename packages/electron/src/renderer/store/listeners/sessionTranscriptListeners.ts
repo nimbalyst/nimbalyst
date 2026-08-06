@@ -21,13 +21,20 @@
  */
 
 import { store } from '@nimbalyst/runtime/store';
+import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
 import { updateSessionStoreAtom, sessionStoreAtom, sessionPromptAdditionsAtom } from '../atoms/sessions';
 import {
   sessionErrorAtom,
   sessionQueuedPromptsAtom,
   streamCompletionSignalAtom,
   transcriptEventSignalAtom,
+  type QueuedPrompt,
 } from '../atoms/sessionTranscript';
+import { projectQueuedPrompts } from '../../components/UnifiedAI/queuedPromptProjection';
+
+function isSessionDataValue(value: unknown): value is SessionData {
+  return typeof value === 'object' && value !== null;
+}
 
 /**
  * Initialize session transcript IPC listeners.
@@ -79,7 +86,7 @@ export function initSessionTranscriptListeners(): () => void {
       store.set(sessionErrorAtom(sessionId), { message, isAuthError, isBedrockToolError, isServerError, isCodexAuthRequired });
 
       // Signal stream completion so awaiters (e.g. superLoopBlockedFeedback) unblock
-      store.set(streamCompletionSignalAtom(sessionId), (prev) => prev + 1);
+      store.set(streamCompletionSignalAtom(sessionId), (prev: number) => prev + 1);
     })
   );
 
@@ -95,7 +102,7 @@ export function initSessionTranscriptListeners(): () => void {
       if (!sessionId || !isComplete) return;
 
       // Signal stream completion so awaiters (e.g. superLoopBlockedFeedback) unblock
-      store.set(streamCompletionSignalAtom(sessionId), (prev) => prev + 1);
+      store.set(streamCompletionSignalAtom(sessionId), (prev: number) => prev + 1);
     })
   );
 
@@ -121,7 +128,7 @@ export function initSessionTranscriptListeners(): () => void {
       // Get current messages to find last user message index
       // Using the atoms approach avoids stale closure issues
       const sessionData = store.get(sessionStoreAtom(sessionId));
-      const messages = sessionData?.messages || [];
+      const messages = isSessionDataValue(sessionData) ? sessionData.messages : [];
       let lastUserIdx = -1;
       for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].type === 'user_message') {
@@ -149,7 +156,7 @@ export function initSessionTranscriptListeners(): () => void {
     window.electronAPI.on('transcript:event', (event: { sessionId?: string }) => {
       const sessionId = event?.sessionId;
       if (!sessionId) return;
-      store.set(transcriptEventSignalAtom(sessionId), (prev) => prev + 1);
+      store.set(transcriptEventSignalAtom(sessionId), (prev: number) => prev + 1);
     })
   );
 
@@ -157,7 +164,7 @@ export function initSessionTranscriptListeners(): () => void {
     window.electronAPI.on('transcript:session-reparsed', (event: { sessionId?: string }) => {
       const sessionId = event?.sessionId;
       if (!sessionId) return;
-      store.set(transcriptEventSignalAtom(sessionId), (prev) => prev + 1);
+      store.set(transcriptEventSignalAtom(sessionId), (prev: number) => prev + 1);
     })
   );
 
@@ -172,7 +179,9 @@ export function initSessionTranscriptListeners(): () => void {
       // Refresh queued prompts from the database
       try {
         const pending = await window.electronAPI.invoke('ai:listPendingPrompts', sessionId);
-        store.set(sessionQueuedPromptsAtom(sessionId), pending || []);
+        store.set(sessionQueuedPromptsAtom(sessionId), (previous: QueuedPrompt[]) =>
+          projectQueuedPrompts(sessionId, previous, pending || [])
+        );
       } catch (error) {
         console.error('[sessionTranscriptListeners] Failed to load queued prompts:', error);
         store.set(sessionQueuedPromptsAtom(sessionId), []);
@@ -181,18 +190,14 @@ export function initSessionTranscriptListeners(): () => void {
   );
 
   // =========================================================================
-  // Prompt Claimed (remove from queue)
-  // This is a custom DOM event, not an IPC event
+  // A claim is transient. Durable state wins on the next queue refresh; never
+  // remove an optimistic row merely because a DOM event said it was claimed.
   // =========================================================================
   const handlePromptClaimed = (event: CustomEvent<{ sessionId: string; promptId: string }>) => {
     const { sessionId, promptId } = event.detail;
     if (!sessionId || !promptId) return;
 
-    const currentQueue = store.get(sessionQueuedPromptsAtom(sessionId));
-    store.set(
-      sessionQueuedPromptsAtom(sessionId),
-      currentQueue.filter(p => p.id !== promptId)
-    );
+    void promptId;
   };
 
   window.addEventListener('ai:promptClaimed', handlePromptClaimed as EventListener);
@@ -212,7 +217,9 @@ export function initSessionTranscriptListeners(): () => void {
 export async function loadInitialQueuedPrompts(sessionId: string): Promise<void> {
   try {
     const pending = await window.electronAPI.invoke('ai:listPendingPrompts', sessionId);
-    store.set(sessionQueuedPromptsAtom(sessionId), pending || []);
+    store.set(sessionQueuedPromptsAtom(sessionId), (previous: QueuedPrompt[]) =>
+      projectQueuedPrompts(sessionId, previous, pending || [])
+    );
   } catch (error) {
     console.error('[sessionTranscriptListeners] Failed to load initial queued prompts:', error);
     store.set(sessionQueuedPromptsAtom(sessionId), []);

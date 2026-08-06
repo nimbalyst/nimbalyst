@@ -6,6 +6,7 @@
  */
 
 import type { AgentMessage } from '../ai/server/types';
+import type { ContextMeterStateV1 } from '../ai/contextMeter';
 import type { SyncedReadReceipt } from '../readReceipts/readReceipts';
 
 export interface SyncConfig {
@@ -435,6 +436,23 @@ export type SessionChange =
 /** Queued prompt for cross-device sync */
 export interface SyncedQueuedPrompt {
   id: string;           // Unique ID for this queued item
+  /** Stable producer-side identity; defaults to id for legacy clients. */
+  clientSubmissionId?: string;
+  sourceSessionId?: string;
+  sourceRoomId?: string;
+  submissionSequence?: number;
+  producer?: string;
+  payloadUtf8Bytes?: number;
+  payloadUnicodeScalars?: number;
+  payloadSha256?: string;
+  claimTrigger?: string;
+  claimTriggeredAt?: number;
+  turnId?: string;
+  providerInputMessageId?: string;
+  providerOutputMessageId?: string;
+  streamEventSequence?: number;
+  terminalStatus?: 'streaming' | 'completed' | 'failed';
+  terminalAt?: number;
   prompt: string;       // The user's message
   timestamp: number;    // When queued
   // Note: documentContext is NOT synced - it's device-local
@@ -510,6 +528,8 @@ export interface SyncedSessionMetadata {
     tokens: number;         // Current tokens in context window
     contextWindow: number;  // Max context window size
   };
+  /** Versioned confidence/provenance state; cumulative totals are never inferred. */
+  contextMeterState?: ContextMeterStateV1;
   /** Whether there are pending interactive prompts (permissions, questions, plan approvals, git commits) */
   hasPendingPrompt?: boolean;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
@@ -570,6 +590,8 @@ export interface SessionIndexEntry {
     tokens: number;         // Current tokens in context window
     contextWindow: number;  // Max context window size
   };
+  /** Versioned confidence/provenance state for mobile rendering. */
+  contextMeterState?: ContextMeterStateV1;
   /** Unix timestamp ms when this session was last read by any device */
   lastReadAt?: number;
 }

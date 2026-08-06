@@ -13,6 +13,27 @@
  */
 
 import { resolveProjectPath } from "../utils/workspaceDetection";
+import { resolveTargetWorkspaceBinding } from "./targetWorkspaceBinding";
+import {
+  SESSION_LAUNCH_EFFORT_LEVELS,
+  SESSION_LAUNCH_THINKING_MODES,
+  SESSION_LAUNCH_TOOL_SCOPES,
+  type SessionLaunchToolScope,
+} from "@nimbalyst/runtime/ai/server/sessionLaunchConfiguration";
+import type {
+  EffortLevel,
+  ThinkingMode,
+} from "@nimbalyst/runtime/ai/server/effortLevels";
+import { CLAUDE_CODE_BACKENDS } from "@nimbalyst/runtime/ai/server";
+
+// Deferred to call time (not evaluated at module load): several unrelated
+// test files provide a narrow vi.mock of the '@nimbalyst/runtime/ai/server'
+// barrel (for e.g. McpConfigService only) without CLAUDE_CODE_BACKENDS. A
+// module-scope `.map()` over that barrel would crash on merely importing this
+// file transitively, even though the enum below is never actually read there.
+function claudeCodeBackendIds(): string[] {
+  return CLAUDE_CODE_BACKENDS.map((backend) => backend.id);
+}
 
 type CreateSessionArgs = {
   title?: string;
@@ -21,14 +42,24 @@ type CreateSessionArgs = {
   prompt?: string;
   useWorktree?: boolean;
   worktreeId?: string;
-  toolScope?: string;
+  toolScope?: SessionLaunchToolScope;
+  effortLevel?: EffortLevel;
+  thinkingMode?: ThinkingMode;
+  claudeCodeBackend?: string;
 };
 
 type SpawnSessionArgs = {
   title?: string;
   prompt: string;
   useWorktree?: boolean;
+  targetWorkspacePath?: string;
+  baseBranch?: string;
+  provider?: string;
   model?: string;
+  toolScope?: SessionLaunchToolScope;
+  effortLevel?: EffortLevel;
+  thinkingMode?: ThinkingMode;
+  claudeCodeBackend?: string;
   notifyOnComplete?: boolean;
   /**
    * When true, the new session is created at the top level — no parent,
@@ -77,6 +108,14 @@ type ListQueuedPromptsArgs = {
   includePromptText?: boolean;
 };
 
+type SendPromptNowArgs = {
+  sessionId: string;
+  prompt: string;
+  idempotencyKey?: string;
+  controlOperation?: string;
+  interruptWaitingForInput?: boolean;
+};
+
 type NotifyUserArgs = {
   title: string;
   body: string;
@@ -84,6 +123,13 @@ type NotifyUserArgs = {
   bypassFocusCheck?: boolean;
   silent?: boolean;
   urgency?: "normal" | "critical" | "low";
+};
+
+type CompactSessionArgs = {
+  /** Optional target session. Defaults to the calling session (self-compaction). */
+  sessionId?: string;
+  /** Optional focus text, equivalent to typing "/compact focus on <focus>". */
+  focus?: string;
 };
 
 interface MetaAgentToolFns {
@@ -124,10 +170,20 @@ interface MetaAgentToolFns {
     targetSessionId: string,
     prompt: string
   ) => Promise<string>;
+  sendPromptNow: (
+    metaSessionId: string,
+    workspaceId: string,
+    args: SendPromptNowArgs
+  ) => Promise<string>;
   notifyUser: (
     metaSessionId: string,
     workspaceId: string,
     args: NotifyUserArgs
+  ) => Promise<string>;
+  compactSession: (
+    metaSessionId: string,
+    workspaceId: string,
+    args: CompactSessionArgs
   ) => Promise<string>;
   respondToPrompt: (
     metaSessionId: string,
@@ -217,9 +273,27 @@ export const META_AGENT_TOOL_DEFS: Array<{
         },
         toolScope: {
           type: "string",
-          enum: ["read", "write", "full"],
+          enum: [...SESSION_LAUNCH_TOOL_SCOPES],
           description:
             "Capability scope for the child. \"read\" = read_file/list_files/search_files only (pure investigation). \"write\" = those plus write_file but NO run_command, so the child can save a file deliverable (e.g. a report) yet cannot build/test/run anything. \"full\" (default) = all tools including run_command. Use read or write for analyze/research tasks so the child physically cannot run a build, and reserve full for tasks that must build/test.",
+        },
+        effortLevel: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_EFFORT_LEVELS],
+          description:
+            "Optional requested reasoning effort for this child only. Accepted only when the resolved provider/model supports that exact value; unsupported combinations fail before session creation.",
+        },
+        thinkingMode: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_THINKING_MODES],
+          description:
+            "Optional Claude adaptive-thinking toggle for this child only. Accepted only for Claude Agent models whose transport implements the toggle; unsupported combinations fail before session creation.",
+        },
+        claudeCodeBackend: {
+          type: "string",
+          get enum() { return claudeCodeBackendIds(); },
+          description:
+            "Optional explicit reviewed Claude-Agent catalog backend/profile id for this claude-code child. Omit model when set (it is derived from the profile); if both are set they must agree. Fails closed on an unknown id or a mismatched model/provider rather than silently running on Anthropic. The response exposes safe profile identity only, never credentials or endpoints.",
         },
       },
     },
@@ -250,15 +324,54 @@ export const META_AGENT_TOOL_DEFS: Array<{
           description:
             "Default false. By default the spawned session inherits the caller's working directory: if the caller is in a worktree, the new session runs in that same worktree; if the caller is in the main checkout, the new session runs there too. Set true only when the user explicitly asks for the new session to get its OWN new worktree (separate branch and working directory) — this creates a fresh worktree rather than inheriting the caller's.",
         },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional absolute path of an already-loaded canonical Nimbalyst project. Cross-project creation fails closed unless isolated=true and useWorktree=true, so the child is born as a top-level session in a fresh target-project worktree. This does not attach to an existing worktree or grant authority from an arbitrary path.",
+        },
+        baseBranch: {
+          type: "string",
+          description:
+            "Optional branch or ref for the fresh worktree created by useWorktree=true. With targetWorkspacePath, the ref is resolved inside that already-loaded target project.",
+        },
+        provider: {
+          type: "string",
+          description:
+            "Optional explicit provider. When set, model must either be omitted or carry the same provider prefix.",
+        },
         model: {
           type: "string",
           description:
-            "Optional explicit model identifier (e.g. 'claude-code:opus'). When omitted, the new session uses the global default model unless inheritModel=true. Wins over inheritModel when both are set.",
+            "Optional explicit model identifier (e.g. 'claude-code:opus'). When omitted, the new session inherits the caller's provider/model. Wins over inheritModel when both are set.",
         },
         inheritModel: {
           type: "boolean",
           description:
-            "Default false. When true and `model` is not set, the spawned session uses the caller's model so it stays on the same provider/model (e.g. opus stays on opus). Ignored when `model` is provided explicitly.",
+            "Optional explicit inheritance intent retained in launch provenance. When model is omitted, the spawned session inherits the caller's provider/model either way; an explicit model wins.",
+        },
+        toolScope: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_TOOL_SCOPES],
+          description:
+            "Capability scope for the spawned session. \"read\" and \"write\" restrict tools; \"full\" (default) grants the complete tool surface.",
+        },
+        effortLevel: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_EFFORT_LEVELS],
+          description:
+            "Optional requested reasoning effort for this session only. Accepted only when the resolved provider/model supports that exact value; unsupported combinations fail before session creation.",
+        },
+        thinkingMode: {
+          type: "string",
+          enum: [...SESSION_LAUNCH_THINKING_MODES],
+          description:
+            "Optional Claude adaptive-thinking toggle for this session only. Accepted only for Claude Agent models whose transport implements the toggle; unsupported combinations fail before session creation.",
+        },
+        claudeCodeBackend: {
+          type: "string",
+          get enum() { return claudeCodeBackendIds(); },
+          description:
+            "Optional explicit reviewed Claude-Agent catalog backend/profile id for this claude-code session. Omit model when set (it is derived from the profile); if both are set they must agree. Fails closed on an unknown id or a mismatched model/provider rather than silently running on Anthropic. The response exposes safe profile identity only, never credentials or endpoints.",
         },
         notifyOnComplete: {
           type: "boolean",
@@ -280,6 +393,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
           type: "string",
           description: "The session ID to inspect.",
         },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional explicit workspace path for a session in another project. If omitted, this call remains bound to the caller's workspace.",
+        },
       },
       required: ["sessionId"],
     },
@@ -294,6 +412,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
         sessionId: {
           type: "string",
           description: "The session ID to inspect.",
+        },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional explicit workspace path for a session in another project. If omitted, this call remains bound to the caller's workspace.",
         },
         includeFullResponse: {
           type: "boolean",
@@ -344,8 +467,65 @@ export const META_AGENT_TOOL_DEFS: Array<{
           type: "string",
           description: "The follow-up prompt to send.",
         },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional explicit workspace path for the target session. If omitted, this call remains bound to the caller's workspace.",
+        },
       },
       required: ["sessionId", "prompt"],
+    },
+  },
+  {
+    name: "send_prompt_now",
+    description:
+      "Durably queue a priority control prompt and, when authorized, interrupt the target's current ordinary turn so the prompt becomes agent-visible immediately. Use interruptWaitingForInput only for an ordinary-text waiting session; structured prompts must use respond_to_prompt. Use FIFO send_prompt for normal follow-ups that should not preempt active work.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "The target child session ID.",
+        },
+        prompt: {
+          type: "string",
+          description: "The priority control prompt to deliver.",
+        },
+        idempotencyKey: {
+          type: "string",
+          description:
+            "Optional stable request key. Reusing it with the same request replays the durable receipt; reusing it with different content fails.",
+        },
+        controlOperation: {
+          type: "string",
+          description:
+            "Optional audit label for the control action, such as waiting_reply or operator_directive.",
+        },
+        interruptWaitingForInput: {
+          type: "boolean",
+          description:
+            "Explicit authority to interrupt an ordinary-text waiting session. Has no effect on structured prompts, which require respond_to_prompt.",
+        },
+      },
+      required: ["sessionId", "prompt"],
+    },
+  },
+  {
+    name: "compact_session",
+    description:
+      "Reliably compact a session's conversation history to free context, optionally focused on what to keep. This invokes the compaction path directly (not via a queued chat message) and reports whether compaction actually ran, unlike sending a literal \"/compact\" prompt through send_prompt/send_prompt_now which is not guaranteed to be recognized as a command. Prefer this tool whenever an agent needs to self-compact or compact another session it owns.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "Optional target session to compact. Defaults to the calling session (self-compaction).",
+        },
+        focus: {
+          type: "string",
+          description: "Optional focus text describing what task state to keep, equivalent to typing \"/compact focus on <focus>\".",
+        },
+      },
     },
   },
   {
@@ -396,6 +576,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
         sessionId: {
           type: "string",
           description: "The child session waiting for input.",
+        },
+        targetWorkspacePath: {
+          type: "string",
+          description:
+            "Optional explicit workspace path for the target session. If omitted, this call remains bound to the caller's workspace.",
         },
         promptId: {
           type: "string",
@@ -454,7 +639,9 @@ const EXTENSION_META_AGENT_ALLOWED_TOOLS = new Set<string>([
   "get_session_result",
   "list_queued_prompts",
   "send_prompt",
+  "send_prompt_now",
   "notify_user",
+  "compact_session",
   "respond_to_prompt",
   "list_spawned_sessions",
 ]);
@@ -508,13 +695,13 @@ export async function dispatchMetaAgentTool(
     case "get_session_status":
       return toolFns.getSessionStatus(
         aiSessionId,
-        effectiveWorkspaceId,
+        resolveTargetWorkspaceBinding(effectiveWorkspaceId, args),
         (args?.sessionId as string) ?? ""
       );
     case "get_session_result":
       return toolFns.getSessionResult(
         aiSessionId,
-        effectiveWorkspaceId,
+        resolveTargetWorkspaceBinding(effectiveWorkspaceId, args),
         (args?.sessionId as string) ?? "",
         { includeFullResponse: args?.includeFullResponse !== false }
       );
@@ -531,14 +718,26 @@ export async function dispatchMetaAgentTool(
     case "send_prompt":
       return toolFns.sendPrompt(
         aiSessionId,
-        effectiveWorkspaceId,
+        resolveTargetWorkspaceBinding(effectiveWorkspaceId, args),
         (args?.sessionId as string) ?? "",
         (args?.prompt as string) ?? ""
       );
+    case "send_prompt_now":
+      return toolFns.sendPromptNow(
+        aiSessionId,
+        effectiveWorkspaceId,
+        (args ?? {}) as SendPromptNowArgs
+      );
     case "notify_user":
       return toolFns.notifyUser(aiSessionId, effectiveWorkspaceId, (args ?? {}) as NotifyUserArgs);
+    case "compact_session":
+      return toolFns.compactSession(aiSessionId, effectiveWorkspaceId, (args ?? {}) as CompactSessionArgs);
     case "respond_to_prompt":
-      return toolFns.respondToPrompt(aiSessionId, effectiveWorkspaceId, (args ?? {}) as RespondToPromptArgs);
+      return toolFns.respondToPrompt(
+        aiSessionId,
+        resolveTargetWorkspaceBinding(effectiveWorkspaceId, args),
+        (args ?? {}) as RespondToPromptArgs
+      );
     case "list_spawned_sessions":
       return toolFns.listSpawnedSessions(aiSessionId, effectiveWorkspaceId);
     default:

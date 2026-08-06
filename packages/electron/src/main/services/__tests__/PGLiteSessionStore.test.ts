@@ -1,4 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PGlite } from '@electric-sql/pglite';
+import {
+  BUILT_IN_PROVIDER_CATALOG,
+  CLAUDEX_SOL_ENTRY_ID,
+  DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID,
+  REVIEWED_PROVIDER_CREDENTIAL_REFERENCES,
+  resolveProviderCatalog,
+} from '@nimbalyst/runtime/ai/server';
+import { persistProviderRuntimeRouteSnapshot } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerRuntimeRoutePersistence';
+import { resolveClaudeAgentRuntimeRoutes } from '@nimbalyst/runtime/ai/server/providers/claudeCode/runtimeRouteResolver';
 import {
   createPGLiteSessionStore,
   getAllSessionsForSync,
@@ -330,6 +340,211 @@ describe('PGLiteSessionStore.updateMetadata defense-in-depth', () => {
     expect(updateCalls.length).toBe(0);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe('PGLiteSessionStore atomic provider route metadata', () => {
+  it('allows one competing route winner, rejects the loser, and preserves unrelated metadata', async () => {
+    let metadata = JSON.stringify({ unrelated: { preserved: true } });
+    let initialSelects = 0;
+    let releaseInitialReads!: () => void;
+    const initialReadsReady = new Promise<void>((resolve) => {
+      releaseInitialReads = resolve;
+    });
+    const db = {
+      query: vi.fn(async (sql: string, params: unknown[] = []) => {
+        if (/^SELECT metadata FROM ai_sessions/i.test(sql.trim())) {
+          const snapshot = metadata;
+          initialSelects += 1;
+          if (initialSelects === 2) releaseInitialReads();
+          if (initialSelects <= 2) await initialReadsReady;
+          return { rows: [{ metadata: snapshot }] };
+        }
+        if (/UPDATE ai_sessions\s+SET metadata = \$3/i.test(sql)) {
+          const expected = params[1];
+          const next = params[2] as string;
+          if (metadata !== expected) return { rows: [] };
+          metadata = next;
+          return { rows: [{ metadata }] };
+        }
+        throw new Error(`Unexpected atomic-route query: ${sql}`);
+      }),
+    };
+    const store = createPGLiteSessionStore(db as any);
+    const resolution = resolveProviderCatalog(
+      BUILT_IN_PROVIDER_CATALOG,
+      undefined,
+    );
+    const credentialReferences = Object.fromEntries(
+      REVIEWED_PROVIDER_CREDENTIAL_REFERENCES.map((reference) => [
+        reference,
+        true,
+      ]),
+    );
+    const routesFor = (catalogEntryId: string) => {
+      const entry = resolution.entries.find(
+        (candidate) => candidate.id === catalogEntryId,
+      );
+      if (!entry) throw new Error(`Missing test catalog entry ${catalogEntryId}`);
+      const routes = resolveClaudeAgentRuntimeRoutes(
+        resolution,
+        { model: entry.model.persistedId },
+        credentialReferences,
+      );
+      if (!routes) throw new Error(`Missing runtime route ${catalogEntryId}`);
+      return routes;
+    };
+    const adapter = {
+      installSessionMetadataValueIfAbsent: (
+        sessionId: string,
+        key: string,
+        value: unknown,
+      ) => store.installMetadataValueIfAbsent!(sessionId, key, value),
+    };
+
+    const results = await Promise.allSettled([
+      persistProviderRuntimeRouteSnapshot(
+        'contended-session',
+        routesFor(CLAUDEX_SOL_ENTRY_ID),
+        adapter,
+      ),
+      persistProviderRuntimeRouteSnapshot(
+        'contended-session',
+        routesFor(DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID),
+        adapter,
+      ),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: {
+        name: 'ProviderRuntimeRouteError',
+        code: 'immutable-session-route',
+      },
+    });
+    const persisted = JSON.parse(metadata);
+    expect(persisted.unrelated).toEqual({ preserved: true });
+    expect(persisted.providerRuntimeRouteSnapshotV1).toBeTruthy();
+  });
+
+  it('executes the compare-and-set contract against a real JSONB row', async () => {
+    const db = new PGlite();
+    try {
+      await db.exec(`
+        CREATE TABLE ai_sessions (
+          id TEXT PRIMARY KEY,
+          metadata JSONB DEFAULT '{}'
+        );
+        INSERT INTO ai_sessions (id, metadata)
+        VALUES ('real-session', '{"unrelated":{"preserved":true}}'::jsonb);
+      `);
+      const store = createPGLiteSessionStore(db as any);
+
+      expect(
+        await store.installMetadataValueIfAbsent!(
+          'real-session',
+          'providerRuntimeRouteSnapshotV1',
+          { catalogEntryId: CLAUDEX_SOL_ENTRY_ID },
+        ),
+      ).toEqual({ catalogEntryId: CLAUDEX_SOL_ENTRY_ID });
+      expect(
+        await store.installMetadataValueIfAbsent!(
+          'real-session',
+          'providerRuntimeRouteSnapshotV1',
+          { catalogEntryId: DEEPSEEK_V4_FLASH_OPENROUTER_ENTRY_ID },
+        ),
+      ).toEqual({ catalogEntryId: CLAUDEX_SOL_ENTRY_ID });
+
+      const { rows } = await db.query<{ metadata: Record<string, unknown> }>(
+        'SELECT metadata FROM ai_sessions WHERE id = $1',
+        ['real-session'],
+      );
+      expect(rows[0]?.metadata).toMatchObject({
+        unrelated: { preserved: true },
+        providerRuntimeRouteSnapshotV1: {
+          catalogEntryId: CLAUDEX_SOL_ENTRY_ID,
+        },
+      });
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+describe('PGLiteSessionStore atomic model reconciliation', () => {
+  it('keeps the durable marker when the model write fails and clears it only with a successful retry', async () => {
+    const db = new PGlite();
+    try {
+      await db.exec(`
+        CREATE TABLE ai_sessions (
+          id TEXT PRIMARY KEY,
+          model TEXT CHECK (model <> 'model-write-failure'),
+          metadata JSONB DEFAULT '{}'
+        );
+        INSERT INTO ai_sessions (id, model, metadata)
+        VALUES (
+          'reconciliation-session',
+          'B',
+          '{"effortLevel":"max","modelChangeReconciliation":{"status":"pending","previousModel":"A"}}'::jsonb
+        );
+      `);
+      const store = createPGLiteSessionStore(db as any);
+
+      await expect(
+        store.updateMetadata('reconciliation-session', {
+          model: 'model-write-failure',
+          metadata: {
+            effortLevel: 'low',
+            modelChangeReconciliation: null,
+          },
+        }),
+      ).rejects.toThrow();
+
+      const failed = await db.query<{
+        model: string;
+        metadata: Record<string, unknown>;
+      }>(
+        'SELECT model, metadata FROM ai_sessions WHERE id = $1',
+        ['reconciliation-session'],
+      );
+      expect(failed.rows[0]).toMatchObject({
+        model: 'B',
+        metadata: {
+          effortLevel: 'max',
+          modelChangeReconciliation: {
+            status: 'pending',
+            previousModel: 'A',
+          },
+        },
+      });
+
+      await store.updateMetadata('reconciliation-session', {
+        model: 'A',
+        metadata: {
+          effortLevel: 'low',
+          modelChangeReconciliation: null,
+        },
+      });
+
+      const recovered = await db.query<{
+        model: string;
+        metadata: Record<string, unknown>;
+      }>(
+        'SELECT model, metadata FROM ai_sessions WHERE id = $1',
+        ['reconciliation-session'],
+      );
+      expect(recovered.rows[0]).toMatchObject({
+        model: 'A',
+        metadata: {
+          effortLevel: 'low',
+          modelChangeReconciliation: null,
+        },
+      });
+    } finally {
+      await db.close();
+    }
   });
 });
 

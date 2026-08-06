@@ -18,6 +18,7 @@ import React, { useCallback, useRef, useImperativeHandle, forwardRef, useEffect,
 import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import { store, registerInteractiveWidgetHost, unregisterInteractiveWidgetHost } from '@nimbalyst/runtime/store';
 import type { SessionData, ChatAttachment, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
+import type { ProviderCatalogControlValue } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalog';
 import { AgentTranscriptPanel } from '@nimbalyst/runtime/ui/AgentTranscript/components/AgentTranscriptPanel';
 import { ClaudeCliTerminalStrip } from './ClaudeCliTerminalStrip';
 import { ClaudeCliNotInstalledNotice } from './ClaudeCliNotInstalledNotice';
@@ -25,7 +26,16 @@ import type { InteractiveWidgetHost, PermissionScope } from '@nimbalyst/runtime/
 import type { TodoItem } from '@nimbalyst/runtime/ui/AgentTranscript/types';
 import { isToolLikeMessage } from '@nimbalyst/runtime/ui/AgentTranscript/utils/messageTypeHelpers';
 import { AIInput, AIInputRef } from './AIInput';
+import type { PickerModel } from './ModelSelector';
+import {
+  createSessionModelChangeHooks,
+  recoverSessionModelChangeTransaction,
+  runSessionModelChangeTransaction,
+  SessionModelChangeReconciliationError,
+} from './latestModelChangeCoordinator';
+import { useSessionModelReconciliationOwner } from './useSessionModelReconciliationOwner';
 import { PromptQueueList } from './PromptQueueList';
+import { projectQueuedPrompts } from './queuedPromptProjection';
 import { TranscriptEmbeddedFileCard } from './TranscriptEmbeddedFileCard';
 import { getDiffPeekSizeForInteractiveWidgetHost } from './interactiveWidgetHostProxy';
 import { customEditorRegistry } from '../CustomEditors/registry';
@@ -65,6 +75,7 @@ import {
   sessionDocumentContextAtom,
   sessionEffortLevelRawAtom,
   sessionThinkingModeRawAtom,
+  sessionCatalogControlValuesRawAtom,
   sessionLoadingAtom,
   sessionModeAtom,
   sessionModelAtom,
@@ -94,7 +105,7 @@ import {
   clearSessionError,
   loadInitialQueuedPrompts,
 } from '../../store';
-import { streamCompletionSignalAtom } from '../../store/atoms/sessionTranscript';
+import { streamCompletionSignalAtom, type QueuedPrompt } from '../../store/atoms/sessionTranscript';
 import { canPersistSessionDraft, convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import {
@@ -110,7 +121,8 @@ import {
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
 import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, defaultThinkingModeAtom, chatShowToolCallsAtom, developerModeAtom } from '../../store/atoms/appSettings';
-import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, resolveThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
+import { resolveCatalogControlValues, resolveCatalogReasoningValues, supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, resolveThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
+import { isDeepSeekClaudeAgentModel, normalizeDeepSeekEffort, normalizeDeepSeekThinkingMode } from '@nimbalyst/runtime/ai/server/deepSeekClaudeAgent';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
@@ -118,6 +130,36 @@ import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPee
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
 import { sessionFileEditsAtom } from '../../store/atoms/sessionFiles';
 import { SESSION_PHASE_COLUMNS, setSessionPhaseAtom, type SessionPhase } from '../../store/atoms/sessionKanban';
+
+function isSessionDataValue(value: unknown): value is SessionData {
+  return typeof value === 'object' && value !== null;
+}
+
+function readSessionData(sessionId: string): SessionData | null {
+  const value = store.get(sessionStoreAtom(sessionId));
+  return isSessionDataValue(value) ? value : null;
+}
+
+function isChatAttachmentValue(value: unknown): value is ChatAttachment {
+  return typeof value === 'object' && value !== null &&
+    typeof (value as { id?: unknown }).id === 'string' &&
+    typeof (value as { filename?: unknown }).filename === 'string';
+}
+
+function readDraftAttachments(sessionId: string): ChatAttachment[] {
+  const value = store.get(sessionDraftAttachmentsAtom(sessionId));
+  return Array.isArray(value) ? value.filter(isChatAttachmentValue) : [];
+}
+
+function readDraftInput(sessionId: string): string {
+  const value = store.get(sessionDraftInputAtom(sessionId));
+  return typeof value === 'string' ? value : '';
+}
+
+/** The reconciliation owner is the single authority for queue/control mutation. */
+export function isQueueMutationBlockedByModelReconciliation(blocked: boolean): boolean {
+  return blocked;
+}
 
 /**
  * Detect a metadata value that's the artifact of `{...stringValue, ...}` -
@@ -302,7 +344,7 @@ async function updateSessionMetadataField<T>(
 ): Promise<void> {
   try {
     // Update local store FIRST (before async IPC) to ensure immediate availability
-    const currentSessionData = store.get(sessionStoreAtom(sessionId));
+    const currentSessionData = readSessionData(sessionId);
 
     if (currentSessionData) {
       const newMetadata = {
@@ -453,6 +495,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionDocumentContext = useAtomValue(sessionDocumentContextAtom(sessionId));
   const rawEffortLevel = useAtomValue(sessionEffortLevelRawAtom(sessionId));
   const rawThinkingMode = useAtomValue(sessionThinkingModeRawAtom(sessionId));
+  const rawCatalogControlValues = useAtomValue(sessionCatalogControlValuesRawAtom(sessionId));
   const loadSessionData = useSetAtom(loadSessionDataAtom);
   const reloadSessionData = useSetAtom(reloadSessionDataAtom);
   const updateSessionStore = useSetAtom(updateSessionStoreAtom);
@@ -468,7 +511,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   const sessionData = useMemo(() => {
     if (!hasSessionData) return null;
-    const snapshot = store.get(sessionStoreAtom(sessionId));
+    const snapshot = readSessionData(sessionId);
     // Guard against corrupted metadata: some legacy rows have a metadata
     // value that's the result of `{...stringValue, ...}`, producing an
     // object with millions of numeric-string keys (each char of the
@@ -519,20 +562,27 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     currentTodos,
   ]);
 
+  const catalogControlValues = useMemo(() => {
+    return rawCatalogControlValues && typeof rawCatalogControlValues === 'object' && !Array.isArray(rawCatalogControlValues)
+      ? rawCatalogControlValues as Readonly<Record<string, unknown>>
+      : {};
+  }, [rawCatalogControlValues]);
+
   // Effort level: read from session metadata, fall back to global default
   const showEffortLevel = useMemo(() => supportsEffortLevel(currentModel), [currentModel]);
-  const effortLevel = useMemo(() => {
-    return rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel;
-  }, [rawEffortLevel, defaultEffortLevel]);
+  const effortLevel = useMemo(() => isDeepSeekClaudeAgentModel(currentModel)
+    ? normalizeDeepSeekEffort(rawEffortLevel)
+    : rawEffortLevel != null ? parseEffortLevel(rawEffortLevel) : defaultEffortLevel,
+  [rawEffortLevel, defaultEffortLevel, currentModel]);
   // Extended-thinking is a power-user control: only surface the selector in
   // developer mode. When hidden, thinkingMode is never set, so the default
   // (adaptive/enabled) applies.
   const developerMode = useAtomValue(developerModeAtom);
-  const showThinkingToggle = useMemo(() => developerMode && supportsThinkingToggle(currentModel), [developerMode, currentModel]);
-  const thinkingMode = useMemo(
-    () => resolveThinkingMode(rawThinkingMode, defaultThinkingMode),
-    [rawThinkingMode, defaultThinkingMode]
-  );
+  const showThinkingToggle = useMemo(() => (developerMode || isDeepSeekClaudeAgentModel(currentModel)) && supportsThinkingToggle(currentModel), [developerMode, currentModel]);
+  const thinkingMode = useMemo(() => isDeepSeekClaudeAgentModel(currentModel)
+    ? normalizeDeepSeekThinkingMode(rawThinkingMode)
+    : resolveThinkingMode(rawThinkingMode, defaultThinkingMode),
+    [rawThinkingMode, currentModel, defaultThinkingMode]);
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -675,7 +725,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const cliTerminalHydratedRef = useRef<string | null>(null);
   useEffect(() => {
     if (cliTerminalHydratedRef.current === sessionId) return;
-    const meta = store.get(sessionStoreAtom(sessionId))?.metadata as
+    const meta = readSessionData(sessionId)?.metadata as
       | Record<string, unknown>
       | undefined;
     if (!meta) return; // session data not loaded yet; retry on next render
@@ -743,7 +793,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     // Keep the in-memory session store's metadata in sync so a remount's
     // hydration doesn't restore a stale collapsed state.
     const isNowCollapsed = !store.get(cliTerminalExpandedAtom(sessionId));
-    const currentSessionData = store.get(sessionStoreAtom(sessionId));
+    const currentSessionData = readSessionData(sessionId);
     if (currentSessionData) {
       updateSessionStore({
         sessionId,
@@ -945,6 +995,44 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // (shouldBlockStartedSessionProviderSwitch keys off messages.length > 0).
   const cliSessionCommitted = sessionHasMessages || startedCliSessionId === sessionId;
 
+  const createModelChangeHooks = useCallback(() => createSessionModelChangeHooks({
+    sessionId,
+    usesClaudeCli: isClaudeCliTerminalSession(provider) && cliSessionCommitted,
+    invoke: (channel, targetSessionId, updates) =>
+      window.electronAPI.invoke(channel, targetSessionId, updates),
+    setClaudeCliModel: async (targetSessionId, targetModelId) => {
+      await window.electronAPI.terminal.setClaudeCliModel(targetSessionId, targetModelId);
+    },
+    readSessionMetadata: () => {
+      const currentSessionData = store.get(sessionStoreAtom(sessionId));
+      return currentSessionData
+        ? (currentSessionData.metadata as Record<string, unknown> || {})
+        : null;
+    },
+    writeSessionMetadata: (metadata) => {
+      updateSessionStore({
+        sessionId,
+        updates: { metadata },
+      });
+    },
+    setCurrentModel,
+    setAgentModeSettings,
+    reportError: (message, error) => {
+      console.error(`[SessionTranscript] ${message}:`, error);
+    },
+  }), [sessionId, provider, cliSessionCommitted, updateSessionStore, setCurrentModel, setAgentModeSettings]);
+
+  const recoverDurableModelChange = useCallback(async (marker: Parameters<typeof recoverSessionModelChangeTransaction>[1]) => {
+    await recoverSessionModelChangeTransaction(sessionId, marker, createModelChangeHooks());
+  }, [sessionId, createModelChangeHooks]);
+
+  const {
+    gate: modelReconciliationGate,
+    blocked: modelReconciliationBlocked,
+    retry: retryModelReconciliation,
+    requireRecovery: requireModelReconciliation,
+  } = useSessionModelReconciliationOwner(sessionId, recoverDurableModelChange);
+
   // NIM-852: for a claude-code-cli session, detect whether the genuine `claude`
   // CLI is installed. Re-check when the session commits (a fresh install between
   // mount and first prompt is then reflected). When not installed we show an
@@ -1018,23 +1106,38 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     prevIsLoadingRef.current = isLoading;
   }, [isLoading, sessionId]);
 
-  // Trigger queue processing when queuedPrompts change and AI is idle.
-  // claude-code-cli is excluded: its queue is flushed to the PTY by the
-  // main-process PID-idle flusher (claudeCliQueueFlush), not the SDK send loop
-  // (ai:triggerQueueProcessing → ai:sendMessage, which throws for the CLI).
+  // Trigger queue processing when queuedPrompts change and AI is idle. The
+  // main process now routes SDK and CLI sessions through their authoritative
+  // rails, so this same effect resumes either provider after durable recovery.
   useEffect(() => {
     if (
       queuedPrompts.length > 0 &&
       !isLoading &&
-      workspacePath &&
-      !isClaudeCliTerminalSession(provider)
+      !modelReconciliationBlocked &&
+      workspacePath
     ) {
       window.electronAPI.invoke('ai:triggerQueueProcessing', sessionId, workspacePath)
         .catch(error => {
           console.error('[SessionTranscript] Failed to trigger queue processing:', error);
         });
     }
-  }, [queuedPrompts.length, isLoading, sessionId, workspacePath, provider]);
+  }, [queuedPrompts.length, isLoading, modelReconciliationBlocked, sessionId, workspacePath]);
+
+  // A mobile/priority row can be persisted while recovery is pending without
+  // having reached this view's queue atom. Probe the authoritative main queue
+  // once when the durable owner releases so that row resumes without a remount;
+  // duplicate mounted views remain safe because main claims atomically.
+  const previousModelReconciliationBlockedRef = useRef(modelReconciliationBlocked);
+  useEffect(() => {
+    const wasBlocked = previousModelReconciliationBlockedRef.current;
+    previousModelReconciliationBlockedRef.current = modelReconciliationBlocked;
+    if (wasBlocked && !modelReconciliationBlocked && !isLoading && workspacePath) {
+      window.electronAPI.invoke('ai:triggerQueueProcessing', sessionId, workspacePath)
+        .catch(error => {
+          console.error('[SessionTranscript] Failed to resume queue after model recovery:', error);
+        });
+    }
+  }, [isLoading, modelReconciliationBlocked, sessionId, workspacePath]);
 
   // ============================================================
   // Expose ref methods
@@ -1051,15 +1154,15 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // Handlers
   // ============================================================
   const handleAttachmentAdd = useCallback((attachment: ChatAttachment) => {
-    setDraftAttachments(prev => [...prev, attachment]);
+    setDraftAttachments((prev: ChatAttachment[]) => [...prev, attachment]);
   }, [setDraftAttachments]);
 
   const handleAttachmentRemove = useCallback((attachmentId: string) => {
-    setDraftAttachments(prev => prev.filter(a => a.id !== attachmentId));
+    setDraftAttachments((prev: ChatAttachment[]) => prev.filter((a: ChatAttachment) => a.id !== attachmentId));
   }, [setDraftAttachments]);
 
   const handleQueue = useCallback(async (message: string) => {
-    if (!message.trim() || isQueueing) return;
+    if (!message.trim() || isQueueing || isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     setIsQueueing(true);
 
     try {
@@ -1067,44 +1170,42 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       const effectiveContext = await getEffectiveDocumentContext();
       const serializableContext = serializeDocumentContext(effectiveContext);
 
-      // Read attachments imperatively — we don't subscribe to keep typing
-      // from re-rendering the entire transcript.
-      const currentAttachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
-
-      // If there's already a pending queued prompt, append to it instead of
-      // creating a separate entry. This bundles multiple queued messages into
-      // one prompt, matching how Claude Code handles stacked queries.
-      const lastQueued = queuedPrompts[queuedPrompts.length - 1];
-      let combinedPrompt = message.trim();
-      let combinedAttachments = currentAttachments;
-
-      if (lastQueued) {
-        // Delete the existing queued prompt so we can replace it
-        await window.electronAPI.invoke('ai:deleteQueuedPrompt', lastQueued.id);
-        combinedPrompt = lastQueued.prompt + '\n\n' + message.trim();
-        // Merge attachments from both prompts
-        combinedAttachments = [...(lastQueued.attachments || []), ...currentAttachments];
-      }
+      // A stable optimistic row lets an acknowledgement-lost retry converge
+      // on the durable queue identity without weakening reconciliation guards.
+      const currentAttachments = readDraftAttachments(sessionId);
+      const clientSubmissionId = crypto.randomUUID();
+      const optimisticTimestamp = Date.now();
+      setQueuedPrompts((prev: QueuedPrompt[]) => projectQueuedPrompts(sessionId, prev, [{
+        id: `optimistic-${clientSubmissionId}`,
+        clientSubmissionId,
+        sourceSessionId: sessionId,
+        status: 'awaiting_ack',
+        prompt: message,
+        timestamp: optimisticTimestamp,
+        documentContext: serializableContext,
+        attachments: currentAttachments,
+      }]));
 
       const result = await window.electronAPI.invoke(
         'ai:createQueuedPrompt',
         sessionId,
-        combinedPrompt,
-        combinedAttachments,
-        serializableContext
-      ) as { id: string; prompt: string; timestamp: number };
+        message,
+        currentAttachments,
+        serializableContext,
+        clientSubmissionId,
+      ) as { id: string; clientSubmissionId?: string; submissionSequence?: number; sourceSessionId?: string; prompt: string; timestamp: number };
 
-      setQueuedPrompts(prev => {
-        // Remove the old queued prompt (if we merged into it) and add the new combined one
-        const filtered = lastQueued ? prev.filter(p => p.id !== lastQueued.id) : prev;
-        return [...filtered, {
-          id: result.id,
-          prompt: combinedPrompt,
-          timestamp: result.timestamp,
-          documentContext: serializableContext,
-          attachments: combinedAttachments
-        }];
-      });
+      setQueuedPrompts((prev: QueuedPrompt[]) => projectQueuedPrompts(sessionId, prev, [{
+        id: result.id,
+        clientSubmissionId: result.clientSubmissionId,
+        submissionSequence: result.submissionSequence,
+        sourceSessionId: result.sourceSessionId,
+        status: 'pending',
+        prompt: result.prompt,
+        timestamp: result.timestamp,
+        documentContext: serializableContext,
+        attachments: currentAttachments,
+      }]));
 
       setLastSubmitAt(Date.now());
       setDraftInput('');
@@ -1115,9 +1216,10 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     } finally {
       setIsQueueing(false);
     }
-  }, [sessionId, getEffectiveDocumentContext, setDraftInput, setDraftAttachments, setLastSubmitAt, isQueueing, queuedPrompts, clearAIInputHistory]);
+  }, [sessionId, getEffectiveDocumentContext, setDraftInput, setDraftAttachments, setLastSubmitAt, isQueueing, modelReconciliationBlocked, clearAIInputHistory]);
 
   const handleSend = useCallback(async () => {
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     // Read draft state imperatively — we deliberately don't subscribe to
     // these atoms in SessionTranscript (see SessionAIInput).
     const currentDraftInput = store.get(sessionDraftInputAtom(sessionId)) ?? '';
@@ -1148,7 +1250,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         handleQueue(cliMessage);
         return;
       }
-      const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+      const attachments = readDraftAttachments(sessionId);
       setDraftInput('');
       setDraftAttachments([]);
       clearAIInputHistory(sessionId);
@@ -1186,7 +1288,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     }
 
     let message = currentDraftInput.trim();
-    const attachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+    const attachments = readDraftAttachments(sessionId);
 
     // Intercept /plan command - strip it and switch to planning mode
     // Match "/plan" only when followed by whitespace or end of string (not "/planning" or "/planify")
@@ -1319,7 +1421,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       });
       setIsProcessing(false);
     }
-  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
+  }, [sessionId, sessionData, isLoading, modelReconciliationBlocked, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
 
   // Launch a sibling session from a `launch: new-session` action prompt.
   // Builds the originating-session mention prefix here (in the renderer) so the
@@ -1370,6 +1472,8 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   );
 
   const handleCancel = useCallback(async () => {
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
+
     try {
       if (isClaudeCliTerminalSession(provider)) {
         // Escalating stop (NIM-814): Ctrl-C → Ctrl-C → SIGINT in the main
@@ -1388,7 +1492,13 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     } catch (error) {
       console.error('[SessionTranscript] Failed to cancel request:', error);
     }
-  }, [provider, sessionId, setIsProcessing, recordClaudeActivity]);
+  }, [
+    modelReconciliationBlocked,
+    provider,
+    sessionId,
+    setIsProcessing,
+    recordClaudeActivity,
+  ]);
 
   const handleFileClick = useCallback((filePath: string) => {
     const baseDir = sessionWorktreePath ?? workspacePath;
@@ -1420,7 +1530,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, []);
 
   const handleCompact = useCallback(async () => {
-    if (!sessionData) return;
+    if (!sessionData || modelReconciliationBlocked) return;
 
     const message = '/compact';
     const userMessage = makeOptimisticUserMessage(
@@ -1447,7 +1557,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     } catch (error) {
       console.error('[SessionTranscript] Failed to send /compact command:', error);
     }
-  }, [sessionId, sessionData, messages, getEffectiveDocumentContext, aiMode, workspacePath, updateSessionStore]);
+  }, [sessionId, sessionData, messages, modelReconciliationBlocked, getEffectiveDocumentContext, aiMode, workspacePath, updateSessionStore]);
 
   const handleTodoClick = useCallback((todo: TodoItem) => {
     onTodoClick?.(todo);
@@ -1458,17 +1568,37 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, [sessionId, navigateHistory]);
 
   const handleCancelQueuedPrompt = useCallback(async (id: string) => {
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     try {
-      await window.electronAPI.invoke('ai:deleteQueuedPrompt', id);
+      const result = await window.electronAPI.invoke(
+        'ai:deleteQueuedPrompt',
+        sessionId,
+        id,
+      ) as { success: boolean };
+      if (!result.success) {
+        const fresh = await window.electronAPI.invoke('ai:listPendingPrompts', sessionId) as typeof queuedPrompts;
+        setQueuedPrompts(fresh);
+        return;
+      }
       setQueuedPrompts(prev => prev.filter(p => p.id !== id));
     } catch (error) {
       console.error('[SessionTranscript] Failed to cancel queued prompt:', error);
     }
-  }, []);
+  }, [modelReconciliationBlocked, queuedPrompts, sessionId, setQueuedPrompts]);
 
   const handleEditQueuedPrompt = useCallback(async (id: string, prompt: string) => {
+    if (modelReconciliationBlocked) return;
     try {
-      await window.electronAPI.invoke('ai:deleteQueuedPrompt', id);
+      const result = await window.electronAPI.invoke(
+        'ai:deleteQueuedPrompt',
+        sessionId,
+        id,
+      ) as { success: boolean };
+      if (!result.success) {
+        const fresh = await window.electronAPI.invoke('ai:listPendingPrompts', sessionId) as typeof queuedPrompts;
+        setQueuedPrompts(fresh);
+        return;
+      }
       setQueuedPrompts(prev => prev.filter(p => p.id !== id));
       // Append to any existing draft so editing multiple queued items doesn't
       // clobber prior text; matches how handleQueue bundles consecutive
@@ -1478,15 +1608,16 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     } catch (error) {
       console.error('[SessionTranscript] Failed to edit queued prompt:', error);
     }
-  }, [setDraftInput]);
+  }, [modelReconciliationBlocked, queuedPrompts, sessionId, setDraftInput, setQueuedPrompts]);
 
   const handleSendNowQueuedPrompt = useCallback(async (_id: string, _prompt: string) => {
+    if (modelReconciliationBlocked) return;
     try {
       // Two-step send-now: (1) interrupt the current turn (graceful for
       // Claude Code, hard abort for other providers via the BaseAIProvider
       // default); (2) explicitly trigger queue processing. The natural
       // completion-handler path also triggers it, and the server's
-      // sessionsProcessingQueue guard de-dupes, so this is safe to call.
+      // queueProcessingLeases guard (hasActiveQueueLease) de-dupes, so this is safe to call.
       // We don't rely on the isLoading auto-effect because session:completed
       // may race or, in some edge cases, may not fire cleanly after abort.
       await window.electronAPI.invoke('ai:interruptCurrentTurn', sessionId);
@@ -1496,7 +1627,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     } catch (error) {
       console.error('[SessionTranscript] Failed to interrupt for send-now:', error);
     }
-  }, [sessionId, workspacePath]);
+  }, [sessionId, workspacePath, modelReconciliationBlocked]);
 
   const handleCloseAndArchive = useCallback(async () => {
     try {
@@ -1518,37 +1649,100 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   }, [sessionId, setIsArchived]);
 
   const handleAIModeChange = useCallback(async (newMode: AIMode) => {
+    if (modelReconciliationBlocked) return;
     setAiMode(newMode);
     try {
       await window.electronAPI.invoke('sessions:update-metadata', sessionId, { mode: newMode });
     } catch (error) {
       console.error('[SessionTranscript] Failed to update mode:', error);
     }
-  }, [sessionId, setAiMode]);
+  }, [sessionId, setAiMode, modelReconciliationBlocked]);
 
-  const handleModelChange = useCallback(async (modelId: string) => {
-    const previousModel = currentModel;
-    setCurrentModel(modelId);
-    // Save as the default model for new sessions
-    setAgentModeSettings({ defaultModel: modelId });
+  const handleModelChange = useCallback(async (modelId: string, pickerModel?: PickerModel) => {
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return false;
+    const nextCatalogControlValues = pickerModel?.catalog
+      ? resolveCatalogControlValues(pickerModel.catalog.controls, {
+          catalogControlValues,
+          effortLevel: rawEffortLevel,
+          thinkingMode: rawThinkingMode,
+        }, { discardUnknownPersistenceKeys: true }).values
+      : {};
+    const mutation = {
+      modelId,
+      previousModel: currentModel,
+      previousControls: {
+        effortLevel: rawEffortLevel ?? null,
+        thinkingMode: rawThinkingMode ?? null,
+        catalogControlValues,
+      },
+      catalogControls: pickerModel?.catalog
+        ? {
+            ...resolveCatalogReasoningValues(pickerModel.catalog.controls, {
+              catalogControlValues: nextCatalogControlValues,
+            }),
+            catalogControlValues: nextCatalogControlValues,
+          }
+        : null,
+    };
+
     try {
-      // claude-code-cli (NIM-806): a RUNNING CLI session retunes via the
-      // genuine CLI's `/model` slash command typed into its PTY (main-process
-      // IPC) — no respawn. Must happen before the metadata update so a failed
-      // PTY switch rolls everything back. The picker is disabled while a turn
-      // is running (readOnlyModel below), so this only fires on idle sessions.
-      if (isClaudeCliTerminalSession(provider) && cliSessionCommitted) {
-        await window.electronAPI.terminal.setClaudeCliModel(sessionId, modelId);
-      }
-      await window.electronAPI.invoke('sessions:update-metadata', sessionId, { model: modelId });
+      await runSessionModelChangeTransaction(sessionId, mutation, createModelChangeHooks());
+      return true;
     } catch (error) {
-      console.error('[SessionTranscript] Failed to update model:', error);
-      setCurrentModel(previousModel);
-      setAgentModeSettings({ defaultModel: previousModel });
+      console.error(
+        '[SessionTranscript] Model change requires reconciliation:',
+        error
+      );
+      if (error instanceof SessionModelChangeReconciliationError) {
+        requireModelReconciliation();
+      }
+      return false;
     }
-  }, [currentModel, sessionId, setCurrentModel, setAgentModeSettings, provider, cliSessionCommitted]);
+  }, [modelReconciliationBlocked, currentModel, sessionId, rawEffortLevel, rawThinkingMode, effortLevel, thinkingMode, catalogControlValues, createModelChangeHooks, requireModelReconciliation]);
+
+  const handleCatalogControlValueChange = useCallback(async (
+    persistenceKey: string,
+    value: ProviderCatalogControlValue,
+  ) => {
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
+    const nextCatalogControlValues = {
+      ...catalogControlValues,
+      [persistenceKey]: value,
+    };
+    const compatibilityMetadata = {
+      ...(persistenceKey === 'effort-level' ? { effortLevel: value } : {}),
+      ...(persistenceKey === 'thinking-mode' ? { thinkingMode: value } : {}),
+    };
+    try {
+      const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, {
+        metadata: {
+          catalogControlValues: nextCatalogControlValues,
+          ...compatibilityMetadata,
+        },
+      }) as { success?: boolean; error?: string } | undefined;
+      if (result?.success === false) {
+        throw new Error(result.error || 'Failed to update catalog control metadata.');
+      }
+      const currentSessionData = readSessionData(sessionId);
+      if (currentSessionData) {
+        updateSessionStore({
+          sessionId,
+          updates: {
+            metadata: {
+              ...(currentSessionData.metadata as Record<string, unknown> || {}),
+              catalogControlValues: nextCatalogControlValues,
+              ...compatibilityMetadata,
+            },
+          },
+        });
+      }
+    } catch (error) {
+      console.error('[SessionTranscript] Failed to update catalog control metadata:', error);
+    }
+  }, [catalogControlValues, modelReconciliationBlocked, sessionId, updateSessionStore]);
 
   const handleEffortLevelChange = useCallback(async (level: EffortLevel) => {
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     const previousLevel = effortLevel;
     await updateSessionMetadataField(sessionId, 'effortLevel', level, null, updateSessionStore);
     setAgentModeSettings({ defaultEffortLevel: level });
@@ -1556,9 +1750,10 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       effort_level: level,
       previous_level: previousLevel,
     });
-  }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog]);
+  }, [sessionId, updateSessionStore, setAgentModeSettings, effortLevel, posthog, modelReconciliationBlocked]);
 
   const handleThinkingModeChange = useCallback(async (mode: ThinkingMode) => {
+    if (isQueueMutationBlockedByModelReconciliation(modelReconciliationBlocked)) return;
     const previousMode = thinkingMode;
     await updateSessionMetadataField(sessionId, 'thinkingMode', mode, null, updateSessionStore);
     // Sticky across sessions: without this the selector reset to "Extended: On"
@@ -1569,7 +1764,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       previous_mode: previousMode,
       model: currentModel,
     });
-  }, [sessionId, updateSessionStore, thinkingMode, currentModel, posthog]);
+  }, [sessionId, updateSessionStore, thinkingMode, currentModel, posthog, modelReconciliationBlocked]);
 
   const handleCommandSelect = useCallback((command: string) => {
     setDraftInput(command);
@@ -2203,7 +2398,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     const { timestamp } = scrollToMessage;
 
     // Find the user message whose timestamp matches the prompt's createdAt.
-    const targetIdx = messages.findIndex(msg =>
+    const targetIdx = messages.findIndex((msg: TranscriptViewMessage) =>
       msg.type === 'user_message' && Math.abs((msg.createdAt?.getTime() || 0) - timestamp) < 1000
     );
 
@@ -2497,7 +2692,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
           <ClaudeCliNotInstalledNotice variant="panel" />
         </div>
       )}
-      {provider === 'claude-code-cli' && cliSessionCommitted && claudeCliInstalled !== false && (
+      {provider === 'claude-code-cli' && cliSessionCommitted && claudeCliInstalled !== false && !modelReconciliationBlocked && (
         <div
           ref={cliTerminalDrawerRef}
           className="claude-cli-terminal-drawer"
@@ -2602,9 +2797,30 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         />
       )}
 
+      {modelReconciliationGate.status !== 'idle' && (
+        <div
+          className="model-reconciliation-gate"
+          data-testid="model-reconciliation-gate"
+          role={modelReconciliationGate.status === 'required' ? 'alert' : 'status'}
+          aria-live="polite"
+        >
+          <span>{modelReconciliationGate.message}</span>
+          {modelReconciliationGate.status === 'required' && (
+            <button
+              type="button"
+              onClick={() => { void retryModelReconciliation(); }}
+              data-testid="model-reconciliation-retry"
+            >
+              Retry recovery
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Queue display */}
       <PromptQueueList
         queue={queuedPrompts}
+        disabled={modelReconciliationBlocked}
         onCancel={handleCancelQueuedPrompt}
         onEdit={handleEditQueuedPrompt}
         onSendNow={isLoading && !isClaudeCliTerminalSession(provider) ? handleSendNowQueuedPrompt : undefined}
@@ -2620,6 +2836,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         onSend={handleSend}
         onCancel={handleCancel}
         isLoading={isLoading}
+        disabled={modelReconciliationBlocked}
         workspacePath={workspacePath}
         sessionId={sessionId}
         enableAttachments={enableAttachments}
@@ -2647,20 +2864,30 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         // sessionHasMessages. The effort selector is still hidden outright (the
         // CLI has no effort flag). ModeTag is already gated to `claude-code` in
         // AIInput.
-        onModelChange={handleModelChange}
-        readOnlyModel={isClaudeCliTerminalSession(provider) && cliSessionCommitted && isLoading}
-        readOnlyModelTitle="Wait for the current turn to finish before switching models"
+        onModelChange={modelReconciliationBlocked ? undefined : handleModelChange}
+        readOnlyModel={modelReconciliationBlocked || (isClaudeCliTerminalSession(provider) && cliSessionCommitted && isLoading)}
+        readOnlyModelTitle={modelReconciliationBlocked
+          ? modelReconciliationGate.status === 'idle' ? undefined : modelReconciliationGate.message
+          : "Wait for the current turn to finish before switching models"}
         sessionHasMessages={sessionHasMessages}
         currentProvider={provider ?? null}
         effortLevel={effortLevel}
         onEffortLevelChange={handleEffortLevelChange}
+        reasoningControlsDisabled={modelReconciliationBlocked}
+        reasoningControlsDisabledTitle={modelReconciliationGate.status === 'idle' ? undefined : modelReconciliationGate.message}
         showEffortLevel={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showEffortLevel}
         thinkingMode={thinkingMode}
         onThinkingModeChange={handleThinkingModeChange}
+        catalogControlValues={catalogControlValues}
+        catalogLegacyControlValues={{
+          ...(rawEffortLevel != null ? { 'effort-level': rawEffortLevel } : {}),
+          ...(rawThinkingMode != null ? { 'thinking-mode': rawThinkingMode } : {}),
+        }}
+        onCatalogControlValueChange={handleCatalogControlValueChange}
         showThinkingToggle={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showThinkingToggle}
         tokenUsage={tokenUsage}
         provider={provider}
-        onQueue={handleQueue}
+        onQueue={modelReconciliationBlocked ? undefined : handleQueue}
         queueCount={queuedPrompts.length}
         currentFilePath={currentFilePath}
         onLaunchActionInNewSession={handleLaunchActionInNewSession}

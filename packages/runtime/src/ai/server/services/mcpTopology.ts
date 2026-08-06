@@ -149,17 +149,25 @@ export const HOST_TOOLS: readonly string[] = [
   'list_recent_sessions',
   'schedule_wakeup',
   'update_session_board',
+  'session_get_visibility',
+  'session_set_visibility',
   // Child-session orchestration (was nimbalyst-meta-agent)
   'create_session',
   'spawn_session',
   'send_prompt',
+  'send_prompt_now',
   'list_queued_prompts',
+  'compact_session',
   'notify_user',
   'respond_to_prompt',
   'get_session_status',
   'get_session_result',
   'list_spawned_sessions',
   'list_worktrees',
+  // Provider usage polling (usagePollingServer.ts): Claude Code / Codex
+  // subscription usage + the local Ollama brain-swap proxy's health. Host,
+  // rarely needed mid-task -> deferred, same as the rest of this bucket.
+  'get_provider_usage',
   // NOTE: `applyDiff` / `streamContent` are intentionally NOT declared here.
   // They have live CallTool handlers (httpServer switch) + renderer IPC
   // listeners, but no ListTools schema — they are deliberately unadvertised so

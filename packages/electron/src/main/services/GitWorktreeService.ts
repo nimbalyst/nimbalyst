@@ -252,10 +252,17 @@ export class GitWorktreeService {
   private async createWorktreeImpl(workspacePath: string, options: CreateWorktreeOptions): Promise<Worktree> {
     logger.info('Creating worktree', { workspacePath, options });
 
-    // Ensure this is a git repository
+    // A canonical workspace can intentionally keep a bare repository in
+    // <workspace>/.git while using the workspace as its explicit work tree.
+    // simple-git's checkIsRepo() rejects that arrangement because its cwd is
+    // not itself a Git work tree, so identify it narrowly and pass the Git
+    // directory/work-tree pair to every creation command.
     const git: SimpleGit = simpleGit(workspacePath);
-    const isRepo = await git.checkIsRepo();
-    if (!isRepo) {
+    const gitDir = path.join(workspacePath, '.git');
+    const isStandardRepo = await git.checkIsRepo();
+    const usesBareGitDir = !isStandardRepo && await this.isBareGitDir(gitDir);
+
+    if (!isStandardRepo && !usesBareGitDir) {
       throw new Error(`Not a git repository: ${workspacePath}`);
     }
 
@@ -267,9 +274,21 @@ export class GitWorktreeService {
     let baseBranch: string;
     if (options.baseBranch) {
       baseBranch = options.baseBranch;
+    } else if (usesBareGitDir) {
+      // A bare Git directory has no safe implicit checked-out branch for the
+      // workspace. Requiring an explicit ref prevents accidentally basing a
+      // new worktree on an arbitrary symbolic HEAD.
+      throw new Error(`baseBranch is required for bare Git workspace: ${workspacePath}`);
     } else {
       // Get the current branch of the repo root
       baseBranch = await this.getCurrentBranch(git);
+    }
+
+    const gitPrefix = usesBareGitDir ? [`--git-dir=${gitDir}`, `--work-tree=${workspacePath}`] : [];
+    try {
+      await git.raw([...gitPrefix, 'rev-parse', '--verify', `${baseBranch}^{commit}`]);
+    } catch (error) {
+      throw new Error(`Invalid baseBranch '${baseBranch}' for ${workspacePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
     logger.info('Using base branch', { baseBranch });
 
@@ -307,7 +326,7 @@ export class GitWorktreeService {
     try {
       // Create the worktree with a new branch
       logger.info('Creating git worktree', { worktreePath, branchName, baseBranch });
-      await git.raw(['worktree', 'add', '-b', branchName, worktreePath, baseBranch]);
+      await git.raw([...gitPrefix, 'worktree', 'add', '-b', branchName, worktreePath, baseBranch]);
 
       logger.info('Worktree created successfully', { worktreePath });
 
@@ -337,6 +356,24 @@ export class GitWorktreeService {
       }
 
       throw new Error(`Failed to create worktree: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Returns true only for the intentional <workspace>/.git bare-directory
+   * layout. A missing .git path, .git file, or non-bare repository remains
+   * fail-closed and is handled by the normal repository path.
+   */
+  private async isBareGitDir(gitDir: string): Promise<boolean> {
+    try {
+      if (!fs.statSync(gitDir).isDirectory()) {
+        return false;
+      }
+
+      const gitDirClient = simpleGit(gitDir);
+      return (await gitDirClient.raw(['rev-parse', '--is-bare-repository'])).trim() === 'true';
+    } catch {
+      return false;
     }
   }
 

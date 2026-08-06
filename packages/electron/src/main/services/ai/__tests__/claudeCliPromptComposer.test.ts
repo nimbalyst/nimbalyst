@@ -5,8 +5,8 @@ import {
 } from '../claudeCliPromptComposer';
 
 describe('composeClaudeCliPtySubmission', () => {
-  it('returns just the trimmed prompt when there are no attachments', () => {
-    expect(composeClaudeCliPtySubmission({ prompt: '  fix the bug  ' })).toBe('fix the bug');
+  it('returns the exact prompt when there are no attachments', () => {
+    expect(composeClaudeCliPtySubmission({ prompt: '  fix the bug  ' })).toBe('  fix the bug  ');
   });
 
   it('appends absolute attachment paths after the prompt on one line', () => {
@@ -40,30 +40,28 @@ describe('composeClaudeCliPtySubmission', () => {
    * the PTY is Enter, which submits the turn early and drops everything after
    * it. The selection preamble was already flattened; the typed prompt was not.
    */
-  describe('newline flattening', () => {
-    it('flattens newlines in the typed prompt', () => {
+  describe('logical payload preservation', () => {
+    it('preserves newlines in the typed prompt', () => {
       expect(
         composeClaudeCliPtySubmission({ prompt: 'fix auth.ts\nalso update the tests' }),
-      ).toBe('fix auth.ts\\nalso update the tests');
+      ).toBe('fix auth.ts\nalso update the tests');
     });
 
-    it('flattens CRLF and bare CR the same way', () => {
-      expect(composeClaudeCliPtySubmission({ prompt: 'a\r\nb\rc' })).toBe('a\\nb\\nc');
+    it('preserves CRLF and bare CR exactly', () => {
+      expect(composeClaudeCliPtySubmission({ prompt: 'a\r\nb\rc' })).toBe('a\r\nb\rc');
     });
 
     it('keeps blank lines between paragraphs', () => {
-      expect(composeClaudeCliPtySubmission({ prompt: 'para one\n\npara two' })).toBe(
-        'para one\\n\\npara two',
-      );
+      expect(composeClaudeCliPtySubmission({ prompt: 'para one\n\npara two' })).toBe('para one\n\npara two');
     });
 
-    it('emits no real newline once attachments and context are appended', () => {
+    it('keeps logical newlines when attachments and context are appended', () => {
       const out = composeClaudeCliPtySubmission({
         prompt: 'line one\nline two',
         attachments: [{ filepath: '/tmp/a.png' }],
         documentContext: { filePath: '/ws/notes.md', textSelection: { text: 'sel\nected' } },
       });
-      expect(out).not.toMatch(/[\r\n]/);
+      expect(out).toContain('line one\nline two');
     });
   });
 

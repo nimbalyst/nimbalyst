@@ -9,14 +9,34 @@ import type { ToolResult } from './protocols/ProtocolInterface';
 import { ModelIdentifier } from './ModelIdentifier';
 import {
   CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS,
+  CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES,
   CLAUDE_CODE_PINNED_SDK_MODELS,
   normalizeClaudeCodeVariant,
 } from '../modelConstants';
+import { isDeepSeekClaudeAgentModel } from './deepSeekClaudeAgent';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
+import type {
+  ContextMeterStateV1,
+  ContextObservationV1,
+  ContextInvalidationReason,
+  ContextMeterIdentityV1,
+} from '../contextMeter';
 export type { ToolDefinition } from '../tools';
 export { ModelIdentifier } from './ModelIdentifier';
 export type { ToolResult } from './protocols/ProtocolInterface';
 export type { TranscriptViewMessage } from './transcript/TranscriptProjector';
+export type {
+  ContextMeterStateV1,
+  ContextObservationV1,
+  ContextInvalidationReason,
+  ContextMeterIdentityV1,
+} from '../contextMeter';
+export {
+  createUnavailableContextMeterStateV1,
+  contextMeterIdentityEquals,
+  hydrateContextMeterStateV1,
+  reduceContextMeterStateV1,
+} from '../contextMeter';
 
 export interface DocumentContext {
   filePath?: string;
@@ -268,11 +288,19 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
   type ClaudeCodeVariant = typeof CLAUDE_CODE_VARIANTS[number];
   const configured = configuredModel || defaultModel;
 
+  if (isDeepSeekClaudeAgentModel(configured)) return 'sonnet';
+
   const toSdkBase = (variant: string): string => CLAUDE_CODE_PINNED_SDK_MODELS[variant as ClaudeCodeVariant] ?? variant;
 
   // Try parsing with ModelIdentifier
   const parsed = ModelIdentifier.tryParse(configured);
   if (parsed && isClaudeCodeFamily(parsed.provider)) {
+    const ollamaIdentity = CLAUDE_CODE_OLLAMA_BACKEND_IDENTITIES.find(
+      (identity) => identity.persistedModel === parsed.combined
+    );
+    if (ollamaIdentity) {
+      return ollamaIdentity.sdkAlias;
+    }
     // baseVariant strips suffixes like -1m
     const variant = parsed.baseVariant as ClaudeCodeVariant;
     if ((CLAUDE_CODE_VARIANTS as readonly string[]).includes(variant)) {
@@ -400,6 +428,8 @@ export interface SessionData {
       categories?: TokenUsageCategory[]; // Category breakdown from /context
       rawResponse?: string;   // Raw markdown from /context for display on session reload
     };
+    /** Sole versioned source for the context meter UI. */
+    contextMeterState?: ContextMeterStateV1;
   };
 
   // Additional metadata
@@ -423,6 +453,8 @@ export interface SessionData {
 
 export interface ProviderConfig {
   apiKey?: string;
+  /** Stable project scope for explicit per-workspace provider credentials. */
+  workspacePath?: string;
   model?: string;
   maxTokens?: number;
   temperature?: number;
@@ -430,6 +462,16 @@ export interface ProviderConfig {
   allowedTools?: string[];  // List of allowed tool names, ['*'] for all tools
   effortLevel?: EffortLevel;  // Effort level for Opus 4.6 adaptive reasoning (low/medium/high/max)
   thinkingMode?: ThinkingMode;  // Extended thinking mode for Claude Agent (enabled/disabled)
+  /** Catalog-owned, provider-neutral persisted controls validated at route resolution. */
+  catalogControlValues?: Readonly<Record<string, unknown>>;
+  /** Turn boundary used to enforce catalog control applicability. */
+  catalogControlContext?: import('./providers/claudeCode/providerCatalog').ProviderCatalogControlContext;
+  customBackend?: string;  // Per-session Claude Agent backend selected by a synthetic model profile (DeepSeek)
+  /**
+   * Claude Code only: exact per-session backend profile. The profile is
+   * resolved for every turn and unknown values fail closed. (Ollama fleet)
+   */
+  claudeCodeBackend?: string;
   responseFormat?: ProviderResponseFormat;  // Response format constraint (extension chat completions)
   skipLogging?: boolean;  // Skip message logging to DB (extension stateless completions)
 }
@@ -526,6 +568,10 @@ export interface StreamChunk {
   contextFillTokens?: number;
   // Model context window for context fill calculations (when provider emits a per-turn snapshot).
   contextWindow?: number;
+  /** Provider observation to be validated by the host reducer. */
+  contextObservation?: ContextObservationV1;
+  /** Already-reduced state for extension providers that host the same reducer. */
+  contextMeterState?: ContextMeterStateV1;
   // Set to true when context was compacted this turn. Signals AIService to clear stale currentContext.
   contextCompacted?: boolean;
   /**

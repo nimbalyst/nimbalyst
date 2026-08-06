@@ -269,6 +269,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  getBuildInfo: () => ipcRenderer.invoke('get-build-info'),
   setTheme: (theme: string) => ipcRenderer.invoke('set-theme', theme),
   setTitleBarOverlayColors: (colors: { color: string; symbolColor: string }) =>
     ipcRenderer.send('window-chrome:set-overlay-colors', colors),

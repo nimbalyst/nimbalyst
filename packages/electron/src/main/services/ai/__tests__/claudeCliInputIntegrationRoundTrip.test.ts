@@ -28,7 +28,7 @@
  *      stuck executing) and flush returns false.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { projectRawMessagesToViewMessages } from '@nimbalyst/runtime/ai/server/transcript';
 import type { RawMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
@@ -101,8 +101,9 @@ function makePipeline() {
 
 /**
  * Minimal in-memory queued-prompt store matching QueuedPromptStoreLike's
- * relevant subset (listPending / claim / complete / fail). `claim` is atomic:
- * it only returns + marks a prompt if it is still `pending`.
+ * relevant dispatch subset. `claim` is atomic: it only returns + marks a
+ * prompt if it is still `pending`; terminal settlement mirrors the observed
+ * idle boundary that completes or fails the claimed token.
  */
 function makeQueueStore(
   seed: Array<{ id: string; prompt?: string | null; attachments?: unknown[] | null }>,
@@ -112,6 +113,7 @@ function makeQueueStore(
     prompt: s.prompt ?? '',
     attachments: s.attachments ?? null,
     status: 'pending' as 'pending' | 'executing' | 'completed' | 'failed',
+    claimToken: undefined as string | undefined,
     errorMessage: undefined as string | undefined,
   }));
 
@@ -125,18 +127,22 @@ function makeQueueStore(
       const item = find(promptId);
       if (!item || item.status !== 'pending') return null;
       item.status = 'executing';
-      return { id: item.id, prompt: item.prompt, attachments: item.attachments };
+      item.claimToken = `claim-${item.id}`;
+      return { id: item.id, prompt: item.prompt, attachments: item.attachments, claimToken: item.claimToken };
     },
-    complete: async (promptId: string): Promise<void> => {
+    beginDispatch: async () => ({ outcome: 'settled' as const }),
+    completeAfterDispatch: async (promptId: string, _sessionId: string, claimToken: string) => {
       const item = find(promptId);
-      if (item) item.status = 'completed';
+      if (item?.claimToken === claimToken) item.status = 'completed';
+      return { outcome: 'settled' as const };
     },
-    fail: async (promptId: string, errorMessage: string): Promise<void> => {
+    failAfterDispatch: async (promptId: string, errorMessage: string, _sessionId: string, claimToken: string) => {
       const item = find(promptId);
-      if (item) {
+      if (item?.claimToken === claimToken) {
         item.status = 'failed';
         item.errorMessage = errorMessage;
       }
+      return { outcome: 'settled' as const };
     },
   };
 }
@@ -263,11 +269,14 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
     ]);
 
     const deps = {
+      preflight: vi.fn(async () => true),
       listPending: store.listPending,
       claim: store.claim,
-      complete: store.complete,
-      fail: store.fail,
+      beginDispatch: store.beginDispatch,
+      completeAfterDispatch: store.completeAfterDispatch,
+      failAfterDispatch: store.failAfterDispatch,
       submit: pipe.submit,
+      registerQueuedTurn: () => true,
     };
 
     // First idle → claims q1 (oldest), writes 'first /tmp/a.png' + Enter.
@@ -276,6 +285,7 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
       deps,
     );
     expect(flushed1).toBe(true);
+    await store.completeAfterDispatch('q1', SESSION_ID, 'claim-q1');
     expect(store.items.find((i) => i.id === 'q1')?.status).toBe('completed');
     expect(pipe.ptyWrites).toEqual([
       ['s', pasted('first /tmp/a.png')],
@@ -291,6 +301,7 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
       deps,
     );
     expect(flushed2).toBe(true);
+    await store.completeAfterDispatch('q2', SESSION_ID, 'claim-q2');
     expect(store.items.find((i) => i.id === 'q2')?.status).toBe('completed');
     expect(pipe.ptyWrites.slice(2)).toEqual([
       ['s', pasted('second')],
@@ -319,13 +330,16 @@ describe('claude-code-cli input integration round-trip (attachments + queued pro
     const flushed = await flushNextClaudeCliQueuedPrompt(
       { sessionId: SESSION_ID, workspacePath: WORKSPACE },
       {
+        preflight: vi.fn(async () => true),
         listPending: store.listPending,
         claim: store.claim,
-        complete: store.complete,
-        fail: store.fail,
+        beginDispatch: store.beginDispatch,
+        completeAfterDispatch: store.completeAfterDispatch,
+        failAfterDispatch: store.failAfterDispatch,
         submit: async () => {
           throw new Error('pty exploded');
         },
+        registerQueuedTurn: () => true,
       },
     );
 

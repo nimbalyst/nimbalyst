@@ -31,6 +31,7 @@ import { getPermissionService } from '../PermissionService';
 import { startClaudeCliProxyObservation, fireClaudeCliTurnCompletion } from './claudeCliObservationSingleton';
 import { flushNextClaudeCliQueuedPromptForSession } from './claudeCliQueueFlushSingleton';
 import { maybeAutoNameClaudeCliSessionProduction } from './claudeCliSessionAutoNameSingleton';
+import { preflightSessionPromptDispatch } from './queuedPromptDispatcher';
 import type { ClaudeTurnState } from './claudeCliPidState';
 
 interface ClaudeCliLauncherConfig {
@@ -201,6 +202,13 @@ const cliFileWatcher = new HooklessAgentFileWatcher();
 export async function ensureClaudeCliSession(
   input: EnsureClaudeCliSessionInput
 ): Promise<EnsureClaudeCliSessionResult> {
+  if (!(await preflightSessionPromptDispatch(input.sessionId))) {
+    return {
+      success: false,
+      error: 'Session model recovery is pending',
+    };
+  }
+
   const manager = getTerminalSessionManager();
   if (manager.isTerminalActive(input.sessionId)) {
     return { success: true, alreadyActive: true };

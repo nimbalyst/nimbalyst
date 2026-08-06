@@ -125,7 +125,12 @@ import { registerDatabaseBrowserSqliteHandlers } from './ipc/DatabaseBrowserSqli
 import { registerMigrationHandlers } from './ipc/MigrationHandlers';
 import { registerTerminalHandlers, shutdownTerminalHandlers } from './ipc/TerminalHandlers';
 import { AIService } from './services/ai/AIService';
-import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesForWorkspace } from './utils/workspaceDetection';
+import {
+    detectFileWorkspace,
+    suggestWorkspaceForFile,
+    getAdditionalDirectoriesForWorkspace,
+    getClaudeAdditionalDirectoriesForWorkspace,
+} from './utils/workspaceDetection';
 import {
   getExternalAttachmentStagingDirectory,
   resolveWorkspaceAttachmentStagingDirectory,
@@ -133,6 +138,11 @@ import {
 import { cliManager, initEnhancedPath, getEnhancedPath, getShellEnvironment } from './services/CLIManager';
 import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState, getActiveExtensionShortNames } from './mcp/httpServer';
 import { writeMcpEndpointDescriptor, removeMcpEndpointDescriptor, type EndpointWorkspace } from './mcp/mcpEndpointDescriptor';
+import {
+  resolveSingleInstanceLifecycleOwnership,
+  runIfSingleInstanceLifecycleOwner,
+  startLosingSecondaryControlPath,
+} from './singleInstanceLifecycle';
 import {
   startWorkspaceBackendModules,
   syncEnabledBackendModulesOnStartup,
@@ -178,6 +188,8 @@ import { registerCodexUsageHandlers } from './ipc/CodexUsageHandlers';
 import { codexUsageService } from './services/CodexUsageService';
 import { registerGeminiUsageHandlers } from './ipc/GeminiUsageHandlers';
 import { geminiUsageService } from './services/GeminiUsageService';
+import { registerOllamaUsageHandlers } from './ipc/OllamaUsageHandlers';
+import { ollamaUsageService } from './services/OllamaUsageService';
 import { codexAuthService } from './services/CodexAuthService';
 import { registerExtensionHandlers, getClaudePluginPaths, initializeExtensionFileTypes } from './ipc/ExtensionHandlers';
 import { registerExtensionPermissionHandlers } from './ipc/ExtensionPermissionHandlers';
@@ -244,6 +256,9 @@ import { pathToFileURL } from 'url';
 import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
 import { installWindowOpenGuard } from './window/windowOpenGuard';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
+import { createProviderRouteCredentialResolver } from './services/ai/providerRouteCredentialResolver';
+import { BUILT_IN_PROVIDER_CATALOG } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalogDefaults';
+import { readProviderCatalog } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalogLoader';
 
 setAuthCallbackSuccessHandler(async () => {
   try {
@@ -632,11 +647,16 @@ registerLinuxAppImageProtocolHandler();
 // (e.g., from a file double-click), it forwards its context to the primary instance.
 // Skip for multi-instance dev mode and Playwright tests.
 const allowMultipleInstances = !!process.env.NIMBALYST_USER_DATA_DIR || !!process.env.PLAYWRIGHT;
+const acquiredSingleInstanceLock = allowMultipleInstances
+    ? null
+    : app.requestSingleInstanceLock();
+const singleInstanceLifecycle = resolveSingleInstanceLifecycleOwnership({
+    allowMultipleInstances,
+    acquiredSingleInstanceLock,
+});
 
 if (!allowMultipleInstances) {
-    const gotTheLock = app.requestSingleInstanceLock();
-
-    if (!gotTheLock) {
+    if (!acquiredSingleInstanceLock) {
         // Another instance holds the lock. On macOS, when the OS launches the
         // packaged app to open a file, the path comes via Apple Events which
         // Electron delivers as the open-file event. But open-file only fires
@@ -647,44 +667,37 @@ if (!allowMultipleInstances) {
 
         logger.main.info(`[SingleInstance] Second instance launched, waiting for open-file. argv=${JSON.stringify(process.argv)}`);
 
-        // Also check argv for file paths (Windows/Linux, or CLI open --args)
-        const fileArg = process.argv.find(arg =>
-            !arg.startsWith('-') &&
-            arg !== process.argv[0] &&
-            path.isAbsolute(arg)
-        );
-        if (fileArg) {
-            logger.main.info(`[SingleInstance] Found file in argv: ${fileArg}`);
-            try { writeFileSync(pendingOpenFilePath, fileArg, 'utf-8'); } catch (_) {}
-            app.quit();
-        } else if (process.argv.find(arg => arg.startsWith('nimbalyst://'))) {
-            // Primary instance will handle via second-instance event; quit immediately
-            logger.main.info('[SingleInstance] Second instance has deep link arg, quitting immediately');
-            app.quit();
-        } else {
-            // No file in argv -- wait for open-file Apple Event
-            let gotFile = false;
-            app.on('open-file', (event, filePath) => {
-                event.preventDefault();
-                gotFile = true;
-                logger.main.info(`[SingleInstance] Second instance received open-file: ${filePath}`);
+        startLosingSecondaryControlPath({
+            argv: process.argv,
+            isAbsolutePath: path.isAbsolute,
+            relayFile: (filePath) => {
+                logger.main.info(`[SingleInstance] Relaying file to primary: ${filePath}`);
                 try {
                     writeFileSync(pendingOpenFilePath, filePath, 'utf-8');
                     logger.main.info(`[SingleInstance] Wrote signal file: ${pendingOpenFilePath}`);
                 } catch (err) {
                     logger.main.error('[SingleInstance] Failed to write signal file:', err);
                 }
-                app.quit();
-            });
-
-            // Fallback timeout -- if open-file never fires, quit anyway
-            setTimeout(() => {
-                if (!gotFile) {
-                    logger.main.info('[SingleInstance] No open-file after timeout, quitting');
-                    app.quit();
-                }
-            }, 5000);
-        }
+            },
+            registerOpenFileHandler: (handler) => {
+              app.on('open-file', (event, filePath) => {
+                event.preventDefault();
+                logger.main.info(`[SingleInstance] Second instance received open-file: ${filePath}`);
+                handler(filePath);
+              });
+            },
+            scheduleExitTimeout: (handler, delayMs) => {
+                setTimeout(handler, delayMs);
+            },
+            quit: () => app.quit(),
+            onDeepLinkExit: () => {
+                // Primary instance handles the URL via the second-instance event.
+                logger.main.info('[SingleInstance] Second instance has deep link arg, quitting immediately');
+            },
+            onTimeoutExit: () => {
+                logger.main.info('[SingleInstance] No open-file after timeout, quitting');
+            },
+        });
     } else {
         // We are the primary instance. When a second instance tries to launch,
         // extract any deep link URL or file path and handle it here.
@@ -733,7 +746,7 @@ if (!allowMultipleInstances) {
 // Workaround for dev mode: watch a signal file that the second instance writes.
 // Currently only works for CLI invocations where the path is in argv.
 // For Finder double-click during dev, quit the packaged app first.
-{
+runIfSingleInstanceLifecycleOwner(singleInstanceLifecycle, () => {
     const pendingOpenFilePath = path.join(app.getPath('userData'), '.pending-open-file');
 
     // Check for a stale signal file on startup (second instance may have written
@@ -770,7 +783,7 @@ if (!allowMultipleInstances) {
     } catch (err) {
         logger.main.warn('[SingleInstance] Failed to watch for open-file signals:', err);
     }
-}
+});
 
 // Track pending deep link URL
 let pendingDeepLinkUrl: string | null = null;
@@ -1434,7 +1447,8 @@ BrowserWindow.prototype.focus = function(this: BrowserWindow) {
 // --- END ACTIVATION DEBUGGING ---
 
 // App ready handler
-app.whenReady().then(async () => {
+runIfSingleInstanceLifecycleOwner(singleInstanceLifecycle, () => {
+  void app.whenReady().then(async () => {
     checkpoint('app-ready');
 
     // The default renderer session may use the microphone after Voice Mode has
@@ -1682,6 +1696,8 @@ app.whenReady().then(async () => {
     codexUsageService.initialize();
     registerGeminiUsageHandlers();
     geminiUsageService.initialize();
+    registerOllamaUsageHandlers();
+    ollamaUsageService.initialize();
     registerPermissionHandlers();
     registerGitStatusHandlers();
     registerGitHandlers();
@@ -1825,7 +1841,12 @@ app.whenReady().then(async () => {
         await syncClaudeDisabledServers(workspacePath, allServers);
         return enabledServers;
     });
-
+    ClaudeCodeProvider.setProviderCredentialResolver(
+        createProviderRouteCredentialResolver()
+    );
+    ClaudeCodeProvider.setProviderCatalogResolutionLoader(
+        () => readProviderCatalog(BUILT_IN_PROVIDER_CATALOG).resolution
+    );
     ClaudeCodeProvider.setMcpWithheldNamesLoader(
         (workspacePath?: string) => claudeAgentWithheldServerNames.get(withheldNamesKey(workspacePath)) ?? []
     );
@@ -2080,10 +2101,13 @@ app.whenReady().then(async () => {
     // common dir from a worktree, and (for Codex) escape its workspace-write
     // sandbox when an orchestrator session needs to edit sibling worktrees.
     // Issue #37 problem 1.
-    // Claude opts out of sibling worktrees: the Claude CLI loads .claude/commands
-    // skills from every additional directory, so N worktrees = N duplicate
-    // copies of every project skill in the system prompt (~7K tokens wasted per
-    // session). Claude has no Codex-style sandbox; cross-worktree file access
+    // Claude opts out of sibling worktrees AND filters any other duplicate-project
+    // catalog directory: the Claude CLI loads .claude/commands skills from every
+    // additional directory, so N worktrees (or a worktree + its parent) = N
+    // duplicate copies of every project skill in the system prompt (~7K tokens
+    // wasted per session). getClaudeAdditionalDirectoriesForWorkspace does this
+    // filtering by canonical project identity, not just sibling-worktree opt-out;
+    // NIM-254. Claude has no Codex-style sandbox; cross-worktree file access
     // still works through the normal permission flow.
     const withAttachmentStagingDirectory = (workspacePath: string, directories: string[]) => {
       const attachmentDirectory = getExternalAttachmentStagingDirectory(workspacePath);
@@ -2094,7 +2118,7 @@ app.whenReady().then(async () => {
     ClaudeCodeProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
       withAttachmentStagingDirectory(
         workspacePath,
-        getAdditionalDirectoriesForWorkspace(workspacePath, { includeSiblingWorktrees: false }),
+        getClaudeAdditionalDirectoriesForWorkspace(workspacePath),
       ));
     OpenAICodexProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
       withAttachmentStagingDirectory(workspacePath, getAdditionalDirectoriesForWorkspace(workspacePath)));
@@ -2801,6 +2825,22 @@ app.whenReady().then(async () => {
         await openFileWithWorkspaceDetection(fileToOpen);
     }
 
+    // Windows and their workspace routes now exist. Automatically resume
+    // ordinary FIFO work that survived a process restart. Atomic claims make
+    // this safe if another trigger races startup; control rows stay fenced
+    // until send_prompt_now records their delivery decision.
+    try {
+        const { discovered, triggered, skipped } =
+            await aiService.drainPendingOrdinaryPromptsOnStartup();
+        if (discovered > 0) {
+            logger.main.info(
+                `[Main] Startup queue drain: discovered ${discovered} session(s), triggered ${triggered}, skipped ${skipped}`
+            );
+        }
+    } catch (drainErr) {
+        logger.main.error('[Main] Startup queue drain failed:', drainErr);
+    }
+
     // Handle pending deep link URL (e.g., auth callback)
     if (pendingDeepLinkUrl) {
         const urlToHandle = pendingDeepLinkUrl;
@@ -2931,22 +2971,30 @@ app.whenReady().then(async () => {
             });
         }
     });
+  });
 });
 
 // Activate handler (macOS)
-app.on('activate', () => {
-    // Avoid resurrecting windows while quitting
-    if (isAppQuitting) return;
-    // Only create window if app is ready (screen module requires app to be ready)
-    if (!app.isReady()) return;
-    // On macOS, show WorkspaceManager when dock icon is clicked and no windows are open
-    if (BrowserWindow.getAllWindows().length === 0) {
-        createWorkspaceManagerWindow();
-    }
+runIfSingleInstanceLifecycleOwner(singleInstanceLifecycle, () => {
+  app.on('activate', () => {
+      // Avoid resurrecting windows while quitting
+      if (isAppQuitting) return;
+      // Only create window if app is ready (screen module requires app to be ready)
+      if (!app.isReady()) return;
+      // On macOS, show WorkspaceManager when dock icon is clicked and no windows are open
+      if (BrowserWindow.getAllWindows().length === 0) {
+          createWorkspaceManagerWindow();
+      }
+  });
 });
 
 // Before quit handler
 app.on('before-quit', async (event) => {
+    if (!singleInstanceLifecycle.ownsPrimaryLifecycle) {
+        logger.main.info('[SingleInstance] Secondary exit bypasses primary lifecycle cleanup');
+        return;
+    }
+
     getCollabOutboxDrainCoordinator().stop();
     getCollabAssetOutboxDrainCoordinator().stop();
     console.log('[QUIT] before-quit event triggered');

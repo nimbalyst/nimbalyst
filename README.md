@@ -1,3 +1,22 @@
+> ## ⚠️ Private build-tracking repo — read before any release/publish action
+>
+> This is Yogev's personal Nimbalyst repo, **not the official Nimbalyst product**. Official repo:
+> https://github.com/nimbalyst/nimbalyst
+>
+> **We are a contributor via fork + pull request. We are NEVER the publisher.** Permanently out of
+> scope here, no exceptions: building/signing a distributable installer for end users, Apple
+> developer authorization/notarization, official GitHub Release publication or asset upload, any
+> app-store submission, or chasing upstream write/admin access. All of that belongs solely to the
+> Nimbalyst maintainers, on their own timeline. A contributor only ever needs push access to their
+> own fork plus PR-open rights on upstream — read-only on the upstream repo itself is correct and
+> expected, never a gap to fix.
+>
+> This exact mistake already cost ~5.5 hours once (2026-07-23: multiple sessions built Windows
+> installers and chased Apple notarization as if it were our job, none of it in scope). Don't
+> repeat it — if release/publish machinery starts expanding before a PR exists, stop and ask.
+>
+> ---
+
 # Nimbalyst is the visual workspace for building with Codex and Claude Code
 
 [Nimbalyst](https://nimbalyst.com) is a free, open-source, local, interactive visual editor & session/task manager for developers, product managers, designers, builders. 

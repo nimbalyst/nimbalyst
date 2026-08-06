@@ -717,6 +717,7 @@ class SyncManager(
 
         // Build encrypted client metadata with draft
         val clientMetadata = ClientMetadata(
+            contextMeterState = session.contextMeterState(),
             draftInput = draftInput,  // Send "" explicitly to clear on other devices
             draftUpdatedAt = now,
             phase = session.phase,
@@ -964,6 +965,12 @@ class SyncManager(
             incomingDraftUpdatedAt = clientMetadata?.draftUpdatedAt,
             lastLocalPushAt = lastPushedDraftAt[entry.sessionId] ?: 0L
         )
+        val resolvedContext = resolveContextMeterMetadata(
+            clientMetadata,
+            existing?.contextMeterStateJson,
+            existing?.contextTokens,
+            existing?.contextWindow,
+        )
 
         return ProcessedSessionEntry(
             session = SessionEntity(
@@ -993,8 +1000,9 @@ class SyncManager(
                         entry.queuedPromptCount != null -> entry.queuedPromptCount > 0
                         else -> existing?.hasQueuedPrompts ?: false
                     },
-                contextTokens = clientMetadata?.currentContext?.tokens ?: existing?.contextTokens,
-                contextWindow = clientMetadata?.currentContext?.contextWindow ?: existing?.contextWindow,
+                contextTokens = resolvedContext.tokens,
+                contextWindow = resolvedContext.window,
+                contextMeterStateJson = resolvedContext.stateJson,
                 createdAt = entry.createdAt,
                 updatedAt = entry.updatedAt,
                 lastSyncedSeq = existing?.lastSyncedSeq ?: 0,
@@ -1052,6 +1060,12 @@ class SyncManager(
             incomingDraftUpdatedAt = clientMetadata?.draftUpdatedAt,
             lastLocalPushAt = lastPushedDraftAt[sessionId] ?: 0L
         )
+        val resolvedContext = resolveContextMeterMetadata(
+            clientMetadata,
+            existing.contextMeterStateJson,
+            existing.contextTokens,
+            existing.contextWindow,
+        )
 
         repository.upsertSession(
             existing.copy(
@@ -1066,8 +1080,9 @@ class SyncManager(
                 phase = clientMetadata?.phase ?: existing.phase,
                 tagsJson = clientMetadata?.tags?.takeIf { it.isNotEmpty() }?.let(gson::toJson) ?: existing.tagsJson,
                 hasQueuedPrompts = clientMetadata?.hasPendingPrompt ?: existing.hasQueuedPrompts,
-                contextTokens = clientMetadata?.currentContext?.tokens ?: existing.contextTokens,
-                contextWindow = clientMetadata?.currentContext?.contextWindow ?: existing.contextWindow,
+                contextTokens = resolvedContext.tokens,
+                contextWindow = resolvedContext.window,
+                contextMeterStateJson = resolvedContext.stateJson,
                 draftInput = if (acceptDraft) draftInput else existing.draftInput,
                 draftUpdatedAt = if (acceptDraft) {
                     clientMetadata?.draftUpdatedAt ?: existing.draftUpdatedAt

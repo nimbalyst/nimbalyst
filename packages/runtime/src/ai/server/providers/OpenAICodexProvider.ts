@@ -99,6 +99,25 @@ const PERSISTED_APP_SERVER_NOTIFICATION_METHODS = new Set([
   'error',
 ]);
 
+/** Preserve the protocol's paired context observation without reinterpreting usage. */
+export function projectCodexCompleteEvent(event: ProtocolEvent): StreamChunk {
+  return {
+    type: 'complete',
+    content: event.content,
+    isComplete: true,
+    usage: event.usage,
+    ...(event.contextFillTokens !== undefined
+      ? { contextFillTokens: event.contextFillTokens }
+      : {}),
+    ...(event.contextWindow !== undefined
+      ? { contextWindow: event.contextWindow }
+      : {}),
+    ...(event.contextObservation
+      ? { contextObservation: event.contextObservation }
+      : {}),
+  };
+}
+
 export class OpenAICodexProvider extends BaseAgentProvider {
   static readonly DEFAULT_MODEL = DEFAULT_MODELS['openai-codex'];
   private static readonly APP_SERVER_IDLE_TIMEOUT_MS = 60_000;
@@ -478,8 +497,20 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     ['codex-mini-latest', 'gpt-5.4-mini'],
   ]);
 
+  // NIM-428: bare flavor-tier shorthand (no `gpt-5.6-` prefix) normalizes to
+  // the matching currently-supported model rather than falling through to the
+  // unsupported-alias rejection below.
+  private static readonly SHORTHAND_MODEL_ALIASES = new Map<string, string>([
+    ['sol', 'gpt-5.6-sol'],
+    ['terra', 'gpt-5.6-terra'],
+    ['luna', 'gpt-5.6-luna'],
+  ]);
+
   /**
-   * Normalize a single model ID, mapping legacy aliases to the canonical form.
+   * Normalize a single model ID, mapping legacy/shorthand aliases to the
+   * canonical form. Throws for a model ID that is neither a known alias nor
+   * an already-supported model (NIM-393) -- callers must not dispatch a
+   * child session on an unrecognized model string.
    */
   static normalizeModelSelection(modelId: string): string {
     const normalized = modelId.trim().toLowerCase();
@@ -491,16 +522,27 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     const rawModelId = parsed && parsed.provider === 'openai-codex'
       ? parsed.model
       : modelId.replace(/^openai-codex:/, '');
-    const replacement = OpenAICodexProvider.MODEL_REPLACEMENTS.get(rawModelId.toLowerCase());
+    const rawModelIdLower = rawModelId.toLowerCase();
+
+    const replacement =
+      OpenAICodexProvider.MODEL_REPLACEMENTS.get(rawModelIdLower) ||
+      OpenAICodexProvider.SHORTHAND_MODEL_ALIASES.get(rawModelIdLower);
     if (replacement) {
       return ModelIdentifier.create('openai-codex', replacement).combined;
     }
 
-    return modelId;
+    if (OpenAICodexProvider.FALLBACK_MODELS_SET.has(rawModelIdLower)) {
+      return ModelIdentifier.create('openai-codex', rawModelIdLower).combined;
+    }
+
+    throw new Error(`Unsupported Codex model alias: "${modelId}"`);
   }
 
   /**
    * Normalize an array of model IDs, deduplicating after normalization.
+   * Entries that fail normalization (NIM-393) are dropped rather than
+   * failing the whole batch -- this is a list-cleanup helper, not a
+   * single-dispatch gate.
    */
   static normalizeModelSelections(models: string[] | undefined): string[] | undefined {
     if (!Array.isArray(models)) {
@@ -508,7 +550,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     }
     const result: string[] = [];
     for (const modelId of models) {
-      const mapped = OpenAICodexProvider.normalizeModelSelection(modelId);
+      let mapped: string;
+      try {
+        mapped = OpenAICodexProvider.normalizeModelSelection(modelId);
+      } catch {
+        continue;
+      }
       if (!result.includes(mapped)) {
         result.push(mapped);
       }
@@ -710,7 +757,14 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   }
 
   private static toRawModelId(modelId: string): string | null {
-    const normalizedSelection = OpenAICodexProvider.normalizeModelSelection(modelId);
+    let normalizedSelection: string;
+    try {
+      normalizedSelection = OpenAICodexProvider.normalizeModelSelection(modelId);
+    } catch {
+      // Model/API discovery lists many models we don't support (e.g. non-Codex
+      // tiers); callers already filter unrecognized ids via FALLBACK_MODELS_SET.
+      return null;
+    }
     const parsed = ModelIdentifier.tryParse(normalizedSelection);
     const rawModelId = parsed && parsed.provider === 'openai-codex'
       ? parsed.model
@@ -1326,14 +1380,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
               break;
 
             case 'complete':
-              yield {
-                type: 'complete',
-                content: item.event.content,
-                isComplete: true,
-                usage: item.event.usage,
-                ...(item.event.contextFillTokens !== undefined ? { contextFillTokens: item.event.contextFillTokens } : {}),
-                ...(item.event.contextWindow !== undefined ? { contextWindow: item.event.contextWindow } : {}),
-              };
+              yield projectCodexCompleteEvent(item.event);
               break;
 
             case 'error':
@@ -1884,7 +1931,11 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     // The openai.models.list() API does not include all Codex-available models
     // (e.g., gpt-5.4 works via the SDK but isn't listed in the API).
     // The SDK itself will fail with a proper error if the model doesn't exist.
-    return OpenAICodexProvider.MODEL_REPLACEMENTS.get(normalized) || resolved;
+    return (
+      OpenAICodexProvider.MODEL_REPLACEMENTS.get(normalized) ||
+      OpenAICodexProvider.SHORTHAND_MODEL_ALIASES.get(normalized) ||
+      resolved
+    );
   }
 
   private buildCodexPrompt(options: {

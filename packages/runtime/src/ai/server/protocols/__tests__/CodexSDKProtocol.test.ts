@@ -15,6 +15,89 @@ function createAsyncEventStream(events: any[]): AsyncIterable<any> {
 }
 
 describe('CodexSDKProtocol', () => {
+  it('forwards the newest paired SDK token_count as an identity-bound observation', async () => {
+    const runStreamed = vi.fn(async () => ({
+      events: createAsyncEventStream([
+        {
+          type: 'token_count',
+          info: {
+            input_tokens: 12,
+            output_tokens: 3,
+            total_tokens: 15,
+            model_context_window: 200000,
+          },
+        },
+        {
+          type: 'token_count',
+          info: {
+            input_tokens: 20,
+            output_tokens: 4,
+            total_tokens: 24,
+            model_context_window: 200000,
+          },
+        },
+      ]),
+    }));
+    const protocol = new CodexSDKProtocol(
+      'test-key',
+      async () =>
+        ({
+          Codex: class {
+            startThread = vi.fn(() => ({ id: 'codex-thread-1', runStreamed }));
+            resumeThread = vi.fn();
+          },
+        }) as any,
+    );
+    const session = await protocol.createSession({
+      workspacePath: process.cwd(),
+      model: 'gpt-5.6-sol',
+    });
+    const emitted: any[] = [];
+    for await (const event of protocol.sendMessage(session, {
+      content: 'test',
+      sessionId: 'nim-session-1',
+    })) {
+      emitted.push(event);
+    }
+
+    const complete = emitted.find((event) => event.type === 'complete');
+    expect(complete?.contextObservation).toMatchObject({
+      schemaVersion: 1,
+      fillTokens: 20,
+      runtimeWindowTokens: 200000,
+      adapterId: 'codex-sdk-token-count-v1',
+      windowPolicy: 'runtime-required',
+      identity: {
+        nimbalystSessionId: 'nim-session-1',
+        providerId: 'openai-codex',
+        persistedModelId: 'openai-codex:gpt-5.6-sol',
+        providerModelId: 'gpt-5.6-sol',
+        upstreamThreadId: 'codex-thread-1',
+        producerRole: 'lead',
+      },
+      order: {
+        lifecycleGeneration: 0,
+        sequence: 2,
+      },
+    });
+    expect(complete?.usage).toEqual({
+      input_tokens: 20,
+      output_tokens: 4,
+      total_tokens: 24,
+    });
+
+    const secondTurn: any[] = [];
+    for await (const event of protocol.sendMessage(session, {
+      content: 'second',
+      sessionId: 'nim-session-1',
+    })) {
+      secondTurn.push(event);
+    }
+    expect(
+      secondTurn.find((event) => event.type === 'complete')?.contextObservation?.order,
+    ).toMatchObject({ lifecycleGeneration: 0, sequence: 4 });
+  });
+
   it('emits a raw_event for every SDK event, including unknown shapes', async () => {
     const sdkEvents = [
       { type: 'unknown.output', payload: { id: 1 } },

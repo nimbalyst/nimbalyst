@@ -58,11 +58,23 @@ export class AutoUpdaterService {
     log.transports.file.level = 'info';
     autoUpdater.logger = log;
 
-    // Configure auto-updater. autoDownload=true: both background polls and the
-    // manual "Check for Updates" trigger download immediately, then surface a
-    // single "Ready to install" toast. Per maintainer direction on #327.
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    // YOGI-LOCAL PATCH: notify only. Never download, never self-install.
+    //
+    // Upstream sets both true (maintainer direction on #327): a background poll downloads
+    // the official release immediately and installs it on next quit. Correct for the
+    // official app, wrong for a patched build -- it would silently replace this build with
+    // stock Nimbalyst and take every local patch with it.
+    //
+    // autoDownload=false keeps the hourly check and still emits 'update-available', so
+    // UpdateAvailableToast still tells Yogev a newer upstream version exists. Nothing is
+    // fetched or installed unless downloadUpdate() is called explicitly.
+    // autoInstallOnAppQuit=false additionally neutralises anything already staged in the
+    // shared updater cache (%LOCALAPPDATA%\@nimbalystelectron-updater\pending).
+    //
+    // Yogev, 2026-07-31: "debang the updater. Have them just show the pop-up or disable it
+    // completely but I prefer it shows the pop."
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
 
     // Configure feed URL based on release channel
     this.configureFeedURL();

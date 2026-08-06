@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import org.json.JSONObject
 
@@ -16,7 +17,7 @@ import org.json.JSONObject
         QueuedPromptEntity::class,
         SyncStateEntity::class,
     ],
-    version = 1,
+    version = 2,
     // packages/android/app/schemas/ is gitignored, so the exported schema is
     // never committed and not used for migration validation. Leaving export on
     // can trip an intermittent CI race in Room KSP between the Debug and
@@ -43,6 +44,7 @@ abstract class NimbalystDatabase : RoomDatabase() {
                     NimbalystDatabase::class.java,
                     "nimbalyst-android.db"
                 )
+                    .addMigrations(MIGRATION_1_2)
                     // Add explicit migrations here as schema evolves (e.g., .addMigrations(MIGRATION_1_2))
                     // Only fall back to destructive migration if no migration path exists (pre-release safety net)
                     .fallbackToDestructiveMigration()
@@ -54,6 +56,12 @@ abstract class NimbalystDatabase : RoomDatabase() {
                     })
                     .build()
                     .also { instance = it }
+            }
+        }
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sessions ADD COLUMN contextMeterStateJson TEXT")
             }
         }
 

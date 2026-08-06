@@ -10,13 +10,41 @@ vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
 }));
 vi.mock('../../../help', () => ({ getHelpContent: () => undefined }));
 
-// inputTokens > 0 makes the breakdown panel eligible (enableTooltip).
+const provenance = {
+  identity: {
+    nimbalystSessionId: 'session-1',
+    providerId: 'openai-codex',
+    persistedModelId: 'openai-codex:gpt-5.4',
+    upstreamThreadId: 'thread-1',
+    producerRole: 'lead' as const,
+  },
+  order: {
+    processInstanceId: 'process-1',
+    lifecycleGeneration: 0,
+    sequence: 1,
+    observedAtMs: 1,
+  },
+  adapterId: 'codex-app-server-thread-usage-v1' as const,
+  windowPolicy: 'runtime-required' as const,
+  numeratorSource: 'runtime-observation' as const,
+  denominatorSource: 'runtime-observation' as const,
+  runtimeWindowTokens: 200_000,
+  acceptedAtMs: 1,
+  lastFreshObservationAtMs: 1,
+};
+
 const props = {
   inputTokens: 80_000,
   outputTokens: 20_000,
   totalTokens: 100_000,
   contextWindow: 200_000,
-  currentContext: { tokens: 132_000, contextWindow: 200_000 },
+  contextMeterState: {
+    schemaVersion: 1 as const,
+    confidence: 'exact' as const,
+    fillTokens: 132_000,
+    effectiveWindowTokens: 200_000,
+    provenance,
+  },
 };
 
 afterEach(() => cleanup());
@@ -73,19 +101,76 @@ describe('ContextUsageDisplay - cumulative rows are labeled as session totals (#
     screen.getByText('Session totals (cumulative)');
   });
 
-  it('omits the session-totals label when there is no context window (header already says Token Usage)', () => {
-    // contextWindow: 0 is the no-window state (hasContextWindow derives from
-    // displayContextWindow > 0); the header then reads "Token Usage" and no
-    // window-fill total renders, so there is no second quantity to label.
+  it('keeps cumulative totals explicitly labeled when context truth is unavailable', () => {
     render(
       <ContextUsageDisplay
         inputTokens={80_000}
         outputTokens={20_000}
         totalTokens={100_000}
-        contextWindow={0}
+        contextWindow={200_000}
+        contextMeterState={{
+          schemaVersion: 1,
+          confidence: 'unavailable',
+          reason: 'runtime-window-required',
+        }}
       />
     );
     fireEvent.click(screen.getByTestId('context-indicator'));
-    expect(screen.queryByText('Session totals (cumulative)')).toBeNull();
+    expect(screen.getByText('Session totals (cumulative)')).toBeTruthy();
+    expect(screen.getByText('runtime window required')).toBeTruthy();
+  });
+});
+
+describe('ContextUsageDisplay - confidence semantics', () => {
+  it('renders exact context without a qualifier', () => {
+    render(<ContextUsageDisplay {...props} />);
+    expect(screen.getByText('132k/200k (66%)')).toBeTruthy();
+    const label = screen.getByTestId('context-indicator').getAttribute('aria-label');
+    expect(label).toContain('exact');
+    expect(label).toContain('68k remaining');
+    fireEvent.click(screen.getByTestId('context-indicator'));
+    expect(screen.getByText('68k tokens remaining · exact')).toBeTruthy();
+  });
+
+  it.each([
+    ['estimated', '~132k/200k (66%) estimated'],
+    ['stale', '132k/200k (66%) stale'],
+  ] as const)('renders %s visibly', (confidence, text) => {
+    render(
+      <ContextUsageDisplay
+        {...props}
+        contextMeterState={{ ...props.contextMeterState, confidence }}
+      />
+    );
+    expect(screen.getByText(text)).toBeTruthy();
+  });
+
+  it('does not turn cumulative totals or a legacy window into a percentage', () => {
+    render(
+      <ContextUsageDisplay
+        inputTokens={180_000}
+        outputTokens={20_000}
+        totalTokens={200_000}
+        contextWindow={200_000}
+      />
+    );
+    expect(screen.getByText('Unavailable')).toBeTruthy();
+    expect(screen.queryByText(/100%/)).toBeNull();
+  });
+
+  it('shows seed conflicts as unavailable without headroom', () => {
+    render(
+      <ContextUsageDisplay
+        {...props}
+        contextMeterState={{
+          schemaVersion: 1,
+          confidence: 'unavailable',
+          reason: 'seed-conflict',
+        }}
+      />
+    );
+    expect(screen.getByText('Unavailable')).toBeTruthy();
+    expect(screen.getByTestId('context-indicator').getAttribute('aria-label')).toContain('seed conflict');
+    expect(screen.queryByText(/remaining/)).toBeNull();
   });
 });

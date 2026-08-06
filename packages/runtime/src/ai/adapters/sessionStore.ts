@@ -98,6 +98,14 @@ export interface UpdateSessionMetadataPayload
   providerSessionId?: string | null;
   draftInput?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Internal atomic metadata-key installation. Store decorators may delegate
+   * this through updateMetadata without understanding the value.
+   */
+  installMetadataValueIfAbsent?: Readonly<{
+    key: string;
+    value: unknown;
+  }>;
   isArchived?: boolean;
   /** Document state for transition detection (persisted across restarts) */
   lastDocumentState?: PersistedDocumentState | null;
@@ -121,6 +129,12 @@ export interface SessionStore {
   ensureReady(): Promise<void>;
   create(payload: CreateSessionPayload): Promise<void>;
   updateMetadata(sessionId: string, metadata: UpdateSessionMetadataPayload): Promise<void>;
+  /** Atomically install one metadata key if absent and return the winner. */
+  installMetadataValueIfAbsent?(
+    sessionId: string,
+    key: string,
+    value: unknown
+  ): Promise<unknown>;
   get(sessionId: string): Promise<SessionData | null>;
   /**
    * Batch fetch multiple sessions by IDs.

@@ -13,8 +13,80 @@ import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { hasEnterpriseManagedMcpConfig } from './enterpriseMcpConfig';
 import { type ThinkingMode } from '../../effortLevels';
+import { DEEPSEEK_CLAUDE_BACKEND_ID, normalizeDeepSeekEffort, normalizeDeepSeekThinkingMode, readDeepSeekApiKeyFromEnvFile } from '../../deepSeekClaudeAgent';
+import {
+  applyClaudeCodeBackendEnv,
+  applyProviderRuntimeLaunchPlanEnv,
+  omitEnvironmentKeysCaseInsensitive,
+  resolveClaudeCodeBackendForConfig,
+} from './customBackends';
+import {
+  ProviderRuntimeRouteError,
+  type ProviderRuntimeLaunchPlan,
+  type ProviderRuntimeSessionSnapshot,
+} from './runtimeRouteResolver';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
+
+function consumeProviderRequestControls(
+  plan: ProviderRuntimeLaunchPlan,
+  env: Record<string, string | undefined>,
+): ThinkingMode | undefined {
+  let thinking: ThinkingMode | undefined;
+  for (const mapping of plan.resolvedControls) {
+    switch (mapping.target) {
+      case 'launch.effort-level':
+        // Consumed by applyProviderRuntimeLaunchPlanEnv before this pass.
+        if (mapping.operation !== 'set' || typeof mapping.value !== 'string') {
+          throw new ProviderRuntimeRouteError(
+            'invalid-controls',
+            `Provider route ${plan.model.catalogEntryId} has an invalid launch effort mapping.`,
+            plan.model.catalogEntryId,
+          );
+        }
+        break;
+      case 'launch.thinking-mode':
+      case 'request.thinking.type': {
+        if (
+          mapping.operation !== 'set'
+          || (mapping.value !== 'enabled' && mapping.value !== 'disabled')
+          || thinking !== undefined
+        ) {
+          throw new ProviderRuntimeRouteError(
+            'invalid-controls',
+            `Provider route ${plan.model.catalogEntryId} has an invalid or duplicate thinking mapping.`,
+            plan.model.catalogEntryId,
+          );
+        }
+        thinking = mapping.value;
+        break;
+      }
+      case 'request.output-config.effort':
+        if (mapping.operation === 'omit') {
+          delete env.CLAUDE_CODE_EFFORT_LEVEL;
+        } else if (
+          mapping.operation === 'set'
+          && (mapping.value === 'high' || mapping.value === 'max')
+        ) {
+          env.CLAUDE_CODE_EFFORT_LEVEL = mapping.value;
+        } else {
+          throw new ProviderRuntimeRouteError(
+            'invalid-controls',
+            `Provider route ${plan.model.catalogEntryId} has an invalid output effort mapping.`,
+            plan.model.catalogEntryId,
+          );
+        }
+        break;
+      default:
+        throw new ProviderRuntimeRouteError(
+          'adapter-required',
+          `Provider route ${plan.model.catalogEntryId} has no adapter for control target ${mapping.target}.`,
+          plan.model.catalogEntryId,
+        );
+    }
+  }
+  return thinking;
+}
 
 type SDKUserMessage = {
   type: 'user';
@@ -40,11 +112,29 @@ export interface BuildSdkOptionsDeps {
     lastUsedSessionId?: string | undefined;
     lastUsedPermissionsPath?: string | undefined;
     packagedBuildOptions?: any;
+    managedChildLaunchOptions?: {
+      env: Record<string, string | undefined>;
+      pathToClaudeCodeExecutable?: string;
+      exactModel?: string;
+      backendId?: string;
+      routeReceipt?: ProviderRuntimeSessionSnapshot['receipt'];
+    };
     resolveTeamContext: (sessionId?: string) => Promise<string | undefined>;
   };
   sessions: { getSessionId: (sessionId: string) => string | null | undefined };
-  config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode };
+  config: {
+    model?: string;
+    apiKey?: string;
+    effortLevel?: string;
+    thinkingMode?: ThinkingMode;
+    customBackend?: string;
+    claudeCodeBackend?: string;
+  };
   abortController: AbortController;
+  mainRouteSnapshot?: Readonly<ProviderRuntimeSessionSnapshot>;
+  subagentRouteSnapshot?: Readonly<ProviderRuntimeSessionSnapshot>;
+  mainRouteCredential?: string;
+  subagentRouteCredential?: string;
   /**
    * True when an enterprise `managed-mcp.json` forbids passing MCP servers at
    * all (NIM-2372). Injectable for tests; defaults to the real filesystem probe.
@@ -172,6 +262,10 @@ export async function buildSdkOptions(
     sessions,
     config,
     abortController,
+    mainRouteSnapshot,
+    subagentRouteSnapshot,
+    mainRouteCredential,
+    subagentRouteCredential,
     hasEnterpriseMcpLockdown = hasEnterpriseManagedMcpConfig,
   } = deps;
 
@@ -236,7 +330,43 @@ export async function buildSdkOptions(
   }
   const effectivePath = customPath || resolvedBinaryPath;
   // console.log(`[CLAUDE-CODE] Binary path: custom=${customPath || '(none)'} resolved=${resolvedBinaryPath ?? '(none)'} effective=${effectivePath ?? '(none)'}`);
-  const resolvedModel = resolveModelVariant();
+  // Resolve before constructing any launch options. A stale/unknown backend id
+  // throws here, before the native process can fall through to Anthropic.
+  const mainRoutePlan = mainRouteSnapshot?.plan;
+  const subagentRoutePlan = subagentRouteSnapshot?.plan;
+  if (mainRoutePlan && !mainRouteCredential) {
+    throw new ProviderRuntimeRouteError(
+      'credential-unavailable',
+      `Provider route ${mainRoutePlan.model.catalogEntryId} has no confirmed lead credential.`,
+      mainRoutePlan.model.catalogEntryId
+    );
+  }
+  if (subagentRoutePlan && !subagentRouteCredential) {
+    throw new ProviderRuntimeRouteError(
+      'credential-unavailable',
+      `Provider route ${subagentRoutePlan.model.catalogEntryId} has no confirmed subagent credential.`,
+      subagentRoutePlan.model.catalogEntryId
+    );
+  }
+  if (
+    mainRoutePlan &&
+    subagentRoutePlan &&
+    (mainRoutePlan.selectedInterface.endpoint !==
+      subagentRoutePlan.selectedInterface.endpoint ||
+      mainRoutePlan.selectedInterface.credentialRef !==
+        subagentRoutePlan.selectedInterface.credentialRef)
+  ) {
+    throw new ProviderRuntimeRouteError(
+      'adapter-required',
+      `Provider route ${mainRoutePlan.model.catalogEntryId} requires an adapter for a native subagent interface that differs from the lead process.`,
+      mainRoutePlan.model.catalogEntryId
+    );
+  }
+  const customBackend = mainRoutePlan
+    ? undefined
+    : resolveClaudeCodeBackendForConfig(config);
+  const resolvedModel =
+    mainRoutePlan?.selectedInterface.modelAlias ?? resolveModelVariant();
 
   const options: any = {
     pathToClaudeCodeExecutable: effectivePath,
@@ -309,7 +439,7 @@ export async function buildSdkOptions(
     },
   };
 
-  if (config.thinkingMode === 'disabled') {
+  if (!customBackend && !mainRoutePlan && config.thinkingMode === 'disabled') {
     if (canDisableThinkingForModel(resolvedModel)) {
       options.thinking = { type: 'disabled' as const };
     } else {
@@ -364,9 +494,19 @@ export async function buildSdkOptions(
   // the Claude native binary treats the mere presence of that variable as an
   // API-key auth signal, which can shadow a valid OAuth/CLI login and produce
   // "Authentication failed" even though accountInfo() succeeds in settings.
-  const { ANTHROPIC_API_KEY: _envAnthropicKey, OPENAI_API_KEY: _envOpenaiKey, ...sanitizedProcessEnv } = process.env;
-  const { ANTHROPIC_API_KEY: _shellAnthropicKey, OPENAI_API_KEY: _shellOpenaiKey, ...sanitizedShellEnv } = shellEnv;
-  const { ANTHROPIC_API_KEY: _settingsAnthropicKey, OPENAI_API_KEY: _settingsOpenaiKey, ...sanitizedSettingsEnv } = settingsEnv;
+  const implicitApiKeyNames = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'];
+  const sanitizedProcessEnv = omitEnvironmentKeysCaseInsensitive(
+    process.env,
+    implicitApiKeyNames
+  );
+  const sanitizedShellEnv = omitEnvironmentKeysCaseInsensitive(
+    shellEnv,
+    implicitApiKeyNames
+  );
+  const sanitizedSettingsEnv = omitEnvironmentKeysCaseInsensitive(
+    settingsEnv,
+    implicitApiKeyNames
+  );
 
   const enableAgentTeams = sanitizedSettingsEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1';
   const env: any = {
@@ -401,7 +541,7 @@ export async function buildSdkOptions(
     // The Claude CLI currently defaults to xhigh when this variable is absent.
     // Always forward a resolved Nimbalyst selection, including "high", so the
     // effort shown in the selector matches the request sent to the CLI.
-    ...(config.effortLevel && {
+    ...(!customBackend && config.effortLevel && {
       CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
     }),
     // The bundled claude binary runs a per-tool idle-timeout watchdog (default
@@ -436,6 +576,23 @@ export async function buildSdkOptions(
         DISABLE_UPDATES: '1',
       }),
   };
+
+  if (!mainRoutePlan && config.customBackend === DEEPSEEK_CLAUDE_BACKEND_ID) {
+    delete env.ANTHROPIC_API_KEY;
+    env.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
+    // Key comes from .env only, never from settings JSON (Yogev, 2026-07-30) --
+    // see readDeepSeekApiKeyFromEnvFile's doc comment. config.apiKey is a
+    // settings-store fallback kept only for a user who deliberately re-enters
+    // a key through Nimbalyst's own key UI; the .env value always wins.
+    const deepSeekApiKey = readDeepSeekApiKeyFromEnvFile() || config.apiKey;
+    if (deepSeekApiKey) env.ANTHROPIC_AUTH_TOKEN = deepSeekApiKey;
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'deepseek-v4-pro[1m]';
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'deepseek-v4-pro[1m]';
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'deepseek-v4-flash';
+    env.CLAUDE_CODE_SUBAGENT_MODEL = 'deepseek-v4-flash';
+    env.CLAUDE_CODE_EFFORT_LEVEL = normalizeDeepSeekEffort(config.effortLevel);
+    options.thinking = { type: normalizeDeepSeekThinkingMode(config.thinkingMode) };
+  }
 
   // NIM-376: Overlay enhanced PATH so the Claude Code SDK can find stdio MCP
   // subprocess binaries (`npx`, `uvx`, `docker`, ...) when Nimbalyst is launched
@@ -497,12 +654,78 @@ export async function buildSdkOptions(
   }
 
   // Per-session API key
-  if (config.apiKey) {
+  if (config.apiKey && !mainRoutePlan && config.customBackend !== DEEPSEEK_CLAUDE_BACKEND_ID) {
     env.ANTHROPIC_API_KEY = config.apiKey;
     if (teammateManager.packagedBuildOptions?.env) {
       teammateManager.packagedBuildOptions.env.ANTHROPIC_API_KEY = config.apiKey;
     }
   }
+
+  // Apply the selected profile after every other auth source. This guarantees
+  // that a configured Anthropic key cannot shadow the per-session proxy route.
+  // Missing proxy/model support then fails at the fixed loopback route instead
+  // of falling back to Anthropic or direct Ollama.
+  if (customBackend) {
+    applyClaudeCodeBackendEnv(env, customBackend);
+    if (
+      teammateManager.packagedBuildOptions?.env
+      && teammateManager.packagedBuildOptions.env !== env
+    ) {
+      applyClaudeCodeBackendEnv(teammateManager.packagedBuildOptions.env, customBackend);
+    }
+    console.info(
+      `[ClaudeCodeBackend] backend=${customBackend.id} provider=${customBackend.provider} `
+      + `requestedModel=${customBackend.model} baseUrl=${customBackend.baseUrl}`
+    );
+  }
+
+  if (mainRoutePlan) {
+    applyProviderRuntimeLaunchPlanEnv(
+      env,
+      mainRoutePlan,
+      mainRouteCredential!
+    );
+    const thinking = consumeProviderRequestControls(mainRoutePlan, env);
+    if (thinking) options.thinking = { type: thinking };
+  }
+
+  if (subagentRoutePlan) {
+    env.CLAUDE_CODE_SUBAGENT_MODEL =
+      subagentRoutePlan.selectedInterface.modelAlias;
+  }
+
+  // Managed native Agent children are separate SDK query() calls. Persist a
+  // per-session copy of the fully composed and scrubbed lead environment in
+  // both development and packaged builds, and pin custom-backend children to
+  // the same exact alias. Binary-path handling remains orthogonal.
+  const managedChildEnv = { ...env };
+  if (subagentRoutePlan) {
+    applyProviderRuntimeLaunchPlanEnv(
+      managedChildEnv,
+      subagentRoutePlan,
+      subagentRouteCredential!
+    );
+  }
+  const subagentThinking = subagentRoutePlan
+    ? consumeProviderRequestControls(subagentRoutePlan, managedChildEnv)
+    : undefined;
+  teammateManager.managedChildLaunchOptions = {
+    env: managedChildEnv,
+    ...(effectivePath && { pathToClaudeCodeExecutable: effectivePath }),
+    ...((customBackend || subagentRoutePlan) && {
+      exactModel:
+        subagentRoutePlan?.selectedInterface.modelAlias ??
+        customBackend?.claudeModelAlias,
+      backendId:
+        subagentRoutePlan?.model.catalogEntryId ?? customBackend?.id,
+    }),
+    ...(subagentRouteSnapshot && {
+      routeReceipt: subagentRouteSnapshot.receipt,
+    }),
+    ...(subagentThinking && {
+      thinking: { type: subagentThinking },
+    }),
+  };
 
   options.env = env;
 

@@ -15,6 +15,10 @@ import path from 'path';
 import fsp from 'fs/promises';
 import os from 'os';
 import { resolveClaudeConfigDir } from './claudeCode/claudeConfigDir';
+import {
+  serializeProviderRuntimeRouteReceipt,
+  type ProviderRuntimeRouteReceipt,
+} from './claudeCode/runtimeRouteResolver';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -97,6 +101,34 @@ export interface PackagedBuildOptions {
   pathToClaudeCodeExecutable?: string;
 }
 
+/**
+ * Per-session launch state for every managed native Claude Code Agent child.
+ * Unlike packagedBuildOptions this exists in development and packaged builds.
+ */
+export interface ManagedChildLaunchOptions extends PackagedBuildOptions {
+  /** When present, task input cannot override the qualified backend model. */
+  exactModel?: string;
+  backendId?: string;
+  routeReceipt?: Readonly<ProviderRuntimeRouteReceipt>;
+  thinking?: Readonly<{ type: string }>;
+}
+
+export const MANAGED_CHILD_ROUTE_RECEIPT_PREFIX =
+  '[NIMBALYST-OLLAMA-NATIVE-CHILD] ';
+
+function collectNativeChildResultText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map(collectNativeChildResultText).filter(Boolean).join('\n');
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === 'string') return record.text;
+    if (record.content !== undefined) return collectNativeChildResultText(record.content);
+  }
+  return '';
+}
+
 // ─── Class ──────────────────────────────────────────────────────────────────
 
 export class TeammateManager {
@@ -130,6 +162,8 @@ export class TeammateManager {
 
   /** Packaged-build options set by ClaudeCodeProvider for production Electron builds */
   packagedBuildOptions?: PackagedBuildOptions;
+  /** Per-session child route set on every lead SDK-options rebuild. */
+  managedChildLaunchOptions?: ManagedChildLaunchOptions;
   private static readonly EMIT_DEBOUNCE_MS = 100;
 
   /** Captured from lead's sendMessage() for teammate spawning. */
@@ -138,6 +172,75 @@ export class TeammateManager {
   lastUsedPermissionsPath?: string;
 
   constructor(private readonly deps: TeammateManagerDeps) {}
+
+  /**
+   * Record the SDK-native Agent/Task route after its successful tool result.
+   * These children are launched inside the Claude binary, so they do not pass
+   * through streamTeammateOutput() and need this explicit provider boundary.
+   */
+  recordNativeAgentToolResult(
+    sessionId: string | undefined,
+    toolName: string,
+    toolArguments: Record<string, unknown> | undefined,
+    toolResult: unknown,
+    isError: boolean,
+  ): void {
+    if ((toolName !== 'Agent' && toolName !== 'Task') || isError) return;
+    const route = this.managedChildLaunchOptions;
+    if (!route?.backendId) return;
+    const baseUrl = route.env.ANTHROPIC_BASE_URL;
+    if (!sessionId || !route.exactModel || !baseUrl) {
+      throw new Error(
+        '[MANAGED-TEAMMATE] Qualified native Agent result is missing exact route identity'
+      );
+    }
+    const resultText = collectNativeChildResultText(toolResult);
+    const agentId = resultText.match(/\bagentId:\s*([A-Za-z0-9@._-]+)/)?.[1];
+    if (!agentId) {
+      throw new Error(
+        '[MANAGED-TEAMMATE] Qualified native Agent result did not expose its child agent ID'
+      );
+    }
+    const requestedName =
+      typeof toolArguments?.name === 'string' ? toolArguments.name : undefined;
+    if (route.routeReceipt) {
+      const serialized = serializeProviderRuntimeRouteReceipt(route.routeReceipt);
+      console.log(`${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${serialized}`);
+      this.deps.logNonBlocking(
+        sessionId,
+        'claude-code',
+        'output',
+        serialized,
+        {
+          messageType: 'native_claude_code_agent_child_route',
+          nativeChildAgentId: agentId,
+          nativeChildAgentName: requestedName || 'native-agent',
+          launchKind: 'spawn',
+        },
+      );
+      return;
+    }
+    const routeReceipt = {
+      schemaVersion: 1,
+      event: 'native_claude_code_agent_child_launch',
+      managerSessionId: sessionId,
+      backendId: route.backendId,
+      childModelAlias: route.exactModel,
+      baseUrl,
+      nativeChildAgentId: agentId,
+      nativeChildAgentName: requestedName || 'native-agent',
+      launchKind: 'spawn',
+    };
+    const serialized = JSON.stringify(routeReceipt);
+    console.log(`${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${serialized}`);
+    this.deps.logNonBlocking(
+      sessionId,
+      'claude-code',
+      'output',
+      serialized,
+      { messageType: 'native_claude_code_agent_child_route' },
+    );
+  }
 
   // ─── Teammate-to-lead message queue ────────────────────────────────────
 
@@ -1291,13 +1394,17 @@ export class TeammateManager {
 
   // ─── Lifecycle: spawn ───────────────────────────────────────────────────
 
+  private resolveManagedChildModel(requestedModel: string | undefined): string | undefined {
+    return this.managedChildLaunchOptions?.exactModel ?? requestedModel;
+  }
+
   spawnManagedTeammate(sessionId: string | undefined, taskInput: any): void {
     const teamName = this.sanitizeName(taskInput.team_name, 'team');
     const name = this.sanitizeName(taskInput.name, 'teammate');
     const agentId = `${name}@${teamName}`;
     const prompt = taskInput.prompt || 'Do your assigned work.';
     const agentType = taskInput.subagent_type || 'general-purpose';
-    const model = taskInput.model;
+    const model = this.resolveManagedChildModel(taskInput.model);
     const color = TeammateManager.TEAMMATE_COLORS[this.teammateColorIndex % TeammateManager.TEAMMATE_COLORS.length];
     this.teammateColorIndex++;
     const cwd = this.lastUsedCwd || process.cwd();
@@ -1365,6 +1472,7 @@ export class TeammateManager {
     agentType: string,
     model: string | undefined,
   ): void {
+    model = this.resolveManagedChildModel(model);
     const color = TeammateManager.TEAMMATE_COLORS[this.teammateColorIndex % TeammateManager.TEAMMATE_COLORS.length];
     this.teammateColorIndex++;
     const cwd = this.lastUsedCwd || process.cwd();
@@ -1424,12 +1532,22 @@ export class TeammateManager {
 
     const permissionsPath = this.lastUsedPermissionsPath;
 
-    // Build environment: use packaged build env if available (production Electron),
-    // otherwise fall back to process.env (development mode)
-    const baseEnv = this.packagedBuildOptions?.env ?? process.env;
+    // Use the per-session lead-derived environment in both development and
+    // packaged execution. Falling back to process.env is allowed only for
+    // legacy/unconfigured sessions; qualified custom backends always populate
+    // managedChildLaunchOptions before a Task can be intercepted.
+    const managedChildOptions = this.managedChildLaunchOptions;
+    const baseEnv =
+      managedChildOptions?.env
+      ?? this.packagedBuildOptions?.env
+      ?? process.env;
+    const effectiveModel = managedChildOptions?.exactModel ?? model ?? 'haiku';
 
     const options: any = {
-      model: model || 'haiku',
+      model: effectiveModel,
+      ...(managedChildOptions?.thinking && {
+        thinking: managedChildOptions.thinking,
+      }),
       maxTurns: 20,
       permissionMode: 'default',
       persistSession: true,
@@ -1466,9 +1584,40 @@ export class TeammateManager {
       additionalDirectories: teammateAdditionalDirectories,
     };
 
-    // Apply packaged-build options (production Electron)
-    if (this.packagedBuildOptions?.pathToClaudeCodeExecutable) {
-      options.pathToClaudeCodeExecutable = this.packagedBuildOptions.pathToClaudeCodeExecutable;
+    const childExecutable =
+      managedChildOptions?.pathToClaudeCodeExecutable
+      ?? this.packagedBuildOptions?.pathToClaudeCodeExecutable;
+    if (childExecutable) {
+      options.pathToClaudeCodeExecutable = childExecutable;
+    }
+
+    if (managedChildOptions?.backendId) {
+      const baseUrl = baseEnv.ANTHROPIC_BASE_URL;
+      if (!sessionId || !managedChildOptions.exactModel || !baseUrl) {
+        throw new Error(
+          '[MANAGED-TEAMMATE] Qualified child route is missing manager session, exact model, or base URL'
+        );
+      }
+      if (managedChildOptions.routeReceipt) {
+        console.log(
+          `${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${serializeProviderRuntimeRouteReceipt(managedChildOptions.routeReceipt)}`
+        );
+      } else {
+        const routeReceipt = {
+          schemaVersion: 1,
+          event: 'native_claude_code_agent_child_launch',
+          managerSessionId: sessionId,
+          backendId: managedChildOptions.backendId,
+          childModelAlias: effectiveModel,
+          baseUrl,
+          nativeChildAgentId: agentId,
+          nativeChildAgentName: name,
+          launchKind: resumeSessionId ? 'resume' : 'spawn',
+        };
+        console.log(
+          `${MANAGED_CHILD_ROUTE_RECEIPT_PREFIX}${JSON.stringify(routeReceipt)}`
+        );
+      }
     }
 
     if (resumeSessionId) {
@@ -1829,7 +1978,7 @@ export class TeammateManager {
             name,
             team_name: teamName,
             agent_type: toolInput.subagent_type || 'general-purpose',
-            model: toolInput.model,
+            model: this.resolveManagedChildModel(toolInput.model),
             color: 'blue',
           },
           'teammate_task'

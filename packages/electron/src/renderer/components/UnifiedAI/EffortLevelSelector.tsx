@@ -6,11 +6,12 @@ import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../../utils/modelUtils';
 interface EffortLevelSelectorProps {
   level: EffortLevel;
   onLevelChange: (level: EffortLevel) => void;
+  allowedLevels?: readonly EffortLevel[];
   disabled?: boolean;
   disabledTitle?: string;
 }
 
-export function EffortLevelSelector({ level, onLevelChange, disabled = false, disabledTitle }: EffortLevelSelectorProps) {
+export function EffortLevelSelector({ level, onLevelChange, allowedLevels, disabled = false, disabledTitle }: EffortLevelSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -40,7 +41,8 @@ export function EffortLevelSelector({ level, onLevelChange, disabled = false, di
     }
   }, [disabled]);
 
-  const currentLevel = EFFORT_LEVELS.find(l => l.key === level) ?? EFFORT_LEVELS.find(l => l.key === DEFAULT_EFFORT_LEVEL)!;
+  const visibleLevels = allowedLevels ? EFFORT_LEVELS.filter(({ key }) => allowedLevels.includes(key)) : EFFORT_LEVELS;
+  const currentLevel = visibleLevels.find(l => l.key === level) ?? visibleLevels[0] ?? EFFORT_LEVELS.find(l => l.key === DEFAULT_EFFORT_LEVEL)!;
 
   return (
     <div className="relative inline-block" ref={dropdownRef}>
@@ -61,7 +63,7 @@ export function EffortLevelSelector({ level, onLevelChange, disabled = false, di
 
       {isOpen && (
         <div className="absolute bottom-full left-0 mb-1 min-w-[120px] rounded-lg p-1 z-[1000] bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_4px_12px_rgba(0,0,0,0.15)]">
-          {EFFORT_LEVELS.map(l => (
+          {visibleLevels.map(l => (
             <button
               key={l.key}
               className={`flex items-center justify-between gap-2 px-2 py-1.5 w-full border-none rounded text-xs cursor-pointer transition-[background] duration-150 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] ${l.key === level ? 'bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)]' : ''}`}

@@ -258,8 +258,15 @@ export function extractModelForProvider(
   if (provider === 'openai-codex' || provider === 'openai-codex-acp') {
     const parsed = ModelIdentifier.tryParse(fullModel);
     const rawModel = parsed ? parsed.model : fullModel;
-    const normalized = OpenAICodexProvider.normalizeModelSelection(rawModel);
-    return normalized.replace(/^openai-codex:/, '');
+    try {
+      const normalized = OpenAICodexProvider.normalizeModelSelection(rawModel);
+      return normalized.replace(/^openai-codex:/, '');
+    } catch {
+      // NIM-393: unsupported Codex model alias -- reject rather than pass
+      // an unrecognized model id through to child dispatch.
+      logger.main.warn(`[AIService] Unsupported Codex model "${fullModel}" - using default model`);
+      return null;
+    }
   }
 
   if (provider === 'claude-code') {

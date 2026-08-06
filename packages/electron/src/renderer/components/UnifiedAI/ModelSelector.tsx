@@ -15,6 +15,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { getProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { isAgentProvider, shouldBlockStartedSessionProviderSwitch } from '@nimbalyst/runtime/ai/server/types';
+import { isCatalogPersistedModelId } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalog';
 import { getClaudeCodeModelLabel } from '../../utils/modelUtils';
 import { advancedSettingsAtom, aiProviderSettingsAtom } from '../../store/atoms/appSettings';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
@@ -23,21 +24,45 @@ import type { SettingsCategory } from '../Settings/SettingsSidebar';
 import { AlphaBadge } from '../common/AlphaBadge';
 import { HelpTooltip } from '../../help';
 import { isDirectChatProvider, isProviderVisible } from '../../utils/chatProviderVisibility';
+import type { CatalogControlDefinition } from './CatalogControlSelector';
 
 const ALPHA_PROVIDERS = new Set(['opencode', 'copilot-cli']);
 const TYPEAHEAD_RESET_MS = 700;
 
-interface Model {
+export interface PickerModel {
   id: string;
   name: string;
   provider: string;
+  catalog?: {
+    entryId: string;
+    family: string;
+    version: string;
+    contextWindow?: number;
+    capabilities: {
+      mainSession: boolean;
+      subagent: boolean;
+      consultation: boolean;
+      tools: boolean;
+      vision: boolean;
+    };
+    controls: CatalogControlDefinition[];
+    availability: {
+      selectable: boolean;
+      code: string;
+      reason?: string;
+    };
+  };
 }
 
 type ProviderType = 'agent' | 'model';
 
 interface ModelSelectorProps {
   currentModel: string;  // Full provider:model ID
-  onModelChange: (modelId: string) => void;
+  onModelChange: (
+    modelId: string,
+    model: PickerModel,
+  ) => void | Promise<boolean | void>;
+  onCurrentModelResolved?: (model: PickerModel | null) => void;
   sessionHasMessages?: boolean;  // Whether current session has any messages
   currentProvider?: string | null;  // Current session provider
   /**
@@ -66,9 +91,10 @@ export function ModelSelector({
   readOnlyTitle,
   openRequest,
   onKeyboardDismiss,
+  onCurrentModelResolved,
 }: ModelSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [models, setModels] = useState<Record<string, Model[]>>({});
+  const [models, setModels] = useState<Record<string, PickerModel[]>>({});
   const [providerLabels, setProviderLabels] = useState<Record<string, string>>({});
   const [providerIcons, setProviderIcons] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -78,6 +104,7 @@ export function ModelSelector({
   const setWindowMode = useSetAtom(setWindowModeAtom);
   const navigateToSettings = useSetAtom(navigateToSettingsAtom);
   const menuRef = React.useRef<HTMLDivElement>(null);
+  const modelLoadGenerationRef = React.useRef(0);
   const lastOpenRequestRef = React.useRef(openRequest);
   const typeaheadQueryRef = React.useRef('');
   const typeaheadResetTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -110,20 +137,35 @@ export function ModelSelector({
 
   // Clear cached models when provider settings change so next dropdown open fetches fresh data
   useEffect(() => {
+    modelLoadGenerationRef.current += 1;
     setModels({});
+    setProviderLabels({});
+    setProviderIcons({});
+    setLoading(false);
   }, [providers]);
 
-  // Load models when dropdown opens
+  const modelsEmpty = Object.keys(models).length === 0;
+
+  // Load models when dropdown opens or a provider-settings invalidation clears
+  // the active cache. The generation guard below prevents an older response
+  // from repopulating the cleared cache.
   useEffect(() => {
-    if (isOpen && Object.keys(models).length === 0) {
+    if ((isOpen || isCatalogPersistedModelId(currentModel)) && modelsEmpty) {
       loadModels();
     }
-  }, [isOpen]);
+  }, [isOpen, currentModel, modelsEmpty, providers]);
+
+  useEffect(() => {
+    const current = Object.values(models).flat().find(model => model.id === currentModel) ?? null;
+    onCurrentModelResolved?.(current);
+  }, [currentModel, models, onCurrentModelResolved]);
 
   const loadModels = async () => {
+    const generation = ++modelLoadGenerationRef.current;
     setLoading(true);
     try {
       const response = await window.electronAPI.aiGetModels();
+      if (generation !== modelLoadGenerationRef.current) return;
       if (response.success && response.grouped) {
         setModels(response.grouped);
         const meta = response as {
@@ -134,9 +176,13 @@ export function ModelSelector({
         if (meta.providerIcons) setProviderIcons(meta.providerIcons);
       }
     } catch (error) {
-      console.error('Failed to load models:', error);
+      if (generation === modelLoadGenerationRef.current) {
+        console.error('Failed to load models:', error);
+      }
     } finally {
-      setLoading(false);
+      if (generation === modelLoadGenerationRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -154,10 +200,14 @@ export function ModelSelector({
     if (!isOpen) resetTypeahead();
   }, [isOpen, resetTypeahead]);
 
-  const handleModelSelect = (modelId: string) => {
+  const handleModelSelect = async (model: PickerModel) => {
     resetTypeahead();
-    onModelChange(modelId);
-    setIsOpen(false);
+    try {
+      const accepted = await onModelChange(model.id, model);
+      if (accepted !== false) setIsOpen(false);
+    } catch {
+      // The owner keeps the picker open and projects its bounded recovery UI.
+    }
   };
 
   const getEnabledModelOptions = React.useCallback((): HTMLButtonElement[] => {
@@ -184,7 +234,10 @@ export function ModelSelector({
     if (node) focusMenu(node);
   }, [refs.setFloating, focusMenu]);
 
-  const handleOptionKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+  const handleOptionKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    isDisabled: boolean,
+  ) => {
     const options = getEnabledModelOptions();
     const currentIndex = options.indexOf(event.currentTarget);
 
@@ -199,7 +252,10 @@ export function ModelSelector({
 
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      handleModelSelect(event.currentTarget.dataset.modelId!);
+      if (isDisabled) return;
+      const modelId = event.currentTarget.dataset.modelId!;
+      const model = Object.values(models).flat().find(candidate => candidate.id === modelId);
+      if (model) handleModelSelect(model);
       return;
     }
 
@@ -373,7 +429,7 @@ export function ModelSelector({
     if (!acc[type]) acc[type] = {};
     acc[type][provider] = providerModels;
     return acc;
-  }, {} as Record<'agents' | 'models', Record<string, Model[]>>);
+  }, {} as Record<'agents' | 'models', Record<string, PickerModel[]>>);
 
   // Capture focus as soon as the popup opens, including while models are still
   // loading. Once options exist, move focus to the active model (or the first
@@ -458,16 +514,22 @@ export function ModelSelector({
                       </HelpTooltip>
                       {providerModels.map(model => {
                         const isCurrent = model.id === currentModel;
-                        const isDisabled = isProviderSwitchDisabled(provider);
-                        const disabledTooltip = 'Start a new session to switch providers after the session has started';
+                        const providerSwitchDisabled = isProviderSwitchDisabled(provider);
+                        const catalogDisabled = model.catalog?.availability.selectable === false;
+                        const isDisabled = providerSwitchDisabled || catalogDisabled;
+                        const disabledTooltip = providerSwitchDisabled
+                          ? 'Start a new session to switch providers after the session has started'
+                          : model.catalog?.availability.reason;
                         return (
                           <button
                             key={model.id}
                             className={`model-selector-option flex items-center justify-between gap-2 pl-6 pr-2 py-1.5 w-full border-none rounded text-xs cursor-pointer transition-[background] duration-150 text-left text-[var(--nim-text)] ${isCurrent ? 'selected bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)]' : ''} ${isDisabled ? 'disabled opacity-50 cursor-not-allowed' : 'hover:bg-[var(--nim-bg-hover)]'}`}
-                            onClick={() => !isDisabled && handleModelSelect(model.id)}
-                            onKeyDown={handleOptionKeyDown}
+                            onClick={() => !isDisabled && handleModelSelect(model)}
+                            onKeyDown={(event) => handleOptionKeyDown(event, isDisabled)}
                             title={isDisabled ? disabledTooltip : undefined}
                             aria-disabled={isDisabled}
+                            tabIndex={isDisabled ? -1 : 0}
+                            aria-label={isDisabled && disabledTooltip ? `${model.name}. ${disabledTooltip}` : model.name}
                             data-model-id={model.id}
                             data-model-name={model.name}
                           >
@@ -511,10 +573,12 @@ export function ModelSelector({
                           <button
                             key={model.id}
                             className={`model-selector-option flex items-center justify-between gap-2 pl-6 pr-2 py-1.5 w-full border-none rounded text-xs cursor-pointer transition-[background] duration-150 text-left text-[var(--nim-text)] ${isCurrent ? 'selected bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)]' : ''} ${isDisabled ? 'disabled opacity-50 cursor-not-allowed' : 'hover:bg-[var(--nim-bg-hover)]'}`}
-                            onClick={() => !isDisabled && handleModelSelect(model.id)}
-                            onKeyDown={handleOptionKeyDown}
+                            onClick={() => !isDisabled && handleModelSelect(model)}
+                            onKeyDown={(event) => handleOptionKeyDown(event, isDisabled)}
                             title={isDisabled ? disabledTooltip : undefined}
                             aria-disabled={isDisabled}
+                            aria-label={isDisabled ? `${model.name}. ${disabledTooltip}` : model.name}
+                            tabIndex={isDisabled ? -1 : 0}
                             data-model-id={model.id}
                             data-model-name={model.name}
                           >

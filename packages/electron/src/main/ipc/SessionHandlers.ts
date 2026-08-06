@@ -28,6 +28,7 @@ import { setSessionPendingPrompt } from '../services/ai/pendingPromptPersistence
 import { normalizeSessionPhaseMetadataUpdate } from '../services/session/sessionPhaseTransition';
 import { destroyProviderForArchivedSession } from '../services/ai/archiveSessionProviderLifecycle';
 import { resolveSessionModelSelection } from '../services/ai/sessionModelSelection';
+import { validateSessionReparent } from './sessionReparentValidation';
 
 // Initialize session manager
 const sessionManager = new SessionManager();
@@ -701,29 +702,46 @@ export async function registerSessionHandlers() {
                 return { success: false, error: 'Session not found' };
             }
 
-            // Validate session belongs to the workspace
-            if (session.workspacePath !== workspacePath) {
-                return { success: false, error: 'Session does not belong to this workspace' };
-            }
+            const [workspaceSessions, parent] = await Promise.all([
+                AISessionsRepository.list(workspacePath, { includeArchived: true }),
+                newParentId ? AISessionsRepository.get(newParentId) : Promise.resolve(null),
+            ]);
+            const sourceMeta = workspaceSessions.find(candidate => candidate.id === sessionId);
 
-            // If setting a parent, validate the parent exists and is in same workspace
-            if (newParentId) {
-                const parent = await AISessionsRepository.get(newParentId);
-                if (!parent) {
-                    return { success: false, error: 'Parent session not found' };
-                }
-                if (parent.workspacePath !== workspacePath) {
-                    return { success: false, error: 'Parent session is in a different workspace' };
-                }
-
-                // Parent must not itself be a child session (no nested workstreams)
-                if (parent.parentSessionId) {
-                    return { success: false, error: 'Cannot nest workstreams: parent is already a child session' };
-                }
+            const validationError = validateSessionReparent({
+                source: {
+                    id: session.id,
+                    workspacePath: session.workspacePath ?? '',
+                    sessionType: session.sessionType,
+                    parentSessionId: session.parentSessionId,
+                    worktreeId: session.worktreeId,
+                    childCount: sourceMeta?.childCount ?? 0,
+                    metadata: session.metadata,
+                },
+                destination: parent ? {
+                    id: parent.id,
+                    workspacePath: parent.workspacePath ?? '',
+                    sessionType: parent.sessionType,
+                    parentSessionId: parent.parentSessionId,
+                    worktreeId: parent.worktreeId,
+                    metadata: parent.metadata,
+                } : null,
+                newParentId,
+                workspacePath,
+            });
+            if (validationError) {
+                return { success: false, error: validationError };
             }
 
             // Update parent_session_id
             await AISessionsRepository.updateMetadata(sessionId, { parentSessionId: newParentId });
+
+            for (const window of BrowserWindow.getAllWindows()) {
+                if (!window.isDestroyed()) {
+                    window.webContents.send('sessions:session-updated', sessionId, { parentSessionId: newParentId });
+                    window.webContents.send('sessions:refresh-list', { workspacePath, sessionId });
+                }
+            }
 
             return { success: true };
         } catch (error) {

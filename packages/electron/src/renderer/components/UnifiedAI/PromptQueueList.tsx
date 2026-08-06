@@ -8,6 +8,10 @@ interface QueuedPromptAttachment {
 
 export interface QueuedPrompt {
   id: string;
+  clientSubmissionId?: string;
+  submissionSequence?: number;
+  sourceSessionId?: string;
+  status?: 'awaiting_ack' | 'pending' | 'executing' | 'completed' | 'failed';
   prompt: string;
   timestamp: number;
   attachments?: QueuedPromptAttachment[];
@@ -15,6 +19,7 @@ export interface QueuedPrompt {
 
 interface PromptQueueListProps {
   queue: QueuedPrompt[];
+  disabled?: boolean;
   onCancel: (id: string) => void;
   onEdit?: (id: string, prompt: string) => void;
   onSendNow?: (id: string, prompt: string) => void;
@@ -54,13 +59,17 @@ function AttachmentIndicator({ attachments }: { attachments: QueuedPromptAttachm
 /**
 - PromptQueueList - Displays queued prompts waiting to be processed
  */
-export function PromptQueueList({ queue, onCancel, onEdit, onSendNow }: PromptQueueListProps) {
+export function PromptQueueList({ queue, disabled = false, onCancel, onEdit, onSendNow }: PromptQueueListProps) {
   if (queue.length === 0) {
     return null;
   }
 
   return (
-    <div className="prompt-queue-list px-3 py-2 border-b border-nim bg-nim-secondary">
+    <div
+      className={`prompt-queue-list px-3 py-2 border-b border-nim bg-nim-secondary${disabled ? ' opacity-60' : ''}`}
+      aria-disabled={disabled}
+      data-controls-disabled={disabled ? 'true' : 'false'}
+    >
       <div className="prompt-queue-header flex items-center mb-1.5">
         <span className="prompt-queue-count text-[11px] font-medium text-nim-muted uppercase tracking-wide">{queue.length} queued</span>
       </div>
@@ -69,20 +78,16 @@ export function PromptQueueList({ queue, onCancel, onEdit, onSendNow }: PromptQu
           <div key={item.id} className="prompt-queue-item flex items-center gap-2 px-2 py-1.5 bg-nim-tertiary border border-nim rounded text-[13px]">
             <span className="prompt-queue-number shrink-0 w-[18px] h-[18px] flex items-center justify-center bg-nim-tertiary rounded-full text-[11px] font-medium text-nim-muted">{index + 1}</span>
             <span className="prompt-queue-text flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-nim-primary" title={item.prompt}>{item.prompt}</span>
-            {item.prompt.includes('\n') && (
-              <span className="prompt-queue-lines shrink-0 text-[10px] text-nim-muted bg-nim-secondary rounded px-1 py-0.5" title={`${item.prompt.split('\n\n').length} messages bundled`}>
-                +{item.prompt.split('\n\n').length - 1} more
-              </span>
-            )}
             {item.attachments && item.attachments.length > 0 && (
               <AttachmentIndicator attachments={item.attachments} />
             )}
             {onSendNow && (
               <button
-                className="prompt-queue-send-now shrink-0 w-5 h-5 flex items-center justify-center bg-transparent border-none rounded text-nim-muted cursor-pointer text-sm leading-none p-0 transition-all duration-150 hover:bg-nim-hover hover:text-nim-accent"
+                className="prompt-queue-send-now shrink-0 w-5 h-5 flex items-center justify-center bg-transparent border-none rounded text-nim-muted cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-nim-muted text-sm leading-none p-0 transition-all duration-150 hover:bg-nim-hover hover:text-nim-accent"
                 onClick={() => onSendNow(item.id, item.prompt)}
-                title="Interrupt and send now"
+                title={disabled ? 'Unavailable while model recovery completes' : 'Interrupt and send now'}
                 type="button"
+                disabled={disabled}
               >
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M9 1L3 9h4.5l-1 6L13 7H8.5L9 1z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -91,19 +96,21 @@ export function PromptQueueList({ queue, onCancel, onEdit, onSendNow }: PromptQu
             )}
             {onEdit && (
               <button
-                className="prompt-queue-edit shrink-0 w-5 h-5 flex items-center justify-center bg-transparent border-none rounded text-nim-muted cursor-pointer text-sm leading-none p-0 transition-all duration-150 hover:bg-nim-hover hover:text-nim-primary"
+                className="prompt-queue-edit shrink-0 w-5 h-5 flex items-center justify-center bg-transparent border-none rounded text-nim-muted cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-nim-muted text-sm leading-none p-0 transition-all duration-150 hover:bg-nim-hover hover:text-nim-primary"
                 onClick={() => onEdit(item.id, item.prompt)}
-                title="Edit this prompt"
+                title={disabled ? 'Unavailable while model recovery completes' : 'Edit this prompt'}
                 type="button"
+                disabled={disabled}
               >
                 &#x270E;
               </button>
             )}
             <button
-              className="prompt-queue-cancel shrink-0 w-5 h-5 flex items-center justify-center bg-transparent border-none rounded text-nim-muted cursor-pointer text-lg leading-none p-0 transition-all duration-150 hover:bg-nim-hover hover:text-nim-primary"
+              className="prompt-queue-cancel shrink-0 w-5 h-5 flex items-center justify-center bg-transparent border-none rounded text-nim-muted cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-nim-muted text-lg leading-none p-0 transition-all duration-150 hover:bg-nim-hover hover:text-nim-primary"
               onClick={() => onCancel(item.id)}
-              title="Cancel this prompt"
+              title={disabled ? 'Unavailable while model recovery completes' : 'Cancel this prompt'}
               type="button"
+              disabled={disabled}
             >
               ×
             </button>

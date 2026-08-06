@@ -5,6 +5,8 @@ import {
   parseThinkingMode,
   resolveEffortLevel,
   resolveThinkingMode,
+  supportedEffortLevelsForModel,
+  supportsThinkingModeForModel,
 } from '../effortLevels';
 
 describe('resolveEffortLevel', () => {
@@ -69,5 +71,26 @@ describe('resolveThinkingMode', () => {
 
   it('sanitizes an invalid session value instead of trusting it', () => {
     expect(resolveThinkingMode('off', 'disabled')).toBe(DEFAULT_THINKING_MODE);
+  });
+});
+
+describe('catalog reasoning controls', () => {
+  it('derives Claudex effort exactly from the catalog', () => {
+    expect(supportedEffortLevelsForModel('claude-code:claudex-sol')).toEqual([
+      { key: 'high', label: 'High' },
+      { key: 'max', label: 'Max' },
+    ]);
+    expect(supportsThinkingModeForModel('claude-code:claudex-sol')).toBe(false);
+  });
+
+  it('fails closed for DeepSeek: its reasoning control is provider-scoped ' +
+    '("reasoning-mode": None/High/Max, not the generic effort-level ladder)', () => {
+    expect(supportedEffortLevelsForModel('claude-code:deepseek-v4-pro')).toEqual([]);
+    expect(supportsThinkingModeForModel('claude-code:deepseek-v4-pro')).toBe(false);
+  });
+
+  it('fails closed when a catalog model defines no reasoning controls', () => {
+    expect(supportedEffortLevelsForModel('claude-code:ollama-qwen3-5-cloud')).toEqual([]);
+    expect(supportsThinkingModeForModel('claude-code:ollama-qwen3-5-cloud')).toBe(false);
   });
 });

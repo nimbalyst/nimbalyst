@@ -23,13 +23,16 @@ import {
   ClaudeCodeProvider,
   OpenAICodexProvider,
 } from '@nimbalyst/runtime/ai/server';
-import { CLAUDE_CODE_SAFE_FALLBACK_MODEL } from '@nimbalyst/runtime/ai/modelConstants';
 import { reconcileClaudeCodeModels } from './claudeCodeModelReconcile';
 import { isModelEnabled } from './modelEnablementFilter';
+import { mergeProviderCatalogPickerModels } from './providerCatalogPicker';
+import { BUILT_IN_PROVIDER_CATALOG } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalogDefaults';
+import { readProviderCatalog } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerCatalogLoader';
+import { getProviderRouteCredentialPresence } from '@nimbalyst/runtime/ai/server/providers/claudeCode/providerRouteCredentials';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { parseContextUsageMessage } from '@nimbalyst/runtime/ai/server/utils/contextUsage';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { resolveEffortLevel, resolveThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveEffortLevel, resolveThinkingMode, supportsThinkingModeForModel } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { SessionStore } from '@nimbalyst/runtime';
 import {
   ModelIdentifier,
@@ -87,6 +90,7 @@ import {
 } from '../../utils/store';
 import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../../utils/aiSettingsMerge';
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
+import { buildClaudeCodeRuntimeConfigForTurn } from './ClaudeCodeTurnLifecycle';
 import { getMessageSyncHandler, getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { applyRemoteReadReceipt } from '../../ipc/ReadReceiptHandlers';
 import { applyRemoteTrackerPersonalState } from '../../ipc/TrackerPersonalStateHandlers';
@@ -95,6 +99,7 @@ import { isFileInWorkspaceOrWorktree, resolveProjectPath } from '../../utils/wor
 import { inferWorktreePathFromFilePath, inferWorktreePathFromCommand } from './worktreeInference';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
+import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -123,7 +128,6 @@ import {
   categorizeAIError,
 } from './aiServiceUtils';
 import { MessageStreamingHandler } from './MessageStreamingHandler';
-import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { shouldForceIdleOnCancel } from './sessionSettlePolicy';
 import {
   hasTerminalizedAskUserQuestion,
@@ -131,7 +135,10 @@ import {
 } from './askUserQuestionFallbackResolution';
 import { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
-import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import {
+  preflightSessionPromptDispatch,
+  tryClaimAndDispatchNextQueuedPrompt,
+} from './queuedPromptDispatcher';
 import {
   QueueDriveService,
   type DriveOutcome,
@@ -145,6 +152,12 @@ import { onWorkspaceWindowAvailable } from '../../window/workspaceWindowAvailabi
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
+import { toMillis } from '../../utils/timestampUtils';
+import {
+  createPriorityTargetGeneration,
+  type PriorityTargetState,
+} from '../PriorityPromptDeliveryService';
+import { drainPendingOrdinaryPromptsOnStartup } from './startupQueuedPromptDrain';
 
 const execFileAsync = promisify(execFile);
 
@@ -165,6 +178,48 @@ function scheduleMobileSettingsSync(): void {
       syncSettingsToMobile(apiKeys['openai']);
     }).catch(() => { /* sync manager may not be available */ });
   }, 500);
+}
+
+/**
+ * Replicate the durable queue lifecycle snapshot after a CLI-only transition.
+ * The PGLite store remains authoritative; sync merely publishes its current
+ * per-session projection for reconnecting renderers.
+ */
+export async function publishQueuedPromptSnapshotForSession(
+  sessionId: string,
+  queueStore?: { listForSession: (id: string, options: { includeCompleted: boolean }) => Promise<any[]> },
+): Promise<void> {
+  const syncProvider = getSyncProvider();
+  if (!syncProvider) return;
+
+  const store = queueStore ?? (await import('../RepositoryManager')).getQueuedPromptsStore();
+  const rows = await store.listForSession(sessionId, { includeCompleted: true });
+  syncProvider.pushChange(sessionId, {
+    type: 'metadata_updated',
+    metadata: {
+      queuedPrompts: rows.map((row) => ({
+        id: row.id,
+        clientSubmissionId: row.clientSubmissionId ?? row.id,
+        sourceSessionId: row.sourceSessionId ?? row.sessionId,
+        sourceRoomId: row.sourceRoomId ?? row.sessionId,
+        submissionSequence: row.submissionSequence,
+        producer: row.producer,
+        payloadUtf8Bytes: row.payloadReceipt?.utf8Bytes,
+        payloadUnicodeScalars: row.payloadReceipt?.unicodeScalars,
+        payloadSha256: row.payloadReceipt?.sha256,
+        claimTrigger: row.claimTrigger,
+        claimTriggeredAt: row.claimTriggeredAt,
+        turnId: row.turnId,
+        providerInputMessageId: row.providerInputMessageId,
+        providerOutputMessageId: row.providerOutputMessageId,
+        streamEventSequence: row.streamEventSequence,
+        terminalStatus: row.terminalStatus,
+        terminalAt: row.terminalAt,
+        prompt: row.prompt,
+        timestamp: row.createdAt,
+      })),
+    },
+  });
 }
 
 export class AIService {
@@ -192,14 +247,33 @@ export class AIService {
   // so file edits are linked to tool calls promptly (not just at session end).
   private matchDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  // Track sessions currently processing a queued prompt to prevent concurrent execution.
-  // Without this, the completion handler and triggerQueueProcessing IPC can race,
-  // each claiming a different prompt and sending both to the AI concurrently.
-  private sessionsProcessingQueue = new Set<string>();
+  // Track the owning lease for each queued-prompt dispatch. Interrupts revoke
+  // the prior lease before priority delivery; a stale dispatch may settle
+  // afterward, but cannot release a newer dispatch's lease or drain FIFO.
+  private queueProcessingLeases = new Map<string, symbol>();
+  private interactivePromptSettlements = new Map<string, Promise<{ success: boolean; error?: string }>>();
+
+  /**
+   * Exposes the dispatch-owned lease guard to the streaming lifecycle without
+   * reviving the old broad processing set. A newer priority dispatch owns a
+   * distinct lease, so stale completion/error handlers can only observe the
+   * current owner through this map.
+   */
+  hasActiveQueueLease(sessionId: string): boolean {
+    return this.queueProcessingLeases.has(sessionId);
+  }
 
   // Track mobile session creation requests to prevent duplicate processing
   // (can happen if the same request is delivered multiple times)
   private processingMobileSessionRequests = new Set<string>();
+
+  // Dedicated re-entrancy guard for sendMessageDirect (compact_session and any
+  // other direct-invocation caller). Deliberately separate from
+  // queueProcessingLeases -- that map's interrupt/revocation semantics are
+  // owned by the queued-prompt dispatch chain, and a direct send is neither a
+  // dispatch nor an interrupt. Checked alongside hasActiveQueueLease() so a
+  // direct send still cannot overlap a queue-driven turn for the same session.
+  private directSendInFlight = new Set<string>();
 
   // Service for preparing document context (transition detection, diff computation, etc.)
   private documentContextService = new DocumentContextService();
@@ -287,6 +361,9 @@ export class AIService {
     attachments?: any[],
     documentContext?: any
   ): Promise<{ id: string; prompt: string; createdAt: number }> {
+    if (!(await preflightSessionPromptDispatch(sessionId))) {
+      throw new Error('Session model recovery is pending');
+    }
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
     const promptId = `meta-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -447,7 +524,7 @@ export class AIService {
     return runQueueDriveAttempt<Electron.BrowserWindow>(
       {
         listPendingIds: async (id) => (await queueStore.listPending(id)).map((row) => row.id),
-        isChainActive: (id) => this.sessionsProcessingQueue.has(id),
+        isChainActive: (id) => this.queueProcessingLeases.has(id),
         isSessionBusy: (id) => {
           const liveState = getSessionStateManager().getSessionState(id);
           return !!liveState && (liveState.status === 'running' || liveState.isStreaming);
@@ -476,7 +553,307 @@ export class AIService {
     return outcome.kind === 'dispatched';
   }
 
+  public async drainPendingOrdinaryPromptsOnStartup(): Promise<{
+    discovered: number;
+    triggered: number;
+    skipped: number;
+  }> {
+    const { getQueuedPromptsStore } = await import('../RepositoryManager');
+    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+    const queueStore = getQueuedPromptsStore();
+    return drainPendingOrdinaryPromptsOnStartup({
+      preflight: preflightSessionPromptDispatch,
+      listPendingOrdinarySessionIds: () =>
+        queueStore.listPendingSessionIds({ deliveryClass: 'ordinary' }),
+      resolveWorkspacePath: async (sessionId) => {
+        const session = await AISessionsRepository.get(sessionId);
+        const workspacePath = session?.worktreePath || session?.workspacePath || null;
+        if (workspacePath) return workspacePath;
+        try {
+          await queueStore.failAllPendingForSession(
+            sessionId,
+            'Queued prompt delivery failed: workspace mapping unavailable',
+          );
+        } catch {
+          logger.main.warn('[AIService] startup queue drain could not terminally fail an unmapped session');
+        }
+        return null;
+      },
+      triggerProcessing: (sessionId, workspacePath) =>
+        this.triggerQueuedPromptProcessingForSession(sessionId, workspacePath),
+      logError: (sessionId, error) => {
+        logger.main.error(
+          `[AIService] startup queue drain failed for session ${sessionId}:`,
+          error,
+        );
+      },
+    });
+  }
+
+  public async interruptCurrentTurnForSession(
+    sessionId: string,
+    expectedState?: PriorityTargetState,
+  ): Promise<{
+    success: boolean;
+    method?: string;
+    error?: string;
+    nativeEntered: boolean;
+    forcedIdle?: boolean;
+  }> {
+    if (!sessionId) {
+      throw new Error('Session ID is required to interrupt');
+    }
+
+    // Priority delivery reserves its queue row before interrupting. While
+    // model recovery owns the session, leave that row pending and do not enter
+    // the native interrupt path; recovery will trigger the same queue once.
+    if (!(await preflightSessionPromptDispatch(sessionId))) {
+      return { success: false, error: 'Session model recovery is pending', nativeEntered: false };
+    }
+
+    const { database } = await import('../../database/PGLiteDatabaseWorker');
+    const readLifecycle = async () => {
+      const { rows } = await database.query<{
+        provider: string;
+        status: string;
+        last_activity: Date | string | number | null;
+        updated_at: Date | string | number | null;
+      }>(
+        `SELECT provider, status, last_activity, updated_at
+         FROM ai_sessions
+         WHERE id = $1
+         LIMIT 1`,
+        [sessionId],
+      );
+      const row = rows[0];
+      if (!row) {
+        return null;
+      }
+      const lastActivity = toMillis(row.last_activity);
+      const updatedAt = toMillis(row.updated_at);
+      return {
+        provider: row.provider,
+        status: row.status,
+        lastActivity,
+        updatedAt,
+        generation: createPriorityTargetGeneration(
+          row.status as PriorityTargetState['status'],
+          lastActivity,
+          updatedAt,
+        ),
+      };
+    };
+
+    const session = await readLifecycle();
+    if (!session) {
+      return { success: false, error: 'Session not found', nativeEntered: false };
+    }
+
+    if (session.provider === 'claude-code-cli') {
+      const terminalManager = getTerminalSessionManager();
+      if (!terminalManager.isTerminalActive(sessionId)) {
+        return { success: false, error: 'No active terminal for session', nativeEntered: false };
+      }
+      const current = await readLifecycle();
+      if (
+        expectedState
+        && (!current || current.generation !== expectedState.generation || current.status !== expectedState.status)
+      ) {
+        return { success: false, error: 'stale lifecycle generation', nativeEntered: false };
+      }
+      try {
+        terminalManager.writeToTerminal(sessionId, '\x03');
+        this.queueProcessingLeases.delete(sessionId);
+        try {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+        } catch (sweepError) {
+          logger.main.error('[AIService] CLI interrupt queue sweep failed:', sweepError);
+        }
+        logger.main.info(`[AIService] Interrupted claude-code-cli terminal for session ${sessionId}`);
+        return { success: true, method: 'terminal-ctrl-c', nativeEntered: true };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+          nativeEntered: true,
+        };
+      }
+    }
+
+    const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+    if (!provider) {
+      return { success: false, error: 'No active provider for session', nativeEntered: false };
+    }
+
+    const sweepInterruptedQueue = async () => {
+      this.queueProcessingLeases.delete(sessionId);
+      try {
+        const { getQueuedPromptsStore } = await import('../RepositoryManager');
+        const queueStore = getQueuedPromptsStore();
+        const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
+        if (completed > 0 || failed > 0 || rolledBack > 0) {
+          logger.main.info(
+            `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
+          );
+        }
+      } catch (sweepErr) {
+        logger.main.error('[AIService] interruptCurrentTurn: sweepExecutingForSession failed:', sweepErr);
+      }
+    };
+
+    // Preserve the manual IPC behavior. Priority callers pass an expected
+    // lifecycle token; for them, avoid mutating queue state until after the
+    // fenced provider interrupt has actually been entered.
+    if (!expectedState) {
+      await sweepInterruptedQueue();
+    }
+
+    const current = await readLifecycle();
+    if (
+      expectedState
+      && (!current || current.generation !== expectedState.generation || current.status !== expectedState.status)
+    ) {
+      return { success: false, error: 'stale lifecycle generation', nativeEntered: false };
+    }
+
+    try {
+      const result = await provider.interruptCurrentTurn();
+      if (expectedState) {
+        await sweepInterruptedQueue();
+      }
+      logger.main.info(`[AIService] Interrupted current turn for session ${sessionId} (method=${result.method})`);
+
+      // A session stuck at running/streaming with no turn behind it would
+      // otherwise defer the follow-up queue drive on a `session:completed`
+      // that can never arrive (NIM-2434).
+      const stateManager = getSessionStateManager();
+      const forcedIdle = await clearStuckRunningState(
+        {
+          getSessionState: (id) => stateManager.getSessionState(id),
+          interruptSession: (id) => stateManager.interruptSession(id),
+          logWarn: (message) => logger.main.warn(message),
+        },
+        { sessionId, hadActiveTurn: result.hadActiveTurn },
+      );
+
+      return { success: true, method: result.method, nativeEntered: true, forcedIdle };
+    } catch (error) {
+      if (expectedState) {
+        await sweepInterruptedQueue();
+      }
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        nativeEntered: true,
+      };
+    }
+  }
+
   public async respondToInteractivePrompt(params: {
+    sessionId: string;
+    promptId: string;
+    promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
+    response: any;
+    respondedBy?: 'desktop' | 'mobile';
+  }): Promise<{ success: boolean; error?: string }> {
+    const key = `${params.sessionId}:${params.promptType}:${params.promptId}`;
+    const existing = this.interactivePromptSettlements.get(key);
+    if (existing) return existing;
+    const settlement = this.respondToInteractivePromptOnce(params).finally(() => {
+      this.interactivePromptSettlements.delete(key);
+    });
+    this.interactivePromptSettlements.set(key, settlement);
+    return settlement;
+  }
+
+  private getAskUserQuestionContinuationEvent(workspacePath?: string | null): Electron.IpcMainInvokeEvent | null {
+    if (!workspacePath) return null;
+    const targetWindow = findWindowByWorkspace(workspacePath);
+    if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+      return null;
+    }
+    return { sender: targetWindow.webContents } as Electron.IpcMainInvokeEvent;
+  }
+
+  private async continueAskUserQuestionSession(params: {
+    event?: Electron.IpcMainInvokeEvent;
+    sessionId: string;
+    workspacePath?: string | null;
+    answers: Record<string, unknown>;
+    source: string;
+    onCompleted?: () => Promise<void>;
+  }): Promise<boolean> {
+    if (!this.sendMessageHandler) return false;
+
+    const event = params.event ?? this.getAskUserQuestionContinuationEvent(params.workspacePath);
+    if (!event) {
+      logger.main.warn(
+        `[AIService] ${params.source}: no live workspace window available to resume AskUserQuestion session ${params.sessionId}`
+      );
+      return false;
+    }
+
+    const answerText = Object.entries(params.answers)
+      .map(([question, answer]) => `${question}: ${String(answer)}`)
+      .join('\n');
+    const resumeMessage = `[Resuming after answering a question]\n\n${answerText}`;
+    const handler = this.sendMessageHandler;
+
+    logger.main.info(`[AIService] ${params.source}: auto-resuming AskUserQuestion session ${params.sessionId}`);
+    try {
+      await handler(event, resumeMessage, undefined, params.sessionId, params.workspacePath ?? undefined);
+      await params.onCompleted?.();
+      return true;
+    } catch (err) {
+      logger.main.error(`[AIService] ${params.source}: failed to auto-resume session after AskUserQuestion: ${err}`);
+      return false;
+    }
+  }
+
+  private classifyDurableAskUserQuestionRequest(content: unknown, promptId: string): 'legacy' | 'canonical' | null {
+    let parsed: unknown = content;
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        return null;
+      }
+    }
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const request = parsed as Record<string, unknown>;
+    if (request.type === 'ask_user_question_request' && request.questionId === promptId) {
+      return 'legacy';
+    }
+    if (
+      request.type === 'nimbalyst_tool_use'
+      && request.name === 'AskUserQuestion'
+      && request.id === promptId
+    ) {
+      return 'canonical';
+    }
+    return null;
+  }
+
+  private isDurableAskUserQuestionContinuationCompleted(content: unknown, promptId: string): boolean {
+    let parsed: unknown = content;
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        return false;
+      }
+    }
+    if (!parsed || typeof parsed !== 'object') return false;
+    const marker = parsed as Record<string, unknown>;
+    return (
+      marker.type === 'ask_user_question_continuation_completed'
+      && marker.questionId === promptId
+    );
+  }
+
+  private async respondToInteractivePromptOnce(params: {
     sessionId: string;
     promptId: string;
     promptType: 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -522,11 +899,190 @@ export class AIService {
       };
     }
 
-    await database.query(
-      `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false]
-    );
+    // A response is a one-shot consumption. Reject duplicates before writing a
+    // second durable row or waking the same blocked waiter twice.
+    let replayedResponse = false;
+    if (promptType === 'ask_user_question_request') {
+      const { rows: existingResponses } = await database.query<{ content: unknown }>(
+        `SELECT content FROM ai_agent_messages
+         WHERE session_id = $1
+           AND content LIKE '%"type":"ask_user_question_response"%'
+           AND content LIKE $2
+         LIMIT 1`,
+        [sessionId, `%"questionId":"${promptId}"%`]
+      );
+      if (existingResponses.length > 0) {
+        // The durable answer is the claim. A replay must finish its lifecycle
+        // work, not merely acknowledge the existing row and strand its waiter.
+        replayedResponse = true;
+        const stored = existingResponses[0]?.content;
+        if (typeof stored === 'string') {
+          try {
+            responseContent = JSON.parse(stored) as Record<string, unknown>;
+          } catch {
+            // Legacy malformed rows still get deterministic cleanup below.
+          }
+        } else if (stored && typeof stored === 'object') {
+          responseContent = stored as Record<string, unknown>;
+        }
+      }
+    }
+
+    let persistedAskRequestEncoding: 'legacy' | 'canonical' | null = null;
+    let askContinuationCompleted = false;
+    if (promptType === 'ask_user_question_request') {
+      const { rows: askRequestRows } = await database.query<{ id: string; content: unknown }>(
+        `SELECT id, content
+         FROM ai_agent_messages
+         WHERE session_id = $1
+           AND (
+             content LIKE '%"type":"ask_user_question_request"%'
+             OR (
+               content LIKE '%"type":"nimbalyst_tool_use"%'
+               AND content LIKE '%"name":"AskUserQuestion"%'
+             )
+           )
+         ORDER BY created_at DESC`,
+        [sessionId]
+      );
+      persistedAskRequestEncoding = askRequestRows
+        .map((row) => this.classifyDurableAskUserQuestionRequest(row.content, promptId))
+        .find((encoding) => encoding !== null) ?? null;
+
+      const { rows: completionRows } = await database.query<{ content: unknown }>(
+        `SELECT content
+         FROM ai_agent_messages
+         WHERE session_id = $1
+           AND content LIKE '%"type":"ask_user_question_continuation_completed"%'
+         ORDER BY created_at DESC`,
+        [sessionId]
+      );
+      askContinuationCompleted = completionRows.some(
+        (row) => this.isDurableAskUserQuestionContinuationCompleted(row.content, promptId)
+      );
+    }
+
+    if (promptType === 'ask_user_question_request') {
+      const settledResponse = {
+        answers: responseContent.answers || response.answers || response,
+        cancelled: responseContent.cancelled === true || response.cancelled === true,
+      };
+      const persistAskContinuationCompleted = async (
+        settlementMode: 'live' | 'resumed',
+      ): Promise<void> => {
+        await database.query(
+          `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            sessionId,
+            'nimbalyst',
+            'output',
+            JSON.stringify({
+              type: 'ask_user_question_continuation_completed',
+              questionId: promptId,
+              settlementMode,
+              completedAt: Date.now(),
+            }),
+            new Date(),
+            true,
+          ]
+        );
+      };
+      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+      const resolved = provider && isAskUserQuestionProvider(provider)
+        ? provider.resolveAskUserQuestion(promptId, settledResponse.answers, sessionId, respondedBy)
+        : false;
+
+      const askUserQuestionChannel = `ask-user-question-response:${sessionId}:${promptId}`;
+      const hasAskUserQuestionWaiter = ipcMain.listenerCount(askUserQuestionChannel) > 0;
+      const sessionFallbackChannel = `ask-user-question:${sessionId}`;
+      const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
+      const hasLiveHandler = resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter;
+
+      let continuationEvent: Electron.IpcMainInvokeEvent | undefined;
+      let shouldResumeCanonicalRequest = false;
+      if (
+        !hasLiveHandler
+        && !askContinuationCompleted
+        && persistedAskRequestEncoding === 'canonical'
+      ) {
+        continuationEvent = this.getAskUserQuestionContinuationEvent(session.workspacePath) ?? undefined;
+        if (!this.sendMessageHandler || !continuationEvent) {
+          return { success: false, error: 'No continuation route available' };
+        }
+        shouldResumeCanonicalRequest = true;
+      }
+
+      const hasPersistedQuestionRequest = persistedAskRequestEncoding !== null;
+      const accepted = persistedAskRequestEncoding === 'canonical'
+        ? hasLiveHandler || askContinuationCompleted || shouldResumeCanonicalRequest
+        : hasLiveHandler || hasPersistedQuestionRequest || replayedResponse;
+      if (!accepted) {
+        return { success: false, error: 'Question not found' };
+      }
+
+      if (!replayedResponse) {
+        await database.query(
+          `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false]
+        );
+      }
+
+      if (hasAskUserQuestionWaiter) {
+        ipcMain.emit(askUserQuestionChannel, {} as any, {
+          questionId: promptId,
+          answers: settledResponse.answers,
+          cancelled: settledResponse.cancelled,
+          respondedBy,
+          sessionId,
+        });
+      }
+      if (hasSessionFallbackWaiter) {
+        ipcMain.emit(sessionFallbackChannel, {} as any, {
+          questionId: promptId,
+          answers: settledResponse.answers,
+          cancelled: settledResponse.cancelled,
+          respondedBy,
+          sessionId,
+        });
+      }
+
+      if (
+        hasLiveHandler
+        && persistedAskRequestEncoding === 'canonical'
+        && !askContinuationCompleted
+      ) {
+        await persistAskContinuationCompleted('live');
+      }
+
+      if (shouldResumeCanonicalRequest) {
+        const completed = await this.continueAskUserQuestionSession({
+          event: continuationEvent,
+          sessionId,
+          workspacePath: session.workspacePath,
+          answers: settledResponse.answers as Record<string, unknown>,
+          source: 'respondToInteractivePrompt',
+          onCompleted: () => persistAskContinuationCompleted('resumed'),
+        });
+        if (!completed) {
+          return { success: false, error: 'Continuation failed' };
+        }
+      }
+
+      if (!(replayedResponse && askContinuationCompleted)) {
+        await setSessionPendingPrompt(sessionId, false);
+      }
+      return { success: true };
+    }
+
+    if (!replayedResponse) {
+      await database.query(
+        `INSERT INTO ai_agent_messages (session_id, source, direction, content, created_at, hidden)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [sessionId, 'nimbalyst', 'output', JSON.stringify(responseContent), new Date(), false]
+      );
+    }
 
     if (promptType === 'permission_request') {
       const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
@@ -538,52 +1094,6 @@ export class AIService {
       }
       (provider as any).resolveToolPermission(promptId, response, sessionId, respondedBy);
       return { success: true };
-    }
-
-    if (promptType === 'ask_user_question_request') {
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      const resolved = provider && isAskUserQuestionProvider(provider)
-        ? provider.resolveAskUserQuestion(promptId, response.answers || response, sessionId, respondedBy)
-        : false;
-
-      const { rows: askRequestRows } = await database.query<{ id: string }>(
-        `SELECT id
-         FROM ai_agent_messages
-         WHERE session_id = $1
-           AND content LIKE '%"type":"ask_user_question_request"%'
-           AND content LIKE $2
-         LIMIT 1`,
-        [sessionId, `%"questionId":"${promptId}"%`]
-      );
-      const hasPersistedQuestionRequest = askRequestRows.length > 0;
-
-      const askUserQuestionChannel = `ask-user-question-response:${sessionId}:${promptId}`;
-      const hasAskUserQuestionWaiter = ipcMain.listenerCount(askUserQuestionChannel) > 0;
-      if (hasAskUserQuestionWaiter) {
-        ipcMain.emit(askUserQuestionChannel, {} as any, {
-          questionId: promptId,
-          answers: response.answers || response,
-          cancelled: response.cancelled || false,
-          respondedBy,
-          sessionId,
-        });
-      }
-
-      const sessionFallbackChannel = `ask-user-question:${sessionId}`;
-      const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
-      if (hasSessionFallbackWaiter) {
-        ipcMain.emit(sessionFallbackChannel, {} as any, {
-          questionId: promptId,
-          answers: response.answers || response,
-          cancelled: response.cancelled || false,
-          respondedBy,
-          sessionId,
-        });
-      }
-
-      return resolved || hasAskUserQuestionWaiter || hasSessionFallbackWaiter || hasPersistedQuestionRequest
-        ? { success: true }
-        : { success: false, error: 'Question not found' };
     }
 
     const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
@@ -771,29 +1281,16 @@ export class AIService {
     workspacePath?: string
   ): Promise<ProviderConfig> {
     const effectiveWorkspacePath = session.workspacePath || workspacePath;
+    // DeepSeek no longer needs a settings-sourced apiKey lookup here (2026-07-30):
+    // sdkOptionsBuilder.ts's DEEPSEEK_CLAUDE_BACKEND_ID branch reads the real key
+    // directly from .env via readDeepSeekApiKeyFromEnvFile(), independent of this
+    // plumbing. Always fetching under 'claude-code' matches the Ollama fleet path
+    // and is a no-op for DeepSeek's own key sourcing.
     const apiKey = this.getApiKeyForProvider('claude-code', effectiveWorkspacePath);
-
-    const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
-    const config: ProviderConfig = {
-      maxTokens: (session.providerConfig as any)?.maxTokens,
-      temperature: (session.providerConfig as any)?.temperature,
-      ...(apiKey ? { apiKey } : {}),
-      ...(effortLevel && { effortLevel }),
-      thinkingMode: resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode()),
-    };
-
-    const fullModel = session.model || session.providerConfig?.model;
-    if (fullModel) {
-      config.model = fullModel;
-    } else {
-      // Billing safety (#631 / NIM-848): a session with no resolved model must
-      // fall back to a STANDARD 200k model, never the 1M user-facing default
-      // (ModelRegistry.getDefaultModel('claude-code') is `opus-1m`). Sending the
-      // paid 1M beta for an empty/lost model silently bills the user.
-      config.model = CLAUDE_CODE_SAFE_FALLBACK_MODEL;
-    }
-
-    return config;
+    // buildClaudeCodeRuntimeConfigForTurn also applies applyDeepSeekClaudeAgentProfile
+    // internally -- see ClaudeCodeTurnLifecycle.ts. It preserves the #631/NIM-848
+    // billing-safety fallback (no resolved model -> CLAUDE_CODE_SAFE_FALLBACK_MODEL).
+    return buildClaudeCodeRuntimeConfigForTurn(session, apiKey);
   }
 
   /**
@@ -874,6 +1371,11 @@ export class AIService {
     targetWindow: Electron.BrowserWindow | null,
     source: string,
   ): Promise<boolean> {
+    if (!(await preflightSessionPromptDispatch(sessionId))) {
+      logger.main.info(`[AIService] ${source}: durable model reconciliation blocks queued dispatch for session ${sessionId}`);
+      return false;
+    }
+
     // NIM-834: claude-code-cli sessions have no in-process turn driver — the SDK
     // dispatch below would call the provider's Phase 1 sendMessage stub and mark
     // the prompt failed (broke meta-agent spawns, restart continuations, and
@@ -886,7 +1388,9 @@ export class AIService {
       dispatchSession = await AISessionsRepository.get(sessionId);
     } catch (lookupError) {
       logger.main.warn(`[AIService] ${source}: provider lookup failed before queued dispatch:`, lookupError);
+      return false;
     }
+    if (!dispatchSession) return false;
     if (dispatchSession?.provider === 'claude-code-cli') {
       return this.dispatchQueuedPromptToClaudeCliSession(sessionId, workspacePath, dispatchSession, source);
     }
@@ -946,7 +1450,7 @@ export class AIService {
       },
       onChainSettled: async ({ sessionId: settledSessionId, source: settledSource }) => {
         // The completion handler in MessageStreamingHandler deferred endSession
-        // because processingSet still contained this session while the inner
+        // because processingLeases still contained this session while the inner
         // sendMessage was running. Now that the chain has fully drained, mark
         // the session idle and stop its file watcher.
         const stateManager = getSessionStateManager();
@@ -967,7 +1471,8 @@ export class AIService {
         // The claimed row leaves the queue mobile sees; the publisher never throws.
         void this.publishQueueStateToSync(claimedSessionId);
       },
-      processingSet: this.sessionsProcessingQueue,
+      processingLeases: this.queueProcessingLeases,
+      preflight: preflightSessionPromptDispatch,
       queueStore,
       sendMessageHandler: this.sendMessageHandler,
       sessionId,
@@ -1010,6 +1515,7 @@ export class AIService {
     const terminalManager = getTerminalSessionManager();
     return dispatchQueuedPromptToClaudeCli(
       {
+        preflight: preflightSessionPromptDispatch,
         isTerminalActive: (id) => terminalManager.isTerminalActive(id),
         ensureSession: (input) => ensureClaudeCliSession(input),
         getLiveTurnState: (id) => terminalManager.getClaudeCliLiveTurnState(id),
@@ -1034,6 +1540,53 @@ export class AIService {
       targetWindow,
       'processQueuedPrompt',
     );
+  }
+
+  /**
+   * Send a message to a session and await the turn's full response content,
+   * bypassing the queued-prompt chain entirely (no queue row, no fire-and-
+   * forget dispatch). Callers that need the response synchronously -- e.g.
+   * the compact_session MCP tool checking whether compaction actually ran --
+   * get a direct answer instead of the queue-status JSON that
+   * sendPromptToSession returns. Reuses the same mocked-IPC-event technique
+   * as the queued-prompt dispatcher (dispatchClaimedQueuedPrompt) so this
+   * calls the identical sendMessageHandler (= streamingHandler.handle) that
+   * both normal chat input and queued prompts already use.
+   */
+  public async sendMessageDirect(
+    sessionId: string,
+    workspacePath: string,
+    message: string,
+    documentContext?: DocumentContext,
+  ): Promise<{ content: string; contextCompacted?: boolean }> {
+    if (!(await preflightSessionPromptDispatch(sessionId))) {
+      throw new Error('Session model recovery is pending');
+    }
+    if (!this.sendMessageHandler) {
+      throw new Error('AI service not initialized');
+    }
+    // Guard against overlapping a turn already running for this session,
+    // whether owned by the queued-prompt dispatch chain (queueProcessingLeases,
+    // via hasActiveQueueLease) or another concurrent direct send
+    // (directSendInFlight) -- see that field's own comment for why these are
+    // separate guards rather than one shared set.
+    if (this.hasActiveQueueLease(sessionId) || this.directSendInFlight.has(sessionId)) {
+      throw new Error(`Session ${sessionId} is already processing a turn`);
+    }
+    const targetWindow = findWindowByWorkspace(workspacePath);
+    if (!targetWindow || targetWindow.isDestroyed()) {
+      throw new Error(`No open window for workspace ${workspacePath}`);
+    }
+    const mockEvent = {
+      sender: targetWindow.webContents,
+      senderFrame: targetWindow.webContents.mainFrame,
+    } as Electron.IpcMainInvokeEvent;
+    this.directSendInFlight.add(sessionId);
+    try {
+      return await this.sendMessageHandler(mockEvent, message, documentContext, sessionId, workspacePath);
+    } finally {
+      this.directSendInFlight.delete(sessionId);
+    }
   }
 
   private async initializeMobileSyncHandler() {
@@ -1187,6 +1740,14 @@ export class AIService {
                 const session = await AISessionsRepository.get(sessionId);
                 if (!session) {
                   logger.main.warn('[AIService] Session not found for queuedPrompts:', sessionId);
+                  return;
+                }
+
+                // Preserve the newly persisted mobile rows as pending, but do
+                // not open a workspace, notify controls, or dispatch until the
+                // durable model-recovery owner releases this session.
+                if (!(await preflightSessionPromptDispatch(sessionId))) {
+                  logger.main.info(`[AIService] mobile queue dispatch blocked by model recovery for ${sessionId}`);
                   return;
                 }
 
@@ -2156,16 +2717,18 @@ export class AIService {
         }
         // Effort level: explicit session value, else the app-wide default the
         // selector displays (Opus 4.6 adaptive reasoning).
-        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel(), session.model);
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }
-        initConfig.thinkingMode = resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode());
+        if (supportsThinkingModeForModel(session.model)) {
+          initConfig.thinkingMode = resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode());
+        }
       }
 
       // Pass effort level for OpenAI Codex
       if (provider === 'openai-codex') {
-        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel());
+        const effortLevel = resolveEffortLevel((session.metadata as any)?.effortLevel, getDefaultEffortLevel(), session.model);
         if (effortLevel) {
           initConfig.effortLevel = effortLevel;
         }
@@ -2192,9 +2755,23 @@ export class AIService {
       return session;
     });
 
-    // Send message to AI -- delegated to MessageStreamingHandler.
-    // Stored on this.sendMessageHandler so queue processing and other paths can re-invoke it.
-    this.sendMessageHandler = this.streamingHandler.handle;
+    // Send message to AI -- delegated to MessageStreamingHandler only after the
+    // same repository-backed preflight used by every queued/direct rail. This
+    // is the final main-process defense for a stale renderer or non-UI caller.
+    // Stored on this.sendMessageHandler so queue processing and other paths
+    // re-invoke the identical gated production entry point.
+    this.sendMessageHandler = async (event, message, documentContext, sessionId, workspacePath) => {
+      if (!sessionId || !(await preflightSessionPromptDispatch(sessionId))) {
+        throw new Error('Session model recovery is pending');
+      }
+      return this.streamingHandler.handle(
+        event,
+        message,
+        documentContext,
+        sessionId,
+        workspacePath,
+      );
+    };
     safeHandle('ai:sendMessage', this.sendMessageHandler);
 
     // Get session history (full session data with messages - slow)
@@ -2327,70 +2904,12 @@ export class AIService {
       return { success: true };
     });
 
-    // Atomically claim a queued prompt for processing
-    // Returns the prompt data if successfully claimed, null if already claimed by another instance
-    // Uses the new queued_prompts table with proper row-level atomic updates
-    safeHandle('ai:claimQueuedPrompt', async (
-      event,
-      sessionId: string,
-      promptId: string
-    ) => {
-      // Use the new QueuedPromptsStore for atomic claim
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-
-      // Atomic claim - only succeeds if status is still 'pending'
-      const claimed = await queueStore.claim(promptId);
-
-      if (claimed) {
-        logger.main.info(`[AIService] claimQueuedPrompt: claimed ${promptId} for session ${sessionId}`);
-        // The claimed prompt is now in the transcript, so drop it from the
-        // queue mobile sees rather than leaving it double-reported.
-        await this.publishQueueStateToSync(sessionId);
-        // Return in the format expected by the renderer
-        return {
-          id: claimed.id,
-          prompt: claimed.prompt,
-          timestamp: claimed.createdAt,
-          attachments: claimed.attachments,
-          documentContext: claimed.documentContext,
-        };
-      }
-
-      logger.main.info(`[AIService] claimQueuedPrompt: prompt ${promptId} not found or already claimed`);
-      return null;
-    });
-
-    // Mark a queued prompt as completed
-    safeHandle('ai:completeQueuedPrompt', async (
-      event,
-      promptId: string
-    ) => {
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-      const row = await queueStore.get(promptId);
-      await queueStore.complete(promptId);
-      logger.main.info(`[AIService] completeQueuedPrompt: ${promptId}`);
-      if (row?.sessionId) {
-        await this.publishQueueStateToSync(row.sessionId);
-      }
-    });
-
-    // Mark a queued prompt as failed
-    safeHandle('ai:failQueuedPrompt', async (
-      event,
-      promptId: string,
-      errorMessage: string
-    ) => {
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-      const row = await queueStore.get(promptId);
-      await queueStore.fail(promptId, errorMessage);
-      logger.main.info(`[AIService] failQueuedPrompt: ${promptId} - ${errorMessage}`);
-      if (row?.sessionId) {
-        await this.publishQueueStateToSync(row.sessionId);
-      }
-    });
+    // ai:claimQueuedPrompt / ai:completeQueuedPrompt / ai:failQueuedPrompt were removed: they let any
+    // renderer caller settle an arbitrary queued prompt with no ownership proof.
+    // The token/lease dispatch model (completeAfterDispatch/failAfterDispatch)
+    // requires an exact claimToken and is only ever called by the internal
+    // dispatcher that holds it -- not exposed over IPC. Asserted absent by
+    // AIService.getModelsCatalog.test.ts and SessionTranscript.modelRecoveryProduction.test.ts.
 
     // List pending prompts for a session
     safeHandle('ai:listPendingPrompts', async (
@@ -2417,6 +2936,9 @@ export class AIService {
       attachments?: any[],
       documentContext?: any
     ) => {
+      if (!(await preflightSessionPromptDispatch(sessionId))) {
+        throw new Error('Session model recovery is pending');
+      }
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
 
@@ -2520,20 +3042,50 @@ export class AIService {
       };
     });
 
+    safeHandle('ai:replaceQueuedPrompt', async (
+      event,
+      sessionId: string,
+      promptId: string,
+      prompt: string,
+      attachments?: any[],
+      documentContext?: any,
+    ) => {
+      const { getQueuedPromptsStore } = await import('../RepositoryManager');
+      const replaced = await getQueuedPromptsStore().replacePending({
+        id: promptId,
+        sessionId,
+        prompt,
+        attachments,
+        documentContext,
+      });
+      if (!replaced) return { success: false, error: 'Queued prompt replacement was not admitted' };
+      return {
+        success: true,
+        row: {
+          id: replaced.id,
+          prompt: replaced.prompt,
+          timestamp: replaced.createdAt,
+          attachments: replaced.attachments,
+          documentContext: replaced.documentContext,
+        },
+      };
+    });
+
     // Delete a queued prompt (for user cancellation)
     safeHandle('ai:deleteQueuedPrompt', async (
       event,
-      promptId: string
+      sessionId: string,
+      promptId: string,
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-      const row = await queueStore.get(promptId);
-      await queueStore.delete(promptId);
-      logger.main.info(`[AIService] deleteQueuedPrompt: deleted ${promptId}`);
-      if (row?.sessionId) {
-        await this.publishQueueStateToSync(row.sessionId);
+      const deleted = await getQueuedPromptsStore().deletePending(promptId, sessionId);
+      if (deleted) {
+        logger.main.info(`[AIService] deleteQueuedPrompt: deleted ${promptId}`);
+        await this.publishQueueStateToSync(sessionId);
       }
-      return { success: true };
+      return deleted
+        ? { success: true }
+        : { success: false, error: 'Queued prompt deletion was not admitted' };
     });
 
     // Trigger queue processing for a session (e.g., when voice command queued while AI is idle)
@@ -2746,7 +3298,7 @@ export class AIService {
       // while session was waiting for input). Auto-resume the session by sending
       // a new message that includes the user's answer. The Claude Code SDK will
       // resume using the stored providerSessionId, picking up conversation history.
-      if (resolvedSessionId && this.sendMessageHandler && session) {
+      if (resolvedSessionId) {
         // Issue #773: without a terminal tool_result the widget stayed pending, so
         // every re-click auto-resumed again. Refuse a repeat answer for a question
         // this process already terminalized.
@@ -2765,24 +3317,15 @@ export class AIService {
           cancelled: false,
         });
 
-        const answerText = Object.entries(answers)
-          .map(([question, answer]) => `${question}: ${answer}`)
-          .join('\n');
-        const resumeMessage = `[Resuming after answering a question]\n\n${answerText}`;
-
-        logger.main.info(`[AIService] No live handler for AskUserQuestion, auto-resuming session: ${resolvedSessionId}`);
-
-        // Fire-and-forget: resume the session in the background
-        const workspacePath = session.workspacePath;
-        setImmediate(async () => {
-          try {
-            await this.sendMessageHandler!(event, resumeMessage, undefined, resolvedSessionId, workspacePath);
-          } catch (err) {
-            logger.main.error(`[AIService] Failed to auto-resume session after AskUserQuestion: ${err}`);
-          }
-        });
-
-        return { success: true };
+        if (await this.continueAskUserQuestionSession({
+          event,
+          sessionId: resolvedSessionId,
+          workspacePath: session.workspacePath,
+          answers,
+          source: 'claude-code:answer-question',
+        })) {
+          return { success: true };
+        }
       }
 
       logger.main.warn(`[AIService] Question not found for provider/session: ${resolvedSessionId}`);
@@ -3043,6 +3586,10 @@ export class AIService {
         throw new Error('Session ID is required to cancel request');
       }
 
+      if (!(await preflightSessionPromptDispatch(sessionId))) {
+        return { success: false, error: 'Session model recovery is pending' };
+      }
+
       // Use repository directly - we just need session metadata (provider type),
       // not the full session load with messages
       const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
@@ -3060,6 +3607,13 @@ export class AIService {
         }
 
         terminalManager.writeToTerminal(sessionId, '\x03');
+        this.queueProcessingLeases.delete(sessionId);
+        try {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+        } catch (sweepError) {
+          logger.main.error('[AIService] CLI cancel queue sweep failed:', sweepError);
+        }
         this.analytics.sendEvent('ai_stream_interrupted', {
           provider: 'claude-code-cli',
           chunksReceived: chunksReceived || 0,
@@ -3090,7 +3644,7 @@ export class AIService {
         // marked completed instead of rolled back, so the queue trigger
         // that follows the abort doesn't immediately re-claim and re-send
         // the same input (NIM-615).
-        this.sessionsProcessingQueue.delete(sessionId);
+        this.queueProcessingLeases.delete(sessionId);
         try {
           const { getQueuedPromptsStore } = await import('../RepositoryManager');
           const queueStore = getQueuedPromptsStore();
@@ -3127,71 +3681,14 @@ export class AIService {
     // distinguish the two paths.
     //
     // Defensive cleanup runs before the interrupt: clear the in-memory
-    // sessionsProcessingQueue guard and unwedge any PGLite rows stuck in
+    // queueProcessingLeases guard and unwedge any PGLite rows stuck in
     // 'executing' via sweepExecutingForSession (delivery-aware -- already
     // delivered prompts are marked completed, not rolled back, so the
     // follow-up ai:triggerQueueProcessing doesn't re-send the same input
     // -- NIM-615).
-    safeHandle('ai:interruptCurrentTurn', async (_event, sessionId: string) => {
-      if (!sessionId) {
-        throw new Error('Session ID is required to interrupt');
-      }
-
-      const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-      const session = await AISessionsRepository.get(sessionId);
-      if (!session) {
-        return { success: false, error: 'Session not found' };
-      }
-
-      if (session.provider === 'claude-code-cli') {
-        const terminalManager = getTerminalSessionManager();
-        if (!terminalManager.isTerminalActive(sessionId)) {
-          return { success: false, error: 'No active terminal for session' };
-        }
-
-        terminalManager.writeToTerminal(sessionId, '\x03');
-        logger.main.info(`[AIService] Interrupted claude-code-cli terminal for session ${sessionId}`);
-        return { success: true, method: 'terminal-ctrl-c' };
-      }
-
-      const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-      if (!provider) {
-        return { success: false, error: 'No active provider for session' };
-      }
-
-      this.sessionsProcessingQueue.delete(sessionId);
-      try {
-        const { getQueuedPromptsStore } = await import('../RepositoryManager');
-        const queueStore = getQueuedPromptsStore();
-        const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
-        if (completed > 0 || failed > 0 || rolledBack > 0) {
-          logger.main.info(
-            `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
-          );
-          await this.publishQueueStateToSync(sessionId);
-        }
-      } catch (sweepErr) {
-        logger.main.error('[AIService] interruptCurrentTurn: sweepExecutingForSession failed:', sweepErr);
-      }
-
-      const result = await provider.interruptCurrentTurn();
-      logger.main.info(`[AIService] Interrupted current turn for session ${sessionId} (method=${result.method})`);
-
-      // A session stuck at running/streaming with no turn behind it would
-      // otherwise defer the follow-up queue drive on a `session:completed`
-      // that can never arrive (NIM-2434).
-      const stateManager = getSessionStateManager();
-      const forcedIdle = await clearStuckRunningState(
-        {
-          getSessionState: (id) => stateManager.getSessionState(id),
-          interruptSession: (id) => stateManager.interruptSession(id),
-          logWarn: (message) => logger.main.warn(message),
-        },
-        { sessionId, hadActiveTurn: result.hadActiveTurn },
-      );
-
-      return { success: true, method: result.method, forcedIdle };
-    });
+    safeHandle('ai:interruptCurrentTurn', async (_event, sessionId: string) =>
+      this.interruptCurrentTurnForSession(sessionId)
+    );
 
     // Settings handlers
     safeHandle('ai:getSettings', async () => {
@@ -3779,7 +4276,26 @@ export class AIService {
         ...apiKeys,
         lmstudio_url: providerSettings['lmstudio']?.baseUrl || 'http://127.0.0.1:8234'
       };
-      const allModels = await ModelRegistry.getAllModels(modelsConfig, enabledProviderSet);
+      let allModels = await ModelRegistry.getAllModels(modelsConfig, enabledProviderSet);
+
+      if (enabledProviders['claude-code'].enabled) {
+        const catalog = readProviderCatalog(BUILT_IN_PROVIDER_CATALOG).resolution;
+        const credentialRefs = [...new Set(
+          [...catalog.entries, ...BUILT_IN_PROVIDER_CATALOG]
+            .flatMap(entry => entry.interfaces)
+            .filter(catalogInterface => catalogInterface.consumers.includes('claude-agent-main'))
+            .map(catalogInterface => catalogInterface.credentialRef),
+        )];
+        const credentialPresence = getProviderRouteCredentialPresence(credentialRefs, {
+          apiKey: apiKeys['deepseek'],
+        });
+        allModels = mergeProviderCatalogPickerModels(
+          allModels,
+          catalog,
+          BUILT_IN_PROVIDER_CATALOG,
+          credentialRef => credentialPresence[credentialRef] === true,
+        );
+      }
 
       // const claudeCodeModels = allModels.filter(m => m.provider === 'claude-code');
       // console.log('[AIService] ai:getModels - claude-code models from registry:',
@@ -3837,7 +4353,8 @@ export class AIService {
           id: m.id,
           display_name: m.name,
           provider: m.provider,
-          maxTokens: m.maxTokens
+          maxTokens: m.maxTokens,
+          ...((m as any).catalog ? { catalog: (m as any).catalog } : {}),
         })),
         grouped,  // This now contains only enabled models
         providers: enabledProviders,

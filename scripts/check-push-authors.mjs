@@ -6,15 +6,13 @@
 // commit with one of these identities is an escaped fixture, never real work.
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { findForbiddenAuthors } from '../packages/shared/forbiddenGitAuthors.mjs';
 
-const FORBIDDEN_NAMES = new Set(['Test', 'Test User', 'Your Name', 'Gate Author', 'NIM-367 Gate Author']);
-const FORBIDDEN_EMAIL_PATTERN = /(^test@|^fixture[-@]|@example\.(com|net|org)$|@test\.?$|\.(test|invalid|example)$)/i;
-
-export function findForbiddenAuthors(commits) {
-  return commits.filter(
-    ({ name, email }) => FORBIDDEN_NAMES.has(name) || FORBIDDEN_EMAIL_PATTERN.test(email),
-  );
-}
+// Re-exported for scripts/__tests__/check-push-authors.test.mjs and any other
+// importer of this module. The denylist itself lives in
+// packages/shared/forbiddenGitAuthors.mjs, shared with the commit-proposal-time
+// guard in packages/electron's GitCommitService (see NIM-431).
+export { findForbiddenAuthors };
 
 export function parseGitLog(output) {
   return output
