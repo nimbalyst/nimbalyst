@@ -8,25 +8,26 @@ import { ipcMain } from 'electron';
 import simpleGit, { SimpleGit } from 'simple-git';
 import log from 'electron-log/main';
 import { existsSync } from 'fs';
-import { dirname, join, relative, isAbsolute, resolve } from 'path';
+import { join, relative, isAbsolute, resolve, parse as parsePath } from 'path';
 import { gitOperationLock } from '../services/GitOperationLock';
 import { executeGitCommit } from '../services/GitCommitService';
 import { getGitSubprocessEnv, simpleGitWithHookEnv } from '../services/gitEnv';
 import { safeHandle } from '../utils/ipcRegistry';
 import { findGitRootForFile } from '../services/GitStatusService';
 import { isFileInWorkspaceOrWorktree } from '../utils/workspaceDetection';
+import { resolveGitContext } from '../services/GitContextService';
 import {
   getGitOperationLogService,
   runGitCommandStreaming,
   withGitOperationLog,
 } from '../services/GitOperationLogService';
 
-function isGitRepository(workspacePath: string): boolean {
-  try {
-    return existsSync(join(workspacePath, '.git'));
-  } catch {
-    return false;
-  }
+/**
+ * Resolve the repo root for a workspace, or null when it is not inside a
+ * git repository. The root may be an ancestor of the workspace (#124).
+ */
+function gitRootFor(workspacePath: string): string | null {
+  return resolveGitContext(workspacePath).gitRoot;
 }
 
 /**
@@ -39,26 +40,6 @@ async function hasCommits(git: SimpleGit): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-function findNearestGitRoot(filePath: string): string | null {
-  let dir = dirname(resolve(filePath));
-
-  while (true) {
-    try {
-      if (existsSync(join(dir, '.git'))) {
-        return dir;
-      }
-    } catch {
-      // Ignore filesystem errors and continue walking up.
-    }
-
-    const parent = dirname(dir);
-    if (parent === dir) {
-      return null;
-    }
-    dir = parent;
   }
 }
 
@@ -123,16 +104,26 @@ export function resolveGitDiffTarget(
   filePath: string
 ): { gitWorkspacePath: string; gitFilePath: string } {
   const resolvedWorkspacePath = resolve(workspacePath);
+  // Single base for both resolving a relative filePath and bounding the
+  // findGitRootForFile walk below -- workspacePath may be a SUBFOLDER of the
+  // git repo root (#124), and relative filePath values (e.g. from
+  // git:working-changes) are repo-root-relative, not workspace-relative.
+  const gitBase = gitRootFor(resolvedWorkspacePath) ?? resolvedWorkspacePath;
   const absoluteFilePath = isAbsolute(filePath)
     ? resolve(filePath)
-    : resolve(resolvedWorkspacePath, filePath);
+    : resolve(gitBase, filePath);
 
   const relatedAbsolutePath = isAbsolute(filePath) && isFileInWorkspaceOrWorktree(absoluteFilePath, resolvedWorkspacePath)
     ? absoluteFilePath
     : null;
+  // Files resolved as belonging to the workspace or a sibling worktree may live
+  // outside the workspace's own repo root entirely (a linked worktree is a
+  // separate working tree next to the main one), so this branch intentionally
+  // is not bounded by gitBase -- only by the
+  // filesystem root -- to preserve the previous unbounded findNearestGitRoot walk.
   const gitWorkspacePath = relatedAbsolutePath
-    ? findNearestGitRoot(relatedAbsolutePath) ?? resolvedWorkspacePath
-    : findGitRootForFile(filePath, resolvedWorkspacePath) ?? resolvedWorkspacePath;
+    ? findGitRootForFile(relatedAbsolutePath, parsePath(relatedAbsolutePath).root) ?? resolvedWorkspacePath
+    : findGitRootForFile(filePath, gitBase) ?? resolvedWorkspacePath;
 
   return {
     gitWorkspacePath,
@@ -182,7 +173,8 @@ export function registerGitHandlers(): void {
       throw new Error('workspacePath is required');
     }
 
-    if (!isGitRepository(workspacePath)) {
+    const gitRoot = gitRootFor(workspacePath);
+    if (!gitRoot) {
       return { branch: '', ahead: 0, behind: 0, hasUncommitted: false };
     }
 
@@ -190,7 +182,7 @@ export function registerGitHandlers(): void {
     // create .git/index.lock, so this read can run concurrently with writes
     // (commit/rebase/etc.) without queueing behind them on gitOperationLock.
     try {
-      const git: SimpleGit = simpleGit(workspacePath, { config: ['core.optionalLocks=false'] });
+      const git: SimpleGit = simpleGit(gitRoot, { config: ['core.optionalLocks=false'] });
       const status = await git.status();
       const branch = normalizeCurrentBranch(status.current) || 'HEAD';
 
@@ -227,12 +219,13 @@ export function registerGitHandlers(): void {
         throw new Error('workspacePath is required');
       }
 
-      if (!isGitRepository(workspacePath)) {
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) {
         return [];
       }
 
       try {
-        const git: SimpleGit = simpleGit(workspacePath);
+        const git: SimpleGit = simpleGit(gitRoot);
 
         if (!(await hasCommits(git))) {
           return [];
@@ -297,10 +290,11 @@ export function registerGitHandlers(): void {
    */
   safeHandle('git:branches', async (_event, workspacePath: string): Promise<{ branches: string[]; current: string }> => {
     if (!workspacePath) throw new Error('workspacePath is required');
-    if (!isGitRepository(workspacePath)) return { branches: [], current: '' };
+    const gitRoot = gitRootFor(workspacePath);
+    if (!gitRoot) return { branches: [], current: '' };
 
     try {
-      const git: SimpleGit = simpleGit(workspacePath);
+      const git: SimpleGit = simpleGit(gitRoot);
       const summary = await git.branch();
       let current = normalizeCurrentBranch(summary.current);
       let branches = summary.all;
@@ -333,11 +327,12 @@ export function registerGitHandlers(): void {
     async (_event, workspacePath: string, options?: { force?: boolean; setUpstream?: boolean; remote?: string; branch?: string }):
       Promise<{ success: boolean; error?: string }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:push', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:push', async () => {
         try {
-          const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
+          const git: SimpleGit = simpleGitWithHookEnv(gitRoot);
           const status = await git.status();
           const branch = normalizeCurrentBranch(status.current);
           if (!branch || branch === 'HEAD') {
@@ -377,11 +372,12 @@ export function registerGitHandlers(): void {
     async (_event, workspacePath: string, options?: { rebase?: boolean; ffOnly?: boolean }):
       Promise<{ success: boolean; error?: string; conflicts?: string[] }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:pull', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:pull', async () => {
         try {
-          const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
+          const git: SimpleGit = simpleGitWithHookEnv(gitRoot);
           const status = await git.status();
           const branch = normalizeCurrentBranch(status.current);
           if (!branch || branch === 'HEAD') {
@@ -408,7 +404,7 @@ export function registerGitHandlers(): void {
 
           // Check for conflict markers in error message
           if (message.includes('CONFLICT') || message.includes('conflict')) {
-            const git: SimpleGit = simpleGit(workspacePath);
+            const git: SimpleGit = simpleGit(gitRoot);
             const status = await git.status();
             return { success: false, error: message, conflicts: status.conflicted };
           }
@@ -427,7 +423,8 @@ export function registerGitHandlers(): void {
     async (_event, workspacePath: string, options?: { remote?: string }):
       Promise<{ success: boolean; error?: string }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
       try {
         const result = await runGitCommandStreaming(
@@ -451,9 +448,10 @@ export function registerGitHandlers(): void {
     async (_event, workspacePath: string, options: { target?: string; action?: 'continue' | 'abort' | 'skip' }):
       Promise<{ success: boolean; error?: string; conflicts?: string[] }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:rebase', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:rebase', async () => {
         const args = options.action
           ? ['rebase', `--${options.action}`]
           : options.target
@@ -464,7 +462,7 @@ export function registerGitHandlers(): void {
         }
         const result = await runGitCommandStreaming(operationLog, workspacePath, args);
         if (result.success) return { success: true };
-        const status = await simpleGit(workspacePath).status();
+        const status = await simpleGit(gitRoot).status();
         return { success: false, error: result.error, conflicts: status.conflicted };
       });
     }
@@ -478,13 +476,14 @@ export function registerGitHandlers(): void {
     async (_event, workspacePath: string):
       Promise<{ isRebasing: boolean; conflicts: string[]; currentCommit?: string }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
-      if (!isGitRepository(workspacePath)) return { isRebasing: false, conflicts: [] };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { isRebasing: false, conflicts: [] };
 
       try {
-        const git: SimpleGit = simpleGit(workspacePath);
+        const git: SimpleGit = simpleGit(gitRoot);
 
         // Check for REBASE_HEAD file as indicator of active rebase
-        const rebaseHeadPath = join(workspacePath, '.git', 'REBASE_HEAD');
+        const rebaseHeadPath = join(gitRoot, '.git', 'REBASE_HEAD');
         const isRebasing = existsSync(rebaseHeadPath);
 
         if (!isRebasing) {
@@ -512,10 +511,11 @@ export function registerGitHandlers(): void {
       Promise<{ success: boolean; error?: string }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!remote) throw new Error('remote is required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
       try {
-        const git: SimpleGit = simpleGitWithHookEnv(workspacePath);
+        const git: SimpleGit = simpleGitWithHookEnv(gitRoot);
         const status = await git.status();
         const targetBranch = branch || normalizeCurrentBranch(status.current);
         if (!targetBranch || targetBranch === 'HEAD') {
@@ -546,9 +546,10 @@ export function registerGitHandlers(): void {
       Promise<{ success: boolean; error?: string }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!ref) throw new Error('ref is required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:checkout', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:checkout', async () => {
         const result = await runGitCommandStreaming(operationLog, workspacePath, ['checkout', ref]);
         return result.success ? { success: true } : { success: false, error: result.error };
       });
@@ -564,12 +565,13 @@ export function registerGitHandlers(): void {
       Promise<{ success: boolean; error?: string; conflicts?: string[] }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!hash) throw new Error('hash is required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:cherry-pick', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:cherry-pick', async () => {
         const result = await runGitCommandStreaming(operationLog, workspacePath, ['cherry-pick', hash]);
         if (result.success) return { success: true };
-        const status = await simpleGit(workspacePath).status();
+        const status = await simpleGit(gitRoot).status();
         return { success: false, error: result.error, conflicts: status.conflicted };
       });
     }
@@ -584,9 +586,10 @@ export function registerGitHandlers(): void {
       Promise<{ success: boolean; error?: string }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!branchName) throw new Error('branchName is required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:create-branch', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:create-branch', async () => {
         const result = await runGitCommandStreaming(
           operationLog,
           workspacePath,
@@ -604,15 +607,16 @@ export function registerGitHandlers(): void {
     'git:commit-detail',
     async (_event, workspacePath: string, hash: string): Promise<{
       body: string;
-      files: Array<{ status: string; path: string; added: number; deleted: number }>;
+      files: Array<{ status: string; path: string; added: number; deleted: number; absolutePath: string }>;
       summary: { filesChanged: number; insertions: number; deletions: number };
     } | null> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!hash) throw new Error('hash is required');
-      if (!isGitRepository(workspacePath)) return null;
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return null;
 
       try {
-        const git: SimpleGit = simpleGit(workspacePath);
+        const git: SimpleGit = simpleGit(gitRoot);
 
         const [bodyRaw, numstatRaw, nameStatusRaw] = await Promise.all([
           git.raw(['show', '-s', '--format=%B', hash]),
@@ -633,14 +637,17 @@ export function registerGitHandlers(): void {
         }
 
         // Parse name-status: "<STATUS>\t<path>" or "<STATUS>\t<old>\t<new>" for renames
-        const files: Array<{ status: string; path: string; added: number; deleted: number }> = [];
+        const files: Array<{ status: string; path: string; added: number; deleted: number; absolutePath: string }> = [];
         for (const line of nameStatusRaw.trim().split('\n').filter(Boolean)) {
           const parts = line.split('\t');
           if (parts.length >= 2) {
             const status = parts[0][0];
             const path = parts[parts.length - 1]; // new path for renames, only path otherwise
             const stats = numstatMap.get(path) ?? { added: 0, deleted: 0 };
-            files.push({ status, path, ...stats });
+            // path is repo-root-relative (git diff-tree output); join against
+            // gitRoot (not workspacePath) so consumers get a correct absolute
+            // path even when workspacePath is a subfolder of the repo (#124).
+            files.push({ status, path, absolutePath: join(gitRoot, path), ...stats });
           }
         }
 
@@ -666,13 +673,14 @@ export function registerGitHandlers(): void {
   safeHandle(
     'git:working-changes',
     async (_event, workspacePath: string): Promise<{
-      staged: Array<{ path: string; status: string }>;
-      unstaged: Array<{ path: string; status: string }>;
-      untracked: Array<{ path: string }>;
-      conflicted: Array<{ path: string }>;
+      staged: Array<{ path: string; status: string; absolutePath: string }>;
+      unstaged: Array<{ path: string; status: string; absolutePath: string }>;
+      untracked: Array<{ path: string; absolutePath: string }>;
+      conflicted: Array<{ path: string; absolutePath: string }>;
     }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
-      if (!isGitRepository(workspacePath)) {
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) {
         return { staged: [], unstaged: [], untracked: [], conflicted: [] };
       }
 
@@ -680,19 +688,22 @@ export function registerGitHandlers(): void {
       // .git/index.lock, allowing this read to run concurrently with writes
       // without queueing on gitOperationLock.
       try {
-        const git: SimpleGit = simpleGit(workspacePath, { config: ['core.optionalLocks=false'] });
+        const git: SimpleGit = simpleGit(gitRoot, { config: ['core.optionalLocks=false'] });
         const status = await git.status();
 
         // Build staged files list from the various status arrays.
         // status.staged = files with index changes (modified in index vs HEAD)
         // status.created = new files added to index (not in HEAD)
-        const staged: Array<{ path: string; status: string }> = [];
+        // Paths from `git status` are repo-root-relative, so absolutePath is
+        // joined against gitRoot (not workspacePath) -- workspacePath may be
+        // a subfolder of the repo (#124).
+        const staged: Array<{ path: string; status: string; absolutePath: string }> = [];
         for (const f of status.staged) {
           const isDeleted = status.deleted.includes(f);
-          staged.push({ path: f, status: isDeleted ? 'D' : 'M' });
+          staged.push({ path: f, status: isDeleted ? 'D' : 'M', absolutePath: join(gitRoot, f) });
         }
         for (const f of status.created) {
-          staged.push({ path: f, status: 'A' });
+          staged.push({ path: f, status: 'A', absolutePath: join(gitRoot, f) });
         }
 
         // Build unstaged files list.
@@ -700,9 +711,9 @@ export function registerGitHandlers(): void {
         // A file CAN appear in both staged and modified -- this means it has
         // staged changes AND additional unstaged edits on top. We must show
         // it in both lists so the user sees the full picture.
-        const unstaged: Array<{ path: string; status: string }> = [];
+        const unstaged: Array<{ path: string; status: string; absolutePath: string }> = [];
         for (const f of status.modified) {
-          unstaged.push({ path: f, status: 'M' });
+          unstaged.push({ path: f, status: 'M', absolutePath: join(gitRoot, f) });
         }
         for (const f of status.deleted) {
           // Only add to unstaged if it's not already there from modified,
@@ -711,15 +722,15 @@ export function registerGitHandlers(): void {
           // If a file is in status.staged with 'D', that's a staged deletion.
           // If it's in status.deleted but NOT in status.staged, it's unstaged.
           if (!status.staged.includes(f)) {
-            unstaged.push({ path: f, status: 'D' });
+            unstaged.push({ path: f, status: 'D', absolutePath: join(gitRoot, f) });
           }
         }
 
         // Untracked files
-        const untracked = status.not_added.map(f => ({ path: f }));
+        const untracked = status.not_added.map(f => ({ path: f, absolutePath: join(gitRoot, f) }));
 
         // Conflicted files
-        const conflicted = status.conflicted.map(f => ({ path: f }));
+        const conflicted = status.conflicted.map(f => ({ path: f, absolutePath: join(gitRoot, f) }));
 
         return { staged, unstaged, untracked, conflicted };
       } catch (error) {
@@ -737,9 +748,10 @@ export function registerGitHandlers(): void {
     async (_event, workspacePath: string, files: string[]): Promise<{ success: boolean; error?: string }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!files || files.length === 0) throw new Error('files are required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:stage', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:stage', async () => {
         const result = await runGitCommandStreaming(operationLog, workspacePath, ['add', '--', ...files]);
         return result.success ? { success: true } : { success: false, error: result.error };
       });
@@ -754,10 +766,11 @@ export function registerGitHandlers(): void {
     async (_event, workspacePath: string, files: string[]): Promise<{ success: boolean; error?: string }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!files || files.length === 0) throw new Error('files are required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:unstage', async () => {
-        const git: SimpleGit = simpleGit(workspacePath);
+      return gitOperationLock.withLock(gitRoot, 'git:unstage', async () => {
+        const git: SimpleGit = simpleGit(gitRoot);
         const args = await hasCommits(git)
           ? ['reset', 'HEAD', '--', ...files]
           : ['rm', '--cached', '--', ...files];
@@ -775,9 +788,10 @@ export function registerGitHandlers(): void {
     async (_event, workspacePath: string, files: string[]): Promise<{ success: boolean; error?: string }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!files || files.length === 0) throw new Error('files are required');
-      if (!isGitRepository(workspacePath)) return { success: false, error: 'Not a git repository' };
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return { success: false, error: 'Not a git repository' };
 
-      return gitOperationLock.withLock(workspacePath, 'git:discard-changes', async () => {
+      return gitOperationLock.withLock(gitRoot, 'git:discard-changes', async () => {
         const result = await runGitCommandStreaming(operationLog, workspacePath, ['checkout', '--', ...files]);
         return result.success ? { success: true } : { success: false, error: result.error };
       });
@@ -793,10 +807,11 @@ export function registerGitHandlers(): void {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!hash) throw new Error('hash is required');
       if (!filePath) throw new Error('filePath is required');
-      if (!isGitRepository(workspacePath)) return '';
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) return '';
 
       try {
-        const git: SimpleGit = simpleGit(workspacePath);
+        const git: SimpleGit = simpleGit(gitRoot);
         const content = await git.show([`${hash}:${filePath}`]);
         return content;
       } catch (error) {
@@ -820,12 +835,13 @@ export function registerGitHandlers(): void {
         throw new Error('filePath is required');
       }
 
-      if (!isGitRepository(workspacePath)) {
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) {
         return '';
       }
 
       try {
-        const git: SimpleGit = simpleGit(workspacePath);
+        const git: SimpleGit = simpleGit(gitRoot);
 
         // In a fresh repo with no commits, diff against an empty tree instead of HEAD
         if (!(await hasCommits(git))) {
@@ -865,7 +881,7 @@ export function registerGitHandlers(): void {
     }> => {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!args?.path) throw new Error('path is required');
-      if (!isGitRepository(workspacePath)) {
+      if (!gitRootFor(workspacePath)) {
         return { unifiedDiff: '', isBinary: false };
       }
 
@@ -964,12 +980,13 @@ export function registerGitHandlers(): void {
       if (!workspacePath) throw new Error('workspacePath is required');
       if (!hash) throw new Error('hash is required');
       if (!filePath) throw new Error('filePath is required');
-      if (!isGitRepository(workspacePath)) {
+      const gitRoot = gitRootFor(workspacePath);
+      if (!gitRoot) {
         return { unifiedDiff: '', isBinary: false };
       }
 
       try {
-        const git: SimpleGit = simpleGit(workspacePath);
+        const git: SimpleGit = simpleGit(gitRoot);
         const diff = await git.raw(['show', '--no-color', '--format=', hash, '--', filePath]);
         return { unifiedDiff: diff, isBinary: /\bBinary files\b/.test(diff) };
       } catch (error) {

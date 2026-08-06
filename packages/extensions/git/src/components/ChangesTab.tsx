@@ -25,13 +25,15 @@ function rowKeysEqual(a: RowKey | null, b: RowKey | null): boolean {
 interface WorkingFile {
   path: string;
   status: string; // M, A, D, ?, C
+  /** Repo-root-absolute path (may differ from `path` when workspacePath is a subfolder of the repo, #124). */
+  absolutePath?: string;
 }
 
 interface WorkingChangesResult {
-  staged: Array<{ path: string; status: string }>;
-  unstaged: Array<{ path: string; status: string }>;
-  untracked: Array<{ path: string }>;
-  conflicted: Array<{ path: string }>;
+  staged: Array<{ path: string; status: string; absolutePath?: string }>;
+  unstaged: Array<{ path: string; status: string; absolutePath?: string }>;
+  untracked: Array<{ path: string; absolutePath?: string }>;
+  conflicted: Array<{ path: string; absolutePath?: string }>;
 }
 
 type Group = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
@@ -398,10 +400,10 @@ export function ChangesTab({
   const loadChanges = useCallback(async () => {
     try {
       const result = await ipc.invoke('git:working-changes', workspacePath) as WorkingChangesResult;
-      setStaged(result.staged.map(f => ({ path: f.path, status: f.status })));
-      setUnstaged(result.unstaged.map(f => ({ path: f.path, status: f.status })));
-      setUntracked(result.untracked.map(f => ({ path: f.path, status: '?' })));
-      setConflicted(result.conflicted.map(f => ({ path: f.path, status: 'C' })));
+      setStaged(result.staged.map(f => ({ path: f.path, status: f.status, absolutePath: f.absolutePath })));
+      setUnstaged(result.unstaged.map(f => ({ path: f.path, status: f.status, absolutePath: f.absolutePath })));
+      setUntracked(result.untracked.map(f => ({ path: f.path, status: '?', absolutePath: f.absolutePath })));
+      setConflicted(result.conflicted.map(f => ({ path: f.path, status: 'C', absolutePath: f.absolutePath })));
       setLoadError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -753,13 +755,21 @@ export function ChangesTab({
   }, [focusedRow, peekedRow, pinnedRow, moveFocus, togglePeek, promoteToPin, closePopover]);
 
   // Open the active file in the editor (used by the popover's "Open in editor" link).
+  // `target.path` is repo-root-relative; resolve the matching absolutePath (joined
+  // against gitRoot) so this still works when workspacePath is a subfolder of the
+  // repo (#124). Falls back to the relative path if absolutePath wasn't returned.
   const handleOpenInEditor = useCallback(() => {
     const target = popoverTarget ?? activeRow;
     if (!target) return;
-    ipc.invoke('workspace:open-file', { workspacePath, filePath: target.path }).catch((err) => {
+    const groupFiles = target.group === 'staged' ? staged
+      : target.group === 'unstaged' ? unstaged
+        : target.group === 'untracked' ? untracked
+          : conflicted;
+    const filePath = groupFiles.find(f => f.path === target.path)?.absolutePath ?? target.path;
+    ipc.invoke('workspace:open-file', { workspacePath, filePath }).catch((err) => {
       console.error('[ChangesTab] workspace:open-file failed:', err);
     });
-  }, [popoverTarget, activeRow, workspacePath]);
+  }, [popoverTarget, activeRow, workspacePath, staged, unstaged, untracked, conflicted]);
 
   if (loading) {
     return <div className="git-log-empty">Loading changes...</div>;

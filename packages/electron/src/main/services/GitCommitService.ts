@@ -1,8 +1,9 @@
 import log from 'electron-log/main';
-import { existsSync, readdirSync, rmSync, statSync } from 'fs';
-import { isAbsolute, join, relative, resolve, sep } from 'path';
+import { readdirSync, realpathSync, rmSync, statSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import simpleGit, { SimpleGit } from 'simple-git';
 import { gitOperationLock } from './GitOperationLock';
+import { resolveGitContext } from './GitContextService';
 import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
 import { sanitizeGitRepositoryEnv } from './gitRepositoryEnv';
 
@@ -29,14 +30,6 @@ export interface GitCommitProposalResponse {
   commitMessage?: string;
 }
 
-function isGitRepository(workspacePath: string): boolean {
-  try {
-    return existsSync(join(workspacePath, '.git'));
-  } catch {
-    return false;
-  }
-}
-
 async function hasCommits(git: SimpleGit): Promise<boolean> {
   try {
     await git.revparse(['HEAD']);
@@ -54,26 +47,55 @@ function getGitCommitErrorMessage(error: unknown): string {
 }
 
 /**
+ * Canonicalize a path the same way git canonicalizes its toplevel. The repo
+ * root from `git rev-parse --show-toplevel` is a physical path, so inputs on
+ * symlinked volumes (macOS /tmp -> /private/tmp) must be resolved the same
+ * way or they would falsely appear to escape the repository. Deleted files
+ * cannot be realpath'd directly; canonicalize the parent and keep the name.
+ */
+function toRealPath(filePath: string): string {
+  try {
+    return realpathSync(filePath);
+  } catch {
+    try {
+      return join(realpathSync(dirname(filePath)), basename(filePath));
+    } catch {
+      return filePath;
+    }
+  }
+}
+
+/**
  * Convert a proposal path to a literal path inside the session's repository.
  *
- * MCP commit proposals are deliberately scoped to their session worktree. Do
- * not let an absolute path, `..`, or Git pathspec magic widen that scope. The
- * returned path is always repository-relative and is passed to Git with its
- * literal-pathspec mode enabled below.
+ * MCP commit proposals are deliberately scoped to the session's repository --
+ * the git toplevel that owns the workspace. For a worktree session the
+ * toplevel is the worktree itself, so cross-worktree rejection is unchanged;
+ * for a workspace opened at a subfolder of a repository (#124) the boundary is
+ * the containing repository. Do not let an absolute path, `..`, or Git
+ * pathspec magic widen that scope. Relative inputs stay in the caller's frame
+ * (workspace-relative). The returned path is always repository-relative and is
+ * passed to Git with its literal-pathspec mode enabled below.
  */
-function toRepositoryRelativePath(workspacePath: string, filePath: string): string {
+function toRepositoryRelativePath(workspacePath: string, repoRoot: string, filePath: string): string {
   if (!filePath || filePath.includes('\0')) {
     throw new Error('Invalid file path in commit proposal');
   }
 
-  const resolvedPath = resolve(workspacePath, filePath);
-  const relativePath = relative(workspacePath, resolvedPath);
-  const escapesWorkspace =
+  // repoRoot comes from `rev-parse --show-toplevel`, which is always physical, so
+  // the workspace base has to be canonicalized too -- otherwise a workspace under a
+  // symlinked parent (macOS /var -> /private/var) makes every relative path in the
+  // proposal look like it escapes the repository.
+  const resolvedPath = isAbsolute(filePath)
+    ? toRealPath(filePath)
+    : toRealPath(resolve(toRealPath(workspacePath), filePath));
+  const relativePath = relative(repoRoot, resolvedPath);
+  const escapesRepository =
     relativePath === '..' ||
     relativePath.startsWith(`..${sep}`) ||
     isAbsolute(relativePath);
 
-  if (escapesWorkspace || relativePath.length === 0) {
+  if (escapesRepository || relativePath.length === 0) {
     throw new Error('Commit proposal file is outside the session workspace');
   }
 
@@ -247,8 +269,9 @@ export async function executeGitCommit(
      * Environment for the git subprocess (and any hooks it runs). Production callers
      * pass an enhanced env (see getGitSubprocessEnv) so husky hooks invoking nvm/Homebrew
      * binaries like `yarn` resolve, since GUI-launched apps don't inherit the shell PATH.
-     * Repository-selection variables are always removed so workspacePath remains
-     * authoritative. When omitted, all other values come from process.env.
+     * Repository-selection variables are always removed so the repository resolved
+     * from workspacePath remains authoritative. When omitted, all other values come
+     * from process.env.
      */
     env?: Record<string, string>;
     /** Stream git and hook output while the commit workflow is running. */
@@ -265,11 +288,15 @@ export async function executeGitCommit(
   if (!message) {
     return { success: false, error: 'message is required' };
   }
-  if (!isGitRepository(workspacePath)) {
+  // The workspace may be a subfolder of the repository (#124); git commands and
+  // the lock key must both use the repository that owns it. When the workspace
+  // IS the repo root (including a linked worktree) this resolves to itself.
+  const { gitRoot } = resolveGitContext(workspacePath);
+  if (!gitRoot) {
     return { success: false, error: 'Not a git repository' };
   }
 
-  return gitOperationLock.withLock(workspacePath, 'git:commit', async () => {
+  return gitOperationLock.withLock(gitRoot, 'git:commit', async () => {
     let lastLockError: unknown;
     // Retry the whole commit body when git fails because another process holds
     // .git/index.lock. Each iteration re-reads status, so it is idempotent.
@@ -295,12 +322,12 @@ export async function executeGitCommit(
           return instance;
         };
         const git: SimpleGit = withOutput(
-          simpleGit(workspacePath, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(gitEnv)
+          simpleGit(gitRoot, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(gitEnv)
         );
         const repoHasCommits = await hasCommits(git);
         // log.info(`${logContext} Starting commit in ${workspacePath} with ${filesToStage?.length || 0} files (hasCommits: ${repoHasCommits})`);
 
-        const toGitPath = (f: string) => toRepositoryRelativePath(workspacePath, f);
+        const toGitPath = (f: string) => toRepositoryRelativePath(workspacePath, gitRoot, f);
 
         if (!filesToStage || filesToStage.length === 0) {
           return {
@@ -321,7 +348,7 @@ export async function executeGitCommit(
         // GIT_INDEX_FILE, which would otherwise redirect the index the way a
         // hook-launched process does. Only ours is injected, and only here.
         const stagingGit: SimpleGit = withOutput(
-          simpleGit(workspacePath, { unsafe: GIT_INHERITED_ENV_UNSAFE })
+          simpleGit(gitRoot, { unsafe: GIT_INHERITED_ENV_UNSAFE })
             .env({ ...gitEnv, GIT_INDEX_FILE: tempIndexPath })
         );
 

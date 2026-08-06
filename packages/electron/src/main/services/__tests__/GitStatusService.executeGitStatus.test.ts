@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -32,7 +33,10 @@ let workspacePath: string;
 beforeEach(async () => {
   execFileMock.mockReset();
   workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), 'nim-git-status-cache-'));
-  await fs.mkdir(path.join(workspacePath, '.git'));
+  // A real repo, not just a `.git` directory: the repository gate asks git for
+  // the toplevel (#124), and git rejects an empty `.git` as "not a repository".
+  // execFileSync is the real one -- only execFile is mocked above.
+  execFileSync('git', ['init', '-q'], { cwd: workspacePath, stdio: 'pipe' });
 });
 
 afterEach(async () => {

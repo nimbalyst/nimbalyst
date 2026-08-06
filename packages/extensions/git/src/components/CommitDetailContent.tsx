@@ -14,7 +14,8 @@ const ipc = (window as unknown as {
 
 export interface CommitDetail {
   body: string;
-  files: Array<{ status: string; path: string; added: number; deleted: number }>;
+  /** `path` is repo-root-relative; `absolutePath` is joined against gitRoot (#124). */
+  files: Array<{ status: string; path: string; added: number; deleted: number; absolutePath?: string }>;
   summary: { filesChanged: number; insertions: number; deletions: number };
 }
 
@@ -381,7 +382,11 @@ export function CommitDetailContent({
           onPin={() => { /* already pinned; no-op */ }}
           onOpenInEditor={() => {
             if (!workspacePath) return;
-            ipc.invoke('workspace:open-file', { workspacePath, filePath: peek.pinnedPath }).catch((err) => {
+            // pinnedPath is repo-root-relative; prefer the matching absolutePath
+            // (joined against gitRoot) so this works when workspacePath is a
+            // subfolder of the repo (#124).
+            const filePath = detail.files.find(f => f.path === peek.pinnedPath)?.absolutePath ?? peek.pinnedPath;
+            ipc.invoke('workspace:open-file', { workspacePath, filePath }).catch((err) => {
               console.error('[CommitDetailContent] workspace:open-file failed:', err);
             });
           }}
