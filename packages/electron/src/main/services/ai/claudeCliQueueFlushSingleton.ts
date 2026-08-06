@@ -16,9 +16,28 @@ import { submitClaudeCliPromptProduction } from './claudeCliSubmitSingleton';
 import { flushNextClaudeCliQueuedPrompt } from './claudeCliQueueFlush';
 import { publishQueuedPromptClaim } from './queuedPromptClaimEvents';
 import { publishQueuedPromptsToSync } from './queuedPromptSyncPublisher';
+import { claudeCliSubmitLatch } from './claudeCliSubmitLatch';
 
 /** Per-session guard so two close `idle` events can't double-flush. */
 const flushInFlight = new Set<string>();
+/** Sessions with a pending re-check queued for when the submit latch lifts. */
+const latchRetryPending = new Set<string>();
+
+/**
+ * A flush skipped because a submit was still draining has to be retried, or the
+ * prompt waits for an idle transition that may never come — a submit that never
+ * makes the CLI start a turn (a slash command, say) leaves it idle throughout, so
+ * there is no running->idle edge to ride.
+ */
+function retryWhenSubmitLatchLifts(sessionId: string, workspacePath: string): void {
+  if (latchRetryPending.has(sessionId)) return;
+  latchRetryPending.add(sessionId);
+  const wait = claudeCliSubmitLatch.remainingMs(sessionId) + 250;
+  setTimeout(() => {
+    latchRetryPending.delete(sessionId);
+    void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+  }, wait).unref?.();
+}
 
 /**
  * Flush the next queued prompt for a session on PID `idle`. Best-effort and
@@ -29,6 +48,10 @@ export async function flushNextClaudeCliQueuedPromptForSession(
   workspacePath: string,
 ): Promise<boolean> {
   if (flushInFlight.has(sessionId)) return false;
+  if (claudeCliSubmitLatch.isInFlight(sessionId)) {
+    retryWhenSubmitLatchLifts(sessionId, workspacePath);
+    return false;
+  }
   flushInFlight.add(sessionId);
   try {
     const store = getQueuedPromptsStore();
@@ -52,6 +75,7 @@ export async function flushNextClaudeCliQueuedPromptForSession(
         complete: (id) => store.complete(id),
         fail: (id, m) => store.fail(id, m),
         submit: (i) => submitClaudeCliPromptProduction(i),
+        isSubmitInFlight: () => claudeCliSubmitLatch.isInFlight(sessionId),
         // The flush runs from the PID-idle transition with no originating IPC
         // event, so there is no single target window; broadcasting is safe
         // because the renderer filters by sessionId (NIM-830).

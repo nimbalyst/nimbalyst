@@ -46,6 +46,21 @@ describe('flushNextClaudeCliQueuedPrompt', () => {
     expect(h.notifyClaimed).toHaveBeenCalledWith('q1');
   });
 
+  it('does not claim while a submit is still draining into the PTY', async () => {
+    // A large paste takes seconds to reach the CLI (ConPTY delivers ~31k
+    // chars/sec), and until the CLI picks it up its PID file still reads idle.
+    // Flushing on that stale idle wrote a second prompt into the same terminal,
+    // which then sat in the prompt box unsent behind the first turn.
+    const h = harness([{ id: 'q1', prompt: 'first' }]);
+    const result = await flushNextClaudeCliQueuedPrompt(
+      { sessionId: 's1', workspacePath: '/w' },
+      { ...h.deps, isSubmitInFlight: () => true },
+    );
+    expect(result).toBe(false);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.submit).not.toHaveBeenCalled();
+  });
+
   it('returns false and does nothing when the queue is empty', async () => {
     const h = harness([]);
     const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);

@@ -45,6 +45,14 @@ export interface FlushClaudeCliQueueDeps {
    * `ai:promptClaimed`. Fired right after a successful claim.
    */
   notifyClaimed?: (promptId: string) => void;
+  /**
+   * True while a prompt we already submitted is still draining into the PTY. The
+   * CLI has not started its turn yet, so the PID file still reads idle — flushing
+   * on that stale idle writes a second prompt into the same terminal, where it
+   * lands behind the first turn's Enter and sits unsent. See
+   * `claudeCliSubmitLatch`.
+   */
+  isSubmitInFlight?: () => boolean;
 }
 
 /**
@@ -56,6 +64,10 @@ export async function flushNextClaudeCliQueuedPrompt(
   args: { sessionId: string; workspacePath: string },
   deps: FlushClaudeCliQueueDeps,
 ): Promise<boolean> {
+  // Check before claiming: a claimed prompt we then decline to send would have to
+  // be rolled back out of `executing`.
+  if (deps.isSubmitInFlight?.()) return false;
+
   const pending = await deps.listPending(args.sessionId);
   if (pending.length === 0) return false;
 
