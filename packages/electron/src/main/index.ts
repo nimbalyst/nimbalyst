@@ -2372,6 +2372,8 @@ app.whenReady().then(async () => {
       await driveStrandedQueuesOnBoot({
         listSessionIdsWithPending: () => getQueuedPromptsStore().listSessionIdsWithPending(),
         getWorkspacePath: async (sessionId) => (await AISessionsRepository.get(sessionId))?.workspacePath,
+        failAllPending: (sessionId, errorMessage) =>
+          getQueuedPromptsStore().failAllPendingForSession(sessionId, errorMessage),
         requestDrive: (sessionId, workspacePath) =>
           bootAiService.requestQueueDrive(sessionId, workspacePath, 'boot-recovery'),
         logInfo: (message) => logger.main.info(message),

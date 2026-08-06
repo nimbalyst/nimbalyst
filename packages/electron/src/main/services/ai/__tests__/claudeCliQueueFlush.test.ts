@@ -1,77 +1,153 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { QueueSettlementResult } from '../../PGLiteQueuedPromptsStore';
 import { flushNextClaudeCliQueuedPrompt, type FlushQueuedPrompt } from '../claudeCliQueueFlush';
+import { receiptQueuedPromptPayload } from '../queuedPromptTruth';
+
+const settled: QueueSettlementResult = { outcome: 'settled' };
 
 function harness(pending: FlushQueuedPrompt[]) {
-  const claim = vi.fn(async (id: string) => pending.find((p) => p.id === id) ?? null);
-  const complete = vi.fn(async () => undefined);
-  const fail = vi.fn(async () => undefined);
-  const submit = vi.fn(async () => ({ submitted: true }));
-  const notifyClaimed = vi.fn();
+  const claimed = pending.map((row) => ({
+    ...row,
+    claimToken: `token-${row.id}`,
+    clientSubmissionId: row.clientSubmissionId ?? `client-${row.id}`,
+    sourceSessionId: row.sourceSessionId ?? 's1',
+    sourceRoomId: row.sourceRoomId ?? 'room-1',
+    submissionSequence: row.submissionSequence ?? 1,
+    producer: row.producer ?? 'composer',
+    claimTrigger: row.claimTrigger ?? 'claude_cli_idle_flush',
+    claimTriggeredAt: row.claimTriggeredAt ?? 1,
+    turnId: row.turnId ?? `turn-${row.id}`,
+    providerInputMessageId: row.providerInputMessageId ?? `input-${row.id}`,
+    providerOutputMessageId: row.providerOutputMessageId ?? `output-${row.id}`,
+    payloadReceipt: row.payloadReceipt ?? receiptQueuedPromptPayload(row.prompt ?? ''),
+  }));
   const deps = {
+    preflight: vi.fn(async () => true),
     listPending: vi.fn(async () => pending),
-    claim,
-    complete,
-    fail,
-    submit,
-    notifyClaimed,
+    claim: vi.fn(async (id: string, _sessionId: string) => claimed.find((row) => row.id === id) ?? null),
+    beginDispatch: vi.fn(async () => settled),
+    completeAfterDispatch: vi.fn(async () => settled),
+    failAfterDispatch: vi.fn(async () => settled),
+    submit: vi.fn(async () => ({ submitted: true })),
+    registerQueuedTurn: vi.fn(() => true),
+    clearQueuedTurnRegistration: vi.fn(),
+    publishSnapshot: vi.fn(async () => undefined),
+    notifyClaimed: vi.fn(),
   };
-  return { deps, claim, complete, fail, submit, notifyClaimed };
+  return deps;
 }
 
 describe('flushNextClaudeCliQueuedPrompt', () => {
-  it('claims + submits the oldest pending prompt and marks it completed', async () => {
-    const h = harness([
-      { id: 'q1', prompt: 'first', attachments: [{ filepath: '/tmp/a.png' }] },
-      { id: 'q2', prompt: 'second' },
-    ]);
-    const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);
+  it('registers exact truth before submit and defers settlement to observed idle', async () => {
+    const deps = harness([{ id: 'q1', prompt: 'first', attachments: [{ filepath: '/tmp/a.png' }] }]);
+    const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, deps);
     expect(result).toBe(true);
-    expect(h.claim).toHaveBeenCalledWith('q1');
-    expect(h.submit).toHaveBeenCalledWith({
-      sessionId: 's1',
-      workspacePath: '/w',
-      prompt: 'first',
-      attachments: [{ filepath: '/tmp/a.png' }],
+    expect(deps.claim).toHaveBeenCalledWith('q1', 's1', 'claude_cli_idle_flush');
+    expect(deps.beginDispatch).toHaveBeenCalledWith('q1', 's1', 'token-q1');
+    expect(deps.submit).toHaveBeenCalledWith({
+      sessionId: 's1', workspacePath: '/w', prompt: 'first',
+      attachments: [{ filepath: '/tmp/a.png' }], documentContext: undefined,
     });
-    expect(h.complete).toHaveBeenCalledWith('q1');
-    expect(h.fail).not.toHaveBeenCalled();
+    expect(deps.registerQueuedTurn).toHaveBeenCalledWith(expect.objectContaining({
+      queueRowId: 'q1', claimToken: 'token-q1', clientSubmissionId: 'client-q1',
+      turnId: 'turn-q1', providerOutputMessageId: 'output-q1',
+    }));
+    expect(deps.claim).toHaveBeenCalledWith('q1', 's1', 'claude_cli_idle_flush');
+    expect(deps.publishSnapshot).toHaveBeenCalledWith('s1');
+    expect(deps.completeAfterDispatch).not.toHaveBeenCalled();
+    expect(deps.failAfterDispatch).not.toHaveBeenCalled();
   });
 
-  it('notifies the renderer (notifyClaimed) when a prompt is claimed so the queued-prompt UI clears', async () => {
-    // Regression for NIM-830: the CLI flush path drained the prompt (DB status
-    // -> completed) but never told the renderer, so it sat in the QUEUED list
-    // forever. notifyClaimed mirrors the SDK dispatcher's ai:promptClaimed.
-    const h = harness([{ id: 'q1', prompt: 'first' }]);
-    await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);
-    expect(h.notifyClaimed).toHaveBeenCalledWith('q1');
+  it('treats claim notification as best-effort', async () => {
+    const deps = harness([{ id: 'q1', prompt: 'first' }]);
+    deps.notifyClaimed.mockImplementation(() => { throw new Error('destroyed window'); });
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, deps),
+    ).resolves.toBe(true);
+    expect(deps.submit).toHaveBeenCalledTimes(1);
+    expect(deps.completeAfterDispatch).not.toHaveBeenCalled();
   });
 
-  it('returns false and does nothing when the queue is empty', async () => {
-    const h = harness([]);
-    const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);
-    expect(result).toBe(false);
-    expect(h.claim).not.toHaveBeenCalled();
-    expect(h.submit).not.toHaveBeenCalled();
-    expect(h.notifyClaimed).not.toHaveBeenCalled();
+  it.each([
+    ['empty', ''],
+    ['whitespace', '   \n'],
+  ])('visibly fails legacy %s input with zero submit side effects', async (_label, prompt) => {
+    const deps = harness([{ id: 'q1', prompt }]);
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, deps),
+    ).resolves.toBe(false);
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(deps.failAfterDispatch).toHaveBeenCalledWith(
+      'q1', 'Queued CLI prompt had no sendable content', 's1', 'token-q1',
+    );
   });
 
-  it('returns false when the prompt was already claimed by someone else', async () => {
-    const h = harness([{ id: 'q1', prompt: 'first' }]);
-    h.deps.claim = vi.fn(async () => null);
-    const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);
-    expect(result).toBe(false);
-    expect(h.submit).not.toHaveBeenCalled();
+  it('admits attachment-only input', async () => {
+    const deps = harness([{ id: 'q1', prompt: '', attachments: [{ filepath: '/tmp/a.png' }] }]);
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, deps),
+    ).resolves.toBe(true);
+    expect(deps.submit).toHaveBeenCalledTimes(1);
   });
 
-  it('marks the prompt failed (not stuck executing) when submit throws', async () => {
-    const h = harness([{ id: 'q1', prompt: 'first' }]);
-    h.deps.submit = vi.fn(async () => { throw new Error('pty gone'); });
-    const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);
-    expect(result).toBe(false);
-    expect(h.fail).toHaveBeenCalledWith('q1', 'pty gone');
-    expect(h.complete).not.toHaveBeenCalled();
-    // The claim succeeded, so the prompt already left the pending queue; the UI
-    // must clear it even though submit later failed.
-    expect(h.notifyClaimed).toHaveBeenCalledWith('q1');
+  it('fails a submitted:false result instead of completing it', async () => {
+    const deps = harness([{ id: 'q1', prompt: 'first' }]);
+    deps.submit.mockResolvedValue({ submitted: false });
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, deps),
+    ).resolves.toBe(false);
+    expect(deps.completeAfterDispatch).not.toHaveBeenCalled();
+    expect(deps.failAfterDispatch).toHaveBeenCalledWith(
+      'q1', 'CLI prompt submission produced no terminal input', 's1', 'token-q1',
+    );
+  });
+
+  it('same-token fails a PTY error and leaves no executing ambiguity', async () => {
+    const deps = harness([{ id: 'q1', prompt: 'first' }]);
+    deps.submit.mockRejectedValue(new Error('pty gone'));
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, deps),
+    ).resolves.toBe(false);
+    expect(deps.failAfterDispatch).toHaveBeenCalledWith('q1', 'pty gone', 's1', 'token-q1');
+  });
+
+  it('surfaces begin, registration, and failure settlement conflicts', async () => {
+    const begin = harness([{ id: 'begin', prompt: 'first' }]);
+    begin.beginDispatch.mockResolvedValue({ outcome: 'stale_owner' });
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, begin),
+    ).rejects.toThrow(/dispatch intent was rejected: stale_owner/);
+    expect(begin.submit).not.toHaveBeenCalled();
+
+    const complete = harness([{ id: 'complete', prompt: 'first' }]);
+    complete.registerQueuedTurn.mockReturnValue(false);
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, complete),
+    ).resolves.toBe(false);
+    expect(complete.submit).not.toHaveBeenCalled();
+
+    const failure = harness([{ id: 'failure', prompt: 'first' }]);
+    failure.submit.mockRejectedValue(new Error('pty gone'));
+    failure.failAfterDispatch.mockResolvedValue({ outcome: 'stale_owner' });
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, failure),
+    ).rejects.toThrow(/failure settlement was rejected: stale_owner/);
+  });
+
+  it('leaves rows pending when preflight or atomic claim rejects', async () => {
+    const blocked = harness([{ id: 'q1', prompt: 'first' }]);
+    blocked.preflight.mockResolvedValue(false);
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, blocked),
+    ).resolves.toBe(false);
+    expect(blocked.listPending).not.toHaveBeenCalled();
+
+    const raced = harness([{ id: 'q1', prompt: 'first' }]);
+    raced.claim.mockResolvedValue(null);
+    await expect(
+      flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, raced),
+    ).resolves.toBe(false);
+    expect(raced.beginDispatch).not.toHaveBeenCalled();
+    expect(raced.submit).not.toHaveBeenCalled();
   });
 });

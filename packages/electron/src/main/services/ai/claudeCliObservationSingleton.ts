@@ -66,6 +66,237 @@ import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { getClaudeCodeApiUpstreamUrl } from '../../utils/store';
 import type { AssembledAssistantMessage } from './claudeCliObservation/claudeApiMessageAssembler';
+import { getQueuedPromptsStore } from '../RepositoryManager';
+import { buildClaudeCliErrorContent } from './claudeCliErrorLog';
+
+type CliQueuedTurnLifecycle = 'streaming' | 'completed' | 'failed';
+
+interface RegisteredClaudeCliQueuedTurn {
+  sessionId: string;
+  workspacePath: string;
+  queueRowId: string;
+  claimToken: string;
+  clientSubmissionId: string;
+  sourceSessionId: string;
+  sourceRoomId: string;
+  submissionSequence: number;
+  producer: string;
+  claimTrigger: string;
+  claimTriggeredAt: number;
+  turnId: string;
+  providerInputMessageId: string;
+  providerOutputMessageId: string;
+  payloadReceipt: { utf8Bytes: number; unicodeScalars: number; sha256: string };
+  eventSequence: number;
+  terminalAt?: number;
+  terminalized: boolean;
+  failureMessage?: string;
+  terminalReceipt?: { lifecycle: 'completed' | 'failed'; terminalAt: number; eventSequence: number };
+  reconciliationInFlight?: boolean;
+  reconciliationAttempts?: number;
+  reconciliationTimer?: ReturnType<typeof setTimeout>;
+  reconciliationExhausted?: boolean;
+}
+
+const registeredQueuedTurns = new Map<string, RegisteredClaudeCliQueuedTurn>();
+/** Terminal rows keep settling here after their visible association is fenced. */
+const settlingQueuedTurns = new Map<string, RegisteredClaudeCliQueuedTurn>();
+const TERMINAL_RECONCILIATION_INITIAL_DELAY_MS = 25;
+const TERMINAL_RECONCILIATION_MAX_DELAY_MS = 1_000;
+const TERMINAL_RECONCILIATION_MAX_ATTEMPTS = 3;
+
+function nextQueuedTurnTruth(
+  turn: RegisteredClaudeCliQueuedTurn,
+  lifecycle: CliQueuedTurnLifecycle,
+): Record<string, unknown> {
+  if (lifecycle !== 'streaming') turn.terminalAt ??= Date.now();
+  return {
+    clientSubmissionId: turn.clientSubmissionId,
+    queueRowId: turn.queueRowId,
+    sourceSessionId: turn.sourceSessionId,
+    sourceRoomId: turn.sourceRoomId,
+    submissionSequence: turn.submissionSequence,
+    producer: turn.producer,
+    claimTrigger: turn.claimTrigger,
+    claimTriggeredAt: turn.claimTriggeredAt,
+    turnId: turn.turnId,
+    providerInputMessageId: turn.providerInputMessageId,
+    providerOutputMessageId: turn.providerOutputMessageId,
+    payloadReceipt: turn.payloadReceipt,
+    lifecycle,
+    eventSequence: ++turn.eventSequence,
+    ...(turn.terminalAt === undefined ? {} : { terminalAt: turn.terminalAt }),
+  };
+}
+
+function attachQueuedTurnTruth(content: string, truth: Record<string, unknown>): string {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    return JSON.stringify({ ...parsed, queuedPromptTruth: truth });
+  } catch {
+    // A queue-truth claim must never fabricate a second transcript shape.
+    // The known CLI bridges all emit JSON, so fail closed by retaining content
+    // without association if an unexpected producer changes that invariant.
+    return content;
+  }
+}
+
+/** Register one claimed queued CLI turn before its PTY provider-entry write. */
+export function registerClaudeCliQueuedTurn(input: Omit<RegisteredClaudeCliQueuedTurn, 'eventSequence' | 'terminalized' | 'terminalAt' | 'failureMessage'>): boolean {
+  if (registeredQueuedTurns.has(input.sessionId) || settlingQueuedTurns.has(input.sessionId)) return false;
+  const required = [
+    input.queueRowId, input.claimToken, input.clientSubmissionId,
+    input.sourceSessionId, input.sourceRoomId, input.producer,
+    input.claimTrigger, input.turnId, input.providerInputMessageId,
+    input.providerOutputMessageId, input.payloadReceipt?.sha256,
+  ];
+  if (required.some((value) => typeof value !== 'string' || value.length === 0) ||
+      !Number.isSafeInteger(input.submissionSequence) || input.submissionSequence < 1 ||
+      !Number.isFinite(input.claimTriggeredAt)) return false;
+  registeredQueuedTurns.set(input.sessionId, { ...input, eventSequence: 0, terminalized: false });
+  return true;
+}
+
+/** Clear an abandoned registration without allowing it to bind a later turn. */
+export function clearClaudeCliQueuedTurnRegistration(sessionId: string, claimToken?: string): void {
+  const current = registeredQueuedTurns.get(sessionId);
+  if (current && (!claimToken || current.claimToken === claimToken)) registeredQueuedTurns.delete(sessionId);
+  const settling = settlingQueuedTurns.get(sessionId);
+  if (settling && (!claimToken || settling.claimToken === claimToken)) {
+    if (settling.reconciliationTimer) clearTimeout(settling.reconciliationTimer);
+    settlingQueuedTurns.delete(sessionId);
+  }
+}
+
+function releaseSettlingQueuedTurn(sessionId: string, claimToken: string): boolean {
+  const settling = settlingQueuedTurns.get(sessionId);
+  if (!settling || settling.claimToken !== claimToken) return false;
+  if (settling.reconciliationTimer) clearTimeout(settling.reconciliationTimer);
+  settlingQueuedTurns.delete(sessionId);
+  return true;
+}
+
+function isCurrentSettlingQueuedTurn(
+  sessionId: string,
+  claimToken: string,
+  expectedTurn: RegisteredClaudeCliQueuedTurn,
+): boolean {
+  return settlingQueuedTurns.get(sessionId) === expectedTurn && expectedTurn.claimToken === claimToken;
+}
+
+function scheduleTerminalReconciliation(sessionId: string, claimToken: string): void {
+  const turn = settlingQueuedTurns.get(sessionId);
+  if (!turn || turn.claimToken !== claimToken || turn.reconciliationTimer || turn.reconciliationInFlight || turn.reconciliationExhausted) return;
+  const attempts = turn.reconciliationAttempts ?? 0;
+  if (attempts >= TERMINAL_RECONCILIATION_MAX_ATTEMPTS) {
+    turn.reconciliationExhausted = true;
+    console.warn('[ClaudeCliObservation] Observed queued CLI terminal reconciliation exhausted');
+    return;
+  }
+  const delay = Math.min(
+    TERMINAL_RECONCILIATION_MAX_DELAY_MS,
+    TERMINAL_RECONCILIATION_INITIAL_DELAY_MS * 2 ** Math.min(Math.max(attempts - 1, 0), 5),
+  );
+  turn.reconciliationTimer = setTimeout(() => {
+    const current = settlingQueuedTurns.get(sessionId);
+    if (!current || current.claimToken !== claimToken) return;
+    current.reconciliationTimer = undefined;
+    void reconcileSettlingQueuedTurn(sessionId, claimToken);
+  }, delay);
+}
+
+function hasExactDurableTerminalReceipt(
+  turn: RegisteredClaudeCliQueuedTurn,
+  sessionId: string,
+  claimToken: string,
+  result: { row?: { id: string; sessionId: string; claimToken?: string; status: string; terminalStatus?: string; terminalAt?: number; streamEventSequence?: number } },
+): boolean {
+  const row = result.row;
+  const receipt = turn.terminalReceipt;
+  return !!row && !!receipt &&
+    row.id === turn.queueRowId &&
+    row.sessionId === sessionId &&
+    row.claimToken === claimToken &&
+    row.status === receipt.lifecycle &&
+    row.terminalStatus === receipt.lifecycle &&
+    row.terminalAt === receipt.terminalAt &&
+    row.streamEventSequence === receipt.eventSequence;
+}
+
+async function reDriveSettledClaudeCliQueue(sessionId: string, workspacePath: string): Promise<void> {
+  try {
+    const { flushNextClaudeCliQueuedPromptForSession } = await import('./claudeCliQueueFlushSingleton');
+    void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+  } catch {
+    console.warn('[ClaudeCliObservation] Failed to re-drive queued CLI turn');
+  }
+}
+
+async function reconcileSettlingQueuedTurn(sessionId: string, claimToken: string): Promise<void> {
+  const turn = settlingQueuedTurns.get(sessionId);
+  if (!turn || turn.claimToken !== claimToken || turn.reconciliationInFlight || turn.reconciliationExhausted || !turn.terminalReceipt) return;
+  if ((turn.reconciliationAttempts ?? 0) >= TERMINAL_RECONCILIATION_MAX_ATTEMPTS) {
+    scheduleTerminalReconciliation(sessionId, claimToken);
+    return;
+  }
+  turn.reconciliationInFlight = true;
+  turn.reconciliationAttempts = (turn.reconciliationAttempts ?? 0) + 1;
+  try {
+    const store = getQueuedPromptsStore();
+    const result = turn.terminalReceipt.lifecycle === 'completed'
+      ? await store.completeAfterDispatch(turn.queueRowId, sessionId, claimToken, turn.terminalReceipt)
+      : await store.failAfterDispatch(turn.queueRowId, turn.failureMessage!, sessionId, claimToken, turn.terminalReceipt);
+    if (!isCurrentSettlingQueuedTurn(sessionId, claimToken, turn)) return;
+    if (hasExactDurableTerminalReceipt(turn, sessionId, claimToken, result)) {
+      try {
+        const { publishQueuedPromptSnapshotForSession } = await import('./AIService');
+        // The import itself yields. A matching teardown and replacement can
+        // therefore take ownership after durable settlement but before the
+        // replica is published.
+        if (!isCurrentSettlingQueuedTurn(sessionId, claimToken, turn)) return;
+        await publishQueuedPromptSnapshotForSession(sessionId, store);
+      } catch {
+        // Durable settlement remains authoritative; a transient replica publish
+        // must not strand the next queued row.
+        console.warn('[ClaudeCliObservation] Failed to publish queued CLI terminal snapshot');
+      }
+      if (!isCurrentSettlingQueuedTurn(sessionId, claimToken, turn)) return;
+      if (releaseSettlingQueuedTurn(sessionId, claimToken)) {
+        await reDriveSettledClaudeCliQueue(sessionId, turn.workspacePath);
+      }
+    } else {
+      console.warn('[ClaudeCliObservation] Observed queued CLI terminal settlement remains unresolved');
+      turn.reconciliationInFlight = false;
+      scheduleTerminalReconciliation(sessionId, claimToken);
+    }
+  } catch {
+    if (!isCurrentSettlingQueuedTurn(sessionId, claimToken, turn)) return;
+    console.warn('[ClaudeCliObservation] Failed to settle observed queued CLI turn');
+    turn.reconciliationInFlight = false;
+    scheduleTerminalReconciliation(sessionId, claimToken);
+  } finally {
+    const current = settlingQueuedTurns.get(sessionId);
+    if (current === turn && current.claimToken === claimToken) current.reconciliationInFlight = false;
+  }
+}
+
+async function settleRegisteredClaudeCliQueuedTurn(sessionId: string): Promise<void> {
+  const turn = registeredQueuedTurns.get(sessionId);
+  if (!turn || turn.terminalized) return;
+  turn.terminalized = true;
+  // PID idle is the terminal boundary. Fence the visible association before
+  // awaiting disk I/O so an immediate next CLI turn cannot inherit this row.
+  registeredQueuedTurns.delete(sessionId);
+  settlingQueuedTurns.set(sessionId, turn);
+  const lifecycle: 'completed' | 'failed' = turn.failureMessage ? 'failed' : 'completed';
+  const truth = nextQueuedTurnTruth(turn, lifecycle);
+  turn.terminalReceipt = {
+    lifecycle,
+    terminalAt: truth.terminalAt as number,
+    eventSequence: truth.eventSequence as number,
+  };
+  await reconcileSettlingQueuedTurn(sessionId, turn.claimToken);
+}
 
 /**
  * Fire the completion sound + "Response Ready" OS notification (+ mobile push when
@@ -118,16 +349,18 @@ async function notifyClaudeCliTurnComplete(
  */
 export function fireClaudeCliTurnCompletion(sessionId: string, workspacePath: string): void {
   const summary = takeClaudeCliTurnSummary(sessionId);
-  if (!summary) return;
-  void notifyClaudeCliTurnComplete(sessionId, workspacePath, summary.lastAssistantText);
-  try {
-    AnalyticsService.getInstance().sendEvent(
-      'ai_response_received',
-      buildClaudeCliResponseEvent({ toolNames: summary.toolNames, finalText: summary.lastAssistantText }),
-    );
-  } catch {
-    // analytics is best-effort
+  if (summary) {
+    void notifyClaudeCliTurnComplete(sessionId, workspacePath, summary.lastAssistantText);
+    try {
+      AnalyticsService.getInstance().sendEvent(
+        'ai_response_received',
+        buildClaudeCliResponseEvent({ toolNames: summary.toolNames, finalText: summary.lastAssistantText }),
+      );
+    } catch {
+      // analytics is best-effort
+    }
   }
+  void settleRegisteredClaudeCliQueuedTurn(sessionId);
 }
 
 async function persistAssistantTurn(
@@ -136,6 +369,8 @@ async function persistAssistantTurn(
   msg: AssembledAssistantMessage,
   hidden: boolean,
 ): Promise<void> {
+  const queuedTurn = hidden ? undefined : registeredQueuedTurns.get(sessionId);
+  const queuedPromptTruth = queuedTurn ? nextQueuedTurnTruth(queuedTurn, 'streaming') : undefined;
   try {
     await AgentMessagesRepository.create({
       sessionId,
@@ -145,9 +380,12 @@ async function persistAssistantTurn(
       // the visible transcript (the B3 wire has no parent_tool_use_id to filter
       // on — see claudeCliSubAgentTracker). File-edit attribution below still runs
       // for them, so a sub-agent's edits are tracked.
-      content: buildAssistantRawContent(msg),
+      content: queuedPromptTruth
+        ? attachQueuedTurnTruth(buildAssistantRawContent(msg), queuedPromptTruth)
+        : buildAssistantRawContent(msg),
       hidden,
       createdAt: new Date(),
+      ...(queuedPromptTruth ? { metadata: { queuedPromptTruth } } : {}),
     });
     notifyMessageLogged(sessionId, workspacePath);
   } catch (err) {
@@ -301,7 +539,27 @@ export async function startClaudeCliProxyObservation(opts: {
         return;
       }
 
-      void logClaudeCliUpstreamError({ sessionId, workspacePath, failure });
+      // Task traffic is hidden and must never consume, fail, or surface the
+      // parent queued-turn association.
+      if (isSubAgentTurnInFlight(sessionId)) return;
+      const queuedTurn = registeredQueuedTurns.get(sessionId);
+      if (!queuedTurn) {
+        void logClaudeCliUpstreamError({ sessionId, workspacePath, failure });
+        return;
+      }
+      queuedTurn.failureMessage ??= failure.message;
+      const queuedPromptTruth = nextQueuedTurnTruth(queuedTurn, 'streaming');
+      void AgentMessagesRepository.create({
+        sessionId,
+        source: 'claude-code',
+        direction: 'output',
+        content: attachQueuedTurnTruth(buildClaudeCliErrorContent(failure), queuedPromptTruth),
+        hidden: false,
+        createdAt: new Date(),
+        metadata: { queuedPromptTruth },
+      }).then(() => notifyMessageLogged(sessionId, workspacePath)).catch((err) => {
+        console.warn('[ClaudeCliObservation] Failed to persist queued CLI error:', err);
+      });
     },
   });
 
@@ -322,6 +580,7 @@ export async function startClaudeCliProxyObservation(opts: {
       clearClaudeCliTurnSummary(sessionId);
       clearSubAgentTracking(sessionId);
       clearClaudeCliObserved1mSupport(sessionId);
+      clearClaudeCliQueuedTurnRegistration(sessionId);
     },
   };
 }

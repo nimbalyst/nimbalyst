@@ -1,350 +1,482 @@
-import { describe, expect, it, vi } from 'vitest';
-import { createPGLiteQueuedPromptsStore } from '../PGLiteQueuedPromptsStore';
+import { PGlite } from '@electric-sql/pglite';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createPGLiteQueuedPromptsStore,
+  SWEEP_UNANSWERED_ERROR,
+} from '../PGLiteQueuedPromptsStore';
 
-type DbStub = { query: <T = any>(sql: string, params?: any[]) => Promise<{ rows: T[] }> };
+const databases: PGlite[] = [];
 
-describe('PGLiteQueuedPromptsStore.rollbackExecuting', () => {
-  it('resets executing rows for the given session back to pending', async () => {
-    const query = vi.fn(async (sql: string, params?: any[]) => {
-      expect(sql).toContain("SET status = 'pending'");
-      expect(sql).toContain('claimed_at = NULL');
-      expect(sql).toContain("status = 'executing'");
-      expect(sql).toContain('WHERE session_id = $1');
-      expect(params).toEqual(['session-abc']);
-      return { rows: [{ id: 'prompt-1' }, { id: 'prompt-2' }] };
+async function createDatabase(): Promise<PGlite> {
+  const db = new PGlite();
+  databases.push(db);
+  await db.exec(`
+    CREATE TABLE ai_sessions (
+      id TEXT PRIMARY KEY,
+      metadata JSONB
+    );
+    CREATE TABLE queued_prompts (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attachments JSONB,
+      document_context JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      claimed_at TIMESTAMPTZ,
+      claim_token TEXT,
+      dispatch_started_at TIMESTAMPTZ,
+      settlement_provenance TEXT,
+      completed_at TIMESTAMPTZ,
+      error_message TEXT,
+      delivery_class TEXT NOT NULL DEFAULT 'ordinary',
+      priority_rank INTEGER NOT NULL DEFAULT 0,
+      delivery_ready BOOLEAN NOT NULL DEFAULT TRUE,
+      producer TEXT,
+      idempotency_key TEXT,
+      request_digest TEXT,
+      control_operation TEXT,
+      interrupt_target_generation TEXT,
+      interrupt_reservation_owner TEXT,
+      interrupt_receipt JSONB,
+      client_submission_id TEXT UNIQUE,
+      source_session_id TEXT,
+      source_room_id TEXT,
+      submission_sequence INTEGER,
+      payload_utf8_bytes INTEGER,
+      payload_unicode_scalars INTEGER,
+      payload_sha256 TEXT,
+      claim_trigger TEXT,
+      claim_triggered_at TIMESTAMPTZ,
+      turn_id TEXT,
+      provider_input_message_id TEXT,
+      provider_output_message_id TEXT,
+      stream_event_sequence INTEGER NOT NULL DEFAULT 0,
+      terminal_status TEXT,
+      terminal_at TIMESTAMPTZ
+    );
+    CREATE TABLE ai_agent_messages (
+      id BIGSERIAL PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      source TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      content TEXT NOT NULL
+    );
+    CREATE TABLE queued_prompt_source_sequences (
+      source_session_id TEXT PRIMARY KEY,
+      next_sequence INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_queued_prompts_interrupt_generation_owner
+      ON queued_prompts(session_id, interrupt_target_generation)
+      WHERE delivery_class = 'control' AND interrupt_target_generation IS NOT NULL;
+    CREATE UNIQUE INDEX idx_queued_prompts_control_idempotency
+      ON queued_prompts(session_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    INSERT INTO ai_sessions (id, metadata) VALUES
+      ('session-a', '{}'::jsonb),
+      ('session-b', '{}'::jsonb),
+      ('blocked', '{"modelChangeReconciliation":{"status":"pending"}}'::jsonb),
+      ('malformed', '[]'::jsonb);
+  `);
+  return db;
+}
+
+afterEach(async () => {
+  while (databases.length > 0) await databases.pop()!.close();
+});
+
+describe('PGLiteQueuedPromptsStore dispatch fencing', () => {
+  it('allocates after the highest migrated source sequence when the allocator row is absent', async () => {
+    const db = await createDatabase();
+    await db.query(
+      `INSERT INTO queued_prompts (
+         id, session_id, prompt, client_submission_id, source_session_id,
+         source_room_id, submission_sequence, payload_utf8_bytes,
+         payload_unicode_scalars, payload_sha256
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      ['legacy', 'session-a', 'legacy', 'legacy', 'session-a', 'session-a', 7, 6, 6, 'legacy-unverified'],
+    );
+    const store = createPGLiteQueuedPromptsStore(db as any);
+
+    await expect(
+      store.create({ id: 'next', sessionId: 'session-a', prompt: 'next' }),
+    ).resolves.toMatchObject({ id: 'next', submissionSequence: 8 });
+  });
+
+  it('replays one stable client submission and rejects conflicting truth', async () => {
+    const db = await createDatabase();
+    const store = createPGLiteQueuedPromptsStore(db as any);
+    const input = {
+      id: 'first-row',
+      clientSubmissionId: 'stable-client',
+      sessionId: 'session-a',
+      prompt: 'same payload',
+      producer: 'test',
+    };
+
+    await expect(store.create(input)).resolves.toMatchObject({ id: 'first-row' });
+    await expect(store.create(input)).resolves.toMatchObject({
+      id: 'first-row',
+      clientSubmissionId: 'stable-client',
     });
-    const db: DbStub = { query: query as any };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    const rolledBack = await store.rollbackExecuting('session-abc');
-
-    expect(rolledBack).toBe(2);
-    expect(query).toHaveBeenCalledOnce();
-  });
-
-  it('returns 0 when no rows are stuck in executing', async () => {
-    const db: DbStub = { query: (async () => ({ rows: [] })) as any };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    const rolledBack = await store.rollbackExecuting('session-no-rows');
-
-    expect(rolledBack).toBe(0);
-  });
-
-  it('is scoped to the given session id only', async () => {
-    let capturedParams: any[] | undefined;
-    const db: DbStub = {
-      query: (async (_sql: string, params?: any[]) => {
-        capturedParams = params;
-        return { rows: [] };
-      }) as any,
-    };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    await store.rollbackExecuting('session-only-this-one');
-
-    expect(capturedParams).toEqual(['session-only-this-one']);
-  });
-});
-
-describe('PGLiteQueuedPromptsStore.rollbackAllExecuting', () => {
-  it('resets every executing row across all sessions', async () => {
-    const query = vi.fn(async (sql: string, params?: any[]) => {
-      expect(sql).toContain("SET status = 'pending'");
-      expect(sql).toContain('claimed_at = NULL');
-      expect(sql).toContain("status = 'executing'");
-      expect(sql).not.toContain('session_id');
-      expect(params).toBeUndefined();
-      return { rows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] };
+    await expect(store.create({ ...input, id: 'retry-row' })).resolves.toMatchObject({
+      id: 'first-row',
+      clientSubmissionId: 'stable-client',
     });
-    const db: DbStub = { query: query as any };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    const rolledBack = await store.rollbackAllExecuting();
-
-    expect(rolledBack).toBe(3);
+    await expect(store.create({ ...input, id: 'payload-conflict', prompt: 'different' }))
+      .rejects.toThrow('payload receipt mismatch');
+    await expect(store.create({ ...input, id: 'session-conflict', sessionId: 'session-b' }))
+      .rejects.toThrow('submission identity conflict');
   });
 
-  it('is idempotent when the table has no stuck rows', async () => {
-    const db: DbStub = { query: (async () => ({ rows: [] })) as any };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    expect(await store.rollbackAllExecuting()).toBe(0);
-    expect(await store.rollbackAllExecuting()).toBe(0);
-  });
-});
-
-describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
-  it('completes answered rows, fails delivered-but-unanswered ones, rolls back undelivered ones', async () => {
-    const calls: { sql: string; params?: any[] }[] = [];
-    const db: DbStub = {
-      query: (async (sql: string, params?: any[]) => {
-        calls.push({ sql, params });
-        // Pass 1: completed-update returns rows with delivery AND output evidence
-        if (sql.includes("SET status = 'completed'")) {
-          return { rows: [{ id: 'answered-1' }, { id: 'answered-2' }] };
-        }
-        // Pass 2: failed-update returns delivered rows with no output evidence
-        if (sql.includes("SET status = 'failed'")) {
-          return { rows: [{ id: 'unanswered-1' }] };
-        }
-        // Pass 3: rollback-update returns the remaining stuck rows
-        if (sql.includes("SET status = 'pending'") && sql.includes('claimed_at = NULL')) {
-          return { rows: [{ id: 'undelivered-1' }] };
-        }
-        throw new Error(`Unexpected query: ${sql}`);
-      }) as any,
-    };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    const result = await store.sweepExecutingOnBoot();
-
-    expect(result).toEqual({ completed: 2, failed: 1, rolledBack: 1 });
-    expect(calls).toHaveLength(3);
-
-    // First pass: executing rows need BOTH the delivered input row AND
-    // output evidence after claimed_at to count as completed (#783: a
-    // delivered input alone does not prove the agent ever responded).
-    // Pending-with-content-match and 24h-abandoned branches stay.
-    expect(calls[0].sql).toContain("SET status = 'completed'");
-    expect(calls[0].sql).toContain("status = 'executing'");
-    expect(calls[0].sql).toContain("status = 'pending'");
-    expect(calls[0].sql).toContain('claimed_at IS NOT NULL');
-    expect(calls[0].sql).toContain('ai_agent_messages');
-    expect(calls[0].sql).toContain("direction = 'input'");
-    expect(calls[0].sql).toContain("direction = 'output'");
-    expect(calls[0].sql).toContain('m.created_at >= queued_prompts.claimed_at');
-    expect(calls[0].sql).toContain('m.created_at >= queued_prompts.created_at');
-    expect(calls[0].sql).toContain('POSITION(queued_prompts.prompt IN m.content)');
-
-    // Second pass: delivered-but-unanswered rows become a VISIBLE terminal
-    // state, never 'completed' (silent success) and never 'pending'
-    // (re-claim would re-send the delivered input, regressing NIM-615).
-    // The pass re-checks output absence itself (NOT EXISTS) so it stays
-    // correct even if an output row commits between the two statements.
-    expect(calls[1].sql).toContain("SET status = 'failed'");
-    expect(calls[1].sql).toContain('error_message');
-    expect(calls[1].sql).toContain("status = 'executing'");
-    expect(calls[1].sql).toContain('claimed_at IS NOT NULL');
-    expect(calls[1].sql).toContain("direction = 'input'");
-    expect(calls[1].sql).toContain('NOT EXISTS');
-    expect(calls[1].sql).toContain("direction = 'output'");
-
-    // Third pass: rolls back anything still executing (i.e. undelivered)
-    expect(calls[2].sql).toContain("SET status = 'pending'");
-    expect(calls[2].sql).toContain('claimed_at = NULL');
-    expect(calls[2].sql).toContain("status = 'executing'");
-  });
-
-  it('fails a delivered executing row with no output after claimed_at instead of completing it (#783)', async () => {
-    // Karl's forensic case: input row logged after claim, app quit
-    // SIGTERM'd the provider, zero output events persisted. The old sweep
-    // marked the row completed and the session looked answered-and-idle.
-    const calls: { sql: string; params?: any[] }[] = [];
-    const db: DbStub = {
-      query: (async (sql: string, params?: any[]) => {
-        calls.push({ sql, params });
-        if (sql.includes("SET status = 'completed'")) {
-          return { rows: [] };
-        }
-        if (sql.includes("SET status = 'failed'")) {
-          return { rows: [{ id: 'local-1783443721220-i0jrwc8' }] };
-        }
-        if (sql.includes("SET status = 'pending'")) {
-          return { rows: [] };
-        }
-        throw new Error(`Unexpected query: ${sql}`);
-      }) as any,
-    };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    const result = await store.sweepExecutingOnBoot();
-
-    expect(result).toEqual({ completed: 0, failed: 1, rolledBack: 0 });
-  });
-
-  it('returns zeros when nothing was executing', async () => {
-    const db: DbStub = { query: (async () => ({ rows: [] })) as any };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    expect(await store.sweepExecutingOnBoot()).toEqual({ completed: 0, failed: 0, rolledBack: 0 });
-  });
-
-  it('completes pending rows that match a delivered input message (leftover-corruption cleanup)', async () => {
-    // Simulates the leftover state after a pre-fix build's
-    // rollbackAllExecuting boot sweep set already-delivered rows back to
-    // pending. The new sweep should catch them by matching prompt text
-    // against ai_agent_messages content.
-    let completedSql = '';
-    const db: DbStub = {
-      query: (async (sql: string) => {
-        if (sql.includes("SET status = 'completed'")) {
-          completedSql = sql;
-          return { rows: [{ id: 'leftover-1' }, { id: 'leftover-2' }, { id: 'leftover-3' }] };
-        }
-        if (sql.includes("SET status = 'failed'") || sql.includes("SET status = 'pending'")) {
-          return { rows: [] };
-        }
-        throw new Error(`Unexpected query: ${sql}`);
-      }) as any,
-    };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    const result = await store.sweepExecutingOnBoot();
-
-    expect(result).toEqual({ completed: 3, failed: 0, rolledBack: 0 });
-    // The combined query must contain both branches so an existing
-    // pending row whose prompt text already appears in the conversation
-    // gets cleaned up alongside the executing-but-delivered case.
-    expect(completedSql).toContain("status = 'pending'");
-    expect(completedSql).toContain('POSITION(queued_prompts.prompt IN m.content)');
-  });
-
-  it('completes pending rows older than 24h regardless of content match (abandoned cleanup)', async () => {
-    let completedSql = '';
-    const db: DbStub = {
-      query: (async (sql: string) => {
-        if (sql.includes("SET status = 'completed'")) {
-          completedSql = sql;
-          return { rows: [{ id: 'abandoned-1' }, { id: 'abandoned-2' }] };
-        }
-        if (sql.includes("SET status = 'failed'") || sql.includes("SET status = 'pending'")) {
-          return { rows: [] };
-        }
-        throw new Error(`Unexpected query: ${sql}`);
-      }) as any,
-    };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    const result = await store.sweepExecutingOnBoot();
-
-    expect(result).toEqual({ completed: 2, failed: 0, rolledBack: 0 });
-    // Age branch: pending rows older than 24h are completed
-    // unconditionally. Handles content-match false negatives caused by
-    // JSON escaping (newlines / quotes / attachments) and genuinely
-    // abandoned prompts.
-    expect(completedSql).toContain("status = 'pending'");
-    expect(completedSql).toContain("created_at < NOW() - INTERVAL '1 day'");
-  });
-});
-
-describe('PGLiteQueuedPromptsStore.complete', () => {
-  it('clears error_message so a turn resolving after a provisional sweep-fail does not keep the stale error', async () => {
-    const query = vi.fn(async (sql: string, params?: any[]) => {
-      expect(sql).toContain("SET status = 'completed'");
-      expect(sql).toContain('error_message = NULL');
-      expect(params).toEqual(['prompt-1']);
-      return { rows: [] };
+  it('retries a transient dialect probe and generates a persisted opaque claim token', async () => {
+    let unavailable = true;
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('UPDATE queued_prompts')) {
+        return {
+          rows: [{
+            id: 'retry', session_id: 'session-a', prompt: 'once', status: 'executing',
+            created_at: new Date(), claimed_at: new Date(), claim_token: params?.[2],
+            delivery_class: 'ordinary', priority_rank: 0, delivery_ready: true,
+          }],
+        };
+      }
+      if (sql.includes('jsonb_typeof')) {
+        if (unavailable) throw new Error('database unavailable');
+        return { rows: [{ kind: 'object' }] };
+      }
+      if (sql.includes('json_valid')) throw new Error('database unavailable');
+      throw new Error(`Unexpected query: ${sql}`);
     });
-    const db: DbStub = { query: query as any };
+    const store = createPGLiteQueuedPromptsStore({ query } as any);
 
-    const store = createPGLiteQueuedPromptsStore(db);
-    await store.complete('prompt-1');
-
-    expect(query).toHaveBeenCalledOnce();
-  });
-});
-
-describe('PGLiteQueuedPromptsStore.sweepExecutingForSession', () => {
-  it('scopes all three passes to the given session id', async () => {
-    const calls: { sql: string; params?: any[] }[] = [];
-    const db: DbStub = {
-      query: (async (sql: string, params?: any[]) => {
-        calls.push({ sql, params });
-        if (sql.includes("SET status = 'completed'")) {
-          return { rows: [{ id: 'answered-1' }] };
-        }
-        if (sql.includes("SET status = 'failed'")) {
-          return { rows: [{ id: 'unanswered-1' }] };
-        }
-        if (sql.includes("SET status = 'pending'")) {
-          return { rows: [{ id: 'undelivered-1' }, { id: 'undelivered-2' }] };
-        }
-        throw new Error(`Unexpected query: ${sql}`);
-      }) as any,
-    };
-
-    const store = createPGLiteQueuedPromptsStore(db);
-    const result = await store.sweepExecutingForSession('session-xyz');
-
-    expect(result).toEqual({ completed: 1, failed: 1, rolledBack: 2 });
-    expect(calls).toHaveLength(3);
-
-    // Pass 1: completion needs input AND output evidence, session-scoped
-    // (#790: an interrupt sweep marked a delivered-but-never-answered
-    // prompt completed on the input row alone).
-    expect(calls[0].sql).toContain("SET status = 'completed'");
-    expect(calls[0].sql).toContain("session_id = $1");
-    expect(calls[0].sql).toContain('claimed_at IS NOT NULL');
-    expect(calls[0].sql).toContain('ai_agent_messages');
-    expect(calls[0].sql).toContain("direction = 'input'");
-    expect(calls[0].sql).toContain("direction = 'output'");
-    expect(calls[0].sql).toContain('m.created_at >= queued_prompts.claimed_at');
-    expect(calls[0].params).toEqual(['session-xyz']);
-
-    // Pass 2: delivered-but-unanswered rows go to a visible failed state,
-    // with an independent no-output recheck (NOT EXISTS)
-    expect(calls[1].sql).toContain("SET status = 'failed'");
-    expect(calls[1].sql).toContain('error_message');
-    expect(calls[1].sql).toContain('session_id = $1');
-    expect(calls[1].sql).toContain('NOT EXISTS');
-    expect(calls[1].params?.[0]).toBe('session-xyz');
-    expect(calls[1].params?.[1]).toContain('interrupted before a response was recorded');
-
-    // Pass 3: roll back undelivered executing rows for the same session
-    expect(calls[2].sql).toContain("SET status = 'pending'");
-    expect(calls[2].sql).toContain('claimed_at = NULL');
-    expect(calls[2].sql).toContain("status = 'executing'");
-    expect(calls[2].sql).toContain('session_id = $1');
-    expect(calls[2].params).toEqual(['session-xyz']);
+    await expect(store.claim('retry', 'session-a')).rejects.toThrow('database unavailable');
+    unavailable = false;
+    const claimed = await store.claim('retry', 'session-a');
+    expect(claimed?.claimToken).toMatch(/^[0-9a-f-]{36}$/i);
   });
 
-  it('returns zeros when the session has no executing rows', async () => {
-    const db: DbStub = { query: (async () => ({ rows: [] })) as any };
+  it('prevents stale owner A from mutating replacement owner B', async () => {
+    const db = await createDatabase();
+    const store = createPGLiteQueuedPromptsStore(db as any);
+    await store.create({ id: 'race', sessionId: 'session-a', prompt: 'race' });
 
-    const store = createPGLiteQueuedPromptsStore(db);
-    expect(await store.sweepExecutingForSession('session-clean')).toEqual({
-      completed: 0,
+    const ownerA = await store.claim('race', 'session-a');
+    expect(ownerA?.claimToken).toBeTruthy();
+    expect(await store.sweepExecutingForSession('session-a')).toMatchObject({
       failed: 0,
-      rolledBack: 0,
+      rolledBack: 1,
+      rolledBackIds: ['race'],
     });
+    expect((await store.get('race'))?.claimToken).toBeUndefined();
+
+    const ownerB = await store.claim('race', 'session-a');
+    expect(ownerB?.claimToken).toBeTruthy();
+    expect(ownerB?.claimToken).not.toBe(ownerA?.claimToken);
+    await expect(
+      store.completeAfterDispatch('race', 'session-a', ownerA!.claimToken!),
+    ).resolves.toMatchObject({ outcome: 'stale_owner' });
+    await expect(
+      store.failAfterDispatch('race', 'late A', 'session-a', ownerA!.claimToken!),
+    ).resolves.toMatchObject({ outcome: 'stale_owner' });
+    await expect(
+      store.beginDispatch('race', 'session-a', ownerB!.claimToken!),
+    ).resolves.toMatchObject({ outcome: 'settled' });
+    await expect(
+      store.completeAfterDispatch('race', 'session-a', ownerB!.claimToken!),
+    ).resolves.toMatchObject({ outcome: 'settled' });
+    await expect(
+      store.completeAfterDispatch('race', 'session-a', ownerB!.claimToken!),
+    ).resolves.toMatchObject({ outcome: 'idempotent_same_claim' });
+  });
+
+  it('classifies wrong identity, recovery, and terminal conflicts without mutation', async () => {
+    const db = await createDatabase();
+    const store = createPGLiteQueuedPromptsStore(db as any);
+    await store.create({ id: 'owned', sessionId: 'session-a', prompt: 'owned' });
+    const claim = await store.claim('owned', 'session-a');
+    const token = claim!.claimToken!;
+    await expect(store.beginDispatch('owned', 'session-a', token)).resolves.toMatchObject({
+      outcome: 'settled',
+    });
+    await expect(store.completeAfterDispatch('owned', 'session-b', token)).resolves.toMatchObject({
+      outcome: 'stale_owner',
+    });
+    await expect(store.completeAfterDispatch('owned', 'session-a', 'random')).resolves.toMatchObject({
+      outcome: 'stale_owner',
+    });
+
+    await db.query(
+      `UPDATE ai_sessions
+       SET metadata = '{"modelChangeReconciliation":{"status":"pending"}}'::jsonb
+       WHERE id = $1`,
+      ['session-a'],
+    );
+    await expect(store.completeAfterDispatch('owned', 'session-a', token)).resolves.toMatchObject({
+      outcome: 'recovery_blocked',
+    });
+    await db.query(`UPDATE ai_sessions SET metadata = '{}'::jsonb WHERE id = $1`, ['session-a']);
+
+    await expect(
+      store.failAfterDispatch('owned', SWEEP_UNANSWERED_ERROR, 'session-a', token),
+    ).resolves.toMatchObject({ outcome: 'settled' });
+    await expect(store.completeAfterDispatch('owned', 'session-a', token)).resolves.toMatchObject({
+      outcome: 'terminal_conflict',
+    });
+    await expect(
+      store.failAfterDispatch('owned', 'different duplicate text', 'session-a', token),
+    ).resolves.toMatchObject({ outcome: 'idempotent_same_claim' });
+    await expect(store.get('owned')).resolves.toMatchObject({
+      status: 'failed',
+      settlementProvenance: 'dispatch_failed',
+      errorMessage: SWEEP_UNANSWERED_ERROR,
+    });
+  });
+
+  it('uses one token-fenced sweep statement and admits same-token late success only', async () => {
+    const db = await createDatabase();
+    const store = createPGLiteQueuedPromptsStore(db as any);
+    await store.create({ id: 'started', sessionId: 'session-a', prompt: 'started' });
+    await store.create({ id: 'not-started', sessionId: 'session-a', prompt: 'not started' });
+    await db.query(
+      `INSERT INTO queued_prompts (id, session_id, prompt)
+       VALUES ('blocked-row', 'blocked', 'blocked')`,
+    );
+    const started = await store.claim('started', 'session-a');
+    const notStarted = await store.claim('not-started', 'session-a');
+    const blocked = await db.query<{ claim_token: string }>(
+      `UPDATE queued_prompts
+       SET status = 'executing', claim_token = 'blocked-token', claimed_at = CURRENT_TIMESTAMP
+       WHERE id = 'blocked-row'
+       RETURNING claim_token`,
+    );
+    expect(blocked.rows[0].claim_token).toBe('blocked-token');
+    await store.beginDispatch('started', 'session-a', started!.claimToken!);
+    await db.query(
+      `INSERT INTO ai_agent_messages (session_id, source, direction, content)
+       VALUES ('session-a', 'unrelated', 'input', 'not either queued prompt')`,
+    );
+
+    const sweep = await store.sweepExecutingForSession('session-a');
+    expect(sweep).toEqual({
+      completed: 0,
+      failed: 1,
+      rolledBack: 1,
+      completedIds: [],
+      failedIds: ['started'],
+      rolledBackIds: ['not-started'],
+    });
+    await expect(store.get('started')).resolves.toMatchObject({
+      status: 'failed',
+      claimToken: started!.claimToken,
+      settlementProvenance: 'sweep_interrupt',
+    });
+    await expect(store.get('not-started')).resolves.toMatchObject({
+      status: 'pending',
+      claimToken: undefined,
+      settlementProvenance: undefined,
+    });
+    await expect(store.get('blocked-row')).resolves.toMatchObject({ status: 'executing' });
+    await expect(
+      store.completeAfterDispatch('started', 'session-a', notStarted!.claimToken!),
+    ).resolves.toMatchObject({ outcome: 'stale_owner' });
+    await expect(
+      store.completeAfterDispatch('started', 'session-a', started!.claimToken!),
+    ).resolves.toMatchObject({ outcome: 'settled' });
+  });
+
+  it('persists the non-CLI handler terminal boundary without minting a second time or sequence', async () => {
+    const db = await createDatabase();
+    const store = createPGLiteQueuedPromptsStore(db as any);
+    await store.create({ id: 'bound-terminal', sessionId: 'session-a', prompt: 'bound' });
+    const claim = await store.claim('bound-terminal', 'session-a');
+    await store.beginDispatch('bound-terminal', 'session-a', claim!.claimToken!);
+
+    const terminalAt = Date.parse('2026-08-03T00:02:00.000Z');
+    await expect(store.completeAfterDispatch('bound-terminal', 'session-a', claim!.claimToken!, {
+      lifecycle: 'completed', terminalAt, eventSequence: 9,
+    })).resolves.toMatchObject({ outcome: 'settled' });
+    await expect(store.get('bound-terminal')).resolves.toMatchObject({
+      status: 'completed', terminalStatus: 'completed', terminalAt, streamEventSequence: 9,
+    });
+  });
+
+  it('atomically admits create, pending replacement, and expected-session delete', async () => {
+    const db = await createDatabase();
+    const store = createPGLiteQueuedPromptsStore(db as any);
+    await expect(
+      store.create({ id: 'blocked-create', sessionId: 'blocked', prompt: 'no' }),
+    ).rejects.toThrow('not admitted');
+    await expect(
+      store.create({ id: 'malformed-create', sessionId: 'malformed', prompt: 'no' }),
+    ).rejects.toThrow('not admitted');
+    await expect(
+      store.create({ id: 'missing-create', sessionId: 'missing', prompt: 'no' }),
+    ).rejects.toThrow('not admitted');
+
+    await store.create({
+      id: 'editable',
+      sessionId: 'session-a',
+      prompt: 'first',
+      attachments: [{ id: 'a' }],
+      documentContext: { filePath: 'a.ts', content: 'a' },
+    });
+    await expect(
+      store.replacePending({
+        id: 'editable',
+        sessionId: 'session-b',
+        prompt: 'wrong',
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      store.replacePending({
+        id: 'editable',
+        sessionId: 'session-a',
+        prompt: 'first\n\nsecond',
+        attachments: [{ id: 'a' }, { id: 'b' }],
+        documentContext: { filePath: 'b.ts', content: 'b' },
+      }),
+    ).resolves.toMatchObject({
+      id: 'editable',
+      prompt: 'first\n\nsecond',
+      attachments: [{ id: 'a' }, { id: 'b' }],
+    });
+    await expect(store.deletePending('editable', 'session-b')).resolves.toBe(false);
+    await expect(store.deletePending('editable', 'session-a')).resolves.toBe(true);
+
+    await store.create({ id: 'claimed', sessionId: 'session-a', prompt: 'claimed' });
+    await store.claim('claimed', 'session-a');
+    await expect(store.deletePending('claimed', 'session-a')).resolves.toBe(false);
+    await expect(store.replacePending({ id: 'claimed', sessionId: 'session-a', prompt: 'lost' })).resolves.toBeNull();
+    await expect(store.get('claimed')).resolves.toMatchObject({ prompt: 'claimed', status: 'executing' });
   });
 });
 
-describe('PGLiteQueuedPromptsStore boot re-drive helpers', () => {
-  it('listSessionIdsWithPending returns each session once, pending rows only', async () => {
-    const query = vi.fn(async (sql: string, params?: any[]) => {
-      expect(sql).toContain('DISTINCT session_id');
-      expect(sql).toContain("status = 'pending'");
-      expect(params).toBeUndefined();
-      return { rows: [{ session_id: 'session-a' }, { session_id: 'session-b' }] };
+describe('PGLiteQueuedPromptsStore current-upstream queue-driver compatibility', () => {
+  it('admits one interrupt owner per session generation and replays its receipt to the loser', async () => {
+    const db = await createDatabase();
+    const store = createPGLiteQueuedPromptsStore(db as any);
+    for (const [id, key] of [['control-a', 'key-a'], ['control-b', 'key-b']] as const) {
+      await store.createPriorityControlPrompt({
+        id,
+        sessionId: 'session-a',
+        prompt: id,
+        producer: 'test',
+        idempotencyKey: key,
+        requestDigest: `digest-${id}`,
+        controlOperation: 'priority',
+      });
+    }
+
+    const generation = 'running:10:20';
+    const reservations = await Promise.all([
+      store.reservePriorityInterrupt({ promptId: 'control-a', generation, owner: 'owner-a' }),
+      store.reservePriorityInterrupt({ promptId: 'control-b', generation, owner: 'owner-b' }),
+    ]);
+    expect(reservations.filter((entry) => entry.reserved)).toHaveLength(1);
+
+    const winner = reservations.find((entry) => entry.reserved)!.row;
+    const loserId = winner.id === 'control-a' ? 'control-b' : 'control-a';
+    const loserBeforeReceipt = await store.get(loserId);
+    expect(loserBeforeReceipt).toMatchObject({
+      deliveryReady: false,
+      interruptReservationOwner: winner.interruptReservationOwner,
     });
-    const db: DbStub = { query: query as any };
+    const receipt = {
+      generation,
+      attempted: true,
+      success: true,
+      method: 'provider-interrupt',
+      error: null,
+      nativeEntered: true,
+      recordedAt: 30,
+    };
+    await store.recordPriorityInterruptReceipt({ promptId: winner.id, generation, receipt });
 
-    const store = createPGLiteQueuedPromptsStore(db);
-
-    expect(await store.listSessionIdsWithPending()).toEqual(['session-a', 'session-b']);
+    await expect(store.get(loserId)).resolves.toMatchObject({
+      id: loserId,
+      deliveryReady: true,
+      interruptReceipt: receipt,
+    });
   });
 
-  it('failAllPendingForSession fails only that session\'s pending rows', async () => {
-    const query = vi.fn(async (sql: string, params?: any[]) => {
-      expect(sql).toContain("SET status = 'failed'");
-      // Must not touch an executing row: that prompt is already in the
-      // conversation and failing it would contradict the boot sweep.
-      expect(sql).toContain("status = 'pending'");
-      expect(sql).toContain('session_id = $1');
-      expect(params).toEqual(['session-gone', 'Project folder is no longer available at /gone']);
-      return { rows: [{ id: 'p1' }, { id: 'p2' }] };
+  it('atomically copies a receipt settled before the loser association executes', async () => {
+    const db = await createDatabase();
+    const store = createPGLiteQueuedPromptsStore(db as any);
+    for (const [id, key] of [['control-a', 'key-a'], ['control-b', 'key-b']] as const) {
+      await store.createPriorityControlPrompt({
+        id,
+        sessionId: 'session-a',
+        prompt: id,
+        producer: 'test',
+        idempotencyKey: key,
+        requestDigest: `digest-${id}`,
+        controlOperation: 'priority',
+      });
+    }
+
+    const generation = 'running:10:20';
+    await expect(store.reservePriorityInterrupt({
+      promptId: 'control-a', generation, owner: 'winner-owner',
+    })).resolves.toMatchObject({ reserved: true });
+
+    let associationObserved!: () => void;
+    let releaseAssociation!: () => void;
+    const observed = new Promise<void>((resolve) => { associationObserved = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseAssociation = resolve; });
+    const gatedStore = createPGLiteQueuedPromptsStore({
+      query: async (sql: string, params?: unknown[]) => {
+        if (sql.includes('SET interrupt_reservation_owner = incumbent.interrupt_reservation_owner')) {
+          associationObserved();
+          await gate;
+        }
+        return db.query(sql, params as any);
+      },
+    } as any);
+    const losingReservation = gatedStore.reservePriorityInterrupt({
+      promptId: 'control-b', generation, owner: 'loser-owner',
     });
-    const db: DbStub = { query: query as any };
+    await observed;
 
-    const store = createPGLiteQueuedPromptsStore(db);
+    await store.recordPriorityInterruptReceipt({
+      promptId: 'control-a',
+      generation,
+      receipt: {
+        generation, attempted: true, success: true, method: 'interrupt',
+        error: null, nativeEntered: true, recordedAt: 30,
+      },
+    });
+    releaseAssociation();
 
-    expect(
-      await store.failAllPendingForSession(
-        'session-gone',
-        'Project folder is no longer available at /gone',
-      ),
-    ).toBe(2);
+    await expect(losingReservation).resolves.toMatchObject({
+      reserved: false,
+      row: {
+        id: 'control-b',
+        interruptReservationOwner: 'winner-owner',
+        deliveryReady: true,
+        interruptReceipt: { success: true },
+      },
+    });
+    await expect(store.get('control-b')).resolves.toMatchObject({
+      deliveryReady: true,
+      interruptReceipt: { success: true },
+    });
+  });
+
+  it('lists distinct pending sessions through the current driver alias', async () => {
+    const query = vi.fn(async () => ({ rows: [{ session_id: 'a' }, { session_id: 'b' }] }));
+    const store = createPGLiteQueuedPromptsStore({ query } as any);
+    await expect(store.listSessionIdsWithPending()).resolves.toEqual(['a', 'b']);
+  });
+
+  it('terminally fails only pending rows for an undeliverable workspace', async () => {
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      expect(sql).toContain("status = 'pending'");
+      expect(params).toEqual(['session-gone', 'workspace missing']);
+      return { rows: [{ id: 'one' }, { id: 'two' }] };
+    });
+    const store = createPGLiteQueuedPromptsStore({ query } as any);
+    await expect(store.failAllPendingForSession('session-gone', 'workspace missing')).resolves.toBe(2);
   });
 });
