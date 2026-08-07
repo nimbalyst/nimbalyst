@@ -135,6 +135,11 @@ import { cliManager, initEnhancedPath, getEnhancedPath, getShellEnvironment } fr
 import { registerWorkspaceWindow, registerExtensionTools, shutdownHttpServer, startMcpHttpServer, updateDocumentState, getActiveExtensionShortNames } from './mcp/httpServer';
 import { writeMcpEndpointDescriptor, removeMcpEndpointDescriptor, type EndpointWorkspace } from './mcp/mcpEndpointDescriptor';
 import {
+  resolveSingleInstanceLifecycleOwnership,
+  runIfSingleInstanceLifecycleOwner,
+  startLosingSecondaryControlPath,
+} from './singleInstanceLifecycle';
+import {
   startWorkspaceBackendModules,
   syncEnabledBackendModulesOnStartup,
   getDefaultBackendModuleLifecycleDeps,
@@ -640,11 +645,16 @@ registerLinuxAppImageProtocolHandler();
 // (e.g., from a file double-click), it forwards its context to the primary instance.
 // Skip for multi-instance dev mode and Playwright tests.
 const allowMultipleInstances = !!process.env.NIMBALYST_USER_DATA_DIR || !!process.env.PLAYWRIGHT;
+const acquiredSingleInstanceLock = allowMultipleInstances
+    ? null
+    : app.requestSingleInstanceLock();
+const singleInstanceLifecycle = resolveSingleInstanceLifecycleOwnership({
+    allowMultipleInstances,
+    acquiredSingleInstanceLock,
+});
 
 if (!allowMultipleInstances) {
-    const gotTheLock = app.requestSingleInstanceLock();
-
-    if (!gotTheLock) {
+    if (!acquiredSingleInstanceLock) {
         // Another instance holds the lock. On macOS, when the OS launches the
         // packaged app to open a file, the path comes via Apple Events which
         // Electron delivers as the open-file event. But open-file only fires
@@ -655,44 +665,37 @@ if (!allowMultipleInstances) {
 
         logger.main.info(`[SingleInstance] Second instance launched, waiting for open-file. argv=${JSON.stringify(process.argv)}`);
 
-        // Also check argv for file paths (Windows/Linux, or CLI open --args)
-        const fileArg = process.argv.find(arg =>
-            !arg.startsWith('-') &&
-            arg !== process.argv[0] &&
-            path.isAbsolute(arg)
-        );
-        if (fileArg) {
-            logger.main.info(`[SingleInstance] Found file in argv: ${fileArg}`);
-            try { writeFileSync(pendingOpenFilePath, fileArg, 'utf-8'); } catch (_) {}
-            app.quit();
-        } else if (process.argv.find(arg => arg.startsWith('nimbalyst://'))) {
-            // Primary instance will handle via second-instance event; quit immediately
-            logger.main.info('[SingleInstance] Second instance has deep link arg, quitting immediately');
-            app.quit();
-        } else {
-            // No file in argv -- wait for open-file Apple Event
-            let gotFile = false;
-            app.on('open-file', (event, filePath) => {
-                event.preventDefault();
-                gotFile = true;
-                logger.main.info(`[SingleInstance] Second instance received open-file: ${filePath}`);
+        startLosingSecondaryControlPath({
+            argv: process.argv,
+            isAbsolutePath: path.isAbsolute,
+            relayFile: (filePath) => {
+                logger.main.info(`[SingleInstance] Relaying file to primary: ${filePath}`);
                 try {
                     writeFileSync(pendingOpenFilePath, filePath, 'utf-8');
                     logger.main.info(`[SingleInstance] Wrote signal file: ${pendingOpenFilePath}`);
                 } catch (err) {
                     logger.main.error('[SingleInstance] Failed to write signal file:', err);
                 }
-                app.quit();
-            });
-
-            // Fallback timeout -- if open-file never fires, quit anyway
-            setTimeout(() => {
-                if (!gotFile) {
-                    logger.main.info('[SingleInstance] No open-file after timeout, quitting');
-                    app.quit();
-                }
-            }, 5000);
-        }
+            },
+            registerOpenFileHandler: (handler) => {
+              app.on('open-file', (event, filePath) => {
+                event.preventDefault();
+                logger.main.info(`[SingleInstance] Second instance received open-file: ${filePath}`);
+                handler(filePath);
+              });
+            },
+            scheduleExitTimeout: (handler, delayMs) => {
+                setTimeout(handler, delayMs);
+            },
+            quit: () => app.quit(),
+            onDeepLinkExit: () => {
+                // Primary instance handles the URL via the second-instance event.
+                logger.main.info('[SingleInstance] Second instance has deep link arg, quitting immediately');
+            },
+            onTimeoutExit: () => {
+                logger.main.info('[SingleInstance] No open-file after timeout, quitting');
+            },
+        });
     } else {
         // We are the primary instance. When a second instance tries to launch,
         // extract any deep link URL or file path and handle it here.
@@ -741,7 +744,7 @@ if (!allowMultipleInstances) {
 // Workaround for dev mode: watch a signal file that the second instance writes.
 // Currently only works for CLI invocations where the path is in argv.
 // For Finder double-click during dev, quit the packaged app first.
-{
+runIfSingleInstanceLifecycleOwner(singleInstanceLifecycle, () => {
     const pendingOpenFilePath = path.join(app.getPath('userData'), '.pending-open-file');
 
     // Check for a stale signal file on startup (second instance may have written
@@ -778,7 +781,7 @@ if (!allowMultipleInstances) {
     } catch (err) {
         logger.main.warn('[SingleInstance] Failed to watch for open-file signals:', err);
     }
-}
+});
 
 // Track pending deep link URL
 let pendingDeepLinkUrl: string | null = null;
@@ -1507,7 +1510,8 @@ BrowserWindow.prototype.focus = function(this: BrowserWindow) {
 // --- END ACTIVATION DEBUGGING ---
 
 // App ready handler
-app.whenReady().then(async () => {
+runIfSingleInstanceLifecycleOwner(singleInstanceLifecycle, () => {
+  void app.whenReady().then(async () => {
     checkpoint('app-ready');
 
     // The default renderer session may use the microphone after Voice Mode has
@@ -3004,22 +3008,30 @@ app.whenReady().then(async () => {
             });
         }
     });
+  });
 });
 
 // Activate handler (macOS)
-app.on('activate', () => {
-    // Avoid resurrecting windows while quitting
-    if (isAppQuitting) return;
-    // Only create window if app is ready (screen module requires app to be ready)
-    if (!app.isReady()) return;
-    // On macOS, show WorkspaceManager when dock icon is clicked and no windows are open
-    if (BrowserWindow.getAllWindows().length === 0) {
-        createWorkspaceManagerWindow();
-    }
+runIfSingleInstanceLifecycleOwner(singleInstanceLifecycle, () => {
+  app.on('activate', () => {
+      // Avoid resurrecting windows while quitting
+      if (isAppQuitting) return;
+      // Only create window if app is ready (screen module requires app to be ready)
+      if (!app.isReady()) return;
+      // On macOS, show WorkspaceManager when dock icon is clicked and no windows are open
+      if (BrowserWindow.getAllWindows().length === 0) {
+          createWorkspaceManagerWindow();
+      }
+  });
 });
 
 // Before quit handler
 app.on('before-quit', async (event) => {
+    if (!singleInstanceLifecycle.ownsPrimaryLifecycle) {
+        logger.main.info('[SingleInstance] Secondary exit bypasses primary lifecycle cleanup');
+        return;
+    }
+
     getCollabOutboxDrainCoordinator().stop();
     getCollabAssetOutboxDrainCoordinator().stop();
     console.log('[QUIT] before-quit event triggered');
