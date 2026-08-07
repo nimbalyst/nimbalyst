@@ -10,11 +10,13 @@ import {
   groupSessionStatusAtom,
   reparentSessionAtom,
   refreshSessionListAtom,
+  sessionRegistryAtom,
   sessionShareAtom,
   removeSessionShareAtom,
   shareKeysAtom,
   buildShareUrl,
 } from '../../store';
+import { isStructuralWorkstreamContainer } from '../../../shared/sessionHierarchy';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { WorktreeIcon } from '../common/WorktreeIcon';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
@@ -194,6 +196,7 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
   const [isValidDropTarget, setIsValidDropTarget] = useState(false);
   const reparentSession = useSetAtom(reparentSessionAtom);
   const refreshSessionList = useSetAtom(refreshSessionListAtom);
+  const sessionRegistry = useAtomValue(sessionRegistryAtom);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     if (type !== 'workstream' || !projectPath) return;
@@ -223,10 +226,23 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
     if (!dataStr || !projectPath) return;
 
     try {
-      const { sessionId, parentId, workspacePath, isWorktreeSession: draggedIsWorktree } = JSON.parse(dataStr);
+      const {
+        sessionId,
+        parentId,
+        workspacePath,
+        isWorktreeSession: draggedIsWorktree,
+        isWorkstream: draggedIsWorkstream,
+        sessionType: draggedSessionType,
+      } = JSON.parse(dataStr);
+      const sourceSession = sessionRegistry.get(sessionId);
 
-      // Worktree sessions cannot be moved
-      if (draggedIsWorktree) return;
+      // Structural containers and worktree sessions cannot be moved.
+      if (
+        draggedIsWorktree
+        || draggedIsWorkstream
+        || draggedSessionType === 'workstream'
+        || isStructuralWorkstreamContainer(sourceSession)
+      ) return;
 
       if (workspacePath !== projectPath) return;
       if (sessionId === id) return;
@@ -254,7 +270,7 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
     } catch (error) {
       console.error('[WorkstreamGroup] Failed to handle drop:', error);
     }
-  }, [type, projectPath, id, reparentSession, refreshSessionList]);
+  }, [type, projectPath, id, reparentSession, refreshSessionList, sessionRegistry]);
 
   // Worktree rename state
   const [isRenamingWorktree, setIsRenamingWorktree] = useState(false);
@@ -733,6 +749,14 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
       {/* Sessions List */}
       {isExpanded && (
         <div className="workstream-group-sessions pt-1 pb-1 pl-10 animate-[workstreamSlideDown_0.2s_ease-out]">
+          {type === 'workstream' && sortedSessions.length === 0 && (
+            <div
+              className="workstream-group-empty py-2 pr-3 text-xs text-[var(--nim-text-faint)]"
+              data-testid="workstream-group-empty"
+            >
+              No sessions yet
+            </div>
+          )}
           {sortedSessions.map(session => (
             <WorkstreamSessionItem
               key={session.id}
