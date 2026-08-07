@@ -299,7 +299,7 @@ type ClientMessage =
   | { type: 'voiceToolRequest'; request: EncryptedVoiceToolRequest }
   | { type: 'voiceToolResponse'; response: EncryptedVoiceToolResponse }
   | { type: 'sessionControl'; message: { sessionId: string; messageType: string; payload?: Record<string, unknown>; timestamp: number; sentBy: 'desktop' | 'mobile' } }
-  | { type: 'requestMobilePush'; sessionId: string; title: string; body: string; requestingDeviceId?: string }
+  | { type: 'requestMobilePush'; sessionId: string; title: string; body: string; requestingDeviceId?: string; force?: boolean; reason?: 'agent_attention' | 'agent_completion' | 'interactive_prompt' }
   | { type: 'settingsSync'; settings: EncryptedSettingsPayload }
   | { type: 'readReceipt'; receipt: EncryptedReadReceiptPayload }
   | { type: 'trackerPersonalState'; state: EncryptedTrackerPersonalStatePayload }
@@ -4134,7 +4134,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     /** Request the sync server to send a push notification to mobile devices */
-    async requestMobilePush(sessionId: string, title: string, body: string): Promise<void> {
+    async requestMobilePush(
+      sessionId: string,
+      title: string,
+      body: string,
+      options?: { force?: boolean; reason?: 'agent_attention' | 'agent_completion' | 'interactive_prompt' },
+    ): Promise<void> {
       // Ensure we're connected before sending the request
       if (!indexWs || !indexConnected) {
         console.log('[CollabV3] Not connected to index, attempting to reconnect before requesting mobile push...');
@@ -4165,6 +4170,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         title,
         body,
         requestingDeviceId: deviceId,
+        force: options?.force,
+        reason: options?.reason,
       };
       // console.log('[CollabV3] Requesting mobile push for session:', sessionId, 'deviceId:', deviceId, 'readyState:', indexWs.readyState);
       try {

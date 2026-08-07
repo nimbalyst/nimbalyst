@@ -278,6 +278,20 @@ export interface RequestMobilePushMessage {
   body: string;
   /** Device ID of the requesting device, used for active-device routing */
   requestingDeviceId?: string;
+  /**
+   * When true, requests that the server bypass its default active-desktop
+   * suppression and deliver to mobile regardless of desktop presence.
+   * Optional and backwards-compatible: omit for the existing default
+   * (desktop-active suppression) behavior. Protocol-only for now -- the
+   * sync server must also be updated to honor this field before it has any
+   * effect.
+   */
+  force?: boolean;
+  /**
+   * Why this push is being requested. Intended to inform server-side
+   * rate-limiting and routing once the server honors `force`. Optional.
+   */
+  reason?: 'agent_attention' | 'agent_completion' | 'interactive_prompt';
 }
 
 /** Update project config (encrypted blob with commands, etc.) */

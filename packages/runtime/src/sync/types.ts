@@ -285,8 +285,27 @@ export interface SyncProvider {
    * Request the sync server to send a push notification to mobile devices.
    * Used when agent completes execution and user should be notified on mobile.
    * The server will check device presence before sending (suppresses if mobile is active).
+   *
+   * `options` is optional and backwards-compatible: omit it for the existing
+   * default behavior. `options.force`/`options.reason` are protocol-only
+   * today -- the sync server must also be updated to honor them before they
+   * have any effect (see `RequestMobilePushMessage` in `@nimbalyst/collab-protocol`).
    */
-  requestMobilePush?(sessionId: string, title: string, body: string): Promise<void>;
+  requestMobilePush?(
+    sessionId: string,
+    title: string,
+    body: string,
+    options?: {
+      /**
+       * When true, requests the server bypass its default active-desktop
+       * suppression and deliver to mobile regardless of desktop presence.
+       * Reserved for explicit user-authorized agent attention flows.
+       */
+      force?: boolean;
+      /** Why this push is being requested. */
+      reason?: 'agent_attention' | 'agent_completion' | 'interactive_prompt';
+    },
+  ): Promise<void>;
 
   /** Get list of currently connected devices */
   getConnectedDevices?(): DeviceInfo[];
