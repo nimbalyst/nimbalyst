@@ -126,7 +126,12 @@ import { registerDatabaseBrowserSqliteHandlers } from './ipc/DatabaseBrowserSqli
 import { registerMigrationHandlers } from './ipc/MigrationHandlers';
 import { registerTerminalHandlers, shutdownTerminalHandlers } from './ipc/TerminalHandlers';
 import { AIService } from './services/ai/AIService';
-import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesForWorkspace } from './utils/workspaceDetection';
+import {
+  detectFileWorkspace,
+  suggestWorkspaceForFile,
+  getAdditionalDirectoriesForWorkspace,
+  getClaudeAdditionalDirectoriesForWorkspace,
+} from './utils/workspaceDetection';
 import {
   getExternalAttachmentStagingDirectory,
   resolveWorkspaceAttachmentStagingDirectory,
@@ -2148,16 +2153,10 @@ app.whenReady().then(async () => {
       });
     }
 
-    // Inject additional directories loader. Adds the parent project root and
-    // sibling worktrees so agents can read shared configs, traverse the .git
-    // common dir from a worktree, and (for Codex) escape its workspace-write
-    // sandbox when an orchestrator session needs to edit sibling worktrees.
-    // Issue #37 problem 1.
-    // Claude opts out of sibling worktrees: the Claude CLI loads .claude/commands
-    // skills from every additional directory, so N worktrees = N duplicate
-    // copies of every project skill in the system prompt (~7K tokens wasted per
-    // session). Claude has no Codex-style sandbox; cross-worktree file access
-    // still works through the normal permission flow.
+    // Codex keeps parent/sibling roots for its workspace-write sandbox. Claude
+    // filters every checkout of the current project because its binary discovers
+    // the same commands and skills from each additional root. Both providers
+    // retain the external attachment-staging directory added by current upstream.
     const withAttachmentStagingDirectory = (workspacePath: string, directories: string[]) => {
       const attachmentDirectory = getExternalAttachmentStagingDirectory(workspacePath);
       return attachmentDirectory
@@ -2167,7 +2166,7 @@ app.whenReady().then(async () => {
     ClaudeCodeProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
       withAttachmentStagingDirectory(
         workspacePath,
-        getAdditionalDirectoriesForWorkspace(workspacePath, { includeSiblingWorktrees: false }),
+        getClaudeAdditionalDirectoriesForWorkspace(workspacePath),
       ));
     OpenAICodexProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
       withAttachmentStagingDirectory(workspacePath, getAdditionalDirectoriesForWorkspace(workspacePath)));

@@ -8,7 +8,9 @@ import {
   clearWorktreeIdentityCache,
   findNearestAncestor,
   findProjectRoot,
+  filterClaudeCatalogDuplicateDirectories,
   getAdditionalDirectoriesForWorkspace,
+  getClaudeAdditionalDirectoriesForWorkspace,
 } from '../workspaceDetection';
 
 /**
@@ -205,9 +207,8 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   let worktreesDir: string;
 
   beforeEach(() => {
-    // Real filesystem fixture so the sync fs.readdirSync path is exercised
-    // end-to-end. The function is called from a synchronous loader and must
-    // tolerate a missing _worktrees dir without blowing up.
+    // Real filesystem fixture so the synchronous Git-registration scan is
+    // exercised end-to-end without needing a Git executable on PATH.
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-add-dirs-'));
     projectPath = path.join(tmpRoot, 'project');
     fs.mkdirSync(projectPath);
@@ -223,35 +224,42 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   });
 
   it('returns sibling worktree paths when called from the parent project root', () => {
-    fs.mkdirSync(worktreesDir);
-    fs.mkdirSync(path.join(worktreesDir, 'proud-gorge'));
-    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+    const externalWorktreesDir = path.join(tmpRoot, 'dedicated-worktree-volume');
+    const proudGorge = path.join(worktreesDir, 'proud-gorge');
+    const swiftFalcon = path.join(externalWorktreesDir, 'swift-falcon');
+    createLinkedWorktree(projectPath, proudGorge, 'proud-gorge');
+    createLinkedWorktree(projectPath, swiftFalcon, 'swift-falcon');
 
     const dirs = getAdditionalDirectoriesForWorkspace(projectPath);
     expect(dirs.sort()).toEqual([
-      path.join(worktreesDir, 'proud-gorge'),
-      path.join(worktreesDir, 'swift-falcon'),
+      fs.realpathSync.native(proudGorge),
+      fs.realpathSync.native(swiftFalcon),
     ].sort());
   });
 
   it('returns the parent project plus other sibling worktrees when called from a worktree', () => {
-    fs.mkdirSync(worktreesDir);
     const cwd = path.join(worktreesDir, 'proud-gorge');
     createLinkedWorktree(projectPath, cwd, 'proud-gorge');
-    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+    const externalSibling = path.join(tmpRoot, 'other-volume', 'swift-falcon');
+    createLinkedWorktree(projectPath, externalSibling, 'swift-falcon');
 
     const dirs = getAdditionalDirectoriesForWorkspace(cwd);
     expect(dirs.sort()).toEqual([
       fs.realpathSync.native(projectPath),
-      path.join(fs.realpathSync.native(worktreesDir), 'swift-falcon'),
+      fs.realpathSync.native(externalSibling),
     ].sort());
     // The current worktree itself must not appear -- it is already the
     // workingDirectory, and re-listing it would just add noise.
     expect(dirs).not.toContain(cwd);
   });
 
-  it('survives a missing _worktrees directory', () => {
-    // No worktrees dir created. Should not throw, just return empty.
+  it('survives a project with no registered worktrees', () => {
+    // No .git/worktrees directory created. Should not throw, just return empty.
+    expect(getAdditionalDirectoriesForWorkspace(projectPath)).toEqual([]);
+  });
+
+  it('does not grant access to an arbitrary directory in a conventional worktrees folder', () => {
+    fs.mkdirSync(path.join(worktreesDir, 'unverified-directory'), { recursive: true });
     expect(getAdditionalDirectoriesForWorkspace(projectPath)).toEqual([]);
   });
 
@@ -259,9 +267,8 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
     // The Claude Code loader opts out: the CLI discovers .claude/commands
     // skills in every additional directory, so N sibling worktrees inflate the
     // system prompt with N duplicate copies of every project skill.
-    fs.mkdirSync(worktreesDir);
-    fs.mkdirSync(path.join(worktreesDir, 'proud-gorge'));
-    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+    createLinkedWorktree(projectPath, path.join(worktreesDir, 'proud-gorge'), 'proud-gorge');
+    createLinkedWorktree(projectPath, path.join(tmpRoot, 'other-volume', 'swift-falcon'), 'swift-falcon');
 
     const dirs = getAdditionalDirectoriesForWorkspace(projectPath, {
       includeSiblingWorktrees: false,
@@ -270,10 +277,9 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   });
 
   it('keeps the parent project but drops siblings when includeSiblingWorktrees is false (worktree)', () => {
-    fs.mkdirSync(worktreesDir);
     const cwd = path.join(worktreesDir, 'proud-gorge');
     createLinkedWorktree(projectPath, cwd, 'proud-gorge');
-    fs.mkdirSync(path.join(worktreesDir, 'swift-falcon'));
+    createLinkedWorktree(projectPath, path.join(tmpRoot, 'other-volume', 'swift-falcon'), 'swift-falcon');
 
     const dirs = getAdditionalDirectoriesForWorkspace(cwd, {
       includeSiblingWorktrees: false,
@@ -283,18 +289,181 @@ describe('getAdditionalDirectoriesForWorkspace', () => {
   });
 });
 
+describe('Claude workflow catalog directory scopes', () => {
+  let tmpRoot: string;
+  let projectPath: string;
+  let worktreePath: string;
+
+  const writeCommand = (root: string, name: string) => {
+    const commandDir = path.join(root, '.claude', 'commands');
+    fs.mkdirSync(commandDir, { recursive: true });
+    fs.writeFileSync(path.join(commandDir, `${name}.md`), `---\ndescription: ${name}\n---\n`);
+  };
+
+  const writeSkill = (root: string, name: string) => {
+    const skillDir = path.join(root, '.claude', 'skills', name);
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\n---\n`);
+  };
+
+  const collectCatalog = (roots: string[]) => roots.flatMap((root) => {
+    const entries: Array<{ kind: 'command' | 'skill'; name: string; sourceRoot: string }> = [];
+    const commandsDir = path.join(root, '.claude', 'commands');
+    if (fs.existsSync(commandsDir)) {
+      for (const entry of fs.readdirSync(commandsDir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith('.md')) {
+          entries.push({ kind: 'command', name: path.basename(entry.name, '.md'), sourceRoot: root });
+        }
+      }
+    }
+    const skillsDir = path.join(root, '.claude', 'skills');
+    if (fs.existsSync(skillsDir)) {
+      for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && fs.existsSync(path.join(skillsDir, entry.name, 'SKILL.md'))) {
+          entries.push({ kind: 'skill', name: entry.name, sourceRoot: root });
+        }
+      }
+    }
+    return entries;
+  });
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-claude-catalog-scopes-'));
+    projectPath = path.join(tmpRoot, 'project');
+    worktreePath = path.join(tmpRoot, 'project_worktrees', 'fresh-worktree');
+    // Worktree identity is git-metadata-based (see createLinkedWorktree above), not the
+    // lexical `<project>_worktrees/<name>` naming convention alone -- a bare directory at
+    // that path is no longer recognized as a worktree.
+    createLinkedWorktree(projectPath, worktreePath, 'fresh-worktree');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    clearWorktreeIdentityCache();
+  });
+
+  it('keeps one project catalog for both main-checkout and worktree Claude sessions', () => {
+    for (const root of [projectPath, worktreePath]) {
+      writeCommand(root, 'repair');
+      writeSkill(root, 'review');
+    }
+
+    const previousWorktreeRoots = [
+      worktreePath,
+      ...getAdditionalDirectoriesForWorkspace(worktreePath, { includeSiblingWorktrees: false }),
+    ];
+    const previousWorktreeCatalog = collectCatalog(previousWorktreeRoots);
+    expect(previousWorktreeCatalog).toHaveLength(4);
+    expect(previousWorktreeCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+      'command:repair',
+      'skill:review',
+    ]);
+
+    const mainCatalog = collectCatalog([
+      projectPath,
+      ...getClaudeAdditionalDirectoriesForWorkspace(projectPath),
+    ]);
+    const worktreeCatalog = collectCatalog([
+      worktreePath,
+      ...getClaudeAdditionalDirectoriesForWorkspace(worktreePath),
+    ]);
+
+    expect(mainCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+    ]);
+    expect(worktreeCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+    ]);
+  });
+
+  it('dedups a registered worktree at a NON-convention path, in both directions', () => {
+    // Real registered worktree, but NOT under `<project>_worktrees/<name>` -- this
+    // machine's actual worktree volumes (D:/nimbalyst-worktrees, D:/claude-worktrees)
+    // use a hyphen and live outside the project directory entirely. F (PR #13)
+    // deliberately made worktree discovery git-metadata-based, not path-lexical, so
+    // dedup must recognize this via registration, not the `_worktrees` naming guess.
+    const offConventionWorktree = path.join(tmpRoot, 'external-worktree-volume', 'unrelated-dir-name');
+    createLinkedWorktree(projectPath, offConventionWorktree, 'unrelated-dir-name');
+
+    for (const root of [projectPath, offConventionWorktree]) {
+      writeCommand(root, 'repair');
+      writeSkill(root, 'review');
+    }
+
+    const mainCatalog = collectCatalog([
+      projectPath,
+      ...getClaudeAdditionalDirectoriesForWorkspace(projectPath),
+    ]);
+    const worktreeCatalog = collectCatalog([
+      offConventionWorktree,
+      ...getClaudeAdditionalDirectoriesForWorkspace(offConventionWorktree),
+    ]);
+
+    expect(mainCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+    ]);
+    expect(worktreeCatalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:repair',
+      'skill:review',
+    ]);
+  });
+
+  it('preserves same-looking entries from a distinct source while removing same-project scopes', () => {
+    const siblingPath = path.join(tmpRoot, 'project_worktrees', 'sibling');
+    const externalRoot = path.join(tmpRoot, 'external-workflows');
+    // Real registered sibling worktree of the same parent project (not just a
+    // lexically-named bare directory -- see the off-convention test above for why).
+    createLinkedWorktree(projectPath, siblingPath, 'sibling');
+    fs.mkdirSync(externalRoot, { recursive: true });
+
+    writeCommand(worktreePath, 'review');
+    writeCommand(projectPath, 'review');
+    writeCommand(siblingPath, 'review');
+    writeSkill(externalRoot, 'review');
+
+    const filtered = filterClaudeCatalogDuplicateDirectories(worktreePath, [
+      projectPath,
+      siblingPath,
+      externalRoot,
+    ]);
+    expect(filtered).toEqual([externalRoot]);
+
+    const catalog = collectCatalog([worktreePath, ...filtered]);
+    expect(catalog.map(({ kind, name }) => `${kind}:${name}`)).toEqual([
+      'command:review',
+      'skill:review',
+    ]);
+  });
+
+  it('normalizes Windows case and separators when comparing catalog provenance', () => {
+    expect(filterClaudeCatalogDuplicateDirectories(
+      'C:\\Repos\\Project_worktrees\\Fresh',
+      [
+        'c:/repos/project',
+        'C:\\REPOS\\PROJECT_WORKTREES\\Sibling',
+        'D:\\Repos\\Project',
+      ],
+    )).toEqual(['D:\\Repos\\Project']);
+  });
+});
+
 describe('findNearestAncestor', () => {
-  const trusted = new Set(['/path/to/project']);
+  const project = path.join(path.sep, 'path', 'to', 'project');
+  const trusted = new Set([project]);
   const pred = (dir: string) => trusted.has(dir);
 
   it('returns the start path itself when it matches', () => {
-    expect(findNearestAncestor('/path/to/project', pred)).toBe('/path/to/project');
+    expect(findNearestAncestor(project, pred)).toBe(project);
   });
 
   it('walks up to the nearest matching ancestor (subfolder cascade)', () => {
-    expect(findNearestAncestor('/path/to/project/packages/electron', pred))
-      .toBe('/path/to/project');
-    expect(findNearestAncestor('/path/to/project/src', pred)).toBe('/path/to/project');
+    expect(findNearestAncestor(path.join(project, 'packages', 'electron'), pred)).toBe(project);
+    expect(findNearestAncestor(path.join(project, 'src'), pred)).toBe(project);
   });
 
   it('returns null when no ancestor matches', () => {
@@ -302,34 +471,39 @@ describe('findNearestAncestor', () => {
   });
 
   it('returns the most specific matching ancestor when several match', () => {
-    const t2 = new Set(['/a', '/a/b/c']);
-    expect(findNearestAncestor('/a/b/c/d', (d) => t2.has(d))).toBe('/a/b/c');
+    const root = path.join(path.sep, 'a');
+    const nested = path.join(root, 'b', 'c');
+    const t2 = new Set([root, nested]);
+    expect(findNearestAncestor(path.join(nested, 'd'), (d) => t2.has(d))).toBe(nested);
   });
 
   it('handles empty input and trailing slashes', () => {
     expect(findNearestAncestor('', pred)).toBe(null);
-    expect(findNearestAncestor('/path/to/project/packages/', pred)).toBe('/path/to/project');
+    expect(findNearestAncestor(`${path.join(project, 'packages')}${path.sep}`, pred)).toBe(project);
   });
 
   describe('stopAt boundary', () => {
     it('still returns a match found at or below the boundary', () => {
       // boundary === the matching ancestor: it is tested, then the walk stops.
-      expect(findNearestAncestor('/path/to/project/src', pred, '/path/to/project'))
-        .toBe('/path/to/project');
+      expect(findNearestAncestor(path.join(project, 'src'), pred, project)).toBe(project);
     });
 
     it('does NOT climb past the boundary to a higher match', () => {
       // A trusted grandparent must not be inherited when a nearer boundary caps
       // the walk - this is the trust-boundary guard for nested projects.
-      const t = new Set(['/root']);
+      const root = path.join(path.sep, 'root');
+      const child = path.join(root, 'child');
+      const t = new Set([root]);
       const p = (d: string) => t.has(d);
-      expect(findNearestAncestor('/root/child/leaf', p, '/root/child')).toBe(null);
+      expect(findNearestAncestor(path.join(child, 'leaf'), p, child)).toBe(null);
     });
 
     it('returns the nearer match even when a farther one also matches', () => {
-      const t = new Set(['/root', '/root/child']);
+      const root = path.join(path.sep, 'root');
+      const child = path.join(root, 'child');
+      const t = new Set([root, child]);
       const p = (d: string) => t.has(d);
-      expect(findNearestAncestor('/root/child/leaf', p, '/root/child')).toBe('/root/child');
+      expect(findNearestAncestor(path.join(child, 'leaf'), p, child)).toBe(child);
     });
   });
 });

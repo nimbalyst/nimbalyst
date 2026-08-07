@@ -571,6 +571,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tracker workstream tabs are now safe and durable and no longer resurrect closed tabs.
 - Filtered tracker empty states now offer an actionable next step instead of a dead end.
 - The mobile transcript resolves the SDK file-tree subpath correctly.
+- Claude Agent worktree sessions no longer list project skills and commands twice.
 
 ### Removed
 <!-- Removed features go here -->
