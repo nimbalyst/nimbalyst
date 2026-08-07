@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('jotai-family', () => ({ atomFamily: vi.fn() }));
+
 vi.mock('../../database/PGLiteDatabaseWorker', () => ({
   database: {
     isInitialized: () => true,
@@ -903,6 +905,122 @@ describe('ToolCallMatcher', () => {
 
       const diffs = await toolCallMatcher.getDiffsForToolCall(SESSION_ID, RAW);
       expect(diffs).toEqual([]);
+    });
+  });
+
+  describe('matchSession raw-message bounds', () => {
+    const queryMock = database.query as ReturnType<typeof vi.fn>;
+
+    it('bounds sessions without definitive tool IDs to the editable file window', async () => {
+      const sessionId = 'bounded-session';
+      const earliestTimestamp = 1_700_000_000_000;
+      const latestTimestamp = earliestTimestamp + 45_000;
+
+      queryMock
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('FROM ai_sessions');
+          expect(params).toEqual([sessionId]);
+          return { rows: [{ workspace_id: '/workspace' }] };
+        })
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('FROM session_files');
+          expect(params).toEqual([sessionId]);
+          return {
+            rows: [
+              { id: 'early-file', file_path: '/workspace/src/early.ts', timestamp_ms: earliestTimestamp, metadata: {} },
+              { id: 'late-file', file_path: '/workspace/src/late.ts', timestamp_ms: latestTimestamp, metadata: {} },
+            ],
+          };
+        })
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('FROM ai_agent_messages');
+          expect(sql).toContain('(EXTRACT(EPOCH FROM created_at) * 1000) >= $2');
+          expect(sql).toContain('(EXTRACT(EPOCH FROM created_at) * 1000) <= $3');
+          expect(params).toEqual([sessionId, earliestTimestamp - 10_000, latestTimestamp + 10_000]);
+          return { rows: [] };
+        });
+
+      await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(0);
+      expect(queryMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('preserves out-of-window exact toolUseId matches with an unbounded lookup', async () => {
+      const sessionId = 'definitive-id-session';
+      const fileTimestamp = 1_700_000_000_000;
+      const toolTimestamp = fileTimestamp - 60_000;
+      let insertedParams: unknown[] | undefined;
+
+      queryMock
+        .mockImplementationOnce(async () => ({ rows: [{ workspace_id: '/workspace' }] }))
+        .mockImplementationOnce(async () => ({
+          rows: [{
+            id: 'file-1',
+            file_path: '/workspace/src/kept.ts',
+            timestamp_ms: fileTimestamp,
+            metadata: { toolUseId: 'tool-definitive' },
+          }],
+        }))
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('FROM ai_agent_messages');
+          expect(sql).not.toContain('(EXTRACT(EPOCH FROM created_at) * 1000) >= $2');
+          expect(sql).not.toContain('(EXTRACT(EPOCH FROM created_at) * 1000) <= $3');
+          expect(params).toEqual([sessionId]);
+          return {
+            rows: [{
+              id: 42,
+              created_at_ms: toolTimestamp,
+              metadata: {},
+              content: JSON.stringify({
+                type: 'assistant',
+                message: {
+                  content: [{
+                    type: 'tool_use',
+                    id: 'tool-definitive',
+                    name: 'Edit',
+                    input: { file_path: '/workspace/src/kept.ts' },
+                  }],
+                },
+              }),
+            }],
+          };
+        })
+        .mockImplementationOnce(async () => ({ rows: [] }))
+        .mockImplementationOnce(async (_sql: string, params: unknown[]) => {
+          insertedParams = params;
+          return { rows: [] };
+        });
+
+      await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(1);
+      expect(insertedParams).toEqual(expect.arrayContaining([
+        sessionId,
+        'file-1',
+        42,
+        'tool-definitive',
+      ]));
+    });
+
+    it('falls back to an unbounded lookup when a stored file timestamp is invalid', async () => {
+      const sessionId = 'invalid-timestamp-session';
+      queryMock
+        .mockImplementationOnce(async () => ({ rows: [{ workspace_id: '/workspace' }] }))
+        .mockImplementationOnce(async () => ({
+          rows: [{
+            id: 'file-invalid',
+            file_path: '/workspace/src/invalid.ts',
+            timestamp_ms: 'not-a-number',
+            metadata: {},
+          }],
+        }))
+        .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+          expect(sql).toContain('FROM ai_agent_messages');
+          expect(sql).not.toContain('(EXTRACT(EPOCH FROM created_at) * 1000) >= $2');
+          expect(sql).not.toContain('(EXTRACT(EPOCH FROM created_at) * 1000) <= $3');
+          expect(params).toEqual([sessionId]);
+          return { rows: [] };
+        });
+
+      await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(0);
+      expect(queryMock).toHaveBeenCalledTimes(3);
     });
   });
 });

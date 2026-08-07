@@ -942,10 +942,39 @@ class ToolCallMatcherImpl {
       }
       const sessionFiles = [...sessionFilesByKey.values()];
 
-      // 3. Load tool call windows from raw ai_agent_messages
-      const windows = await getRawToolCallWindows(sessionId, workspacePath);
+      // A session with no edited files cannot produce a match, so avoid the
+      // raw-message scan entirely.
+      if (sessionFiles.length === 0) return 0;
 
-      if (windows.length === 0 || sessionFiles.length === 0) return 0;
+      // Bound raw history for providers whose file rows have no definitive
+      // tool IDs (notably Codex). Exact metadata toolUseId matches deliberately
+      // bypass scoreMatch's time cutoff, so sessions carrying any such ID must
+      // retain the unbounded lookup to preserve those matches.
+      const hasDefinitiveToolUseIds = sessionFiles.some(file =>
+        typeof file.metadata?.toolUseId === 'string' && file.metadata.toolUseId.length > 0
+      );
+      let rawWindowOptions: { afterDate: Date; beforeDate: Date } | undefined;
+      if (!hasDefinitiveToolUseIds) {
+        const fileTimestamps = sessionFiles.map(file => ensureNumber(file.timestamp_ms));
+        const hasInvalidTimestamp = fileTimestamps.some(timestamp => !Number.isFinite(timestamp));
+        let minFileTs = Infinity;
+        let maxFileTs = -Infinity;
+        for (const timestamp of fileTimestamps) {
+          if (timestamp < minFileTs) minFileTs = timestamp;
+          if (timestamp > maxFileTs) maxFileTs = timestamp;
+        }
+        if (!hasInvalidTimestamp) {
+          rawWindowOptions = {
+            afterDate: new Date(minFileTs - TIME_CUTOFF_MS),
+            beforeDate: new Date(maxFileTs + TIME_CUTOFF_MS),
+          };
+        }
+      }
+
+      // 3. Load tool call windows from raw ai_agent_messages.
+      const windows = await getRawToolCallWindows(sessionId, workspacePath, rawWindowOptions);
+
+      if (windows.length === 0) return 0;
 
       // 4. Deduplicate windows by toolCallItemId.
       // When both item.started and item.completed exist for the same tool call,
