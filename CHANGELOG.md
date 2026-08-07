@@ -216,6 +216,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Menus and popups that open over the title bar respond to clicks again on Windows and Linux, including "Open folder…" in the project switcher (#1052).
 - Tracker types defined in one project no longer overwrite another open project's identically-named types (#1035).
 - Codex sessions now reach for Nimbalyst's browser tools instead of dead-ending on the ChatGPT desktop app's in-app browser plugin.
+- Windows shows the correct app icon in the taskbar and window chrome, checking the packaged `.ico` and current logo asset instead of only a `icon.png` name that no longer matches the packaged asset.
 
 ### Removed
 <!-- Removed features go here -->
