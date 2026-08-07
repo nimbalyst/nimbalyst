@@ -25,9 +25,11 @@ import {
   getMigrationProxy,
   stopPeriodicBackupTimer,
 } from '../database/initialize';
+import { legacyPgliteDatabase } from '../database/PGLiteDatabaseWorker';
 import { resolveBackend, readBackendState, commitRollbackToPglite } from '../database/sqlite/BackendSelector';
 import { classifyDatabaseError } from '../database/DatabaseErrorTelemetry';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
+import type { BackupPhysicalGrowthAssessment } from '../services/database/DatabaseBackupService';
 import * as fs from 'fs';
 
 let runningMigration = false;
@@ -60,6 +62,17 @@ export function registerMigrationHandlers(): void {
       const migratedDirs = fs
         .readdirSync(userDataPath)
         .filter((d) => d.startsWith('pglite-db.migrated-'));
+      let storageHealth: BackupPhysicalGrowthAssessment | null = null;
+      if (resolved.backend === 'pglite') {
+        const backupService = legacyPgliteDatabase.getBackupService();
+        if (backupService) {
+          try {
+            storageHealth = await backupService.assessPhysicalGrowth();
+          } catch (err) {
+            logger.main.warn('[Migration] Failed to read PGlite storage health:', err);
+          }
+        }
+      }
       return {
         success: true,
         activeBackend: resolved.backend,
@@ -69,6 +82,7 @@ export function registerMigrationHandlers(): void {
         migratedDirs,
         running: runningMigration,
         runningDryRun,
+        storageHealth,
       };
     } catch (err) {
       return { success: false, error: (err as Error).message };

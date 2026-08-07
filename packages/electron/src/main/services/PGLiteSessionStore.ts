@@ -2,6 +2,7 @@
  * PGLite implementation of SessionStore interface from runtime package
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { toMillis } from '../utils/timestampUtils';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
 import {
@@ -494,8 +495,14 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             );
             if (transition.changed) merged.activity = transition.metadata.activity;
           }
-          updates.push(`metadata = $${values.length + 1}`);
-          values.push(JSON.stringify(merged));
+          // JSONB object order is not meaningful and JSON serialization drops
+          // undefined object properties. Compare the canonical persisted value
+          // so repeated token/context snapshots do not create another dead tuple.
+          const persistedMerged = JSON.parse(JSON.stringify(merged)) as Record<string, any>;
+          if (!isDeepStrictEqual(existingMetadata, persistedMerged)) {
+            updates.push(`metadata = $${values.length + 1}`);
+            values.push(JSON.stringify(persistedMerged));
+          }
         }
       }
       if ((metadata as any).hasBeenNamed !== undefined) pushUpdate('has_been_named =', (metadata as any).hasBeenNamed);
