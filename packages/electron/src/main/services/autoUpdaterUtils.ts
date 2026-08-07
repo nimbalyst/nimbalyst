@@ -18,6 +18,32 @@ export function categorizeDownloadDuration(durationMs: number): 'fast' | 'medium
   return 'slow';
 }
 
+function parseVersionParts(version: string): number[] | null {
+  const normalized = version.trim().replace(/^v/i, '').split(/[+-]/)[0];
+  const match = normalized.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  if (!match) return null;
+  return [match[1], match[2] ?? '0', match[3] ?? '0'].map((part) => Number.parseInt(part, 10));
+}
+
+export function compareAppVersions(versionA: string, versionB: string): number | null {
+  const a = parseVersionParts(versionA);
+  const b = parseVersionParts(versionB);
+  if (!a || !b) return null;
+
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] > b[i]) return 1;
+    if (a[i] < b[i]) return -1;
+  }
+  return 0;
+}
+
+export function isUpdateVersionNewer(updateVersion: string, currentVersion: string): boolean {
+  const comparison = compareAppVersions(updateVersion, currentVersion);
+  // Fail open for unusual version strings: electron-updater already accepted
+  // the candidate version, so only suppress updates we can compare confidently.
+  return comparison === null || comparison > 0;
+}
+
 // electron-updater runs its requests through Electron's Chromium net stack,
 // which reports connectivity failures as `net::ERR_*` strings that none of the
 // Node-style checks (enotfound / econnrefused / timeout) match. The most common
