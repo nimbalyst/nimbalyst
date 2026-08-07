@@ -122,6 +122,27 @@ describe('watchClaudePidState liveness backstop', () => {
     return { states, stop };
   }
 
+  // The CLI reports a FOURTH status, `shell`: the conversation turn is over but a
+  // background shell it started is still running (verified against claude 2.1.224,
+  // which wrote `"status":"shell"` 28s into a run_in_background turn and held it).
+  // Treating that as unrecognized left the watcher holding `running` forever, so
+  // no running->idle transition ever fired: the spinner never stopped and the
+  // queue never drained until the user killed the background task by hand.
+  it('settles to idle when a turn ends with a background shell still running', async () => {
+    let file = busyFile;
+    const { states, stop } = setup({
+      readFile: async () => file,
+      isProcessAlive: () => true,
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(states).toEqual(['running']);
+
+    file = JSON.stringify({ status: 'shell', pid: 999, updatedAt: 2_000 });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(states).toEqual(['running', 'idle']);
+    stop();
+  });
+
   it('keeps trusting an old busy file while the process is alive (no updatedAt staleness)', async () => {
     const { states, stop } = setup({
       readFile: async () => busyFile,

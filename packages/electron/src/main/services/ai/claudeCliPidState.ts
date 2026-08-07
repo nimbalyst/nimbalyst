@@ -20,8 +20,15 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
-/** Statuses the CLI writes into the PID file. */
-export type ClaudePidStatus = 'busy' | 'idle' | 'waiting';
+/**
+ * Statuses the CLI writes into the PID file.
+ *
+ * `shell` means the conversation turn has finished but a background shell the
+ * turn started is still running (the TUI shows "N shells still running for
+ * agents to manage"). The CLI happily accepts a new prompt in that state, so for
+ * turn purposes it is idle.
+ */
+export type ClaudePidStatus = 'busy' | 'idle' | 'waiting' | 'shell';
 
 /** Nimbalyst-side turn states the CLI status maps to. */
 export type ClaudeTurnState = 'running' | 'idle' | 'waiting_for_input';
@@ -39,7 +46,15 @@ export interface ParsedClaudePidFile {
   raw: Record<string, unknown>;
 }
 
-const KNOWN_STATUSES: ReadonlySet<string> = new Set(['busy', 'idle', 'waiting']);
+const KNOWN_STATUSES: ReadonlySet<string> = new Set(['busy', 'idle', 'waiting', 'shell']);
+
+/**
+ * Unrecognized statuses are held rather than guessed at (see `watchClaudePidState`),
+ * which is forward-compatible but silent: `shell` shipped in the CLI and pinned
+ * every affected session to "running" until someone noticed. Warn once per value
+ * so the next new status is diagnosable from the log instead of the symptom.
+ */
+const warnedUnknownStatuses = new Set<string>();
 
 /**
  * Normalize an `updatedAt` value to epoch milliseconds. The CLI's unit is
@@ -70,6 +85,13 @@ export function parseClaudePidFile(contents: string): ParsedClaudePidFile | null
   const obj = parsed as Record<string, unknown>;
   const rawStatus = typeof obj.status === 'string' ? obj.status.trim().toLowerCase() : '';
   if (!KNOWN_STATUSES.has(rawStatus)) {
+    if (rawStatus && !warnedUnknownStatuses.has(rawStatus)) {
+      warnedUnknownStatuses.add(rawStatus);
+      console.warn(
+        `[ClaudeCliPidState] unrecognized CLI status "${rawStatus}"; holding last-known turn state. ` +
+          'If sessions appear stuck as running, this is why.',
+      );
+    }
     return null;
   }
   const pid = typeof obj.pid === 'number' && Number.isFinite(obj.pid) ? obj.pid : undefined;
@@ -102,7 +124,8 @@ export function isClaudePidFileStale(
   now: number,
   staleAfterMs: number
 ): boolean {
-  if (parsed.status === 'idle') return false;
+  // `shell` is a finished turn, so like `idle` it legitimately stops refreshing.
+  if (parsed.status === 'idle' || parsed.status === 'shell') return false;
   if (parsed.updatedAt === undefined) return false;
   return now - parsed.updatedAt > staleAfterMs;
 }
@@ -114,6 +137,9 @@ export function mapPidStatusToTurnState(status: ClaudePidStatus): ClaudeTurnStat
       return 'running';
     case 'waiting':
       return 'waiting_for_input';
+    // A leftover background shell is not a turn. The conversation is free, so the
+    // spinner stops and the queue drains instead of waiting for the shell to die.
+    case 'shell':
     case 'idle':
     default:
       return 'idle';
