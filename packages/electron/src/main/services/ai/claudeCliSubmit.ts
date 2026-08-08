@@ -80,6 +80,58 @@ export interface SubmitClaudeCliPromptDeps {
     hasDocumentContext: boolean;
   }) => void;
   delay: (ms: number) => Promise<void>;
+  /**
+   * Has the CLI actually started a turn for this session? Read from its PID file
+   * (`readClaudePidTurnState`). Omit to skip Enter confirmation entirely, which
+   * is what the pure unit tests and any caller without a live PID do.
+   */
+  hasTurnStarted?: (sessionId: string) => boolean | Promise<boolean>;
+}
+
+/** How long to wait between checks that the turn actually started. */
+const ENTER_CONFIRM_POLL_MS = 250;
+/** Checks per attempt. 8 x 250ms = 2s, well past the ~400ms measured worst case. */
+const ENTER_CONFIRM_POLLS = 8;
+/** Extra Enters to try. The prompt box is empty once a turn starts, so a
+ *  redundant Enter on an already-submitted session is a no-op. */
+const ENTER_RETRIES = 2;
+
+/**
+ * Press Enter until the CLI actually starts a turn.
+ *
+ * The CLI ingests an attached file AFTER its bytes land (read + decode), and an
+ * Enter arriving during that window is swallowed. Measured on 2.1.220 with real
+ * screenshots (`nimbalyst-local/cli-paste-probes/05` and `06`): 25ms and 200ms
+ * strand, ~400ms and up submit. `submitWriteGapMs` cannot know that, because it
+ * scales with the PAYLOAD LENGTH — a sentence plus one path is ~300 chars and
+ * yields the 25ms floor however large the image is.
+ *
+ * So don't guess a bigger constant, which would be the same bug with a nicer
+ * number. Ask the same signal Nimbalyst already trusts for "is this session
+ * busy" and re-press if the answer is no.
+ */
+async function confirmEnterStartedTurn(
+  sessionId: string,
+  deps: SubmitClaudeCliPromptDeps,
+): Promise<void> {
+  const hasTurnStarted = deps.hasTurnStarted;
+  if (!hasTurnStarted) return;
+
+  for (let attempt = 0; attempt <= ENTER_RETRIES; attempt++) {
+    for (let poll = 0; poll < ENTER_CONFIRM_POLLS; poll++) {
+      try {
+        if (await hasTurnStarted(sessionId)) return;
+      } catch {
+        // An unreadable PID file is not a reason to spam Enter — treat the
+        // confirmation as unavailable and stop.
+        return;
+      }
+      await deps.delay(ENTER_CONFIRM_POLL_MS);
+    }
+    if (attempt < ENTER_RETRIES) {
+      deps.writeToTerminal(sessionId, SUBMIT_TERMINATOR);
+    }
+  }
 }
 
 /**
@@ -147,6 +199,9 @@ export async function submitClaudeCliPrompt(
     );
     await deps.delay(submitWriteGapMs(ptyText.length));
     deps.writeToTerminal(input.sessionId, SUBMIT_TERMINATOR);
+    // An attachment makes the CLI do async work after the bytes land, which can
+    // swallow that Enter. Confirm a turn really started; press again if not.
+    await confirmEnterStartedTurn(input.sessionId, deps);
   }
 
   // Log the CLEAN typed prompt (+ attachment chips), NOT the path-augmented PTY
