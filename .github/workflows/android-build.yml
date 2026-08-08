@@ -27,6 +27,12 @@ on:
       - 'packages/android/**'
       - 'packages/runtime/**'
       - '.github/workflows/android-build.yml'
+  # Lets android-release.yml invoke this build as a reusable workflow on
+  # `android/v*` tag pushes. Deliberately no `paths` filter here -- combining
+  # `paths` with a tag trigger is ambiguous for newly-created tags, so the
+  # release trigger lives in android-release.yml instead, untouched by this
+  # push/pull_request path filtering.
+  workflow_call:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
