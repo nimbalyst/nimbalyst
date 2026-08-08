@@ -61,6 +61,23 @@ describe('flushNextClaudeCliQueuedPrompt', () => {
     expect(h.submit).not.toHaveBeenCalled();
   });
 
+  it('does not claim while an interrupt escalation is in flight', async () => {
+    // The user's stop press starts an escalation: Ctrl-C, wait 1500ms, re-check,
+    // maybe Ctrl-C again. The first Ctrl-C ends the turn in ~200ms, the PID
+    // watcher's idle edge flushes the queued prompt, a NEW turn starts, and the
+    // escalation's re-check reads `running` and cannot tell it from the old turn
+    // refusing to die, so its second Ctrl-C kills the queued prompt and the TUI
+    // puts the text back in the box. Hold the flush until the escalation is over.
+    const h = harness([{ id: 'q1', prompt: 'first' }]);
+    const result = await flushNextClaudeCliQueuedPrompt(
+      { sessionId: 's1', workspacePath: '/w' },
+      { ...h.deps, isInterruptInFlight: () => true },
+    );
+    expect(result).toBe(false);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.submit).not.toHaveBeenCalled();
+  });
+
   it('returns false and does nothing when the queue is empty', async () => {
     const h = harness([]);
     const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);

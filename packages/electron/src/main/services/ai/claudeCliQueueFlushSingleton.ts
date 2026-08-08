@@ -17,11 +17,31 @@ import { flushNextClaudeCliQueuedPrompt } from './claudeCliQueueFlush';
 import { publishQueuedPromptClaim } from './queuedPromptClaimEvents';
 import { publishQueuedPromptsToSync } from './queuedPromptSyncPublisher';
 import { claudeCliSubmitLatch } from './claudeCliSubmitLatch';
+import { claudeCliInterruptGate } from './claudeCliInterruptGate';
 
 /** Per-session guard so two close `idle` events can't double-flush. */
 const flushInFlight = new Set<string>();
 /** Sessions with a pending re-check queued for when the submit latch lifts. */
 const latchRetryPending = new Set<string>();
+/** Sessions with a pending re-check queued for when the interrupt gate clears. */
+const interruptRetryPending = new Set<string>();
+
+/**
+ * A flush skipped because a stop press was still escalating must retry once the
+ * escalation is over: the idle edge that triggered it has already passed, and
+ * after the escalation the session sits idle with the prompt still queued. The
+ * short settle keeps the retry clear of the escalation's final keystroke.
+ */
+function retryWhenInterruptGateClears(sessionId: string, workspacePath: string): void {
+  if (interruptRetryPending.has(sessionId)) return;
+  interruptRetryPending.add(sessionId);
+  void claudeCliInterruptGate.waitUntilClear(sessionId).then(() => {
+    setTimeout(() => {
+      interruptRetryPending.delete(sessionId);
+      void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
+    }, 500).unref?.();
+  });
+}
 
 /**
  * A flush skipped because a submit was still draining has to be retried, or the
@@ -52,6 +72,10 @@ export async function flushNextClaudeCliQueuedPromptForSession(
     retryWhenSubmitLatchLifts(sessionId, workspacePath);
     return false;
   }
+  if (claudeCliInterruptGate.isInFlight(sessionId)) {
+    retryWhenInterruptGateClears(sessionId, workspacePath);
+    return false;
+  }
   flushInFlight.add(sessionId);
   try {
     const store = getQueuedPromptsStore();
@@ -76,6 +100,7 @@ export async function flushNextClaudeCliQueuedPromptForSession(
         fail: (id, m) => store.fail(id, m),
         submit: (i) => submitClaudeCliPromptProduction(i),
         isSubmitInFlight: () => claudeCliSubmitLatch.isInFlight(sessionId),
+        isInterruptInFlight: () => claudeCliInterruptGate.isInFlight(sessionId),
         // The flush runs from the PID-idle transition with no originating IPC
         // event, so there is no single target window; broadcasting is safe
         // because the renderer filters by sessionId (NIM-830).

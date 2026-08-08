@@ -53,6 +53,16 @@ export interface FlushClaudeCliQueueDeps {
    * `claudeCliSubmitLatch`.
    */
   isSubmitInFlight?: () => boolean;
+  /**
+   * True while a stop press is still escalating (Ctrl-C, settle, re-check,
+   * maybe Ctrl-C again — see `claudeCliInterrupt`). The first Ctrl-C ends the
+   * turn well inside the escalation's 1500ms settle, so the idle edge fires and
+   * a flush here starts a NEW turn that the escalation's re-check cannot tell
+   * from the old one refusing to die — its second Ctrl-C then kills the queued
+   * prompt and the TUI drops the text back into the prompt box. Hold the flush
+   * until the escalation is over.
+   */
+  isInterruptInFlight?: () => boolean;
 }
 
 /**
@@ -67,6 +77,7 @@ export async function flushNextClaudeCliQueuedPrompt(
   // Check before claiming: a claimed prompt we then decline to send would have to
   // be rolled back out of `executing`.
   if (deps.isSubmitInFlight?.()) return false;
+  if (deps.isInterruptInFlight?.()) return false;
 
   const pending = await deps.listPending(args.sessionId);
   if (pending.length === 0) return false;
