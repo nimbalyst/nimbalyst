@@ -29,11 +29,35 @@ export interface SwitchClaudeCliModelInput {
 export interface SwitchClaudeCliModelDeps {
   writeToTerminal: (sessionId: string, data: string) => void;
   delay: (ms: number) => Promise<void>;
+  /**
+   * Recent PTY output for this session (terminal scrollback tail), used to spot
+   * the confirmation dialog. Omit to skip confirmation entirely.
+   */
+  readRecentOutput?: (sessionId: string) => string;
 }
 
 export type SwitchClaudeCliModelResult =
-  | { switched: true; cliArg: string }
+  | { switched: true; cliArg: string; confirmed?: true }
   | { switched: false };
+
+/** How long to wait between checks for the confirmation dialog. */
+const CONFIRM_POLL_MS = 250;
+/** Checks before giving up. 8 x 250ms = 2s. */
+const CONFIRM_POLLS = 8;
+
+/**
+ * Does this output show the CLI's "switch model?" confirmation?
+ *
+ * 2.1.225 stopped treating `/model x` as a direct setter: on a cached
+ * conversation it asks first, because switching re-reads the whole history on
+ * the next message. Matched on the heading plus an affirmative row so ordinary
+ * text mentioning a model can't trigger it.
+ */
+export function isModelSwitchConfirmation(output: string | undefined): boolean {
+  if (!output) return false;
+  const visible = output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  return /switch\s+model\?/i.test(visible) && /\byes,\s*switch\b/i.test(visible);
+}
 
 /** Build the `/model <arg>` line for a picker model id, or null if unresolvable. */
 export function buildClaudeCliModelSwitchCommand(model: string | undefined): string | null {
@@ -54,5 +78,19 @@ export async function switchClaudeCliModel(
   await deps.delay(MODEL_SWITCH_WRITE_GAP_MS);
   deps.writeToTerminal(input.sessionId, '\r');
 
-  return { switched: true, cliArg: command.slice('/model '.length) };
+  const cliArg = command.slice('/model '.length);
+  if (!deps.readRecentOutput) return { switched: true, cliArg };
+
+  // The dialog waits forever if nobody answers, and the session reads as busy
+  // the whole time. Accept it on the user's behalf: they picked this model in
+  // Nimbalyst's picker, so re-asking in a terminal they have to go find is a
+  // question already answered. Enter takes the highlighted first row ("Yes").
+  for (let poll = 0; poll < CONFIRM_POLLS; poll++) {
+    await deps.delay(CONFIRM_POLL_MS);
+    if (isModelSwitchConfirmation(deps.readRecentOutput(input.sessionId))) {
+      deps.writeToTerminal(input.sessionId, '\r');
+      return { switched: true, cliArg, confirmed: true };
+    }
+  }
+  return { switched: true, cliArg };
 }

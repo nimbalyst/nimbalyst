@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- A Claude Code CLI session no longer hangs when the CLI asks you to confirm a model switch.
 - Shared spreadsheets, diagrams, mockups, and data models no longer drop edits when two people work in them at once.
 - Opening a shared document whose editor you do not have now names the extension you need and offers to install it, instead of showing only the document type.
 - Shared mockup files now have a source pane, so their content can be edited collaboratively.

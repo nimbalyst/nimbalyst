@@ -68,6 +68,35 @@ describe('switchClaudeCliModel', () => {
     expect(deps.delay).toHaveBeenCalledWith(MODEL_SWITCH_WRITE_GAP_MS);
   });
 
+  it('confirms the switch when the CLI asks instead of leaving it pending', async () => {
+    // CLI 2.1.225 stopped treating `/model x` as a direct setter: on a cached
+    // conversation it opens "Switch model?" with Yes/No and WAITS. Nothing
+    // answered it, so the session sat in progress and the only way through was
+    // the raw terminal. The model was already chosen in Nimbalyst's picker, so
+    // the dialog re-asks a question the user has answered.
+    const { writes, deps } = makeDeps();
+    const result = await switchClaudeCliModel(
+      { sessionId: 's1', model: 'claude-code-cli:opus-1m' },
+      {
+        ...deps,
+        readRecentOutput: () =>
+          'Switch model?\n  1. Yes, switch to Opus 5 (1M context)\n  2. No, go back',
+      },
+    );
+    expect(result).toEqual({ switched: true, cliArg: 'opus[1m]', confirmed: true });
+    // command, Enter, then the confirmation Enter accepting the highlighted Yes
+    expect(writes).toEqual(['/model opus[1m]', '\r', '\r']);
+  });
+
+  it('does not send a confirmation Enter when no dialog appeared', async () => {
+    const { writes, deps } = makeDeps();
+    await switchClaudeCliModel(
+      { sessionId: 's1', model: 'claude-code-cli:fable' },
+      { ...deps, readRecentOutput: () => 'ordinary output, no dialog' },
+    );
+    expect(writes).toEqual(['/model fable', '\r']);
+  });
+
   it('does not touch the PTY for an unresolvable model', async () => {
     const { writes, deps } = makeDeps();
     const result = await switchClaudeCliModel({ sessionId: 's1', model: 'openai:gpt-5.5' }, deps);

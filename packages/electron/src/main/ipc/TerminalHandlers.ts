@@ -382,6 +382,10 @@ export function registerTerminalHandlers(): void {
         writeToTerminal: (sessionId: string, data: string) =>
           manager.writeToTerminal(sessionId, data),
         delay: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+        // Only the tail matters: the confirmation renders right after the
+        // command, and a whole scrollback would match a mention from earlier.
+        readRecentOutput: (sessionId: string) =>
+          (manager.getScrollbackBuffer(sessionId) ?? '').slice(-4000),
       });
       if (!result.switched) {
         throw new Error(`Model "${payload.model}" cannot be applied to a Claude Code CLI session`);
