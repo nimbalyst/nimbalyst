@@ -25,6 +25,7 @@ import {
   type VirtualElement,
 } from '@floating-ui/react';
 import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { OrgSwitcher } from './OrgSwitcher';
 import {
@@ -60,6 +61,7 @@ interface ProjectRailIconProps {
   isActive: boolean;
   processingCount: number;
   unreadCount: number;
+  awaitingCount: number;
   onActivate: (path: string) => void;
   onClose: (project: OpenProject) => void;
   onContextMenu: (project: OpenProject, x: number, y: number) => void;
@@ -70,6 +72,7 @@ function ProjectRailIcon({
   isActive,
   processingCount,
   unreadCount,
+  awaitingCount,
   onActivate,
   onClose,
   onContextMenu,
@@ -120,8 +123,33 @@ function ProjectRailIcon({
   // Inactive projects show a badge when something needs attention. Active
   // projects already have the user's eyes on them so we suppress the
   // badge to keep the rail quiet.
-  const showBadge = !isActive && (processingCount > 0 || unreadCount > 0);
-  const badgeLabel = processingCount > 0 ? `${processingCount}` : unreadCount > 0 ? `${unreadCount}` : '';
+  //
+  // Priority: awaiting a question > still running > finished-unread. The three
+  // are visually distinct rather than three flavours of the same number,
+  // because a bare count can't say whether it means "2 still working" or
+  // "2 done, go read them" — opposite calls to action. Each state borrows the
+  // symbol the session list already uses for it (SessionListItem's
+  // SessionStatusIndicator) so the rail and the sidebar read as one language:
+  //
+  //   awaiting  → contact_support, warning colour, pulsing (blocked on you)
+  //   running   → spinner, no count (nothing to do yet; count is noise)
+  //   unread    → plain count, primary colour (N finished threads to read)
+  const badgeState = !isActive
+    ? awaitingCount > 0
+      ? 'awaiting'
+      : processingCount > 0
+        ? 'running'
+        : unreadCount > 0
+          ? 'unread'
+          : 'none'
+    : 'none';
+  const showBadge = badgeState !== 'none';
+  const badgeTitle =
+    badgeState === 'awaiting'
+      ? `${awaitingCount} session${awaitingCount === 1 ? '' : 's'} waiting for your response`
+      : badgeState === 'running'
+        ? `${processingCount} session${processingCount === 1 ? '' : 's'} running`
+        : `${unreadCount} finished session${unreadCount === 1 ? '' : 's'} to read`;
 
   // Wrapper is a non-interactive container so the activate button and the
   // close button can sit as siblings. Nesting a button inside a button is
@@ -146,10 +174,14 @@ function ProjectRailIcon({
         {projectInitials(project.name)}
         {showBadge && (
           <span
-            className="project-rail-item-badge"
-            aria-label={processingCount > 0 ? `${processingCount} streaming session(s)` : `${unreadCount} unread`}
+            className={`project-rail-item-badge is-${badgeState}`}
+            aria-label={badgeTitle}
+            title={badgeTitle}
+            data-badge-state={badgeState}
           >
-            {badgeLabel}
+            {badgeState === 'awaiting' && <MaterialSymbol icon="contact_support" size={11} />}
+            {badgeState === 'running' && <MaterialSymbol icon="progress_activity" size={11} />}
+            {badgeState === 'unread' && unreadCount}
           </span>
         )}
       </button>
@@ -431,6 +463,7 @@ export function ProjectRail() {
             isActive={project.path === activePath}
             processingCount={activity?.processing ?? 0}
             unreadCount={activity?.unread ?? 0}
+            awaitingCount={activity?.awaiting ?? 0}
             onActivate={handleActivate}
             onClose={handleClose}
             onContextMenu={handleContextMenu}
