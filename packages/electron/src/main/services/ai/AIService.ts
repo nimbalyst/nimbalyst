@@ -1181,6 +1181,19 @@ export class AIService {
 
                 logger.main.info(`[AIService] Inserted ${newPromptsCount} new prompts into queued_prompts table`);
 
+                // Mirror the freshly-inserted rows back to mobile. Every other
+                // creation/mutation path (createQueuedPrompt, claim, complete,
+                // fail, delete, cancel/interrupt sweeps) publishes after its
+                // change; this mobile-receive path never did, so a prompt sent
+                // from a phone never got its own confirming "you're now
+                // authoritatively queued" push -- it only left the queue (via
+                // the claim-time publish) but never entered it. The sending
+                // device's own optimistic local row is not enough by itself:
+                // the mobile queue pane is driven by synced state, not local
+                // composition, so without this push a phone-originated prompt
+                // never displays as queued at all while pending.
+                await this.publishQueueStateToSync(sessionId);
+
                 // Load session to get its workspacePath for window routing
                 // Use repository directly since we just need metadata, not full session load
                 const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
