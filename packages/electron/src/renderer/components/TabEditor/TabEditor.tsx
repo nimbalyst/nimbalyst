@@ -59,6 +59,8 @@ import { hasEditorFind, registerEditorFindHandler } from './editorFindCommand';
 import { useSuppressedDocumentHeaderProviderIds } from './DocumentHeaderSuppressionContext';
 import { createCollectionItem } from '../TrackerMode/createCollectionItem';
 import { loadTrackerTeamMembers } from '../TrackerMode/useTrackerTeamMembers';
+import { assertFileSaveSucceeded, getSaveFailureMessage, resolveSaveFailureType, type FileSaveResult } from '../../utils/fileSaveResult';
+import { resolveSaveAttempt } from './resolveSaveAttempt';
 
 /** Normalize a file path for comparison: backslashes to forward slashes, strip trailing slashes. */
 function normalizePathForCompare(p: string): string {
@@ -239,6 +241,18 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   // external change to disk while the buffer is dirty. The buffer is
   // preserved -- the user clicks "Reload" to pick up the disk content.
   const [autosaveConflictDiskContent, setAutosaveConflictDiskContent] = useState<string | null>(null);
+  const [saveFailure, setSaveFailure] = useState<{
+    errorType: string;
+    source: 'auto' | 'manual';
+  } | null>(null);
+  const assertManualSaveSucceeded = useCallback((result: FileSaveResult | null) => {
+    if (!result?.success) {
+      setSaveFailure({ errorType: resolveSaveFailureType(result), source: 'manual' });
+    } else {
+      setSaveFailure(null);
+    }
+    assertFileSaveSucceeded(result);
+  }, []);
   const [showMonacoDiffBar, setShowMonacoDiffBar] = useState(false); // For Monaco diff approval bar
   const [showCustomEditorDiffBar, setShowCustomEditorDiffBar] = useState(false); // For custom editor diff approval bar
   const [isEditorReady, setIsEditorReady] = useState(false); // Track when editor is mounted and ready
@@ -814,10 +828,25 @@ export const TabEditor: React.FC<TabEditorProps> = ({
   ) => {
     if (!window.electronAPI) return;
 
+    const expectedDiskContent = lastSavedContentRef.current;
+    // Generate a unique save ID to track this specific save operation
+    const thisSaveId = ++saveIdRef.current;
+    pendingSaveIdsRef.current.add(thisSaveId);
+
+    // The local baseline and the DocumentModel echo-suppression baseline must
+    // always move together -- writing one without the other leaves the next
+    // conflict check comparing against content that is not on disk. Every exit
+    // path below goes through here so a new branch cannot forget one of them.
+    const setPersistedBaseline = (content: string) => {
+      lastSavedContentRef.current = content;
+      documentModel?.setLastPersistedContent(content);
+    };
+    // Post-write bookkeeping (history snapshot, tag updates) can still throw
+    // after the bytes are on disk. The catch below must not rewind the
+    // baseline in that case -- disk really does hold contentToSave.
+    let contentReachedDisk = false;
+
     try {
-      // Generate a unique save ID to track this specific save operation
-      const thisSaveId = ++saveIdRef.current;
-      pendingSaveIdsRef.current.add(thisSaveId);
 
       // Capture the content we expect to be on disk BEFORE we optimistically
       // overwrite lastSavedContentRef. This becomes the `lastKnownContent`
@@ -825,8 +854,6 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       // else, we know an external process changed the file (e.g. an AI
       // session recreated a previously-deleted file). For autosave, the
       // conflict path preserves the buffer rather than clobbering disk.
-      const expectedDiskContent = lastSavedContentRef.current;
-
       // Set saving flag BEFORE saving to prevent file watcher from reloading
       isSavingRef.current = true;
 
@@ -834,112 +861,108 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       // CRITICAL: Update both ref and state synchronously to ensure file watcher sees the change
       const saveTime = Date.now();
       lastSaveTimeRef.current = saveTime;
-      lastSavedContentRef.current = contentToSave;
 
-      // Update DocumentModel echo-suppression baseline BEFORE writing to disk.
-      // The file watcher can fire before saveFile returns, and echo suppression
-      // needs to see the new content as "ours" to avoid unnecessary getPendingTags calls.
-      documentModel?.setLastPersistedContent(contentToSave);
+      // Update the baseline BEFORE writing to disk. The file watcher can fire
+      // before saveFile returns, and echo suppression needs to see the new
+      // content as "ours" to avoid unnecessary getPendingTags calls.
+      setPersistedBaseline(contentToSave);
 
       logger.ui.info(`[TabEditor] Saving ${fileName}, saveId=${thisSaveId}, skipDiffCheck=${skipDiffCheck}`);
 
       // Save to disk with conflict detection. Always pass lastKnownContent so
       // the main process can detect external changes and refuse to overwrite
-      // them silently.
-      const result = await window.electronAPI.saveFile(
-          contentToSave,
-          filePath,
-          expectedDiskContent
-      );
-
-      // console.log(`[TabEditor] saveFile returned for ${fileName}, success=${result?.success}, conflict=${result?.conflict}`);
-
-      // IMMEDIATE: Clear dirty flag as soon as save succeeds
-      if (result && result.success) {
-        isDirtyRef.current = false;
-        documentModelHandleRef.current?.setDirty(false);
-        // Notify clean sibling editors (e.g. same file open in AgentMode)
-        documentModelHandleRef.current?.notifySiblingsSaved(contentToSave);
-        // Update initialContentRef with current editor content to prevent false dirty flags
-        if (getContentFnRef.current) {
-          initialContentRef.current = getContentFnRef.current();
-        }
-        // Notify parent immediately
-        onDirtyChange?.(false);
-        // console.log(`[TabEditor] Cleared dirty flag immediately after successful save for ${fileName}`);
-      }
-
-      if (result) {
-        // Check for conflicts
-        if (result.conflict) {
-          // Restore lastSavedContentRef -- we optimistically set it to
-          // contentToSave above, but the save did NOT land on disk. The
-          // baseline must remain whatever we last knew was on disk so the
-          // next conflict check is meaningful.
-          lastSavedContentRef.current = expectedDiskContent;
-
-          if (snapshotType === 'auto') {
-            // Autosave path: never overwrite silently, never prompt. Show a
-            // non-blocking banner. Buffer is preserved as-is. The user can
-            // click "Reload" to pick up disk content. Until then, autosave
-            // skips because lastSavedContentRef still mismatches disk on
-            // every retry; the banner stays up.
-            logger.ui.info('[TabEditor] Autosave conflict detected -- showing non-blocking banner, buffer preserved');
-            if (typeof result.diskContent === 'string') {
-              setAutosaveConflictDiskContent(result.diskContent);
-            } else {
-              setAutosaveConflictDiskContent('');
-            }
-            // Keep the buffer dirty so the user's edits are preserved.
-            // Don't proceed to history snapshot for this failed save.
-            return;
-          }
-
-          // Manual save path: prompt the user as before.
-          logger.ui.info('[TabEditor] Save conflict detected, prompting user');
-          const shouldOverwrite = window.confirm(
+      // them silently. resolveSaveAttempt owns the conflict prompt and the
+      // forced retry; every outcome it returns carries the baseline that must
+      // end up persisted, so no branch here can forget to rewind or advance it.
+      const outcome = await resolveSaveAttempt(
+        { contentToSave, expectedDiskContent, filePath, snapshotType },
+        {
+          saveFile: (content, path, lastKnown, source) =>
+            window.electronAPI.saveFile(content, path, lastKnown, source),
+          confirmOverwrite: () => {
+            logger.ui.info('[TabEditor] Save conflict detected, prompting user');
+            return window.confirm(
               'The file has been modified externally since you opened it.\n\n' +
               'Do you want to overwrite the external changes with your edits?\n\n' +
               'Click OK to overwrite, or Cancel to reload the file from disk.'
-          );
+            );
+          },
+        },
+      );
 
-          if (shouldOverwrite) {
-            // Retry save without conflict checking (force overwrite)
-            const forceResult = await window.electronAPI.saveFile(contentToSave, filePath);
-            if (forceResult && forceResult.success) {
-              initialContentRef.current = contentToSave;
-              lastSaveTimeRef.current = Date.now();
-              lastSavedContentRef.current = contentToSave;
-            }
-          } else if (result.diskContent) {
-            // User chose to reload - update editor with disk content
-            // Update editor content programmatically to avoid remount
-            const diskContent = result.diskContent;
-            if (editorRef.current) {
-              try {
-                // Import Lexical functions from 'lexical' and editor functions from '@nimbalyst/runtime'
-                const transformers = getEditorTransformers();
+      setPersistedBaseline(outcome.baseline);
 
-                editorRef.current.update(() => {
-                  // Clearing a selected node without moving selection first makes
-                  // Lexical throw "selection has been lost ..." (NIM-2005).
-                  $setSelection(null);
-                  const root = $getRoot();
-                  root.clear();
-                  $convertFromEnhancedMarkdownString(diskContent, transformers);
-                }, { tag: SKIP_SCROLL_INTO_VIEW_TAG });
-              } catch (error) {
-                logger.ui.error(`[TabEditor] Failed to update editor content:`, error);
-              }
-            }
+      if (outcome.kind === 'autosave-conflict') {
+        // Autosave path: never overwrite silently, never prompt. Show a
+        // non-blocking banner. Buffer is preserved as-is. The user can click
+        // "Reload" to pick up disk content. The DocumentModel runs only its
+        // bounded retry sequence while the banner stays up.
+        logger.ui.info('[TabEditor] Autosave conflict detected -- showing non-blocking banner, buffer preserved');
+        setAutosaveConflictDiskContent(outcome.diskContent);
+        // Keep the buffer dirty so the user's edits are preserved.
+        // Don't proceed to history snapshot for this failed save.
+        throw new Error('Autosave blocked by a disk conflict');
+      }
 
-            contentRef.current = diskContent;
-            initialContentRef.current = diskContent;
-            lastSavedContentRef.current = diskContent;
-            isDirtyRef.current = false;
-            return;
+      if (outcome.kind === 'failed') {
+        setSaveFailure({ errorType: outcome.errorType, source: snapshotType });
+        throw new Error(`File save failed (${outcome.errorType})`);
+      }
+
+      if (outcome.kind === 'reload') {
+        // User chose to reload - update editor with disk content
+        // Update editor content programmatically to avoid remount
+        const diskContent = outcome.diskContent;
+        if (editorRef.current) {
+          try {
+            // Import Lexical functions from 'lexical' and editor functions from '@nimbalyst/runtime'
+            const transformers = getEditorTransformers();
+
+            editorRef.current.update(() => {
+              // Clearing a selected node without moving selection first makes
+              // Lexical throw "selection has been lost ..." (NIM-2005).
+              $setSelection(null);
+              const root = $getRoot();
+              root.clear();
+              $convertFromEnhancedMarkdownString(diskContent, transformers);
+            }, { tag: SKIP_SCROLL_INTO_VIEW_TAG });
+          } catch (error) {
+            logger.ui.error(`[TabEditor] Failed to update editor content:`, error);
           }
         }
+
+        contentRef.current = diskContent;
+        initialContentRef.current = diskContent;
+        isDirtyRef.current = false;
+        documentModelHandleRef.current?.setDirty(false);
+        onDirtyChange?.(false);
+        setSaveFailure(null);
+        pendingSaveIdsRef.current.delete(thisSaveId);
+        isSavingRef.current = false;
+        return;
+      }
+
+      const finalResult = outcome.result;
+      if (outcome.forced) {
+        // The forced write is the one that reached disk, so echo suppression
+        // should be measured from it, not the refused attempt.
+        lastSaveTimeRef.current = Date.now();
+      }
+      contentReachedDisk = true;
+
+      // IMMEDIATE: Clear dirty flag as soon as save succeeds
+      isDirtyRef.current = false;
+      documentModelHandleRef.current?.setDirty(false);
+      // Notify clean sibling editors (e.g. same file open in AgentMode)
+      documentModelHandleRef.current?.notifySiblingsSaved(contentToSave);
+      // Update initialContentRef with current editor content to prevent false dirty flags
+      if (getContentFnRef.current) {
+        initialContentRef.current = getContentFnRef.current();
+      }
+      // Notify parent immediately
+      onDirtyChange?.(false);
+      setSaveFailure(null);
+      setAutosaveConflictDiskContent(null);
 
         // Create history snapshot
         if (window.electronAPI.history) {
@@ -947,7 +970,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             const description = snapshotType === 'manual' ? 'Manual save' : 'Auto-save';
             const dbSnapshotType = snapshotType === 'manual' ? 'manual' : 'auto-save';
             await window.electronAPI.history.createSnapshot(
-                result.filePath,
+                finalResult.filePath,
                 contentToSave,
                 dbSnapshotType,
                 description
@@ -993,7 +1016,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
         }
 
         // Notify parent
-        onSaveComplete?.(result.filePath);
+        onSaveComplete?.(finalResult.filePath);
 
         // Clear this save ID after a delay to ensure file watcher events are processed
         // File watchers can be slow, especially on macOS, so use a generous timeout
@@ -1004,12 +1027,12 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             isSavingRef.current = false;
           }
         }, 10000);
-      }
     } catch (error) {
       logger.ui.error(`[TabEditor] Failed to save file ${filePath}:`, error);
       // Reset refs on error
       lastSaveTimeRef.current = null;
-      lastSaveTimeRef.current = null;
+      setPersistedBaseline(contentReachedDisk ? contentToSave : expectedDiskContent);
+      pendingSaveIdsRef.current.delete(thisSaveId);
       isSavingRef.current = false;
       throw error;
     }
@@ -1052,8 +1075,12 @@ export const TabEditor: React.FC<TabEditorProps> = ({
     const currentContent = getContentFnRef.current();
     // Use skipDiffCheck=false so saveWithHistory checks for leftover diff nodes
     // and clears pending tags if all diffs have been resolved
-    await saveWithHistory(currentContent, 'manual', false);
-  }, [saveWithHistory, fileName]);
+    try {
+      await saveWithHistory(currentContent, 'manual', false);
+    } catch (error) {
+      logger.ui.error(`[TabEditor] Manual save failed for ${filePath}:`, error);
+    }
+  }, [saveWithHistory, fileName, filePath]);
 
   // Periodic snapshots
   const lastSnapshotContentRef = useRef<string>(initialContent);
@@ -1154,8 +1181,9 @@ export const TabEditor: React.FC<TabEditorProps> = ({
 
         const currentContent = getContentFnRef.current();
         logger.ui.info(`[TabEditor] DocumentModel autosave: ${fileName}`);
-        saveWithHistory(currentContent, 'auto').catch((err) => {
+        return saveWithHistory(currentContent, 'auto').catch((err) => {
           logger.ui.error(`[TabEditor] DocumentModel autosave failed for ${filePath}:`, err);
+          throw err;
         });
       }),
     );
@@ -1649,7 +1677,13 @@ export const TabEditor: React.FC<TabEditorProps> = ({
           });
 
           // Save the approved content to disk
-          await window.electronAPI.saveFile(approvedContent, filePath);
+          const saveResult = await window.electronAPI.saveFile(
+            approvedContent,
+            filePath,
+            undefined,
+            'manual',
+          );
+          assertManualSaveSucceeded(saveResult);
 
           // Create incremental-approval tag with the REJECTED version
           // This is the baseline: it shows what we've decided so far (approved + rejected)
@@ -1723,7 +1757,13 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             });
 
             // Save to disk
-            await window.electronAPI.saveFile(currentContent, filePath);
+            const saveResult = await window.electronAPI.saveFile(
+              currentContent,
+              filePath,
+              undefined,
+              'manual',
+            );
+            assertManualSaveSucceeded(saveResult);
 
             // Update DocumentModel's echo-suppression baseline
             documentModel?.setLastPersistedContent(currentContent);
@@ -1889,7 +1929,13 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       // console.log('[TabEditor] ABOUT TO WRITE TO DISK');
       // Write to disk - use saveFile with (content, filePath) parameter order
       try {
-        await window.electronAPI.saveFile(newContent, filePath);
+        const saveResult = await window.electronAPI.saveFile(
+          newContent,
+          filePath,
+          undefined,
+          'manual',
+        );
+        assertManualSaveSucceeded(saveResult);
         // console.log('[TabEditor] WROTE TO DISK SUCCESSFULLY');
       } catch (writeError) {
         console.error('[TabEditor] ERROR WRITING TO DISK:', writeError);
@@ -1979,7 +2025,13 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       const oldContent = editorRef.current.rejectDiff();
 
       // Write to disk - use saveFile with (content, filePath) parameter order
-      await window.electronAPI.saveFile(oldContent, filePath);
+      const saveResult = await window.electronAPI.saveFile(
+        oldContent,
+        filePath,
+        undefined,
+        'manual',
+      );
+      assertManualSaveSucceeded(saveResult);
 
       // Mark tag as reviewed (must pass filePath, tagId, status, workspacePath)
       if (window.electronAPI.history) {
@@ -2109,7 +2161,13 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       }
 
       // Write original content back to disk
-      await window.electronAPI.saveFile(baseline.content, filePath);
+      const saveResult = await window.electronAPI.saveFile(
+        baseline.content,
+        filePath,
+        undefined,
+        'manual',
+      );
+      assertManualSaveSucceeded(saveResult);
 
       // Mark tag as reviewed
       if (window.electronAPI.history) {
@@ -2375,7 +2433,13 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             if (!pendingAIEditTagRef.current) return;
 
             // Save the resulting content
-            await window.electronAPI.saveFile(result.content, filePath);
+            const saveResult = await window.electronAPI.saveFile(
+              result.content,
+              filePath,
+              undefined,
+              'manual',
+            );
+            assertManualSaveSucceeded(saveResult);
 
             // Update tag status
             if (window.electronAPI.history) {
@@ -2446,11 +2510,17 @@ export const TabEditor: React.FC<TabEditorProps> = ({
         // user can resolve via the autosave-conflict banner.
         const flushDirtyBuffer = async (content: string): Promise<boolean> => {
           const expected = lastSavedContentRef.current;
-          const result = await window.electronAPI.saveFile(content, filePath, expected);
+          const result = await window.electronAPI.saveFile(
+            content,
+            filePath,
+            expected,
+            'manual',
+          );
           if (result?.conflict) {
             setAutosaveConflictDiskContent(typeof result.diskContent === 'string' ? result.diskContent : '');
             return false;
           }
+          assertManualSaveSucceeded(result);
           lastSavedContentRef.current = content;
           contentRef.current = content;
           isDirtyRef.current = false;
@@ -2658,6 +2728,27 @@ export const TabEditor: React.FC<TabEditorProps> = ({
           fileName={fileName}
           editor={isMarkdown && !sourceMode ? editorRef.current : undefined}
         />
+        {saveFailure !== null && (
+          <div
+            className="save-failure-banner flex items-center gap-2 px-3 py-2 text-[13px] bg-nim-warning-subtle border-b border-nim-warning text-nim"
+            role="alert"
+            data-testid="save-failure-banner"
+          >
+            <span className="flex-1">
+              {getSaveFailureMessage(saveFailure.errorType, saveFailure.source)}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                void handleManualSave();
+              }}
+              className="px-2 py-1 rounded border border-nim text-nim hover:bg-nim-active"
+              data-testid="save-failure-banner-retry"
+            >
+              Retry
+            </button>
+          </div>
+        )}
         {autosaveConflictDiskContent !== null && (
           <div
             className="autosave-conflict-banner flex items-center gap-2 px-3 py-2 text-[13px] bg-nim-warning-subtle border-b border-nim-warning text-nim"

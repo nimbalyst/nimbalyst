@@ -435,6 +435,26 @@ export async function buildSdkOptions(
       sanitizedSettingsEnv.DISABLE_UPDATES == null && {
         DISABLE_UPDATES: '1',
       }),
+    // #1177: Suppress the CLI's own "git status at the start of the
+    // conversation" block. That block is rebuilt from the LIVE working tree by
+    // every CLI process and injected at the head of the conversation, and it is
+    // never persisted to the transcript, so `--resume` always regenerates it.
+    // Nimbalyst runs each user turn as a separate process, so in an agentic
+    // session -- where the agent itself edits files between turns -- the block
+    // differs on most turns and every message block behind it is a cache miss.
+    // Measured over 19,073 local turns: 62.8% full-prefix rewrite on resume
+    // turns against 0.4% on in-process turns, carrying ~63% of all cache-write
+    // tokens. Cache writes bill at 1.25x base input where reads bill at 0.1x.
+    // The equivalent context is re-added as a FROZEN section resolved once per
+    // session (see buildClaudeCodeSystemPrompt's gitContext) so it cannot move
+    // between turns. Default only -- a user-set value (settings/shell/process
+    // env) still wins, so anyone who wants the CLI's live snapshot back can
+    // have it.
+    ...(sanitizedProcessEnv.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS == null &&
+      sanitizedShellEnv.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS == null &&
+      sanitizedSettingsEnv.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS == null && {
+        CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1',
+      }),
   };
 
   // NIM-376: Overlay enhanced PATH so the Claude Code SDK can find stdio MCP

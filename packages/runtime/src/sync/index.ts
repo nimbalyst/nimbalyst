@@ -176,7 +176,6 @@ export type {
   DocumentSyncStatus,
   AwarenessState,
   SerializedRelativePosition,
-  ReviewGateState,
   DocClientMessage,
   DocServerMessage,
 } from './documentSyncTypes';

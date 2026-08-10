@@ -48,8 +48,6 @@ vi.mock('@nimbalyst/runtime/sync', async () => {
     onAwarenessChange(): () => void { return () => {}; }
     setLocalAwareness(): void { /* no-op */ }
     setRoomMetadata(): void { /* no-op */ }
-    acceptRemoteChanges(): void { /* no-op */ }
-    rejectRemoteChanges(): void { /* no-op */ }
     getLastSeq(): number { return 0; }
     destroy(): void { this.destroyed = true; }
   }

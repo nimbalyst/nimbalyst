@@ -45,26 +45,27 @@ function installApi(teams: unknown[]) {
   });
 }
 
-// Nobody should set up an organization without being told Teams is alpha and
+// Nobody should set up an organization without being told Teams is beta and
 // will be paid after launch — on both the create surface and the admin surface.
 // In the bound window that disclosure is the slim bottom status bar (2026-07-28
 // layout decision), not a two-line banner inside the Inbox.
-describe('TeamMode alpha disclosure', () => {
+describe('TeamMode beta disclosure', () => {
   afterEach(() => cleanup());
 
-  it('discloses the alpha status on the unbound create-an-organization surface', async () => {
+  it('discloses the beta status on the unbound create-an-organization surface', async () => {
     installApi([]);
     const store = createStore();
     store.set(selectedOrgIdAtom, null);
     render(<Provider store={store}><TeamMode /></Provider>);
 
     await waitFor(() => screen.getByText(/Create an organization to collaborate/));
-    expect(screen.getByTestId('team-alpha-notice').textContent).toMatch(/alpha/i);
-    expect(screen.getByTestId('team-alpha-notice').textContent).toMatch(/subscription after launch/i);
-    expect(screen.getAllByTestId('alpha-badge').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('team-beta-notice').textContent).toMatch(/beta/i);
+    expect(screen.getByTestId('team-beta-notice').textContent).toMatch(/subscription after launch/i);
+    // Teams surfaces are labelled beta, never alpha.
+    expect(screen.getAllByTestId('alpha-badge').map((b) => b.textContent)).not.toContain('alpha');
   });
 
-  it('discloses the alpha status in the window status bar while administering', async () => {
+  it('discloses the beta status in the window status bar while administering', async () => {
     installApi([team]);
     const store = createStore();
     store.set(selectedOrgIdAtom, 'org-1');
@@ -73,8 +74,8 @@ describe('TeamMode alpha disclosure', () => {
     await waitFor(() => expect(screen.getByTestId('org-sidebar-header').textContent).toContain('Acme'));
     const statusBar = screen.getByTestId('org-window-status-bar');
     expect(statusBar.textContent).toMatch(/expect bugs/i);
-    expect(statusBar.textContent).toMatch(/free during alpha/i);
-    expect(screen.getAllByTestId('alpha-badge').length).toBeGreaterThan(0);
+    expect(statusBar.textContent).toMatch(/free during beta/i);
+    expect(screen.getAllByTestId('alpha-badge').map((b) => b.textContent)).not.toContain('alpha');
   });
 
   it('drops the two-line banner from the Inbox in favour of the status bar', async () => {
@@ -85,6 +86,6 @@ describe('TeamMode alpha disclosure', () => {
 
     // The window lands on Inbox.
     await waitFor(() => screen.getByTestId('org-window-status-bar'));
-    expect(screen.queryByTestId('team-alpha-notice')).toBeNull();
+    expect(screen.queryByTestId('team-beta-notice')).toBeNull();
   });
 });

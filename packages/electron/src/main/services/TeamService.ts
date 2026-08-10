@@ -23,6 +23,7 @@ import { BrowserWindow, net } from 'electron';
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { basename } from 'path';
+import { mkdir, stat } from 'fs/promises';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getNormalizedGitRemote } from '../utils/gitUtils';
@@ -99,6 +100,7 @@ import { windowReferencesWorkspace, windowStates } from '../window/windowState';
 import {
   resolveOrgProjectLocalStates,
   type OrgProjectLocalState,
+  type WorkspaceBindingState,
   type WorkspaceRemoteState,
 } from './orgProjectLocalState';
 
@@ -1182,7 +1184,7 @@ function pinBoundProject(team: TeamDetails, teamProjectId?: string): TeamDetails
  * the window that ran the creation wizard learns about the new org -- any other
  * project window keeps offering "Set up" for an org that already exists.
  */
-function broadcastWorkspaceOrgChanged(payload: { orgId: string; workspacePath?: string }): void {
+export function broadcastWorkspaceOrgChanged(payload: { orgId: string; workspacePath?: string }): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('team:workspace-org-changed', payload);
   }
@@ -1538,6 +1540,30 @@ async function getRecentWorkspaceRemoteStates(
   return states;
 }
 
+/**
+ * Recent workspaces bound to one of `teamProjectIds` by name rather than by
+ * remote. Without this a folder opened through the shared-project flow keeps
+ * reporting "not local" in the org's Projects list even while it is open.
+ */
+function getRecentWorkspaceBindingStates(
+  orgId: string,
+  teamProjectIds: ReadonlySet<string>,
+): WorkspaceBindingState[] {
+  const states: WorkspaceBindingState[] = [];
+  for (const workspace of getRecentItems('workspaces')) {
+    if (!workspace.path || !existsSync(workspace.path)) continue;
+    const binding = getLocalOrgBinding(workspace.path);
+    if (!binding || binding.orgId !== orgId) continue;
+    if (!binding.teamProjectId || !teamProjectIds.has(binding.teamProjectId)) continue;
+    states.push({
+      workspacePath: workspace.path,
+      teamProjectId: binding.teamProjectId,
+      open: isWorkspaceOpen(workspace.path),
+    });
+  }
+  return states;
+}
+
 async function resolveLocalProjectStatesForOrg(
   orgId: string,
 ): Promise<OrgProjectLocalState[]> {
@@ -1550,8 +1576,84 @@ async function resolveLocalProjectStatesForOrg(
       .map((project) => project.gitRemoteHash)
       .filter((hash): hash is string => !!hash),
   );
+  const teamProjectIds = new Set(
+    projects
+      .map((project) => project.teamProjectId)
+      .filter((id): id is string => !!id),
+  );
   const workspaces = await getRecentWorkspaceRemoteStates(hashes);
-  return resolveOrgProjectLocalStates(projects, workspaces);
+  const bound = getRecentWorkspaceBindingStates(orgId, teamProjectIds);
+  return resolveOrgProjectLocalStates(projects, workspaces, bound);
+}
+
+/**
+ * Attach a local directory to a shared project that has no git remote.
+ *
+ * This is the join half of the git-free flow: the creator's machine records the
+ * binding when the org is made, and every other member records it here. The
+ * guards are the important part -- rebinding a directory that already belongs
+ * to another project is the one destructive outcome available, so both the
+ * recorded binding and the directory's own remote are checked first.
+ */
+export async function bindWorkspaceToSharedProject(input: {
+  orgId: string;
+  teamProjectId: string;
+  directoryPath: string;
+}): Promise<void> {
+  const { orgId, teamProjectId, directoryPath } = input;
+  if (!orgId) throw new Error('Opening a shared project requires orgId');
+  if (!teamProjectId) throw new Error('Opening a shared project requires teamProjectId');
+  if (!directoryPath) throw new Error('Opening a shared project requires a directory');
+  if (!isAuthenticated()) throw new Error('Sign in to open a shared project');
+
+  const teams = await listTeams();
+  const team = teams.find(t => (
+    t.orgId === orgId && (!t.membershipType || t.membershipType === 'active_member')
+  ));
+  if (!team) {
+    throw new Error('You are not a member of that organization');
+  }
+
+  // The registry is the authority when present; an org whose listing predates
+  // per-project rows can still name its primary project.
+  const project = team.projects?.find(p => p.teamProjectId === teamProjectId)
+    ?? (team.teamProjectId === teamProjectId ? { gitRemoteHash: team.gitRemoteHash } : undefined);
+  if (!project) {
+    throw new Error('That project is no longer part of this organization');
+  }
+  if (project.gitRemoteHash) {
+    throw new Error(
+      'That project is matched to teammates by its git remote. Clone the repository and open it instead.',
+    );
+  }
+
+  const existingBinding = getLocalOrgBinding(directoryPath);
+  if (existingBinding && (
+    existingBinding.orgId !== orgId || existingBinding.teamProjectId !== teamProjectId
+  )) {
+    throw new Error('That folder already belongs to a different project');
+  }
+
+  if (existsSync(directoryPath)) {
+    const stats = await stat(directoryPath);
+    if (!stats.isDirectory()) {
+      throw new Error('That path is a file, not a folder');
+    }
+    const remote = await getNormalizedGitRemote(directoryPath);
+    if (remote) {
+      const remoteMatch = resolveTeamForRemoteHash(teams, hashGitRemote(remote));
+      if (remoteMatch && remoteMatch.teamProjectId !== teamProjectId) {
+        throw new Error(
+          "That folder's git remote already connects it to a different project",
+        );
+      }
+    }
+  } else {
+    await mkdir(directoryPath, { recursive: true });
+  }
+
+  setLocalOrgBinding(directoryPath, orgId, teamProjectId);
+  logger.main.info('[TeamService] Bound workspace to shared project:', directoryPath, orgId, teamProjectId);
 }
 
 /** Epic H3 P3: read-only pre-flight for the "Move to another org" wizard.
@@ -1644,6 +1746,69 @@ async function acceptInvite(orgId: string): Promise<TeamDetails> {
 
   logger.main.info('[TeamService] Accepted invite for team:', team.name, 'orgId:', orgId);
   return team;
+}
+
+/**
+ * Outcome of following a `nimbalyst://invite/{orgId}` deep link.
+ *
+ * `sign-in-required` is the expected first-run case: the invitee installed the
+ * app because of the invitation email, so no account owns the invite yet.
+ */
+export type InviteDeepLinkOutcome =
+  | { status: 'accepted'; orgId: string; teamName: string }
+  | { status: 'already-member'; orgId: string; teamName: string }
+  | { status: 'sign-in-required'; orgId: string; email?: string }
+  | { status: 'not-found'; orgId: string; email?: string }
+  | { status: 'error'; orgId: string; message: string };
+
+/**
+ * Resolve a team-invitation deep link against the signed-in accounts.
+ *
+ * The link carries no token, so this re-derives everything from the server's
+ * team directory: an invitation is acceptable only when some signed-in account
+ * can already see the pending membership. An `email` that no signed-in account
+ * owns is reported as `sign-in-required` rather than silently accepting under a
+ * different account — following a link must never join the wrong identity to a
+ * team.
+ */
+export async function resolveInviteDeepLink(
+  orgId: string,
+  email?: string,
+): Promise<InviteDeepLinkOutcome> {
+  // Normalize here rather than trusting the caller: this is exported, and a
+  // casing mismatch must not be the difference between accepting an invitation
+  // and telling the user to sign in again.
+  const normalizedEmail = email?.trim().toLowerCase() || undefined;
+
+  if (!isAuthenticated()) return { status: 'sign-in-required', orgId, email: normalizedEmail };
+
+  if (normalizedEmail) {
+    const ownsEmail = getAccounts().some((account) => (
+      account.sessionStatus === 'active'
+      && account.email?.trim().toLowerCase() === normalizedEmail
+    ));
+    if (!ownsEmail) return { status: 'sign-in-required', orgId, email: normalizedEmail };
+  }
+
+  try {
+    // The console already flipped this membership to active when it accepted
+    // the invitation in the browser, so a stale directory would report a team
+    // the user "isn't in" moments after they joined it.
+    invalidateListTeamsCache();
+    const team = (await listTeams()).find((candidate) => candidate.orgId === orgId);
+    if (!team) return { status: 'not-found', orgId, email: normalizedEmail };
+
+    if (team.membershipType && team.membershipType !== 'active_member') {
+      const joined = await acceptInvite(orgId);
+      return { status: 'accepted', orgId, teamName: joined.name };
+    }
+
+    return { status: 'already-member', orgId, teamName: team.name };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.main.error('[TeamService] resolveInviteDeepLink failed:', message);
+    return { status: 'error', orgId, message };
+  }
 }
 
 /**

@@ -122,7 +122,8 @@ export interface AppliedTrackerSchema {
 }
 
 export interface TrackerSchemaSyncHooks {
-  getMaxSyncId: () => Promise<SyncId>;
+  // No `getMaxSyncId`: schemas bootstrap from zero every connect so the server's
+  // definition can repair a diverged row. See runSchemaBootstrap (#1178).
   listUnsynced: () => Promise<TrackerSchemaLocalChange[]>;
   applyRemote: (def: { type: string; model: string | null; syncId: SyncId }) => Promise<unknown>;
 }
@@ -525,12 +526,24 @@ export class TrackerSyncEngine {
     });
   }
 
+  /**
+   * Bootstrap schemas from ZERO, not from the local cursor.
+   *
+   * Items page from `MAX(sync_id)` because there can be tens of thousands of
+   * them. Schemas are a handful of rows, and an incremental cursor makes the
+   * client unrepairable: one workspace-wide MAX means any type whose version
+   * sits BELOW the cursor is never re-sent, so a row that was clobbered or
+   * never applied stays stale forever with no way back (#1178). A full snapshot
+   * every connect is cheap and makes the server's definition self-healing --
+   * `applyRemote` is version-gated and content-gated, so re-delivering what we
+   * already have is a no-op.
+   */
   private async runSchemaBootstrap(): Promise<void> {
     const hooks = this.config.schemaSync;
     if (!hooks) return;
 
-    let cursor: SyncId = await hooks.getMaxSyncId();
-    console.info(`[TrackerSchemaSync] bootstrap start since sync_id=${cursor}`);
+    let cursor: SyncId = 0 as SyncId;
+    console.info('[TrackerSchemaSync] bootstrap start (full snapshot since sync_id=0)');
 
     // eslint-disable-next-line no-constant-condition
     while (true) {

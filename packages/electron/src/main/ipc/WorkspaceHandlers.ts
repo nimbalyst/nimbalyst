@@ -748,6 +748,14 @@ export function registerWorkspaceHandlers() {
     // Update workspace state - takes partial update, merges atomically with deep merge
     safeHandle('workspace:update-state', async (event, workspacePath: string, updates: any) => {
         return updateWorkspaceState(workspacePath, (state) => {
+            // Extension storage writes carry the complete cache. Replace this one
+            // field so deletions survive; deepMerge intentionally preserves keys.
+            if (updates && Object.prototype.hasOwnProperty.call(updates, 'extensionStorage')) {
+                const { extensionStorage, ...remainingUpdates } = updates;
+                deepMerge(state, remainingUpdates);
+                Object.assign(state, { extensionStorage });
+                return;
+            }
             deepMerge(state, updates);
         });
     });

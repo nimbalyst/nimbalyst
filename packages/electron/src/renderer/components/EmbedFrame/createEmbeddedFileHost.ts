@@ -78,7 +78,7 @@ export interface EmbeddedFileHostOptions {
    * future Cmd+S binding) invokes these callbacks to ask the extension
    * to save now. Returns unsubscribe.
    */
-  subscribeToSaveRequests(cb: () => void): () => void;
+  subscribeToSaveRequests(cb: () => void | Promise<void>): () => void;
 }
 
 function basename(p: string): string {

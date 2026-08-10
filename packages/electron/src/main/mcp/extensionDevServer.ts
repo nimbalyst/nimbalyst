@@ -27,7 +27,7 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import * as path from "path";
 import * as fs from "fs";
-import { ExtensionLogService } from "../services/ExtensionLogService";
+import { runExtensionBuild } from "../extensions/extensionBuild";
 import { database } from "../database/initialize";
 import { findWindowByWorkspace } from "../window/WindowManager";
 import { getRestartSignalPath, getPackageRoot } from "../utils/appPaths";
@@ -801,119 +801,6 @@ export async function startExtensionDevServer(
   return { httpServer, port };
 }
 
-/**
- * Run npm build in an extension project directory
- */
-async function runBuild(
-  extensionPath: string
-): Promise<{ success: boolean; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    // Verify the path exists and has a package.json
-    const packageJsonPath = path.join(extensionPath, "package.json");
-    if (!fs.existsSync(packageJsonPath)) {
-      resolve({
-        success: false,
-        stdout: "",
-        stderr: `Error: No package.json found at ${extensionPath}`,
-      });
-      return;
-    }
-
-    // Try to get extension ID from manifest for log tagging
-    let extensionId: string | undefined;
-    const manifestPath = path.join(extensionPath, "manifest.json");
-    try {
-      if (fs.existsSync(manifestPath)) {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-        extensionId = manifest.id;
-      }
-    } catch {
-      // Ignore manifest errors during build - they'll be caught in validation
-    }
-
-    const logService = ExtensionLogService.getInstance();
-
-    // Log build start
-    logService.addMainLog(
-      "info",
-      `Starting build for extension: ${extensionId || extensionPath}`,
-      extensionId
-    );
-
-    let stdout = "";
-    let stderr = "";
-
-    const child = spawn("npm", ["run", "build"], {
-      cwd: extensionPath,
-      shell: true,
-      env: { ...process.env, FORCE_COLOR: "0" },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    child.stdout.on("data", (data) => {
-      const chunk = data.toString();
-      stdout += chunk;
-      // Log build output as it comes in
-      if (extensionId) {
-        logService.addBuildLog(extensionId, chunk, false);
-      }
-    });
-
-    child.stderr.on("data", (data) => {
-      const chunk = data.toString();
-      stderr += chunk;
-      // Log build errors as they come in
-      if (extensionId) {
-        logService.addBuildLog(extensionId, chunk, true);
-      }
-    });
-
-    child.on("close", (code) => {
-      const success = code === 0;
-      logService.addMainLog(
-        success ? "info" : "error",
-        `Build ${success ? "succeeded" : "failed"} for extension: ${
-          extensionId || extensionPath
-        }`,
-        extensionId
-      );
-      resolve({
-        success,
-        stdout,
-        stderr,
-      });
-    });
-
-    child.on("error", (error) => {
-      logService.addMainLog(
-        "error",
-        `Build process error: ${error.message}`,
-        extensionId
-      );
-      resolve({
-        success: false,
-        stdout,
-        stderr: stderr + "\n" + error.message,
-      });
-    });
-
-    // Timeout after 60 seconds
-    setTimeout(() => {
-      child.kill();
-      logService.addMainLog(
-        "error",
-        "Build timed out after 60 seconds",
-        extensionId
-      );
-      resolve({
-        success: false,
-        stdout,
-        stderr: stderr + "\nBuild timed out after 60 seconds",
-      });
-    }, 60000);
-  });
-}
-
 function createExtensionDevMcpServer(
   workspacePath: string | undefined
 ): Server {
@@ -1294,7 +1181,7 @@ function createExtensionDevMcpServer(
           `[Extension Dev MCP] Building extension at: ${normalizedPath}`
         );
 
-        const result = await runBuild(normalizedPath);
+        const result = await runExtensionBuild(normalizedPath);
 
         if (result.success) {
           return {
@@ -1449,7 +1336,7 @@ function createExtensionDevMcpServer(
         console.log(
           `[Extension Dev MCP] Rebuilding extension ${extensionId} at ${normalizedPath}`
         );
-        const buildResult = await runBuild(normalizedPath);
+        const buildResult = await runExtensionBuild(normalizedPath);
         if (!buildResult.success) {
           return {
             content: [

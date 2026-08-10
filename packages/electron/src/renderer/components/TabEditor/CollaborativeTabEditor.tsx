@@ -594,7 +594,6 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         onLocalUpdate: recordFirstLocalEdit,
         onRemoteUpdate: (origin) => collabProviderRef.current?.handleRemoteUpdate(origin),
         onOfflineMetric: recordOfflineMetric,
-        reviewGateEnabled: false,
       });
       const awarenessUnsub = syncProvider.onAwarenessChange((states) => {
         const users = new Map<string, RemoteUser>();
@@ -761,7 +760,6 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
               );
             },
             onRemoteUpdate: events.onRemoteUpdate,
-            reviewGateEnabled: false,
           });
           return { replica, syncProvider, detachProvider };
         } catch (error) {

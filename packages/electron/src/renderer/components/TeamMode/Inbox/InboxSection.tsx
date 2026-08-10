@@ -239,7 +239,7 @@ export function InboxSection({
           </div>
         </div>
 
-        {/* The alpha disclosure is the org window's bottom status bar now
+        {/* The beta disclosure is the org window's bottom status bar now
             (2026-07-28 layout decision) — two lines of it above every Inbox
             was the thing being replaced. */}
         <div className="inbox-controls org-window-no-drag mt-3 flex flex-col gap-2">

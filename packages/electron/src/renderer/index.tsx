@@ -6,6 +6,12 @@
 // system for mounting editors and capturing screenshots via native capturePage().
 const isCaptureMode = new URLSearchParams(window.location.search).get('mode') === 'capture';
 
+// Must precede `react-dom`: this installs the DevTools hook shim the render
+// profiler reads, and react-dom captures that hook once at module init.
+// Records nothing until `window.__renderProfiler.start()`.
+// See docs/RENDER_PERFORMANCE.md.
+import './devtools/installRenderProfiler';
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Provider as JotaiProvider } from 'jotai';

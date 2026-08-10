@@ -3177,9 +3177,10 @@ export class AIService {
       const result = await provider.interruptCurrentTurn();
       logger.main.info(`[AIService] Interrupted current turn for session ${sessionId} (method=${result.method})`);
 
-      // A session stuck at running/streaming with no turn behind it would
-      // otherwise defer the follow-up queue drive on a `session:completed`
-      // that can never arrive (NIM-2434).
+      // A session stuck at running/streaming with no turn behind it -- because
+      // there never was one, or because `method: 'abort'` just destroyed it --
+      // would otherwise defer the follow-up queue drive on a `session:completed`
+      // that can never arrive (NIM-2434, NIM-2512).
       const stateManager = getSessionStateManager();
       const forcedIdle = await clearStuckRunningState(
         {
@@ -3187,7 +3188,7 @@ export class AIService {
           interruptSession: (id) => stateManager.interruptSession(id),
           logWarn: (message) => logger.main.warn(message),
         },
-        { sessionId, hadActiveTurn: result.hadActiveTurn },
+        { sessionId, hadActiveTurn: result.hadActiveTurn, method: result.method },
       );
 
       return { success: true, method: result.method, forcedIdle };

@@ -40,7 +40,7 @@ export const organizationDirectoryAtom = atom<OrganizationDirectoryEntry[]>([]);
 
 /**
  * Whether org-creation affordances (New organization buttons,
- * create-team-from-workspace) render. Open to every build since the Teams alpha
+ * create-team-from-workspace) render. Open to every build since the Teams beta
  * unlocked; flip this back to `import.meta.env.DEV` to re-lock packaged builds
  * to dev-only creation (NIM-2306 — the earlier lock was temporary, never an
  * invite-only program).

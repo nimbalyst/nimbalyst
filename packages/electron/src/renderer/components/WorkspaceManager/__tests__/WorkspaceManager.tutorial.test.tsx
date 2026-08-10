@@ -76,10 +76,17 @@ describe("WorkspaceManager tutorial actions", () => {
 
     render(<WorkspaceManager />);
 
-    expect(
-      (await screen.findByTestId("workspace-manager-sidebar-tutorial-button"))
-        .textContent
-    ).toContain("Open tutorial");
+    // Both buttons render immediately in their "no tutorial yet" state and only
+    // relabel once `tutorial.getStatus()` resolves. Waiting for the *element*
+    // would resolve against that first paint — which it did, intermittently,
+    // whenever React's scheduler macrotask lost the race to testing-library's
+    // under a loaded full-suite run. Wait for the label instead.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("workspace-manager-sidebar-tutorial-button")
+          .textContent
+      ).toContain("Open tutorial")
+    );
     expect(
       screen.getByTestId("workspace-manager-welcome-tutorial-cta")
         .textContent

@@ -9,10 +9,6 @@ import { createConversationCommentAdapter } from '../ConversationCommentAdapter'
 import { FULL_CAPABILITIES, createCommentFixtures } from '../commentFixtures';
 import type { Actor, CommentAdapter } from '../commentTypes';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 const NOW = Date.parse('2026-07-26T18:00:00.000Z');
 const VIEWER: Actor = {
   kind: 'user',

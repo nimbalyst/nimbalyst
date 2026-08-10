@@ -18,8 +18,13 @@ import {
   $isRangeSelection,
   TextNode,
 } from 'lexical';
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useMemo, useState} from 'react';
 import * as ReactDOM from 'react-dom';
+// Static, not `import()`: EmojiTransformer already pulls emoji-list into the
+// startup chunk, so a dynamic import here only produced a Rollup warning
+// ("dynamic import will not move module into another chunk") without deferring
+// anything.
+import emojiList from '../../utils/emoji-list';
 
 class EmojiOption extends MenuOption {
   title: string;
@@ -90,23 +95,16 @@ const MAX_EMOJI_SUGGESTION_COUNT = 10;
 export default function EmojiPickerPlugin() {
   const [editor] = useLexicalComposerContext();
   const [queryString, setQueryString] = useState<string | null>(null);
-  const [emojis, setEmojis] = useState<Array<Emoji>>([]);
-
-  useEffect(() => {
-    import('../../utils/emoji-list').then((file) => setEmojis(file.default));
-  }, []);
 
   const emojiOptions = useMemo(
     () =>
-      emojis != null
-        ? emojis.map(
-            ({emoji, aliases, tags}) =>
-              new EmojiOption(aliases[0], emoji, {
-                keywords: [...aliases, ...tags],
-              }),
-          )
-        : [],
-    [emojis],
+      (emojiList as Array<Emoji>).map(
+        ({emoji, aliases, tags}) =>
+          new EmojiOption(aliases[0], emoji, {
+            keywords: [...aliases, ...tags],
+          }),
+      ),
+    [],
   );
 
   const checkForTriggerMatch = useBasicTypeaheadTriggerMatch(':', {

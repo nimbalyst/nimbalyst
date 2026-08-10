@@ -16,6 +16,7 @@
 import Store from 'electron-store';
 import { logger } from '../utils/logger';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
+import { isLocalIssueKey } from '../../shared/localIssueKey';
 import type { CommitDetectedEvent } from '../file/GitRefWatcher';
 import type { TrackerAutomationSettings } from '../utils/store';
 import { getEffectiveTrackerAutomation } from '../utils/store';
@@ -49,6 +50,14 @@ export function parseIssueKeys(commitMessage: string, prefix?: string): IssueKey
   while ((match = closingPattern.exec(commitMessage)) !== null) {
     const closingKeyword = match[1];
     const issueKey = match[2].toUpperCase();
+
+    // A provisional local key is not a real issue reference -- it exists only
+    // until the tracker room acks the item and hands back its own key. Closing
+    // an item off one would resolve to whatever LC-### happens to be unclaimed
+    // in the reader's workspace.
+    if (isLocalIssueKey(issueKey)) {
+      continue;
+    }
 
     // If a prefix filter is provided, only match that prefix
     if (prefix && !issueKey.startsWith(prefix.toUpperCase() + '-')) {

@@ -45,7 +45,7 @@
  * Provider sharing model
  * ----------------------
  * A `DocumentSyncProvider` owns its Y.Doc and emits onStatusChange /
- * onRemoteUpdate / onReviewStateChange callbacks set at construction
+ * onRemoteUpdate callbacks set at construction
  * time. The cache wires its own callbacks at construction and fans out
  * to a per-entry event bus; consumers subscribe to the bus via
  * `entry.on(...)`. This lets the cache support N simultaneous consumers
@@ -72,7 +72,6 @@ import type {
   AwarenessState,
   DocumentSyncConfig,
   DocumentSyncStatus,
-  ReviewGateState,
 } from '@nimbalyst/runtime/sync';
 
 // ============================================================================
@@ -92,8 +91,7 @@ const DEFAULT_PREWARM_CONCURRENCY = 5;
  * once per itemId on first acquire / prewarm. Construction is async
  * because the team-org / JWT resolution itself is async.
  *
- * The factory's `onStatusChange` / `onRemoteUpdate` / `onReviewStateChange`
- * callbacks are IGNORED -- the cache wires its own and dispatches to
+ * The factory's `onStatusChange` / `onRemoteUpdate` callbacks are IGNORED -- the cache wires its own and dispatches to
  * subscribers via the entry's event bus. Callers should pass `undefined`
  * (or stub no-ops) for these fields.
  */
@@ -108,13 +106,6 @@ export interface BodyDocEntryListener {
   onStatusChange?: (status: DocumentSyncStatus) => void;
   onRemoteUpdate?: (origin: string) => void;
   onAwarenessChange?: (states: Map<string, AwarenessState>) => void;
-  /**
-   * Fires on every review-gate transition. `null` is delivered to new
-   * subscribers when the gate hasn't fired yet for this entry, so a
-   * late-mount detail panel can render a neutral initial state instead
-   * of waiting on the first server update.
-   */
-  onReviewStateChange?: (state: ReviewGateState | null) => void;
 }
 
 export interface BodyDocAcquisition {
@@ -152,11 +143,9 @@ interface CacheEntry {
   refCount: number;
   /** Last status delivered to subscribers; new subscribers get this synchronously. */
   lastStatus: DocumentSyncStatus;
-  /** Last review-gate state; new subscribers get this synchronously. */
-  lastReviewState: ReviewGateState | null;
   /** Last remote awareness snapshot; new subscribers get a defensive copy. */
   lastAwarenessStates: Map<string, AwarenessState>;
-  /** Listener fan-out for status / remote-update / review-state. */
+  /** Listener fan-out for status / remote-update / awareness. */
   listeners: Set<BodyDocEntryListener>;
   /** Cache-owned provider subscription, released only when the entry is destroyed. */
   awarenessUnsubscribe: (() => void) | null;
@@ -218,9 +207,8 @@ export class BodyDocCache {
     if (listener) {
       entry.listeners.add(listener);
       // Replay the latest known state so new subscribers don't miss an
-      // already-delivered status / review notification.
+      // already-delivered status notification.
       if (listener.onStatusChange) listener.onStatusChange(entry.lastStatus);
-      if (listener.onReviewStateChange) listener.onReviewStateChange(entry.lastReviewState);
       if (listener.onAwarenessChange) {
         listener.onAwarenessChange(new Map(entry.lastAwarenessStates));
       }
@@ -365,7 +353,6 @@ export class BodyDocCache {
       syncProvider: null as unknown as DocumentSyncProvider, // assigned below
       refCount: 0,
       lastStatus: 'disconnected',
-      lastReviewState: null,
       lastAwarenessStates: new Map(),
       listeners: new Set(),
       awarenessUnsubscribe: null,
@@ -390,14 +377,6 @@ export class BodyDocCache {
         for (const l of entry.listeners) {
           try { l.onRemoteUpdate?.(origin); } catch (err) {
             console.warn('[BodyDocCache] remoteUpdate listener threw:', err);
-          }
-        }
-      },
-      onReviewStateChange: (state) => {
-        entry.lastReviewState = state;
-        for (const l of entry.listeners) {
-          try { l.onReviewStateChange?.(state); } catch (err) {
-            console.warn('[BodyDocCache] reviewState listener threw:', err);
           }
         }
       },

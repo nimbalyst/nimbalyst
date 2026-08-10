@@ -9,7 +9,7 @@ import { useAtom, useAtomValue, useStore } from 'jotai';
 // there is no organization to open the management dialog against.
 import { OrganizationMembersRolesPanel } from '../Settings/panels/OrganizationMembersRolesPanel';
 import { AlphaBadge } from '../common/AlphaBadge';
-import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../common/TeamAlphaNotice';
+import { TEAM_BETA_TOOLTIP, TeamBetaNotice } from '../common/TeamBetaNotice';
 import { selectedOrgIdAtom } from '../../store/atoms/orgScope';
 import {
   organizationCreationEnabled,
@@ -208,7 +208,7 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
         >
           <h1 className="m-0 flex items-center gap-2 text-xl font-semibold text-[var(--nim-text)]">
             Organizations
-            <AlphaBadge size="sm" tooltip={TEAM_ALPHA_TOOLTIP} className="org-window-no-drag" />
+            <AlphaBadge size="sm" stage="beta" tooltip={TEAM_BETA_TOOLTIP} className="org-window-no-drag" />
           </h1>
           <p className="m-0 mt-1 text-sm text-[var(--nim-text-muted)]">
             {selectedOrgId
@@ -217,7 +217,7 @@ export function TeamMode({ workspacePath, isActive = true }: { workspacePath?: s
                 ? 'Create an organization to collaborate with a team, or accept a pending invitation.'
                 : 'Creating an organization is temporarily unavailable. Accept a pending invitation to get started.'}
           </p>
-          <TeamAlphaNotice className="mt-2.5 max-w-[640px]" />
+          <TeamBetaNotice className="mt-2.5 max-w-[640px]" />
         </header>
         <main className="team-mode-content flex-1 overflow-y-auto p-6">
           <div className="mx-auto max-w-[900px]">
@@ -816,7 +816,7 @@ const OrgWindowTitleBar = React.memo(function OrgWindowTitleBar({
           <span className="org-sidebar-header-name min-w-0 flex-1 truncate text-[13px] font-semibold text-[var(--nim-text)]">
             {name}
           </span>
-          <AlphaBadge size="xs" tooltip={TEAM_ALPHA_TOOLTIP} className="org-window-no-drag shrink-0" />
+          <AlphaBadge size="xs" stage="beta" tooltip={TEAM_BETA_TOOLTIP} className="org-window-no-drag shrink-0" />
           {onOpenPreferences && (
             // Inside the drag strip, so it has to opt out by hand or the OS
             // eats the click as a window drag.

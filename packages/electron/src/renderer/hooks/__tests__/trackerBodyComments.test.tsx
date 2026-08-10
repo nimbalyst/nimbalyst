@@ -43,8 +43,6 @@ vi.mock('@nimbalyst/runtime/sync', async (importOriginal) => {
     }
     setLocalAwareness() {}
     setRoomMetadata() {}
-    acceptRemoteChanges() {}
-    rejectRemoteChanges() {}
   }
 
   return { ...actual, DocumentSyncProvider: FakeDocumentSyncProvider };
@@ -119,7 +117,6 @@ function TrackerBodyEditor(): React.ReactElement {
     title: 'NIM-COMMENT',
     workspacePath: '/workspace',
     syncMode: 'shared',
-    teamMemberCount: 2,
     teamOrgId: 'org-1',
     itemShared: true,
   });

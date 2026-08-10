@@ -44,6 +44,7 @@ import { SuperFilesPanel } from './SuperFilesPanel';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
 import { type AgentModelOption } from './AgentModelPicker';
 import { isClaudeCliTerminalSession } from '../UnifiedAI/claudeCliInputRouting';
+import { buildCommitPrompt } from '@nimbalyst/runtime/ui/AgentTranscript/utils/commitPromptBuilder';
 
 // Types for worktree mode (copied from DiffModeView)
 interface WorktreeChangedFile {
@@ -422,56 +423,11 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
           error?: string;
         };
 
-        let message = 'Use the developer_git_commit_proposal tool to create a commit. If its schema is not loaded, use ToolSearch to load it first.';
-
-        if (commitContext.success && commitContext.files.length > 0) {
-          const fileList = commitContext.files
-            .map(f => `- ${f.path} (${f.status})`)
-            .join('\n');
-
-          if (commitContext.scenario === 'worktree') {
-            // Worktree: everything uncommitted here belongs to this workstream.
-            message += `\n\nHere are all the uncommitted changes in this worktree:\n${fileList}`;
-            message += '\n\nThis is the complete set of uncommitted changes in this worktree. ' +
-              'A worktree is dedicated to a single line of work, so include all of these files in the commit.';
-            message += '\n\nThen call developer_git_commit_proposal with the file list.';
-            message += '\nDo NOT call get_session_edited_files or get_workstream_edited_files -- the file data is already provided above.';
-          } else {
-            // Shared checkout: scope to this session's/workstream's edits so concurrent
-            // sessions' unrelated work isn't swept in.
-            const scope = commitContext.scenario === 'workstream'
-              ? `across ${childSessionIds!.length} sessions in this workstream`
-              : 'in this session';
-
-            message += `\n\nHere are the files edited ${scope} that have uncommitted changes:\n${fileList}`;
-            message += '\n\nThis list covers files edited directly. If you ALSO ran commands this session that change files as a side effect ' +
-              '(e.g. npm install rewriting package-lock.json, a build/codegen step, license regeneration), include those changed files too -- ' +
-              'check git status for them. If you ran no such commands, the list above is complete; do not go looking. ' +
-              'Either way, do NOT add unrelated uncommitted changes -- other concurrent sessions may have their own work in this repo.';
-            message += '\n\nThen call developer_git_commit_proposal with the file list.';
-            message += '\nDo NOT call get_session_edited_files or get_workstream_edited_files -- the edited-file data is already provided above.';
-          }
-        } else if (commitContext.success && commitContext.files.length === 0) {
-          message += isInWorktree
-            ? '\n\nNo uncommitted changes in this worktree.'
-            : '\n\nNo session-edited files have uncommitted changes. Check git status to see if there are any other uncommitted changes to commit.';
-        } else {
-          // Fallback: let the agent discover files the old way
-          if (isInWorkstream) {
-            message += `\n\nThis session is part of a workstream with ${childSessionIds!.length} sessions. ` +
-              'Use get_workstream_edited_files to find ALL files edited across the workstream. ' +
-              'Cross-reference with git status to include all workstream-edited files that have uncommitted changes.';
-          } else {
-            message += '\n\nFirst call get_session_edited_files to find all files edited, ' +
-              'then cross-reference with git status to include all session-edited files that have uncommitted changes.';
-          }
-        }
-
-        if (isInWorktree) {
-          message += '\n\nThis work is on a worktree branch. ' +
-            'Consider the full set of changes on this branch (vs the base branch) when writing the commit message, ' +
-            'as the user may want a single commit summarizing all the work done on this branch.';
-        }
+        const message = buildCommitPrompt({
+          commitContext,
+          isInWorktree,
+          workstreamSessionCount: isInWorkstream ? childSessionIds.length : undefined,
+        });
 
         const docContext = {
           filePath: undefined,

@@ -13,7 +13,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { useAtomValue } from 'jotai';
 
 import { AlphaBadge } from '../../common/AlphaBadge';
-import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../../common/TeamAlphaNotice';
+import { TEAM_BETA_TOOLTIP, TeamBetaNotice } from '../../common/TeamBetaNotice';
 import {
   bucketMemberCount,
   categorizeTeamAnalyticsError,
@@ -602,7 +602,7 @@ export function OrgCreationWizard({
           <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--nim-text)]">
             {state.orgName.trim() || 'New organization'}
           </span>
-          <AlphaBadge size="xs" tooltip={TEAM_ALPHA_TOOLTIP} />
+          <AlphaBadge size="xs" stage="beta" tooltip={TEAM_BETA_TOOLTIP} />
           <button
             type="button"
             disabled={state.busy}
@@ -711,7 +711,7 @@ export function OrgCreationWizard({
               <p className="m-0 mt-1 text-[12px] text-[var(--nim-text-muted)]">
                 Everyone you invite sees this name. You can change it later.
               </p>
-              <TeamAlphaNotice className="mt-3" />
+              <TeamBetaNotice className="mt-3" />
               <label className="mt-3 block text-[11px] font-medium text-[var(--nim-text-muted)]">
                 Organization name
                 <input

@@ -173,7 +173,6 @@ export async function createDefaultResource(
           pendingUpdateBase64,
         );
       },
-      reviewGateEnabled: false,
     });
     bridge = createExtensionAwarenessBridge({
       syncProvider,

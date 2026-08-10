@@ -299,6 +299,31 @@ describe('DocumentModel', () => {
       await vi.advanceTimersByTimeAsync(2000);
       expect(saveRequested).toHaveBeenCalledTimes(1);
     });
+
+    it('bounds retries when a persistent autosave request keeps failing', async () => {
+      const handle = model.attach();
+      const saveError = Object.assign(new Error('write failed'), { code: 'EACCES' });
+      const saveRequested = vi.fn(async () => {
+        throw saveError;
+      });
+      handle.onSaveRequested(saveRequested);
+      handle.setDirty(true);
+
+      // A permanently unwritable file must not be retried every two seconds.
+      // The autosave policy allows a small bounded retry sequence, then waits
+      // for an explicit/manual save or a new clean -> dirty edit cycle.
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+      expect(saveRequested).toHaveBeenCalledTimes(3);
+
+      // A successful manual save clears dirty state and rearms autosave for
+      // later edits instead of permanently disabling it for this document.
+      handle.setDirty(false);
+      handle.setDirty(true);
+      await vi.advanceTimersByTimeAsync(2100);
+
+      expect(saveRequested).toHaveBeenCalledTimes(4);
+    });
   });
 
   describe('diff mode', () => {

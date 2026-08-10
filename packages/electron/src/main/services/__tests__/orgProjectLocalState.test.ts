@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   resolveOrgProjectLocalStates,
+  type WorkspaceBindingState,
   type WorkspaceRemoteState,
 } from '../orgProjectLocalState';
 import type { TeamProjectSummary } from '../TeamService';
@@ -66,6 +67,35 @@ describe('resolveOrgProjectLocalStates', () => {
     expect(resolveOrgProjectLocalStates(projects, workspaces)[0]).toMatchObject({
       localStatus: 'open',
       workspacePath: '/workspace/open',
+    });
+  });
+
+  // A folder attached through the shared-project flow has no remote to be
+  // matched by, so without the binding pass it reports "not local" even while
+  // the user is looking at it.
+  it('resolves a remote-less project through the workspace bound to it', () => {
+    const projects = [project('notes', null)];
+    const bound: WorkspaceBindingState[] = [
+      { workspacePath: '/workspace/notes', teamProjectId: 'team-notes', open: true },
+    ];
+
+    expect(resolveOrgProjectLocalStates(projects, [], bound)[0]).toMatchObject({
+      localStatus: 'open',
+      workspacePath: '/workspace/notes',
+    });
+  });
+
+  it('lets a git remote match win over a binding for the same project', () => {
+    const projects = [project('widgets', 'hash-widgets')];
+    const workspaces: WorkspaceRemoteState[] = [
+      { workspacePath: '/workspace/cloned', gitRemoteHash: 'hash-widgets', open: false },
+    ];
+    const bound: WorkspaceBindingState[] = [
+      { workspacePath: '/workspace/bound', teamProjectId: 'team-widgets', open: true },
+    ];
+
+    expect(resolveOrgProjectLocalStates(projects, workspaces, bound)[0]).toMatchObject({
+      workspacePath: '/workspace/cloned',
     });
   });
 });

@@ -119,7 +119,6 @@ export async function inspectSharedDocumentEmptiness(
     userId: config.userId,
     documentId: config.documentId,
     createWebSocket: config.createWebSocket,
-    reviewGateEnabled: false,
     onFirstSyncComplete: resolveFirstSync,
   });
 
@@ -254,7 +253,6 @@ export async function exportSharedDocument(params: Omit<SeedParams, 'content'>):
     userId: config.userId,
     documentId: config.documentId,
     createWebSocket: config.createWebSocket,
-    reviewGateEnabled: false,
   });
 
   try {
@@ -375,7 +373,6 @@ async function attemptHeadlessRoomWrite(
     userId: config.userId,
     documentId: config.documentId,
     createWebSocket: config.createWebSocket,
-    reviewGateEnabled: false,
   });
 
   try {

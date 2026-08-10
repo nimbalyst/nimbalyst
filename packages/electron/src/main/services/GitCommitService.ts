@@ -66,26 +66,27 @@ function toRealPath(filePath: string): string {
 }
 
 /**
- * Convert a proposal path to a literal path inside the session's repository.
+ * Convert an IPC-supplied path to a literal path inside one repository.
  *
- * MCP commit proposals are deliberately scoped to the session's repository --
- * the git toplevel that owns the workspace. For a worktree session the
- * toplevel is the worktree itself, so cross-worktree rejection is unchanged;
- * for a workspace opened at a subfolder of a repository (#124) the boundary is
- * the containing repository. Do not let an absolute path, `..`, or Git
- * pathspec magic widen that scope. Relative inputs stay in the caller's frame
- * (workspace-relative). The returned path is always repository-relative and is
- * passed to Git with its literal-pathspec mode enabled below.
+ * Commit and discard both operate on concrete selected files, never Git query
+ * pathspecs. Keep this validation shared so neither destructive path can widen
+ * beyond the selected repository-relative filenames.
+ *
+ * The boundary is the repository that owns the workspace. For a worktree
+ * session the git toplevel is the worktree itself, so cross-worktree rejection
+ * is unchanged; for a workspace opened at a subfolder of a repository (#124)
+ * the boundary is the containing repository. Relative inputs stay in the
+ * caller's frame (workspace-relative).
  */
-function toRepositoryRelativePath(workspacePath: string, repoRoot: string, filePath: string): string {
+export function toRepositoryRelativePath(workspacePath: string, repoRoot: string, filePath: string): string {
   if (!filePath || filePath.includes('\0')) {
-    throw new Error('Invalid file path in commit proposal');
+    throw new Error('Invalid file path');
   }
 
   // repoRoot comes from `rev-parse --show-toplevel`, which is always physical, so
   // the workspace base has to be canonicalized too -- otherwise a workspace under a
-  // symlinked parent (macOS /var -> /private/var) makes every relative path in the
-  // proposal look like it escapes the repository.
+  // symlinked parent (macOS /var -> /private/var) makes every relative path look
+  // like it escapes the repository.
   const resolvedPath = isAbsolute(filePath)
     ? toRealPath(filePath)
     : toRealPath(resolve(toRealPath(workspacePath), filePath));
@@ -96,13 +97,12 @@ function toRepositoryRelativePath(workspacePath: string, repoRoot: string, fileP
     isAbsolute(relativePath);
 
   if (escapesRepository || relativePath.length === 0) {
-    throw new Error('Commit proposal file is outside the session workspace');
+    throw new Error('File is outside the repository');
   }
 
-  // Git interprets a leading ':' as pathspec magic, even after '--'. The
-  // proposal contract is a list of concrete files, not a Git query language.
+  // `--` ends option parsing but does not disable a leading `:` pathspec.
   if (relativePath.startsWith(':')) {
-    throw new Error('Commit proposal file must be a literal path');
+    throw new Error('File must be a literal path, not a Git pathspec');
   }
 
   return relativePath.replace(/\\/g, '/');

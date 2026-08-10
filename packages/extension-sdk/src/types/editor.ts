@@ -470,7 +470,7 @@ export interface EditorHost {
    * Editor should call saveContent() in response.
    * Returns unsubscribe function.
    */
-  onSaveRequested(callback: () => void): () => void;
+  onSaveRequested(callback: () => void | Promise<void>): () => void;
 
   // ============ HISTORY ============
 

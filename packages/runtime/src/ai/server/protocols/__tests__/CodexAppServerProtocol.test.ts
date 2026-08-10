@@ -294,6 +294,48 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
+  it('ignores child-thread and stale-turn completion until the active root turn completes', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-root' } } });
+    const session = await sessionPromise;
+
+    const events: ProtocolEvent[] = [];
+    let streamCompleted = false;
+    const collector = (async () => {
+      for await (const ev of protocol.sendMessage(session, { content: 'delegate and synthesize' })) {
+        events.push(ev);
+      }
+      streamCompleted = true;
+    })();
+
+    const turnReq = await nextWrittenMatching(child, 'turn/start');
+    child.emitLine({ id: turnReq.id, result: { turn: { id: 'turn-root', items: [], status: 'inProgress' } } });
+
+    child.emitLine({ method: 'item/agentMessage/delta', params: { threadId: 'thread-child', turnId: 'turn-child', itemId: 'msg-child', delta: 'child-only report' } });
+    child.emitLine({ method: 'item/completed', params: { threadId: 'thread-child', turnId: 'turn-child', item: { type: 'agentMessage', id: 'msg-child', text: 'child-only report' } } });
+    child.emitLine({ method: 'turn/completed', params: { threadId: 'thread-child', turn: { id: 'turn-child', status: 'completed' } } });
+    child.emitLine({ method: 'turn/completed', params: { threadId: 'thread-root', turn: { id: 'turn-stale', status: 'completed' } } });
+    await Promise.resolve();
+
+    expect(streamCompleted).toBe(false);
+    expect(events).toHaveLength(0);
+
+    child.emitLine({ method: 'item/agentMessage/delta', params: { threadId: 'thread-root', turnId: 'turn-root', itemId: 'msg-root', delta: 'root synthesis' } });
+    child.emitLine({ method: 'turn/completed', params: { threadId: 'thread-root', turn: { id: 'turn-root', status: 'completed' } } });
+
+    await collector;
+
+    expect(events.filter((event) => event.type === 'text').map((event) => event.content)).toEqual(['root synthesis']);
+    expect(events.filter((event) => event.type === 'complete')).toHaveLength(1);
+    expect(events[events.length - 1]).toMatchObject({ type: 'complete', content: 'root synthesis' });
+
+    protocol.cleanupSession(session);
+  });
+
   it('translates fileChange item/completed into a tool_call event with diff-based baselines', async () => {
     const protocol = new CodexAppServerProtocol();
     const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });

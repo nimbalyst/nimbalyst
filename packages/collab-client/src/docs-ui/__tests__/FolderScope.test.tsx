@@ -12,7 +12,6 @@ import { SharedDocsListView } from '../SharedDocsListView';
 vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
-vi.mock('@nimbalyst/runtime', () => ({}));
 
 const folders: SharedFolder[] = [
   { folderId: 'folder-engineering', name: 'Engineering', parentFolderId: null, createdAt: 1, updatedAt: 1 },

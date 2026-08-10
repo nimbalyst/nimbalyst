@@ -358,9 +358,9 @@ jobs:
         shell: powershell
 
       # Install and authenticate smctl before electron-builder runs. The custom
-      # signer in build/sign-windows.js is then invoked for the staged app
-      # binaries and for the NSIS installer, so the payload is signed before it
-      # is embedded in the distributable.
+      # signer in build/sign-windows.js is then invoked for Nimbalyst.exe, the
+      # NSIS uninstaller and the installer, so the payload executable is signed
+      # before it is embedded in the distributable (#853).
       - name: Set up DigiCert KeyLocker for Windows payload signing
         if: matrix.platform == 'win' && matrix.arch != 'arm64' && env.DIGICERT_CLIENT_CERT_BASE64 != '' && (github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true')
         uses: digicert/code-signing-software-trust-action@v1.0.0
@@ -645,13 +645,17 @@ jobs:
           Write-Host "DigiCert client certificate decoded ($($certBytes.Length) bytes)"
         shell: powershell
 
-      - name: Sign Windows ARM64 payload with DigiCert KeyLocker
+      # Install and authenticate smctl only. Signing goes through
+      # build/sign-windows.js so this job shares the x64 job's allowlist and
+      # retry policy; the action's own `input:` mode signs once with no retry,
+      # and a directory argument there makes `smctl --simple` recurse and sign
+      # every file type Authenticode recognizes, including node_modules
+      # JavaScript (~200 DigiCert calls per ARM64 build).
+      - name: Set up DigiCert KeyLocker for Windows ARM64 signing
         if: env.DIGICERT_CLIENT_CERT_BASE64 != ''
         uses: digicert/code-signing-software-trust-action@v1.0.0
         with:
           simple-signing-mode: true
-          input: ${{ steps.arm-payload.outputs.path }}
-          keypair-alias: ${{ secrets.DIGICERT_KEYPAIR_ALIAS }}
         env:
           DIGICERT_CLIENT_CERT_BASE64: ${{ secrets.DIGICERT_CLIENT_CERT_BASE64 }}
           SM_HOST: "https://clientauth.one.digicert.com"
@@ -659,7 +663,10 @@ jobs:
           SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
           SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
 
-      - name: Sign Windows ARM64 native modules with DigiCert KeyLocker
+      # The uninstaller and installer are signed by the same script during the
+      # repackage step below.
+      - name: Sign Windows ARM64 payload with DigiCert KeyLocker
+        if: env.DIGICERT_CLIENT_CERT_BASE64 != ''
         shell: pwsh
         env:
           DIGICERT_KEYPAIR_ALIAS: ${{ secrets.DIGICERT_KEYPAIR_ALIAS }}
@@ -668,18 +675,9 @@ jobs:
           SM_CLIENT_CERT_FILE: ${{ runner.temp }}\digicert_client_cert.p12
           SM_CLIENT_CERT_PASSWORD: ${{ secrets.DIGICERT_CLIENT_CERT_PW }}
         run: |
-          $ErrorActionPreference = "Stop"
-          Get-ChildItem "${{ steps.arm-payload.outputs.path }}" -Filter *.node -File -Recurse | ForEach-Object {
-            $temporaryPath = "$($_.FullName).dll"
-            Move-Item -LiteralPath $_.FullName -Destination $temporaryPath
-            try {
-              & smctl sign --keypair-alias $env:DIGICERT_KEYPAIR_ALIAS --input $temporaryPath --simple
-              if ($LASTEXITCODE -ne 0) {
-                throw "smctl failed to sign $($_.FullName) with exit code $LASTEXITCODE"
-              }
-            } finally {
-              Move-Item -LiteralPath $temporaryPath -Destination $_.FullName
-            }
+          node packages/electron/build/sign-windows.js "${{ steps.arm-payload.outputs.path }}\Nimbalyst.exe"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to sign the Windows ARM64 payload executable"
           }
 
       - name: Package signed Windows ARM64 payload

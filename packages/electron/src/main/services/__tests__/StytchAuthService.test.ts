@@ -23,14 +23,6 @@ vi.mock('fs', () => ({
   unlinkSync: vi.fn((filePath: string) => files.delete(filePath)),
 }));
 
-vi.mock('@nimbalyst/runtime', () => ({
-  STYTCH_CONFIG: {
-    live: { projectId: 'test', publicToken: 'test', apiBase: 'https://test.invalid' },
-  },
-  asPersonalJwt: (jwt: string) => jwt,
-  asPersonalMemberId: (id: string) => id,
-}));
-
 vi.mock('../../utils/store', () => ({
   getSessionSyncConfig: vi.fn(() => ({ serverUrl: 'https://sync.example' })),
   setSessionSyncConfig: vi.fn(),

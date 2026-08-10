@@ -79,6 +79,18 @@ export function rebindElectronCollabHostScope(host: ElectronCollabHost, scopeKey
   host.setScopeKey(scopeKey);
 }
 
+/**
+ * Re-resolve the collaboration scope of every host mounted in this window.
+ *
+ * Called when the answer to "does this project have a team?" may have changed
+ * without the workspace path changing -- signing in, or binding the project to
+ * a newly created organization. Hosts are per-workspace and a window only ever
+ * mounts its own, so this does not need the broadcast's workspace path.
+ */
+export function invalidateElectronCollabScopes(): void {
+  for (const host of hostsByScope.values()) host.invalidateScope();
+}
+
 export function getElectronCollabHost(scope: CollabScope): ElectronCollabHost {
   return getOrCreateElectronHost(scope.scopeKey);
 }

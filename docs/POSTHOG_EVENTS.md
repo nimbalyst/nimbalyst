@@ -59,8 +59,8 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
 | --- | --- | --- | --- | --- | --- |
 | `file_opened` | `FileHandlers.ts:85`<br/>`WorkspaceHandlers.ts:804` | User opens file via dialog or workspace tree | `source` (dialog/workspace)<br/>`fileType`<br/>`hasWorkspace` | v0.45.25 (2025-11-14) |  |
-| `file_saved` | `FileHandlers.ts:199` | User manually saves file (Cmd+S) | `saveType` (manual)<br/>`fileType`<br/>`hasFrontmatter`<br/>`wordCount` | v0.45.25 (2025-11-14) |  |
-| `file_save_failed` | `FileHandlers.ts:212, 277` | File save operation fails | `errorType`<br/>`fileType`<br/>`isAutoSave` | v0.45.25 (2025-11-14) |  |
+| `file_saved` | `FileHandlers.ts` | File save operation succeeds | `saveType` (manual/auto)<br/>`fileType`<br/>`hasFrontmatter`<br/>`wordCount` | v0.45.25 (2025-11-14) | (pending release): Propagated the real autosave/manual source through file-save IPC |
+| `file_save_failed` | `FileHandlers.ts` | File save operation fails; a continuous failure is emitted once per file/source/error-code incident until a successful save rearms it | `errorType` (permission/not_found/disk_full/is_directory/resource_limit/io/invalid_path/unknown)<br/>`errorCode` (allowlisted stable Node filesystem code or UNKNOWN)<br/>`fileType`<br/>`isAutoSave` | v0.45.25 (2025-11-14) | (pending release): Classified failures from stable Node error codes, propagated autosave source, and deduplicated continuous failures |
 | `file_created` | `FileHandlers.ts:399`<br/>`WorkspaceHandlers.ts:154` | User creates new file | `creationType` (new_file_menu/ai_tool)<br/>`fileType` (markdown/mockup/text/other) | v0.45.25 (2025-11-14) | v0.47.2 (2025-12-10): Added mockup fileType |
 | `file_renamed` | `WorkspaceHandlers.ts:592` | User renames file in workspace | None | v0.45.25 (2025-11-14) |  |
 | `file_deleted` | `WorkspaceHandlers.ts:618` | User deletes file from workspace | None | v0.45.25 (2025-11-14) |  |

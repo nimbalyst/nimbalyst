@@ -29,8 +29,6 @@ interface MockedSyncProvider {
   destroyed: boolean;
   destroy(): void;
   setRoomMetadata?(meta: unknown): void;
-  acceptRemoteChanges?(): void;
-  rejectRemoteChanges?(): void;
   getYDoc(): { destroy(): void };
 }
 
@@ -50,8 +48,6 @@ vi.mock('@nimbalyst/runtime/sync', () => {
     }
     destroy(): void { this.destroyed = true; }
     setRoomMetadata(_meta: unknown): void { /* no-op */ }
-    acceptRemoteChanges(): void { /* no-op */ }
-    rejectRemoteChanges(): void { /* no-op */ }
     getYDoc(): { destroy(): void } { return this.ydoc; }
   }
   class CollabLexicalProvider {

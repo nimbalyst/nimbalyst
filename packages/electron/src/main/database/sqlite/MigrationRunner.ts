@@ -186,6 +186,11 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'tracker_personal_snooze',
       sqlFile: path.join(schemaDir, '0029_tracker_personal_snooze.sql'),
     },
+    {
+      version: 30,
+      name: 'tracker_type_defs_synced_model',
+      sqlFile: path.join(schemaDir, '0030_tracker_type_defs_synced_model.sql'),
+    },
   ];
 }
 

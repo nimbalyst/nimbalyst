@@ -33,6 +33,22 @@ interface InstalledExtension {
   manifest: any;
   name: string;
   enabled: boolean;
+  staleBundleWarning?: string;
+}
+
+interface RebuildNotice {
+  kind: 'success' | 'error';
+  message: string;
+}
+
+function summarizeRebuildError(error: string | undefined): string {
+  if (!error) return 'The extension build failed. Open View Logs for details.';
+  const lines = error.split('\n').map(line => line.trim()).filter(Boolean);
+  const usefulLine = lines.find(line => /error|failed|timed out/i.test(line) && line !== 'Extension build failed:')
+    ?? lines[1]
+    ?? lines[0]
+    ?? 'The extension build failed. Open View Logs for details.';
+  return usefulLine.length > 180 ? `${usefulLine.slice(0, 177)}...` : usefulLine;
 }
 
 interface ExtensionDevIndicatorProps {
@@ -52,6 +68,7 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
   const [relativeTime, setRelativeTime] = useState<string>('');
   const [extensions, setExtensions] = useState<InstalledExtension[]>([]);
   const [rebuildingExtension, setRebuildingExtension] = useState<string | null>(null);
+  const [rebuildNotice, setRebuildNotice] = useState<RebuildNotice | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const rebuildSubmenuRef = useRef<HTMLDivElement>(null);
@@ -229,13 +246,27 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
 
   const handleRebuildExtension = async (extension: InstalledExtension) => {
     setRebuildingExtension(extension.id);
+    setRebuildNotice(null);
     try {
       const result = await window.electronAPI.extensions.devReload(extension.id, extension.path);
       if (!result.success) {
         console.error(`[ExtensionDevIndicator] Failed to rebuild ${extension.name}:`, result.error);
+        setRebuildNotice({
+          kind: 'error',
+          message: `${extension.name}: ${summarizeRebuildError(result.error)}`,
+        });
+      } else {
+        setExtensions(current => current.map(item => (
+          item.id === extension.id ? { ...item, staleBundleWarning: undefined } : item
+        )));
+        setRebuildNotice({ kind: 'success', message: `${extension.name} rebuilt and reloaded.` });
       }
     } catch (error) {
       console.error(`[ExtensionDevIndicator] Failed to rebuild ${extension.name}:`, error);
+      setRebuildNotice({
+        kind: 'error',
+        message: `${extension.name}: ${summarizeRebuildError(String(error))}`,
+      });
     } finally {
       setRebuildingExtension(null);
     }
@@ -243,21 +274,35 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
 
   const handleRebuildAll = async () => {
     setRebuildingExtension('all');
+    setRebuildNotice(null);
+    const failed: string[] = [];
+    const rebuiltIds = new Set<string>();
     try {
       for (const ext of extensions) {
         const result = await window.electronAPI.extensions.devReload(ext.id, ext.path);
         if (!result.success) {
           console.error(`[ExtensionDevIndicator] Failed to rebuild ${ext.name}:`, result.error);
+          failed.push(ext.name);
+        } else {
+          rebuiltIds.add(ext.id);
         }
       }
+      setExtensions(current => current.map(item => (
+        rebuiltIds.has(item.id) ? { ...item, staleBundleWarning: undefined } : item
+      )));
+      setRebuildNotice(failed.length > 0
+        ? { kind: 'error', message: `Build failed for ${failed.join(', ')}. Open View Logs for details.` }
+        : { kind: 'success', message: `Rebuilt and reloaded ${extensions.length} extension${extensions.length === 1 ? '' : 's'}.` });
     } catch (error) {
       console.error('[ExtensionDevIndicator] Failed to rebuild extensions:', error);
+      setRebuildNotice({ kind: 'error', message: summarizeRebuildError(String(error)) });
     } finally {
       setRebuildingExtension(null);
       setRebuildSubmenuOpen(false);
-      setMenuOpen(false);
     }
   };
+
+  const staleExtensionCount = extensions.filter(extension => extension.staleBundleWarning).length;
 
   return (
     <>
@@ -303,6 +348,32 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
             <div className="extension-dev-menu-uptime flex items-center gap-2 mx-3 mb-2 text-xs text-[var(--nim-text-faint)] [&_.material-symbols-outlined]:text-[var(--nim-text-faint)]">
               <MaterialSymbol icon="schedule" size={16} />
               <span>Started {relativeTime}</span>
+            </div>
+          )}
+
+          {staleExtensionCount > 0 && (
+            <div
+              className="extension-dev-stale-warning flex items-start gap-2 mx-3 mb-2 py-2 px-2.5 rounded-md bg-[color-mix(in_srgb,var(--nim-warning)_10%,transparent)] border border-[color-mix(in_srgb,var(--nim-warning)_30%,transparent)] text-xs text-[var(--nim-text-muted)]"
+              role="status"
+            >
+              <MaterialSymbol icon="warning" size={16} />
+              <span>
+                {staleExtensionCount} stale extension bundle{staleExtensionCount === 1 ? '' : 's'} detected. Rebuild before testing.
+              </span>
+            </div>
+          )}
+
+          {rebuildNotice && (
+            <div
+              className={`extension-dev-rebuild-notice flex items-start gap-2 mx-3 mb-2 py-2 px-2.5 rounded-md border text-xs ${
+                rebuildNotice.kind === 'error'
+                  ? 'bg-[color-mix(in_srgb,var(--nim-error)_10%,transparent)] border-[color-mix(in_srgb,var(--nim-error)_30%,transparent)] text-[var(--nim-error)]'
+                  : 'bg-[color-mix(in_srgb,var(--nim-success)_10%,transparent)] border-[color-mix(in_srgb,var(--nim-success)_30%,transparent)] text-[var(--nim-success)]'
+              }`}
+              role={rebuildNotice.kind === 'error' ? 'alert' : 'status'}
+            >
+              <MaterialSymbol icon={rebuildNotice.kind === 'error' ? 'error' : 'check_circle'} size={16} />
+              <span>{rebuildNotice.message}</span>
             </div>
           )}
 
@@ -382,8 +453,9 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
                         onClick={() => handleRebuildExtension(ext)}
                         disabled={rebuildingExtension !== null}
                         role="menuitem"
+                        title={ext.staleBundleWarning}
                       >
-                        <MaterialSymbol icon="extension" size={18} />
+                        <MaterialSymbol icon={ext.staleBundleWarning ? 'warning' : 'extension'} size={18} />
                         <span className="truncate">
                           {rebuildingExtension === ext.id ? 'Rebuilding...' : ext.name}
                         </span>

@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { store } from '@nimbalyst/runtime/store';
+import { openSettingsCommandAtom } from '../../atoms/settingsNavigation';
+import { errorNotificationService } from '../../../services/ErrorNotificationService';
 import { activeWorkspacePathAtom } from '../../atoms/openProjects';
 import { pendingCollabDocumentAtom } from '../../atoms/collabDocuments';
 import {
@@ -113,5 +115,86 @@ describe('tracker deep-link routing', () => {
       selectedItemId: 'tracker-document',
       itemViews: { 'tracker-document': 'document' },
     });
+  });
+});
+
+describe('team-invitation deep-link handoff', () => {
+  let cleanup: (() => void) | undefined;
+  let handlers: Record<string, (data: any) => void>;
+  /** Stands in for main's consume-and-clear: reading it hands over ownership. */
+  let pendingInvite: Record<string, unknown> | null;
+  let consumeCount: number;
+
+  beforeEach(() => {
+    handlers = {};
+    pendingInvite = null;
+    consumeCount = 0;
+    store.set(openSettingsCommandAtom, null);
+    vi.spyOn(errorNotificationService, 'showInfo').mockReturnValue('');
+    vi.spyOn(errorNotificationService, 'showWarning').mockReturnValue('');
+
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        invoke: vi.fn(async (channel: string) => {
+          if (channel === 'deep-link:consume-pending-team-invite') {
+            consumeCount += 1;
+            const pending = pendingInvite;
+            pendingInvite = null;
+            return pending;
+          }
+          return null;
+        }),
+        on: vi.fn((event: string, handler: (data: any) => void) => {
+          handlers[event] = handler;
+          return () => delete handlers[event];
+        }),
+        featureUsage: { record: vi.fn(async () => undefined) },
+      },
+    });
+  });
+
+  afterEach(() => {
+    cleanup?.();
+    cleanup = undefined;
+    vi.restoreAllMocks();
+    store.set(openSettingsCommandAtom, null);
+  });
+
+  it('applies an invitation once even when the nudge races the mount-time drain', async () => {
+    pendingInvite = { status: 'accepted', orgId: 'org-acme', teamName: 'Acme' };
+
+    cleanup = initDeepLinkListeners();
+    // Main fires the nudge at a window that is already draining. The outcome
+    // must be read through the consuming IPC, never carried on the event, or
+    // the invitee sees the same toast twice.
+    handlers['deep-link:team-invite-available']?.(undefined);
+
+    await vi.waitFor(() => expect(consumeCount).toBeGreaterThanOrEqual(2));
+    expect(errorNotificationService.showInfo).toHaveBeenCalledTimes(1);
+    expect(errorNotificationService.showInfo).toHaveBeenCalledWith(
+      'You joined Acme',
+      expect.any(String),
+      expect.anything(),
+    );
+  });
+
+  it('sends an invitee with no matching account to account settings to sign in', async () => {
+    pendingInvite = {
+      status: 'sign-in-required',
+      orgId: 'org-acme',
+      email: 'invitee@test.com',
+    };
+
+    cleanup = initDeepLinkListeners();
+
+    await vi.waitFor(() => {
+      expect(store.get(openSettingsCommandAtom)).toMatchObject({ category: 'account' });
+    });
+    expect(errorNotificationService.showWarning).toHaveBeenCalledWith(
+      'Sign in to accept this invitation',
+      expect.stringContaining('invitee@test.com'),
+      expect.anything(),
+    );
   });
 });

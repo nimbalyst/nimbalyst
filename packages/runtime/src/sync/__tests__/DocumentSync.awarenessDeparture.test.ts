@@ -48,7 +48,6 @@ function makeNetworkProvider(socket: RecordingWebSocket): DocumentSyncProvider {
     orgId: 'org-1',
     userId: 'member-rowan',
     documentId: 'doc-1',
-    reviewGateEnabled: false,
     createWebSocket: () => socket as unknown as WebSocket,
   });
 }

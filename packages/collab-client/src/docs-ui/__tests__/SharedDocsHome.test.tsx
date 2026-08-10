@@ -25,7 +25,6 @@ vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
 // rules make jsdom's nwsapi build a selector out of each candidate element's
 // classes, and Tailwind arbitrary values (`max-w-[860px]`) are not escaped, so
 // it throws "is not a valid selector". Stub the barrel to keep it out of the tree.
-vi.mock('@nimbalyst/runtime', () => ({}));
 
 const visibleDocumentsAtom = atom<SharedDocument[]>([]);
 const trashedDocumentsAtom = atom<SharedDocument[]>([]);

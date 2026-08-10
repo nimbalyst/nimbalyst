@@ -30,6 +30,9 @@ import { DiffSession } from './DiffSession';
 
 let nextAttachmentId = 0;
 
+const AUTOSAVE_FAILURE_RETRY_DELAYS_MS = [5_000, 30_000] as const;
+const AUTOSAVE_MAX_ATTEMPTS = AUTOSAVE_FAILURE_RETRY_DELAYS_MS.length + 1;
+
 /**
  * Thrown by `saveFromEditor` when the model is in the deleted state.
  * Callers (TabEditor.saveWithHistory, etc.) treat this as a non-fatal block:
@@ -48,7 +51,7 @@ interface EditorAttachment {
   id: string;
   isDirty: boolean;
   fileChangedCallbacks: Set<(content: string | ArrayBuffer) => void>;
-  saveRequestedCallbacks: Set<() => void>;
+  saveRequestedCallbacks: Set<() => void | Promise<void>>;
   diffRequestedCallbacks: Set<(state: DiffState) => void>;
   diffResolvedCallbacks: Set<(accepted: boolean) => void>;
 }
@@ -113,6 +116,10 @@ export class DocumentModel {
   private pendingSave: { editorId: string; content: string | ArrayBuffer; resolve: () => void; reject: (err: unknown) => void } | null = null;
   private autosaveTimer: ReturnType<typeof setInterval> | null = null;
   private lastEditTime = 0;
+  private autosaveRequestInFlight = false;
+  private autosaveConsecutiveFailures = 0;
+  private nextAutosaveAttemptAt = 0;
+  private autosaveBlocked = false;
 
   // -- File watcher ---------------------------------------------------------
 
@@ -193,7 +200,11 @@ export class DocumentModel {
         if (isDirty) {
           this.lastEditTime = Date.now();
         }
-        if (wasDirty !== this.isDirty()) {
+        const nowDirty = this.isDirty();
+        if (!nowDirty) {
+          this.resetAutosaveFailureState();
+        }
+        if (wasDirty !== nowDirty) {
           this.emit('dirty-changed');
         }
       },
@@ -208,6 +219,7 @@ export class DocumentModel {
        * Updates lastPersistedContent and notifies clean siblings.
        */
       notifySiblingsSaved: (content: string | ArrayBuffer) => {
+        this.resetAutosaveFailureState();
         this.lastPersistedContent = content;
         this.notifyFileChanged(content, id);
       },
@@ -470,6 +482,7 @@ export class DocumentModel {
       // echo suppression to see the new content as "ours".
       this.lastPersistedContent = content;
       await this.backingStore.save(content);
+      this.resetAutosaveFailureState();
 
       // Clear dirty flag for the saving editor
       const att = this.attachments.get(editorId);
@@ -819,24 +832,59 @@ export class DocumentModel {
       // Skip if not dirty
       if (!this.isDirty()) return;
 
+      // A persistent write failure is retried only a bounded number of times.
+      // Once blocked, the dirty buffer remains intact and an explicit/manual
+      // save (which clears dirty state on success) rearms autosave.
+      if (this.autosaveBlocked || this.autosaveRequestInFlight) return;
+      if (Date.now() < this.nextAutosaveAttemptAt) return;
+
       // Skip if edit was too recent (debounce)
       if (Date.now() - this.lastEditTime < this.options.autosaveDebounce) return;
 
       // Find the first dirty editor and request a save
       for (const att of this.attachments.values()) {
         if (att.isDirty && att.saveRequestedCallbacks.size > 0) {
-          for (const cb of att.saveRequestedCallbacks) {
-            try {
-              cb();
-            } catch (err) {
-              console.error('[DocumentModel] Error in autosave request:', err);
-            }
-          }
+          void this.requestAutosave(att);
           // Only request save from one editor at a time
           break;
         }
       }
     }, interval);
+  }
+
+  private async requestAutosave(att: EditorAttachment): Promise<void> {
+    this.autosaveRequestInFlight = true;
+    try {
+      for (const cb of att.saveRequestedCallbacks) {
+        await cb();
+      }
+      this.resetAutosaveFailureState();
+    } catch (err) {
+      this.autosaveConsecutiveFailures += 1;
+      if (this.autosaveConsecutiveFailures >= AUTOSAVE_MAX_ATTEMPTS) {
+        this.autosaveBlocked = true;
+        this.nextAutosaveAttemptAt = 0;
+        console.error(
+          `[DocumentModel] Autosave blocked after ${AUTOSAVE_MAX_ATTEMPTS} failed attempts; explicit retry required:`,
+          err,
+        );
+      } else {
+        const retryDelay = AUTOSAVE_FAILURE_RETRY_DELAYS_MS[this.autosaveConsecutiveFailures - 1];
+        this.nextAutosaveAttemptAt = Date.now() + retryDelay;
+        console.error(
+          `[DocumentModel] Autosave request failed; retrying in ${retryDelay}ms:`,
+          err,
+        );
+      }
+    } finally {
+      this.autosaveRequestInFlight = false;
+    }
+  }
+
+  private resetAutosaveFailureState(): void {
+    this.autosaveConsecutiveFailures = 0;
+    this.nextAutosaveAttemptAt = 0;
+    this.autosaveBlocked = false;
   }
 
   // -- Notifications --------------------------------------------------------

@@ -20,7 +20,7 @@
 
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
-import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
+import { resolveProviderFromModel } from '../../utils/modelUtils';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import {
   store,
@@ -94,6 +94,8 @@ export interface CreateNewSessionOptions {
   model?: string;
   metadata?: Record<string, unknown>;
   mode?: 'agent' | 'planning';
+  /** Session title. Defaults to 'New Session'. */
+  title?: string;
   /** Select the new session in Agent mode. Defaults to true for existing callers. */
   selectSession?: boolean;
 }
@@ -405,17 +407,17 @@ export const createNewSessionActionAtom = atom(
       ? { initialDraft: input }
       : input ?? {};
     const model = options.model ?? get(defaultAgentModelAtom);
+    const title = options.title ?? 'New Session';
 
     try {
       const sessionId = options.sessionId ?? crypto.randomUUID();
-      const parsedModel = model ? ModelIdentifier.tryParse(model) : null;
-      const provider = parsedModel?.provider || 'claude-code';
+      const provider = resolveProviderFromModel(model);
       const result = await window.electronAPI.invoke('sessions:create', {
         session: {
           id: sessionId,
           provider,
           model,
-          title: 'New Session',
+          title,
           mode: options.mode,
           metadata: options.metadata,
         },
@@ -425,7 +427,7 @@ export const createNewSessionActionAtom = atom(
       if (result.success && result.id) {
         set(addSessionFullAtom, {
           id: result.id,
-          title: 'New Session',
+          title,
           createdAt: Date.now(),
           updatedAt: Date.now(),
           provider,
@@ -500,8 +502,7 @@ export const createNewWorktreeSessionActionAtom = atom(
 
       const worktree = worktreeResult.worktree;
       const sessionId = crypto.randomUUID();
-      const parsedModel = defaultModel ? ModelIdentifier.tryParse(defaultModel) : null;
-      const provider = parsedModel?.provider || 'claude-code';
+      const provider = resolveProviderFromModel(defaultModel);
       const result: SessionCreateResult = await window.electronAPI.invoke('sessions:create', {
         session: {
           id: sessionId,
@@ -575,8 +576,7 @@ export const createWorktreeSessionCoreActionAtom = atom(
 
     const worktree = worktreeResult.worktree;
     const sessionId = crypto.randomUUID();
-    const parsedModel = defaultModel ? ModelIdentifier.tryParse(defaultModel) : null;
-    const provider = parsedModel?.provider || 'claude-code';
+    const provider = resolveProviderFromModel(defaultModel);
     const result = await window.electronAPI.invoke('sessions:create', {
       session: {
         id: sessionId,
@@ -699,8 +699,10 @@ export const requestSessionQuickOpenActionAtom = atom(null, (get, set) => {
 // the module-level `store` without grabbing a setter inside a hook.
 // ============================================================
 
-export function dispatchCreateNewSession(initialDraft?: string): Promise<string | undefined> {
-  return store.set(createNewSessionActionAtom, initialDraft) as Promise<string | undefined>;
+export function dispatchCreateNewSession(
+  input?: string | CreateNewSessionOptions,
+): Promise<string | undefined> {
+  return store.set(createNewSessionActionAtom, input) as Promise<string | undefined>;
 }
 
 export function dispatchCreateNewWorktreeSession(

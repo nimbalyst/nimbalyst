@@ -75,8 +75,10 @@ describe('buildSdkOptions env-key hardening', () => {
   let originalToolSearch: string | undefined;
   let originalDisableAutoupdater: string | undefined;
   let originalDisableUpdates: string | undefined;
+  let originalDisableGitInstructions: string | undefined;
 
   beforeEach(() => {
+    originalDisableGitInstructions = process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS;
     originalAnthropic = process.env.ANTHROPIC_API_KEY;
     originalOpenAI = process.env.OPENAI_API_KEY;
     originalEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
@@ -115,6 +117,11 @@ describe('buildSdkOptions env-key hardening', () => {
       delete process.env.DISABLE_UPDATES;
     } else {
       process.env.DISABLE_UPDATES = originalDisableUpdates;
+    }
+    if (originalDisableGitInstructions === undefined) {
+      delete process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS;
+    } else {
+      process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS = originalDisableGitInstructions;
     }
   });
 
@@ -234,6 +241,42 @@ describe('buildSdkOptions env-key hardening', () => {
     );
 
     expect(options.env.DISABLE_AUTOUPDATER).toBe('0');
+  });
+
+  it('disables the CLI git-status snapshot by default on every spawn (#1177)', async () => {
+    // Every resumed turn spawns a fresh CLI process, and each one rebuilds the
+    // "git status at the start of the conversation" block from the LIVE working
+    // tree. An agentic session edits files, so that block differs on most turns
+    // and invalidates the whole message prefix behind it: measured 62.8% full
+    // rewrite on resume turns vs 0.4% in-process. Nimbalyst supplies its own
+    // frozen snapshot instead (see buildClaudeCodeSystemPrompt gitContext).
+    delete process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS;
+
+    const { options } = await buildSdkOptions(makeDeps(), makeParams());
+
+    expect(options.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS).toBe('1');
+  });
+
+  it.each(['settingsEnv', 'shellEnv'] as const)(
+    'lets a user-configured CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS in %s override the default (#1177)',
+    async (source) => {
+      delete process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS;
+
+      const { options } = await buildSdkOptions(
+        makeDeps(),
+        makeParams({ [source]: { CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '0' } })
+      );
+
+      expect(options.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS).toBe('0');
+    }
+  );
+
+  it('lets a user-configured CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS in process env override the default (#1177)', async () => {
+    process.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS = '0';
+
+    const { options } = await buildSdkOptions(makeDeps(), makeParams());
+
+    expect(options.env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS).toBe('0');
   });
 
   it('lets a user-configured ENABLE_TOOL_SEARCH override the default', async () => {

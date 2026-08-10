@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.72.4",
+  "version": "0.72.8",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -449,11 +449,6 @@
         }
       ],
       "artifactName": "${productName}-Windows-${arch}.${ext}",
-      "signExts": [
-        ".exe",
-        ".dll",
-        ".node"
-      ],
       "signtoolOptions": {
         "publisherName": "NIMBALYST, INC.",
         "signingHashAlgorithms": [

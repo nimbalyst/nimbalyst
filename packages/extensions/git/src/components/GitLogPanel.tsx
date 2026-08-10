@@ -202,17 +202,39 @@ export function GitLogPanel({ host }: PanelHostProps) {
   const [fileMaskHistory, setFileMaskHistory] = useState<string[]>(
     () => host.storage.getGlobal<string[]>('changesFileMaskHistory') ?? []
   );
+  const fileMaskEnabledDirtyRef = useRef(false);
+  const fileMaskInputDirtyRef = useRef(false);
+  const fileMaskHistoryDirtyRef = useRef(false);
+  useEffect(() => {
+    const hydrateFileMaskStorage = () => {
+      if (!fileMaskEnabledDirtyRef.current) {
+        setFileMaskEnabled(host.storage.get<boolean>('changesFileMaskEnabled') ?? false);
+      }
+      if (!fileMaskInputDirtyRef.current) {
+        setFileMaskInput(host.storage.get<string>('changesFileMask') ?? '');
+      }
+      if (!fileMaskHistoryDirtyRef.current) {
+        setFileMaskHistory(host.storage.getGlobal<string[]>('changesFileMaskHistory') ?? []);
+      }
+    };
+    hydrateFileMaskStorage();
+    window.addEventListener('nimbalyst:extension-storage-hydrated', hydrateFileMaskStorage);
+    return () => window.removeEventListener('nimbalyst:extension-storage-hydrated', hydrateFileMaskStorage);
+  }, [host.storage]);
   const updateFileMaskEnabled = useCallback((enabled: boolean) => {
+    fileMaskEnabledDirtyRef.current = true;
     setFileMaskEnabled(enabled);
     void host.storage.set('changesFileMaskEnabled', enabled);
   }, [host.storage]);
   const updateFileMaskInput = useCallback((value: string) => {
+    fileMaskInputDirtyRef.current = true;
     setFileMaskInput(value);
     void host.storage.set('changesFileMask', value);
   }, [host.storage]);
   const commitFileMaskToHistory = useCallback((value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return;
+    fileMaskHistoryDirtyRef.current = true;
     setFileMaskHistory(prev => {
       const next = [trimmed, ...prev.filter(v => v !== trimmed)].slice(0, 10);
       void host.storage.setGlobal('changesFileMaskHistory', next);
@@ -220,6 +242,7 @@ export function GitLogPanel({ host }: PanelHostProps) {
     });
   }, [host.storage]);
   const removeFileMaskHistoryEntry = useCallback((value: string) => {
+    fileMaskHistoryDirtyRef.current = true;
     setFileMaskHistory(prev => {
       const next = prev.filter(v => v !== value);
       void host.storage.setGlobal('changesFileMaskHistory', next);

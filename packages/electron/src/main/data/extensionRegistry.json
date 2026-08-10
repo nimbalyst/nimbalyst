@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-20T22:46:26.014Z",
+  "generatedAt": "2026-08-06T14:43:17.937Z",
   "extensions": [
     {
       "id": "com.nimbalyst.astro",
@@ -168,7 +168,7 @@
       "id": "com.nimbalyst.csv-spreadsheet",
       "name": "CSV Spreadsheet",
       "description": "Edit CSV files with a spreadsheet interface and formula support",
-      "version": "1.0.2",
+      "version": "1.1.0",
       "author": "Nimbalyst",
       "categories": [
         "data"
@@ -195,10 +195,10 @@
         "filesystem"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.csv-spreadsheet/1.0.2",
-      "checksum": "d72c92bf1f28e132e1cd1890c3dd1a8f257f2498612c09e6c031defb3ef3beb2",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.csv-spreadsheet/1.1.0",
+      "checksum": "6740992ab4a18f92fa40565426a17c24d97a2c9ed375cf4ce43729ea368dfde3",
       "repositoryUrl": "",
-      "changelog": "1.0.2: See collaborator presence in shared spreadsheets, share selected cells with AI, and reopen shared documents more reliably.\n1.0.1: Collaborative editing support, currency/percent/number cell formatting, and full ISO date rendering.",
+      "changelog": "1.1.0: Formulas now compute live and survive a save, plus find and replace, per-column filters, selections that cross frozen columns, right-aligned numbers, and AI tools for analyzing data and applying formulas.\n1.0.2: See collaborator presence in shared spreadsheets, share selected cells with AI, and reopen shared documents more reliably.\n1.0.1: Collaborative editing support, currency/percent/number cell formatting, and full ISO date rendering.",
       "tagline": "Visual CSV editing with formulas and column formatting",
       "longDescription": "Open CSV and TSV files in a full spreadsheet interface with formula support, column resizing, frozen rows/columns, and sortable headers. Edit data visually while the underlying CSV stays clean and git-friendly. Toggle to source mode to see and edit the raw text.",
       "highlights": [

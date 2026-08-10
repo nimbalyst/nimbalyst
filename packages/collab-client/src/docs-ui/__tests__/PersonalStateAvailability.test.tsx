@@ -13,8 +13,6 @@ vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
 
-vi.mock('@nimbalyst/runtime', () => ({}));
-
 const scope = {
   scopeKey: '/availability-test',
   orgId: 'org-availability-test',

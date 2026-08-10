@@ -1059,6 +1059,38 @@
   cursor: not-allowed;
 }
 
+.git-changes-commit-ai-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: linear-gradient(135deg, var(--nim-purple, #a78bfa) 0%, var(--nim-primary) 100%);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: opacity 0.1s;
+}
+
+.git-changes-commit-ai-btn svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.git-changes-commit-ai-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.git-changes-commit-ai-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .git-changes-commit-summary {
   font-size: 11px;
   color: var(--nim-text-faint);
@@ -1069,16 +1101,24 @@
   border-bottom: 1px solid color-mix(in srgb, var(--nim-border) 50%, transparent);
 }
 
+.git-changes-group--conflict {
+  background: color-mix(in srgb, var(--nim-error, #ef4444) 6%, transparent);
+}
+
 .git-changes-group-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px;
+  padding: 4px 8px;
   cursor: pointer;
   user-select: none;
   font-size: 11px;
   font-weight: 500;
   color: var(--nim-text-muted);
+}
+
+.git-changes-group-header--list {
+  background: color-mix(in srgb, var(--nim-text) 2%, transparent);
 }
 
 .git-changes-group-header:hover {
@@ -1122,25 +1162,64 @@
 .git-changes-dir-row {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  line-height: 1.6;
+  gap: 6px;
+  padding: 1px 8px;
+  min-height: 19px;
+  line-height: 1.55;
+}
+
+.git-changes-dir-row:hover {
+  background: var(--nim-bg-tertiary);
 }
 
 .git-changes-dir-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--nim-text-muted);
   font-family: var(--nim-font-mono, monospace);
   font-size: 11px;
+}
+
+.git-changes-dir-badge {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-family: var(--nim-font-mono, monospace);
+  color: var(--nim-text-faint);
+  background: color-mix(in srgb, var(--nim-text) 6%, transparent);
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 14px;
+}
+
+/* Expand/collapse affordance; also a fixed-width spacer on file rows. */
+.git-changes-row-chevron {
+  width: 10px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--nim-text-faint);
+  font-size: 8px;
+  line-height: 1;
+  text-align: center;
+  cursor: pointer;
+}
+
+.git-changes-row-chevron:hover {
+  color: var(--nim-text);
 }
 
 /* File rows */
 .git-changes-file-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 2px 8px;
+  gap: 6px;
+  padding: 1px 8px;
+  min-height: 19px;
   font-size: 12px;
-  line-height: 1.7;
+  line-height: 1.55;
   cursor: default;
 }
 
@@ -1148,11 +1227,23 @@
   background: var(--nim-bg-tertiary);
 }
 
-.git-changes-file-name {
+.git-changes-file-path {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
+}
+
+/* Directory prefix shown when a single-file directory is folded into one row. */
+.git-changes-file-dir-prefix {
+  color: var(--nim-text-faint);
+  font-family: var(--nim-font-mono, monospace);
+  font-size: 11px;
+}
+
+.git-changes-file-name {
   color: var(--nim-text);
   font-size: 12px;
   font-weight: 500;

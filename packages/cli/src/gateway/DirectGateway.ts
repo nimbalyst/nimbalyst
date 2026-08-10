@@ -40,7 +40,7 @@ import type {
   TrackerTypeSummary,
   UpdateInput,
 } from './types.js';
-import { deriveIssueKeyPrefix } from './issueKeyPrefix.js';
+import { deriveIssueKeyPrefix, LOCAL_ISSUE_KEY_PREFIX } from './issueKeyPrefix.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 250;
@@ -571,18 +571,50 @@ export class DirectGateway implements TrackerGateway {
         bodyVersion,
       });
 
-      // Allocate a local issue key (NULL issue_number on the new row is ignored
-      // by MAX, so this picks the next number in the workspace).
-      const prefix = this.issueKeyPrefix(db, workspace);
-      const maxRow = db
-        .prepare(`SELECT MAX(issue_number) AS m FROM tracker_items WHERE workspace = ?`)
-        .get(workspace) as { m: number | null };
-      const nextNum = (maxRow?.m ?? 0) + 1;
-      db.prepare(`UPDATE tracker_items SET issue_number = ?, issue_key = ? WHERE id = ?`).run(
-        nextNum,
-        `${prefix}-${nextNum}`,
-        id,
-      );
+      // Assign an issue key. In a workspace a tracker room owns, only the room
+      // may allocate a real issue number -- the CLI's rows drain through the
+      // app's sync_id-IS-NULL backfill, so a locally minted NIM key here would
+      // land in the room as a guess and diverge from what other members see.
+      // Those rows get a provisional LC-### key instead, which the ack
+      // replaces.
+      const roomOwned = db
+        .prepare(
+          `SELECT 1 FROM tracker_items
+           WHERE workspace = ? AND (sync_status = 'synced' OR sync_id IS NOT NULL)
+           LIMIT 1`,
+        )
+        .get(workspace) !== undefined;
+
+      if (roomOwned) {
+        const localRows = db
+          .prepare(
+            `SELECT issue_key AS k FROM tracker_items
+             WHERE workspace = ? AND issue_key LIKE '${LOCAL_ISSUE_KEY_PREFIX}-%'`,
+          )
+          .all(workspace) as { k: string }[];
+        let maxLocal = 0;
+        for (const row of localRows) {
+          const suffix = Number(row.k.slice(LOCAL_ISSUE_KEY_PREFIX.length + 1));
+          if (Number.isSafeInteger(suffix) && suffix > maxLocal) maxLocal = suffix;
+        }
+        db.prepare(`UPDATE tracker_items SET issue_key = ? WHERE id = ?`).run(
+          `${LOCAL_ISSUE_KEY_PREFIX}-${maxLocal + 1}`,
+          id,
+        );
+      } else {
+        // Solo workspace: no counterparty to disagree with. NULL issue_number
+        // on the new row is ignored by MAX, so this picks the next number.
+        const prefix = this.issueKeyPrefix(db, workspace);
+        const maxRow = db
+          .prepare(`SELECT MAX(issue_number) AS m FROM tracker_items WHERE workspace = ?`)
+          .get(workspace) as { m: number | null };
+        const nextNum = (maxRow?.m ?? 0) + 1;
+        db.prepare(`UPDATE tracker_items SET issue_number = ?, issue_key = ? WHERE id = ?`).run(
+          nextNum,
+          `${prefix}-${nextNum}`,
+          id,
+        );
+      }
 
       if (description && bodyVersion > 0) {
         db.prepare(

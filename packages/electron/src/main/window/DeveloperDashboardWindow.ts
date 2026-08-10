@@ -43,6 +43,35 @@ safeHandle('dev:get-atomfamily-stats', async () => {
 });
 
 /**
+ * Drive the renderer's React render profiler from the dashboard window.
+ *
+ * The dashboard is its own window, so this always profiles a *different*
+ * renderer — the main app window. That is the intent (you want to watch the
+ * window under load, not the dashboard), but it also means Chromium's
+ * background throttling applies: the snapshot carries `visibilityState` /
+ * `hasFocus` so a suspiciously quiet reading can be recognized as a hidden
+ * window rather than a healthy one.
+ */
+safeHandle('dev:render-profiler', async (_event, action: 'start' | 'stop' | 'snapshot' | 'reset') => {
+    const mainWin = findMainAppWindow();
+    if (!mainWin) return { available: false, reason: 'no main app window' };
+
+    if (!['start', 'stop', 'snapshot', 'reset'].includes(action)) {
+        throw new Error(`dev:render-profiler: unknown action "${action}"`);
+    }
+
+    try {
+        return await mainWin.webContents.executeJavaScript(
+            `window.__renderProfiler
+                ? Promise.resolve(window.__renderProfiler.${action}()).then(r => r ?? { ok: true })
+                : { available: false, reason: 'profiler not installed (production build?)' }`
+        );
+    } catch (error) {
+        return { available: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+});
+
+/**
  * Combined system stats for the developer dashboard: file watchers, process metrics, window state.
  */
 safeHandle('dev:get-system-stats', async () => {

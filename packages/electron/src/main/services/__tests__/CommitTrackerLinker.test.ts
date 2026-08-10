@@ -28,7 +28,22 @@ vi.mock('../../utils/logger', () => ({
   },
 }));
 
-import { CommitTrackerLinker, getIssueKeyPrefix } from '../CommitTrackerLinker';
+import { CommitTrackerLinker, getIssueKeyPrefix, parseIssueKeys } from '../CommitTrackerLinker';
+
+describe('parseIssueKeys', () => {
+  // LC-### is the provisional key an item holds between creation and the
+  // tracker room's ack. It means something different in every workspace, so it
+  // must never resolve to an item the way a room-assigned key does.
+  it('ignores provisional local keys', () => {
+    expect(parseIssueKeys('fix: thing\n\nFixes LC-7')).toEqual([]);
+  });
+
+  it('still matches room-assigned keys alongside a local one', () => {
+    expect(parseIssueKeys('fix: thing\n\nFixes NIM-42, refs LC-7')).toEqual([
+      { issueKey: 'NIM-42', shouldClose: true },
+    ]);
+  });
+});
 
 describe('CommitTrackerLinker', () => {
   beforeEach(() => {

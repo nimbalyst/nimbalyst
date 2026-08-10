@@ -8,6 +8,16 @@ export interface WorkspaceRemoteState {
   open: boolean;
 }
 
+/**
+ * A workspace that names its project directly, because it has no git remote to
+ * be matched by. See `WorkspaceState.localOrgBinding`.
+ */
+export interface WorkspaceBindingState {
+  workspacePath: string;
+  teamProjectId: string;
+  open: boolean;
+}
+
 export interface OrgProjectLocalState extends TeamProjectSummary {
   localStatus: OrgProjectLocalStatus;
   workspacePath: string | null;
@@ -16,6 +26,7 @@ export interface OrgProjectLocalState extends TeamProjectSummary {
 export function resolveOrgProjectLocalStates(
   projects: readonly TeamProjectSummary[],
   workspaces: readonly WorkspaceRemoteState[],
+  boundWorkspaces: readonly WorkspaceBindingState[] = [],
 ): OrgProjectLocalState[] {
   const workspaceByHash = new Map<string, WorkspaceRemoteState>();
   for (const workspace of workspaces) {
@@ -25,10 +36,24 @@ export function resolveOrgProjectLocalStates(
     }
   }
 
+  const workspaceByProject = new Map<string, WorkspaceBindingState>();
+  for (const workspace of boundWorkspaces) {
+    const existing = workspaceByProject.get(workspace.teamProjectId);
+    if (!existing || (!existing.open && workspace.open)) {
+      workspaceByProject.set(workspace.teamProjectId, workspace);
+    }
+  }
+
   return projects.map((project) => {
-    const workspace = project.gitRemoteHash
+    // Remote first, binding second -- the same precedence findTeamForWorkspace
+    // uses, so the row and the resolver never disagree about which folder a
+    // project is.
+    const workspace = (project.gitRemoteHash
       ? workspaceByHash.get(project.gitRemoteHash)
-      : undefined;
+      : undefined)
+      ?? (project.teamProjectId
+        ? workspaceByProject.get(project.teamProjectId)
+        : undefined);
     return {
       ...project,
       workspacePath: workspace?.workspacePath ?? null,

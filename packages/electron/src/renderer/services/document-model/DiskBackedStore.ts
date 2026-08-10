@@ -13,6 +13,7 @@ import {
   fileDeletedAtomFamily,
   historyPendingTagCreatedAtomFamily,
 } from '../../store/atoms/fileWatch';
+import { assertFileSaveSucceeded } from '../../utils/fileSaveResult';
 
 export class DiskBackedStore implements DocumentBackingStore {
   private readonly filePath: string;
@@ -52,14 +53,16 @@ export class DiskBackedStore implements DocumentBackingStore {
     }, 5000);
 
     if (typeof content === 'string') {
-      await window.electronAPI.saveFile(content, this.filePath);
+      const result = await window.electronAPI.saveFile(content, this.filePath, undefined, 'auto');
+      assertFileSaveSucceeded(result);
     } else {
       // Binary content -- convert ArrayBuffer to base64 for IPC
       // This path is for future binary file support
       const uint8 = new Uint8Array(content);
       const binary = Array.from(uint8, (b) => String.fromCharCode(b)).join('');
       const base64 = btoa(binary);
-      await window.electronAPI.saveFile(base64, this.filePath);
+      const result = await window.electronAPI.saveFile(base64, this.filePath, undefined, 'auto');
+      assertFileSaveSucceeded(result);
     }
   }
 

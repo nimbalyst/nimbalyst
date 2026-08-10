@@ -370,6 +370,11 @@ class WorkspaceFileEditAttributionServiceImpl {
           event.beforeContent,
           winner.sessionId,
           toolUseId,
+          // Speculative: this baseline comes from scored watcher attribution,
+          // not from observing the real pre-edit moment. An authoritative
+          // writer (file_change pre_edit_snapshot, OpenCode / Codex-ACP edit
+          // tools) may replace its content.
+          { speculative: true },
         );
         counters.tagsCreated++;
       }

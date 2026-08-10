@@ -187,7 +187,7 @@ export function createEditorHost(options: EditorHostOptions): EditorHost {
     },
 
     // ============ SAVE REQUESTS ============
-    onSaveRequested(callback: () => void): () => void {
+    onSaveRequested(callback: () => void | Promise<void>): () => void {
       return options.subscribeToSaveRequests(callback);
     },
 

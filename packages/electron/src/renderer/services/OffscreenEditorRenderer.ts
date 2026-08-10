@@ -16,6 +16,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { EditorHost } from '@nimbalyst/runtime';
 import { getExtensionLoader, getBaseThemeColors, hasExtensionEditorAPI, getExtensionEditorAPI, type ExtendedThemeColors } from '@nimbalyst/runtime';
 import { waitForEditorRegistration } from './waitForEditorRegistration';
+import { assertFileSaveSucceeded } from '../utils/fileSaveResult';
 // Note: Window globals for mockup annotations are declared in @nimbalyst/runtime
 
 /**
@@ -292,7 +293,8 @@ class OffscreenEditorRendererImpl {
 
       async saveContent(content: string | ArrayBuffer): Promise<void> {
         if (typeof content === 'string') {
-          await electronAPI.saveFile(content, filePath);
+          const result = await electronAPI.saveFile(content, filePath, undefined, 'auto');
+          assertFileSaveSucceeded(result);
         } else {
           throw new Error('Binary content saving not yet implemented for offscreen editors');
         }
@@ -300,7 +302,7 @@ class OffscreenEditorRendererImpl {
         isDirty = false;
       },
 
-      onSaveRequested(callback: () => void): () => void {
+      onSaveRequested(callback: () => void | Promise<void>): () => void {
         saveRequestCallbacks.push(callback);
         return () => {
           const index = saveRequestCallbacks.indexOf(callback);

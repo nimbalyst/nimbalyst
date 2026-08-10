@@ -1,8 +1,16 @@
 import React, { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { DiffPeekPopover } from './DiffPeekPopover';
-import { useDiffCache } from '../hooks/useDiffCache';
+import { useDiffCache, type DiffGroup } from '../hooks/useDiffCache';
 import { SessionsForFilePane } from './SessionsForFilePane';
 import { GitStatusBar } from './GitStatusBar';
+import {
+  buildChangeRows,
+  mergeWorkingChanges,
+  visibleFilePaths,
+  type ChangeRow,
+  type WorkingChangesResult,
+  type WorkingFile,
+} from '../changeList';
 
 // Access the generic Electron IPC invoke
 const ipc = (window as unknown as {
@@ -10,33 +18,6 @@ const ipc = (window as unknown as {
     invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
   };
 }).electronAPI;
-
-interface RowKey {
-  path: string;
-  group: Group;
-}
-
-function rowKeysEqual(a: RowKey | null, b: RowKey | null): boolean {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  return a.path === b.path && a.group === b.group;
-}
-
-interface WorkingFile {
-  path: string;
-  status: string; // M, A, D, ?, C
-  /** Repo-root-absolute path (may differ from `path` when workspacePath is a subfolder of the repo, #124). */
-  absolutePath?: string;
-}
-
-interface WorkingChangesResult {
-  staged: Array<{ path: string; status: string; absolutePath?: string }>;
-  unstaged: Array<{ path: string; status: string; absolutePath?: string }>;
-  untracked: Array<{ path: string; absolutePath?: string }>;
-  conflicted: Array<{ path: string; absolutePath?: string }>;
-}
-
-type Group = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
 
 interface ChangesTabProps {
   workspacePath: string;
@@ -65,6 +46,8 @@ interface SuccessResult {
   error?: string;
   commitHash?: string;
 }
+
+const NO_COLLAPSED_DIRS: Set<string> = new Set();
 
 // --- File mask: comma-separated globs, e.g. "*.tsx,*.ts, *.css" ---
 
@@ -115,54 +98,18 @@ const statusTitles: Record<string, string> = {
   C: 'Conflict',
 };
 
-// --- Directory tree with path collapsing ---
-
-interface DirNode {
-  path: string;
-  displayPath: string;
-  files: WorkingFile[];
-  subdirectories: Map<string, DirNode>;
-}
-
-function buildDirTree(files: WorkingFile[]): DirNode {
-  const root: DirNode = { path: '', displayPath: '', files: [], subdirectories: new Map() };
-  for (const file of files) {
-    const parts = file.path.split('/');
-    if (parts.length === 1) { root.files.push(file); continue; }
-    let current = root;
-    parts.slice(0, -1).forEach((part, index) => {
-      const pathSoFar = parts.slice(0, index + 1).join('/');
-      if (!current.subdirectories.has(part)) {
-        current.subdirectories.set(part, { path: pathSoFar, displayPath: part, files: [], subdirectories: new Map() });
-      }
-      current = current.subdirectories.get(part)!;
-    });
-    current.files.push(file);
-  }
-  return collapseDirTree(root);
-}
-
-function collapseDirTree(node: DirNode): DirNode {
-  node.subdirectories.forEach((subdir, key) => {
-    node.subdirectories.set(key, collapseDirTree(subdir));
-  });
-  if (node.subdirectories.size === 1 && node.files.length === 0) {
-    const [, child] = Array.from(node.subdirectories.entries())[0];
-    return { ...child, displayPath: node.displayPath ? `${node.displayPath}/${child.displayPath}` : child.displayPath };
-  }
-  return node;
-}
-
-function Checkbox({ checked, indeterminate, onChange, disabled }: {
+function Checkbox({ checked, indeterminate, onChange, disabled, label }: {
   checked: boolean;
   indeterminate?: boolean;
   onChange: () => void;
   disabled?: boolean;
+  label?: string;
 }) {
   const state = indeterminate ? 'indeterminate' : checked ? 'checked' : 'unchecked';
   return (
     <span
       role="checkbox"
+      aria-label={label}
       aria-checked={indeterminate ? 'mixed' : checked}
       tabIndex={disabled ? -1 : 0}
       onClick={(e) => { e.stopPropagation(); if (!disabled) onChange(); }}
@@ -186,109 +133,98 @@ function Checkbox({ checked, indeterminate, onChange, disabled }: {
   );
 }
 
-function dirSelectionState(
-  node: DirNode,
-  selected: Set<string>,
-  group: Group,
-): 'none' | 'some' | 'all' {
-  if (group === 'conflicted') return 'none';
-  const paths = collectPaths(node);
+function selectionState(paths: string[], selected: Set<string>): 'none' | 'some' | 'all' {
   if (paths.length === 0) return 'none';
-  let selectedCount = 0;
-  for (const p of paths) if (selected.has(p)) selectedCount++;
-  if (selectedCount === 0) return 'none';
-  if (selectedCount === paths.length) return 'all';
-  return 'some';
+  let count = 0;
+  for (const path of paths) if (selected.has(path)) count++;
+  if (count === 0) return 'none';
+  return count === paths.length ? 'all' : 'some';
 }
 
-interface TreeRenderOptions {
+interface RowRenderOptions {
+  selectable: boolean;
   selected: Set<string>;
   toggleSelected: (path: string) => void;
   bulkToggle: (paths: string[], select: boolean) => void;
-  focusedRow: RowKey | null;
-  pinnedRow: RowKey | null;
-  peekedRow: RowKey | null;
-  onRowClick: (key: RowKey, target: HTMLElement) => void;
-  registerRowEl: (key: RowKey, el: HTMLElement | null) => void;
+  toggleDir: (path: string) => void;
+  focusedPath: string | null;
+  pinnedPath: string | null;
+  peekedPath: string | null;
+  onRowClick: (path: string, target: HTMLElement) => void;
+  registerRowEl: (path: string, el: HTMLElement | null) => void;
 }
 
-function renderFileTree(
-  node: DirNode,
-  depth: number,
-  group: Group,
-  opts: TreeRenderOptions,
-): React.ReactNode {
-  const subdirs = Array.from(node.subdirectories.values()).sort((a, b) => a.displayPath.localeCompare(b.displayPath));
-  const sortedFiles = [...node.files].sort((a, b) => a.path.localeCompare(b.path));
-  const childDepth = node.displayPath ? depth + 1 : depth;
-  const dirState = node.displayPath ? dirSelectionState(node, opts.selected, group) : 'none';
-  const dirPaths = node.displayPath ? collectPaths(node) : [];
-  const conflict = group === 'conflicted';
+function ChangeRows({ rows, opts }: { rows: ChangeRow[]; opts: RowRenderOptions }) {
   return (
     <>
-      {node.displayPath && (
-        <div className="git-changes-dir-row" style={{ paddingLeft: depth * 12 + 24 }}>
-          <Checkbox
-            checked={dirState === 'all'}
-            indeterminate={dirState === 'some'}
-            onChange={() => opts.bulkToggle(dirPaths, dirState !== 'all')}
-            disabled={conflict}
-          />
-          <span className="git-changes-dir-name">{node.displayPath}/</span>
-        </div>
-      )}
-      {subdirs.map(sub => (
-        <React.Fragment key={sub.path}>
-          {renderFileTree(sub, childDepth, group, opts)}
-        </React.Fragment>
-      ))}
-      {sortedFiles.map(file => {
-        const name = file.path.split('/').pop() ?? file.path;
-        const isSelected = opts.selected.has(file.path);
-        const conflict = group === 'conflicted';
-        const rowKey: RowKey = { path: file.path, group };
-        const isFocused = rowKeysEqual(opts.focusedRow, rowKey);
-        const isPinned = rowKeysEqual(opts.pinnedRow, rowKey);
-        const isPeeked = rowKeysEqual(opts.peekedRow, rowKey);
+      {rows.map(row => {
+        const paddingLeft = 8 + row.depth * 12;
+
+        if (row.kind === 'dir') {
+          const state = opts.selectable ? selectionState(row.filePaths, opts.selected) : 'none';
+          return (
+            <div key={`dir:${row.path}`} className="git-changes-dir-row" style={{ paddingLeft }}>
+              <button
+                type="button"
+                className="git-changes-row-chevron"
+                onClick={() => opts.toggleDir(row.path)}
+                aria-expanded={!row.collapsed}
+                aria-label={`${row.collapsed ? 'Expand' : 'Collapse'} ${row.label}`}
+              >
+                {row.collapsed ? '▶' : '▼'}
+              </button>
+              <Checkbox
+                checked={state === 'all'}
+                indeterminate={state === 'some'}
+                onChange={() => opts.bulkToggle(row.filePaths, state !== 'all')}
+                disabled={!opts.selectable}
+                label={row.label}
+              />
+              <span className="git-changes-dir-name" title={row.path}>{row.label}</span>
+              <span className="git-changes-dir-badge">{row.fileCount}</span>
+            </div>
+          );
+        }
+
+        const name = row.path.split('/').pop() ?? row.path;
         const rowClasses = [
           'git-changes-file-row',
-          conflict ? 'git-changes-file-row--conflict' : '',
-          isFocused ? 'git-changes-file-row--focused' : '',
-          isPinned ? 'git-changes-file-row--pinned' : '',
-          isPeeked ? 'git-changes-file-row--peeked' : '',
+          opts.selectable ? '' : 'git-changes-file-row--conflict',
+          opts.focusedPath === row.path ? 'git-changes-file-row--focused' : '',
+          opts.pinnedPath === row.path ? 'git-changes-file-row--pinned' : '',
+          opts.peekedPath === row.path ? 'git-changes-file-row--peeked' : '',
         ].filter(Boolean).join(' ');
+
         return (
           <div
-            key={file.path}
-            ref={(el) => opts.registerRowEl(rowKey, el)}
+            key={`file:${row.path}`}
+            ref={(el) => opts.registerRowEl(row.path, el)}
             className={rowClasses}
-            style={{ paddingLeft: childDepth * 12 + 24 }}
-            onClick={(e) => opts.onRowClick(rowKey, e.currentTarget)}
+            style={{ paddingLeft }}
+            onClick={(e) => opts.onRowClick(row.path, e.currentTarget)}
           >
+            <span className="git-changes-row-chevron" />
             <Checkbox
-              checked={isSelected}
-              onChange={() => opts.toggleSelected(file.path)}
-              disabled={conflict}
+              checked={opts.selected.has(row.path)}
+              onChange={() => opts.toggleSelected(row.path)}
+              disabled={!opts.selectable}
+              label={row.path}
             />
-            <span
-              className={`git-changes-file-name ${statusColorClass(file.status)}${file.status === 'D' ? ' git-changes-file-name--strike' : ''}`}
-              title={statusTitles[file.status] ?? file.status}
-            >
-              {name}
+            <span className="git-changes-file-path" title={row.path}>
+              {row.dirPrefix && <span className="git-changes-file-dir-prefix">{row.dirPrefix}</span>}
+              <span
+                className={`git-changes-file-name ${statusColorClass(row.status)}${row.status === 'D' ? ' git-changes-file-name--strike' : ''}`}
+                title={statusTitles[row.status] ?? row.status}
+              >
+                {name}
+              </span>
             </span>
-            {conflict && <span className="git-changes-conflict-label">Resolve in editor</span>}
+            {!opts.selectable && <span className="git-changes-conflict-label">Resolve in editor</span>}
           </div>
         );
       })}
     </>
   );
-}
-
-function collectPaths(node: DirNode): string[] {
-  const out: string[] = [];
-  node.files.forEach(f => out.push(f.path));
-  node.subdirectories.forEach(sub => out.push(...collectPaths(sub)));
-  return out;
 }
 
 export function ChangesTab({
@@ -299,9 +235,9 @@ export function ChangesTab({
   fileMaskEnabled,
   fileMaskInput,
 }: ChangesTabProps) {
-  const [staged, setStaged] = useState<WorkingFile[]>([]);
-  const [unstaged, setUnstaged] = useState<WorkingFile[]>([]);
-  const [untracked, setUntracked] = useState<WorkingFile[]>([]);
+  // One flat list of changes: staged/unstaged/untracked are merged, since the
+  // selection (not the index) is what gets committed.
+  const [changes, setChanges] = useState<WorkingFile[]>([]);
   const [conflicted, setConflicted] = useState<WorkingFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -309,20 +245,24 @@ export function ChangesTab({
   const [commitMessage, setCommitMessage] = useState('');
   const [commitDescription, setCommitDescription] = useState('');
   const [isCommitting, setIsCommitting] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [changesCollapsed, setChangesCollapsed] = useState(false);
+  const [conflictsCollapsed, setConflictsCollapsed] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const messageRef = useRef<HTMLTextAreaElement>(null);
 
-  // Per-group selection state (paths)
-  const [selectedStaged, setSelectedStaged] = useState<Set<string>>(new Set());
-  const [selectedUnstaged, setSelectedUnstaged] = useState<Set<string>>(new Set());
-  const [selectedUntracked, setSelectedUntracked] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Diff peek / pin / focus state. The popover renders for whichever of pinned or
-  // peeked is set (peek wins if both are set, since peek is the more recent intent).
-  const [pinnedRow, setPinnedRow] = useState<RowKey | null>(null);
-  const [peekedRow, setPeekedRow] = useState<RowKey | null>(null);
-  const [focusedRow, setFocusedRow] = useState<RowKey | null>(null);
+  // Directories default to expanded, so only manual collapses are tracked (and
+  // persisted). A directory that appears later is therefore expanded by default
+  // while collapses the user made survive reloads.
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
+
+  // Diff peek / pin / focus state (by path). The popover renders for whichever of
+  // pinned or peeked is set (peek wins if both are set, since peek is the more
+  // recent intent).
+  const [pinnedPath, setPinnedPath] = useState<string | null>(null);
+  const [peekedPath, setPeekedPath] = useState<string | null>(null);
+  const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
 
   // Persisted diff peek size (shared with the git commit proposal widget via AI settings).
@@ -360,36 +300,51 @@ export function ChangesTab({
   // Token bumped whenever git status changes — invalidates the diff cache.
   const [diffInvalidationToken, setDiffInvalidationToken] = useState(0);
 
-  // Persistent map of row keys -> DOM elements, for floating-ui anchoring + scroll-into-view.
+  // Persistent map of paths -> DOM elements, for floating-ui anchoring + scroll-into-view.
   const rowElsRef = useRef<Map<string, HTMLElement>>(new Map());
-  const rowKeyToString = (k: RowKey) => `${k.group}|${k.path}`;
-  const registerRowEl = useCallback((key: RowKey, el: HTMLElement | null) => {
-    const k = rowKeyToString(key);
-    if (el) rowElsRef.current.set(k, el);
-    else rowElsRef.current.delete(k);
+  const registerRowEl = useCallback((path: string, el: HTMLElement | null) => {
+    if (el) rowElsRef.current.set(path, el);
+    else rowElsRef.current.delete(path);
   }, []);
 
-  // Sessions pane open/closed state (persisted via workspace state IPC).
+  // Sessions pane open/closed state and collapsed directories (persisted per workspace).
   const [sessionsPaneOpen, setSessionsPaneOpen] = useState(true);
   useEffect(() => {
     let cancelled = false;
     ipc.invoke('workspace:get-state', workspacePath)
       .then((state) => {
         if (cancelled) return;
-        const stored = (state as { gitChanges?: { sessionsPaneOpen?: boolean } } | null)?.gitChanges?.sessionsPaneOpen;
-        if (typeof stored === 'boolean') setSessionsPaneOpen(stored);
+        const stored = (state as {
+          gitChanges?: { sessionsPaneOpen?: boolean; collapsedDirs?: string[] };
+        } | null)?.gitChanges;
+        if (typeof stored?.sessionsPaneOpen === 'boolean') setSessionsPaneOpen(stored.sessionsPaneOpen);
+        if (Array.isArray(stored?.collapsedDirs)) setCollapsedDirs(new Set(stored.collapsedDirs));
       })
       .catch(() => { /* not fatal */ });
     return () => { cancelled = true; };
   }, [workspacePath]);
+
+  const persistGitChangesState = useCallback((patch: Record<string, unknown>) => {
+    ipc.invoke('workspace:update-state', workspacePath, { gitChanges: patch })
+      .catch(() => { /* not fatal */ });
+  }, [workspacePath]);
+
   const toggleSessionsPane = useCallback(() => {
     setSessionsPaneOpen(prev => {
       const next = !prev;
-      ipc.invoke('workspace:update-state', workspacePath, { gitChanges: { sessionsPaneOpen: next } })
-        .catch(() => { /* not fatal */ });
+      persistGitChangesState({ sessionsPaneOpen: next });
       return next;
     });
-  }, [workspacePath]);
+  }, [persistGitChangesState]);
+
+  const toggleDir = useCallback((dirPath: string) => {
+    setCollapsedDirs(prev => {
+      const next = new Set(prev);
+      if (next.has(dirPath)) next.delete(dirPath); else next.add(dirPath);
+      persistGitChangesState({ collapsedDirs: Array.from(next) });
+      return next;
+    });
+  }, [persistGitChangesState]);
 
   // File mask (controlled by parent panel toolbar)
   const maskPatterns = useMemo(
@@ -400,10 +355,12 @@ export function ChangesTab({
   const loadChanges = useCallback(async () => {
     try {
       const result = await ipc.invoke('git:working-changes', workspacePath) as WorkingChangesResult;
-      setStaged(result.staged.map(f => ({ path: f.path, status: f.status, absolutePath: f.absolutePath })));
-      setUnstaged(result.unstaged.map(f => ({ path: f.path, status: f.status, absolutePath: f.absolutePath })));
-      setUntracked(result.untracked.map(f => ({ path: f.path, status: '?', absolutePath: f.absolutePath })));
-      setConflicted(result.conflicted.map(f => ({ path: f.path, status: 'C', absolutePath: f.absolutePath })));
+      setChanges(mergeWorkingChanges(result));
+      setConflicted(result.conflicted.map(f => ({
+        path: f.path,
+        status: 'C',
+        absolutePath: f.absolutePath,
+      })));
       setLoadError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -426,36 +383,24 @@ export function ChangesTab({
   }, [onWorkspaceEvent, loadChanges]);
 
   // Filtered (mask-applied) lists
-  const filteredStaged = useMemo(() => staged.filter(f => matchesFileMask(f.path, maskPatterns)), [staged, maskPatterns]);
-  const filteredUnstaged = useMemo(() => unstaged.filter(f => matchesFileMask(f.path, maskPatterns)), [unstaged, maskPatterns]);
-  const filteredUntracked = useMemo(() => untracked.filter(f => matchesFileMask(f.path, maskPatterns)), [untracked, maskPatterns]);
-  const filteredConflicted = useMemo(() => conflicted.filter(f => matchesFileMask(f.path, maskPatterns)), [conflicted, maskPatterns]);
+  const filteredChanges = useMemo(
+    () => changes.filter(f => matchesFileMask(f.path, maskPatterns)),
+    [changes, maskPatterns],
+  );
+  const filteredConflicted = useMemo(
+    () => conflicted.filter(f => matchesFileMask(f.path, maskPatterns)),
+    [conflicted, maskPatterns],
+  );
 
   // Drop selections that are no longer visible (filtered out or removed from working tree)
   useEffect(() => {
-    const visible = new Set(filteredStaged.map(f => f.path));
-    setSelectedStaged(prev => {
+    const visible = new Set(filteredChanges.map(f => f.path));
+    setSelected(prev => {
       const next = new Set<string>();
       prev.forEach(p => { if (visible.has(p)) next.add(p); });
       return next.size === prev.size ? prev : next;
     });
-  }, [filteredStaged]);
-  useEffect(() => {
-    const visible = new Set(filteredUnstaged.map(f => f.path));
-    setSelectedUnstaged(prev => {
-      const next = new Set<string>();
-      prev.forEach(p => { if (visible.has(p)) next.add(p); });
-      return next.size === prev.size ? prev : next;
-    });
-  }, [filteredUnstaged]);
-  useEffect(() => {
-    const visible = new Set(filteredUntracked.map(f => f.path));
-    setSelectedUntracked(prev => {
-      const next = new Set<string>();
-      prev.forEach(p => { if (visible.has(p)) next.add(p); });
-      return next.size === prev.size ? prev : next;
-    });
-  }, [filteredUntracked]);
+  }, [filteredChanges]);
 
   const showStatus = useCallback((text: string, isError = false) => {
     setStatusMessage({ text, isError });
@@ -486,57 +431,32 @@ export function ChangesTab({
     }
   }, [withLog, showStatus, loadChanges]);
 
-  const stagePaths = useCallback((paths: string[]) => {
-    if (paths.length === 0) return Promise.resolve(false);
-    return runOp(
-      `git add ${paths.length} file${paths.length !== 1 ? 's' : ''}`,
-      () => ipc.invoke('git:stage', workspacePath, paths) as Promise<SuccessResult>,
-      'Failed to stage files',
-    );
-  }, [runOp, workspacePath]);
+  const selectedFiles = useMemo(
+    () => filteredChanges.filter(f => selected.has(f.path)),
+    [filteredChanges, selected],
+  );
+  const selectedCount = selectedFiles.length;
 
-  const unstagePaths = useCallback((paths: string[]) => {
-    if (paths.length === 0) return Promise.resolve(false);
-    return runOp(
-      `git reset HEAD -- ${paths.length} file${paths.length !== 1 ? 's' : ''}`,
-      () => ipc.invoke('git:unstage', workspacePath, paths) as Promise<SuccessResult>,
-      'Failed to unstage files',
-    );
-  }, [runOp, workspacePath]);
+  // An untracked file has no committed version, so there is nothing to discard —
+  // removing it would be `git clean`, which Discard deliberately does not do.
+  const discardablePaths = useMemo(
+    () => selectedFiles.filter(f => f.status !== '?').map(f => f.path),
+    [selectedFiles],
+  );
 
-  const discardPaths = useCallback(async (paths: string[]) => {
-    if (paths.length === 0) return false;
-    const label = paths.length === 1 ? paths[0] : `${paths.length} files`;
+  const handleDiscardSelected = useCallback(async () => {
+    if (discardablePaths.length === 0) return;
+    const count = discardablePaths.length;
+    const label = count === 1 ? discardablePaths[0] : `${count} files`;
     if (!window.confirm(`Discard all changes to ${label}? This cannot be undone.`)) {
-      return false;
+      return;
     }
-    return runOp(
-      `git checkout -- ${paths.length} file${paths.length !== 1 ? 's' : ''}`,
-      () => ipc.invoke('git:discard-changes', workspacePath, paths) as Promise<SuccessResult>,
+    await runOp(
+      `git checkout -- ${count} file${count !== 1 ? 's' : ''}`,
+      () => ipc.invoke('git:discard-changes', workspacePath, discardablePaths) as Promise<SuccessResult>,
       'Failed to discard changes',
     );
-  }, [runOp, workspacePath]);
-
-  // "If selection is empty, act on all visible files in the group"
-  const effectivePaths = useCallback((selected: Set<string>, all: WorkingFile[]) => {
-    if (selected.size === 0) return all.map(f => f.path);
-    return all.filter(f => selected.has(f.path)).map(f => f.path);
-  }, []);
-
-  const handleStageGroup = useCallback(async (selected: Set<string>, all: WorkingFile[]) => {
-    const paths = effectivePaths(selected, all);
-    await stagePaths(paths);
-  }, [effectivePaths, stagePaths]);
-
-  const handleUnstageGroup = useCallback(async () => {
-    const paths = effectivePaths(selectedStaged, filteredStaged);
-    await unstagePaths(paths);
-  }, [effectivePaths, selectedStaged, filteredStaged, unstagePaths]);
-
-  const handleDiscardGroup = useCallback(async () => {
-    const paths = effectivePaths(selectedUnstaged, filteredUnstaged);
-    await discardPaths(paths);
-  }, [effectivePaths, selectedUnstaged, filteredUnstaged, discardPaths]);
+  }, [discardablePaths, runOp, workspacePath]);
 
   const handleCommit = useCallback(async () => {
     const fullMessage = commitDescription
@@ -549,16 +469,19 @@ export function ChangesTab({
       return;
     }
 
-    if (staged.length === 0) {
-      showStatus('No files staged for commit', true);
+    const paths = selectedFiles.map(f => f.path);
+    if (paths.length === 0) {
+      showStatus('Select at least one file to commit', true);
       return;
     }
 
     setIsCommitting(true);
     try {
+      // The selected paths are staged into a temporary index by the main process,
+      // so exactly these files are committed regardless of the repository's index.
       const result = await withLog(
         `git commit -m "${commitMessage}"`,
-        () => ipc.invoke('git:commit', workspacePath, fullMessage, []) as Promise<SuccessResult>,
+        () => ipc.invoke('git:commit', workspacePath, fullMessage, paths) as Promise<SuccessResult>,
         {
           isError: (r) => !r.success,
           getError: (r) => r.error,
@@ -569,7 +492,7 @@ export function ChangesTab({
       if (result.success) {
         setCommitMessage('');
         setCommitDescription('');
-        showStatus(`Committed ${staged.length} file${staged.length !== 1 ? 's' : ''}`);
+        showStatus(`Committed ${paths.length} file${paths.length !== 1 ? 's' : ''}`);
       } else {
         showStatus(result.error || 'Commit failed', true);
       }
@@ -579,142 +502,139 @@ export function ChangesTab({
     } finally {
       setIsCommitting(false);
     }
-  }, [workspacePath, commitMessage, commitDescription, staged, loadChanges, showStatus, withLog]);
+  }, [workspacePath, commitMessage, commitDescription, selectedFiles, loadChanges, showStatus, withLog]);
 
-  const toggleGroup = useCallback((group: string) => {
-    setCollapsedGroups(prev => {
+  const handleCommitWithAI = useCallback(() => {
+    if (selectedFiles.length === 0) return;
+    // App.tsx opens a new session seeded with a commit request for exactly these files.
+    window.dispatchEvent(new CustomEvent('nimbalyst:commit-with-ai', {
+      detail: {
+        workspacePath,
+        files: selectedFiles.map(f => ({ path: f.path, status: f.status })),
+      },
+    }));
+  }, [selectedFiles, workspacePath]);
+
+  const toggleSelected = useCallback((path: string) => {
+    setSelected(prev => {
       const next = new Set(prev);
-      if (next.has(group)) next.delete(group); else next.add(group);
+      if (next.has(path)) next.delete(path); else next.add(path);
       return next;
     });
   }, []);
 
-  // Toggle helpers for group-header "select all" checkboxes
-  const groupSelectionState = (selected: Set<string>, all: WorkingFile[]): 'none' | 'some' | 'all' => {
-    if (all.length === 0 || selected.size === 0) return 'none';
-    if (selected.size >= all.length) return 'all';
-    return 'some';
-  };
+  const bulkToggle = useCallback((paths: string[], select: boolean) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (select) paths.forEach(p => next.add(p));
+      else paths.forEach(p => next.delete(p));
+      return next;
+    });
+  }, []);
 
-  const toggleAllInGroup = (
-    selected: Set<string>,
-    setSelected: React.Dispatch<React.SetStateAction<Set<string>>>,
-    all: WorkingFile[],
-  ) => {
-    const state = groupSelectionState(selected, all);
-    if (state === 'all') {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(all.map(f => f.path)));
-    }
-  };
-
-  const makeToggle = (setSet: React.Dispatch<React.SetStateAction<Set<string>>>) =>
-    (path: string) => {
-      setSet(prev => {
-        const next = new Set(prev);
-        if (next.has(path)) next.delete(path); else next.add(path);
-        return next;
-      });
-    };
-
-  const makeBulkToggle = (setSet: React.Dispatch<React.SetStateAction<Set<string>>>) =>
-    (paths: string[], select: boolean) => {
-      setSet(prev => {
-        const next = new Set(prev);
-        if (select) paths.forEach(p => next.add(p));
-        else paths.forEach(p => next.delete(p));
-        return next;
-      });
-    };
-
-  const totalChanges = staged.length + unstaged.length + untracked.length + conflicted.length;
-  const filteredTotal = filteredStaged.length + filteredUnstaged.length + filteredUntracked.length + filteredConflicted.length;
+  const totalChanges = changes.length + conflicted.length;
+  const filteredTotal = filteredChanges.length + filteredConflicted.length;
   const isAnyLoading = operationLoading || isCommitting;
 
-  const stagedTree = useMemo(() => buildDirTree(filteredStaged), [filteredStaged]);
-  const unstagedTree = useMemo(() => buildDirTree(filteredUnstaged), [filteredUnstaged]);
-  const untrackedTree = useMemo(() => buildDirTree(filteredUntracked), [filteredUntracked]);
-  const conflictedTree = useMemo(() => buildDirTree(filteredConflicted), [filteredConflicted]);
+  const changeRows = useMemo(
+    () => buildChangeRows(filteredChanges, collapsedDirs),
+    [filteredChanges, collapsedDirs],
+  );
+  // Conflicts are few and never selectable, so they are always fully expanded.
+  const conflictRows = useMemo(
+    () => buildChangeRows(filteredConflicted, NO_COLLAPSED_DIRS),
+    [filteredConflicted],
+  );
 
-  // Flat row list (in tree-display order) for ↑/↓ keyboard navigation.
-  const flatRows = useMemo(() => {
-    const out: RowKey[] = [];
-    const collect = (node: DirNode, group: Group) => {
-      const subdirs = Array.from(node.subdirectories.values()).sort((a, b) => a.displayPath.localeCompare(b.displayPath));
-      const sortedFiles = [...node.files].sort((a, b) => a.path.localeCompare(b.path));
-      for (const sub of subdirs) collect(sub, group);
-      for (const f of sortedFiles) out.push({ path: f.path, group });
-    };
-    if (!collapsedGroups.has('conflicted') && filteredConflicted.length > 0) collect(conflictedTree, 'conflicted');
-    if (!collapsedGroups.has('staged') && filteredStaged.length > 0) collect(stagedTree, 'staged');
-    if (!collapsedGroups.has('unstaged') && filteredUnstaged.length > 0) collect(unstagedTree, 'unstaged');
-    if (!collapsedGroups.has('untracked') && filteredUntracked.length > 0) collect(untrackedTree, 'untracked');
-    return out;
-  }, [stagedTree, unstagedTree, untrackedTree, conflictedTree, collapsedGroups, filteredStaged, filteredUnstaged, filteredUntracked, filteredConflicted]);
+  // Navigable rows, in display order. Derived from the rendered rows, so files
+  // hidden inside a collapsed directory are never focused.
+  const flatRows = useMemo(() => [
+    ...(conflictsCollapsed ? [] : visibleFilePaths(conflictRows)),
+    ...(changesCollapsed ? [] : visibleFilePaths(changeRows)),
+  ], [conflictRows, changeRows, conflictsCollapsed, changesCollapsed]);
+
+  // Collapsing a directory or tightening the file mask can hide the row that
+  // focus, peek or pin still points at. Without this, Space/Enter act on a row
+  // the user cannot see and the popover anchors to nothing.
+  useEffect(() => {
+    const visible = new Set(flatRows);
+    setFocusedPath(prev => (prev && !visible.has(prev) ? null : prev));
+    setPeekedPath(prev => (prev && !visible.has(prev) ? null : prev));
+    setPinnedPath(prev => (prev && !visible.has(prev) ? null : prev));
+  }, [flatRows]);
+
+  const conflictedPaths = useMemo(
+    () => new Set(filteredConflicted.map(f => f.path)),
+    [filteredConflicted],
+  );
 
   // The "active file" the popover and sessions pane display: pinned wins, then peeked, then focused.
-  const activeRow: RowKey | null = pinnedRow ?? peekedRow ?? focusedRow;
+  const activePath: string | null = pinnedPath ?? peekedPath ?? focusedPath;
+  const activeFile = useMemo(
+    () => activePath ? { path: activePath, group: 'changes' } : null,
+    [activePath],
+  );
 
   // Diff fetch is keyed off the popover target (peek wins over pinned for visual swap).
-  const popoverTarget: RowKey | null = peekedRow ?? pinnedRow;
-  const diffState = useDiffCache(workspacePath, popoverTarget, diffInvalidationToken);
-
-  const measureAnchor = useCallback((key: RowKey | null): DOMRect | null => {
-    if (!key) return null;
-    const el = rowElsRef.current.get(`${key.group}|${key.path}`);
-    return el ? el.getBoundingClientRect() : null;
-  }, []);
+  const popoverPath: string | null = peekedPath ?? pinnedPath;
+  const diffTarget = useMemo(() => {
+    if (!popoverPath) return null;
+    // 'working' is the combined HEAD-vs-working-tree diff, which is what a merged
+    // row represents; conflicts still diff against the index.
+    const group: DiffGroup = conflictedPaths.has(popoverPath) ? 'conflicted' : 'working';
+    return { path: popoverPath, group };
+  }, [popoverPath, conflictedPaths]);
+  const diffState = useDiffCache(workspacePath, diffTarget, diffInvalidationToken);
 
   // Update anchor rect whenever the popover target changes or the row resizes.
   useEffect(() => {
-    if (!popoverTarget) {
+    if (!popoverPath) {
       setAnchorRect(null);
       return;
     }
-    setAnchorRect(measureAnchor(popoverTarget));
-  }, [popoverTarget, measureAnchor]);
+    const el = rowElsRef.current.get(popoverPath);
+    setAnchorRect(el ? el.getBoundingClientRect() : null);
+  }, [popoverPath]);
 
   const closePopover = useCallback(() => {
-    setPeekedRow(null);
-    setPinnedRow(null);
+    setPeekedPath(null);
+    setPinnedPath(null);
   }, []);
 
   const promoteToPin = useCallback(() => {
-    setPeekedRow(prev => {
+    setPeekedPath(prev => {
       if (prev) {
-        setPinnedRow(prev);
+        setPinnedPath(prev);
         return null;
       }
       return prev;
     });
   }, []);
 
-  const handleRowClick = useCallback((key: RowKey, target: HTMLElement) => {
-    setFocusedRow(key);
-    setPeekedRow(null);
+  const handleRowClick = useCallback((path: string, target: HTMLElement) => {
+    setFocusedPath(path);
+    setPeekedPath(null);
     setAnchorRect(target.getBoundingClientRect());
-    setPinnedRow(prev => (rowKeysEqual(prev, key) ? null : key));
+    setPinnedPath(prev => (prev === path ? null : path));
   }, []);
 
-  const togglePeek = useCallback((key: RowKey) => {
-    setPeekedRow(prev => {
-      if (rowKeysEqual(prev, key)) return null;
-      const el = rowElsRef.current.get(`${key.group}|${key.path}`);
+  const togglePeek = useCallback((path: string) => {
+    setPeekedPath(prev => {
+      if (prev === path) return null;
+      const el = rowElsRef.current.get(path);
       if (el) setAnchorRect(el.getBoundingClientRect());
-      return key;
+      return path;
     });
   }, []);
 
   const moveFocus = useCallback((delta: number) => {
     if (flatRows.length === 0) return;
-    setFocusedRow(prev => {
-      let idx = prev ? flatRows.findIndex(r => rowKeysEqual(r, prev)) : -1;
+    setFocusedPath(prev => {
+      let idx = prev ? flatRows.indexOf(prev) : -1;
       if (idx === -1) idx = delta > 0 ? -1 : flatRows.length;
       const next = flatRows[Math.max(0, Math.min(flatRows.length - 1, idx + delta))];
       if (next) {
-        const el = rowElsRef.current.get(`${next.group}|${next.path}`);
-        el?.scrollIntoView({ block: 'nearest' });
+        rowElsRef.current.get(next)?.scrollIntoView({ block: 'nearest' });
       }
       return next ?? prev;
     });
@@ -732,44 +652,42 @@ export function ChangesTab({
       e.preventDefault();
       moveFocus(-1);
     } else if (e.key === ' ') {
-      if (focusedRow) {
+      if (focusedPath) {
         e.preventDefault();
-        togglePeek(focusedRow);
+        togglePeek(focusedPath);
       }
     } else if (e.key === 'Enter') {
-      if (peekedRow) {
+      if (peekedPath) {
         e.preventDefault();
         promoteToPin();
-      } else if (focusedRow && !pinnedRow) {
+      } else if (focusedPath && !pinnedPath) {
         e.preventDefault();
-        const el = rowElsRef.current.get(`${focusedRow.group}|${focusedRow.path}`);
+        const el = rowElsRef.current.get(focusedPath);
         if (el) setAnchorRect(el.getBoundingClientRect());
-        setPinnedRow(focusedRow);
+        setPinnedPath(focusedPath);
       }
     } else if (e.key === 'Escape') {
-      if (peekedRow || pinnedRow) {
+      if (peekedPath || pinnedPath) {
         e.preventDefault();
         closePopover();
       }
     }
-  }, [focusedRow, peekedRow, pinnedRow, moveFocus, togglePeek, promoteToPin, closePopover]);
+  }, [focusedPath, peekedPath, pinnedPath, moveFocus, togglePeek, promoteToPin, closePopover]);
 
   // Open the active file in the editor (used by the popover's "Open in editor" link).
-  // `target.path` is repo-root-relative; resolve the matching absolutePath (joined
+  // `target` is repo-root-relative; resolve the matching absolutePath (joined
   // against gitRoot) so this still works when workspacePath is a subfolder of the
   // repo (#124). Falls back to the relative path if absolutePath wasn't returned.
   const handleOpenInEditor = useCallback(() => {
-    const target = popoverTarget ?? activeRow;
+    const target = popoverPath ?? activePath;
     if (!target) return;
-    const groupFiles = target.group === 'staged' ? staged
-      : target.group === 'unstaged' ? unstaged
-        : target.group === 'untracked' ? untracked
-          : conflicted;
-    const filePath = groupFiles.find(f => f.path === target.path)?.absolutePath ?? target.path;
+    const filePath = changes.find(f => f.path === target)?.absolutePath
+      ?? conflicted.find(f => f.path === target)?.absolutePath
+      ?? target;
     ipc.invoke('workspace:open-file', { workspacePath, filePath }).catch((err) => {
       console.error('[ChangesTab] workspace:open-file failed:', err);
     });
-  }, [popoverTarget, activeRow, workspacePath, staged, unstaged, untracked, conflicted]);
+  }, [popoverPath, activePath, workspacePath, changes, conflicted]);
 
   if (loading) {
     return <div className="git-log-empty">Loading changes...</div>;
@@ -796,33 +714,28 @@ export function ChangesTab({
     );
   }
 
-  const stagedSelState = groupSelectionState(selectedStaged, filteredStaged);
-  const unstagedSelState = groupSelectionState(selectedUnstaged, filteredUnstaged);
-  const untrackedSelState = groupSelectionState(selectedUntracked, filteredUntracked);
+  const allSelectionState = selectionState(filteredChanges.map(f => f.path), selected);
 
-  const treeOptionsFor = (
-    selected: Set<string>,
-    setSelected: React.Dispatch<React.SetStateAction<Set<string>>>,
-  ): TreeRenderOptions => ({
+  const rowOptions: RowRenderOptions = {
+    selectable: true,
     selected,
-    toggleSelected: makeToggle(setSelected),
-    bulkToggle: makeBulkToggle(setSelected),
-    focusedRow,
-    pinnedRow,
-    peekedRow,
+    toggleSelected,
+    bulkToggle,
+    toggleDir,
+    focusedPath,
+    pinnedPath,
+    peekedPath,
     onRowClick: handleRowClick,
     registerRowEl,
-  });
+  };
 
-  const conflictedTreeOptions: TreeRenderOptions = {
+  const conflictRowOptions: RowRenderOptions = {
+    ...rowOptions,
+    selectable: false,
     selected: new Set(),
     toggleSelected: () => {},
     bulkToggle: () => {},
-    focusedRow,
-    pinnedRow,
-    peekedRow,
-    onRowClick: handleRowClick,
-    registerRowEl,
+    toggleDir: () => {},
   };
 
   return (
@@ -858,98 +771,46 @@ export function ChangesTab({
 
       <div className="git-changes-body">
         <div className="git-changes-files">
-          {/* Conflicted */}
           {filteredConflicted.length > 0 && (
-            <div className="git-changes-group">
+            <div className="git-changes-group git-changes-group--conflict">
               <div
                 className="git-changes-group-header git-changes-group-header--conflict"
-                onClick={() => toggleGroup('conflicted')}
+                onClick={() => setConflictsCollapsed(v => !v)}
               >
-                <span className="git-changes-group-chevron">{collapsedGroups.has('conflicted') ? '▶' : '▼'}</span>
+                <span className="git-changes-group-chevron">{conflictsCollapsed ? '▶' : '▼'}</span>
                 <span className="git-changes-group-label">Conflicts ({filteredConflicted.length})</span>
               </div>
-              {!collapsedGroups.has('conflicted') &&
-                renderFileTree(conflictedTree, 0, 'conflicted', conflictedTreeOptions)}
+              {!conflictsCollapsed && <ChangeRows rows={conflictRows} opts={conflictRowOptions} />}
             </div>
           )}
 
-          {/* Staged */}
-          {filteredStaged.length > 0 && (
+          {filteredChanges.length > 0 && (
             <div className="git-changes-group">
-              <div className="git-changes-group-header" onClick={() => toggleGroup('staged')}>
-                <span className="git-changes-group-chevron">{collapsedGroups.has('staged') ? '▶' : '▼'}</span>
+              <div
+                className="git-changes-group-header git-changes-group-header--list"
+                onClick={() => setChangesCollapsed(v => !v)}
+              >
+                <span className="git-changes-group-chevron">{changesCollapsed ? '▶' : '▼'}</span>
                 <Checkbox
-                  checked={stagedSelState === 'all'}
-                  indeterminate={stagedSelState === 'some'}
-                  onChange={() => toggleAllInGroup(selectedStaged, setSelectedStaged, filteredStaged)}
+                  checked={allSelectionState === 'all'}
+                  indeterminate={allSelectionState === 'some'}
+                  label="Select all changes"
+                  onChange={() => bulkToggle(
+                    filteredChanges.map(f => f.path),
+                    allSelectionState !== 'all',
+                  )}
                 />
-                <span className="git-changes-group-label">Staged Changes ({filteredStaged.length})</span>
-                <button
-                  className="git-changes-group-action"
-                  onClick={(e) => { e.stopPropagation(); handleUnstageGroup(); }}
-                  disabled={isAnyLoading}
-                >
-                  {selectedStaged.size > 0 ? `Unstage Selected (${selectedStaged.size})` : 'Unstage All'}
-                </button>
-              </div>
-              {!collapsedGroups.has('staged') &&
-                renderFileTree(stagedTree, 0, 'staged', treeOptionsFor(selectedStaged, setSelectedStaged))}
-            </div>
-          )}
-
-          {/* Unstaged */}
-          {filteredUnstaged.length > 0 && (
-            <div className="git-changes-group">
-              <div className="git-changes-group-header" onClick={() => toggleGroup('unstaged')}>
-                <span className="git-changes-group-chevron">{collapsedGroups.has('unstaged') ? '▶' : '▼'}</span>
-                <Checkbox
-                  checked={unstagedSelState === 'all'}
-                  indeterminate={unstagedSelState === 'some'}
-                  onChange={() => toggleAllInGroup(selectedUnstaged, setSelectedUnstaged, filteredUnstaged)}
-                />
-                <span className="git-changes-group-label">Changes ({filteredUnstaged.length})</span>
-                <button
-                  className="git-changes-group-action"
-                  onClick={(e) => { e.stopPropagation(); handleStageGroup(selectedUnstaged, filteredUnstaged); }}
-                  disabled={isAnyLoading}
-                >
-                  {selectedUnstaged.size > 0 ? `Stage Selected (${selectedUnstaged.size})` : 'Stage All'}
-                </button>
+                <span className="git-changes-group-label">Changes ({filteredChanges.length})</span>
                 <button
                   className="git-changes-group-action git-changes-group-action--danger"
-                  onClick={(e) => { e.stopPropagation(); handleDiscardGroup(); }}
-                  disabled={isAnyLoading}
-                  title={selectedUnstaged.size > 0 ? 'Discard selected changes' : 'Discard all unstaged changes'}
+                  onClick={(e) => { e.stopPropagation(); handleDiscardSelected(); }}
+                  disabled={isAnyLoading || discardablePaths.length === 0}
+                  title="Discard changes to the selected tracked files"
                 >
-                  {selectedUnstaged.size > 0 ? `Discard (${selectedUnstaged.size})` : 'Discard All'}
+                  {discardablePaths.length > 0 ? `Discard (${discardablePaths.length})` : 'Discard'}
                 </button>
               </div>
-              {!collapsedGroups.has('unstaged') &&
-                renderFileTree(unstagedTree, 0, 'unstaged', treeOptionsFor(selectedUnstaged, setSelectedUnstaged))}
-            </div>
-          )}
-
-          {/* Untracked */}
-          {filteredUntracked.length > 0 && (
-            <div className="git-changes-group">
-              <div className="git-changes-group-header" onClick={() => toggleGroup('untracked')}>
-                <span className="git-changes-group-chevron">{collapsedGroups.has('untracked') ? '▶' : '▼'}</span>
-                <Checkbox
-                  checked={untrackedSelState === 'all'}
-                  indeterminate={untrackedSelState === 'some'}
-                  onChange={() => toggleAllInGroup(selectedUntracked, setSelectedUntracked, filteredUntracked)}
-                />
-                <span className="git-changes-group-label">Untracked ({filteredUntracked.length})</span>
-                <button
-                  className="git-changes-group-action"
-                  onClick={(e) => { e.stopPropagation(); handleStageGroup(selectedUntracked, filteredUntracked); }}
-                  disabled={isAnyLoading}
-                >
-                  {selectedUntracked.size > 0 ? `Track Selected (${selectedUntracked.size})` : 'Track All'}
-                </button>
-              </div>
-              {!collapsedGroups.has('untracked') &&
-                renderFileTree(untrackedTree, 0, 'untracked', treeOptionsFor(selectedUntracked, setSelectedUntracked))}
+              {!changesCollapsed && <ChangeRows rows={changeRows} opts={rowOptions} />}
             </div>
           )}
         </div>
@@ -958,7 +819,7 @@ export function ChangesTab({
         {sessionsPaneOpen && (
           <SessionsForFilePane
             workspacePath={workspacePath}
-            activeFile={activeRow}
+            activeFile={activeFile}
             onCollapse={toggleSessionsPane}
           />
         )}
@@ -1001,22 +862,36 @@ export function ChangesTab({
             <button
               className="git-changes-commit-btn"
               onClick={handleCommit}
-              disabled={isCommitting || staged.length === 0 || !commitMessage.trim()}
+              disabled={isCommitting || selectedCount === 0 || !commitMessage.trim()}
             >
-              {isCommitting ? 'Committing...' : 'Commit'}
+              {isCommitting ? 'Committing...' : `Commit (${selectedCount})`}
+            </button>
+            <button
+              className="git-changes-commit-ai-btn"
+              onClick={handleCommitWithAI}
+              disabled={selectedCount === 0}
+              title="Open a new session that writes the message and commits these files"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 2l1.9 5.6L19.5 9.5 13.9 11.4 12 17l-1.9-5.6L4.5 9.5l5.6-1.9L12 2z" />
+                <path d="M18.5 14.5l.85 2.15L21.5 17.5l-2.15.85L18.5 20.5l-.85-2.15L15.5 17.5l2.15-.85.85-2.15z" />
+              </svg>
+              Commit with AI
             </button>
           </div>
           <div className="git-changes-commit-summary">
-            {staged.length > 0 ? `${staged.length} file${staged.length !== 1 ? 's' : ''} staged` : 'No files staged'}
+            {selectedCount > 0
+              ? `${selectedCount} file${selectedCount !== 1 ? 's' : ''} selected · committed exactly as selected`
+              : 'Select files to commit'}
           </div>
         </div>
       </div>
 
-      {popoverTarget && anchorRect && (
+      {diffTarget && anchorRect && (
         <DiffPeekPopover
           anchorRect={anchorRect}
-          filePath={popoverTarget.path}
-          mode={peekedRow ? 'peek' : 'pinned'}
+          filePath={diffTarget.path}
+          mode={peekedPath ? 'peek' : 'pinned'}
           diff={diffState.diff}
           isBinary={diffState.isBinary}
           loading={diffState.loading}

@@ -412,8 +412,23 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
   /** Host-private update used when a mounted desktop shell changes project. */
   setScopeKey(scopeKey: string): void {
     if (scopeKey === this.scopeKey) return;
-    this.dataSource?.dispose();
     this.scopeKey = scopeKey;
+    this.invalidateScope();
+  }
+
+  /**
+   * Drop the resolved scope and push every listener back through resolution.
+   *
+   * Resolution fails permanently for a window opened before sign-in ("Not
+   * authenticated") or before the project had an organization ("No team
+   * found") -- the docs lifecycle treats both as non-retryable and stops. Until
+   * something re-triggers it, signing in or creating an org cannot turn on the
+   * Shared Docs gutter button, the quick-open Team tab, or "Share to team",
+   * because the docs session is what marks the workspace as having a team.
+   * The listener contract is identical to a project change.
+   */
+  invalidateScope(): void {
+    this.dataSource?.dispose();
     this.scopePromise = null;
     this.dataSource = null;
     this.dataSourcePromise = null;

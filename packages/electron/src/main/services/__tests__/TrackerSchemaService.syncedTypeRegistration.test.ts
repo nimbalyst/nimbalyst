@@ -108,6 +108,23 @@ describe('registerMaterializedSyncedTypes (NIM-865)', () => {
     expect(globalRegistry.has(TYPE)).toBe(false);
   });
 
+  it('registers a yaml-sourced row the TEAM owns (shared definition wins) (#1178)', async () => {
+    // The state every team member ends up in: a local YAML file for a type the
+    // team also shares. Skipping on source='yaml' alone left the stale local
+    // definition registered and froze the type for that member.
+    await materializeTrackerTypeDef(
+      WS,
+      { type: TYPE, displayName: 'StaleLocal', fields: [], roles: {} } as never,
+      'yaml',
+      db,
+    );
+    await db.query(`UPDATE tracker_type_defs SET sync_id = 14 WHERE type = '${TYPE}'`);
+
+    const count = await registerMaterializedSyncedTypes(WS, db);
+    expect(count).toBe(1);
+    expect(globalRegistry.get(TYPE)?.displayName).toBe('StaleLocal');
+  });
+
   it('does not mutate the registry when the workspace is no longer active', async () => {
     const model = JSON.stringify({
       type: TYPE, displayName: 'GitHub PR Test',

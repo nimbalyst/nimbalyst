@@ -20,6 +20,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
+## [0.72.8] - 2026-08-07
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Claude Agent sessions no longer re-write the prompt cache on most turns, cutting token cost and rate-limit usage on long sessions.
+- A file that repeatedly fails to save now shows a Retry banner instead of autosave looping on it forever.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.72.7] - 2026-08-07
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Windows release builds sign and publish again.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.72.6] - 2026-08-07
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Tracker items shared with a team now get the same issue key for everyone, instead of each member's app assigning its own number to the same item.
+- Simply opening a tracker item no longer bumps its "Updated" time or adds a phantom edit to its history.
+
+### Removed
+<!-- Removed features go here -->
+- The accept/reject bar on shared tracker content — edits from teammates now just appear, the same as in shared documents.
+
+## [0.72.5] - 2026-08-06
+
+
+### Added
+<!-- New features go here -->
+- Open a shared project that is not a git repository by choosing a folder for it in your organization's project list.
+- A Renders tab in the Developer Dashboard that reports which components re-render, how often, and why.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- The CSV Spreadsheet extension now computes formulas live and keeps them after a save, and adds find and replace, per-column filters, and AI tools for analyzing data and applying formulas.
+- The Git panel's Changes tab is now one compact, collapsible list with no staging step: tick the files you want and commit them, or hand the selection to AI to write the message.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Codex sessions using parallel sub-agents now wait for the lead agent's final response instead of ending when the first child finishes.
+- Sending a queued prompt immediately no longer leaves the session stuck as running with the prompt never delivered.
+- Committing from the Git panel works again, renamed files show up, and discarding also undoes staged changes without touching files you did not select.
+- The Git panel's file mask is remembered per project again, instead of resetting every time you reopen the panel.
+- A spawned session's completion notification no longer repeats its entire original prompt back to the session that started it.
+- Reloading an extension now rebuilds it first, so your latest changes actually load.
+- Signing in or creating an organization now turns on Shared Docs right away, instead of staying hidden until you restart or reopen the window.
+- The voice agent no longer sounds like it switches to a different voice partway through an answer.
+- Accepting a team invitation now opens Nimbalyst instead of leaving you in the browser, and tells you how to sign in if you do not have the app yet.
+- When a session edits the same file several times, the red/green diff shows the whole set of changes again instead of only the last one.
+- Everyone on a team now sees the same tracker fields: a schema your team shares wins over an old copy on your machine, instead of silently freezing that type and hiding fields like Collections from you.
+- Customizing a shared tracker type now reaches your teammates, and a second open project no longer swaps another window's tracker types for the built-in ones.
+
+### Removed
+<!-- Removed features go here -->
+
 ## [0.72.4] - 2026-08-05
 
 
@@ -277,6 +359,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shared tracker saved views survive the view migration again.
 - Git actions are hidden in projects that are not git repositories.
 - iOS pairing links now open the in-app scanner instead of being ignored.
+- Persistent file-save failures now pause autosave after bounded retries, preserve unsaved edits, and show a Retry banner instead of looping indefinitely.
 
 ### Removed
 <!-- Removed features go here -->

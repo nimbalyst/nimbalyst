@@ -780,9 +780,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     status: collabStatus,
     syncProvider,
     commentsConfig,
-    reviewState,
-    acceptRemoteChanges,
-    rejectRemoteChanges,
     providerEpoch,
     bodyCacheMarkdown,
   } = useTrackerContentCollab({
@@ -790,7 +787,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     title: item?.issueKey || (item ? getRecordTitle(item) : itemId),
     workspacePath,
     syncMode,
-    teamMemberCount: teamMembers.length,
     teamOrgId,
     itemShared: isItemShared,
   });
@@ -1727,32 +1723,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                   data-testid="tracker-content-loading"
                 >
                   <span className="text-sm text-nim-muted">Loading content...</span>
-                </div>
-              )}
-              {reviewState?.hasUnreviewed && (
-                <div
-                  className="flex items-center gap-2 px-3 py-1.5 text-xs border-b border-nim bg-nim-tertiary"
-                  data-testid="tracker-content-review-banner"
-                >
-                  <MaterialSymbol icon="rate_review" size={14} className="text-nim-warning" />
-                  <span className="flex-1 text-nim-muted">
-                    {reviewState.unreviewedCount} pending change{reviewState.unreviewedCount !== 1 ? 's' : ''} from{' '}
-                    {reviewState.unreviewedAuthors.length > 0
-                      ? reviewState.unreviewedAuthors.join(', ')
-                      : 'collaborators'}
-                  </span>
-                  <button
-                    className="px-2 py-0.5 rounded text-[11px] font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
-                    onClick={acceptRemoteChanges}
-                  >
-                    Accept
-                  </button>
-                  <button
-                    className="px-2 py-0.5 rounded text-[11px] font-medium text-nim-muted hover:text-nim hover:bg-nim-tertiary border border-nim transition-colors"
-                    onClick={rejectRemoteChanges}
-                  >
-                    Reject
-                  </button>
                 </div>
               )}
               <NimbalystEditor key={`collab-${item.id}-${providerEpoch}`} config={collabEditorConfig} />

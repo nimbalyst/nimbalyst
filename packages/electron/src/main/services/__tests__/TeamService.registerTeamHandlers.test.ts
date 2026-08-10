@@ -127,8 +127,11 @@ const EXPECTED_TEAM_CHANNELS = [
   'team:update-role',
 ];
 
+// Both live in WorkspaceManagerWindow: opening a project is window work, and
+// TeamService only owns the membership check and the binding behind it.
 const TEAM_CHANNELS_REGISTERED_OUTSIDE_TEAM_SERVICE = [
   'team:open-project-workspace',
+  'team:open-shared-project',
 ];
 
 const EXPECTED_ORG_CHANNELS = [

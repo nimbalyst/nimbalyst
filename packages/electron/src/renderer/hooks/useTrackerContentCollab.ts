@@ -29,8 +29,8 @@
  * room that already has authoritative content from another collaborator.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DocumentSyncProvider, DocumentSyncStatus, ReviewGateState } from '@nimbalyst/runtime/sync';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { DocumentSyncProvider, DocumentSyncStatus } from '@nimbalyst/runtime/sync';
 import type { CollabLexicalProvider } from '@nimbalyst/runtime/collab-lexical';
 import type { Doc } from 'yjs';
 import type { Provider } from '@lexical/yjs';
@@ -69,8 +69,6 @@ interface UseTrackerContentCollabOptions {
   title?: string;
   workspacePath?: string;
   syncMode: string;
-  /** Number of team members -- enables review gate when > 1 */
-  teamMemberCount: number;
   /**
    * orgId of the team that owns this workspace.
    * - `undefined`: the parent is still resolving team membership; the hook
@@ -112,9 +110,6 @@ interface TrackerContentCollabResult {
   status: DocumentSyncStatus;
   syncProvider: DocumentSyncProvider | null;
   commentsConfig: CommentsConfig | null;
-  reviewState: ReviewGateState | null;
-  acceptRemoteChanges: () => void;
-  rejectRemoteChanges: () => void;
   /**
    * Increments every time a new CollabLexicalProvider is created. Callers
    * should include this in the React key of the editor tree that hosts
@@ -150,7 +145,6 @@ export function useTrackerContentCollab({
   title,
   workspacePath,
   syncMode,
-  teamMemberCount,
   teamOrgId,
   itemShared = true,
 }: UseTrackerContentCollabOptions): TrackerContentCollabResult {
@@ -168,10 +162,8 @@ export function useTrackerContentCollab({
   // Stay in `loading: true` so the UI shows a connecting state instead of
   // prematurely flipping to the local editor.
   const isCollabPending = isTeamSynced && teamOrgId === undefined && perItemShareSatisfied;
-  const isMultiUser = teamMemberCount > 1;
   const [loading, setLoading] = useState(isCollabActive || isCollabPending);
   const [status, setStatus] = useState<DocumentSyncStatus>('disconnected');
-  const [reviewState, setReviewState] = useState<ReviewGateState | null>(null);
   const [providerEpoch, setProviderEpoch] = useState(0);
   const [bodyCacheMarkdown, setBodyCacheMarkdown] = useState<string | null>(null);
   const syncProviderRef = useRef<DocumentSyncProvider | null>(null);
@@ -276,10 +268,6 @@ export function useTrackerContentCollab({
             console.warn('[useTrackerContentCollab] Backup serialization failed:', error);
           }
         },
-        // reviewGateEnabled is per-room; setting it at first-acquire is
-        // correct -- multi-user state for a single team-room does not
-        // change mid-session.
-        reviewGateEnabled: isMultiUser,
       };
     };
 
@@ -308,10 +296,6 @@ export function useTrackerContentCollab({
       onRemoteUpdate: (origin) => {
         if (cancelled) return;
         collabProviderRef.current?.handleRemoteUpdate(origin);
-      },
-      onReviewStateChange: (state) => {
-        if (cancelled) return;
-        setReviewState(state);
       },
       onAwarenessChange: (states) => {
         if (cancelled) return;
@@ -381,15 +365,7 @@ export function useTrackerContentCollab({
       collabProviderRef.current = null;
       setStatus('disconnected');
     };
-  }, [itemId, workspacePath, isCollabActive, isCollabPending, isMultiUser, collabStateKey]);
-
-  const acceptRemoteChanges = useCallback(() => {
-    syncProviderRef.current?.acceptRemoteChanges();
-  }, []);
-
-  const rejectRemoteChanges = useCallback(() => {
-    syncProviderRef.current?.rejectRemoteChanges();
-  }, []);
+  }, [itemId, workspacePath, isCollabActive, isCollabPending, collabStateKey]);
 
   const collaboration = useMemo(() => {
     if (!collabProviderRef.current || providerEpoch === 0) return null;
@@ -482,8 +458,7 @@ export function useTrackerContentCollab({
   if (!isCollabActive && !isCollabPending) {
     return {
       collaboration: null, loading: false, status: 'disconnected',
-      syncProvider: null, commentsConfig: null, reviewState: null,
-      acceptRemoteChanges: () => {}, rejectRemoteChanges: () => {},
+      syncProvider: null, commentsConfig: null,
       providerEpoch: 0,
       bodyCacheMarkdown: null,
     };
@@ -495,9 +470,6 @@ export function useTrackerContentCollab({
     status,
     syncProvider: syncProviderRef.current,
     commentsConfig,
-    reviewState,
-    acceptRemoteChanges,
-    rejectRemoteChanges,
     providerEpoch,
     bodyCacheMarkdown,
   };

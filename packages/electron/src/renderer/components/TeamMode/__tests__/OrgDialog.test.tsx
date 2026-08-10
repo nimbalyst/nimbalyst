@@ -5,10 +5,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { OrgDialog, OrgDialogPrimaryButton } from '../OrgDialog';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span>{icon}</span>,
-}));
-
 function renderDialog(onClose = vi.fn()) {
   return {
     onClose,

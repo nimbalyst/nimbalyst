@@ -182,7 +182,6 @@ describe('TrackerSyncEngine (in-memory)', () => {
     const b = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
     const bApplied: Array<{ type: string; model: string | null; syncId: number }> = [];
     b.config.schemaSync = {
-      getMaxSyncId: async () => 0,
       listUnsynced: async () => [],
       applyRemote: async (def) => { bApplied.push(def); },
     };
@@ -194,7 +193,6 @@ describe('TrackerSyncEngine (in-memory)', () => {
     const aApplied: Array<{ type: string; model: string | null; syncId: number }> = [];
     const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
     a.config.schemaSync = {
-      getMaxSyncId: async () => 0,
       listUnsynced: async () => aPending,
       applyRemote: async (def) => {
         aApplied.push(def);
@@ -215,7 +213,6 @@ describe('TrackerSyncEngine (in-memory)', () => {
     const c = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
     const cApplied: Array<{ type: string; model: string | null; syncId: number }> = [];
     c.config.schemaSync = {
-      getMaxSyncId: async () => 0,
       listUnsynced: async () => [],
       applyRemote: async (def) => { cApplied.push(def); },
     };

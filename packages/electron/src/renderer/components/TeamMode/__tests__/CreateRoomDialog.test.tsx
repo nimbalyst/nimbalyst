@@ -6,10 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationDirectoryEntry } from '../../../../shared/conversationDirectory';
 import { CreateRoomDialog } from '../CreateRoomDialog';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 const createDirectoryConversation = vi.fn();
 vi.mock('../../../services/conversationDirectoryClient', () => ({
   createDirectoryConversation: (...args: unknown[]) =>

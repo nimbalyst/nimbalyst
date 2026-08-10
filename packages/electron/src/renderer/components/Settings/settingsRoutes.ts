@@ -97,7 +97,7 @@ export type SettingsDestination =
 export interface SettingsAvailabilityContext {
   developerMode: boolean;
   showDirectChatProviders: boolean;
-  /** Teams alpha gate — see `teamsConfiguredAtom`. Hides org/sharing routes. */
+  /** Teams beta gate — see `teamsConfiguredAtom`. Hides org/sharing routes. */
   teamsConfigured: boolean;
 }
 

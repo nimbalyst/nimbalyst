@@ -53,6 +53,11 @@ import { useTheme } from '../../hooks/useTheme';
 import { createEmbeddedFileHost } from './createEmbeddedFileHost';
 import { CollaborativeEmbedEditor } from './CollaborativeEmbedEditor';
 import {
+  FileSaveRejectedError,
+  assertFileSaveSucceeded,
+  getSaveFailureMessage,
+} from '../../utils/fileSaveResult';
+import {
   parseCollaborativeEmbedReference,
   type CollaborativeEmbedProviderRequest,
   type CollaborativeEmbedReference,
@@ -77,6 +82,8 @@ const MIN_EMBED_HEIGHT_PX = 120;
 const MIN_EMBED_WIDTH_PX = 200;
 const MAX_EMBED_WIDTH_PX = 4000;
 const MAX_EMBED_HEIGHT_PX = 4000;
+const EMBED_AUTOSAVE_FAILURE_RETRY_DELAYS_MS = [5_000, 30_000] as const;
+const EMBED_AUTOSAVE_MAX_ATTEMPTS = EMBED_AUTOSAVE_FAILURE_RETRY_DELAYS_MS.length + 1;
 
 function parsePx(value: string | undefined, fallback: number, min: number): number {
   if (!value) return fallback;
@@ -223,7 +230,14 @@ async function writeFileToDisk(
         content: string,
         filePath: string,
         lastKnownContent?: string,
-      ) => Promise<unknown>;
+        saveSource?: 'auto' | 'manual',
+      ) => Promise<{
+        success: boolean;
+        conflict?: boolean;
+        deleted?: boolean;
+        errorType?: string;
+        errorCode?: string;
+      } | null>;
     };
   }).electronAPI;
   if (!api?.saveFile) throw new Error('saveFile IPC not available');
@@ -231,7 +245,8 @@ async function writeFileToDisk(
     typeof content === 'string'
       ? content
       : new TextDecoder().decode(content);
-  await api.saveFile(text, absolutePath);
+  const result = await api.saveFile(text, absolutePath, undefined, 'auto');
+  assertFileSaveSucceeded(result);
 }
 
 function workspaceRelativePath(absolutePath: string): string {
@@ -591,11 +606,60 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
   // ---- Save / dirty state for edit mode --------------------------------
   const [isDirty, setIsDirty] = useState(false);
   const isDirtyRef = useRef(false);
-  const saveRequestListeners = useRef(new Set<() => void>());
+  const saveRequestListeners = useRef(new Set<() => void | Promise<void>>());
+  const autosaveRequestInFlightRef = useRef(false);
+  const autosaveFailureCountRef = useRef(0);
+  const nextAutosaveAttemptAtRef = useRef(0);
+  const autosaveBlockedRef = useRef(false);
   // Content of our most recent save -- used to dedupe the file-watcher
   // event that fires when our own save hits disk (we don't want to round-
   // trip the bytes back through the extension's onFileChanged callback).
   const lastSavedContentRef = useRef<string | null>(null);
+
+  // Surfaces the blocked state. Without it an embed stops autosaving after its
+  // retries are spent and the user has no signal that their edits are only in
+  // memory -- the dirty dot alone reads as "saving shortly".
+  const [saveBlockedErrorType, setSaveBlockedErrorType] = useState<string | null>(null);
+
+  const resetAutosaveFailureState = useCallback(() => {
+    autosaveFailureCountRef.current = 0;
+    nextAutosaveAttemptAtRef.current = 0;
+    autosaveBlockedRef.current = false;
+    setSaveBlockedErrorType(null);
+  }, []);
+
+  const requestEmbedSave = useCallback(async (explicitRetry = false) => {
+    if (explicitRetry) resetAutosaveFailureState();
+    if (autosaveRequestInFlightRef.current || autosaveBlockedRef.current) return;
+    if (Date.now() < nextAutosaveAttemptAtRef.current) return;
+
+    autosaveRequestInFlightRef.current = true;
+    try {
+      for (const cb of saveRequestListeners.current) {
+        await cb();
+      }
+      resetAutosaveFailureState();
+    } catch (error) {
+      autosaveFailureCountRef.current += 1;
+      const retryDelay =
+        EMBED_AUTOSAVE_FAILURE_RETRY_DELAYS_MS[autosaveFailureCountRef.current - 1];
+      if (retryDelay === undefined) {
+        autosaveBlockedRef.current = true;
+        setSaveBlockedErrorType(
+          error instanceof FileSaveRejectedError ? error.errorType : 'unknown',
+        );
+        console.error(
+          `[EmbedFrame] Autosave blocked after ${EMBED_AUTOSAVE_MAX_ATTEMPTS} failed attempts`,
+          error,
+        );
+      } else {
+        nextAutosaveAttemptAtRef.current = Date.now() + retryDelay;
+        console.error(`[EmbedFrame] Autosave failed; retrying in ${retryDelay}ms`, error);
+      }
+    } finally {
+      autosaveRequestInFlightRef.current = false;
+    }
+  }, [resetAutosaveFailureState]);
 
   const toggleReadOnly = useCallback(() => {
     setIsReadOnly((prev) => {
@@ -604,13 +668,11 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
       // flush before we drop the editing UI. Saves are async; the user
       // will see the dot clear as the write completes.
       if (next && isDirtyRef.current) {
-        saveRequestListeners.current.forEach((cb) => {
-          try { cb(); } catch (err) { console.error(err); }
-        });
+        void requestEmbedSave(true);
       }
       return next;
     });
-  }, []);
+  }, [requestEmbedSave]);
 
   // Autosave: while in edit mode and dirty, ask the extension to save on
   // a 2s cadence. The extension's `onSaveRequested` handler is what
@@ -619,12 +681,10 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
     if (isReadOnly) return;
     const interval = setInterval(() => {
       if (!isDirtyRef.current) return;
-      saveRequestListeners.current.forEach((cb) => {
-        try { cb(); } catch (err) { console.error('[EmbedFrame] save request failed', err); }
-      });
+      void requestEmbedSave();
     }, 2000);
     return () => clearInterval(interval);
-  }, [isReadOnly]);
+  }, [isReadOnly, requestEmbedSave]);
 
   const host = useMemo(() => {
     if (!absolutePath) return null;
@@ -677,6 +737,7 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
         // state stays (we don't catch here).
         isDirtyRef.current = false;
         setIsDirty(false);
+        resetAutosaveFailureState();
       },
       getReadOnly: () => isReadOnlyRef.current,
       subscribeToReadOnlyChanges(cb) {
@@ -689,6 +750,7 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
         if (next === isDirtyRef.current) return;
         isDirtyRef.current = next;
         setIsDirty(next);
+        if (!next) resetAutosaveFailureState();
       },
       subscribeToSaveRequests(cb) {
         saveRequestListeners.current.add(cb);
@@ -701,7 +763,7 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
     // toggles) flow to the mounted extension via `host.onFileChanged(...)`
     // / `host.onReadOnlyChanged(...)` rather than re-mount, which preserves
     // the extension's view-state (pan / zoom / scroll).
-  }, [absolutePath]);
+  }, [absolutePath, resetAutosaveFailureState]);
 
   const handleEditClick = useCallback(() => {
     if (collaborativeReference) {
@@ -925,6 +987,27 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
         onToggleReadOnly={toggleReadOnly}
         onEditClick={handleEditClick}
       />
+      {saveBlockedErrorType !== null && (
+        <div
+          className="embed-frame__save-failure flex items-center gap-2 px-3 py-2 text-[13px] bg-nim-warning-subtle border-b border-nim-warning text-nim"
+          role="alert"
+          data-testid="embed-save-failure-banner"
+        >
+          <span className="flex-1">
+            {getSaveFailureMessage(saveBlockedErrorType, 'auto')}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              void requestEmbedSave(true);
+            }}
+            className="px-2 py-1 rounded border border-nim text-nim hover:bg-nim-active"
+            data-testid="embed-save-failure-retry"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       <div
         ref={bodyRef}
         className="embed-frame__body"

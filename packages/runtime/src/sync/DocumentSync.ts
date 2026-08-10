@@ -12,11 +12,10 @@
  * - Handles sync (initial load), realtime broadcasts, and awareness
  * - Never sends plaintext data over the wire
  *
- * Review Gate:
- * When reviewGateEnabled is true, remote updates are applied to the Y.Doc
- * (for CRDT correctness) but tracked as "unreviewed". The host application
- * should not autosave until acceptRemoteChanges() is called. This mirrors
- * the AI "pending review" pattern for collaborator trust boundaries.
+ * Remote updates merge and land like any other CRDT update -- a shared room is
+ * shared, so there is no per-collaborator accept/reject step. Recovering an
+ * earlier state is an explicit user action (resync / restore), not a gate on
+ * every inbound edit.
  */
 
 import * as Y from 'yjs';
@@ -24,7 +23,6 @@ import type {
   DocumentSyncConfig,
   DocumentSyncStatus,
   AwarenessState,
-  ReviewGateState,
   DocClientMessage,
   DocServerMessage,
   DocSyncResponseMessage,
@@ -112,21 +110,6 @@ const COMPACTION_TIME_THRESHOLD_MS = 5 * 60 * 1000;
 const COMPACTION_TIME_MIN_UPDATES = 20;
 const COMPACTION_CHECK_INTERVAL_MS = 60 * 1000;
 
-/**
- * A buffered remote update: the raw Yjs update bytes plus metadata.
- * Used by the review gate to track which remote changes are unreviewed.
- */
-interface BufferedRemoteUpdate {
-  /** Raw decrypted Yjs update bytes */
-  updateBytes: Uint8Array;
-  /** User who sent this update */
-  senderId: string;
-  /** Server sequence number */
-  sequence: number;
-  /** When we received this update locally */
-  receivedAt: number;
-}
-
 export class DocumentSyncProvider {
   private ydoc: Y.Doc;
   private readonly ownsYDoc: boolean;
@@ -153,16 +136,6 @@ export class DocumentSyncProvider {
   private awarenessThrottleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastAwarenessSendTime = 0;
   private awarenessCleanupTimer: ReturnType<typeof setInterval> | null = null;
-
-  // Review gate state
-  private unreviewedUpdates: BufferedRemoteUpdate[] = [];
-  /**
-   * The Y.Doc state vector at the point of last review acceptance.
-   * All state up to this vector has been accepted for autosave.
-   * Null until initial sync completes (at which point it's set to the
-   * current state vector, since initial sync data is considered accepted).
-   */
-  private reviewedStateVector: Uint8Array | null = null;
 
   // Reconnect state
   private reconnectAttempt = 0;
@@ -504,8 +477,6 @@ export class DocumentSyncProvider {
     if (this.ownsYDoc) this.ydoc.destroy();
     this.awarenessListeners.clear();
     this.awarenessStates.clear();
-    this.unreviewedUpdates = [];
-    this.reviewedStateVector = null;
   }
 
   // --------------------------------------------------------------------------
@@ -788,114 +759,6 @@ export class DocumentSyncProvider {
       await this.replayPendingUpdate();
     }
     return this.waitForPendingWrites(timeoutMs);
-  }
-
-  // --------------------------------------------------------------------------
-  // Review Gate API
-  // --------------------------------------------------------------------------
-
-  /**
-   * Whether the review gate is enabled.
-   * When enabled, remote changes are tracked as "unreviewed" and the host
-   * application should not autosave until they are accepted.
-   */
-  get reviewGateEnabled(): boolean {
-    return this.config.reviewGateEnabled === true;
-  }
-
-  /**
-   * Whether there are unreviewed remote changes.
-   * Always false when reviewGateEnabled is false.
-   */
-  hasUnreviewedRemoteChanges(): boolean {
-    if (!this.reviewGateEnabled) return false;
-    return this.unreviewedUpdates.length > 0;
-  }
-
-  /**
-   * Get the current review gate state.
-   */
-  getReviewGateState(): ReviewGateState {
-    if (!this.reviewGateEnabled) {
-      return { hasUnreviewed: false, unreviewedCount: 0, unreviewedAuthors: [] };
-    }
-    const authors = [...new Set(this.unreviewedUpdates.map(u => u.senderId))];
-    return {
-      hasUnreviewed: this.unreviewedUpdates.length > 0,
-      unreviewedCount: this.unreviewedUpdates.length,
-      unreviewedAuthors: authors,
-    };
-  }
-
-  /**
-   * Get the buffered remote update bytes that haven't been reviewed yet.
-   * Returns a copy. The UI layer can apply these to a separate Y.Doc
-   * to compute diffs for gutter decorations.
-   */
-  getUnreviewedUpdates(): Uint8Array[] {
-    return this.unreviewedUpdates.map(u => u.updateBytes.slice());
-  }
-
-  /**
-   * Get the Yjs state as it was at the last review acceptance point.
-   * The host can compare this to the current Y.Doc state to show diffs.
-   * Returns null if no review has occurred yet (initial sync not complete).
-   */
-  getReviewedStateVector(): Uint8Array | null {
-    return this.reviewedStateVector ? this.reviewedStateVector.slice() : null;
-  }
-
-  /**
-   * Compute the diff between the reviewed state and the current Y.Doc.
-   * Returns a Yjs update that, when applied to a Y.Doc at the reviewed state,
-   * would bring it to the current state. This represents all unreviewed
-   * remote changes (useful for rendering diffs/gutter decorations).
-   *
-   * Returns null if no review baseline exists or no remote changes pending.
-   */
-  getUnreviewedDiff(): Uint8Array | null {
-    if (!this.reviewGateEnabled || !this.reviewedStateVector) return null;
-    if (this.unreviewedUpdates.length === 0) return null;
-    return Y.encodeStateAsUpdate(this.ydoc, this.reviewedStateVector);
-  }
-
-  /**
-   * Accept all unreviewed remote changes.
-   * Advances the reviewed state vector to the current Y.Doc state.
-   * After this call, hasUnreviewedRemoteChanges() returns false and
-   * the host application can safely autosave.
-   */
-  acceptRemoteChanges(): void {
-    if (!this.reviewGateEnabled) return;
-    if (this.unreviewedUpdates.length === 0) return;
-
-    this.unreviewedUpdates = [];
-    this.reviewedStateVector = Y.encodeStateVector(this.ydoc);
-    this.notifyReviewStateChange();
-  }
-
-  /**
-   * Reject all unreviewed remote changes.
-   * Clears the unreviewed buffer without advancing the reviewed state vector.
-   *
-   * The Y.Doc still contains the remote data (CRDTs can't truly undo merged
-   * operations). The host application should:
-   * 1. Not autosave the current Y.Doc state
-   * 2. Restore the file from its last saved version (which doesn't include
-   *    the remote changes, since the review gate prevented autosave)
-   *
-   * The remote changes still exist on the server and will be re-sent on
-   * next sync. To permanently prevent them, the user would need to
-   * overwrite the server state (e.g., via compaction with their local state).
-   */
-  rejectRemoteChanges(): void {
-    if (!this.reviewGateEnabled) return;
-    if (this.unreviewedUpdates.length === 0) return;
-    if (!this.reviewedStateVector) return;
-
-    this.unreviewedUpdates = [];
-    // Keep the reviewed SV as-is (don't advance it)
-    this.notifyReviewStateChange();
   }
 
   // --------------------------------------------------------------------------
@@ -1187,9 +1050,6 @@ export class DocumentSyncProvider {
       this.config.onFirstSyncComplete?.(msg.serverHasState === false);
       this.notifyContentChanged();
 
-      if (this.reviewGateEnabled) {
-        this.reviewedStateVector = Y.encodeStateVector(this.ydoc);
-      }
       if (this.hasPendingLocalUpdates()) {
         await this.replayPendingUpdate();
       } else {
@@ -1267,17 +1127,6 @@ export class DocumentSyncProvider {
       return;
     }
     this.lastSeq = Math.max(this.lastSeq, msg.sequence);
-
-    // Buffer the update for the review gate
-    if (this.reviewGateEnabled && this.synced) {
-      this.unreviewedUpdates.push({
-        updateBytes: updateBytes.slice(),
-        senderId: msg.senderId,
-        sequence: msg.sequence,
-        receivedAt: Date.now(),
-      });
-      this.notifyReviewStateChange();
-    }
 
     this.config.onRemoteUpdate?.(REMOTE_ORIGIN);
     this.notifyContentChanged();
@@ -1666,10 +1515,6 @@ export class DocumentSyncProvider {
     this.setStatus(
       this.hasPendingLocalUpdates() ? 'offline-unsynced' : 'disconnected'
     );
-    // Note: unreviewed updates and reviewedStateVector are preserved across
-    // disconnect/reconnect. If the user reconnects, they'll still see the
-    // pending review state. On reconnect, initial sync is accepted but
-    // buffered unreviewed updates remain.
     if (shouldReconnect) {
       this.scheduleReconnect();
     }
@@ -1916,10 +1761,6 @@ export class DocumentSyncProvider {
     for (const listener of this.awarenessListeners) {
       listener(snapshot);
     }
-  }
-
-  private notifyReviewStateChange(): void {
-    this.config.onReviewStateChange?.(this.getReviewGateState());
   }
 
   // --------------------------------------------------------------------------

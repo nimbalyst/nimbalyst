@@ -23,6 +23,9 @@ import {
   parseTrackerSchemaPatchYAML,
   serializeTrackerSchemaPatchYAML,
   resolveTrackerSchemaPatch,
+  diffTrackerSchema,
+  decodeTrackerSchemaPayload,
+  encodeTrackerSchemaPatchPayload,
   type TrackerDataModel,
   type TrackerSchemaPatch,
   type TrackerSchemaRole,
@@ -32,6 +35,11 @@ import {
 import {
   materializeTrackerTypeDef,
   materializeTrackerTypeDefs,
+  materializeYamlTrackerTypeDef,
+  materializeYamlTrackerTypeDefs,
+  markTrackerTypeDefProjected,
+  listRetractedTeamOwnedTrackerTypes,
+  listUnprojectedTeamOwnedTrackerTypes,
   reconcileYamlTrackerTypeDefs,
   listMaterializedTrackerTypeDefs,
   classifyTrackerSchemaDrift,
@@ -43,7 +51,14 @@ import {
   type ApplyRemoteSchemaResult,
   type TypeDefDb,
 } from './tracker/trackerTypeDefStore';
-import { installTrackerSchemaScopeProvider } from './tracker/trackerSchemaScope';
+import {
+  installTrackerSchemaScopeProvider,
+  runWithTrackerSchemaWorkspace,
+} from './tracker/trackerSchemaScope';
+import {
+  getWindowIdForWindow,
+  resolveActiveWorkspacePathForWindowId,
+} from '../window/windowState';
 
 // ---------------------------------------------------------------------------
 // Service State
@@ -219,7 +234,9 @@ function loadWorkspaceSchemas(workspacePath: string): void {
   void (async () => {
     try {
       if (shouldReconcileYamlMirror) {
-        if (loaded.length) await materializeTrackerTypeDefs(workspacePath, loaded);
+        // Yaml-aware: a team-owned type's shared definition outranks whatever is
+        // on this machine's disk, so the mirror write must not clobber it (#1178).
+        if (loaded.length) await materializeYamlTrackerTypeDefs(workspacePath, loaded);
         await reconcileYamlTrackerTypeDefs(workspacePath, loaded.map(m => m.type));
       }
       // Register DB-materialized types that have no local YAML (synced or
@@ -234,6 +251,8 @@ function loadWorkspaceSchemas(workspacePath: string): void {
         undefined,
         () => currentWorkspacePath === workspacePath,
       );
+      await reconcileRetractedTeamSchemas(workspacePath);
+      await projectUnprojectedSharedSchemas(workspacePath);
     } catch (err) {
       console.error('[TrackerSchemaService] post-load schema mirror/register failed:', err);
     }
@@ -247,9 +266,14 @@ function loadWorkspaceSchemas(workspacePath: string): void {
  * YAML, so without this the type vanishes from the registry after restart (the
  * incremental schema delta never re-arrives). See NIM-865.
  *
- * YAML-sourced rows are skipped: the on-disk YAML was already registered from
- * source by loadWorkspaceSchemas and is authoritative; overwriting it with the
- * (possibly drifted) mirror copy would be wrong.
+ * Purely-local YAML rows are skipped: the on-disk YAML was already registered
+ * from source by loadWorkspaceSchemas and is authoritative for a type the team
+ * does not share; overwriting it with the mirror copy would be wrong.
+ *
+ * A TEAM-OWNED row (`sync_id` set) is registered even when it is yaml-sourced.
+ * The team's definition is the authority for a shared type — that is the whole
+ * point of schema sync — and skipping it on `source = 'yaml'` is what let one
+ * member's stale file freeze a type for their whole team (#1178).
  *
  * sync/cli rows ARE registered even when the type slot is already occupied — a
  * built-in always sits in the registry (`has()` is true), and a synced override
@@ -278,9 +302,9 @@ export async function registerMaterializedSyncedTypes(
   let registered = 0;
   for (const def of defs) {
     if (!def?.type) continue;
-    // The on-disk YAML is authoritative for yaml-sourced types and is already
-    // registered; never clobber it with the mirror copy.
-    if (def.source === 'yaml') continue;
+    // The on-disk YAML is authoritative only for a type the team does not share,
+    // and it is already registered; never clobber it with the mirror copy.
+    if (def.source === 'yaml' && def.sync_id == null) continue;
     let model: TrackerDataModel | null = null;
     try {
       // `model` is JSON TEXT on SQLite but may be a parsed object on PGLite;
@@ -300,15 +324,139 @@ export async function registerMaterializedSyncedTypes(
 }
 
 function reloadWorkspaceSchema(filePath: string): void {
+  if (isSelfWrittenSchemaFile(filePath)) return; // our own write-back, not a user edit
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
     const model = resolveSchemaModelFromContent(path.basename(filePath), content);
     globalRegistry.register(model);
-    if (currentWorkspacePath) void materializeTrackerTypeDef(currentWorkspacePath, model);
+    // Yaml-aware mirror write: for a team-owned type this either no-ops (the file
+    // matches the shared definition) or queues the user's edit for push (#1178).
+    if (currentWorkspacePath) void materializeYamlTrackerTypeDef(currentWorkspacePath, model);
     // console.log(`[TrackerSchemaService] Reloaded schema: ${model.type}`);
     notifySchemaChanged();
   } catch (err) {
     console.error(`[TrackerSchemaService] Failed to reload ${filePath}:`, err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Write-back (shared definition -> YAML file)
+// ---------------------------------------------------------------------------
+
+/**
+ * Paths this service is writing itself. The chokidar watcher cannot tell a
+ * write-back from a user edit, and treating our own write as an edit would queue
+ * a pointless push (and, with two peers, an echo loop). Entries are cleared once
+ * the watcher has had a chance to fire.
+ */
+const selfWrittenSchemaFiles = new Set<string>();
+
+function isSelfWrittenSchemaFile(filePath: string): boolean {
+  return selfWrittenSchemaFiles.has(path.resolve(filePath));
+}
+
+/**
+ * Retire the local YAML file for a type the team has deleted, so the retraction
+ * actually takes effect on this machine instead of the file re-registering the
+ * dead definition on the next load. The content is preserved as a `.bak`
+ * sibling, which the loader ignores (it only reads `.yaml` / `.yml`).
+ */
+async function retireLocalSchemaFile(workspacePath: string, type: string): Promise<void> {
+  const filePath = await findWorkspaceSchemaFileByType(workspacePath, type);
+  if (!filePath) return;
+  try {
+    selfWrittenSchemaFiles.add(path.resolve(filePath));
+    await fsPromises.rename(filePath, `${filePath}.${Date.now()}.bak`);
+  } catch (err) {
+    console.error(`[TrackerSchemaService] failed to retire ${type} schema file:`, err);
+  }
+}
+
+/**
+ * Write every team-owned schema this workspace has not yet projected onto its
+ * YAML dir, overwriting any local file for that type.
+ *
+ * This is the half of "shared definition wins" that makes the file useful rather
+ * than merely ignored: once projected, an edit to it is unambiguous and gets
+ * pushed to the team. Before projection there is no baseline, so the file can
+ * only be disregarded — which is right for correctness but leaves the user with
+ * a file that silently does nothing (#1178).
+ *
+ * Idempotent: a row is projected once, then `synced_model` keeps it out.
+ */
+async function projectUnprojectedSharedSchemas(workspacePath: string): Promise<void> {
+  const pending = await listUnprojectedTeamOwnedTrackerTypes(workspacePath);
+  for (const row of pending) {
+    const raw: unknown = row.model;
+    const model = parseSyncedTrackerSchemaModel(
+      row.type,
+      typeof raw === 'string' ? raw : JSON.stringify(raw),
+    );
+    if (!model) continue;
+    // Builtin overrides project as a delta for the same reason they travel as
+    // one: the local file keeps picking up shipped builtin fields.
+    await writeBackSharedSchema(workspacePath, model, globalRegistry.isBuiltin(row.type));
+  }
+}
+
+/**
+ * Apply team-side schema retractions to this workspace: drop the dead type from
+ * the registry and retire any local YAML file still defining it. Runs on load so
+ * a tombstone delivered while this workspace was closed still lands.
+ */
+async function reconcileRetractedTeamSchemas(workspacePath: string): Promise<void> {
+  const retracted = await listRetractedTeamOwnedTrackerTypes(workspacePath);
+  for (const type of retracted) {
+    await retireLocalSchemaFile(workspacePath, type);
+    if (currentWorkspacePath === workspacePath) globalRegistry.clearWorkspaceSchema(type);
+  }
+  if (retracted.length && currentWorkspacePath === workspacePath) notifySchemaChanged();
+}
+
+/**
+ * Project a shared tracker schema onto this workspace's YAML file, so the file
+ * is a faithful copy of what the team shares and a later hand edit is
+ * unambiguously a local change to push. Best-effort: a workspace whose schema
+ * dir cannot be written still runs off the DB mirror.
+ */
+async function writeBackSharedSchema(
+  workspacePath: string,
+  model: TrackerDataModel,
+  asPatch = false,
+): Promise<void> {
+  const trackersDir = path.join(workspacePath, '.nimbalyst', 'trackers');
+  // A builtin override projects as a DELTA file, so the local copy keeps
+  // resolving against this app's builtin as it evolves -- the same reason the
+  // payload travels as a delta.
+  const seed = asPatch ? globalRegistry.getBuiltinModel(model.type) : undefined;
+  const fileName = seed ? patchFileNameForType(model.type) : `${model.type}.yaml`;
+  const filePath = path.resolve(path.join(trackersDir, fileName));
+  try {
+    await fsPromises.mkdir(trackersDir, { recursive: true });
+    selfWrittenSchemaFiles.add(filePath);
+    const content = seed
+      ? serializeTrackerSchemaPatchYAML(diffTrackerSchema(seed, model))
+      : serializeTrackerYAML(model);
+    await fsPromises.writeFile(filePath, content, 'utf-8');
+    // Record what a RE-READ of the file yields, not the model we were handed:
+    // serialize->parse normalizes (defaults, tag support, key order), and
+    // recording the pre-serialization model would make the very next load look
+    // like a local edit -- every peer would push an echo of what it just
+    // received.
+    const projected = resolveSchemaModelFromContent(path.basename(filePath), content);
+    await markTrackerTypeDefProjected(workspacePath, model.type, JSON.stringify(projected));
+    // A full-copy override left over from before this type went delta would be
+    // loaded alongside the patch; retire it so one file defines one type.
+    const stale = await findWorkspaceSchemaFileByType(workspacePath, model.type);
+    if (stale && path.resolve(stale) !== filePath) {
+      selfWrittenSchemaFiles.add(path.resolve(stale));
+      await fsPromises.rename(stale, `${stale}.${Date.now()}.bak`);
+    }
+  } catch (err) {
+    console.error(`[TrackerSchemaService] write-back failed for ${model.type}:`, err);
+  } finally {
+    // `awaitWriteFinish` delays the watcher event past the write itself.
+    setTimeout(() => selfWrittenSchemaFiles.delete(filePath), 2000).unref?.();
   }
 }
 
@@ -375,14 +523,80 @@ function stopWatcher(): void {
 // IPC Handlers
 // ---------------------------------------------------------------------------
 
+/**
+ * The workspace a renderer request is asking about — the workspace of the window
+ * that sent it, not whichever workspace last claimed the live registry view.
+ *
+ * The registry is process-global: opening a second window on another project
+ * reverts every builtin override for EVERY window, so a project with custom
+ * schemas silently shows builtins as soon as you open a second project (#1178).
+ * Resolving per sender, against that workspace's own layer, keeps each window
+ * looking at its own project's schemas.
+ */
+function workspacePathForEvent(event: { sender: Electron.WebContents }): string | null {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return resolveActiveWorkspacePathForWindowId(getWindowIdForWindow(win)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read schemas on behalf of `workspacePath`. The active workspace reads the live
+ * view directly; any other workspace gets its own cached layer built first (YAML
+ * on disk plus the DB mirror, so synced and CLI-created types are included) and
+ * the read is scoped to it.
+ */
+async function readSchemasForWorkspace<T>(
+  workspacePath: string | null,
+  read: () => T,
+): Promise<T> {
+  if (!workspacePath || workspacePath === currentWorkspacePath) return read();
+  await buildWorkspaceSchemaLayer(workspacePath);
+  return runWithTrackerSchemaWorkspace(workspacePath, read);
+}
+
+/**
+ * Populate the cached schema layer for a non-active workspace: its YAML models,
+ * overlaid with the DB mirror for every type the DB owns (team-owned, synced or
+ * CLI-created). Mirrors the precedence the active view gets from
+ * loadWorkspaceSchemas + registerMaterializedSyncedTypes.
+ */
+async function buildWorkspaceSchemaLayer(workspacePath: string): Promise<void> {
+  const byType = new Map<string, TrackerDataModel>();
+  for (const model of readWorkspaceSchemaModelsFromDisk(workspacePath).models) {
+    byType.set(model.type, model);
+  }
+  try {
+    for (const def of await listMaterializedTrackerTypeDefs(workspacePath)) {
+      if (!def?.type) continue;
+      if (def.source === 'yaml' && def.sync_id == null) continue;
+      const raw: unknown = def.model;
+      const model = parseSyncedTrackerSchemaModel(
+        def.type,
+        typeof raw === 'string' ? raw : JSON.stringify(raw),
+      );
+      if (model) byType.set(def.type, model);
+    }
+  } catch (err) {
+    console.error('[TrackerSchemaService] buildWorkspaceSchemaLayer mirror read failed:', err);
+  }
+  globalRegistry.setWorkspaceLayer(workspacePath, Array.from(byType.values()));
+}
+
 function registerIpcHandlers(): void {
-  safeHandle('tracker-schema:get-all', async () => {
-    return globalRegistry.getAll().map(serializeModel);
+  safeHandle('tracker-schema:get-all', async (event) => {
+    return readSchemasForWorkspace(workspacePathForEvent(event), () =>
+      globalRegistry.getAll().map(serializeModel),
+    );
   });
 
-  safeHandle('tracker-schema:get', async (_event, type: string) => {
-    const model = globalRegistry.get(type);
-    return model ? serializeModel(model) : null;
+  safeHandle('tracker-schema:get', async (event, type: string) => {
+    return readSchemasForWorkspace(workspacePathForEvent(event), () => {
+      const model = globalRegistry.get(type);
+      return model ? serializeModel(model) : null;
+    });
   });
 
   safeHandle('tracker-schema:get-role-field', async (_event, type: string, role: TrackerSchemaRole) => {
@@ -422,10 +636,26 @@ function registerIpcHandlers(): void {
 // Notifications
 // ---------------------------------------------------------------------------
 
+/**
+ * Push the current schema set to every window — each in terms of ITS OWN
+ * workspace. Broadcasting the active workspace's list to all windows is how a
+ * second open project used to overwrite a window's schemas in place (#1178).
+ */
 function notifySchemaChanged(): void {
-  const schemas = globalRegistry.getAll().map(serializeModel);
+  const active = globalRegistry.getAll().map(serializeModel);
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('tracker-schema:changed', schemas);
+    const workspacePath = resolveActiveWorkspacePathForWindowId(getWindowIdForWindow(win)) ?? null;
+    if (!workspacePath || workspacePath === currentWorkspacePath) {
+      win.webContents.send('tracker-schema:changed', active);
+      continue;
+    }
+    void readSchemasForWorkspace(workspacePath, () =>
+      globalRegistry.getAll().map(serializeModel),
+    )
+      .then((schemas) => {
+        if (!win.isDestroyed()) win.webContents.send('tracker-schema:changed', schemas);
+      })
+      .catch(() => {});
   }
 }
 
@@ -807,7 +1037,7 @@ export async function resyncWorkspaceSchemaMirror(
   if (!canReconcile) {
     throw new Error('Tracker schema directory could not be read; refusing to resync mirror.');
   }
-  if (yamlModels.length) await materializeTrackerTypeDefs(workspacePath, yamlModels);
+  if (yamlModels.length) await materializeYamlTrackerTypeDefs(workspacePath, yamlModels);
   await reconcileYamlTrackerTypeDefs(workspacePath, yamlModels.map(m => m.type));
 }
 
@@ -823,6 +1053,67 @@ function parseSyncedTrackerSchemaModel(type: string, modelJson: string): Tracker
   }
 }
 
+// ---------------------------------------------------------------------------
+// Delta payloads for builtin overrides
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve an inbound schema payload to a full model. A delta payload is applied
+ * to THIS machine's builtin seed, so a teammate's override of `bug` picks up
+ * whatever fields this app version's builtin ships — the point of sending a
+ * delta rather than a frozen copy (#1178).
+ *
+ * Returns the resolved model plus whether it arrived as a delta, which decides
+ * where write-back projects it (`<type>.patch.yaml` vs `<type>.yaml`).
+ */
+function resolveInboundSchemaPayload(
+  type: string,
+  modelJson: string,
+): { model: TrackerDataModel; isPatch: boolean } | null {
+  const decoded = decodeTrackerSchemaPayload(type, modelJson);
+  if (!decoded) return null;
+  if (decoded.kind === 'model') return { model: decoded.model, isPatch: false };
+
+  const seed = globalRegistry.getBuiltinModel(type);
+  if (!seed) {
+    // A delta with no local seed cannot be resolved. Dropping it is right: this
+    // app version does not know the type the sender was patching.
+    console.warn(`[TrackerSchemaService] schema patch for unknown builtin '${type}' dropped`);
+    return null;
+  }
+  try {
+    return { model: resolveTrackerSchemaPatch(seed, decoded.patch), isPatch: true };
+  } catch (err) {
+    console.error(`[TrackerSchemaService] failed to resolve schema patch for ${type}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Encode a locally-originated schema change for the wire. An override of a
+ * BUILTIN travels as a delta against this app's builtin seed; a custom type the
+ * team owns outright travels as its full model. Tombstones pass through.
+ */
+export function encodeTrackerSchemaDefForPush<T extends { type: string; model: string | null }>(
+  def: T,
+): T {
+  if (def.model === null) return def;
+  if (!globalRegistry.isBuiltin(def.type)) return def;
+
+  const seed = globalRegistry.getBuiltinModel(def.type);
+  const model = parseSyncedTrackerSchemaModel(def.type, def.model);
+  if (!seed || !model) return def;
+
+  try {
+    return { ...def, model: encodeTrackerSchemaPatchPayload(diffTrackerSchema(seed, model)) };
+  } catch (err) {
+    // Fall back to the full model rather than dropping the change: a frozen
+    // copy is worse than a delta, but losing the override entirely is worse still.
+    console.error(`[TrackerSchemaService] failed to diff ${def.type} against its builtin:`, err);
+    return def;
+  }
+}
+
 /**
  * Apply a server-confirmed schema sync delta. The DB mirror is authoritative
  * for transport state; the in-process registry is updated only when the delta
@@ -835,15 +1126,33 @@ export async function applyRemoteWorkspaceTrackerSchemaDef(
 ): Promise<ApplyRemoteSchemaResult> {
   if (!workspacePath || !def?.type) return { applied: false, reason: 'invalid' };
 
-  const model = def.model === null
+  const resolved = def.model === null
     ? null
-    : parseSyncedTrackerSchemaModel(def.type, def.model);
-  if (def.model !== null && !model) {
+    : resolveInboundSchemaPayload(def.type, def.model);
+  if (def.model !== null && !resolved) {
     return { applied: false, reason: 'invalid' };
   }
+  const model = resolved?.model ?? null;
 
-  const result = await applyRemoteTrackerSchemaDef(workspacePath, def);
+  // The mirror stores the RESOLVED model, never the delta: every consumer (the
+  // registry, the `nim` CLI, drift detection) reads a full model, and the
+  // resolution depends on this machine's builtin seed.
+  const result = await applyRemoteTrackerSchemaDef(
+    workspacePath,
+    model ? { ...def, model: JSON.stringify(model) } : def,
+  );
   if (!result.applied) return result;
+
+  // Project the team's definition onto the workspace's YAML file. Without this
+  // the file keeps whatever it had, and there is no baseline to tell a later
+  // hand edit from a leftover -- so the edit could never be pushed (#1178).
+  if (model && !result.deleted) {
+    await writeBackSharedSchema(workspacePath, model, resolved?.isPatch ?? false);
+  }
+
+  if (result.deleted) {
+    await retireLocalSchemaFile(workspacePath, def.type);
+  }
 
   if (currentWorkspacePath === workspacePath) {
     if (result.deleted) {

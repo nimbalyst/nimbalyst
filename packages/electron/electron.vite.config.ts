@@ -326,7 +326,15 @@ export default defineConfig({
         };
       })(),
       viteNimbalystPlugin(),
-      react(),
+      // The debug-label plugin names every module-level atom and atomFamily
+      // (`fooAtom.debugLabel = 'fooAtom'`). Without it the atom-write profiler
+      // and the Developer Dashboard's AtomFamily tab can only show `atom42` /
+      // `(unnamed)`. Dev only — it adds an assignment per atom declaration.
+      react(
+        process.env.NODE_ENV === 'production'
+          ? undefined
+          : { babel: { plugins: ['jotai/babel/plugin-debug-label'] } },
+      ),
       optimizeExcalidrawPlugin(),
       optimizeShikiPlugin(),
       // Monaco workers are configured in monacoConfig.ts using Vite's native ?worker imports

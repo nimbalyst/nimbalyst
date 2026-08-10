@@ -8,9 +8,13 @@ import { describe, expect, it, vi } from 'vitest';
 // options threading.
 //
 // Mock surface mirrors MetaAgentService.fullResponse.test.ts.
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: { create: vi.fn(), updateMetadata: vi.fn(), get: vi.fn() },
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => ({
   AgentMessagesRepository: { list: vi.fn() },
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/SessionFilesRepository', () => ({
   SessionFilesRepository: { getFilesBySession: vi.fn().mockResolvedValue([]) },
 }));
 vi.mock('@nimbalyst/runtime/ai/server', () => ({
@@ -61,7 +65,8 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
   ClaudeCliLauncherConfig: { setMetaAgentServerPort: vi.fn() },
 }));
 
-import { AISessionsRepository, AgentMessagesRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+import { AgentMessagesRepository } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
 import { MetaAgentService } from '../MetaAgentService';
 
 const SESSION_ROW = {

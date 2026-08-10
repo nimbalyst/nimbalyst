@@ -234,6 +234,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   // flip the appended system prompt on turn 2 and bust the whole prompt cache.
   private outOfBandNamingDecision: boolean | undefined = undefined;
 
+  // Git snapshot stated in the system prompt, resolved ONCE per session and then
+  // frozen — same invariant as outOfBandNamingDecision above, same reason
+  // (#1177). `gitContextFrozen` covers the failure case too: if the first
+  // resolve times out we freeze to "no git context" rather than acquiring one on
+  // turn 2, because adding the section later is the same cache miss.
+  private gitContextFrozen = false;
+  private frozenGitContext: string | undefined = undefined;
+
   private markMessagesAsHidden: boolean = false; // Flag to mark next messages as hidden
   private helperMethod: 'native' | 'custom' = 'native';
 
@@ -534,6 +542,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   public static setShellEnvironmentLoader(loader: (() => Record<string, string> | null) | null): void { ClaudeCodeDeps.setShellEnvironmentLoader(loader); }
   public static setEnhancedPathLoader(loader: (() => string) | null): void { ClaudeCodeDeps.setEnhancedPathLoader(loader); }
   public static setAdditionalDirectoriesLoader(loader: ((workspacePath: string) => string[]) | null): void { ClaudeCodeDeps.setAdditionalDirectoriesLoader(loader); }
+  public static setGitContextLoader(loader: ((workspacePath: string) => Promise<string | null>) | null): void { ClaudeCodeDeps.setGitContextLoader(loader); }
   public static setAttachmentStagingLoader(loader: ((workspacePath: string) => { root: string; mode: 'temp' | 'workspace' | 'custom' }) | null): void { ClaudeCodeDeps.setAttachmentStagingLoader(loader); }
   public static setAttachmentDenyRulesLoader(loader: ((workspacePath: string) => Promise<string[]>) | null): void { ClaudeCodeDeps.setAttachmentDenyRulesLoader(loader); }
   public static setSecurityLogger(logger: ((message: string, data?: any) => void) | null): void { BaseAgentProvider.setSecurityLogger(logger); }
@@ -787,6 +796,12 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       const agentRole = await this.getAgentRole(sessionId);
       const isMetaAgent = agentRole === 'meta-agent';
       const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
+      // Resolve-and-freeze the git snapshot before the (synchronous) prompt
+      // build. First turn pays the git call; every later turn reads the frozen
+      // value, which is what keeps the prompt byte-stable (#1177).
+      // workspacePath is the CLI's cwd (see buildSdkOptions), so it is also the
+      // repo the suppressed CLI block would have described.
+      await this.ensureGitContext(workspacePath);
       const systemPrompt = this.buildSystemPrompt(documentContext, enableAgentTeams, isMetaAgent, workflowPreset);
 
       // Note: Attachments (images/documents) are NOT added to the message text.
@@ -3807,6 +3822,31 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   }
 
 
+  /**
+   * Resolve the session's git snapshot on the first turn and freeze it.
+   * `buildSystemPrompt` is synchronous, so this must be awaited before it runs.
+   *
+   * #1177: the frozen-ness is the whole point. We disable the CLI's own
+   * git-status block because it is regenerated from the live working tree by
+   * every resumed turn's process, invalidating the message prefix behind it.
+   * Replacing it with a section that ALSO moves between turns would fix nothing.
+   * The flag is set before the await so a concurrent second turn cannot resolve
+   * a second value, and a rejected loader freezes to no context.
+   */
+  protected async ensureGitContext(workspacePath?: string): Promise<void> {
+    if (this.gitContextFrozen) return;
+    this.gitContextFrozen = true;
+    if (!workspacePath || !ClaudeCodeDeps.gitContextLoader) return;
+    try {
+      this.frozenGitContext = (await ClaudeCodeDeps.gitContextLoader(workspacePath)) || undefined;
+    } catch (error) {
+      // Degrade to no git context for the life of the session. A hung `git
+      // status` froze new agent sessions once already (#929) — never let this
+      // block a turn, and never retry it later.
+      console.warn('[CLAUDE-CODE] Failed to resolve git context:', error);
+    }
+  }
+
   protected buildSystemPrompt(documentContext?: DocumentContext, enableAgentTeams?: boolean, isMetaAgent: boolean = false, workflowPreset: MetaAgentWorkflowPreset = 'default'): string {
     if (isMetaAgent) {
       return buildMetaAgentSystemPrompt('claude', workflowPreset, {
@@ -3857,6 +3897,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       hasSessionNaming,
       hasOutOfBandNaming: alreadyNamedOutOfBand,
       worktreePath,
+      gitContext: this.frozenGitContext,
       isVoiceMode,
       voiceModeCodingAgentPrompt,
       enableAgentTeams,

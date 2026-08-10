@@ -7,10 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OrgWelcomeBanner } from '../OrgWelcomeBanner';
 import { ORG_WELCOME_DISMISSED_SETTING_KEY } from '../orgWelcomeModel';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 const invoke = vi.fn();
 const list = vi.fn();
 const listMembers = vi.fn();

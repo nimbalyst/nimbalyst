@@ -3,13 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Mirrors the mock surface of MetaAgentService.providerInheritance.test.ts so we
 // can drive createChildSessionInternal hermetically and assert on the parent
 // agent_role promotion behavior (NIM-858).
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: {
     create: vi.fn(),
     updateMetadata: vi.fn(),
     get: vi.fn(),
   },
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => ({
   AgentMessagesRepository: {},
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/SessionFilesRepository', () => ({
   SessionFilesRepository: {},
 }));
 
@@ -79,7 +83,7 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
   ClaudeCliLauncherConfig: { setMetaAgentServerPort: vi.fn() },
 }));
 
-import { AISessionsRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { MetaAgentService } from '../MetaAgentService';
 
 const STANDARD_PARENT = {

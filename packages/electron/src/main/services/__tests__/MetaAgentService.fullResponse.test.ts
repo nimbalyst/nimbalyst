@@ -10,9 +10,13 @@ import { describe, expect, it, vi } from 'vitest';
 // import MetaAgentService without pulling electron-app / node-pty into the graph),
 // plus AgentMessagesRepository.list and a real extractMessageText so the result
 // builder sees actual message text.
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: { create: vi.fn(), updateMetadata: vi.fn(), get: vi.fn() },
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => ({
   AgentMessagesRepository: { list: vi.fn() },
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/SessionFilesRepository', () => ({
   SessionFilesRepository: { getFilesBySession: vi.fn().mockResolvedValue([]) },
 }));
 vi.mock('@nimbalyst/runtime/ai/server', () => ({
@@ -63,7 +67,7 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
   ClaudeCliLauncherConfig: { setMetaAgentServerPort: vi.fn() },
 }));
 
-import { AgentMessagesRepository } from '@nimbalyst/runtime';
+import { AgentMessagesRepository } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
 import { MetaAgentService } from '../MetaAgentService';
 
 const PREFETCHED = {

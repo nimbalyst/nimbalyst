@@ -242,6 +242,7 @@ export function MonacoEditor({
         await host.saveContent(transformSaveContent?.(content) ?? content);
       } catch (error) {
         console.error('[MonacoEditor] Save failed:', error);
+        throw error;
       }
     };
 

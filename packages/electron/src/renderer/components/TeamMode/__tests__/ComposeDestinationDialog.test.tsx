@@ -7,10 +7,6 @@ import type { ConversationDirectoryEntry } from '../../../../shared/conversation
 import { ComposeDestinationDialog } from '../ComposeDestinationDialog';
 import { NewDirectMessageDialog } from '../NewDirectMessageDialog';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 const createDirectoryConversation = vi.fn();
 vi.mock('../../../services/conversationDirectoryClient', () => ({
   createDirectoryConversation: (...args: unknown[]) =>

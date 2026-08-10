@@ -18,10 +18,6 @@ import { DIALOG_IDS } from '../../../dialogs/registry';
 import { teamInboxSnapshotAtom } from '../../../store/atoms/teamInbox';
 import { OrgUserIndicator } from '../OrgUserIndicator';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 const ORG = { orgId: 'org-1', name: 'Acme Robotics' };
 
 function installApi(overrides: Record<string, unknown> = {}) {

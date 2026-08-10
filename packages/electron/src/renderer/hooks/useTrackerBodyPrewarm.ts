@@ -55,22 +55,12 @@ export interface UseTrackerBodyPrewarmOptions {
    * or before the team org is resolved. The hook is a no-op when false.
    */
   enabled: boolean;
-  /**
-   * Whether the room currently has more than one connected member. The
-   * cache caches the constructed `DocumentSyncProvider`; its
-   * `reviewGateEnabled` is fixed at construction, so we must construct
-   * with the same value the eventual detail-open would use -- otherwise
-   * a prewarm-then-acquire flow ends up with the wrong gating semantics.
-   * Defaults to false (matches the local-edit case).
-   */
-  multiUser?: boolean;
 }
 
 export function useTrackerBodyPrewarm({
   workspacePath,
   itemIds,
   enabled,
-  multiUser = false,
 }: UseTrackerBodyPrewarmOptions): void {
   useEffect(() => {
     if (!enabled) return;
@@ -99,7 +89,6 @@ export function useTrackerBodyPrewarm({
           userId: config.userId,
           documentId: config.documentId,
           createWebSocket: config.createWebSocket,
-          reviewGateEnabled: multiUser,
         };
       };
       void getBodyDocCache().prewarm(prefix, factory);
@@ -114,7 +103,6 @@ export function useTrackerBodyPrewarm({
   }, [
     enabled,
     workspacePath,
-    multiUser,
     itemIds.slice(0, PREWARM_LIMIT).join('|'),
   ]);
 }

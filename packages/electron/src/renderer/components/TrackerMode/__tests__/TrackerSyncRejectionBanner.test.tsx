@@ -10,10 +10,6 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { Provider } from 'jotai';
 import { store } from '@nimbalyst/runtime/store';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 import { trackerSyncRejectionAtom, type TrackerSyncRejection } from '../../../store/atoms/trackerSync';
 import { TrackerSyncRejectionBanner } from '../TrackerSyncRejectionBanner';
 

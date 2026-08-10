@@ -27,6 +27,13 @@ export type ImageCompressor = (
   options?: { targetSizeBytes?: number }
 ) => Promise<{ buffer: Buffer; mimeType: string; wasCompressed: boolean }>;
 export type ExtensionFileTypesLoader = () => Set<string>;
+/**
+ * Resolves the git snapshot (branch, main branch, recent commits) stated at the
+ * top of a session's system prompt. Returns null when the workspace is not a
+ * repo or git did not answer in time — the caller freezes that "none" for the
+ * whole session rather than retrying on a later turn (#1177).
+ */
+export type GitContextLoader = (workspacePath: string) => Promise<string | null>;
 
 // ---- Dependency Store ----
 
@@ -83,6 +90,13 @@ export const ClaudeCodeDeps = {
   // subprocesses (`npx`, `uvx`, `docker`) using options.env.PATH, and
   // Dock/Finder-launched Electron has a minimal PATH that omits those dirs.
   enhancedPathLoader: null as (() => string) | null,
+
+  // Returns the frozen git snapshot for a workspace. #1177: we suppress the
+  // CLI's own git-status block (CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS) because it
+  // is rebuilt from the live working tree on every resumed turn and invalidates
+  // the prompt cache; this loader supplies a Nimbalyst-owned replacement that
+  // the provider resolves once and never re-reads.
+  gitContextLoader: null as GitContextLoader | null,
 
   // Returns additional directories Claude should have access to based on workspace context
   // (e.g., SDK docs when working on an extension project)
@@ -156,6 +170,10 @@ export const ClaudeCodeDeps = {
 
   setEnhancedPathLoader(loader: (() => string) | null): void {
     this.enhancedPathLoader = loader;
+  },
+
+  setGitContextLoader(loader: GitContextLoader | null): void {
+    this.gitContextLoader = loader;
   },
 
   setAdditionalDirectoriesLoader(loader: AdditionalDirectoriesLoader | null): void {

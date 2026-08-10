@@ -716,6 +716,16 @@ Defense in depth: a missed pathway anywhere is still caught somewhere else, with
 
 ---
 
+## 12. Persistent Autosave Failure Protection
+
+`DocumentModel` treats rejected save-request promises as a continuous autosave failure incident. It attempts the initial save, retries after 5 seconds, retries once more after 30 seconds, and then blocks automatic retries until an explicit successful save clears dirty state. Inline embedded editors use the same bounded sequence for their independent autosave timer.
+
+The renderer preserves the dirty buffer throughout the incident. `TabEditor` shows a non-blocking, category-specific save-failure banner with a Retry action; Retry uses the manual-save path, and a successful write rearms autosave. Structured IPC failures must be converted back into rejected promises by automatic callers so they never clear dirty state after a failed write.
+
+The `save-file` IPC carries `auto` or `manual` as the save source. Main-process analytics classifies failures only from allowlisted Node filesystem error codes, never from messages that may contain user paths. A continuous `(file, source, error code)` failure emits one `file_save_failed` event until any successful save for that file rearms telemetry.
+
+---
+
 ## Key Files Reference
 
 ### Main Process - Watchers

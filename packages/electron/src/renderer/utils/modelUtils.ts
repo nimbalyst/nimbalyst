@@ -42,6 +42,15 @@ interface ModelInfo {
 }
 
 /**
+ * Resolve the provider that owns a model id, falling back to Claude Code when the
+ * id is absent or unparseable. Session-creation paths all need this before they can
+ * pick a send route, and each hand-rolled copy is a chance for the fallback to drift.
+ */
+export function resolveProviderFromModel(modelId?: string | null): string {
+  return (modelId ? ModelIdentifier.tryParse(modelId) : null)?.provider || 'claude-code';
+}
+
+/**
  * Extract Claude Code variant from a model ID using ModelIdentifier.
  * Returns the base variant (without suffix) or null if not a valid Claude Code model.
  */

@@ -21,10 +21,6 @@ import { detectTrigger, deriveDraft, EMPTY_POOL, urnsInText } from '../composerD
 import { composerEditor, composerText, type } from '../composerTestDriver';
 import type { ConversationContext, MessageAttachment } from '../commentTypes';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 const NOW = Date.parse('2026-07-26T18:00:00.000Z');
 
 function renderComposer(

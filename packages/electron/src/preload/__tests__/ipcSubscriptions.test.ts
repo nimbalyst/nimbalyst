@@ -51,6 +51,10 @@ describe('createIpcSubscriber', () => {
 
   it('an identity-keyed removal API cannot work across the bridge (why off() was removed)', () => {
     const ipcRenderer = makeIpcRenderer();
+    // This test leaks 200 listeners on purpose; without an unlimited ceiling it
+    // prints the very MaxListenersExceededWarning it is asserting about, which
+    // reads like a real failure in CI and pre-push output.
+    ipcRenderer.setMaxListeners(0);
     const registered = new WeakMap<object, { channel: string; handler: (...a: any[]) => void }>();
 
     // The old preload implementation, verbatim in behaviour.

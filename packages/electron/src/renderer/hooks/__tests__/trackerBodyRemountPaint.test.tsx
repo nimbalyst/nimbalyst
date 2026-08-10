@@ -102,8 +102,6 @@ vi.mock('@nimbalyst/runtime/sync', async (importOriginal) => {
     onAwarenessChange() { return () => {}; }
     setLocalAwareness() {}
     setRoomMetadata() {}
-    acceptRemoteChanges() {}
-    rejectRemoteChanges() {}
   }
 
   return { ...actual, DocumentSyncProvider: FakeDocumentSyncProvider };
@@ -168,7 +166,6 @@ function TrackerBodyHarness({ focused = false }: { focused?: boolean }): React.R
     title: 'NIM-TEST',
     workspacePath: '/workspace',
     syncMode: 'shared',
-    teamMemberCount: 1,
     teamOrgId: 'org-1',
     itemShared: true,
   });

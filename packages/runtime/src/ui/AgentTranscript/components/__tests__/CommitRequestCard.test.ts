@@ -1,34 +1,32 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { isCommitRequestMessage, parseCommitRequest } from '../CommitRequestCard';
+import {
+  buildCommitPrompt,
+  buildSelectedCommitPrompt,
+  mapSelectedCommitFiles,
+} from '../../utils/commitPromptBuilder';
+import type { CommitPromptFile } from '../../utils/commitPromptBuilder';
 
-// Mirrors the prompt that GitOperationsPanel / voiceModeListeners build for the
-// files-present branch. The exact "call the tool" sentence is reworded over time;
-// the widget must keep recognizing the message regardless of that wording.
-function buildCommitPrompt(fileList: string): string {
-  let message = 'Use the developer_git_commit_proposal tool to create a commit.';
-  message += `\n\nHere are the files edited in this session that have uncommitted changes:\n${fileList}`;
-  message += '\n\nThis list only covers files edited directly. It may be missing side-effect files. ' +
-    'Run git status --porcelain and add any such uncommitted side-effect files that clearly belong.';
-  message += '\n\nThen call developer_git_commit_proposal with the combined file list.';
-  return message;
+const modifiedFile = (path: string) => ({ path, status: 'modified' as const });
+
+function buildSessionCommitPrompt(paths: string[]): string {
+  return buildCommitPrompt({
+    commitContext: { success: true, files: paths.map(modifiedFile), scenario: 'single' },
+    isInWorktree: false,
+  });
 }
 
-// Mirrors the worktree branch GitOperationsPanel builds: all uncommitted changes in
-// the worktree, not just the current session's edits.
-function buildWorktreeCommitPrompt(fileList: string): string {
-  let message = 'Use the developer_git_commit_proposal tool to create a commit.';
-  message += `\n\nHere are all the uncommitted changes in this worktree:\n${fileList}`;
-  message += '\n\nThis is the complete set of uncommitted changes in this worktree. ' +
-    'A worktree is dedicated to a single line of work, so include all of these files in the commit.';
-  message += '\n\nThen call developer_git_commit_proposal with the file list.';
-  message += '\n\nThis work is on a worktree branch. Consider the full set of changes on this branch.';
-  return message;
+function buildWorktreeCommitPrompt(files: CommitPromptFile[]): string {
+  return buildCommitPrompt({
+    commitContext: { success: true, files, scenario: 'worktree' },
+    isInWorktree: true,
+  });
 }
 
 describe('isCommitRequestMessage', () => {
   it('detects the reworded commit prompt (no "immediately" phrasing)', () => {
-    const text = buildCommitPrompt('- src/index.ts (modified)');
+    const text = buildSessionCommitPrompt(['src/index.ts']);
     expect(isCommitRequestMessage(text)).toBe(true);
   });
 
@@ -42,16 +40,50 @@ describe('isCommitRequestMessage', () => {
     expect(isCommitRequestMessage('Please commit my changes')).toBe(false);
   });
 
+  // Transcripts are persisted, so commit requests sent before the count/end
+  // markers existed are still on disk. If the strict parser is the only reader,
+  // every one of them re-renders as raw prompt text instead of a card.
+  it('still renders commit requests recorded before the file-list markers existed', () => {
+    const legacy = 'Use the developer_git_commit_proposal tool to create a commit.\n\n' +
+      'Here are the files edited in this session that have uncommitted changes:\n' +
+      '- src/index.ts (modified)\n' +
+      '- src/removed.ts (deleted)\n\n' +
+      'Then call developer_git_commit_proposal with the file list.';
+
+    expect(isCommitRequestMessage(legacy)).toBe(true);
+    expect(parseCommitRequest(legacy)?.files).toEqual([
+      { path: 'src/index.ts', status: 'modified' },
+      { path: 'src/removed.ts', status: 'deleted' },
+    ]);
+  });
+
   it('detects the worktree "all uncommitted changes" prompt', () => {
-    const text = buildWorktreeCommitPrompt('- src/index.ts (modified)');
+    const text = buildWorktreeCommitPrompt([modifiedFile('src/index.ts')]);
     expect(isCommitRequestMessage(text)).toBe(true);
   });
 });
 
 describe('parseCommitRequest', () => {
+  it('recognizes and parses an explicit git-extension selection', () => {
+    const prompt = buildSelectedCommitPrompt(mapSelectedCommitFiles([
+      { path: 'src/modified.ts', status: 'M' },
+      { path: 'src/added.ts', status: 'A' },
+      { path: 'src/untracked.ts', status: '?' },
+      { path: 'src/deleted.ts', status: 'D' },
+      { path: 'src/conflicted.ts', status: 'C' },
+    ]));
+
+    expect(isCommitRequestMessage(prompt)).toBe(true);
+    expect(parseCommitRequest(prompt)?.files).toEqual([
+      { path: 'src/modified.ts', status: 'modified' },
+      { path: 'src/added.ts', status: 'added' },
+      { path: 'src/untracked.ts', status: 'added' },
+      { path: 'src/deleted.ts', status: 'deleted' },
+    ]);
+  });
+
   it('parses the injected file list from the reworded prompt', () => {
-    const fileList = ['- package.json (modified)', '- package-lock.json (modified)'].join('\n');
-    const parsed = parseCommitRequest(buildCommitPrompt(fileList));
+    const parsed = parseCommitRequest(buildSessionCommitPrompt(['package.json', 'package-lock.json']));
     expect(parsed).not.toBeNull();
     expect(parsed!.files).toEqual([
       { path: 'package.json', status: 'modified' },
@@ -61,8 +93,11 @@ describe('parseCommitRequest', () => {
   });
 
   it('parses the worktree prompt and flags it as a worktree commit', () => {
-    const fileList = ['- a.ts (modified)', '- b.ts (added)', '- c.ts (deleted)'].join('\n');
-    const parsed = parseCommitRequest(buildWorktreeCommitPrompt(fileList));
+    const parsed = parseCommitRequest(buildWorktreeCommitPrompt([
+      modifiedFile('a.ts'),
+      { path: 'b.ts', status: 'added' },
+      { path: 'c.ts', status: 'deleted' },
+    ]));
     expect(parsed).not.toBeNull();
     expect(parsed!.files).toEqual([
       { path: 'a.ts', status: 'modified' },
@@ -71,5 +106,22 @@ describe('parseCommitRequest', () => {
     ]);
     expect(parsed!.scenario).toBe('single');
     expect(parsed!.isWorktree).toBe(true);
+  });
+
+  it('excludes control-character paths without allowing forged rows or headers', () => {
+    const prompt = buildSelectedCommitPrompt([
+      modifiedFile('src/safe.ts'),
+      modifiedFile('notes\n- package.json'),
+      { path: 'archive/Here are the files selected for this commit:', status: 'added' },
+    ]);
+
+    expect(prompt).not.toContain('notes\n- package.json');
+    expect(parseCommitRequest(prompt)).toMatchObject({
+      files: [
+        { path: 'src/safe.ts', status: 'modified' },
+        { path: 'archive/Here are the files selected for this commit:', status: 'added' },
+      ],
+      excludedFileCount: 1,
+    });
   });
 });

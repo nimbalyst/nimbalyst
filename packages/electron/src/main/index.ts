@@ -4,6 +4,7 @@ import {
     type TrackerDeepLinkTarget,
     type TrackerDeepLinkView,
 } from '../shared/trackerDeepLinks';
+import { parseInviteDeepLink, type InviteDeepLinkTarget } from '../shared/inviteDeepLinks';
 import { safeHandle, safeOn } from './utils/ipcRegistry';
 import { installMicrophoneGate } from './mediaPermissionGate';
 import { markBootComplete } from './utils/bootState';
@@ -126,6 +127,7 @@ import { registerMigrationHandlers } from './ipc/MigrationHandlers';
 import { registerTerminalHandlers, shutdownTerminalHandlers } from './ipc/TerminalHandlers';
 import { AIService } from './services/ai/AIService';
 import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesForWorkspace } from './utils/workspaceDetection';
+import { getAgentGitContext } from './utils/gitAgentContext';
 import {
   getExternalAttachmentStagingDirectory,
   resolveWorkspaceAttachmentStagingDirectory,
@@ -223,7 +225,14 @@ import { registerTrackerSyncHandlers, initializeTrackerSync } from './services/T
 import { initTrackerSchemaService, updateTrackerSchemaWorkspace } from './services/TrackerSchemaService';
 import { initTrackerNavigationService } from './services/TrackerNavigationService';
 import { initTrackerSavedViewService } from './services/TrackerSavedViewService';
-import { registerTeamHandlers, autoMatchTeamForWorkspace, getOrgScopedJwt, findTeamForWorkspace } from './services/TeamService';
+import {
+  registerTeamHandlers,
+  autoMatchTeamForWorkspace,
+  getOrgScopedJwt,
+  findTeamForWorkspace,
+  resolveInviteDeepLink,
+  type InviteDeepLinkOutcome,
+} from './services/TeamService';
 import { windowStates, windows, resolveActiveWorkspacePath } from './window/windowState';
 import { getRecentItems } from './utils/store';
 import { registerTeamCustodyHandlers } from './services/TeamCustodyService';
@@ -800,6 +809,18 @@ safeHandle('deep-link:consume-pending-tracker', (_event, workspacePath: string) 
     return { ...pending, workspacePath };
 });
 
+// Team-invitation handoff: nimbalyst://invite/{orgId}?email=...
+// Not keyed by workspace — an invitee following this link from the email may
+// have no team workspace yet, and on a cold launch no window at all. The
+// single most recent outcome is held for whichever renderer mounts first.
+let pendingTeamInviteOutcome: InviteDeepLinkOutcome | null = null;
+
+safeHandle('deep-link:consume-pending-team-invite', () => {
+    const pending = pendingTeamInviteOutcome;
+    pendingTeamInviteOutcome = null;
+    return pending;
+});
+
 // Same pattern for shared-folder deep links: nimbalyst://folder/{folderId}?orgId=...
 const pendingSharedFolderLinks = new Map<string, { folderId: string; orgId: string }>();
 
@@ -975,6 +996,21 @@ async function handleDeepLink(url: string): Promise<void> {
             }
 
             await openSharedFolderFromDeepLink(folderId, orgId);
+        } else if (parsed.host === 'invite' || parsed.pathname?.startsWith('/invite/')) {
+            // Handle team invitation handoff from the web console:
+            // nimbalyst://invite/{orgId}?email={email}
+            let inviteLink: InviteDeepLinkTarget;
+            try {
+                inviteLink = parseInviteDeepLink(url);
+            } catch (error) {
+                logger.main.warn('[DeepLink] Invalid invite link:', {
+                    link: summarizeDeepLink(url),
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                return;
+            }
+
+            await openTeamInviteFromDeepLink(inviteLink.orgId, inviteLink.email);
         } else if (parsed.host === 'action') {
             handleAppActionLink(url);
         } else if (parsed.host === 'tracker' || parsed.pathname?.startsWith('/tracker/')) {
@@ -1197,6 +1233,44 @@ async function openSharedFolderFromDeepLink(folderId: string, orgId: string): Pr
 
     logger.main.info('[DeepLink] Opening new window for shared folder workspace:', { workspacePath, folderId });
     createWindow(false, true, workspacePath);
+}
+
+/**
+ * Handle the team-invitation handoff the web console sends after it accepts an
+ * invitation in the browser: `nimbalyst://invite/{orgId}?email={email}`.
+ *
+ * Unlike the doc/folder/tracker links this does not target a workspace — a new
+ * invitee has none — so the outcome goes to whichever window is frontmost, and
+ * is queued for a renderer that has not mounted yet (cold launch from the
+ * email).
+ */
+async function openTeamInviteFromDeepLink(orgId: string, email?: string): Promise<void> {
+    const outcome = await resolveInviteDeepLink(orgId, email);
+    logger.main.info('[DeepLink] Team invite outcome:', {
+        status: outcome.status,
+        orgId,
+        hasEmail: !!email,
+    });
+
+    // The outcome is only ever read through `consume-pending-team-invite`,
+    // which clears it. The event below is a bare nudge carrying no payload, so
+    // a renderer that is mid-mount (draining) and one that is already listening
+    // cannot both apply the same invitation.
+    pendingTeamInviteOutcome = outcome;
+
+    const target = getMostRecentlyFocusedWorkspaceWindow();
+    if (!target || target.isDestroyed()) {
+        // No project window to surface this in — the workspace manager is the
+        // only place a brand-new invitee can act on it.
+        createWorkspaceManagerWindow();
+        return;
+    }
+
+    if (target.isMinimized()) target.restore();
+    target.show();
+    target.focus();
+    app.focus({ steal: true });
+    target.webContents.send('deep-link:team-invite-available');
 }
 
 /**
@@ -2098,6 +2172,11 @@ app.whenReady().then(async () => {
       ));
     OpenAICodexProvider.setAdditionalDirectoriesLoader((workspacePath: string) =>
       withAttachmentStagingDirectory(workspacePath, getAdditionalDirectoriesForWorkspace(workspacePath)));
+    // #1177: replaces the CLI's own git-status block, which we suppress because
+    // it is rebuilt from the live working tree on every resumed turn and busts
+    // the prompt cache. The provider resolves this once per session and freezes
+    // it.
+    ClaudeCodeProvider.setGitContextLoader((workspacePath: string) => getAgentGitContext(workspacePath));
     ClaudeCodeProvider.setAttachmentStagingLoader((workspacePath: string) => ({
       root: resolveWorkspaceAttachmentStagingDirectory(workspacePath),
       mode: getAttachmentStagingConfig().mode,

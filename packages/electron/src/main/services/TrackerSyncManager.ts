@@ -53,10 +53,12 @@ import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { getDatabase } from '../database/initialize';
 import { TrackerPGLiteStore } from './tracker/TrackerPGLiteStore';
 import {
-  getMaxTrackerSchemaSyncId,
   listUnsyncedTrackerSchemaDefs,
 } from './tracker/trackerTypeDefStore';
-import { applyRemoteWorkspaceTrackerSchemaDef } from './TrackerSchemaService';
+import {
+  applyRemoteWorkspaceTrackerSchemaDef,
+  encodeTrackerSchemaDefForPush,
+} from './TrackerSchemaService';
 import {
   applyRemoteWorkspaceTrackerNavigationEntry,
   registerTrackerNavigationFlushHandler,
@@ -310,8 +312,10 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
     persistence,
     initializeIssueKeyPrefix: getWorkspaceState(workspacePath).issueKeyPrefix,
     schemaSync: {
-      getMaxSyncId: () => getMaxTrackerSchemaSyncId(workspacePath),
-      listUnsynced: () => listUnsyncedTrackerSchemaDefs(workspacePath),
+      // An override of a builtin goes out as a DELTA so each peer resolves it
+      // against its own builtin and keeps receiving shipped fields (#1178).
+      listUnsynced: async () =>
+        (await listUnsyncedTrackerSchemaDefs(workspacePath)).map(encodeTrackerSchemaDefForPush),
       applyRemote: (def) => applyRemoteWorkspaceTrackerSchemaDef(workspacePath, def),
     },
     navigationSync: {
@@ -840,8 +844,10 @@ export function registerTrackerSyncHandlers(): void {
           userId: payload.userId,
           persistence,
           schemaSync: {
-            getMaxSyncId: () => getMaxTrackerSchemaSyncId(workspacePath),
-            listUnsynced: () => listUnsyncedTrackerSchemaDefs(workspacePath),
+                  listUnsynced: async () =>
+              (await listUnsyncedTrackerSchemaDefs(workspacePath)).map(
+                encodeTrackerSchemaDefForPush,
+              ),
             applyRemote: (def) => applyRemoteWorkspaceTrackerSchemaDef(workspacePath, def),
           },
           navigationSync: {

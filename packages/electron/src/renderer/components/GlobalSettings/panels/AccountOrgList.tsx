@@ -13,7 +13,7 @@ import React, { useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 import { AlphaBadge } from '../../common/AlphaBadge';
-import { TEAM_ALPHA_TOOLTIP } from '../../common/TeamAlphaNotice';
+import { TEAM_BETA_TOOLTIP } from '../../common/TeamBetaNotice';
 import { organizationCreationEnabled } from '../../../store/atoms/settingsDomains';
 // Imported from the registry/context directly rather than the `dialogs` barrel,
 // which pulls every dialog component (and the extension SDK) into this panel.
@@ -210,7 +210,7 @@ export function AccountOrgList({
           >
             New organization
           </button>
-          <AlphaBadge size="xs" tooltip={TEAM_ALPHA_TOOLTIP} />
+          <AlphaBadge size="xs" stage="beta" tooltip={TEAM_BETA_TOOLTIP} />
         </div>
       )}
     </div>

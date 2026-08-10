@@ -1,8 +1,36 @@
-# July 28th 2026 Release
+# August 7th 2026 Release
+
+### New Features
+
+- New Tutorial available on install and via Help > Launch Tutorial
+- Tracker items can now open as full documents with editable field chips, keyboard-driven search and filters, and a side-by-side AI chat panel.
+- Undo and redo in the tracker table with Cmd+Z and Cmd+Shift+Z, covering cell edits, paste, bulk status and priority changes, and archiving.
+- Spreadsheets support find, replace and formulas.
+- The new-worktree dialog can now search branches, narrowing the local and remote lists as you type.
+- Agent sessions can show an MCP status chip listing which servers the session has and which are connected — off by default, under Settings > Agent Features.
+
+### Improvements
+
+- The Git panel's Changes tab is now one compact, collapsible list with no staging step: tick the files you want and commit them, or hand the selection to AI to write the message.
+- Claude Agent sessions no longer re-write the prompt cache on most turns, cutting token cost and rate-limit usage on long sessions.
 
 ### Fixed
 
-- Windows and Linux get the File/Edit/View menus back, now drawn in the project window's title bar.
-- Menus and popups that open over the title bar respond to clicks again on Windows and Linux, including "Open folder…" in the project switcher (#1052).
-- Tracker types defined in one project no longer overwrite another open project's identically-named types (#1035).
-- Codex sessions now reach for Nimbalyst's own browser tools instead of dead-ending on a third-party in-app browser plugin.
+- Claude Code sessions use your existing MCP setup instead of overriding it, so account connectors load again and sessions no longer fail to start on machines with an organization-managed MCP policy (#1051).
+- OAuth-authorized HTTP and SSE servers connect, and servers whose provider refuses dynamic client registration can be authorized with a client ID you enter.
+- Queued prompts now run on their own: a prompt sent from your phone opens the project and runs it, prompts left over from a quit resume once the project is open again, and a prompt that arrives mid-turn runs when the turn ends (#962).
+- Sessions no longer show as running after their work finished, so prompts queued behind an interrupted or background-task session send. Cancelling a Codex session stops it for good, and Codex sessions using parallel sub-agents wait for the lead agent's final response.
+- Yes/no questions from the agent show both answers as pickable buttons and wait for you to choose. Answering or cancelling a question closes it for good instead of bringing it back when you switch sessions (#1116, #773).
+- Simply opening a tracker item no longer bumps its "Updated" time or adds a phantom edit to its history.
+- Tracker items with structured array fields no longer crash when opened (#1104), sidebar type counts no longer read 0 for types that have items, and sorting by a date column orders rows by date instead of alphabetically by month name.
+- A session that reports its previous conversation has expired now genuinely starts fresh on the next message (#1098).
+- Main windows restore their maximized state after restart instead of reopening at stale bounds (#1077), and dropdown menus no longer open underneath the macOS window controls (#1096).
+- Windows builds sign installer and uninstaller (#853).
+- A file that repeatedly fails to save now shows a Retry banner instead of autosave looping on it forever.
+- Projects with many new, uncommitted folders no longer stall while the file tree and changed-files list refresh.
+- Find-in-document highlights matches inside inline code, comments whose anchor text was deleted scroll into view, and the sidebar extension panel reopens where you left it after a reload (#1114).
+- Links written as plain relative paths, such as `design/dashboard.mockup.html`, open the file instead of a broken page in your web browser, and embedded mockups and diagrams in shared documents open the shared copy.
+- When a session edits the same file several times, the red/green diff shows the whole set of changes again instead of only the last one.
+- Tables exported to PDF span the full page width with content-sized columns.
+- Web search and web fetch no longer fail in Claude Code CLI sessions running at max effort.
+- Changing a project's permission mode now applies to agent sessions that are already running.

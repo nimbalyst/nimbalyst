@@ -171,6 +171,11 @@ interface ElectronAPI {
       error?: string;
     }>;
     openProjectWorkspace: (workspacePath: string) => Promise<{ success: boolean; error?: string }>;
+    openSharedProject: (payload: {
+      orgId: string;
+      teamProjectId: string;
+      directoryPath: string;
+    }) => Promise<{ success: boolean; workspacePath?: string; error?: string }>;
     [method: string]: any;
   };
   organization: {
@@ -295,7 +300,20 @@ interface ElectronAPI {
     filters?: Array<{ name: string; extensions: string[] }>;
     defaultPath?: string;
   }) => Promise<{ canceled: boolean; filePaths: string[] }>;
-  saveFile: (content: string, filePath: string, lastKnownContent?: string) => Promise<{ success: boolean; filePath: string; conflict?: boolean; diskContent?: string } | null>;
+  saveFile: (
+    content: string,
+    filePath: string,
+    lastKnownContent?: string,
+    saveSource?: 'auto' | 'manual',
+  ) => Promise<{
+    success: boolean;
+    filePath: string;
+    conflict?: boolean;
+    deleted?: boolean;
+    diskContent?: string;
+    errorType?: string;
+    errorCode?: string;
+  } | null>;
   saveFileAs: (content: string) => Promise<{ success: boolean; filePath: string } | null>;
   showErrorDialog: (title: string, message: string) => Promise<void>;
   showSaveDialogPdf: (options: { defaultPath?: string }) => Promise<string | null>;
@@ -778,7 +796,15 @@ interface ElectronAPI {
 
   // Extensions API
   extensions: {
-    listInstalled: () => Promise<Array<{ id: string; path: string; manifest: any; name: string; enabled: boolean }>>;
+    listInstalled: () => Promise<Array<{
+      id: string;
+      path: string;
+      manifest: any;
+      name: string;
+      enabled: boolean;
+      isBuiltin?: boolean;
+      staleBundleWarning?: string;
+    }>>;
     getAllSettings: () => Promise<Record<string, { enabled: boolean; claudePluginEnabled?: boolean; agentWorkflowsEnabled?: boolean }>>;
     getEnabled: (extensionId: string, defaultEnabled?: boolean) => Promise<boolean>;
     setEnabled: (extensionId: string, enabled: boolean) => Promise<{ success: boolean; error?: string }>;

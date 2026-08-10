@@ -5,10 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { WorktreeBaseBranchPicker } from '../WorktreeBaseBranchPicker';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 const BRANCHES = [
   'main',
   'feature/login',

@@ -56,7 +56,6 @@ describe('DocumentSyncProvider.connect with a filename-shaped documentId', () =>
       orgId: 'org-1',
       userId: 'user-1',
       documentId: 'Integration 80% of Everything.md',
-      reviewGateEnabled: false,
       createWebSocket: createWebSocket as unknown as (url: string) => WebSocket,
     });
 

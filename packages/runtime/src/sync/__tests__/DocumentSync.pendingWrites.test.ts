@@ -17,7 +17,6 @@ function createProvider(documentKey: CryptoKey): DocumentSyncProvider {
     orgId: 'org-1',
     userId: 'user-1',
     documentId: 'doc-1',
-    reviewGateEnabled: false,
   });
 }
 

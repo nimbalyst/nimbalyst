@@ -2,7 +2,7 @@
  * Organization identity and switcher at the top of the org window's left nav.
  *
  * This row *is* the window's org header (2026-07-28 layout decision): the org
- * avatar, name and alpha chip live here rather than in a band above the
+ * avatar, name and beta chip live here rather than in a band above the
  * sidebar/content split, and the menu carries both the org switch and the
  * "Open web console" escape hatch that band used to hold.
  *
@@ -29,7 +29,7 @@ import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowCo
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 import { AlphaBadge } from '../common/AlphaBadge';
-import { TEAM_ALPHA_TOOLTIP } from '../common/TeamAlphaNotice';
+import { TEAM_BETA_TOOLTIP } from '../common/TeamBetaNotice';
 import { activeOrganizations, type OrgChoice } from './defaultOrg';
 
 export function OrgWindowSwitcher({
@@ -101,7 +101,7 @@ export function OrgWindowSwitcher({
             {name || 'Select organization'}
           </span>
         </span>
-        {name && <AlphaBadge size="xs" tooltip={TEAM_ALPHA_TOOLTIP} />}
+        {name && <AlphaBadge size="xs" stage="beta" tooltip={TEAM_BETA_TOOLTIP} />}
         <MaterialSymbol icon="unfold_more" size={16} className="shrink-0 text-[var(--nim-text-muted)]" />
       </button>
 

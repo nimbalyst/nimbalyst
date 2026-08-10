@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: {
     create: vi.fn(),
     updateMetadata: vi.fn(),
   },
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => ({
   AgentMessagesRepository: {},
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/SessionFilesRepository', () => ({
   SessionFilesRepository: {},
 }));
 
@@ -58,7 +62,7 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
   ClaudeCliLauncherConfig: { setMetaAgentServerPort: vi.fn() },
 }));
 
-import { AISessionsRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { MetaAgentService } from '../MetaAgentService';
 
 describe('MetaAgentService.resolveOrCreateWorkstream', () => {

@@ -11,7 +11,7 @@ import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowCo
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { getProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
-import { TEAM_ALPHA_TOOLTIP } from '../common/TeamAlphaNotice';
+import { TEAM_BETA_TOOLTIP } from '../common/TeamBetaNotice';
 import { developerModeAtom } from '../../store/atoms/appSettings';
 import { teamsConfiguredAtom } from '../../store/atoms/settingsDomains';
 import {
@@ -156,9 +156,10 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
                   {isSettingsRoute && route.source === 'builtin' && route.isAlpha && (
                     <AlphaBadge
                       size="xs"
-                      // Sharing is the org/Teams entry point, so it gets the
-                      // Teams-specific alpha + pricing disclosure.
-                      tooltip={route.id === 'project-sharing' ? TEAM_ALPHA_TOOLTIP : SETTINGS_ALPHA_TOOLTIP}
+                      // Sharing is the org/Teams entry point, so it is labelled
+                      // beta and gets the Teams-specific pricing disclosure.
+                      stage={route.id === 'project-sharing' ? 'beta' : 'alpha'}
+                      tooltip={route.id === 'project-sharing' ? TEAM_BETA_TOOLTIP : SETTINGS_ALPHA_TOOLTIP}
                     />
                   )}
                   {(status === 'success' || status === 'active' || status === 'error' || status === 'denied') && (

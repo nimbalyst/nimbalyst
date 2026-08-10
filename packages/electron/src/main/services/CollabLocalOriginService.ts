@@ -348,7 +348,6 @@ async function resolveDocumentSyncConfig(
     userId: '',
     documentId,
     createWebSocket: ((url: string) => new WebSocket(url)) as unknown as DocumentSyncConfig['createWebSocket'],
-    reviewGateEnabled: false,
   };
 }
 

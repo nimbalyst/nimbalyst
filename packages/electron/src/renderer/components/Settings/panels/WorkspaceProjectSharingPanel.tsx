@@ -5,7 +5,7 @@ import { DIALOG_IDS } from '../../../dialogs/registry';
 import type { OrgCreationWizardData } from '../../../dialogs/teamDialogs';
 import type { AccountLoginData } from '../../../dialogs/accountDialogs';
 import { AlphaBadge } from '../../common/AlphaBadge';
-import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../../common/TeamAlphaNotice';
+import { TEAM_BETA_TOOLTIP, TeamBetaNotice } from '../../common/TeamBetaNotice';
 import { MoveProjectWizard } from './MoveProjectWizard';
 import { MergeOrgWizard } from './MergeOrgWizard';
 import { ProjectAccessEditor } from './ProjectAccessEditor';
@@ -1064,12 +1064,12 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
         <div className="provider-panel-header mb-5 pb-4 border-b border-[var(--nim-border)]">
           <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-1.5 text-[var(--nim-text)] flex items-center gap-2">
             Organization
-            <AlphaBadge size="sm" tooltip={TEAM_ALPHA_TOOLTIP} />
+            <AlphaBadge size="sm" stage="beta" tooltip={TEAM_BETA_TOOLTIP} />
           </h3>
           <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
             Create an organization to collaborate on shared, encrypted tracker items and documents.
           </p>
-          <TeamAlphaNotice className="mt-2.5" />
+          <TeamBetaNotice className="mt-2.5" />
         </div>
         {/* Signing out of this state is one click, not an instruction to go
             find another panel: the wizard's first step is the sign-in. */}
@@ -1116,12 +1116,12 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       <div className="provider-panel-header mb-5 pb-4 border-b border-[var(--nim-border)]">
         <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-1.5 text-[var(--nim-text)] flex items-center gap-2">
           Organization
-          <AlphaBadge size="sm" tooltip={TEAM_ALPHA_TOOLTIP} />
+          <AlphaBadge size="sm" stage="beta" tooltip={TEAM_BETA_TOOLTIP} />
         </h3>
         <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
           Create an organization to collaborate on shared, encrypted tracker items and documents.
         </p>
-        <TeamAlphaNotice className="mt-2.5" />
+        <TeamBetaNotice className="mt-2.5" />
         {userEmail && team && (
           <div className="flex items-center gap-1.5 mt-2 text-[12px] text-[var(--nim-text-faint)]">
             <MaterialSymbol icon="person" size={13} />

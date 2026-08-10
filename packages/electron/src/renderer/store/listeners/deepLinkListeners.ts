@@ -22,6 +22,7 @@ import {
   setTrackerModeLayoutAtom,
 } from '../atoms/trackers';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
+import { openSettingsCommandAtom } from '../atoms/settingsNavigation';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import type { TrackerDeepLinkView } from '../../../shared/trackerDeepLinks';
 
@@ -95,6 +96,82 @@ function applyTrackerPayload(data: TrackerPayload): void {
       selectedType: 'all',
       selectedItemId: data.trackerId,
     });
+  }
+}
+
+/**
+ * Team-invitation handoff from the web console. The console has already
+ * accepted the invitation in the browser; main has re-derived what that means
+ * for the signed-in accounts here.
+ */
+type TeamInviteOutcome =
+  | { status: 'accepted'; orgId: string; teamName: string }
+  | { status: 'already-member'; orgId: string; teamName: string }
+  | { status: 'sign-in-required'; orgId: string; email?: string }
+  | { status: 'not-found'; orgId: string; email?: string }
+  | { status: 'error'; orgId: string; message: string };
+
+function applyTeamInviteOutcome(outcome: TeamInviteOutcome): void {
+  if (!outcome?.status) return;
+
+  switch (outcome.status) {
+    case 'accepted':
+      errorNotificationService.showInfo(
+        `You joined ${outcome.teamName}`,
+        'Shared documents, trackers, and projects for this team are now available.',
+        { duration: 8000 }
+      );
+      break;
+    case 'already-member':
+      // Also the normal handoff path: the console accepted the invitation
+      // before the app was reached, so this is a confirmation, not a no-op.
+      errorNotificationService.showInfo(
+        `${outcome.teamName} is ready`,
+        'Shared documents, trackers, and projects for this team are available in Nimbalyst.',
+        { duration: 6000 }
+      );
+      break;
+    case 'sign-in-required':
+      // The common first-run path: they installed Nimbalyst because of the
+      // invitation, so send them straight to the account settings that host
+      // sign-in and the pending-invite list.
+      errorNotificationService.showWarning(
+        'Sign in to accept this invitation',
+        outcome.email
+          ? `Sign in to Nimbalyst as ${outcome.email} to join this team.`
+          : 'Sign in to Nimbalyst with the address the invitation was sent to.',
+        { duration: 10000 }
+      );
+      store.set(openSettingsCommandAtom, {
+        category: 'account',
+        timestamp: Date.now(),
+      });
+      break;
+    case 'not-found':
+      errorNotificationService.showWarning(
+        'Invitation not available',
+        'This invitation is no longer pending for your account. Ask the team admin to send a new one.',
+        { duration: 8000 }
+      );
+      break;
+    case 'error':
+      errorNotificationService.showError(
+        'Could not accept the invitation',
+        outcome.message,
+        { duration: 8000 }
+      );
+      break;
+  }
+}
+
+async function drainPendingTeamInvite(): Promise<void> {
+  try {
+    const pending = await window.electronAPI.invoke(
+      'deep-link:consume-pending-team-invite'
+    ) as TeamInviteOutcome | null;
+    if (pending) applyTeamInviteOutcome(pending);
+  } catch (err) {
+    console.error('[DeepLink] Failed to consume pending team invite:', err);
   }
 }
 
@@ -212,9 +289,22 @@ export function initDeepLinkListeners(): () => void {
     })
   );
 
+  // Live: team-invitation handoff from the web console. The event is a bare
+  // nudge — the outcome is always read through the consuming IPC below, so a
+  // nudge racing the mount-time drain still applies the invitation once.
+  cleanups.push(
+    window.electronAPI.on('deep-link:team-invite-available', () => {
+      void drainPendingTeamInvite();
+    })
+  );
+
   // Drain any pending payload queued before this listener mounted (newly
   // created window case).
   void drainPendingFor(store.get(activeWorkspacePathAtom));
+
+  // The invite handoff is not workspace-keyed — a cold launch straight from the
+  // email has no active workspace to drain against.
+  void drainPendingTeamInvite();
 
   // Also drain when the active workspace changes — covers users switching
   // projects in the rail to one that has a queued link.

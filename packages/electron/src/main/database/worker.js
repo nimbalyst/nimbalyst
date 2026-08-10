@@ -2400,6 +2400,13 @@ class PGLiteWorker {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_tracker_type_defs_ws_type
           ON tracker_type_defs (workspace, type);
       `);
+      // Last shared definition projected onto this workspace's YAML file
+      // (schema version 30). Mirror of SQLite
+      // 0030_tracker_type_defs_synced_model.sql. Added separately so databases
+      // created before team schema sync pick the column up on the next launch.
+      await this.db.exec(`
+        ALTER TABLE tracker_type_defs ADD COLUMN IF NOT EXISTS synced_model TEXT;
+      `);
       console.log('[PGLite Worker] tracker_type_defs table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create tracker_type_defs table:', error);

@@ -48,6 +48,7 @@ import { compressImage } from './ImageCompressor';
 import { getRegisteredExtensions } from '../extensions/RegisteredFileTypes';
 import { isPathInWorkspace, getRelativeWorkspacePath } from '../utils/workspaceDetection';
 import { syncTrackerItem, unsyncTrackerItem, isTrackerSyncActive } from './TrackerSyncManager';
+import { allocateIssueKeyForNewItem } from './tracker/allocateIssueKey';
 import {
   getEffectiveTrackerSyncPolicy,
   getInitialTrackerSyncStatus,
@@ -200,6 +201,27 @@ function parseTrackerContentColumn(raw: string): any {
   } catch {
     return raw;
   }
+}
+
+/**
+ * SQLite returns the encoded JSON text stored in `tracker_items.content`,
+ * while PGLite's JSONB column can return the decoded value. Treat either
+ * representation as equal so redundant renderer saves remain true no-ops.
+ */
+function trackerContentMatches(
+  storedContent: unknown,
+  content: unknown,
+  contentJson: string | null,
+): boolean {
+  if (storedContent === null || storedContent === undefined) {
+    return contentJson === null;
+  }
+  if (typeof storedContent === 'string') {
+    return storedContent === content
+      || storedContent === contentJson
+      || JSON.stringify(parseTrackerContentColumn(storedContent)) === contentJson;
+  }
+  return JSON.stringify(storedContent) === contentJson;
 }
 
 function normalizeTrackerTitle(title: string | undefined): string {
@@ -2520,6 +2542,9 @@ export class ElectronDocumentService implements DocumentService {
       throw new Error(`Tracker item not found: ${itemId}`);
     }
     const contentJson = content != null ? JSON.stringify(content) : null;
+    if (trackerContentMatches(row.content, content, contentJson)) {
+      return;
+    }
     const data = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
     const modifierIdentity = getCurrentIdentity(row.workspace);
     appendActivity(data, modifierIdentity, 'updated', { field: 'content' });
@@ -3286,22 +3311,16 @@ export class ElectronDocumentService implements DocumentService {
       ]
     );
 
-    // NIM-363: allocate a NIM-### issue key for items created through the
-    // native/UI path (quick-add) the same way the MCP create path does, so
-    // every type -- including ideas -- gets a key. Without this, manual creates
-    // had no issue key while MCP creates did.
+    // #363: items created through the native/UI path (quick-add) get a key the
+    // same way the MCP create path does, so every type -- including ideas --
+    // gets one. When a room owns this workspace the key is provisional
+    // (`LC-###`) until the room acks; see allocateIssueKey.ts.
     try {
       const prefix = getWorkspaceState(payload.workspace).issueKeyPrefix || 'NIM';
-      const maxResult = await database.query<{ max_num: number | null }>(
-        `SELECT MAX(issue_number) as max_num FROM tracker_items WHERE workspace = $1`,
-        [payload.workspace]
-      );
-      const nextNum = (maxResult.rows[0]?.max_num ?? 0) + 1;
-      const issueKey = `${prefix}-${nextNum}`;
-      await database.query(
-        `UPDATE tracker_items SET issue_number = $1, issue_key = $2 WHERE id = $3`,
-        [nextNum, issueKey, payload.id]
-      );
+      await allocateIssueKeyForNewItem(database, payload.id, payload.workspace, {
+        syncActive: isTrackerSyncActive(payload.workspace),
+        prefix,
+      });
     } catch (issueKeyError) {
       console.error('[DocumentService] Local issue key allocation failed:', issueKeyError);
     }

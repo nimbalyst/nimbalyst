@@ -67,7 +67,6 @@ async function resolveRoomConfig(orgId: string, documentId: string): Promise<Doc
     userId: '',
     documentId,
     createWebSocket: ((url: string) => new WebSocket(url)) as unknown as DocumentSyncConfig['createWebSocket'],
-    reviewGateEnabled: false,
   };
 }
 

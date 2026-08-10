@@ -8,10 +8,6 @@ import { FULL_CAPABILITIES, createCommentFixtures, createFixtureResolver } from 
 import { EMPTY_POOL, type DraftPool } from '../composerDraft';
 import { composerText, format, pressEnter, type, typeMore } from '../composerTestDriver';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 const NOW = Date.parse('2026-07-26T18:00:00.000Z');
 
 function renderComposer(

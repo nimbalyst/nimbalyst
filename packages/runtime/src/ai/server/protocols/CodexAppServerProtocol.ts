@@ -186,6 +186,29 @@ function summarizeNotificationParams(
   }
 }
 
+function extractNotificationRouting(paramsUnknown: unknown): {
+  threadId: string | null;
+  turnId: string | null;
+} {
+  if (!paramsUnknown || typeof paramsUnknown !== 'object') {
+    return { threadId: null, turnId: null };
+  }
+
+  const params = paramsUnknown as {
+    threadId?: unknown;
+    turnId?: unknown;
+    turn?: { id?: unknown };
+  };
+  const nestedTurnId = params.turn?.id;
+
+  return {
+    threadId: typeof params.threadId === 'string' && params.threadId ? params.threadId : null,
+    turnId: typeof params.turnId === 'string' && params.turnId
+      ? params.turnId
+      : (typeof nestedTurnId === 'string' && nestedTurnId ? nestedTurnId : null),
+  };
+}
+
 export class CodexAppServerProtocol implements AgentProtocol {
   readonly platform = 'codex-app-server';
 
@@ -302,13 +325,36 @@ export class CodexAppServerProtocol implements AgentProtocol {
     let fullText = '';
 
     const unsubscribers: Array<() => void> = [];
+    // Codex can flush the turn/start response and the first notifications in
+    // one stdout chunk. Hold turn-scoped events until the response establishes
+    // which turn this generator owns.
+    let turnStartResolved = false;
+    const pendingTurnNotifications: Array<{ method: string; params: unknown }> = [];
 
-    const onNotification = (method: string, params: unknown) => {
+    const dispatchOwnedNotification = (method: string, params: unknown) => {
+      const routing = extractNotificationRouting(params);
+      // A single app-server process multiplexes collaboration child threads.
+      // Their output remains Codex-internal and must never enter or terminate
+      // the owning Nimbalyst session's root stream.
+      if (routing.threadId && routing.threadId !== raw.threadId) {
+        return;
+      }
+      if (routing.turnId && !turnStartResolved) {
+        pendingTurnNotifications.push({ method, params });
+        return;
+      }
+      if (routing.turnId && raw.activeTurnId && routing.turnId !== raw.activeTurnId) {
+        return;
+      }
+
       try {
         this.dispatchNotification(method, params, push, raw, (delta) => { fullText += delta; }, (u) => { usage = u; });
       } catch (err) {
         push({ kind: 'fail', error: err instanceof Error ? err : new Error(String(err)) });
       }
+    };
+    const onNotification = (method: string, params: unknown) => {
+      dispatchOwnedNotification(method, params);
     };
     // Capture the unsubscribe so the next turn on this same ProtocolSession does
     // not re-process notifications through this turn's handler. Without this,
@@ -360,6 +406,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
       } as TurnStartParams);
       turnStartResultId = turnStart?.turn?.id ?? null;
       raw.activeTurnId = turnStartResultId;
+      turnStartResolved = true;
+      for (const pending of pendingTurnNotifications.splice(0)) {
+        dispatchOwnedNotification(pending.method, pending.params);
+      }
     } catch (err) {
       const baseMsg = err instanceof Error ? err.message : String(err);
       yield {

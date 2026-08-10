@@ -251,6 +251,8 @@ describe('createTrackerItem sync status policy', () => {
       sync: { mode: 'shared', scope: 'project' },
     });
 
+    mockIsTrackerSyncActive.mockReturnValue(false);
+
     mockQuery.mockResolvedValueOnce({ rows: [{ min_key: null }] }); // kanbanSortOrder MIN query
     mockQuery.mockResolvedValueOnce({ rows: [] }); // INSERT
     mockQuery.mockResolvedValueOnce({ rows: [{ max_num: null }] }); // issue-key MAX query
@@ -279,9 +281,13 @@ describe('createTrackerItem sync status policy', () => {
       sync: { mode: 'local', scope: 'project' },
     });
 
+    // Sync is active, so the create takes a provisional LC-### key rather than
+    // minting into the room's namespace.
+    mockIsTrackerSyncActive.mockReturnValue(true);
+
     mockQuery.mockResolvedValueOnce({ rows: [{ min_key: null }] }); // kanbanSortOrder MIN query
     mockQuery.mockResolvedValueOnce({ rows: [] }); // INSERT
-    mockQuery.mockResolvedValueOnce({ rows: [{ max_num: null }] }); // issue-key MAX query
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // existing local-key scan
     mockQuery.mockResolvedValueOnce({ rows: [] }); // issue-key UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [makeTrackerRow({ id: 'bug-shared', sync_status: 'pending' })] }); // SELECT
 

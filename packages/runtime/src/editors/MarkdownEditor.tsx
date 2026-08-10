@@ -203,6 +203,7 @@ export function MarkdownEditor({
         await host.saveContent(content);
       } catch (error) {
         console.error('[MarkdownEditor] Save failed:', error);
+        throw error;
       }
     };
 

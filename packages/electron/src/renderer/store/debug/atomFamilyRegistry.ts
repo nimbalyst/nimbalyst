@@ -37,12 +37,25 @@ function extractFile(stack: string): string {
  * Signature matches the original so it works as a direct import swap.
  */
 export const atomFamily: typeof originalAtomFamily = (initializeAtom, areEqual?) => {
-  const family = originalAtomFamily(initializeAtom, areEqual);
-
   let file = '(unknown)';
   try {
     file = extractFile(new Error().stack || '');
   } catch { /* ignore */ }
+
+  // Jotai's babel debug-label plugin names the family declaration itself, but
+  // per-param atoms are created lazily and have no declaration to name — they
+  // would show up in the atom-write profiler as `atom137`. Stamp them with the
+  // family's name (not the param) so writes across every instance aggregate
+  // into one row: "this family is hot" is the question worth answering.
+  const named = ((param: never) => {
+    const created = (initializeAtom as (p: never) => { debugLabel?: string })(param);
+    if (created && !created.debugLabel) {
+      created.debugLabel = (family as { debugLabel?: string })?.debugLabel || file;
+    }
+    return created;
+  }) as typeof initializeAtom;
+
+  const family = originalAtomFamily(named, areEqual);
 
   registry.push({ family, file });
 

@@ -18,6 +18,13 @@ import { pushFileToIndex } from '../services/DocSyncService';
 import { pushNewDocumentToSync } from '../file/WorkspaceWatcher';
 import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
+import {
+    FileSaveFailureTelemetryDeduper,
+    classifyFileSaveError,
+    getFileSaveSourceAnalytics,
+    normalizeFileSaveSource,
+    type FileSaveSource,
+} from './fileSaveErrors';
 
 // Helper function to get file type from extension
 function getFileType(filePath: string): string {
@@ -35,16 +42,6 @@ function getFileType(filePath: string): string {
     return typeMap[ext] || 'other';
 }
 
-// Helper function to categorize errors
-function categorizeError(error: any): string {
-    const message = error?.message?.toLowerCase() || String(error).toLowerCase();
-    if (message.includes('permission') || message.includes('eacces')) return 'permission';
-    if (message.includes('enoent') || message.includes('not found')) return 'not_found';
-    if (message.includes('enospc') || message.includes('disk full')) return 'disk_full';
-    if (message.includes('conflict')) return 'conflict';
-    return 'unknown';
-}
-
 // Helper function to get word count category
 function getWordCountCategory(content: string): 'small' | 'medium' | 'large' {
     const wordCount = content.split(/\s+/).filter(word => word.length > 0).length;
@@ -60,6 +57,7 @@ function hasFrontmatter(content: string): boolean {
 
 export function registerFileHandlers() {
     const analytics = AnalyticsService.getInstance();
+    const saveFailureTelemetry = new FileSaveFailureTelemetryDeduper();
 
     // Generic file dialog for extensions to select files
     // Returns the file path (not content) so extensions can load files themselves
@@ -108,7 +106,13 @@ export function registerFileHandlers() {
     });
 
     // Save file
-    safeHandle('save-file', async (event, content: string, specificFilePath: string, lastKnownContent?: string) => {
+    safeHandle('save-file', async (
+        event,
+        content: string,
+        specificFilePath: string,
+        lastKnownContent?: string,
+        requestedSaveSource?: FileSaveSource,
+    ) => {
         const window = BrowserWindow.fromWebContents(event.sender);
         if (!window) {
             console.error('[SAVE] ✗ No window found for event sender');
@@ -123,6 +127,8 @@ export function registerFileHandlers() {
         const state = windowStates.get(windowId);
         // ALWAYS use the specificFilePath provided
         const filePath = specificFilePath;
+        const saveSource = normalizeFileSaveSource(requestedSaveSource);
+        const saveSourceAnalytics = getFileSaveSourceAnalytics(saveSource);
 
         // console.log('[SAVE] save-file handler called at', new Date().toISOString(), 'for path:', filePath);
 
@@ -243,11 +249,12 @@ export function registerFileHandlers() {
 
             // Track successful file save
             analytics.sendEvent('file_saved', {
-                saveType: 'manual',
+                saveType: saveSourceAnalytics.saveType,
                 fileType: getFileType(filePath),
                 hasFrontmatter: hasFrontmatter(content),
                 wordCount: getWordCountCategory(content)
             });
+            saveFailureTelemetry.markSuccess(filePath);
 
             // Push file index update for .md files in sync-enabled projects
             if (filePath.endsWith('.md') && state?.workspacePath) {
@@ -259,14 +266,20 @@ export function registerFileHandlers() {
             console.error('[SAVE] ✗ Error saving file:', error);
             savingWindows.delete(windowId); // Clean up on error
 
-            // Track save failure
-            analytics.sendEvent('file_save_failed', {
-                errorType: categorizeError(error),
-                fileType: filePath ? getFileType(filePath) : 'unknown',
-                isAutoSave: false  // This handler is for manual saves
-            });
+            const classifiedError = classifyFileSaveError(error);
+            if (saveFailureTelemetry.shouldReport(filePath, saveSource, classifiedError.errorCode)) {
+                analytics.sendEvent('file_save_failed', {
+                    ...classifiedError,
+                    fileType: filePath ? getFileType(filePath) : 'unknown',
+                    isAutoSave: saveSourceAnalytics.isAutoSave,
+                });
+            }
 
-            return null;
+            return {
+                success: false,
+                filePath,
+                ...classifiedError,
+            };
         }
     });
 
@@ -332,9 +345,10 @@ export function registerFileHandlers() {
         } catch (error) {
             console.error('Error in save-file-as:', error);
 
+            const classifiedError = classifyFileSaveError(error);
             // Track save failure
             analytics.sendEvent('file_save_failed', {
-                errorType: categorizeError(error),
+                ...classifiedError,
                 fileType: state?.filePath ? getFileType(state.filePath) : 'unknown',
                 isAutoSave: false
             });

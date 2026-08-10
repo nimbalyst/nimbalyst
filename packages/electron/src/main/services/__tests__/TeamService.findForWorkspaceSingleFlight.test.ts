@@ -1,13 +1,17 @@
 import { createHash } from 'crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchMock, gitRemoteMock, safeHandleMock, handlers, workspaceStates } = vi.hoisted(() => {
+const {
+  fetchMock, gitRemoteMock, safeHandleMock, handlers, workspaceStates, directories, madeDirectories,
+} = vi.hoisted(() => {
   const handlers = new Map<string, (...args: any[]) => any>();
   return {
     fetchMock: vi.fn(),
     gitRemoteMock: vi.fn(),
     handlers,
     workspaceStates: new Map<string, any>(),
+    directories: new Set<string>(),
+    madeDirectories: [] as string[],
     safeHandleMock: vi.fn((channel: string, handler: (...args: any[]) => any) => {
       handlers.set(channel, handler);
     }),
@@ -26,6 +30,15 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 vi.mock('../../utils/gitUtils', () => ({ getNormalizedGitRemote: gitRemoteMock }));
+
+vi.mock('fs', () => ({
+  existsSync: (path: string) => directories.has(path),
+}));
+
+vi.mock('fs/promises', () => ({
+  mkdir: async (path: string) => { madeDirectories.push(path); directories.add(path); },
+  stat: async () => ({ isDirectory: () => true }),
+}));
 
 vi.mock('../../utils/store', () => ({
   getWorkspaceState: (workspacePath: string) => workspaceStates.get(workspacePath) ?? {},
@@ -84,7 +97,12 @@ vi.mock('../CollabBackupService', () => ({}));
 // even though this test never triggers that bootstrap.
 vi.mock('../TeamAuthBootstrap', () => ({ createTeamAuthBootstrap: (fn: unknown) => fn }));
 
-import { findTeamForWorkspace, invalidateListTeamsCache, registerTeamHandlers } from '../TeamService';
+import {
+  bindWorkspaceToSharedProject,
+  findTeamForWorkspace,
+  invalidateListTeamsCache,
+  registerTeamHandlers,
+} from '../TeamService';
 import { refreshPersonalSessionForAccount } from '../StytchAuthService';
 import { getJwtExp } from '../jwtOrg';
 
@@ -258,6 +276,104 @@ describe('workspace org resolution without a git remote', () => {
     await expect(findTeamForWorkspace('/projects/with-remote')).resolves.toEqual(
       expect.objectContaining({ orgId: 'org-1' }),
     );
+  });
+});
+
+describe('binding a directory to a shared project', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock.mockReset();
+    gitRemoteMock.mockReset();
+    gitRemoteMock.mockResolvedValue(null);
+    workspaceStates.clear();
+    directories.clear();
+    madeDirectories.length = 0;
+    invalidateListTeamsCache();
+
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        teams: [
+          {
+            orgId: 'org-1',
+            name: 'Widgets Team',
+            gitRemoteHash: REMOTE_HASH,
+            teamProjectId: 'tp-primary',
+            projects: [
+              { projectId: 'p-1', teamProjectId: 'tp-primary', gitRemoteHash: REMOTE_HASH, slug: null, name: 'Widgets' },
+              { projectId: 'p-2', teamProjectId: 'tp-notes', gitRemoteHash: null, slug: 'notes', name: 'Notes' },
+            ],
+            createdAt: new Date().toISOString(),
+            role: 'admin',
+          },
+          { orgId: 'org-invited', name: 'Not Joined', gitRemoteHash: null, teamProjectId: 'tp-other', membershipType: 'invited', createdAt: new Date().toISOString(), role: 'member' },
+        ],
+      }),
+    }));
+  });
+
+  const bind = (overrides: Partial<{ orgId: string; teamProjectId: string; directoryPath: string }> = {}) =>
+    bindWorkspaceToSharedProject({
+      orgId: 'org-1',
+      teamProjectId: 'tp-notes',
+      directoryPath: '/projects/notes',
+      ...overrides,
+    });
+
+  it('creates the directory and records the project it belongs to', async () => {
+    await bind();
+
+    expect(madeDirectories).toContain('/projects/notes');
+    expect(workspaceStates.get('/projects/notes')?.localOrgBinding).toEqual({
+      orgId: 'org-1',
+      teamProjectId: 'tp-notes',
+    });
+  });
+
+  it('refuses an organization the account has not joined', async () => {
+    await expect(bind({ orgId: 'org-invited', teamProjectId: 'tp-other' }))
+      .rejects.toThrow(/not a member/i);
+    expect(workspaceStates.size).toBe(0);
+  });
+
+  it('refuses a project that is not in the organization', async () => {
+    await expect(bind({ teamProjectId: 'tp-gone' })).rejects.toThrow(/no longer part/i);
+  });
+
+  // Binding an arbitrary folder to a repo-backed project would give the same
+  // project two answers -- the remote match and the binding.
+  it('refuses a project that is matched by its git remote', async () => {
+    await expect(bind({ teamProjectId: 'tp-primary' })).rejects.toThrow(/clone the repository/i);
+  });
+
+  it('refuses a folder that already belongs to another project', async () => {
+    directories.add('/projects/notes');
+    workspaceStates.set('/projects/notes', {
+      localOrgBinding: { orgId: 'org-1', teamProjectId: 'tp-elsewhere' },
+    });
+
+    await expect(bind()).rejects.toThrow(/different project/i);
+  });
+
+  it("refuses a folder whose git remote connects it somewhere else", async () => {
+    directories.add('/projects/notes');
+    gitRemoteMock.mockResolvedValue(REMOTE);
+
+    await expect(bind()).rejects.toThrow(/different project/i);
+    expect(workspaceStates.get('/projects/notes')?.localOrgBinding).toBeUndefined();
+  });
+
+  it('accepts an existing folder that has files but no conflicting identity', async () => {
+    directories.add('/projects/notes');
+
+    await bind();
+
+    expect(madeDirectories).toEqual([]);
+    expect(workspaceStates.get('/projects/notes')?.localOrgBinding).toEqual({
+      orgId: 'org-1',
+      teamProjectId: 'tp-notes',
+    });
   });
 });
 

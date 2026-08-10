@@ -33,14 +33,17 @@ function validateWindowsUpdaterConfig() {
     );
   }
 
-  const requiredSignExtensions = ['.exe', '.dll', '.node'];
+  // signExts makes electron-builder invoke the DigiCert signer once per matching
+  // file in the staged payload. Setting it to the native extensions cost 59
+  // KeyLocker calls per x64 build and burned the whole yearly signing allocation
+  // in a week. Windows trust only needs Nimbalyst.exe, the uninstaller and the
+  // installer signed; bundled third-party binaries already carry their own
+  // publisher's signature and must not be re-signed with ours.
   const configuredSignExtensions = asArray(windowsConfig?.signExts);
-  const missingSignExtensions = requiredSignExtensions.filter(
-    extension => !configuredSignExtensions.includes(extension)
-  );
-  if (missingSignExtensions.length > 0) {
+  if (configuredSignExtensions.length > 0) {
     throw new Error(
-      `Windows payload signing is missing native extensions: ${missingSignExtensions.join(', ')}`
+      `build.win.signExts must not be set (found: ${configuredSignExtensions.join(', ')}). ` +
+      'Payload-wide signing multiplies DigiCert KeyLocker calls by ~30x per build.'
     );
   }
 

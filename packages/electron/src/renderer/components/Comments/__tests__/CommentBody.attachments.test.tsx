@@ -6,10 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CommentBody } from '../CommentBody';
 import type { BodySegment, MessageAttachmentView } from '../commentTypes';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 function imageAttachment(
   overrides: Partial<MessageAttachmentView> = {},
 ): MessageAttachmentView {

@@ -113,12 +113,6 @@ export interface DocumentSyncConfig {
   ) => void | Promise<void>;
 
   /**
-   * Called when the review gate state changes (remote changes arrive or are accepted/rejected).
-   * Allows UI to show pending review indicators.
-   */
-  onReviewStateChange?: (state: ReviewGateState) => void;
-
-  /**
    * Called once after the initial sync response from the server completes.
    * `isEmpty` is true if the server had no existing content for this room.
    *
@@ -137,17 +131,6 @@ export interface DocumentSyncConfig {
   onRoomMoved?: (dest: { destOrgId: string }) => void;
 
   /**
-   * Enable the review gate for remote changes.
-   * When true, remote updates are applied to the Y.Doc (for CRDT correctness and live preview)
-   * but marked as "unreviewed" -- the host application should not autosave until
-   * acceptRemoteChanges() is called.
-   *
-   * When false (default), all remote updates are treated as accepted immediately.
-   * Use false for single-user multi-device sync (no review needed for your own edits).
-   */
-  reviewGateEnabled?: boolean;
-
-  /**
    * Override the WebSocket URL construction.
    * If provided, called instead of the default JWT-based URL builder.
    * Useful for integration tests with auth bypass.
@@ -162,24 +145,6 @@ export interface DocumentSyncConfig {
    * restrictions that block browser WebSocket upgrades.
    */
   createWebSocket?: (url: string) => WebSocket;
-}
-
-// ============================================================================
-// Review Gate
-// ============================================================================
-
-/**
- * State of the review gate for remote changes.
- * Mirrors the AI "pending review" pattern: remote edits are visible in the editor
- * but not saved to disk until the user explicitly accepts them.
- */
-export interface ReviewGateState {
-  /** Whether there are any unreviewed remote changes */
-  hasUnreviewed: boolean;
-  /** Number of buffered remote update operations */
-  unreviewedCount: number;
-  /** User IDs that contributed unreviewed changes */
-  unreviewedAuthors: string[];
 }
 
 // ============================================================================

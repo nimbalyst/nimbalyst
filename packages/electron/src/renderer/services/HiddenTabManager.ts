@@ -29,6 +29,7 @@ import { store } from '@nimbalyst/runtime/store';
 import { DocumentModelRegistry } from './document-model/DocumentModelRegistry';
 import type { DocumentModelEditorHandle } from './document-model/types';
 import { fileDeletedAtomFamily } from '../store/atoms/fileWatch';
+import { assertFileSaveSucceeded } from '../utils/fileSaveResult';
 
 const LOG_PREFIX = '[HiddenTabManager]';
 const TTL_MS = 30_000; // 30 seconds after last release before cleanup
@@ -512,7 +513,8 @@ class HiddenTabManager {
           // Delegate to DocumentModel for coordinated save
           await documentModelHandle.saveContent(content);
         } else if (typeof content === 'string') {
-          await electronAPI.saveFile(content, filePath);
+          const result = await electronAPI.saveFile(content, filePath, undefined, 'auto');
+          assertFileSaveSucceeded(result);
         } else {
           throw new Error('Binary content saving not yet implemented for hidden editors');
         }

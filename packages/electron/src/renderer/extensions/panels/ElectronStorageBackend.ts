@@ -13,52 +13,94 @@ import type { StorageBackend } from '@nimbalyst/runtime';
 let workspaceCache: Record<string, unknown> = {};
 let globalCache: Record<string, unknown> = {};
 let currentWorkspacePath: string | null = null;
+let workspaceHydration: Promise<void> = Promise.resolve();
+let globalHydration: Promise<void> = Promise.resolve();
+let workspaceHydrationGeneration = 0;
+let globalHydrationGeneration = 0;
+let hydratedWorkspaceGeneration: number | null = null;
+
+const STORAGE_HYDRATED_EVENT = 'nimbalyst:extension-storage-hydrated';
+
+interface WorkspaceState {
+  extensionStorage?: Record<string, unknown>;
+}
+
+function notifyStorageHydrated(workspacePath: string | null): void {
+  if (typeof window.dispatchEvent !== 'function' || typeof CustomEvent === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(STORAGE_HYDRATED_EVENT, {
+    detail: { workspacePath },
+  }));
+}
+
+function hydrateWorkspaceCache(workspacePath: string | null): Promise<void> {
+  const generation = ++workspaceHydrationGeneration;
+  hydratedWorkspaceGeneration = null;
+  workspaceCache = {};
+
+  if (!workspacePath || !window.electronAPI) {
+    hydratedWorkspaceGeneration = generation;
+    return Promise.resolve();
+  }
+
+  return window.electronAPI.invoke('workspace:get-state', workspacePath)
+    .then((state: WorkspaceState | undefined) => {
+      if (generation !== workspaceHydrationGeneration || workspacePath !== currentWorkspacePath) return;
+      workspaceCache = state?.extensionStorage ?? {};
+      hydratedWorkspaceGeneration = generation;
+    })
+    .catch((err) => {
+      if (generation !== workspaceHydrationGeneration || workspacePath !== currentWorkspacePath) return;
+      console.error('[ElectronStorageBackend] Failed to load workspace storage:', err);
+    });
+}
+
+function hydrateGlobalCache(): Promise<void> {
+  const generation = ++globalHydrationGeneration;
+  globalCache = {};
+
+  if (!window.electronAPI) {
+    return Promise.resolve();
+  }
+
+  return window.electronAPI.invoke('app-settings:get', 'extensionStorage')
+    .then((data) => {
+      if (generation !== globalHydrationGeneration) return;
+      globalCache = data || {};
+    })
+    .catch((err) => {
+      if (generation !== globalHydrationGeneration) return;
+      console.error('[ElectronStorageBackend] Failed to load global storage:', err);
+    });
+}
 
 /**
  * Initialize the storage backend with the current workspace path.
  */
-export function initializeElectronStorageBackend(workspacePath: string | null): void {
+export function initializeElectronStorageBackend(workspacePath: string | null): Promise<void> {
   currentWorkspacePath = workspacePath;
+  workspaceHydration = hydrateWorkspaceCache(workspacePath);
+  globalHydration = hydrateGlobalCache();
+  const generation = workspaceHydrationGeneration;
 
-  // Load workspace storage into cache
-  if (workspacePath && window.electronAPI) {
-    window.electronAPI.invoke('workspace:get-state', workspacePath, 'extensionStorage')
-      .then((data) => {
-        workspaceCache = data || {};
-      })
-      .catch((err) => {
-        console.error('[ElectronStorageBackend] Failed to load workspace storage:', err);
-      });
-  }
-
-  // Load global storage into cache
-  if (window.electronAPI) {
-    window.electronAPI.invoke('app-settings:get', 'extensionStorage')
-      .then((data) => {
-        globalCache = data || {};
-      })
-      .catch((err) => {
-        console.error('[ElectronStorageBackend] Failed to load global storage:', err);
-      });
-  }
+  return Promise.all([workspaceHydration, globalHydration]).then(() => {
+    if (generation === workspaceHydrationGeneration && workspacePath === currentWorkspacePath) {
+      notifyStorageHydrated(workspacePath);
+    }
+  });
 }
 
 /**
  * Update workspace path when workspace changes.
  */
-export function updateWorkspacePath(workspacePath: string | null): void {
+export function updateWorkspacePath(workspacePath: string | null): Promise<void> {
   currentWorkspacePath = workspacePath;
-  workspaceCache = {};
-
-  if (workspacePath && window.electronAPI) {
-    window.electronAPI.invoke('workspace:get-state', workspacePath, 'extensionStorage')
-      .then((data) => {
-        workspaceCache = data || {};
-      })
-      .catch((err) => {
-        console.error('[ElectronStorageBackend] Failed to load workspace storage:', err);
-      });
-  }
+  workspaceHydration = hydrateWorkspaceCache(workspacePath);
+  const generation = workspaceHydrationGeneration;
+  return workspaceHydration.then(() => {
+    if (generation === workspaceHydrationGeneration && workspacePath === currentWorkspacePath) {
+      notifyStorageHydrated(workspacePath);
+    }
+  });
 }
 
 /**
@@ -72,19 +114,26 @@ export const electronStorageBackend: StorageBackend = {
   },
 
   async setWorkspace<T>(key: string, value: T): Promise<void> {
-    workspaceCache[key] = value;
-
-    if (!currentWorkspacePath || !window.electronAPI) {
+    const workspacePath = currentWorkspacePath;
+    const hydrationGeneration = workspaceHydrationGeneration;
+    if (!workspacePath || !window.electronAPI) {
       console.warn('[ElectronStorageBackend] Cannot save workspace storage: no workspace path');
       return;
     }
 
     try {
+      await workspaceHydration;
+      if (workspacePath !== currentWorkspacePath) return;
+      if (hydratedWorkspaceGeneration !== hydrationGeneration) {
+        throw new Error('Cannot save workspace storage before it has loaded successfully');
+      }
+      workspaceCache[key] = value;
+      // Same-workspace windows remain last-write-wins because this IPC replaces
+      // the complete extensionStorage blob; cross-window merging is out of scope.
       await window.electronAPI.invoke(
         'workspace:update-state',
-        currentWorkspacePath,
-        'extensionStorage',
-        { ...workspaceCache }
+        workspacePath,
+        { extensionStorage: { ...workspaceCache } },
       );
     } catch (err) {
       console.error('[ElectronStorageBackend] Failed to save workspace storage:', err);
@@ -93,18 +142,23 @@ export const electronStorageBackend: StorageBackend = {
   },
 
   async deleteWorkspace(key: string): Promise<void> {
-    delete workspaceCache[key];
-
-    if (!currentWorkspacePath || !window.electronAPI) {
+    const workspacePath = currentWorkspacePath;
+    const hydrationGeneration = workspaceHydrationGeneration;
+    if (!workspacePath || !window.electronAPI) {
       return;
     }
 
     try {
+      await workspaceHydration;
+      if (workspacePath !== currentWorkspacePath) return;
+      if (hydratedWorkspaceGeneration !== hydrationGeneration) {
+        throw new Error('Cannot delete workspace storage before it has loaded successfully');
+      }
+      delete workspaceCache[key];
       await window.electronAPI.invoke(
         'workspace:update-state',
-        currentWorkspacePath,
-        'extensionStorage',
-        { ...workspaceCache }
+        workspacePath,
+        { extensionStorage: { ...workspaceCache } },
       );
     } catch (err) {
       console.error('[ElectronStorageBackend] Failed to delete workspace storage:', err);
@@ -119,14 +173,14 @@ export const electronStorageBackend: StorageBackend = {
   },
 
   async setGlobal<T>(key: string, value: T): Promise<void> {
-    globalCache[key] = value;
-
     if (!window.electronAPI) {
       console.warn('[ElectronStorageBackend] Cannot save global storage: no electronAPI');
       return;
     }
 
     try {
+      await globalHydration;
+      globalCache[key] = value;
       await window.electronAPI.invoke('app-settings:set', 'extensionStorage', { ...globalCache });
     } catch (err) {
       console.error('[ElectronStorageBackend] Failed to save global storage:', err);
@@ -135,13 +189,13 @@ export const electronStorageBackend: StorageBackend = {
   },
 
   async deleteGlobal(key: string): Promise<void> {
-    delete globalCache[key];
-
     if (!window.electronAPI) {
       return;
     }
 
     try {
+      await globalHydration;
+      delete globalCache[key];
       await window.electronAPI.invoke('app-settings:set', 'extensionStorage', { ...globalCache });
     } catch (err) {
       console.error('[ElectronStorageBackend] Failed to delete global storage:', err);
@@ -196,8 +250,16 @@ export const electronStorageBackend: StorageBackend = {
   // ============ CLEANUP ============
 
   async deleteAllForExtension(extensionId: string): Promise<void> {
+    const workspacePath = currentWorkspacePath;
+    const hydrationGeneration = workspaceHydrationGeneration;
     const prefix = `ext:${extensionId}:`;
     const secretPrefix = `nimbalyst:${extensionId}:`;
+
+    await Promise.all([workspaceHydration, globalHydration]);
+    if (workspacePath !== currentWorkspacePath) return;
+    if (workspacePath && hydratedWorkspaceGeneration !== hydrationGeneration) {
+      throw new Error('Cannot delete extension workspace storage before it has loaded successfully');
+    }
 
     // Clean workspace storage
     for (const key of Object.keys(workspaceCache)) {
@@ -214,12 +276,11 @@ export const electronStorageBackend: StorageBackend = {
     }
 
     // Save cleaned caches
-    if (currentWorkspacePath && window.electronAPI) {
+    if (workspacePath && window.electronAPI) {
       await window.electronAPI.invoke(
         'workspace:update-state',
-        currentWorkspacePath,
-        'extensionStorage',
-        { ...workspaceCache }
+        workspacePath,
+        { extensionStorage: { ...workspaceCache } },
       );
     }
 

@@ -35,7 +35,8 @@ import {
   hasSchemaDrift,
   applyRemoteTrackerSchemaDef,
   listUnsyncedTrackerSchemaDefs,
-  getMaxTrackerSchemaSyncId,
+  materializeYamlTrackerTypeDef,
+  markTrackerTypeDefProjected,
 } from '../trackerTypeDefStore';
 import type { TrackerDataModel } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 
@@ -53,6 +54,8 @@ interface TypeDefRow {
   source: string | null;
   deleted_at: string | null;
   sync_status: string | null;
+  sync_id: number | null;
+  synced_model: string | null;
 }
 
 describe('trackerTypeDefStore materialization lifecycle (SQLite, migration 0012)', () => {
@@ -235,12 +238,14 @@ describe('trackerTypeDefStore materialization lifecycle (SQLite, migration 0012)
       expect(active.map((r) => r.type)).toEqual(['epic']);
     });
 
-    it('is version-gated: a stale or duplicate syncId never clobbers a newer row', async () => {
+    it('is version-gated: an older syncId never clobbers a newer row, and re-delivery is idempotent', async () => {
       await applyRemoteTrackerSchemaDef(WS, def('epic', model('epic', { displayName: 'New' }), 10), db);
 
       const stale = await applyRemoteTrackerSchemaDef(WS, def('epic', model('epic', { displayName: 'Old' }), 3), db);
       expect(stale).toEqual({ applied: false, reason: 'stale' });
-      const dup = await applyRemoteTrackerSchemaDef(WS, def('epic', model('epic', { displayName: 'Same' }), 10), db);
+      // Same version AND same content: nothing to do. (Same version with
+      // DIFFERENT content is a diverged row and heals -- see the repair suite.)
+      const dup = await applyRemoteTrackerSchemaDef(WS, def('epic', model('epic', { displayName: 'New' }), 10), db);
       expect(dup).toEqual({ applied: false, reason: 'stale' });
 
       const all = await rows();
@@ -301,6 +306,135 @@ describe('trackerTypeDefStore materialization lifecycle (SQLite, migration 0012)
       await applyRemoteTrackerSchemaDef(WS, def('epic', model('epic'), 1), db);
       const beta = await listMaterializedTrackerTypes('/ws/beta', db);
       expect(beta).toHaveLength(0);
+    });
+  });
+
+  describe('team-owned schemas beat local YAML (#1178)', () => {
+    // A workspace load re-reads .nimbalyst/trackers/*.yaml and mirrors every model
+    // it finds. When the team already shares that type, the shared definition is
+    // authoritative: the YAML write must not overwrite it, must not steal the row
+    // back into the yaml lane, and must not strand `sync_id` on a stale model --
+    // the bootstrap cursor is MAX(sync_id), so a clobbered row is never re-sent.
+    const shared = model('bug', { displayName: 'Bug', fields: [{ name: 'collection' }] });
+    const staleYaml = model('bug', { displayName: 'Bug', fields: [] });
+    const def = (type: string, m: TrackerDataModel, syncId: number) => ({
+      type,
+      model: JSON.stringify(m),
+      syncId,
+    });
+
+    it('a stale YAML load never clobbers the shared definition', async () => {
+      await applyRemoteTrackerSchemaDef(WS, def('bug', shared, 14), db);
+
+      await materializeYamlTrackerTypeDef(WS, staleYaml, db);
+
+      const all = await rows();
+      expect(JSON.parse(all[0].model)).toEqual(shared);
+      expect(all[0].source).toBe('sync');
+      expect(all[0].sync_id).toBe(14);
+    });
+
+    it('does not queue a stale YAML load for push', async () => {
+      await applyRemoteTrackerSchemaDef(WS, def('bug', shared, 14), db);
+      await materializeYamlTrackerTypeDef(WS, staleYaml, db);
+
+      expect(await listUnsyncedTrackerSchemaDefs(WS, db)).toEqual([]);
+    });
+
+    it('a YAML edit made AFTER the shared definition landed is queued for push', async () => {
+      await applyRemoteTrackerSchemaDef(WS, def('bug', shared, 14), db);
+      // Write-back projected `shared` onto disk; the user then edits that file.
+      await markTrackerTypeDefProjected(WS, 'bug', JSON.stringify(shared), db);
+      const edited = model('bug', { displayName: 'Defect', fields: [{ name: 'collection' }] });
+      await materializeYamlTrackerTypeDef(WS, edited, db);
+
+      const out = await listUnsyncedTrackerSchemaDefs(WS, db);
+      expect(out).toHaveLength(1);
+      expect(JSON.parse(out[0].model!)).toEqual(edited);
+      const all = await rows();
+      expect(JSON.parse(all[0].model)).toEqual(edited);
+      expect(all[0].sync_id).toBe(14); // still team-owned; server assigns the next version
+    });
+
+    it('never tombstones a team-owned row whose YAML file is gone', async () => {
+      // The exact shape a pre-fix database is in: yaml-sourced row that later
+      // received a sync_id. Reconcile keyed on source='yaml' would push a
+      // team-wide schema deletion just because one member deleted a local file.
+      await materializeTrackerTypeDef(WS, staleYaml, 'yaml', db);
+      await db.query(`UPDATE tracker_type_defs SET sync_id = 14 WHERE type = 'bug'`);
+
+      await reconcileYamlTrackerTypeDefs(WS, [], db);
+
+      const active = await listMaterializedTrackerTypes(WS, db);
+      expect(active.map((r) => r.type)).toEqual(['bug']);
+    });
+  });
+
+  describe('the server definition repairs a diverged local row (#1178)', () => {
+    // Schemas bootstrap from sync_id=0 on every connect, so the server re-offers
+    // the version we already claim to have. When our stored model does not match
+    // it, ours is wrong -- the server is the authority for a shared type and must
+    // be able to heal a row without the user deleting anything.
+    const server = model('bug', { displayName: 'Bug', fields: [{ name: 'collection' }] });
+    const diverged = model('bug', { displayName: 'Bug', fields: [] });
+    const def = (m: TrackerDataModel | null, syncId: number) => ({
+      type: 'bug',
+      model: m ? JSON.stringify(m) : null,
+      syncId,
+    });
+
+    it('re-applies the server model at the SAME syncId when ours diverged', async () => {
+      await applyRemoteTrackerSchemaDef(WS, def(server, 14), db);
+      // However it happened (an older build's YAML clobber), our row now holds a
+      // different model under the same version.
+      await db.query(`UPDATE tracker_type_defs SET model = $1 WHERE type = 'bug'`, [
+        JSON.stringify(diverged),
+      ]);
+
+      const res = await applyRemoteTrackerSchemaDef(WS, def(server, 14), db);
+
+      expect(res).toEqual({ applied: true, deleted: false });
+      const all = await rows();
+      expect(JSON.parse(all[0].model)).toEqual(server);
+    });
+
+    it('is a no-op when our row already matches (no reconnect churn)', async () => {
+      await applyRemoteTrackerSchemaDef(WS, def(server, 14), db);
+
+      const res = await applyRemoteTrackerSchemaDef(WS, def(server, 14), db);
+
+      expect(res).toEqual({ applied: false, reason: 'stale' });
+    });
+
+    it('never discards a local edit still waiting to be pushed', async () => {
+      await applyRemoteTrackerSchemaDef(WS, def(server, 14), db);
+      await markTrackerTypeDefProjected(WS, 'bug', JSON.stringify(server), db);
+      const edit = model('bug', { displayName: 'Defect', fields: [{ name: 'collection' }] });
+      await materializeYamlTrackerTypeDef(WS, edit, db);
+
+      const res = await applyRemoteTrackerSchemaDef(WS, def(server, 14), db);
+
+      expect(res).toEqual({ applied: false, reason: 'stale' });
+      const all = await rows();
+      expect(JSON.parse(all[0].model)).toEqual(edit);
+      expect(await listUnsyncedTrackerSchemaDefs(WS, db)).toHaveLength(1);
+    });
+
+    it('still rejects a strictly older version', async () => {
+      await applyRemoteTrackerSchemaDef(WS, def(server, 20), db);
+      const res = await applyRemoteTrackerSchemaDef(WS, def(diverged, 14), db);
+      expect(res).toEqual({ applied: false, reason: 'stale' });
+      expect(JSON.parse((await rows())[0].model)).toEqual(server);
+    });
+
+    it('re-applies a retraction we somehow missed at the same version', async () => {
+      await applyRemoteTrackerSchemaDef(WS, def(server, 14), db);
+      await db.query(`UPDATE tracker_type_defs SET sync_id = 15 WHERE type = 'bug'`);
+
+      const res = await applyRemoteTrackerSchemaDef(WS, def(null, 15), db);
+
+      expect(res).toEqual({ applied: true, deleted: true });
+      expect(await listMaterializedTrackerTypes(WS, db)).toHaveLength(0);
     });
   });
 
@@ -392,19 +526,6 @@ describe('trackerTypeDefStore materialization lifecycle (SQLite, migration 0012)
 
       const active = await listMaterializedTrackerTypes(WS, db);
       expect(active).toHaveLength(0);
-    });
-  });
-
-  describe('getMaxTrackerSchemaSyncId (Epic B Phase 3 — bootstrap cursor)', () => {
-    it('returns the highest applied schema sync id for the workspace', async () => {
-      await applyRemoteTrackerSchemaDef(WS, { type: 'alpha', model: JSON.stringify(model('alpha')), syncId: 2 }, db);
-      await applyRemoteTrackerSchemaDef(WS, { type: 'beta', model: JSON.stringify(model('beta')), syncId: 7 }, db);
-      await applyRemoteTrackerSchemaDef('/ws/beta', { type: 'gamma', model: JSON.stringify(model('gamma')), syncId: 99 }, db);
-      await materializeTrackerTypeDef(WS, model('local'), 'yaml', db);
-
-      await expect(getMaxTrackerSchemaSyncId(WS, db)).resolves.toBe(7);
-      await expect(getMaxTrackerSchemaSyncId('/ws/beta', db)).resolves.toBe(99);
-      await expect(getMaxTrackerSchemaSyncId('/ws/empty', db)).resolves.toBe(0);
     });
   });
 });

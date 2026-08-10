@@ -13,17 +13,24 @@ import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowCo
 
 interface AlphaBadgeProps {
   /**
-   * `xs` and `sm` render the lowercase word "alpha" as a pill (sidebar rows / panel headers).
-   * `dot` renders just the Greek α character — for tight spots like square icon buttons.
+   * `xs` and `sm` render the lowercase stage word as a pill (sidebar rows / panel headers).
+   * `dot` renders just the Greek letter — for tight spots like square icon buttons.
    */
   size?: 'xs' | 'sm' | 'dot';
+  /** Maturity the badge announces. Teams surfaces pass `beta`; everything else is alpha. */
+  stage?: 'alpha' | 'beta';
   className?: string;
   tooltip?: string;
 }
 
 const DEFAULT_TOOLTIP = 'Alpha feature — may change or be removed.';
 export const SETTINGS_ALPHA_TOOLTIP =
-  'Alpha features may be incomplete, and shared data may be lost.\n\nTeam features are free during alpha and will be part of a Nimbalyst Team subscription in the future.';
+  'Alpha features may be incomplete, and shared data may be lost.\n\nTeam features are free during beta and will be part of a Nimbalyst Teams subscription in the future.';
+
+const STAGE_LABELS = {
+  alpha: { word: 'alpha', dot: 'α', title: 'Alpha' },
+  beta: { word: 'beta', dot: 'β', title: 'Beta' },
+} as const;
 
 const PILL_BASE = 'inline-flex items-center font-medium lowercase bg-[var(--nim-bg-tertiary)] border border-[var(--nim-border)]';
 
@@ -35,9 +42,11 @@ const SIZE_CLASSES: Record<NonNullable<AlphaBadgeProps['size']>, string> = {
 
 export const AlphaBadge: React.FC<AlphaBadgeProps> = ({
   size = 'xs',
+  stage = 'alpha',
   className = '',
   tooltip = DEFAULT_TOOLTIP,
 }) => {
+  const label = STAGE_LABELS[stage];
   const [tooltipOpen, setTooltipOpen] = useState(false);
   const { refs, floatingStyles, context } = useFloating({
     open: tooltipOpen,
@@ -54,11 +63,12 @@ export const AlphaBadge: React.FC<AlphaBadgeProps> = ({
       <span
         ref={refs.setReference}
         data-testid="alpha-badge"
-        aria-label="Alpha feature"
+        data-stage={stage}
+        aria-label={`${label.title} feature`}
         className={`${SIZE_CLASSES[size]} ${className}`.trim()}
         {...getReferenceProps()}
       >
-        {size === 'dot' ? 'α' : 'alpha'}
+        {size === 'dot' ? label.dot : label.word}
       </span>
       {tooltipOpen && tooltip && (
         <FloatingPortal>
@@ -68,7 +78,7 @@ export const AlphaBadge: React.FC<AlphaBadgeProps> = ({
             style={floatingStyles}
             {...getFloatingProps()}
           >
-            <div className="mb-1 text-[13px] font-semibold text-[var(--nim-text)]">Alpha</div>
+            <div className="mb-1 text-[13px] font-semibold text-[var(--nim-text)]">{label.title}</div>
             {tooltip}
           </div>
         </FloatingPortal>

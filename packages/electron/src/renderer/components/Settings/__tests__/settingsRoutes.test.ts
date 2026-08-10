@@ -82,7 +82,7 @@ describe('settings route registry', () => {
     });
   });
 
-  it('hides the project Sharing route until the account has a team (invite-only alpha)', () => {
+  it('hides the project Sharing route until the account has a team (invite-only beta)', () => {
     const withoutTeams = getSettingsRoutesForScope('project', {
       developerMode: true,
       showDirectChatProviders: false,

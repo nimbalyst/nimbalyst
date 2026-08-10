@@ -13,9 +13,9 @@ vi.mock('@nimbalyst/runtime', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span>{icon}</span>,
 }));
 vi.mock('../../../common/AlphaBadge', () => ({ AlphaBadge: () => <span /> }));
-vi.mock('../../../common/TeamAlphaNotice', () => ({
-  TEAM_ALPHA_TOOLTIP: 'alpha',
-  TeamAlphaNotice: () => <div />,
+vi.mock('../../../common/TeamBetaNotice', () => ({
+  TEAM_BETA_TOOLTIP: 'beta',
+  TeamBetaNotice: () => <div />,
 }));
 vi.mock('../../../../utils/teamAnalytics', () => ({ trackTeamAnalyticsEvent: vi.fn() }));
 

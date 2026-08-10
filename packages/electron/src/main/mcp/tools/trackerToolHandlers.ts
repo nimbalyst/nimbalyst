@@ -20,6 +20,7 @@ import {
   shouldSyncTrackerItem,
 } from '../../services/TrackerPolicyService';
 import { isTrackerSyncActive, syncTrackerItem } from '../../services/TrackerSyncManager';
+import { allocateIssueKeyForNewItem } from '../../services/tracker/allocateIssueKey';
 import { applyHeadlessBodyMarkdown } from '../../services/MainBodyDocService';
 import { applyRelationshipFieldWrites } from '../../services/tracker/relationshipFieldWrite';
 import { appendActivity } from '../../services/tracker/trackerActivity';
@@ -2004,22 +2005,19 @@ export async function handleTrackerCreate(
       }
     }
 
-    // Allocate a local issue key if sync didn't assign one
+    // Assign an issue key if the sync ack has not already supplied one. When a
+    // room owns this workspace the key is provisional (`LC-###`) and the room's
+    // ack replaces it -- see allocateIssueKey.ts for why the client must not
+    // mint into the NIM namespace itself.
     if (createdRow && !createdRow.issue_key) {
       try {
         const prefix = workspacePath
           ? (getWorkspaceState(workspacePath).issueKeyPrefix || 'NIM')
           : 'NIM';
-        const maxResult = await db.query<{ max_num: number | null }>(
-          `SELECT MAX(issue_number) as max_num FROM tracker_items WHERE workspace = $1`,
-          [workspacePath || '']
-        );
-        const nextNum = (maxResult.rows[0]?.max_num ?? 0) + 1;
-        const issueKey = `${prefix}-${nextNum}`;
-        await db.query(
-          `UPDATE tracker_items SET issue_number = $1, issue_key = $2 WHERE id = $3`,
-          [nextNum, issueKey, id]
-        );
+        await allocateIssueKeyForNewItem(db, id, workspacePath || '', {
+          syncActive: !!workspacePath && isTrackerSyncActive(workspacePath),
+          prefix,
+        });
         createdRow = await resolveTrackerRowByReference(db, id, workspacePath);
         createdItem = createdRow ? rowToTrackerItem(createdRow) : createdItem;
       } catch (issueKeyError) {

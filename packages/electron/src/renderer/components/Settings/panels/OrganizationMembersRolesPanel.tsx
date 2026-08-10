@@ -3,7 +3,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { useAtomValue } from 'jotai';
 import { ActionGuard } from './ActionGuard';
 import { AlphaBadge } from '../../common/AlphaBadge';
-import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../../common/TeamAlphaNotice';
+import { TEAM_BETA_TOOLTIP, TeamBetaNotice } from '../../common/TeamBetaNotice';
 import {
   bucketMemberCount,
   categorizeTeamAnalyticsError,
@@ -37,7 +37,7 @@ interface OrganizationSummary {
 export function OrganizationMembersRolesPanel({
   orgId,
   readOnlyRoles = false,
-  // Invite-only alpha: the create-org card only renders in dev builds.
+  // Invite-only beta: the create-org card only renders in dev builds.
   allowOrganizationCreation = organizationCreationEnabled,
 }: {
   orgId?: string;
@@ -72,7 +72,7 @@ export function OrganizationMembersRolesPanel({
       <header className="mb-5 border-b border-[var(--nim-border)] pb-4">
         <h2 className="m-0 flex items-center gap-2 text-xl font-semibold">
           Members &amp; Roles
-          <AlphaBadge size="sm" tooltip={TEAM_ALPHA_TOOLTIP} />
+          <AlphaBadge size="sm" stage="beta" tooltip={TEAM_BETA_TOOLTIP} />
         </h2>
         <p className="m-0 mt-1 text-sm text-[var(--nim-text-muted)]">
           {selected ? `${selected.name} · ${callerRole}${selected.sourceEmail ? ` · ${selected.sourceEmail}` : ''}` : 'Choose an organization.'}
@@ -154,7 +154,7 @@ export function OrganizationMembersRolesPanel({
               Create organization
             </button>
           </div>
-          <TeamAlphaNotice className="mt-3" />
+          <TeamBetaNotice className="mt-3" />
         </div>
       )}
 

@@ -10,12 +10,13 @@ import {
   Legend,
 } from 'recharts';
 import { summarizeDatabaseQueryStats } from './dashboardStats';
+import { RenderProfilerPanel } from './RenderProfilerPanel';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type TabId = 'overview' | 'atomfamily';
+type TabId = 'overview' | 'atomfamily' | 'renders';
 
 interface AtomFamilyStat {
   name: string;
@@ -641,6 +642,7 @@ function CountBadge({ count }: { count: number }) {
 const TABS: { id: TabId; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'atomfamily', label: 'Atom Families' },
+  { id: 'renders', label: 'Renders' },
 ];
 
 function formatTime(date: Date): string {
@@ -746,6 +748,7 @@ export function DeveloperDashboard() {
         {activeTab === 'atomfamily' && (
           <AtomFamilyPanel stats={atomStats} loading={loading} refresh={refresh} />
         )}
+        {activeTab === 'renders' && <RenderProfilerPanel />}
       </div>
     </div>
   );

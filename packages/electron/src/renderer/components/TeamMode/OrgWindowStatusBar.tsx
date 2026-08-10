@@ -1,7 +1,7 @@
 /**
  * The org window's slim bottom status bar.
  *
- * Replaces the two-line alpha banner that used to sit inside the Inbox and the
+ * Replaces the two-line beta banner that used to sit inside the Inbox and the
  * admin panels (2026-07-28 layout decision): one muted line, always present so
  * nobody administers an organization without the disclosure, and never
  * dismissible. The full pricing sentence is one hover away rather than spending
@@ -13,8 +13,8 @@ import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 import { HelpTooltip } from '../../help';
 
-export const ORG_WINDOW_ALPHA_STATUS =
-  'Nimbalyst Teams alpha — expect bugs; organizations are free during alpha.';
+export const ORG_WINDOW_BETA_STATUS =
+  'Nimbalyst Teams beta — expect bugs; organizations are free during beta.';
 
 /** Fixed content, so it is memoized and never repaints with a navigation. */
 export const OrgWindowStatusBar = React.memo(function OrgWindowStatusBar() {
@@ -26,7 +26,7 @@ export const OrgWindowStatusBar = React.memo(function OrgWindowStatusBar() {
         data-component="OrgWindowStatusBar"
       >
         <MaterialSymbol icon="info" size={12} className="shrink-0" />
-        <span className="min-w-0 truncate">{ORG_WINDOW_ALPHA_STATUS}</span>
+        <span className="min-w-0 truncate">{ORG_WINDOW_BETA_STATUS}</span>
       </footer>
     </HelpTooltip>
   );

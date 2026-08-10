@@ -135,7 +135,9 @@ interface SessionListItemProps {
   phase?: string; // Kanban board phase (backlog, planning, implementing, validating, complete)
 }
 
-export const SessionListItem = memo<SessionListItemProps>(({
+// Named rather than an inline arrow so the render profiler can report it by
+// name instead of "Memo <- SessionHistory". See docs/RENDER_PERFORMANCE.md.
+export const SessionListItem = memo<SessionListItemProps>(function SessionListItem({
   id,
   title,
   createdAt,
@@ -168,7 +170,7 @@ export const SessionListItem = memo<SessionListItemProps>(({
   uncommittedCount,
   branchedAt,
   phase,
-}) => {
+}) {
   const [isHovering, setIsHovering] = useState(false);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });

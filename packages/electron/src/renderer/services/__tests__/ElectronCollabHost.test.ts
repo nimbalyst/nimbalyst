@@ -219,4 +219,36 @@ describe('ElectronCollabHost personal state', () => {
     expect(openArtifact).toHaveBeenCalledWith(ref, 'history');
     expect(store.get(historyDialogFileAtom)).toBe('collab://org:org-1:doc:doc-1');
   });
+
+  // A window opened before sign-in resolves once, fails non-retryably, and the
+  // docs lifecycle stops for good -- so signing in later left Shared Docs, the
+  // quick-open Team tab, and "Share to team" hidden until the window reopened.
+  it('re-resolves a scope that failed non-retryably when invalidated', async () => {
+    const resolveIndexConfig = vi.fn()
+      .mockResolvedValueOnce({ success: false, error: 'Not authenticated. Sign in first.' })
+      .mockResolvedValue({
+        success: true,
+        config: {
+          orgId: 'org-1',
+          teamProjectId: 'project-1',
+          serverUrl: 'wss://example.test',
+          userId: 'member-1',
+          userEmail: 'person@example.com',
+        },
+      });
+    (window as any).electronAPI.documentSync.resolveIndexConfig = resolveIndexConfig;
+    const host = new ElectronCollabHost({ scopeKey: '/workspace/signed-out' });
+    const observed: Array<unknown> = [];
+    host.onScopeChanged((scope) => observed.push(scope));
+
+    await expect(host.resolveScope()).rejects.toThrow('Not authenticated');
+
+    host.invalidateScope();
+
+    expect(observed).toEqual([null]);
+    await expect(host.resolveScope()).resolves.toMatchObject({
+      scopeKey: '/workspace/signed-out',
+      orgId: 'org-1',
+    });
+  });
 });

@@ -7,10 +7,6 @@ import { InboxSection } from '../InboxSection';
 import { createInboxFixtures } from '../inboxFixtures';
 import { createFixtureInboxProvider } from '../inboxFixtureProvider';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 const NOW = Date.parse('2026-07-26T18:00:00.000Z');
 
 function installApi() {

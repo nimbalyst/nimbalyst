@@ -106,7 +106,6 @@ async function resolveConfig(
     createWebSocket: ((url: string) => new WebSocket(url)) as unknown as DocumentSyncConfig['createWebSocket'],
     // No reviewGate -- the service-as-peer must never block on user
     // approval; it just lands the merge and exits.
-    reviewGateEnabled: false,
   };
 }
 

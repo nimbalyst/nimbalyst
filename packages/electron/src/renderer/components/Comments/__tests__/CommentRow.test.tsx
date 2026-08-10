@@ -9,10 +9,6 @@ import { createCommentFixtures, createFixtureResolver, FULL_CAPABILITIES } from 
 import { resourceRefToUrn } from '../resourceUrn';
 import type { Comment, CommentCapabilities, ResourcePreviewState } from '../commentTypes';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 vi.mock('@nimbalyst/runtime/plugins/TrackerLinkPlugin', () => ({
   useResolvedTrackerReference: (referenceKey: string) =>
     referenceKey === 'itm-pasted-plan'

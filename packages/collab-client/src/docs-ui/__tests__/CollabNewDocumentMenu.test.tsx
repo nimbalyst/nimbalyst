@@ -8,10 +8,6 @@ import {
   CollabNewDocumentMenu,
 } from '../CollabNewDocumentMenu';
 
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-}));
-
 function descriptor(
   documentType: string,
   displayName: string,

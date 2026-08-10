@@ -1020,7 +1020,6 @@ export class HarnessClient {
       orgId: "org-harness",
       documentId: "doc-harness",
       userId: this.userId,
-      reviewGateEnabled: false,
       replica: this.replica,
       initialPendingUpdateBase64:
         this.persisted.pendingUpdateBase64 ?? undefined,

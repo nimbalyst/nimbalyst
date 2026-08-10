@@ -5,13 +5,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 //   1. AISessionsRepository.get  - the parent-session lookup the fix relies on.
 //   2. A working ModelIdentifier.tryParse / getDefaultModelId (the sibling test
 //      stubs ModelIdentifier as {}, which throws once tryParse is reached).
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: {
     create: vi.fn(),
     updateMetadata: vi.fn(),
     get: vi.fn(),
   },
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => ({
   AgentMessagesRepository: {},
+}));
+vi.mock('@nimbalyst/runtime/storage/repositories/SessionFilesRepository', () => ({
   SessionFilesRepository: {},
 }));
 
@@ -99,7 +103,7 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
   ClaudeCliLauncherConfig: { setMetaAgentServerPort: vi.fn() },
 }));
 
-import { AISessionsRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { database as databaseWorker } from '../../database/PGLiteDatabaseWorker';
 import { MetaAgentService } from '../MetaAgentService';
 
