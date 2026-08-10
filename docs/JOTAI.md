@@ -368,7 +368,7 @@ export const updateSessionStoreAtom = atom(
 
 ## Integration with Centralized IPC Listeners
 
-See [centralized-ipc-listener-architecture.md](../plans/centralized-ipc-listener-architecture.md) for the full pattern.
+See [IPC_LISTENERS.md](./IPC_LISTENERS.md) for the full pattern.
 
 ### The Flow
 
