@@ -415,6 +415,16 @@ describe('transcript auto-scroll thresholds', () => {
   it('still auto-scrolls when the transcript was sticky before the new content arrived', () => {
     expect(shouldAutoScrollTranscript(true, 200)).toBe(true);
   });
+
+  it('suppresses auto-scroll while a transcript selection is active, even when sticky at the bottom', () => {
+    // The user is dragging a highlight in the transcript; a jump to the bottom
+    // would collapse it. Selection wins over the sticky-bottom pull.
+    expect(shouldAutoScrollTranscript(true, 0, true)).toBe(false);
+  });
+
+  it('resumes auto-scroll once the selection is released', () => {
+    expect(shouldAutoScrollTranscript(true, 0, false)).toBe(true);
+  });
 });
 
 // Regression coverage for the user-reported bug on 2026-06-01: the
