@@ -2457,7 +2457,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       if (!leadQuery) {
         console.log('[CLAUDE-CODE] interruptCurrentTurn: no active lead query, falling back to abort');
         this.abortProviderRuntime();
-        return { method: 'abort', hadActiveTurn: false };
+        return { method: 'abort' };
       }
 
       console.log('[CLAUDE-CODE] interruptCurrentTurn: interrupting active lead query');
@@ -2475,7 +2475,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         console.warn('[CLAUDE-CODE] interruptCurrentTurn: interrupt() failed (transport may be closed):', err);
       }
 
-      return { method: 'interrupt', hadActiveTurn: true };
+      return { method: 'interrupt' };
     } finally {
       if (persistenceFailed) {
         console.error(
