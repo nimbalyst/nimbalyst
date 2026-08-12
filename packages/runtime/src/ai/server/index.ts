@@ -24,6 +24,8 @@ export {
 export type { SharedMcpServerConfig, PerProviderMcpDeps } from './services/mcpServerConfig';
 export * from './services/mcpTopology';
 export * from './services/mcpTokenBudget';
+export * from './providers/modelLauncher/modelLauncherProfiles';
+export * from './providers/modelLauncher/modelLauncherAdapter';
 export * from './attachments/attachmentDenyMatcher';
 export * from './attachments/stagedAttachmentRegistry';
 

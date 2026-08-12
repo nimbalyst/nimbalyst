@@ -24,7 +24,7 @@ import { AlphaBadge } from '../common/AlphaBadge';
 import { HelpTooltip } from '../../help';
 import { isDirectChatProvider, isProviderVisible } from '../../utils/chatProviderVisibility';
 
-const ALPHA_PROVIDERS = new Set(['opencode', 'copilot-cli']);
+const ALPHA_PROVIDERS = new Set(['opencode', 'copilot-cli', 'model-launcher']);
 const TYPEAHEAD_RESET_MS = 700;
 
 interface Model {
@@ -315,6 +315,7 @@ export function ModelSelector({
       case 'openai-codex-acp': return 'OpenAI Codex (ACP)';
       case 'opencode': return 'OpenCode';
       case 'copilot-cli': return 'GitHub Copilot';
+      case 'model-launcher': return 'Model Launcher';
       case 'lmstudio': return 'LMStudio';
       default: {
         // Extension-contributed providers carry their contribution id here

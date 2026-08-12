@@ -815,7 +815,7 @@ export class AIService {
     // Claude Code is enabled by default (undefined means enabled).
     // This matches the logic in ai:getModels which uses `claudeCodeSettings.enabled !== false`.
     // Other providers require explicit enabling (undefined means disabled).
-    const globalEnabled = provider === 'claude-code'
+    const globalEnabled = provider === 'claude-code' || provider === 'model-launcher'
       ? providerSettings[provider]?.enabled !== false
       : providerSettings[provider]?.enabled ?? false;
 
@@ -1943,6 +1943,9 @@ export class AIService {
             break;
           case 'copilot-cli':
             // Copilot uses its own CLI auth (copilot auth login), no API key needed
+            break;
+          case 'model-launcher':
+            // The workspace launcher owns route authentication.
             break;
           case 'lmstudio':
             // LMStudio doesn't need an API key, just the base URL
@@ -3356,6 +3359,9 @@ export class AIService {
             // Copilot uses its own CLI auth, no API key needed
             apiKey = 'not-required';
             break;
+          case 'model-launcher':
+            apiKey = 'not-required';
+            break;
           case 'lmstudio':
             // LMStudio doesn't need an API key, just test the connection
             apiKey = 'not-required';
@@ -3558,6 +3564,7 @@ export class AIService {
       if (providerSettings['openai-codex']?.enabled === true) enabledSet.add('openai-codex');
       if (providerSettings['opencode']?.enabled === true) enabledSet.add('opencode');
       if (providerSettings['lmstudio']?.enabled === true) enabledSet.add('lmstudio');
+      if (providerSettings['model-launcher']?.enabled !== false) enabledSet.add('model-launcher');
 
       const modelsConfig = {
         ...apiKeys,
@@ -3722,6 +3729,13 @@ export class AIService {
           enabled: providerSettings['lmstudio']?.enabled === true,
           models: providerSettings['lmstudio']?.models,
           hiddenModels: providerSettings['lmstudio']?.hiddenModels
+        },
+        'model-launcher': {
+          // The adapter is credential-neutral; the workspace launcher owns its
+          // approved route and reports availability when invoked.
+          enabled: providerSettings['model-launcher']?.enabled !== false,
+          models: providerSettings['model-launcher']?.models,
+          hiddenModels: providerSettings['model-launcher']?.hiddenModels
         }
       };
 
