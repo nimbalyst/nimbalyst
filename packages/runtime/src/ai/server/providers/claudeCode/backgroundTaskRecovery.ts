@@ -1274,6 +1274,11 @@ export class BackgroundAgentRecoveryCoordinator {
   async suppressRunning(sessionId: string, reason: string): Promise<void> {
     await this.mutateSession(sessionId, (_session, ledger, currentTasks) => {
       const suppressedAt = this.now();
+      let stoppedTasks = stopRunningTasks(
+        currentTasks,
+        reason,
+        suppressedAt
+      );
       for (const record of Object.values(ledger.tasks)) {
         if (
           [
@@ -1289,11 +1294,16 @@ export class BackgroundAgentRecoveryCoordinator {
           record.updatedAt = suppressedAt;
           record.lastReason = reason;
           record.claimLeaseExpiresAt = undefined;
+          stoppedTasks = upsertCurrentTask(stoppedTasks, record.taskId, {
+            status: 'stopped',
+            recoveryDisposition: reason,
+            updatedAt: suppressedAt,
+          });
         }
       }
       return {
         result: undefined,
-        currentTasks: stopRunningTasks(currentTasks, reason, suppressedAt),
+        currentTasks: stoppedTasks,
       };
     });
   }
