@@ -807,6 +807,26 @@ export class BackgroundAgentRecoveryCoordinator {
             continue;
           if (record.claimedTurnId === input.turnId) continue;
           if (
+            record.recoveryState === 'dispatching' &&
+            (record.claimLeaseExpiresAt ?? 0) <= checkedAt
+          ) {
+            // The native send begins only after guardNativeSendMessage has
+            // durably moved the generation to dispatching. If the process dies
+            // before the tool result is persisted, the send may already have
+            // reached Claude. There is no native idempotency key, so reclaiming
+            // this lease could duplicate the continuation.
+            record.recoveryState = 'notify-only';
+            record.lastReason = 'ambiguous-dispatch';
+            record.updatedAt = checkedAt;
+            record.claimLeaseExpiresAt = undefined;
+            notices.push({
+              generation: record.generation,
+              taskId: record.taskId,
+              reason: record.lastReason,
+            });
+            continue;
+          }
+          if (
             (record.recoveryState === 'claimed' ||
               record.recoveryState === 'dispatching') &&
             (record.claimLeaseExpiresAt ?? 0) > checkedAt
@@ -949,6 +969,7 @@ export class BackgroundAgentRecoveryCoordinator {
     turnId: string;
     toolUseId: string;
     input: Record<string, unknown>;
+    plannedGenerations?: readonly string[];
   }): Promise<{ matched: boolean; allow: boolean; reason?: string }> {
     const result = await this.mutateSession<{
       matched: boolean;
@@ -1109,7 +1130,15 @@ export class BackgroundAgentRecoveryCoordinator {
       record.updatedAt = this.now();
       return { result: { matched: true, allow: true } };
     });
-    return result ?? { matched: false, allow: true };
+    if (result) return result;
+    if ((input.plannedGenerations?.length ?? 0) > 0) {
+      return {
+        matched: true,
+        allow: false,
+        reason: 'background-agent-recovery-session-missing',
+      };
+    }
+    return { matched: false, allow: true };
   }
 
   async observeNativeSendMessageResult(input: {
@@ -1169,15 +1198,77 @@ export class BackgroundAgentRecoveryCoordinator {
           record.recoveryState !== 'dispatching'
         )
           continue;
-        record.recoveryState =
-          record.attempts < MAX_RECOVERY_ATTEMPTS ? 'retryable' : 'notify-only';
-        record.lastReason = 'native-dispatch-not-observed';
+        if (record.recoveryState === 'dispatching') {
+          // The pre-tool guard persisted dispatching before allowing the native
+          // call, so lack of a result is ambiguous and must never be retried.
+          record.recoveryState = 'notify-only';
+          record.lastReason = 'ambiguous-dispatch';
+        } else {
+          // A claimed generation that never reached the first-send guard is
+          // safe to offer on one later recovery turn.
+          record.recoveryState =
+            record.attempts < MAX_RECOVERY_ATTEMPTS
+              ? 'retryable'
+              : 'notify-only';
+          record.lastReason = 'native-dispatch-not-observed';
+        }
         record.claimLeaseExpiresAt = undefined;
         record.updatedAt = finishedAt;
         changed = true;
       }
       return { result: undefined, write: changed };
     });
+  }
+
+  async observeExplicitTaskStop(input: {
+    sessionId: string;
+    taskId: string;
+  }): Promise<boolean> {
+    const result = await this.mutateSession(
+      input.sessionId,
+      (_session, ledger, currentTasks) => {
+        const records = Object.values(ledger.tasks).filter(
+          (record) => record.taskId === input.taskId
+        );
+        if (records.length === 0) {
+          return { result: false, write: false };
+        }
+
+        const stoppedAt = this.now();
+        let changed = false;
+        for (const record of records) {
+          if (
+            ![
+              'pending',
+              'claimed',
+              'dispatching',
+              'dispatched',
+              'retryable',
+              'notify-only',
+            ].includes(record.recoveryState)
+          ) {
+            continue;
+          }
+          record.recoveryState = 'stopped';
+          record.terminalAt = stoppedAt;
+          record.updatedAt = stoppedAt;
+          record.lastReason = 'native-task-stop-succeeded';
+          record.claimLeaseExpiresAt = undefined;
+          changed = true;
+        }
+
+        if (!changed) return { result: true, write: false };
+        return {
+          result: true,
+          currentTasks: upsertCurrentTask(currentTasks, input.taskId, {
+            status: 'stopped',
+            recoveryDisposition: 'native-task-stop-succeeded',
+            updatedAt: stoppedAt,
+          }),
+        };
+      }
+    );
+    return result ?? false;
   }
 
   async suppressRunning(sessionId: string, reason: string): Promise<void> {

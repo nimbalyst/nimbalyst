@@ -413,7 +413,7 @@ describe('BackgroundAgentRecoveryCoordinator', () => {
     expect(thirdProcess.dispatches).toEqual([]);
   });
 
-  it('reclaims a crashed dispatch only after its durable lease expires', async () => {
+  it('reclaims an expired claim that never reached the native send guard', async () => {
     await writeTranscriptFixture();
     const instanceA = coordinator('provider-a');
     await recordRunningBackgroundAgent(instanceA);
@@ -452,6 +452,97 @@ describe('BackgroundAgentRecoveryCoordinator', () => {
     expect(afterLeaseExpiry.dispatches[0]?.generation).toBe(
       abandoned.dispatches[0]?.generation
     );
+  });
+
+  it('never auto-dispatches a generation after the native send guard persisted an ambiguous dispatch', async () => {
+    await writeTranscriptFixture();
+    const instanceA = coordinator('provider-a');
+    await recordRunningBackgroundAgent(instanceA);
+
+    const instanceB = coordinator('provider-b');
+    const recovery = await instanceB.claimResumeDispatches({
+      sessionId: SESSION_ID,
+      workspacePath: WORKSPACE_PATH,
+      providerSessionId: PROVIDER_SESSION_ID,
+      turnId: 'provider-b:turn-1',
+      isResume: true,
+    });
+    expect(recovery.dispatches).toHaveLength(1);
+    await expect(
+      instanceB.guardNativeSendMessage({
+        sessionId: SESSION_ID,
+        turnId: 'provider-b:turn-1',
+        toolUseId: 'send-before-process-crash',
+        input: { to: AGENT_ID, summary: 'Continue the original task' },
+        plannedGenerations: recovery.dispatches.map(
+          (dispatch) => dispatch.generation
+        ),
+      })
+    ).resolves.toEqual(expect.objectContaining({ matched: true, allow: true }));
+
+    // The native send may have happened, but process B dies before it can
+    // persist the tool result or run turn finalization.
+    clock += 5 * 60_000 + 1;
+    const laterProcess = await coordinator(
+      'provider-c'
+    ).claimResumeDispatches({
+      sessionId: SESSION_ID,
+      workspacePath: WORKSPACE_PATH,
+      providerSessionId: PROVIDER_SESSION_ID,
+      turnId: 'provider-c:turn-1',
+      isResume: true,
+    });
+
+    expect(laterProcess.dispatches).toEqual([]);
+    expect(laterProcess.notices).toEqual([
+      expect.objectContaining({
+        generation: recovery.dispatches[0]?.generation,
+        reason: 'ambiguous-dispatch',
+      }),
+    ]);
+    expect(
+      Object.values(
+        getBackgroundAgentRecoveryLedger(sessions.get(SESSION_ID)!.metadata)
+          .tasks
+      )[0]
+    ).toEqual(
+      expect.objectContaining({
+        recoveryState: 'notify-only',
+        lastReason: 'ambiguous-dispatch',
+        dispatchToolUseId: 'send-before-process-crash',
+      })
+    );
+  });
+
+  it('fails closed when a claimed recovery session is deleted before the native tool hook', async () => {
+    await writeTranscriptFixture();
+    await recordRunningBackgroundAgent(coordinator('provider-a'));
+    const instanceB = coordinator('provider-b');
+    const recovery = await instanceB.claimResumeDispatches({
+      sessionId: SESSION_ID,
+      workspacePath: WORKSPACE_PATH,
+      providerSessionId: PROVIDER_SESSION_ID,
+      turnId: 'provider-b:turn-1',
+      isResume: true,
+    });
+    expect(recovery.dispatches).toHaveLength(1);
+
+    sessions.delete(SESSION_ID);
+    await expect(
+      instanceB.guardNativeSendMessage({
+        sessionId: SESSION_ID,
+        turnId: 'provider-b:turn-1',
+        toolUseId: 'send-after-session-delete',
+        input: { to: AGENT_ID, summary: 'Must not leave deleted session' },
+        plannedGenerations: recovery.dispatches.map(
+          (dispatch) => dispatch.generation
+        ),
+      })
+    ).resolves.toEqual({
+      matched: true,
+      allow: false,
+      reason: 'background-agent-recovery-session-missing',
+    });
   });
 
   it('lets the first manual or automatic resume win without blocking later ordinary messages', async () => {
@@ -691,7 +782,7 @@ describe('BackgroundAgentRecoveryCoordinator', () => {
     ).toBe('stopped');
   });
 
-  it('keeps a rejected dispatch retryable once, then records notify-only without false running state', async () => {
+  it('keeps a rejected dispatch retryable once, then records an ambiguous dispatch without false running state', async () => {
     await writeTranscriptFixture();
     const instanceA = coordinator('provider-a');
     await recordRunningBackgroundAgent(instanceA);
@@ -760,7 +851,7 @@ describe('BackgroundAgentRecoveryCoordinator', () => {
     expect(Object.values(ledger.tasks)[0]).toEqual(
       expect.objectContaining({
         recoveryState: 'notify-only',
-        lastReason: 'native-dispatch-not-observed',
+        lastReason: 'ambiguous-dispatch',
       })
     );
     expect(
@@ -824,7 +915,54 @@ describe('BackgroundAgentRecoveryCoordinator', () => {
     ).toBe('stopped');
   });
 
-  it('creates a new generation only after a recovered agent actually starts again', async () => {
+  it('persists an explicit TaskStop for a ledger-known task after provider recycle', async () => {
+    await writeTranscriptFixture();
+    await recordRunningBackgroundAgent(coordinator('provider-a'));
+    const recycledProvider = coordinator('provider-b');
+    const recovery = await recycledProvider.claimResumeDispatches({
+      sessionId: SESSION_ID,
+      workspacePath: WORKSPACE_PATH,
+      providerSessionId: PROVIDER_SESSION_ID,
+      turnId: 'provider-b:turn-1',
+      isResume: true,
+    });
+    expect(recovery.dispatches).toHaveLength(1);
+
+    await expect(
+      recycledProvider.observeExplicitTaskStop({
+        sessionId: SESSION_ID,
+        taskId: TASK_ID,
+      })
+    ).resolves.toBe(true);
+
+    const session = sessions.get(SESSION_ID)!;
+    expect(
+      Object.values(getBackgroundAgentRecoveryLedger(session.metadata).tasks)[0]
+    ).toEqual(
+      expect.objectContaining({
+        recoveryState: 'stopped',
+        lastReason: 'native-task-stop-succeeded',
+      })
+    );
+    expect(session.metadata.currentTasks).toEqual([
+      expect.objectContaining({
+        taskId: TASK_ID,
+        status: 'stopped',
+        recoveryDisposition: 'native-task-stop-succeeded',
+      }),
+    ]);
+
+    const nextProcess = await coordinator('provider-c').claimResumeDispatches({
+      sessionId: SESSION_ID,
+      workspacePath: WORKSPACE_PATH,
+      providerSessionId: PROVIDER_SESSION_ID,
+      turnId: 'provider-c:turn-1',
+      isResume: true,
+    });
+    expect(nextProcess.dispatches).toEqual([]);
+  });
+
+  it('dispatches each recovered-running generation once while same-generation replay stays at zero', async () => {
     await writeTranscriptFixture();
     const instanceA = coordinator('provider-a');
     await recordRunningBackgroundAgent(instanceA);
@@ -880,5 +1018,78 @@ describe('BackgroundAgentRecoveryCoordinator', () => {
         priorState: 'running',
       })
     );
+
+    // Replay of the recovered-running event is still generation 2, not a new
+    // candidate, and the next provider process dispatches that generation once.
+    await instanceB.observeTaskEvent({
+      sessionId: SESSION_ID,
+      workspacePath: WORKSPACE_PATH,
+      providerSessionId: PROVIDER_SESSION_ID,
+      turnId: 'provider-b:turn-1',
+      launch: { runInBackground: true, name: 'researcher' },
+      event: {
+        subtype: 'task_started',
+        task_id: TASK_ID,
+        tool_use_id: AGENT_ID,
+        task_type: 'local_agent',
+        description: 'Inspect the original source',
+      },
+    });
+    expect(
+      Object.values(
+        getBackgroundAgentRecoveryLedger(sessions.get(SESSION_ID)!.metadata)
+          .tasks
+      )
+    ).toHaveLength(2);
+
+    const instanceC = coordinator('provider-c');
+    const secondGeneration = await instanceC.claimResumeDispatches({
+      sessionId: SESSION_ID,
+      workspacePath: WORKSPACE_PATH,
+      providerSessionId: PROVIDER_SESSION_ID,
+      turnId: 'provider-c:turn-1',
+      isResume: true,
+    });
+    expect(secondGeneration.dispatches).toHaveLength(1);
+    expect(secondGeneration.dispatches[0]?.generation).toBe(
+      records[1]?.generation
+    );
+    await expect(
+      instanceC.guardNativeSendMessage({
+        sessionId: SESSION_ID,
+        turnId: 'provider-c:turn-1',
+        toolUseId: 'send-recovery-2',
+        input: { to: AGENT_ID, summary: 'Continue recovered running work' },
+        plannedGenerations: secondGeneration.dispatches.map(
+          (dispatch) => dispatch.generation
+        ),
+      })
+    ).resolves.toEqual(expect.objectContaining({ matched: true, allow: true }));
+    await instanceC.observeNativeSendMessageResult({
+      sessionId: SESSION_ID,
+      turnId: 'provider-c:turn-1',
+      toolUseId: 'send-recovery-2',
+      isError: false,
+      content: 'ok',
+    });
+
+    const repeatedProcess = await coordinator(
+      'provider-d'
+    ).claimResumeDispatches({
+      sessionId: SESSION_ID,
+      workspacePath: WORKSPACE_PATH,
+      providerSessionId: PROVIDER_SESSION_ID,
+      turnId: 'provider-d:turn-1',
+      isResume: true,
+    });
+    expect(repeatedProcess.dispatches).toEqual([]);
+    expect(
+      Object.values(
+        getBackgroundAgentRecoveryLedger(sessions.get(SESSION_ID)!.metadata)
+          .tasks
+      )
+        .sort((a, b) => a.generationNumber - b.generationNumber)
+        .map((record) => record.recoveryState)
+    ).toEqual(['dispatched', 'dispatched']);
   });
 });

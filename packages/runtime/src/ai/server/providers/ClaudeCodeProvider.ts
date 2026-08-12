@@ -144,9 +144,14 @@ import {
 import { applyTaskListMutation, sortTaskList, type TaskListItem } from './claudeCode/taskListReconstruct';
 import {
   BackgroundAgentRecoveryCoordinator,
-  buildBackgroundAgentRecoveryInstruction,
   inspectClaudeBackgroundAgentTranscript,
 } from './claudeCode/backgroundTaskRecovery';
+import {
+  getClaudeTaskStopTarget,
+  guardClaudeBackgroundAgentRecoveryTool,
+  observeClaudeBackgroundAgentRecoveryToolResult,
+  prepareClaudeBackgroundAgentRecoveryTurn,
+} from './claudeCode/backgroundTaskRecoveryLifecycle';
 
 
 /**
@@ -517,24 +522,18 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       teammatePreToolHandler: async (toolName, toolInput, toolUseID, hookSessionId) => {
         if (toolName === 'SendMessage' && hookSessionId && recoveryTurnId && toolUseID) {
           try {
-            const recoveryDecision = await this.backgroundAgentRecovery.guardNativeSendMessage({
-              sessionId: hookSessionId,
-              turnId: recoveryTurnId,
-              toolUseId: toolUseID,
-              input: toolInput || {},
-            });
-            if (recoveryDecision.matched && !recoveryDecision.allow) {
-              return {
-                handled: true,
-                result: {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse',
-                    permissionDecision: 'deny',
-                    permissionDecisionReason: recoveryDecision.reason,
-                  },
-                },
-              };
-            }
+            const recoveryGuard = await guardClaudeBackgroundAgentRecoveryTool(
+              this.backgroundAgentRecovery,
+              {
+                toolName,
+                sessionId: hookSessionId,
+                turnId: recoveryTurnId,
+                toolUseId: toolUseID,
+                toolInput: toolInput || {},
+                plannedGenerations: plannedRecoveryGenerations,
+              },
+            );
+            if (recoveryGuard.handled) return recoveryGuard;
           } catch (error) {
             console.error('[CLAUDE-CODE] Failed to guard native background-agent recovery dispatch:', error);
             if ((plannedRecoveryGenerations?.length ?? 0) > 0) {
@@ -868,22 +867,32 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
       const providerSessionId = sessionId ? this.sessions.getSessionId(sessionId) ?? undefined : undefined;
       const recovery = sessionId
-        ? await this.backgroundAgentRecovery.claimResumeDispatches({
-          sessionId,
-          workspacePath,
-          providerSessionId,
-          turnId: recoveryTurnId,
-          isResume: Boolean(providerSessionId),
-        }).catch((error) => {
+        ? await prepareClaudeBackgroundAgentRecoveryTurn(
+          this.backgroundAgentRecovery,
+          {
+            sessionId,
+            workspacePath,
+            providerSessionId,
+            turnId: recoveryTurnId,
+            isResume: Boolean(providerSessionId),
+          },
+        ).catch((error) => {
           console.error('[CLAUDE-CODE] Failed to inspect durable background-agent recovery state:', error);
-          return { dispatches: [], notices: [] };
+          return {
+            dispatches: [],
+            notices: [],
+            plannedGenerations: [],
+            systemInstruction: '',
+          };
         })
-        : { dispatches: [], notices: [] };
-      plannedRecoveryGenerations.push(...recovery.dispatches.map((dispatch) => dispatch.generation));
-      const recoveryInstruction = buildBackgroundAgentRecoveryInstruction(
-        recovery.dispatches,
-        recovery.notices,
-      );
+        : {
+          dispatches: [],
+          notices: [],
+          plannedGenerations: [],
+          systemInstruction: '',
+        };
+      plannedRecoveryGenerations.push(...recovery.plannedGenerations);
+      const recoveryInstruction = recovery.systemInstruction;
       if (sessionId && providerSessionId) {
         this.emit('message:logged', { sessionId, direction: 'output' });
       }
@@ -1528,17 +1537,27 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                     }
                   }
 
-                  if (toolCall.name === 'SendMessage' && sessionId) {
+                  const stoppedTaskId = getClaudeTaskStopTarget(
+                    toolCall.name,
+                    toolCall.arguments,
+                    item.isError === true,
+                  );
+                  if (toolCall.name === 'SendMessage' || stoppedTaskId) {
                     try {
-                      await this.backgroundAgentRecovery.observeNativeSendMessageResult({
-                        sessionId,
-                        turnId: recoveryTurnId,
-                        toolUseId: item.toolUseId,
-                        isError: item.isError === true,
-                        content: item.content,
-                      });
+                      await observeClaudeBackgroundAgentRecoveryToolResult(
+                        this.backgroundAgentRecovery,
+                        {
+                          sessionId,
+                          turnId: recoveryTurnId,
+                          toolName: toolCall.name,
+                          toolUseId: item.toolUseId,
+                          isError: item.isError === true,
+                          toolArguments: toolCall.arguments,
+                          content: item.content,
+                        },
+                      );
                     } catch (error) {
-                      console.error('[CLAUDE-CODE] Failed to persist native background-agent recovery result:', error);
+                      console.error('[CLAUDE-CODE] Failed to persist native background-agent recovery tool result:', error);
                     }
                   }
 
@@ -1552,11 +1571,6 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                   }
 
                   if (toolCall.name === 'TaskStop' && !item.isError) {
-                    const stoppedTaskId = typeof toolCall.arguments?.task_id === 'string'
-                      ? toolCall.arguments.task_id
-                      : typeof toolCall.arguments?.shell_id === 'string'
-                        ? toolCall.arguments.shell_id
-                        : undefined;
                     if (stoppedTaskId && this.activeTasks.has(stoppedTaskId)) {
                       await this.handleSystemTask(
                         'task_notification',
