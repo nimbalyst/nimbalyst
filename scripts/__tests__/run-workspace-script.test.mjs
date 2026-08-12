@@ -10,6 +10,27 @@ import {
   runScriptIn,
   selectWorkspaces,
 } from '../run-workspace-script.mjs';
+import { resolvePrepushBase } from '../resolve-prepush-base.mjs';
+
+test('checks fork pushes against canonical upstream main', () => {
+  const calls = [];
+  const base = resolvePrepushBase((...args) => {
+    calls.push(args);
+    if (args.at(-1) === 'upstream/main') return 'stable-base\n';
+    throw new Error('unexpected fallback');
+  });
+  assert.equal(base, 'stable-base');
+  assert.deepEqual(calls, [['merge-base', 'HEAD', 'upstream/main']]);
+});
+
+test('falls back to origin main when upstream is not configured', () => {
+  const base = resolvePrepushBase((...args) => {
+    if (args.at(-1) === 'upstream/main') throw new Error('unknown revision');
+    if (args.at(-1) === 'origin/main') return 'fork-base\n';
+    throw new Error('unexpected fallback');
+  });
+  assert.equal(base, 'fork-base');
+});
 
 test('launches the Windows npm shim through cmd.exe', () => {
   assert.deepEqual(npmSpawnConfig('win32', { ComSpec: 'C:\\Windows\\cmd.exe' }), {

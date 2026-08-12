@@ -5,7 +5,7 @@ set -eu
 # when the outgoing commits touch any manifest. This is exactly the check
 # CI's `npm ci` performs; without it, lockfile drift is only discovered
 # after pushing (2026-07-07 incident: npm 10/11 override-shape mismatch).
-base=$(git merge-base HEAD origin/main 2>/dev/null || echo HEAD~1)
+base=$(node scripts/resolve-prepush-base.mjs)
 
 # Fail fast, and accurately, when the hook is running under the wrong Node.
 # Every check below shells out to node/npm, and with engine-strict=true the
