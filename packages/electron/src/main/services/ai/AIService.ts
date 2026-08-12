@@ -144,6 +144,7 @@ import { ingestMobileQueuedPrompts } from './mobileQueuedPromptIngest';
 import { onWorkspaceWindowAvailable } from '../../window/workspaceWindowAvailability';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
+import { shouldDriveNewlyQueuedPrompt } from './queuedPromptDrivePolicy';
 import { supportsWorkspaceSlashWorkflowProvider } from '../../../shared/agentWorkflowProviders';
 import { captureTutorialMilestone } from '../tutorial/tutorialAnalytics';
 
@@ -2434,36 +2435,12 @@ export class AIService {
         promptCount: 1
       });
 
-      // claude-code-cli (NIM-806): the CLI queue normally drains on the PID
-      // watcher's running->idle transition. But a prompt queued while the CLI is
-      // ALREADY idle (e.g. smart-commit on a session sitting at its prompt) has no
-      // transition to ride, so it would sit forever. If the terminal is live and
-      // the session is idle right now, kick a flush directly. The flush singleton's
-      // in-flight guard + DB claim make this safe against a concurrent transition
-      // flush; if the CLI is mid-turn (running/waiting), we skip and let the next
-      // idle transition drain it.
-      //
-      // NIM-821: idleness is decided from the LIVE PID file, not just
-      // SessionStateManager's snapshot — the snapshot is updated asynchronously
-      // from the PID watcher, and a prompt queued inside that gap (PID already
-      // idle, state still 'running') skipped the kick with no future idle
-      // transition ever coming. Either signal saying idle kicks the flush; the
-      // claim is race-safe, so erring toward flushing is fine.
-      if (queuedSession?.provider === 'claude-code-cli') {
-        const terminalManager = getTerminalSessionManager();
-        const state = getSessionStateManager().getSessionState(sessionId);
-        const workspacePath = queuedSession.workspacePath ?? state?.workspacePath;
-        if (terminalManager.isTerminalActive(sessionId) && workspacePath) {
-          if (state?.status === 'idle') {
-            void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
-          } else {
-            void terminalManager.getClaudeCliLiveTurnState(sessionId).then((live) => {
-              if (live === 'idle') {
-                void flushNextClaudeCliQueuedPromptForSession(sessionId, workspacePath);
-              }
-            }).catch(() => {});
-          }
-        }
+      // Queue admission must notify the provider-neutral driver. It handles
+      // immediate dispatch, busy-session retry, and Claude CLI's dedicated
+      // delivery rails; a provider-specific idle kick leaves the other desktop
+      // providers with no edge to start their queue.
+      if (shouldDriveNewlyQueuedPrompt(queuedSession)) {
+        this.requestQueueDrive(sessionId, queuedSession.workspacePath, 'renderer-trigger');
       }
 
       return {
