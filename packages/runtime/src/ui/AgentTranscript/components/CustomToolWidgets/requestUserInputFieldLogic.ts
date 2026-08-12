@@ -62,6 +62,34 @@ export function seedDraft(args: RequestUserInputArgs): RequestUserInputDraft {
   return { fields, primed: true };
 }
 
+/**
+ * The draft is stored in an atomFamily keyed by the tool call's promptId
+ * (`providerToolCallId`). Priming (seeding fields from the agent's defaults)
+ * must happen once per KEY, not once per component instance. A bare
+ * "primed once" boolean on the component suppresses seeding when the key
+ * changes while the widget stays mounted, leaving a live, interactive form
+ * rendered against an empty draft. Tracking which key was primed makes the
+ * guard key-aware, so a re-key (or a remount onto a new key) fails safe:
+ *
+ *  - 'skip'  : this key was already handled this mount; preserve in-progress edits.
+ *  - 'adopt' : a different key whose draft is already primed (e.g. it survived an
+ *              unmount in the module-level atom); keep it, do not reseed over the
+ *              user's text.
+ *  - 'seed'  : a different (or first) key with an empty draft; seed from defaults
+ *              so the form is never left blank.
+ */
+export type PrimeDecision = 'skip' | 'adopt' | 'seed';
+
+export function decidePriming(
+  promptId: string,
+  primedKey: string | null,
+  draftPrimed: boolean,
+): PrimeDecision {
+  if (primedKey === promptId) return 'skip';
+  if (draftPrimed) return 'adopt';
+  return 'seed';
+}
+
 export function fieldDraftValid(
   field: RequestUserInputField,
   draft: RequestUserInputFieldDraft | undefined,

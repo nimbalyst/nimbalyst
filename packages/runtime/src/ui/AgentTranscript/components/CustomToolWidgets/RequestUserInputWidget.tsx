@@ -75,6 +75,7 @@ import {
   draftToAnswers,
   fieldDraftValid,
   seedDraft,
+  decidePriming,
 } from './requestUserInputFieldLogic';
 import type {
   RequestUserInputAnswer,
@@ -997,18 +998,18 @@ export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ messag
 
   const [draft, setDraft] = useAtom(requestUserInputDraftAtom(promptId));
 
-  // Prime the draft on first mount.
-  const primedRef = useRef(false);
+  // Prime the draft once per prompt KEY. Tracking which key was primed (not a
+  // bare "primed once" boolean) keeps this key-aware: if the atom key changes
+  // while the component stays mounted, the new draft is re-seeded rather than
+  // left as an empty, still-interactive form. See decidePriming + issue #1218.
+  const primedKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (primedRef.current) return;
     if (!args) return;
-    if (draft.primed) {
-      primedRef.current = true;
-      return;
-    }
-    setDraft(seedDraft(args));
-    primedRef.current = true;
-  }, [args, draft.primed, setDraft]);
+    const decision = decidePriming(promptId, primedKeyRef.current, draft.primed);
+    if (decision === 'skip') return;
+    if (decision === 'seed') setDraft(seedDraft(args));
+    primedKeyRef.current = promptId;
+  }, [args, promptId, draft.primed, setDraft]);
 
   const setFieldDraft = useCallback(
     (fieldId: string, next: RequestUserInputFieldDraft) => {
