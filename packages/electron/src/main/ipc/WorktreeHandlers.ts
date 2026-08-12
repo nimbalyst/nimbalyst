@@ -583,35 +583,10 @@ export function registerWorktreeHandlers(): void {
         throw new Error('workspacePath is required');
       }
 
-      logger.info('Deleting worktree', { worktreeId, workspacePath });
-
-      // Get worktree from database to find its path
-      const db = getDatabase();
-      if (!db) {
-        throw new Error('Database not initialized');
-      }
-
-      const worktreeStore = createWorktreeStore(db);
-      const worktree = await worktreeStore.get(worktreeId);
-
-      if (!worktree) {
-        throw new Error(`Worktree not found: ${worktreeId}`);
-      }
-
-      // Stop the git ref watcher for this worktree
-      await gitRefWatcher.stop(worktree.path);
-
-      // Delete the git worktree
-      await gitWorktreeService.deleteWorktree(worktree.path, workspacePath);
-
-      // Delete the database record
-      await worktreeStore.delete(worktreeId);
-
-      logger.info('Worktree deleted successfully', { worktreeId });
-
-      return {
-        success: true,
-      };
+      // Deletion is lifecycle-sensitive: the archive path owns session/provider
+      // retirement and its recovery path. Never remove a worktree directly and
+      // leave a resumable session pointing at a deleted working directory.
+      return archiveWorktree(worktreeId, workspacePath);
     } catch (error) {
       logger.error('Failed to delete worktree:', error);
       return {
