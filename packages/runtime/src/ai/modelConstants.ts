@@ -491,6 +491,7 @@ export const DEFAULT_MODELS = {
   lmstudio: 'lmstudio:local-model',
   opencode: 'opencode:anthropic/claude-sonnet-4-5',
   'copilot-cli': 'copilot-cli:default',
+  'model-launcher': 'model-launcher:deepseek-pro',
 };
 
 /**

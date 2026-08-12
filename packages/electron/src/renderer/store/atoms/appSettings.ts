@@ -1200,6 +1200,7 @@ const defaultProviders: Record<string, ProviderConfig> = {
   'openai-codex-acp': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   opencode: { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
   'copilot-cli': { enabled: false, testStatus: 'idle', installStatus: 'not-installed' },
+  'model-launcher': { enabled: true, testStatus: 'idle' },
   lmstudio: { enabled: false, baseUrl: 'http://127.0.0.1:8234', testStatus: 'idle' },
 };
 

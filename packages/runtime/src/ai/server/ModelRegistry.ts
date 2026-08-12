@@ -86,6 +86,10 @@ export class ModelRegistry {
           const { CopilotCLIProvider } = await import('./providers/CopilotCLIProvider');
           models = await CopilotCLIProvider.getModels();
           break;
+        case 'model-launcher':
+          const { ModelLauncherProvider } = await import('./providers/ModelLauncherProvider');
+          models = await ModelLauncherProvider.getModels();
+          break;
         default:
           assertExhaustiveProvider(provider);
       }
@@ -125,6 +129,7 @@ export class ModelRegistry {
     if (shouldFetch('opencode')) promises.push(this.getModelsForProvider('opencode'));
     if (shouldFetch('lmstudio')) promises.push(this.getModelsForProvider('lmstudio', undefined, apiKeys['lmstudio_url']));
     if (shouldFetch('copilot-cli')) promises.push(this.getModelsForProvider('copilot-cli'));
+    if (shouldFetch('model-launcher')) promises.push(this.getModelsForProvider('model-launcher'));
 
     const results = await Promise.allSettled(promises);
 
@@ -174,6 +179,9 @@ export class ModelRegistry {
       case 'copilot-cli':
         const { CopilotCLIProvider: CLP } = await import('./providers/CopilotCLIProvider');
         return CLP.getDefaultModel();
+      case 'model-launcher':
+        const { ModelLauncherProvider } = await import('./providers/ModelLauncherProvider');
+        return ModelLauncherProvider.getDefaultModel();
       default:
         assertExhaustiveProvider(provider);
     }
