@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Explicit agent attention alerts can reach mobile even while the desktop app is active.
 
 ### Removed
 <!-- Removed features go here -->

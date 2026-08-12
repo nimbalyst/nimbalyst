@@ -34,6 +34,7 @@
 export type {
   SyncConfig,
   SyncStatus,
+  MobilePushClientWriteResult,
   SyncProvider,
   SessionChange,
   SyncedSessionMetadata,

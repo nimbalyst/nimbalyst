@@ -25,6 +25,7 @@ import { deriveTrackerPersonalStateKey } from './trackerPersonalStateKey';
 import type {
   SyncConfig,
   SyncStatus,
+  MobilePushClientWriteResult,
   SyncProvider,
   SessionChange,
   SyncedSessionMetadata,
@@ -1381,9 +1382,14 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   } | null = null;
 
   // Helper to announce device to the index server
-  function announceDevice(): void {
+  function announceDevice(override?: Partial<DeviceInfo>): {
+    attempted: boolean;
+    written: boolean;
+    error?: string;
+  } {
     // Get current device info (prefer callback for dynamic presence, fallback to static)
-    const deviceInfo = config.getDeviceInfo?.() ?? config.deviceInfo;
+    const baseDeviceInfo = config.getDeviceInfo?.() ?? config.deviceInfo;
+    const deviceInfo = baseDeviceInfo ? { ...baseDeviceInfo, ...override } : undefined;
     // Check both our flag AND the actual WebSocket readyState to avoid "Sent before connected" errors
     if (deviceInfo && indexWs && indexConnected && indexWs.readyState === WebSocket.OPEN) {
       const announceMsg: ClientMessage = {
@@ -1394,9 +1400,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           lastActiveAt: deviceInfo.lastActiveAt ?? Date.now(),
         },
       };
-      indexWs.send(JSON.stringify(announceMsg));
-      // console.log('[CollabV3] Announced device:', deviceInfo.name);
+      try {
+        indexWs.send(JSON.stringify(announceMsg));
+        return { attempted: true, written: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[CollabV3] Failed to announce device:', message);
+        return { attempted: true, written: false, error: message.slice(0, 500) };
+      }
     }
+    return { attempted: false, written: false };
   }
 
   // Start periodic device re-announcement to handle server hibernation
@@ -4134,7 +4147,35 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     /** Request the sync server to send a push notification to mobile devices */
-    async requestMobilePush(sessionId: string, title: string, body: string): Promise<void> {
+    async requestMobilePush(
+      sessionId: string,
+      title: string,
+      body: string,
+      options?: {
+        bypassActiveDeviceRouting?: boolean;
+        forceDesktopAwayForPush?: boolean;
+      }
+    ): Promise<MobilePushClientWriteResult> {
+      let forcedAwayFrameWritten = false;
+      let restorationScheduled = false;
+      const skipped = (
+        skippedReason: Exclude<
+          MobilePushClientWriteResult['skippedReason'],
+          'request_frame_send_failed' | null
+        >,
+        error?: unknown
+      ): MobilePushClientWriteResult => ({
+        outcome: 'skipped',
+        attempted: false,
+        requestFrameWritten: false,
+        skippedReason,
+        ...(error !== undefined
+          ? { error: (error instanceof Error ? error.message : String(error)).slice(0, 500) }
+          : {}),
+        forcedAwayFrameWritten,
+        restorationScheduled,
+      });
+
       // Ensure we're connected before sending the request
       if (!indexWs || !indexConnected) {
         console.log('[CollabV3] Not connected to index, attempting to reconnect before requesting mobile push...');
@@ -4142,36 +4183,67 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           await connectToIndex();
         } catch (err) {
           console.error('[CollabV3] Failed to connect to index before requesting mobile push:', err);
-          return;
+          return skipped('reconnect_failed', err);
         }
       }
 
       // Double-check connection and WebSocket state after await
-      if (!indexWs || !indexConnected) {
+      if (!indexWs) {
         console.error('[CollabV3] Cannot request mobile push - failed to establish connection');
-        return;
+        return skipped('socket_unavailable');
       }
 
       // Check actual WebSocket state
-      if (indexWs.readyState !== WebSocket.OPEN) {
+      if (!indexConnected || indexWs.readyState !== WebSocket.OPEN) {
         console.error('[CollabV3] Cannot request mobile push - WebSocket not open, state:', indexWs.readyState);
-        return;
+        return skipped('socket_not_open');
       }
 
       const deviceId = config.getDeviceInfo?.()?.deviceId ?? config.deviceInfo?.deviceId;
+      if (options?.forceDesktopAwayForPush && deviceId) {
+        const forcedAwayResult = announceDevice({
+          deviceId,
+          isFocused: false,
+          status: 'away',
+          lastActiveAt: Date.now() - 10 * 60 * 1000,
+        });
+        forcedAwayFrameWritten = forcedAwayResult.written;
+        setTimeout(() => announceDevice(), 1500);
+        restorationScheduled = true;
+        if (!forcedAwayResult.written) {
+          return skipped('forced_away_frame_failed', forcedAwayResult.error);
+        }
+      }
+
       const msg: ClientMessage = {
         type: 'requestMobilePush',
         sessionId: sessionId,
         title,
         body,
-        requestingDeviceId: deviceId,
+        ...(options?.bypassActiveDeviceRouting ? {} : { requestingDeviceId: deviceId }),
       };
       // console.log('[CollabV3] Requesting mobile push for session:', sessionId, 'deviceId:', deviceId, 'readyState:', indexWs.readyState);
       try {
         indexWs.send(JSON.stringify(msg));
-        // console.log('[CollabV3] Mobile push message sent successfully');
+        return {
+          outcome: 'request_frame_written',
+          attempted: true,
+          requestFrameWritten: true,
+          skippedReason: null,
+          forcedAwayFrameWritten,
+          restorationScheduled,
+        };
       } catch (error) {
         console.error('[CollabV3] Failed to send mobile push message:', error);
+        return {
+          outcome: 'failed',
+          attempted: true,
+          requestFrameWritten: false,
+          skippedReason: 'request_frame_send_failed',
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+          forcedAwayFrameWritten,
+          restorationScheduled,
+        };
       }
     },
 
