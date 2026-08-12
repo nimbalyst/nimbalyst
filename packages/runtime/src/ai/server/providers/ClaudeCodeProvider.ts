@@ -329,7 +329,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   private recoveryTurnSequence = 0;
   private recoverySessionId: string | undefined;
   private destroying = false;
-  private explicitUserStopRequested = false;
+  // Monotonic high-water mark for turns covered by explicit user stop intent.
+  // Later turns receive a greater sequence and remain eligible, while late SDK
+  // chunks from any stopped turn stay gated without an unbounded identity set.
+  private explicitUserStopThroughRecoveryTurnSequence = 0;
 
   // Terminal task_notification chunks received while draining background tasks
   // after the lead turn ended. Consumed by finalizeBackgroundDrain to wake the
@@ -705,6 +708,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     return resolveClaudeCodeModelVariant(this.config.model, CLAUDE_CODE_SAFE_FALLBACK_MODEL);
   }
 
+  private beginRecoveryTurn(): string {
+    return `${this.recoveryInstanceId}:turn-${++this.recoveryTurnSequence}`;
+  }
 
 
   async *sendMessage(
@@ -716,8 +722,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     attachments?: any[]
   ): AsyncIterableIterator<StreamChunk> {
     const startTime = Date.now();
-    this.explicitUserStopRequested = false;
-    const recoveryTurnId = `${this.recoveryInstanceId}:turn-${++this.recoveryTurnSequence}`;
+    const recoveryTurnId = this.beginRecoveryTurn();
     const plannedRecoveryGenerations: string[] = [];
     if (sessionId) this.recoverySessionId = sessionId;
 
@@ -2253,7 +2258,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   private async persistExplicitUserStopBoundary(): Promise<void> {
     if (this.destroying) return;
-    this.explicitUserStopRequested = true;
+    this.explicitUserStopThroughRecoveryTurnSequence = Math.max(
+      this.explicitUserStopThroughRecoveryTurnSequence,
+      this.recoveryTurnSequence,
+    );
 
     for (const task of this.activeTasks.values()) {
       if (task.status === 'running') task.status = 'stopped';
@@ -2428,6 +2436,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
    */
   async interruptCurrentTurn(): Promise<InterruptTurnResult> {
     const leadQuery = this.leadQuery;
+    const interruptResolve = this.interruptResolve;
     if (leadQuery) {
       // Mark the turn as explicitly interrupted immediately so a naturally
       // closing stream cannot inject teammate follow-up while the durable stop
@@ -2435,28 +2444,47 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       this.wasInterrupted = true;
     }
 
-    await this.persistExplicitUserStopBoundary();
-
-    if (!leadQuery) {
-      console.log('[CLAUDE-CODE] interruptCurrentTurn: no active lead query, falling back to abort');
-      this.abortProviderRuntime();
-      return { method: 'abort', hadActiveTurn: false };
-    }
-
-    console.log('[CLAUDE-CODE] interruptCurrentTurn: interrupting active lead query');
-
-    if (this.interruptResolve) {
-      this.interruptResolve();
-      this.interruptResolve = null;
+    let persistenceFailed = false;
+    let persistenceError: unknown;
+    try {
+      await this.persistExplicitUserStopBoundary();
+    } catch (error) {
+      persistenceFailed = true;
+      persistenceError = error;
     }
 
     try {
-      await leadQuery.interrupt();
-    } catch (err) {
-      console.warn('[CLAUDE-CODE] interruptCurrentTurn: interrupt() failed (transport may be closed):', err);
-    }
+      if (!leadQuery) {
+        console.log('[CLAUDE-CODE] interruptCurrentTurn: no active lead query, falling back to abort');
+        this.abortProviderRuntime();
+        return { method: 'abort', hadActiveTurn: false };
+      }
 
-    return { method: 'interrupt', hadActiveTurn: true };
+      console.log('[CLAUDE-CODE] interruptCurrentTurn: interrupting active lead query');
+
+      if (interruptResolve) {
+        interruptResolve();
+        if (this.interruptResolve === interruptResolve) {
+          this.interruptResolve = null;
+        }
+      }
+
+      try {
+        await leadQuery.interrupt();
+      } catch (err) {
+        console.warn('[CLAUDE-CODE] interruptCurrentTurn: interrupt() failed (transport may be closed):', err);
+      }
+
+      return { method: 'interrupt', hadActiveTurn: true };
+    } finally {
+      if (persistenceFailed) {
+        console.error(
+          '[CLAUDE-CODE] Explicit user stop runtime cleanup was attempted, but durable recovery suppression failed:',
+          persistenceError,
+        );
+        throw persistenceError;
+      }
+    }
   }
 
   /**
@@ -2946,9 +2974,21 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     recoveryTurnId: string,
     launch?: { runInBackground?: boolean; name?: string },
   ): Promise<void> {
-    // Once explicit stop intent is observed, do not let a late SDK chunk create
-    // fresh recoverable evidence behind the durable cancellation boundary.
-    if (this.explicitUserStopRequested) return;
+    // Do not let late SDK chunks from a stopped turn recreate recoverable
+    // evidence after a newer turn starts. Recovery turn ids are provider-owned
+    // and monotonic, so the stopped high-water mark is constant-space and
+    // remains valid for as long as an older stream can still emit.
+    const recoveryTurnPrefix = `${this.recoveryInstanceId}:turn-`;
+    const recoveryTurnSequence = recoveryTurnId.startsWith(recoveryTurnPrefix)
+      ? Number(recoveryTurnId.slice(recoveryTurnPrefix.length))
+      : Number.NaN;
+    if (
+      Number.isSafeInteger(recoveryTurnSequence)
+      && recoveryTurnSequence > 0
+      && recoveryTurnSequence <= this.explicitUserStopThroughRecoveryTurnSequence
+    ) {
+      return;
+    }
 
     if (subtype === 'task_started') {
       this.activeTasks.set(chunk.task_id, {

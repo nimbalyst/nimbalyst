@@ -25,6 +25,7 @@ type MutableSession = RecoverySessionSnapshot & {
 type ProviderInternals = {
   backgroundAgentRecovery: BackgroundAgentRecoveryCoordinator;
   recoverySessionId?: string;
+  beginRecoveryTurn: () => string;
   activeTasks: Map<
     string,
     {
@@ -196,6 +197,7 @@ describe("ClaudeCodeProvider explicit-interrupt recovery boundary", () => {
     );
     const interrupt = vi.fn(async () => undefined);
     const resolveInterrupt = vi.fn();
+    const stoppedTurn = internals.beginRecoveryTurn();
     internals.leadQuery = { interrupt };
     internals.interruptResolve = resolveInterrupt;
     harness.blockNextWrite();
@@ -217,7 +219,7 @@ describe("ClaudeCodeProvider explicit-interrupt recovery boundary", () => {
         },
         SESSION_ID,
         WORKSPACE_PATH,
-        "provider-owner:turn-1",
+        stoppedTurn,
         { runInBackground: true }
       );
     } finally {
@@ -297,6 +299,175 @@ describe("ClaudeCodeProvider explicit-interrupt recovery boundary", () => {
         recoveryDisposition: "user-cancelled",
       }),
     ]);
+    provider.destroy();
+  });
+
+  it("keeps stopped turn A gated after turn B begins while accepting B task events", async () => {
+    const harness = createHarness("turn-safe-session");
+    const owner = harness.coordinator("turn-safe-owner");
+    await recordRunningAgent(owner, "turn-safe-session");
+    const { provider, internals } = wireProvider(
+      owner,
+      "turn-safe-session",
+      harness.sessions
+    );
+    const turnA = internals.beginRecoveryTurn();
+    internals.leadQuery = { interrupt: vi.fn(async () => undefined) };
+
+    await expect(provider.interruptCurrentTurn()).resolves.toEqual({
+      method: "interrupt",
+    });
+
+    const turnB = internals.beginRecoveryTurn();
+    await internals.handleSystemTask(
+      "task_started",
+      {
+        task_id: "late-task-from-turn-a",
+        tool_use_id: "late-agent-from-turn-a",
+        task_type: "local_agent",
+        description: "Late stopped-turn event",
+      },
+      "turn-safe-session",
+      WORKSPACE_PATH,
+      turnA,
+      { runInBackground: true }
+    );
+    await internals.handleSystemTask(
+      "task_started",
+      {
+        task_id: "legitimate-task-from-turn-b",
+        tool_use_id: "legitimate-agent-from-turn-b",
+        task_type: "local_agent",
+        description: "Legitimate next-turn event",
+      },
+      "turn-safe-session",
+      WORKSPACE_PATH,
+      turnB,
+      { runInBackground: true }
+    );
+
+    expect(internals.activeTasks.has("late-task-from-turn-a")).toBe(false);
+    expect(
+      internals.activeTasks.get("legitimate-task-from-turn-b")
+    ).toMatchObject({
+      status: "running",
+      sourceTurnId: turnB,
+    });
+    const records = Object.values(
+      getBackgroundAgentRecoveryLedger(
+        harness.sessions.get("turn-safe-session")!.metadata
+      ).tasks
+    );
+    expect(
+      records.some((record) => record.taskId === "late-task-from-turn-a")
+    ).toBe(false);
+    expect(
+      records.find((record) => record.taskId === "legitimate-task-from-turn-b")
+    ).toMatchObject({
+      recoveryState: "pending",
+      sourceTurnId: turnB,
+    });
+    provider.destroy();
+  });
+
+  it("still releases the graceful runtime and gates late chunks when durable suppression fails", async () => {
+    const harness = createHarness("graceful-failure-session");
+    const owner = harness.coordinator("graceful-failure-owner");
+    await recordRunningAgent(owner, "graceful-failure-session");
+    const { provider, internals } = wireProvider(
+      owner,
+      "graceful-failure-session",
+      harness.sessions
+    );
+    const stoppedTurn = internals.beginRecoveryTurn();
+    const interrupt = vi.fn(async () => undefined);
+    const resolveInterrupt = vi.fn();
+    internals.leadQuery = { interrupt };
+    internals.interruptResolve = resolveInterrupt;
+    vi.spyOn(owner, "suppressRunning").mockRejectedValueOnce(
+      new Error("durable suppression failed")
+    );
+
+    await expect(provider.interruptCurrentTurn()).rejects.toThrow(
+      "durable suppression failed"
+    );
+
+    expect(resolveInterrupt).toHaveBeenCalledOnce();
+    expect(interrupt).toHaveBeenCalledOnce();
+    await internals.handleSystemTask(
+      "task_started",
+      {
+        task_id: "late-task-after-graceful-failure",
+        tool_use_id: "late-agent-after-graceful-failure",
+        task_type: "local_agent",
+        description: "Must remain gated in memory",
+      },
+      "graceful-failure-session",
+      WORKSPACE_PATH,
+      stoppedTurn,
+      { runInBackground: true }
+    );
+    expect(internals.activeTasks.has("late-task-after-graceful-failure")).toBe(
+      false
+    );
+    expect(
+      Object.values(
+        getBackgroundAgentRecoveryLedger(
+          harness.sessions.get("graceful-failure-session")!.metadata
+        ).tasks
+      )[0]
+    ).toMatchObject({
+      recoveryState: "pending",
+    });
+    provider.destroy();
+  });
+
+  it("still aborts the no-lead runtime and gates late chunks when durable suppression fails", async () => {
+    const harness = createHarness("abort-failure-session");
+    const owner = harness.coordinator("abort-failure-owner");
+    await recordRunningAgent(owner, "abort-failure-session");
+    const { provider, internals } = wireProvider(
+      owner,
+      "abort-failure-session",
+      harness.sessions
+    );
+    const stoppedTurn = internals.beginRecoveryTurn();
+    const abortController = new AbortController();
+    internals.abortController = abortController;
+    vi.spyOn(owner, "suppressRunning").mockRejectedValueOnce(
+      new Error("durable suppression failed")
+    );
+
+    await expect(provider.interruptCurrentTurn()).rejects.toThrow(
+      "durable suppression failed"
+    );
+
+    expect(abortController.signal.aborted).toBe(true);
+    await internals.handleSystemTask(
+      "task_started",
+      {
+        task_id: "late-task-after-abort-failure",
+        tool_use_id: "late-agent-after-abort-failure",
+        task_type: "local_agent",
+        description: "Must remain gated in memory",
+      },
+      "abort-failure-session",
+      WORKSPACE_PATH,
+      stoppedTurn,
+      { runInBackground: true }
+    );
+    expect(internals.activeTasks.has("late-task-after-abort-failure")).toBe(
+      false
+    );
+    expect(
+      Object.values(
+        getBackgroundAgentRecoveryLedger(
+          harness.sessions.get("abort-failure-session")!.metadata
+        ).tasks
+      )[0]
+    ).toMatchObject({
+      recoveryState: "pending",
+    });
     provider.destroy();
   });
 
