@@ -82,6 +82,7 @@ type NotifyUserArgs = {
   body: string;
   sessionId?: string;
   bypassFocusCheck?: boolean;
+  mobilePush?: "never" | "when_desktop_away" | "always";
   silent?: boolean;
   urgency?: "normal" | "critical" | "low";
 };
@@ -351,7 +352,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "notify_user",
     description:
-      "Show a local OS/system notification to get the human's attention. Use this for explicitly authorized asynchronous attention signals when chat may be missed. This is separate from voice mode; it respects the user's OS notification setting and returns JSON explaining whether the notification was shown or skipped.",
+      "Show a local OS/system notification and optionally request mobile push. Use mobilePush=always only for explicitly authorized attention signals; it bypasses active-desktop suppression and returns client-write receipts, not confirmed push-provider delivery.",
     inputSchema: {
       type: "object",
       properties: {
@@ -372,6 +373,12 @@ export const META_AGENT_TOOL_DEFS: Array<{
           type: "boolean",
           description:
             "Optional. If true, bypass in-app focus/session-visible suppression while still respecting the OS notification setting. Use only when the user asked agents to get their attention.",
+        },
+        mobilePush: {
+          type: "string",
+          enum: ["never", "when_desktop_away", "always"],
+          description:
+            "Optional mobile delivery mode. Defaults to never. always is reserved for explicit user-authorized attention requests.",
         },
         silent: {
           type: "boolean",

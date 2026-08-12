@@ -81,6 +81,23 @@ export interface SyncStatus {
   error: string | null;
 }
 
+export interface MobilePushClientWriteResult {
+  /** Describes only the desktop client's WebSocket writes, never push-provider delivery. */
+  outcome: 'skipped' | 'failed' | 'request_frame_written';
+  attempted: boolean;
+  requestFrameWritten: boolean;
+  skippedReason:
+    | 'reconnect_failed'
+    | 'socket_unavailable'
+    | 'socket_not_open'
+    | 'forced_away_frame_failed'
+    | 'request_frame_send_failed'
+    | null;
+  error?: string;
+  forcedAwayFrameWritten: boolean;
+  restorationScheduled: boolean;
+}
+
 export interface SyncProvider {
   /** Connect to sync server for a session */
   connect(sessionId: string): Promise<void>;
@@ -286,7 +303,17 @@ export interface SyncProvider {
    * Used when agent completes execution and user should be notified on mobile.
    * The server will check device presence before sending (suppresses if mobile is active).
    */
-  requestMobilePush?(sessionId: string, title: string, body: string): Promise<void>;
+  requestMobilePush?(
+    sessionId: string,
+    title: string,
+    body: string,
+    options?: {
+      /** Omit the requesting desktop from the server's active-device routing decision. */
+      bypassActiveDeviceRouting?: boolean;
+      /** Briefly advertise this desktop as away so an explicit attention push is not suppressed. */
+      forceDesktopAwayForPush?: boolean;
+    }
+  ): Promise<MobilePushClientWriteResult>;
 
   /** Get list of currently connected devices */
   getConnectedDevices?(): DeviceInfo[];

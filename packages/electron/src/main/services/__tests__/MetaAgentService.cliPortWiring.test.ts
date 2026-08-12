@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const syncMocks = vi.hoisted(() => ({
+  requestMobilePush: vi.fn(),
+  isDesktopTrulyAway: vi.fn(() => false),
+}));
+
 // NIM-828 (original): MetaAgentService.start() had to wire the standalone
 // meta-agent MCP port into ClaudeCliLauncherConfig so claude-code-cli sessions
 // got an --mcp-config including the meta-agent tools.
@@ -42,7 +47,13 @@ vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] },
 }));
 
-vi.mock('../SyncManager', () => ({ getSyncProvider: () => ({ pushChange: vi.fn() }) }));
+vi.mock('../SyncManager', () => ({
+  getSyncProvider: () => ({
+    pushChange: vi.fn(),
+    requestMobilePush: syncMocks.requestMobilePush,
+  }),
+  isDesktopTrulyAway: syncMocks.isDesktopTrulyAway,
+}));
 vi.mock('../../utils/ipcRegistry', () => ({ safeHandle: vi.fn() }));
 vi.mock('../../utils/store', () => ({ getDefaultAIModel: () => null }));
 vi.mock('../../utils/timestampUtils', () => ({ toMillis: (v: unknown) => v }));
@@ -68,6 +79,15 @@ import { MetaAgentService } from '../MetaAgentService';
 describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', () => {
   beforeEach(() => {
     vi.mocked(setMetaAgentToolFns).mockReset();
+    syncMocks.requestMobilePush.mockReset().mockResolvedValue({
+      outcome: 'request_frame_written',
+      attempted: true,
+      requestFrameWritten: true,
+      skippedReason: null,
+      forcedAwayFrameWritten: true,
+      restorationScheduled: true,
+    });
+    syncMocks.isDesktopTrulyAway.mockReturnValue(false);
   });
 
   it('injects the meta-agent tool fns into the unified-server dispatch on start', async () => {
@@ -121,6 +141,29 @@ describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', (
       urgency: 'normal',
     });
     expect(result.result.shown).toBe(true);
+    expect(syncMocks.requestMobilePush).not.toHaveBeenCalled();
+
+    const forcedResult = JSON.parse(await fns.notifyUser('caller-session', '/workspace', {
+      title: 'Decision needed',
+      body: 'Please check the session',
+      mobilePush: 'always',
+    }));
+    expect(syncMocks.requestMobilePush).toHaveBeenCalledWith(
+      'caller-session',
+      'Build release -- Decision needed',
+      'Please check the session',
+      {
+        bypassActiveDeviceRouting: true,
+        forceDesktopAwayForPush: true,
+      }
+    );
+    expect(forcedResult.mobilePush).toMatchObject({
+      mode: 'always',
+      attempted: true,
+      requestFrameWritten: true,
+      forcedAwayFrameWritten: true,
+      restorationScheduled: true,
+    });
 
     vi.mocked(AISessionsRepository.get).mockResolvedValueOnce({
       id: 'other-session',
@@ -131,7 +174,7 @@ describe('MetaAgentService tool-fn injection (Phase 7: no standalone server)', (
       body: 'Do not deliver',
       sessionId: 'other-session',
     })).rejects.toThrow('Session other-session not found');
-    expect(showNotificationWithResult).toHaveBeenCalledTimes(1);
+    expect(showNotificationWithResult).toHaveBeenCalledTimes(2);
 
     await service.shutdown();
   });

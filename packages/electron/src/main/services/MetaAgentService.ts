@@ -22,6 +22,8 @@ import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 import type { NotificationOptions, NotificationResult } from './NotificationService';
 import { composeNotificationTitle } from '../../shared/notificationTitle';
+import { getSyncProvider, isDesktopTrulyAway } from './SyncManager';
+import type { MobilePushClientWriteResult } from '@nimbalyst/runtime/sync';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -121,9 +123,13 @@ interface NotifyUserArgs {
   body?: string;
   sessionId?: string;
   bypassFocusCheck?: boolean;
+  mobilePush?: 'never' | 'when_desktop_away' | 'always';
   silent?: boolean;
   urgency?: 'normal' | 'critical' | 'low';
 }
+
+const DIRECT_FORCED_NOTIFICATION_RATE_WINDOW_MS = 60 * 1000;
+const DIRECT_FORCED_NOTIFICATION_RATE_LIMIT = 10;
 
 type ShowNotificationWithResult = (
   options: NotificationOptions
@@ -185,6 +191,7 @@ export class MetaAgentService {
   private notificationSignatures = new Map<string, string>();
   private ipcHandlersRegistered = false;
   private showNotificationWithResult: ShowNotificationWithResult | null = null;
+  private directForcedNotificationAttempts = new Map<string, number[]>();
 
   private constructor() {}
 
@@ -304,6 +311,7 @@ export class MetaAgentService {
     this.unsubscribeStateListener = null;
     this.notificationSignatures.clear();
     this.showNotificationWithResult = null;
+    this.directForcedNotificationAttempts.clear();
     // No standalone HTTP server to tear down (Phase 7); the injected toolFns are
     // process-lifetime singletons.
     this.serverPort = null;
@@ -1050,11 +1058,17 @@ export class MetaAgentService {
       throw new Error('Notification delivery is not initialized');
     }
 
+    const mobilePushMode = args.mobilePush || 'never';
+    if (mobilePushMode === 'always') {
+      this.consumeForcedNotificationRateLimit(callerSessionId, targetSessionId);
+    }
+
     const boundedBody = body.length > 1000 ? `${body.slice(0, 997)}...` : body;
     const rawSourceLabel = session.title || session.provider || `Session ${targetSessionId.slice(0, 8)}`;
     const sourceLabel = rawSourceLabel.trim().slice(0, 60) || `Session ${targetSessionId.slice(0, 8)}`;
+    const notificationTitle = composeNotificationTitle(sourceLabel, title);
     const result = await this.showNotificationWithResult({
-      title: composeNotificationTitle(sourceLabel, title),
+      title: notificationTitle,
       body: boundedBody,
       sessionId: targetSessionId,
       workspacePath: session.workspacePath,
@@ -1065,14 +1079,85 @@ export class MetaAgentService {
       urgency: args.urgency || 'normal',
     });
 
+    const desktopTrulyAway = isDesktopTrulyAway();
+    const bypassActiveDeviceRouting = mobilePushMode === 'always';
+    const forceDesktopAwayForPush = mobilePushMode === 'always';
+    let mobilePushAttempted = false;
+    let mobilePushRequestFrameWritten = false;
+    let mobilePushOutcome: MobilePushClientWriteResult['outcome'] = 'skipped';
+    let mobilePushSkippedReason: string | null =
+      mobilePushMode === 'never' ? 'not_requested' : null;
+    let mobilePushError: string | null = null;
+    let forcedAwayFrameWritten = false;
+    let restorationScheduled = false;
+
+    if (mobilePushMode !== 'never') {
+      const syncProvider = getSyncProvider();
+      if (!syncProvider?.requestMobilePush) {
+        mobilePushSkippedReason = 'sync_provider_unavailable';
+      } else if (mobilePushMode === 'when_desktop_away' && !desktopTrulyAway) {
+        mobilePushSkippedReason = 'desktop_not_truly_away';
+      } else {
+        try {
+          const writeResult = await syncProvider.requestMobilePush(
+            targetSessionId,
+            notificationTitle,
+            boundedBody,
+            { bypassActiveDeviceRouting, forceDesktopAwayForPush }
+          );
+          mobilePushAttempted = writeResult.attempted;
+          mobilePushRequestFrameWritten = writeResult.requestFrameWritten;
+          mobilePushOutcome = writeResult.outcome;
+          mobilePushSkippedReason = writeResult.skippedReason;
+          mobilePushError = writeResult.error || null;
+          forcedAwayFrameWritten = writeResult.forcedAwayFrameWritten;
+          restorationScheduled = writeResult.restorationScheduled;
+        } catch (error) {
+          mobilePushError = error instanceof Error ? error.message : String(error);
+          mobilePushSkippedReason = 'provider_rejected';
+          mobilePushOutcome = 'failed';
+        }
+      }
+    }
+
     return JSON.stringify({
       tool: 'notify_user',
       deliveryChannel: 'os_notification',
-      mobilePushAttempted: false,
+      mobilePushAttempted,
+      mobilePush: {
+        mode: mobilePushMode,
+        requested: mobilePushMode !== 'never',
+        attempted: mobilePushAttempted,
+        requestFrameWritten: mobilePushRequestFrameWritten,
+        outcome: mobilePushOutcome,
+        skippedReason: mobilePushSkippedReason,
+        desktopTrulyAway,
+        bypassActiveDeviceRouting,
+        forceDesktopAwayForPush,
+        forcedAwayFrameWritten,
+        restorationScheduled,
+        ...(mobilePushError ? { error: mobilePushError } : {}),
+      },
       sessionId: targetSessionId,
       bypassFocusCheck: args.bypassFocusCheck === true,
       result,
     }, null, 2);
+  }
+
+  private consumeForcedNotificationRateLimit(
+    callerSessionId: string,
+    targetSessionId: string
+  ): void {
+    const key = `${callerSessionId}\u0000${targetSessionId}`;
+    const now = Date.now();
+    const recent = (this.directForcedNotificationAttempts.get(key) || []).filter(
+      (timestamp) => now - timestamp < DIRECT_FORCED_NOTIFICATION_RATE_WINDOW_MS
+    );
+    if (recent.length >= DIRECT_FORCED_NOTIFICATION_RATE_LIMIT) {
+      throw new Error('notify_user rate limit exceeded for this caller and target session');
+    }
+    recent.push(now);
+    this.directForcedNotificationAttempts.set(key, recent);
   }
 
   private async respondToPrompt(workspaceId: string, args: {
