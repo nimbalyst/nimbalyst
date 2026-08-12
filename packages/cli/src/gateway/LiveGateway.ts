@@ -298,6 +298,12 @@ function mcpItemToRecord(item: any): TrackerRecord {
       if (v !== undefined) fields[k] = v;
     }
   }
+  // `tracker_get` returns comments as a top-level key rather than inside the
+  // customFields bag, so they reach no field without this. Empty stays unset:
+  // an item with no comments should read the same as it always has.
+  if (Array.isArray(item.comments) && item.comments.length > 0) {
+    fields.comments = item.comments;
+  }
   return {
     id: item.id,
     primaryType: item.type,
