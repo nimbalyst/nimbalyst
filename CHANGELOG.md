@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Running Claude background agents now resume from their surviving transcript after a provider restart.
 
 ### Removed
 <!-- Removed features go here -->

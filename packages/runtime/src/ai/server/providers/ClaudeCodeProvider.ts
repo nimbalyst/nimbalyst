@@ -52,6 +52,7 @@ import {
 import type { InterruptTurnResult } from '../AIProvider';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
+import { AISessionsRepository } from '../../../storage/repositories/AISessionsRepository';
 import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
 import { TeammateManager, type TeammateToLeadMessage } from './TeammateManager';
 import path from 'path';
@@ -141,6 +142,11 @@ import {
   readLatestSdkDebugLogTail,
 } from './claudeCode/spawnCrashDiagnostics';
 import { applyTaskListMutation, sortTaskList, type TaskListItem } from './claudeCode/taskListReconstruct';
+import {
+  BackgroundAgentRecoveryCoordinator,
+  buildBackgroundAgentRecoveryInstruction,
+  inspectClaudeBackgroundAgentTranscript,
+} from './claudeCode/backgroundTaskRecovery';
 
 
 /**
@@ -182,6 +188,8 @@ const SDK_NATIVE_TOOLS: readonly string[] = [
 const NIMBALYST_HANDLED_TOOLS: readonly string[] = [
   'ScheduleWakeup',
 ];
+
+let claudeProviderInstanceSequence = 0;
 
 /**
  * Track changes in the agent-sdk and claude-code itself here:
@@ -307,7 +315,15 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // Set from task_updated patches (is_backgrounded): the task's tool call
     // returned a launch acknowledgement, not a completion. See NIM-1470.
     isBackgrounded?: boolean;
+    sourceTurnId?: string;
+    agentName?: string;
   }>();
+
+  private readonly backgroundAgentRecovery: BackgroundAgentRecoveryCoordinator;
+  private readonly recoveryInstanceId: string;
+  private recoveryTurnSequence = 0;
+  private recoverySessionId: string | undefined;
+  private destroying = false;
 
   // Terminal task_notification chunks received while draining background tasks
   // after the lead turn ended. Consumed by finalizeBackgroundDrain to wake the
@@ -376,6 +392,19 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   constructor() {
     super();
+    this.recoveryInstanceId = `claude-provider-${process.pid}-${Date.now()}-${++claudeProviderInstanceSequence}`;
+    this.backgroundAgentRecovery = new BackgroundAgentRecoveryCoordinator({
+      instanceId: this.recoveryInstanceId,
+      getSession: async (sessionId) => AISessionsRepository.get(sessionId),
+      mergeSessionMetadata: async (sessionId, patch) => {
+        await AISessionsRepository.updateMetadata(sessionId, { metadata: patch });
+      },
+      inspectTranscript: (input) => inspectClaudeBackgroundAgentTranscript({
+        ...input,
+        projectsDir: process.env.NIMBALYST_CLAUDE_PROJECTS_DIR
+          || path.join(os.homedir(), '.claude', 'projects'),
+      }),
+    });
     this.teammateManager = new TeammateManager({
       logNonBlocking: (sessionId, source, direction, content, metadata) =>
         this.logAgentMessageNonBlocking(sessionId, source, direction, content, metadata),
@@ -467,7 +496,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     workspacePath: string,
     sessionId: string | undefined,
     permissionsPath: string | undefined,
-    isTeammateSession: boolean
+    isTeammateSession: boolean,
+    recoveryTurnId?: string,
+    plannedRecoveryGenerations?: readonly string[],
   ): AgentToolHooks {
     return new AgentToolHooks({
       workspacePath: workspacePath,
@@ -483,8 +514,45 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       getPendingExitPlanModeConfirmations: () => this.pendingExitPlanModeConfirmations,
       getSessionApprovedPatterns: () => this.permissions.sessionApprovedPatterns,
       getPendingToolPermissions: () => this.permissions.pendingToolPermissions,
-      teammatePreToolHandler: async (toolName, toolInput, toolUseID, sessionId) =>
-        this.teammateManager.handlePreToolUse(toolName, toolInput, toolUseID, sessionId),
+      teammatePreToolHandler: async (toolName, toolInput, toolUseID, hookSessionId) => {
+        if (toolName === 'SendMessage' && hookSessionId && recoveryTurnId && toolUseID) {
+          try {
+            const recoveryDecision = await this.backgroundAgentRecovery.guardNativeSendMessage({
+              sessionId: hookSessionId,
+              turnId: recoveryTurnId,
+              toolUseId: toolUseID,
+              input: toolInput || {},
+            });
+            if (recoveryDecision.matched && !recoveryDecision.allow) {
+              return {
+                handled: true,
+                result: {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                    permissionDecisionReason: recoveryDecision.reason,
+                  },
+                },
+              };
+            }
+          } catch (error) {
+            console.error('[CLAUDE-CODE] Failed to guard native background-agent recovery dispatch:', error);
+            if ((plannedRecoveryGenerations?.length ?? 0) > 0) {
+              return {
+                handled: true,
+                result: {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                    permissionDecisionReason: 'Background-agent recovery state could not be verified.',
+                  },
+                },
+              };
+            }
+          }
+        }
+        return this.teammateManager.handlePreToolUse(toolName, toolInput, toolUseID, hookSessionId);
+      },
       isTeammateSession: !!isTeammateSession,
       permissionsPath,
       historyManager: this.createHistoryManagerAdapter(),
@@ -648,6 +716,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     attachments?: any[]
   ): AsyncIterableIterator<StreamChunk> {
     const startTime = Date.now();
+    const recoveryTurnId = `${this.recoveryInstanceId}:turn-${++this.recoveryTurnSequence}`;
+    const plannedRecoveryGenerations: string[] = [];
+    if (sessionId) this.recoverySessionId = sessionId;
 
     // CRITICAL: Capture hidden mode flag at START and reset immediately
     // This prevents race conditions when concurrent sendMessage calls overlap
@@ -729,7 +800,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       workspacePath!,
       sessionId,
       permissionsPath,
-      false
+      false,
+      recoveryTurnId,
+      plannedRecoveryGenerations,
     );
 
     // Clear edited files tracker for new turn
@@ -788,6 +861,33 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         }
       }
 
+      // Require workspace path before inspecting any persisted provider evidence.
+      if (!workspacePath) {
+        throw new Error('[CLAUDE-CODE] workspacePath is required but was not provided');
+      }
+
+      const providerSessionId = sessionId ? this.sessions.getSessionId(sessionId) ?? undefined : undefined;
+      const recovery = sessionId
+        ? await this.backgroundAgentRecovery.claimResumeDispatches({
+          sessionId,
+          workspacePath,
+          providerSessionId,
+          turnId: recoveryTurnId,
+          isResume: Boolean(providerSessionId),
+        }).catch((error) => {
+          console.error('[CLAUDE-CODE] Failed to inspect durable background-agent recovery state:', error);
+          return { dispatches: [], notices: [] };
+        })
+        : { dispatches: [], notices: [] };
+      plannedRecoveryGenerations.push(...recovery.dispatches.map((dispatch) => dispatch.generation));
+      const recoveryInstruction = buildBackgroundAgentRecoveryInstruction(
+        recovery.dispatches,
+        recovery.notices,
+      );
+      if (sessionId && providerSessionId) {
+        this.emit('message:logged', { sessionId, direction: 'output' });
+      }
+
       // Build system prompt (no longer contains document context)
       const promptBuildStart = Date.now();
       // console.log('[CLAUDE-CODE] sendMessage - documentContext keys:', documentContext ? Object.keys(documentContext) : 'undefined');
@@ -802,7 +902,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // workspacePath is the CLI's cwd (see buildSdkOptions), so it is also the
       // repo the suppressed CLI block would have described.
       await this.ensureGitContext(workspacePath);
-      const systemPrompt = this.buildSystemPrompt(documentContext, enableAgentTeams, isMetaAgent, workflowPreset);
+      let systemPrompt = this.buildSystemPrompt(documentContext, enableAgentTeams, isMetaAgent, workflowPreset);
+      if (recoveryInstruction) {
+        systemPrompt = `${systemPrompt}\n\n${recoveryInstruction}`;
+      }
 
       // Note: Attachments (images/documents) are NOT added to the message text.
       // They're sent as separate content blocks via the API's multimodal format.
@@ -828,11 +931,6 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           attachments: attachmentSummaries,
           timestamp: Date.now()
         });
-      }
-
-      // Require workspace path
-      if (!workspacePath) {
-        throw new Error('[CLAUDE-CODE] workspacePath is required but was not provided');
       }
 
       // Build SDK options (settings, MCP config, env, session resumption, prompt input)
@@ -1430,6 +1528,20 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                     }
                   }
 
+                  if (toolCall.name === 'SendMessage' && sessionId) {
+                    try {
+                      await this.backgroundAgentRecovery.observeNativeSendMessageResult({
+                        sessionId,
+                        turnId: recoveryTurnId,
+                        toolUseId: item.toolUseId,
+                        isError: item.isError === true,
+                        content: item.content,
+                      });
+                    } catch (error) {
+                      console.error('[CLAUDE-CODE] Failed to persist native background-agent recovery result:', error);
+                    }
+                  }
+
                   this.processTeammateToolResult(sessionId, toolCall.name, toolCall.arguments, item.content, toolCall.isError === true, toolCall.id);
 
                   // Mirror SDK-native task-list mutations into session metadata so
@@ -1437,6 +1549,23 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                   // only available in the result, so capture happens here).
                   if (!toolCall.isError) {
                     this.captureTaskListMutation(sessionId, toolCall.name, toolCall.arguments, item.content);
+                  }
+
+                  if (toolCall.name === 'TaskStop' && !item.isError) {
+                    const stoppedTaskId = typeof toolCall.arguments?.task_id === 'string'
+                      ? toolCall.arguments.task_id
+                      : typeof toolCall.arguments?.shell_id === 'string'
+                        ? toolCall.arguments.shell_id
+                        : undefined;
+                    if (stoppedTaskId && this.activeTasks.has(stoppedTaskId)) {
+                      await this.handleSystemTask(
+                        'task_notification',
+                        { task_id: stoppedTaskId, status: 'stopped', summary: 'Stopped explicitly' },
+                        sessionId,
+                        workspacePath,
+                        recoveryTurnId,
+                      );
+                    }
                   }
 
                   if (item.toolUseId) {
@@ -1521,7 +1650,29 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                 if (item.subtype === 'task_notification') {
                   sawTaskNotificationThisTurn = true;
                 }
-                this.handleSystemTask(item.subtype, item.chunk, sessionId);
+                {
+                  const launchToolCall = item.chunk?.tool_use_id
+                    ? toolCallsById.get(item.chunk.tool_use_id)
+                    : undefined;
+                  const launchArgs = launchToolCall?.arguments;
+                  const explicitBackground = typeof launchArgs?.run_in_background === 'boolean'
+                    ? launchArgs.run_in_background
+                    : typeof launchArgs?.runInBackground === 'boolean'
+                      ? launchArgs.runInBackground
+                      : undefined;
+                  await this.handleSystemTask(
+                    item.subtype,
+                    item.chunk,
+                    sessionId,
+                    workspacePath,
+                    recoveryTurnId,
+                    launchArgs ? {
+                      // Agent defaults to background execution in the current SDK.
+                      runInBackground: explicitBackground ?? (launchToolCall?.name === 'Agent'),
+                      name: typeof launchArgs.name === 'string' ? launchArgs.name : undefined,
+                    } : undefined,
+                  );
+                }
                 break;
 
               case 'system_compact':
@@ -2024,6 +2175,18 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         }
       }
     } finally {
+      if (sessionId) {
+        try {
+          await this.backgroundAgentRecovery.finishRecoveryTurn({
+            sessionId,
+            turnId: recoveryTurnId,
+            plannedGenerations: plannedRecoveryGenerations,
+          });
+        } catch (error) {
+          console.error('[CLAUDE-CODE] Failed to finalize background-agent recovery turn:', error);
+        }
+      }
+
       // Don't stop MCP health checks or clear mcpQuery between turns -
       // the SDK subprocess stays alive for session resume, so MCP operations
       // (health checks, reconnect) should keep working between turns.
@@ -2074,6 +2237,18 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   abort(): void {
     console.log('[CLAUDE-CODE] Abort called, abortController:', this.abortController ? 'exists' : 'NULL');
+    if (!this.destroying && this.recoverySessionId) {
+      const recoverySessionId = this.recoverySessionId;
+      for (const task of this.activeTasks.values()) {
+        if (task.status === 'running') task.status = 'stopped';
+      }
+      this.emitTaskUpdate(recoverySessionId).catch(() => {});
+      this.backgroundAgentRecovery.suppressRunning(recoverySessionId, 'user-cancelled')
+        .then(() => this.emit('message:logged', { sessionId: recoverySessionId, direction: 'output' }))
+        .catch((error) => {
+          console.error('[CLAUDE-CODE] Failed to suppress background-agent recovery after user cancellation:', error);
+        });
+    }
     this.streamClosedRetryCount = 0;
     this.resetStreamClosedTurnState();
 
@@ -2490,6 +2665,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
    */
   destroy(): void {
     console.log('[CLAUDE-CODE] Destroying provider');
+    this.destroying = true;
 
     // Clean up permission service
     if (this.permissionService) {
@@ -2559,29 +2735,6 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     sessionId: string | undefined,
     hideMessages: boolean,
   ): Generator<StreamChunk> {
-    // Clean up stale "running" tasks from previous sessions/restarts
-    if (sessionId && this.activeTasks.size === 0) {
-      (async () => {
-        try {
-          const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
-          const currentSession = await AISessionsRepository.get(sessionId);
-          const tasks = currentSession?.metadata?.currentTasks;
-          if (Array.isArray(tasks) && tasks.some((t: any) => t.status === 'running')) {
-            const cleaned = tasks.map((t: any) =>
-              t.status === 'running' ? { ...t, status: 'stopped' } : t
-            );
-            await AISessionsRepository.updateMetadata(sessionId, {
-              metadata: { ...currentSession?.metadata, currentTasks: cleaned }
-            });
-            this.emit('message:logged', { sessionId, direction: 'output' });
-            // console.log(`[CLAUDE-CODE] Cleaned up ${tasks.filter((t: any) => t.status === 'running').length} stale running tasks`);
-          }
-        } catch {
-          // Non-critical cleanup
-        }
-      })();
-    }
-
     // Hydrate the in-memory task-list map from persisted metadata so TaskUpdate
     // deltas in a resumed session merge onto the existing board instead of
     // creating stubs (the map is per-provider-instance and starts empty).
@@ -2703,7 +2856,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       this.emit('teammate:messageWhileIdle', {
         sessionId,
         message:
-          '[System: A sub-agent you launched did not finish — its process was interrupted before returning results. Do not keep waiting for it; continue without it, or retry the delegation if the work still matters.]',
+          '[System: A background agent process was interrupted before returning results. Continue this session; if durable recovery evidence is available, resume the original agent through SendMessage. Do not launch a replacement agent.]',
       });
       return;
     }
@@ -2742,7 +2895,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   }
 
   /** Handle system task chunks (task_started, task_progress, task_notification) */
-  private handleSystemTask(subtype: string, chunk: any, sessionId: string | undefined): void {
+  private async handleSystemTask(
+    subtype: string,
+    chunk: any,
+    sessionId: string | undefined,
+    workspacePath: string,
+    recoveryTurnId: string,
+    launch?: { runInBackground?: boolean; name?: string },
+  ): Promise<void> {
     if (subtype === 'task_started') {
       this.activeTasks.set(chunk.task_id, {
         taskId: chunk.task_id,
@@ -2754,6 +2914,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         toolCount: 0,
         tokenCount: 0,
         durationMs: 0,
+        sourceTurnId: recoveryTurnId,
+        agentName: launch?.name,
+        isBackgrounded: launch?.runInBackground === true,
       });
       console.log(`[CLAUDE-CODE] SUBAGENT_TASK started: id=${chunk.task_id} type=${chunk.task_type ?? 'n/a'} desc="${(chunk.description || '').substring(0, 80)}"`);
       this.emitTaskUpdate(sessionId).catch(() => {});
@@ -2810,6 +2973,22 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         }
         if (typeof patch.error === 'string' && patch.error) existing.summary = patch.error;
         this.emitTaskUpdate(sessionId).catch(() => {});
+      }
+    }
+
+    const providerSessionId = sessionId ? this.sessions.getSessionId(sessionId) : null;
+    if (sessionId && providerSessionId) {
+      try {
+        await this.backgroundAgentRecovery.observeTaskEvent({
+          sessionId,
+          workspacePath,
+          providerSessionId,
+          turnId: recoveryTurnId,
+          launch,
+          event: { ...chunk, subtype },
+        });
+      } catch (error) {
+        console.error('[CLAUDE-CODE] Failed to persist background-agent task evidence:', error);
       }
     }
   }
@@ -2885,17 +3064,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // Update session metadata with the current todos
       // This will trigger session reloads which will update the UI
 
-      // Import AISessionsRepository dynamically
-      const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
-
-      // Get current session to merge metadata
-      const currentSession = await AISessionsRepository.get(sessionId);
-
-      const currentMetadata = currentSession?.metadata || {};
-
       await AISessionsRepository.updateMetadata(sessionId, {
         metadata: {
-          ...currentMetadata,
           currentTodos: todos
         }
       });
@@ -2917,13 +3087,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     if (!sessionId) return;
 
     try {
-      const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
-      const currentSession = await AISessionsRepository.get(sessionId);
-      const currentMetadata = currentSession?.metadata || {};
-
       await AISessionsRepository.updateMetadata(sessionId, {
         metadata: {
-          ...currentMetadata,
           currentTasks: Array.from(this.activeTasks.values()),
         }
       });
@@ -2958,13 +3123,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   private async emitTaskListUpdate(sessionId: string | undefined): Promise<void> {
     if (!sessionId) return;
     try {
-      const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
-      const currentSession = await AISessionsRepository.get(sessionId);
-      const currentMetadata = currentSession?.metadata || {};
-
       await AISessionsRepository.updateMetadata(sessionId, {
         metadata: {
-          ...currentMetadata,
           // Sorted by numeric id so the board renders in creation order.
           currentTaskList: sortTaskList(this.taskListItems.values()),
         }
