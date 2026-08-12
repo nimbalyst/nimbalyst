@@ -2,10 +2,13 @@
 
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
+import path from 'path';
 import { PassThrough } from 'stream';
 import { describe, expect, it, vi } from 'vitest';
 import { invokeModelLauncher } from '../modelLauncherAdapter';
 import { MODEL_LAUNCHER_PROFILES } from '../modelLauncherProfiles';
+
+const WORKSPACE_PATH = path.join(process.cwd(), 'test-workspace');
 
 function successfulChild() {
   const child = new EventEmitter() as EventEmitter & {
@@ -37,7 +40,7 @@ describe('model launcher adapter', () => {
     });
 
     const result = await invokeModelLauncher({
-      workspacePath: 'D:\\CLAUDE',
+      workspacePath: WORKSPACE_PATH,
       profile: MODEL_LAUNCHER_PROFILES[0],
       task: 'review this',
       effort: 'xhigh',
@@ -59,7 +62,7 @@ describe('model launcher adapter', () => {
       '--effort', 'xhigh',
     ]));
     expect(args).not.toContain('--fallback');
-    expect(options).toMatchObject({ cwd: 'D:\\CLAUDE', windowsHide: true });
+    expect(options).toMatchObject({ cwd: WORKSPACE_PATH, windowsHide: true });
   });
 
   it('fails closed when the launcher audit is not completed', async () => {
@@ -77,7 +80,7 @@ describe('model launcher adapter', () => {
     });
 
     await expect(invokeModelLauncher({
-      workspacePath: 'D:\\CLAUDE',
+      workspacePath: WORKSPACE_PATH,
       profile: MODEL_LAUNCHER_PROFILES[1],
       task: 'review this',
       deps: {
@@ -104,7 +107,7 @@ describe('model launcher adapter', () => {
     });
 
     await expect(invokeModelLauncher({
-      workspacePath: 'D:\\CLAUDE',
+      workspacePath: WORKSPACE_PATH,
       profile: MODEL_LAUNCHER_PROFILES[0],
       task: 'review this',
       deps: {
