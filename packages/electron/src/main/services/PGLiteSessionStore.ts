@@ -85,6 +85,41 @@ function parseJsonColumn(value: unknown): unknown {
 let moduleDb: PGliteLike | null = null;
 let moduleEnsureReady: EnsureReadyFn | null = null;
 
+// PGLite and SQLite expose different JSON merge operators, so metadata uses a
+// backend-neutral read/merge/write. Serialize that complete mutation per
+// session, including across multiple store wrappers sharing one DB adapter.
+const metadataMutationGates = new WeakMap<PGliteLike, Map<string, Promise<void>>>();
+
+async function withSessionMetadataMutationLock<T>(
+  db: PGliteLike,
+  sessionId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let sessionGates = metadataMutationGates.get(db);
+  if (!sessionGates) {
+    sessionGates = new Map();
+    metadataMutationGates.set(db, sessionGates);
+  }
+
+  const previous = sessionGates.get(sessionId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  sessionGates.set(sessionId, gate);
+
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (sessionGates.get(sessionId) === gate) {
+      sessionGates.delete(sessionId);
+      if (sessionGates.size === 0) metadataMutationGates.delete(db);
+    }
+  }
+}
+
 /**
  * Get the database instance for direct queries (e.g., migrations)
  */
@@ -427,6 +462,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       await ensureReady();
       const updates: string[] = [];
       const values: any[] = [sessionId];
+      let incomingMetadata: Record<string, any> | undefined;
 
       const pushUpdate = (clause: string, value: any) => {
         updates.push(`${clause} $${values.length + 1}`);
@@ -470,32 +506,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             `[PGLiteSessionStore] updateMetadata refused non-object metadata for session ${sessionId}: type=${typeof incoming}, isArray=${Array.isArray(incoming)}`,
           );
         } else {
-          const normalizedIncoming = normalizeSessionPhaseMetadataUpdate(incoming);
-          const { rows } = await db.query<{ metadata: unknown }>(
-            `SELECT metadata FROM ai_sessions WHERE id = $1`,
-            [sessionId],
-          );
-          const existingMetadata = normalizeJsonObject(rows[0]?.metadata);
-          const merged: Record<string, any> = { ...existingMetadata, ...normalizedIncoming };
-          // Record workflow-phase transitions into metadata.activity[] so the
-          // session's lifecycle history is self-contained and renderable on the
-          // project-graph timeline (see session/sessionPhaseTransition.ts). This
-          // is the single chokepoint for every phase change -- the
-          // update_session_meta MCP tool and the kanban UI both land here. Only
-          // the workflow `phase` is tracked; operational status flips too often
-          // for the bounded log.
-          const incomingPhase = normalizedIncoming.phase;
-          if (typeof incomingPhase === 'string') {
-            const transition = computeSessionPhaseTransition(
-              existingMetadata as Record<string, any>,
-              incomingPhase,
-              null,
-              Date.now(),
-            );
-            if (transition.changed) merged.activity = transition.metadata.activity;
-          }
-          updates.push(`metadata = $${values.length + 1}`);
-          values.push(JSON.stringify(merged));
+          incomingMetadata = normalizeSessionPhaseMetadataUpdate(incoming);
         }
       }
       if ((metadata as any).hasBeenNamed !== undefined) pushUpdate('has_been_named =', (metadata as any).hasBeenNamed);
@@ -509,31 +520,60 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       if (metadata.canonicalLastTransformedAt !== undefined) pushUpdate('canonical_last_transformed_at =', metadata.canonicalLastTransformedAt);
       if (metadata.canonicalLastRawMessageId !== undefined) pushUpdate('canonical_last_raw_message_id =', metadata.canonicalLastRawMessageId);
 
-      // NOTE: We intentionally do NOT update updated_at here. The updated_at timestamp
-      // should only change when messages are added (via PGLiteAgentMessagesStore.create),
-      // so that session history sorting accurately reflects the last message time.
-      if (!updates.length) {
-        // Nothing to update - no-op
-        return;
-      }
+      const applyUpdates = async (metadataPatch?: Record<string, any>) => {
+        if (metadataPatch) {
+          const { rows } = await db.query<{ metadata: unknown }>(
+            `SELECT metadata FROM ai_sessions WHERE id = $1`,
+            [sessionId],
+          );
+          const existingMetadata = normalizeJsonObject(rows[0]?.metadata);
+          const merged: Record<string, any> = {
+            ...existingMetadata,
+            ...metadataPatch,
+          };
+          // Record workflow-phase transitions into metadata.activity[] so the
+          // session's lifecycle history is self-contained and renderable on the
+          // project-graph timeline (see session/sessionPhaseTransition.ts).
+          const incomingPhase = metadataPatch.phase;
+          if (typeof incomingPhase === 'string') {
+            const transition = computeSessionPhaseTransition(
+              existingMetadata as Record<string, any>,
+              incomingPhase,
+              null,
+              Date.now(),
+            );
+            if (transition.changed) merged.activity = transition.metadata.activity;
+          }
+          updates.push(`metadata = $${values.length + 1}`);
+          values.push(JSON.stringify(merged));
+        }
 
-      const setClause = updates.join(', ');
-      await db.query(
-        `UPDATE ai_sessions SET ${setClause} WHERE id=$1`,
-        values
-      );
-
-      // GitHub #925 / NIM-1831: a workstream is archived (or restored) as a unit.
-      // Cascade the is_archived flag to direct children (linked by
-      // parent_session_id) so archiving a workstream parent doesn't leave its
-      // child sessions active — invisible orphans that keep counting toward the
-      // active total. buildSessionArchiveFilter only checks a row's own
-      // is_archived, so the children must carry the flag themselves.
-      if (metadata.isArchived !== undefined) {
+        // NOTE: We intentionally do NOT update updated_at here. The updated_at timestamp
+        // should only change when messages are added (via PGLiteAgentMessagesStore.create),
+        // so that session history sorting accurately reflects the last message time.
+        if (!updates.length) return;
+        const setClause = updates.join(', ');
         await db.query(
-          `UPDATE ai_sessions SET is_archived=$2 WHERE parent_session_id=$1`,
-          [sessionId, metadata.isArchived]
+          `UPDATE ai_sessions SET ${setClause} WHERE id=$1`,
+          values
         );
+
+        // A workstream is archived (or restored) as a unit. Keep direct children
+        // aligned so they cannot become invisible active-session orphans.
+        if (metadata.isArchived !== undefined) {
+          await db.query(
+            `UPDATE ai_sessions SET is_archived=$2 WHERE parent_session_id=$1`,
+            [sessionId, metadata.isArchived]
+          );
+        }
+      };
+
+      if (incomingMetadata) {
+        await withSessionMetadataMutationLock(db, sessionId, () =>
+          applyUpdates(incomingMetadata)
+        );
+      } else {
+        await applyUpdates();
       }
     },
 

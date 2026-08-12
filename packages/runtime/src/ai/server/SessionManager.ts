@@ -1281,13 +1281,8 @@ export class SessionManager {
    * This persists cumulative token usage for the session
    */
   async updateSessionTokenUsage(sessionId: string, tokenUsage: SessionData['tokenUsage']): Promise<void> {
-    // Get current metadata and merge token usage into it
-    const session = await AISessionsRepository.get(sessionId);
-    const currentMetadata = (session?.metadata ?? {}) as Record<string, unknown>;
-
     await AISessionsRepository.updateMetadata(sessionId, {
       metadata: {
-        ...currentMetadata,
         tokenUsage
       }
     });

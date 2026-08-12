@@ -331,6 +331,70 @@ describe('PGLiteSessionStore.updateMetadata defense-in-depth', () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it('serializes concurrent shallow metadata patches so recovery and unrelated fields both survive', async () => {
+    let storedMetadata = '{}';
+    let updateCount = 0;
+    let releaseFirstUpdate!: () => void;
+    const firstUpdateBlocked = new Promise<void>((resolve) => {
+      releaseFirstUpdate = resolve;
+    });
+    let firstUpdateEntered!: () => void;
+    const firstUpdateStarted = new Promise<void>((resolve) => {
+      firstUpdateEntered = resolve;
+    });
+
+    const db = {
+      query: vi.fn(async (sql: string, params: unknown[] = []) => {
+        if (/SELECT\s+metadata\s+FROM\s+ai_sessions/i.test(sql)) {
+          return { rows: [{ metadata: storedMetadata }] };
+        }
+        if (/UPDATE\s+ai_sessions\s+SET\s+metadata\s*=/i.test(sql)) {
+          updateCount += 1;
+          const nextMetadata = String(params[params.length - 1]);
+          if (updateCount === 1) {
+            firstUpdateEntered();
+            await firstUpdateBlocked;
+          }
+          storedMetadata = nextMetadata;
+          return { rows: [] };
+        }
+        return { rows: [] };
+      }),
+    };
+    const recoveryStore = createPGLiteSessionStore(db as any);
+    const unrelatedStore = createPGLiteSessionStore(db as any);
+
+    const recoveryPatch = recoveryStore.updateMetadata('s1', {
+      metadata: {
+        backgroundAgentRecovery: {
+          version: 1,
+          tasks: { generation1: { recoveryState: 'claimed' } },
+        },
+      },
+    });
+    await firstUpdateStarted;
+    const unrelatedPatch = unrelatedStore.updateMetadata('s1', {
+      metadata: { phase: 'validating', tags: ['recovery'] },
+    });
+
+    // Drain the promise queue while the first write remains blocked. Without
+    // per-session serialization, the second caller reads the same stale JSON,
+    // writes its patch, and is then overwritten when the first write resumes.
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    releaseFirstUpdate();
+    await Promise.all([recoveryPatch, unrelatedPatch]);
+
+    expect(JSON.parse(storedMetadata)).toEqual({
+      backgroundAgentRecovery: {
+        version: 1,
+        tasks: { generation1: { recoveryState: 'claimed' } },
+      },
+      phase: 'validating',
+      tags: ['recovery'],
+      activity: expect.any(Array),
+    });
+  });
 });
 
 describe('PGLiteSessionStore.updateMetadata nullable column clears', () => {
