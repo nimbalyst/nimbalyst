@@ -32,6 +32,8 @@ vi.mock('../../../../electron/claudeCodeEnvironment', () => ({
 }));
 
 import { buildSdkOptions } from '../claudeCode/sdkOptionsBuilder';
+import { getBuiltInProviderControlEntry } from '../claudeCode/providerControlCatalogDefaults';
+import { resolveProviderControlSnapshot } from '../claudeCode/providerControlContract';
 
 function makeDeps(overrides: Partial<Parameters<typeof buildSdkOptions>[0]> = {}) {
   return {
@@ -185,6 +187,34 @@ describe('buildSdkOptions env-key hardening', () => {
     );
 
     expect(options.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high');
+  });
+
+  it('uses the immutable catalog snapshot for exact effort and thinking transport', async () => {
+    const entry = getBuiltInProviderControlEntry('claude-code:opus')!;
+    const providerControlSnapshot = resolveProviderControlSnapshot({
+      catalog: [entry],
+      catalogEntryId: entry.id,
+      interfaceId: 'claude-agent-sdk',
+      consumer: 'main-session',
+      phase: 'launch',
+      requested: { 'effort-level': 'xhigh', 'thinking-mode': 'disabled' },
+    });
+    const teammateManager = {
+      resolveTeamContext: async () => undefined,
+      packagedBuildOptions: undefined as any,
+    };
+
+    const { options } = await buildSdkOptions(
+      makeDeps({
+        config: { effortLevel: 'low', thinkingMode: 'enabled', providerControlSnapshot },
+        teammateManager,
+      }),
+      makeParams(),
+    );
+
+    expect(options.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('xhigh');
+    expect(options.thinking).toEqual({ type: 'disabled' });
+    expect(teammateManager.packagedBuildOptions.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('xhigh');
   });
 
   it('disables SDK extended thinking for supported Claude Agent models', async () => {
