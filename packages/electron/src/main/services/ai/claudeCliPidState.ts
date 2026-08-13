@@ -3,9 +3,9 @@
  *
  * The `claude` CLI maintains a per-process state
  * file at `~/.claude/sessions/{pid}.json` — the same file `claude ps` reads.
- * Polling it for `busy` / `idle` / `waiting` is a far more stable turn-level
- * signal than tailing the jsonl log or screen-scraping the TUI, and it needs no
- * configuration.
+ * Polling it for `busy` / `shell` / `idle` / `waiting` is a far more stable
+ * turn-level signal than tailing the jsonl log or screen-scraping the TUI, and
+ * it needs no configuration.
  *
  * The SDK-only `MessageStreamingHandler` never sees CLI turns, so this is how
  * the CLI path drives the session's running/idle/needs-action indicator.
@@ -20,8 +20,16 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 
-/** Statuses the CLI writes into the PID file. */
-export type ClaudePidStatus = 'busy' | 'idle' | 'waiting';
+/**
+ * Statuses the CLI writes into the PID file.
+ *
+ * `shell` (CLI 2.1.141+) means the turn finished while a `local_bash` task is
+ * still alive; the CLI writes it in place of `idle`. Until it was recognized
+ * here it fell through `KNOWN_STATUSES`, so `parseClaudePidFile` returned null
+ * on every poll and the watcher held `running` for the life of the process.
+ * The session sat on "Thinking" until the CLI exited.
+ */
+export type ClaudePidStatus = 'busy' | 'shell' | 'idle' | 'waiting';
 
 /** Nimbalyst-side turn states the CLI status maps to. */
 export type ClaudeTurnState = 'running' | 'idle' | 'waiting_for_input';
@@ -39,7 +47,7 @@ export interface ParsedClaudePidFile {
   raw: Record<string, unknown>;
 }
 
-const KNOWN_STATUSES: ReadonlySet<string> = new Set(['busy', 'idle', 'waiting']);
+const KNOWN_STATUSES: ReadonlySet<string> = new Set(['busy', 'shell', 'idle', 'waiting']);
 
 /**
  * Normalize an `updatedAt` value to epoch milliseconds. The CLI's unit is
@@ -94,15 +102,16 @@ export function parseClaudePidFile(contents: string): ParsedClaudePidFile | null
  * (`isProcessAlive`) for stuck detection; this check remains opt-in and unused
  * by production wiring.
  *
- * `idle` is never stale (an idle CLI legitimately stops refreshing the file), and
- * a file with no `updatedAt` is treated as fresh (we can't judge it).
+ * `idle` and `shell` are never stale (both mean the turn is over, and the CLI
+ * legitimately stops refreshing the file), and a file with no `updatedAt` is
+ * treated as fresh (we can't judge it).
  */
 export function isClaudePidFileStale(
   parsed: ParsedClaudePidFile,
   now: number,
   staleAfterMs: number
 ): boolean {
-  if (parsed.status === 'idle') return false;
+  if (parsed.status === 'idle' || parsed.status === 'shell') return false;
   if (parsed.updatedAt === undefined) return false;
   return now - parsed.updatedAt > staleAfterMs;
 }
@@ -114,6 +123,10 @@ export function mapPidStatusToTurnState(status: ClaudePidStatus): ClaudeTurnStat
       return 'running';
     case 'waiting':
       return 'waiting_for_input';
+    // `shell` is idle with a background shell task attached: the turn is over,
+    // so it resolves like `idle`. Holding `running` here strands every
+    // `onTurnState('idle')` consumer for the life of the process.
+    case 'shell':
     case 'idle':
     default:
       return 'idle';
