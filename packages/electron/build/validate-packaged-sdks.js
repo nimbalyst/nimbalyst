@@ -24,7 +24,7 @@
  *
  * Run: node validate-packaged-sdks.js <path-to-packaged-app> [--platform <p>] [--arch <a>]
  *   - macOS:   /path/to/Nimbalyst.app
- *   - Linux:   /path/to/Nimbalyst-Linux.AppImage (extracted dir)
+ *   - Linux:   /path/to/Nimbalyst-Linux-x64.AppImage (extracted dir)
  *   - Windows: /path/to/install/dir
  *
  * Pass --platform/--arch when the caller knows the build target (afterPack

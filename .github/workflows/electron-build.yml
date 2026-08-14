@@ -571,12 +571,15 @@ jobs:
           echo "✅ Bundled Windows app-update.yml contains the expected publisherName"
         shell: bash
 
-      # Generate update metadata files
+      # Generate update metadata files. No `|| true`: each platform job has just
+      # built its own artifact, so failing to find it (e.g. after an artifactName
+      # change) must fail the job rather than silently ship a release with no
+      # update metadata.
       - name: Generate update metadata
         if: github.ref_type == 'tag' || inputs.release == true || inputs.release == 'true'
         working-directory: packages/electron
         run: |
-          node build/generate-update-yml.js || true
+          node build/generate-update-yml.js
         shell: bash
 
       # Upload artifacts
