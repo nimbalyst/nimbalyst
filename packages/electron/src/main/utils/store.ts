@@ -216,6 +216,10 @@ interface AppStoreSchema {
   };
   // System spellchecker (enabled by default, applies to all editors and text inputs)
   spellcheckEnabled?: boolean;
+  // Spellchecker language(s) as Chromium BCP-47 codes (e.g. ["en-CA"]).
+  // Empty/unset -> derived from the OS locale at launch. Ignored on macOS,
+  // which uses the system spellchecker.
+  spellcheckLanguages?: string[];
   // System tray icon
   showTrayIcon?: boolean;
   // Advanced: V8 heap memory limit in MB (default: 4096 = 4GB)

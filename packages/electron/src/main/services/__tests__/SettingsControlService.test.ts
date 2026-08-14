@@ -121,6 +121,7 @@ describe('SettingsControlService allowlist invariants', () => {
         'sessionSync',
         'settingsAgentToolsDisabled',
         'spellcheckEnabled',
+        'spellcheckLanguages',
         'theme',
         'voiceMode',
       ].sort(),

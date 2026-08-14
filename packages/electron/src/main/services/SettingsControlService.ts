@@ -46,6 +46,7 @@ import {
 } from '../utils/store';
 import * as StytchAuth from './StytchAuthService';
 import { logger } from '../utils/logger';
+import { resolveSpellCheckerLanguages } from '../utils/spellcheckLanguages';
 import {
   startExtensionBackendModules,
   stopExtensionBackendModules,
@@ -69,6 +70,7 @@ export const ALLOWED_APP_KEYS = [
   'completionSoundEnabled',
   'osNotificationsEnabled',
   'spellcheckEnabled',
+  'spellcheckLanguages',
   'analyticsEnabled',
   'defaultAIModel',
   'preferredAgentLanguage',
@@ -164,6 +166,7 @@ export class SettingsControlService {
       analyticsEnabled: storeIsAnalyticsEnabled(),
       completionSoundEnabled: getAppSetting<boolean>('completionSoundEnabled') ?? false,
       spellcheckEnabled: getAppSetting<boolean>('spellcheckEnabled') ?? true,
+      spellcheckLanguages: getAppSetting<string[]>('spellcheckLanguages') ?? [],
       preferredAgentLanguage: getAppSetting<string>('preferredAgentLanguage') ?? '',
       voiceMode: getAppSetting<unknown>('voiceMode') ?? null,
       sessionSync: sync
@@ -407,6 +410,36 @@ export class SettingsControlService {
     }
     this.audit('appearance_set_spellcheck', sessionId, { before, after: args.enabled });
     return { ok: true, before, after: args.enabled };
+  }
+
+  /**
+   * Set the spellchecker language(s) as Chromium BCP-47 codes (e.g. ["en-CA"]).
+   * An empty list clears the override, so launch derives the language from the
+   * OS locale again. Applied live where possible; the persisted value governs
+   * the next launch regardless. No-op on macOS (system spellchecker).
+   */
+  async setSpellcheckLanguages(
+    sessionId: string,
+    args: { languages: string[] },
+  ): Promise<SettingsToolResult<string[], string[]>> {
+    rateLimit(sessionId);
+    const before = getAppSetting<string[]>('spellcheckLanguages') ?? [];
+    const after = Array.isArray(args.languages) ? args.languages : [];
+    setAppSetting('spellcheckLanguages', after);
+    try {
+      const { session } = await import('electron');
+      if (process.platform !== 'darwin') {
+        const available = session.defaultSession.availableSpellCheckerLanguages ?? [];
+        const langs = resolveSpellCheckerLanguages(undefined, available, after);
+        if (langs.length > 0) {
+          session.defaultSession.setSpellCheckerLanguages(langs);
+        }
+      }
+    } catch {
+      // Non-fatal: the persisted setting still applies on next launch.
+    }
+    this.audit('appearance_set_spellcheck_languages', sessionId, { before, after });
+    return { ok: true, before, after };
   }
 
   async setAnalytics(

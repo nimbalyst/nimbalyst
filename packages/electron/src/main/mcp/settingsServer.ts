@@ -116,6 +116,20 @@ const TOOLS = [
     },
   },
   {
+    name: "appearance_set_spellcheck_languages",
+    description:
+      "Set the spellchecker language(s) as Chromium BCP-47 codes (e.g. [\"en-CA\"], [\"en-US\",\"fr\"]). " +
+      "Pass an empty array to clear the override and derive the language from the OS locale. " +
+      "No effect on macOS, which uses the system spellchecker.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        languages: { type: "array", items: { type: "string" } },
+      },
+      required: ["languages"],
+    },
+  },
+  {
     name: "analytics_set_enabled",
     description: "Enable or disable anonymous usage analytics.",
     inputSchema: {
@@ -270,6 +284,15 @@ export async function dispatchSettingsTool(
 
       case "appearance_set_spellcheck":
         return respond(await svc.setSpellcheck(aiSessionId, { enabled: !!args.enabled }));
+
+      case "appearance_set_spellcheck_languages":
+        return respond(
+          await svc.setSpellcheckLanguages(aiSessionId, {
+            languages: Array.isArray(args.languages)
+              ? (args.languages as unknown[]).filter((x): x is string => typeof x === "string")
+              : [],
+          }),
+        );
 
       case "analytics_set_enabled":
         return respond(await svc.setAnalytics(aiSessionId, { enabled: !!args.enabled }));

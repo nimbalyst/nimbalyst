@@ -9,6 +9,7 @@ import { safeHandle, safeOn } from './utils/ipcRegistry';
 import { installMicrophoneGate } from './mediaPermissionGate';
 import { markBootComplete } from './utils/bootState';
 import { markStart, markEnd, checkpoint, logSummary } from './utils/startupTiming';
+import { resolveSpellCheckerLanguages } from './utils/spellcheckLanguages';
 import type { SessionStore } from '@nimbalyst/runtime';
 import * as os from 'os';
 import * as path from 'path';
@@ -1568,6 +1569,29 @@ app.whenReady().then(async () => {
     const spellcheckEnabled = getAppSetting<boolean>('spellcheckEnabled');
     if (spellcheckEnabled === false) {
         session.defaultSession.setSpellCheckerEnabled(false);
+    }
+
+    // Set the spellchecker LANGUAGE. Chromium otherwise defaults to en-US and
+    // ignores the OS locale, so an `en_CA` user sees Canadian spelling flagged
+    // as wrong. Prefer a saved override, else the system locale. macOS uses the
+    // OS spellchecker and ignores setSpellCheckerLanguages, so skip it there.
+    if (spellcheckEnabled !== false && process.platform !== 'darwin') {
+        try {
+            const available = session.defaultSession.availableSpellCheckerLanguages ?? [];
+            const saved = getAppSetting<string[]>('spellcheckLanguages');
+            const localeSource =
+                app.getSystemLocale?.() ||
+                app.getLocale() ||
+                process.env.LC_ALL ||
+                process.env.LANG ||
+                process.env.LC_MESSAGES;
+            const langs = resolveSpellCheckerLanguages(localeSource, available, saved);
+            if (langs.length > 0) {
+                session.defaultSession.setSpellCheckerLanguages(langs);
+            }
+        } catch {
+            // Non-fatal: fall back to Chromium's default language selection.
+        }
     }
 
     // Issue #146: wire up the `nim-asset://` request handler. Workspaces are
