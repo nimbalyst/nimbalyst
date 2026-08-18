@@ -8,10 +8,14 @@ import { Notification, BrowserWindow, app, ipcMain, shell } from 'electron';
 import { logger } from '../utils/logger';
 import { isOSNotificationsEnabled, isNotifyWhenFocusedEnabled, isSessionBlockedNotificationsEnabled } from '../utils/store';
 import {
-  createWindow,
   findWindowByWorkspace,
   getMostRecentlyFocusedWorkspaceWindow,
 } from '../window/WindowManager';
+// Via the ref: importing the chokepoint's own module here would drag the
+// tracker-sync/tutorial/autoUpdater graph into every suite that reaches
+// NotificationService (the MCP interactive tools do).
+import { openWorkspaceAwaitingRailSeed } from '../window/workspaceOpenRef';
+import { deliverAfterWorkspaceSeed } from '../file/FileOperations';
 import type { SessionNotificationNavigationTarget } from '../../shared/sessionNotificationNavigation';
 import { composeNotificationTitle } from '../../shared/notificationTitle';
 import { resolveNotificationIcon, type NotificationKind } from './notificationIcons';
@@ -390,7 +394,7 @@ class NotificationService {
     }
 
     if (!targetWindow || targetWindow.isDestroyed()) {
-      this.openWorkspaceForNavigation(navigation);
+      void this.openWorkspaceForNavigation(navigation);
       return;
     }
 
@@ -403,8 +407,31 @@ class NotificationService {
   /**
    * Open a window for an unloaded project and queue the navigation for its
    * renderer to drain once the workspace is active.
+   *
+   * Uses `openOrFocusWorkspaceWindowAwaitingRailSeed` (not the sync
+   * `openOrFocusWorkspaceWindow`) and `deliverAfterWorkspaceSeed` to
+   * sequence the live `notification-clicked` send after the Multi-Project
+   * Mode rail-add actually lands, instead of firing it immediately against
+   * the fire-and-forget seed. Sending it immediately raced the renderer's
+   * own `rail:add-project` listener (`store/listeners/railProjectListeners.ts`)
+   * into independently repeating the same register+activate work that
+   * `notification-clicked`'s `activateWorkspace()` also does -- both idempotent,
+   * but at `MAX_OPEN_PROJECTS` each side independently detects the cap and
+   * shows its own differently-worded "rail full" toast for one click. Awaiting
+   * the seed first means the renderer has already registered+activated by
+   * the time `notification-clicked` arrives on success, so
+   * `activateWorkspace()`'s own "already active" check short-circuits
+   * instead of repeating the add.
+   *
+   * `pendingNavigations` is set SYNCHRONOUSLY, before the first `await`, so
+   * a second click on the same still-opening workspace lands on
+   * `takeLivePendingNavigation`'s "still opening" guard in
+   * `handleNotificationClick` instead of racing a second call into this
+   * method -- for the Multi-Project Mode add-to-rail path that second call
+   * would fire a second `rail:add-project` seed, the exact duplicate-flow
+   * shape this fix exists to remove.
    */
-  private openWorkspaceForNavigation(navigation: SessionNotificationNavigationTarget): void {
+  private async openWorkspaceForNavigation(navigation: SessionNotificationNavigationTarget): Promise<void> {
     const { workspacePath } = navigation;
     this.pendingNavigations.set(workspacePath, { target: navigation, queuedAt: Date.now() });
     logger.main.info('[NotificationService] Opening workspace for notification:', {
@@ -412,20 +439,77 @@ class NotificationService {
       sessionId: navigation.sessionId,
     });
 
-    let openedWindow: BrowserWindow | undefined;
     try {
-      openedWindow = createWindow(false, true, workspacePath);
+      await deliverAfterWorkspaceSeed(
+        openWorkspaceAwaitingRailSeed(workspacePath),
+        (outcome) => {
+          if (outcome.kind !== 'new-window') {
+            // Multi-Project Mode added the project to an already-loaded
+            // window's rail (or it was already open) -- there is no fresh
+            // mount for the renderer's deep-link-style queue drain to hook
+            // into, so deliver the navigation live, the same way an
+            // already-open workspace is handled above in
+            // handleNotificationClick. Nothing left to queue-drain.
+            //
+            // Read the pending entry (not the closed-over `navigation`)
+            // before deleting it: a second click on this still-opening
+            // workspace overwrote it with a newer target in
+            // `handleNotificationClick`'s "still opening" branch, and that
+            // second click never gets its own `openWorkspaceForNavigation`
+            // call to deliver from -- sending the stale first-click target
+            // here would silently open the wrong session.
+            const latest = this.pendingNavigations.get(workspacePath)?.target ?? navigation;
+            this.pendingNavigations.delete(workspacePath);
+            if (outcome.window.isMinimized()) outcome.window.restore();
+            outcome.window.focus();
+            outcome.window.show();
+            outcome.window.webContents.send('notification-clicked', latest);
+            return;
+          }
+
+          // Drop the queued target if the window never gets far enough to
+          // drain it. Otherwise the stale entry makes every later click for
+          // this workspace a no-op, and a much later manual open would jump
+          // to a stale session.
+          this.evictPendingNavigationOnWindowLoss(outcome.window, workspacePath);
+        },
+        (outcome) => {
+          // Same "read before delete" reasoning as the success branch above:
+          // a second click may have overwritten the pending target.
+          const latest = this.pendingNavigations.get(workspacePath)?.target ?? navigation;
+          this.pendingNavigations.delete(workspacePath);
+          logger.main.warn('[NotificationService] Rail seed did not land for notification workspace:', {
+            workspacePath,
+            sessionId: latest.sessionId,
+            reason: outcome?.reason ?? 'no-opener',
+          });
+          // 'at-cap': the renderer's own `rail:add-project` listener
+          // (`railProjectListeners.ts`) already showed the "rail full" toast
+          // for the refused seed, in the SAME rail window
+          // `openOrFocusWorkspaceWindowAwaitingRailSeed` just focused.
+          // `reportNavigationFailure` delivers `notification-clicked` to
+          // `getMostRecentlyFocusedWorkspaceWindow()` -- in production that
+          // IS this same rail window -- and `activateWorkspace()` would
+          // retry the identical refused add and show a second,
+          // differently-worded toast for one click. Log only; there is no
+          // window it is safe to deliver into.
+          //
+          // 'timeout': ambiguous whether the add landed, but nothing was
+          // shown to the user either way, so still surface a failure.
+          // A null outcome (opener not registered) showed the user nothing
+          // either, so it belongs with 'timeout', not with the silent
+          // 'at-cap' case the renderer already toasted.
+          if (!outcome || outcome.reason === 'timeout') {
+            this.reportNavigationFailure(latest);
+          }
+        },
+      );
     } catch (error) {
+      const latest = this.pendingNavigations.get(workspacePath)?.target ?? navigation;
       this.pendingNavigations.delete(workspacePath);
       logger.main.error('[NotificationService] Failed to open notification workspace:', error);
-      this.reportNavigationFailure(navigation);
-      return;
+      this.reportNavigationFailure(latest);
     }
-
-    // Drop the queued target if the window never gets far enough to drain it.
-    // Otherwise the stale entry makes every later click for this workspace a
-    // no-op, and a much later manual open would jump to a stale session.
-    this.evictPendingNavigationOnWindowLoss(openedWindow, workspacePath);
   }
 
   private evictPendingNavigationOnWindowLoss(

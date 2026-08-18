@@ -59,6 +59,7 @@ import {
     updateSleepPrevention,
 } from '../services/SyncManager';
 import { getDocSyncStatusForWorkspace } from '../file/WorkspaceWatcher';
+import { refreshApplicationMenu } from '../menu/applicationMenuRef';
 import * as StytchAuth from '../services/StytchAuthService';
 import { getRestartSignalPath } from '../utils/appPaths';
 import { TrayManager } from '../tray/TrayManager';
@@ -629,6 +630,10 @@ export function registerSettingsHandlers() {
 
     safeHandle('app:set-multi-project-mode', async (_event, enabled: boolean) => {
         setMultiProjectMode(enabled);
+        // Rebuild the menu so items gated on multi-project mode (e.g. "Merge
+        // All Windows") pick up the new enabled/disabled state immediately,
+        // rather than staying stale until some unrelated rebuild happens.
+        refreshApplicationMenu();
     });
 
     safeHandle('app:get-open-projects', async () => {

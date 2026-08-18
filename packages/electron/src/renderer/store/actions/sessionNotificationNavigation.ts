@@ -10,6 +10,7 @@ import {
   activeWorkspacePathAtom,
   addOpenProjectAtom,
   openProjectsAtom,
+  MAX_OPEN_PROJECTS,
 } from '../atoms/openProjects';
 import {
   initWorkstreamState,
@@ -30,7 +31,12 @@ interface SessionListResult {
   error?: string;
 }
 
-type NavigationFailure = 'archived' | 'missing' | 'lookup-failed' | 'project-unavailable';
+type NavigationFailure =
+  | 'archived'
+  | 'missing'
+  | 'lookup-failed'
+  | 'project-unavailable'
+  | 'rail-full';
 
 const MAX_SOURCE_LABEL_LENGTH = 60;
 
@@ -58,7 +64,9 @@ function failureMessage(
     case 'missing':
       return `Session ${shortId} could not be found in its originating project.`;
     case 'project-unavailable':
-      return `Nimbalyst could not switch to the project for session ${shortId}. Close a project from the rail, then retry.`;
+      return `Nimbalyst could not switch to the project for session ${shortId}.`;
+    case 'rail-full':
+      return `Session ${shortId} is in a project that is not open, and this window already has ${MAX_OPEN_PROJECTS} projects. Close one from the rail, then retry.`;
     default:
       return `Nimbalyst could not verify session ${shortId} in its originating project.`;
   }
@@ -150,14 +158,20 @@ async function activateWorkspace(target: SessionNotificationNavigationTarget): P
     }
   }
 
-  store.set(addOpenProjectAtom, {
+  const outcome = store.set(addOpenProjectAtom, {
     path: target.workspacePath,
     name: target.workspacePath.split(/[\\/]/).filter(Boolean).pop() || target.workspacePath,
     openedAt: Date.now(),
   });
 
-  // `addOpenProjectAtom` silently no-ops when the rail is at its cap; without
-  // this check we would go on to select a session against the wrong workspace.
+  // At the cap the add is refused, and continuing would select the session
+  // against whatever workspace is still active — the wrong one. Report the
+  // actual reason so the user knows the fix is "close a project", not "retry".
+  if (outcome === 'at-cap') {
+    return showUnavailable(target, 'rail-full');
+  }
+
+  // Defensive: any other way the active path failed to land on the target.
   if (store.get(activeWorkspacePathAtom) !== target.workspacePath) {
     return showUnavailable(target, 'project-unavailable');
   }

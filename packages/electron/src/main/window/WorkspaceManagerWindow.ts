@@ -5,9 +5,12 @@ import { existsSync, mkdirSync, statSync } from 'fs';
 import { readdir } from 'fs/promises';
 import { resolveEntryType } from '../utils/FileTree';
 import { shouldExcludeDir, shouldExcludePath } from '../utils/fileFilters';
-import { getRecentItems, addToRecentItems, store, getWorkspaceWindowState, getTheme } from '../utils/store';
-import { createWindow, findWindowByWorkspace, windows, windowStates } from './WindowManager';
+import { getRecentItems, addToRecentItems, store, getWorkspaceWindowState, getTheme, getMultiProjectMode } from '../utils/store';
+import { createWindow, findWindowByWorkspace, getMostRecentlyFocusedWorkspaceWindow, windowStates, type CreateWindowOptions } from './WindowManager';
 import { safeHandle } from '../utils/ipcRegistry';
+import { resolveProjectOpenTarget } from './resolveProjectOpenTarget';
+import { seedProjectIntoWindow, type RailSeedOutcome } from './railSeeding';
+import { logger } from '../utils/logger';
 import { getBackgroundColor } from '../theme/ThemeManager';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { GitStatusService } from '../services/GitStatusService';
@@ -20,7 +23,6 @@ import {
 import { initializeTrackerSync } from '../services/TrackerSyncManager';
 import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
 import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
-import { windowReferencesWorkspace } from './windowState';
 import { TutorialProjectService } from '../services/tutorial/TutorialProjectService';
 import {
   normalizeTutorialEntryPoint,
@@ -78,29 +80,137 @@ function bucketFileCount(count: number): string {
   return '100+';
 }
 
-function findWindowReferencingWorkspace(workspacePath: string): BrowserWindow | null {
-  for (const [windowId, state] of windowStates) {
-    if (!windowReferencesWorkspace(state, workspacePath)) continue;
-    const window = windows.get(windowId);
-    if (window && !window.isDestroyed()) return window;
-  }
-  return null;
+export type ProjectOpenOutcome =
+  | { kind: 'focus-existing'; window: BrowserWindow }
+  | { kind: 'add-to-rail'; window: BrowserWindow }
+  | { kind: 'new-window'; window: BrowserWindow };
+
+/** Async-sibling outcome for callers that must sequence a payload after the
+ *  rail registration actually lands (see `openOrFocusWorkspaceWindowAwaitingRailSeed`
+ *  below). `'blocked'` replaces `add-to-rail` when the seed did not land --
+ *  there is no window it is safe to deliver a payload into. */
+export type ProjectOpenOutcomeAsync =
+  | { kind: 'focus-existing'; window: BrowserWindow }
+  | { kind: 'add-to-rail'; window: BrowserWindow }
+  | { kind: 'new-window'; window: BrowserWindow }
+  | { kind: 'blocked'; reason: Extract<RailSeedOutcome, 'at-cap' | 'timeout'>; window: BrowserWindow };
+
+/**
+ * Shared routing decision: focus an existing window, add to the focused
+ * window's rail (Multi-Project Mode), or spawn a new window. Pulled out so
+ * the sync and async entry points below cannot drift on recents tracking or
+ * the existing-window/focused-window lookups.
+ */
+function routeWorkspaceWindow(workspacePath: string) {
+  addToRecentItems('workspaces', workspacePath, basename(workspacePath));
+
+  // findWindowByWorkspace (not a local exact-match helper) so worktree paths
+  // resolve to the parent project's window the same way MCP routing and the
+  // notification click path already do -- funneling call sites through this
+  // chokepoint must not narrow their existing-window matching.
+  const existingWindow = findWindowByWorkspace(workspacePath);
+  return resolveProjectOpenTarget({
+    workspacePath,
+    multiProjectModeEnabled: getMultiProjectMode(),
+    existingWindowForPath: existingWindow,
+    focusedWorkspaceWindow: existingWindow ? null : getMostRecentlyFocusedWorkspaceWindow(),
+  });
+}
+
+function createNewWorkspaceWindow(workspacePath: string, options?: CreateWindowOptions): BrowserWindow {
+  const savedState = getWorkspaceWindowState(workspacePath);
+  return createWindow(false, true, workspacePath, savedState?.bounds, options);
 }
 
 /**
- * Focus the window already showing a workspace, or open one for it. Shared by
- * the two "open this project" channels so they cannot drift apart on recents or
- * saved bounds.
+ * Focus the window already showing a workspace, add it to the focused
+ * window's project rail (Multi-Project Mode), or open a new window for it.
+ * This is THE chokepoint for "open this project" -- every call site that
+ * opens a workspace (as opposed to a bare document) must funnel through
+ * here so they cannot drift apart on recents, saved bounds, or whether the
+ * rail is respected.
+ *
+ * In the `focus-existing` and `new-window` cases the returned window's
+ * *content* is already loaded or is a genuinely fresh window callers wait on
+ * `ready-to-show` / `did-finish-load` for, same as before. In the
+ * `add-to-rail` case, though, the window's content is loaded but the
+ * *project* is not yet registered in it -- `workspace:register-additional`
+ * and the rail activation happen asynchronously in the renderer (see
+ * `store/listeners/railProjectListeners.ts`) and are still in flight when
+ * this function returns. Callers that only need to know where a project
+ * landed (menus, discarded outcomes) can use the returned window as-is; any
+ * caller that needs to deliver a payload targeted at that project (a deep
+ * link, `open-document`, ...) MUST NOT send it synchronously against this
+ * return value -- use `openOrFocusWorkspaceWindowAwaitingRailSeed` instead
+ * and sequence the send after it resolves.
  */
-function openOrFocusWorkspaceWindow(workspacePath: string): void {
-  addToRecentItems('workspaces', workspacePath, basename(workspacePath));
-  const existingWindow = findWindowReferencingWorkspace(workspacePath);
-  if (existingWindow) {
-    existingWindow.focus();
-    return;
+function openOrFocusWorkspaceWindow(
+  workspacePath: string,
+  options?: CreateWindowOptions,
+): ProjectOpenOutcome {
+  const target = routeWorkspaceWindow(workspacePath);
+
+  if (target.kind === 'focus-existing') {
+    target.window.focus();
+    return { kind: 'focus-existing', window: target.window };
   }
-  const savedState = getWorkspaceWindowState(workspacePath);
-  createWindow(false, true, workspacePath, savedState?.bounds);
+
+  if (target.kind === 'add-to-rail') {
+    target.window.focus();
+    // Fire-and-forget: this caller doesn't need to know the outcome, but
+    // route it through the same acked channel `seedProjectIntoWindow` uses
+    // (rather than a bare `webContents.send`) so there is exactly one way
+    // `rail:add-project` ever gets sent, and callers that DO need to wait
+    // (`openOrFocusWorkspaceWindowAwaitingRailSeed`) aren't racing a second,
+    // unacked send of the same message.
+    void seedProjectIntoWindow(target.window, workspacePath);
+    return { kind: 'add-to-rail', window: target.window };
+  }
+
+  return { kind: 'new-window', window: createNewWorkspaceWindow(workspacePath, options) };
+}
+
+export { openOrFocusWorkspaceWindow };
+
+/**
+ * Async sibling of `openOrFocusWorkspaceWindow` for callers that need to
+ * deliver a payload targeted at `workspacePath` once it is actually open in
+ * the returned window. Resolves only after the `add-to-rail` case's seed is
+ * confirmed (registered, and appended to the rail) or definitively failed:
+ *
+ * - `focus-existing` / `new-window` resolve immediately, same as the sync
+ *   chokepoint -- there is no seed to wait on.
+ * - `add-to-rail` resolves once `seedProjectIntoWindow` gets an `'added'` or
+ *   `'already-open'` ack.
+ * - `'at-cap'` or `'timeout'` resolve to `{ kind: 'blocked' }` instead of
+ *   `add-to-rail` -- the project never landed anywhere, so there is no
+ *   window it is safe to deliver a payload into. Callers must not send
+ *   anything in this case; surface the failure instead (log, notify, or
+ *   leave a queued/pending entry for a later attempt to drain).
+ */
+export async function openOrFocusWorkspaceWindowAwaitingRailSeed(
+  workspacePath: string,
+  options?: CreateWindowOptions & { seedTimeoutMs?: number },
+): Promise<ProjectOpenOutcomeAsync> {
+  const target = routeWorkspaceWindow(workspacePath);
+
+  if (target.kind === 'focus-existing') {
+    target.window.focus();
+    return { kind: 'focus-existing', window: target.window };
+  }
+
+  if (target.kind === 'add-to-rail') {
+    target.window.focus();
+    const seedOutcome = await seedProjectIntoWindow(target.window, workspacePath, {
+      timeoutMs: options?.seedTimeoutMs,
+    });
+    if (seedOutcome === 'at-cap' || seedOutcome === 'timeout') {
+      return { kind: 'blocked', reason: seedOutcome, window: target.window };
+    }
+    return { kind: 'add-to-rail', window: target.window };
+  }
+
+  return { kind: 'new-window', window: createNewWorkspaceWindow(workspacePath, options) };
 }
 
 /**
@@ -429,31 +539,38 @@ export function setupWorkspaceManagerHandlers() {
     return { success: false };
   });
 
-  // Open workspace (reuse existing window if already open)
+  // Open workspace: focus an existing window, add to the focused window's
+  // rail (Multi-Project Mode), or create a new window -- via the shared
+  // chokepoint so this, the most common "open a project" entry point,
+  // cannot drift from the others.
   safeHandle('workspace-manager:open-workspace', async (event, workspacePath: string) => {
-    // Add to recent workspaces
-    addToRecentItems('workspaces', workspacePath, basename(workspacePath));
+    // Awaits the rail seed (if any) before touching the Workspace Manager
+    // window: closing it is an irreversible UI action for the user, and
+    // doing that before the seed is confirmed would strand them with no
+    // surface to retry from if the seed comes back 'at-cap' or 'timeout'.
+    const outcome = await openOrFocusWorkspaceWindowAwaitingRailSeed(workspacePath);
 
-    // Check if this workspace is already open in an existing window
-    const existingWindow = findWindowByWorkspace(workspacePath);
-    if (existingWindow && !existingWindow.isDestroyed()) {
-      // Focus the existing window instead of creating a new one
-      existingWindow.focus();
+    if (outcome.kind === 'blocked') {
+      logger.main.warn(
+        '[WorkspaceManager] Rail seed did not land, leaving Workspace Manager open:',
+        { workspacePath, reason: outcome.reason },
+      );
+      return { success: false, error: `Could not open project (${outcome.reason})` };
+    }
 
-      // Close workspace manager after focusing existing workspace
+    if (outcome.kind !== 'new-window') {
+      // Existing/rail window is already loaded -- no analytics/MCP-watch/
+      // team-match/tracker-sync/devtools bootstrapping to do, that already
+      // happened when the window (or the rail registration) was created.
       if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
         workspaceManagerClosingForProject = true;
         workspaceManagerWindow.close();
       }
-
       return { success: true };
     }
 
-    // Check for saved workspace window state
+    const window = outcome.window;
     const savedState = getWorkspaceWindowState(workspacePath);
-
-    // Create window with saved bounds if available
-    const window = createWindow(false, true, workspacePath, savedState?.bounds);
 
     (async () => {
       try {

@@ -25,8 +25,15 @@ export interface WorkspaceWindowResolverDeps<W> {
   isDestroyed(window: W): boolean;
   /** Does the project folder still exist on disk? */
   workspaceExists(workspacePath: string): boolean;
-  createWindow(workspacePath: string): W;
-  /** Resolve once the new window's renderer has finished loading. */
+  /**
+   * Open `workspacePath` when no live window has it -- focuses an existing
+   * workspace window and adds the project to its rail (Multi-Project Mode),
+   * or spawns a brand-new window. `isNewWindow` tells the resolver whether
+   * the window still needs to finish loading: an add-to-rail window is
+   * already loaded, so `waitForLoad` would never resolve for it.
+   */
+  openWorkspace(workspacePath: string): { window: W; isNewWindow: boolean };
+  /** Resolve once a newly-created window's renderer has finished loading. */
   waitForLoad(window: W): Promise<void>;
   isQuitting(): boolean;
   now(): number;
@@ -95,8 +102,10 @@ export function createWorkspaceWindowResolver<W>(
 
       const openPromise = (async () => {
         try {
-          const created = deps.createWindow(workspacePath);
-          await deps.waitForLoad(created);
+          const { window: created, isNewWindow } = deps.openWorkspace(workspacePath);
+          if (isNewWindow) {
+            await deps.waitForLoad(created);
+          }
           return created;
         } catch (error) {
           deps.logWarn(

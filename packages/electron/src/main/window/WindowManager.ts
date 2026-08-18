@@ -4,9 +4,10 @@ import { join, basename } from 'path';
 import { existsSync } from 'fs';
 import { WindowState, FileTreeItem } from '../types';
 import { WINDOW_CASCADE_OFFSET } from '../utils/constants';
-import { getTheme, saveWorkspaceWindowState, getWorkspaceNavigationHistory, saveWorkspaceNavigationHistory } from '../utils/store';
+import { getTheme, saveWorkspaceWindowState, getWorkspaceWindowState, getWorkspaceNavigationHistory, saveWorkspaceNavigationHistory } from '../utils/store';
 import { stopFileWatcher } from '../file/FileWatcher';
-import { stopWorkspaceWatcher, startWorkspaceWatcher } from '../file/WorkspaceWatcher.ts';
+import { stopWorkspaceWatcher, startWorkspaceWatcher, stopWarmWorkspaceWatch } from '../file/WorkspaceWatcher.ts';
+import { clearPendingRailSeeds } from './railSeeding';
 import { getFolderContents } from '../utils/FileTree';
 import { getTitleBarColors } from '../theme/ThemeManager';
 import { ElectronDocumentService, setupDocumentServiceHandlers } from '../services/ElectronDocumentService';
@@ -164,6 +165,33 @@ export function getFocusedOrNewWindow(): BrowserWindow {
 
     // If no focused window, create a new one
     return createWindow();
+}
+
+/**
+ * Every workspace path a closing window's bounds/focus/dev-tools state
+ * should be persisted under: the window's primary path plus every rail-warm
+ * "additional" path it currently references.
+ *
+ * Before Multi-Project Mode, a window's primary path was the only workspace
+ * it could ever represent, so keying `saveWorkspaceWindowState` off it alone
+ * was correct. With the rail, one window's bounds ARE the bounds every
+ * referenced project would reopen into -- writing only the primary path left
+ * every other project's saved geometry stale (frozen at whatever it was the
+ * last time IT was a standalone window, or never written at all). Writing
+ * the same bounds to every referenced path means whichever project a user
+ * opens next launch restores the window that will actually end up hosting
+ * the whole rail, which is the geometry that matters.
+ *
+ * Pure so the close-time decision is unit-testable without spinning up a
+ * real BrowserWindow.
+ */
+export function resolveBoundsPersistPaths(state: WindowState | undefined): string[] {
+    if (!state || state.mode !== 'workspace' || !state.workspacePath) return [];
+    const paths = new Set<string>([state.workspacePath]);
+    for (const path of state.additionalWorkspacePaths ?? []) {
+        if (path) paths.add(path);
+    }
+    return [...paths];
 }
 
 export interface CreateWindowOptions {
@@ -393,42 +421,47 @@ export function createWindow(
             }
         });
 
-        // Handle window close with unsaved changes
-        window.on('close', (event) => {
-            if (isQuitting) {
-                // Allow close to proceed without prompts during app quit
-                return;
-            }
-
-            const state = windowStates.get(windowId);
-            if (state?.documentEdited) {
-                event.preventDefault();
-                // Send message to renderer to show custom dialog
-                window.webContents.send('confirm-close-unsaved');
-            }
-        });
-
         // Store state for use in both 'close' and 'closed' handlers
         let savedState: WindowState | undefined;
 
-        window.on('close', (event) => {
-            // Save workspace-specific window state before closing
-            const state = windowStates.get(windowId);
-            savedState = state; // Preserve for 'closed' handler
-
+        // Persist bounds/nav-history for a workspace window. Shared by both
+        // branches of the 'close' handler below: the original (pre-fix) code
+        // ran this unconditionally even on a *prevented* close (it lived in a
+        // second, always-run listener), so a cancelled close still captured
+        // the window's current bounds/nav history. That part was harmless --
+        // it just gets overwritten on the eventual real close -- so the merge
+        // below preserves it for both branches. What must NOT run on a
+        // prevented close is `windowStates.delete` and the session re-save.
+        const persistWorkspaceCloseState = (state: WindowState | undefined) => {
             if (state?.mode === 'workspace' && state.workspacePath) {
                 const bounds = window.getBounds();
                 const focusOrder = windowFocusOrder.get(windowId) || 0;
                 const devToolsOpen = windowDevToolsState.get(windowId) || false;
+                const activePath = state.activeWorkspacePath ?? state.workspacePath;
 
-                saveWorkspaceWindowState(state.workspacePath, {
-                    mode: 'workspace',
-                    workspacePath: state.workspacePath,
-                    filePath: state.filePath ?? undefined,
-                    bounds,
-                    focusOrder,
-                    devToolsOpen
-                });
+                // Persist bounds/focus/dev-tools to every path this window
+                // referenced (see resolveBoundsPersistPaths), not just the
+                // primary. `state.filePath` is a WINDOW-level field (the
+                // currently open file in whichever project is active) --
+                // NOT per-project, so attributing it to a background rail
+                // path would stamp the active project's open file onto an
+                // unrelated project's saved state. Only the active path gets
+                // `state.filePath`; every other referenced path keeps
+                // whatever file it last had saved for itself.
+                for (const path of resolveBoundsPersistPaths(state)) {
+                    const filePathForPath = path === activePath
+                        ? (state.filePath ?? undefined)
+                        : getWorkspaceWindowState(path)?.filePath;
+
+                    saveWorkspaceWindowState(path, {
+                        mode: 'workspace',
+                        workspacePath: path,
+                        filePath: filePathForPath,
+                        bounds,
+                        focusOrder,
+                        devToolsOpen
+                    });
+                }
 
                 // Save navigation history
                 const navHistory = navigationHistoryService.saveNavigationState(windowId);
@@ -436,6 +469,34 @@ export function createWindow(
                     saveWorkspaceNavigationHistory(state.workspacePath, navHistory);
                 }
             }
+        };
+
+        // Handle window close: prompt-and-cancel for unsaved changes, then
+        // (only for a close that actually proceeds) drop this window from
+        // `windowStates` and re-save the global session.
+        //
+        // NOTE: this used to be TWO separate `window.on('close', ...)`
+        // listeners -- one that called `event.preventDefault()` for unsaved
+        // changes, and a second, unconditional one that always saved state
+        // and called `windowStates.delete(windowId)`. Node's EventEmitter
+        // runs every registered listener regardless of `preventDefault()`,
+        // so a close the user CANCELLED still wiped this window's state
+        // while the window stayed on screen. Merged into one listener so a
+        // prevented close returns before the destructive parts run.
+        window.on('close', (event) => {
+            const state = windowStates.get(windowId);
+
+            if (!isQuitting && state?.documentEdited) {
+                event.preventDefault();
+                // Send message to renderer to show custom dialog
+                window.webContents.send('confirm-close-unsaved');
+                persistWorkspaceCloseState(state);
+                return; // Cancelled: leave windowStates (and everything derived from it) untouched.
+            }
+
+            // The close is proceeding (either quitting, or no unsaved changes).
+            savedState = state; // Preserve for 'closed' handler
+            persistWorkspaceCloseState(state);
 
             // Remove from windowStates so saveSessionState() will skip this closing window
             windowStates.delete(windowId);
@@ -463,11 +524,27 @@ export function createWindow(
 
         window.on('closed', () => {
             windows.delete(windowId);
-            // Use saved state from 'close' handler
-            const state = savedState;
+            // Use state saved during 'close' when the window closed directly.
+            // Falls back to the live `windowStates` entry for windows
+            // destroyed via the save/discard dialog flow: `close-window-save`
+            // / `close-window-discard` (below) call `window.destroy()`
+            // directly once the renderer resolves the dialog, and per
+            // Electron, `destroy()` skips the 'close' event entirely -- so a
+            // window whose FIRST close attempt was cancelled (see 'close'
+            // above) never re-enters that handler, and `savedState` is never
+            // populated for it.
+            const state = savedState ?? windowStates.get(windowId);
+            // Always release the windowStates entry here too -- it is a
+            // no-op if 'close' already deleted it, and the only place that
+            // reliably runs for the destroy()-after-cancelled-close path.
+            windowStates.delete(windowId);
             savingWindows.delete(windowId);
             windowFocusOrder.delete(windowId);
             windowDevToolsState.delete(windowId);
+            // Rail seeds parked for a window that closed before its renderer
+            // collected them would otherwise sit in the map for the process
+            // lifetime.
+            clearPendingRailSeeds(windowId);
             stopFileWatcher(windowId);
             stopWorkspaceWatcher(windowId);
 
@@ -493,6 +570,21 @@ export function createWindow(
 
                 for (const path of referencedPaths) {
                     if (anyWindowReferencesWorkspace(path)) continue;
+
+                    // Release the rail's background watch (content-only
+                    // file-changed/file-deleted forwarding + GitRefWatcher)
+                    // for this path. `stopWorkspaceWatcher(windowId)` above
+                    // already swept any of this window's ADDITIONAL
+                    // (rail-warm, already-backgrounded) paths that went
+                    // unreferenced, but a path that was still this window's
+                    // ACTIVE path at close time was never demoted to a
+                    // background watch, so it never showed up in that sweep
+                    // -- its GitRefWatcher would otherwise run forever. Safe
+                    // (no-op) to call again for paths the sweep already
+                    // handled: both `releaseAllBackgroundRefs` and
+                    // `gitRefWatcher.stop` are no-ops for a path with nothing
+                    // left to release.
+                    stopWarmWorkspaceWatch(path);
 
                     const docService = documentServices.get(path);
                     if (docService) {

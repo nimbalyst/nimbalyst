@@ -28,7 +28,7 @@ import { existsSync } from 'fs';
 import * as fs from 'fs';
 import { windowStates, createWindow, findWindowByFilePath, getWindowId } from '../window/WindowManager';
 import { createAboutWindow } from '../window/AboutWindow';
-import { createWorkspaceManagerWindow } from '../window/WorkspaceManagerWindow.ts';
+import { createWorkspaceManagerWindow, openOrFocusWorkspaceWindow } from '../window/WorkspaceManagerWindow.ts';
 import { launchTutorialFromMenu } from './helpMenuActions';
 import {
     createTeamManagementWindow,
@@ -41,7 +41,8 @@ import { createDatabaseBrowserWindow } from '../window/DatabaseBrowserWindow';
 import { createDeveloperDashboardWindow } from '../window/DeveloperDashboardWindow';
 import { runDiffErgonomicsHarness } from '../file/DiffErgonomicsFixture';
 import { loadFileIntoWindow } from '../file/FileOperations';
-import { getRecentItems, clearRecentItems, addToRecentItems, getTheme, setTheme, store, getWorkspaceState, getWorkspaceWindowState, isExtensionDevToolsEnabled, setWorktreeOnboardingShown } from '../utils/store';
+import { getRecentItems, clearRecentItems, addToRecentItems, getTheme, setTheme, store, getWorkspaceState, getWorkspaceWindowState, isExtensionDevToolsEnabled, setWorktreeOnboardingShown, getMultiProjectMode } from '../utils/store';
+import { consolidateWorkspaceWindows } from '../window/consolidateWorkspaceWindows';
 import { updateWindowTitleBars, updateNativeTheme } from '../theme/ThemeManager';
 import { refreshWorkspaceFileTree } from '../file/FileWatcherDebug';
 import { getFolderContents } from '../utils/FileTree';
@@ -203,16 +204,15 @@ async function createRecentSubmenu(): Promise<any[]> {
                 click: async () => {
                     // Check if workspace exists
                     if (existsSync(workspace.path)) {
-                        // Check for saved workspace window state
+                        const outcome = openOrFocusWorkspaceWindow(workspace.path);
+
+                        // Restore dev tools if they were open. Only meaningful for a
+                        // brand-new window -- an existing/rail window is already
+                        // loaded, so 'did-finish-load' would never fire again.
                         const savedState = getWorkspaceWindowState(workspace.path);
-
-                        // Create window with saved bounds if available
-                        const window = createWindow(false, true, workspace.path, savedState?.bounds);
-
-                        // Restore dev tools if they were open
-                        if (savedState?.devToolsOpen) {
-                            window.webContents.once('did-finish-load', () => {
-                                window.webContents.openDevTools();
+                        if (outcome.kind === 'new-window' && savedState?.devToolsOpen) {
+                            outcome.window.webContents.once('did-finish-load', () => {
+                                outcome.window.webContents.openDevTools();
                             });
                         }
                     } else {
@@ -252,6 +252,12 @@ export async function createApplicationMenu() {
     // Drives the Messages menu and the two accelerators it borrows. Rebuilt on
     // every org-window focus transition (see registerTeamManagementFocusChange).
     const orgWindowFocused = isTeamManagementWindowFocused();
+    // "Merge All Windows" only makes sense with the rail on and more than
+    // one workspace window open to fold together.
+    const openWorkspaceWindowCount = Array.from(windowStates.values()).filter(
+        (state) => state.mode === 'workspace' || state.mode === 'agentic-coding'
+    ).length;
+    const canMergeAllWindows = getMultiProjectMode() && openWorkspaceWindowCount > 1;
 
     const template: any[] = [
         {
@@ -1157,6 +1163,41 @@ export async function createApplicationMenu() {
                 { label: 'Minimize', accelerator: KeyboardShortcuts.window.minimize, role: 'minimize' },
                 { type: 'separator' },
                 { label: 'Bring All to Front', role: 'front' },
+                {
+                    // Multi-Project Mode only changes routing for newly-opened
+                    // projects and the next launch; windows already open stay
+                    // open otherwise. This gives relief now without quitting.
+                    label: 'Merge All Windows',
+                    enabled: canMergeAllWindows,
+                    click: async () => {
+                        AnalyticsService.getInstance().sendEvent('menu_action_used', {
+                            menu: 'window',
+                            action: 'merge_all_windows',
+                        });
+
+                        const result = await consolidateWorkspaceWindows();
+                        if (!result.plan) return;
+
+                        if (result.refused.length > 0 || result.skippedWindowIds.length > 0) {
+                            const focused = getFocusedWindow();
+                            const details: string[] = [];
+                            if (result.refused.length > 0) {
+                                details.push('The project rail is full, so some projects could not be added.');
+                            }
+                            if (result.skippedWindowIds.length > 0) {
+                                details.push('Windows with unsaved changes were left open.');
+                            }
+                            if (focused) {
+                                dialog.showMessageBox(focused, {
+                                    type: 'info',
+                                    title: 'Some Windows Stayed Open',
+                                    message: 'Not every window could be merged.',
+                                    detail: details.join(' '),
+                                });
+                            }
+                        }
+                    }
+                },
                 { type: 'separator' },
                 ...createWindowListMenu()
             ]

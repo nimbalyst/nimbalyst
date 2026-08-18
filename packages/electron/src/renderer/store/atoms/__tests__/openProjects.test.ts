@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+// @vitest-environment node
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createStore } from 'jotai';
 import {
   openProjectsAtom,
@@ -10,11 +11,14 @@ import {
   attachWorkspaceSwitchCleanup,
   resolveInitialOpenProjectsState,
   selectProjectsToRegister,
+  mergeOpenProjects,
+  initOpenProjects,
+  teardownOpenProjects,
+  MAX_OPEN_PROJECTS,
   type OpenProject,
 } from '../openProjects';
+import { store } from '@nimbalyst/runtime/store';
 import { activeSessionIdAtom, selectedWorkstreamAtom } from '../sessions';
-
-const MAX_OPEN_PROJECTS = 8;
 
 function project(path: string, openedAt = 0): OpenProject {
   const name = path.split('/').filter(Boolean).pop() ?? path;
@@ -29,9 +33,10 @@ describe('openProjects atoms', () => {
   });
 
   describe('addOpenProjectAtom', () => {
-    it('adds a new project and activates it', () => {
-      jotaiStore.set(addOpenProjectAtom, project('/ws/a'));
+    it('adds a new project, activates it, and reports "added"', () => {
+      const outcome = jotaiStore.set(addOpenProjectAtom, project('/ws/a'));
 
+      expect(outcome).toBe('added');
       expect(jotaiStore.get(openProjectsAtom)).toEqual([project('/ws/a')]);
       expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/a');
     });
@@ -46,28 +51,55 @@ describe('openProjects atoms', () => {
       expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/c');
     });
 
-    it('dedups when path is already open and just activates it', () => {
+    it('dedups when path is already open, just activates it, and reports "already-open"', () => {
       jotaiStore.set(addOpenProjectAtom, project('/ws/a'));
       jotaiStore.set(addOpenProjectAtom, project('/ws/b'));
-      jotaiStore.set(addOpenProjectAtom, project('/ws/a'));
+      const outcome = jotaiStore.set(addOpenProjectAtom, project('/ws/a'));
 
+      expect(outcome).toBe('already-open');
       const open = jotaiStore.get(openProjectsAtom);
       expect(open).toHaveLength(2);
       expect(open.map((p) => p.path)).toEqual(['/ws/a', '/ws/b']);
       expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/a');
     });
 
-    it('rejects new projects beyond the cap without altering active', () => {
+    it('rejects new projects beyond the cap, reports "at-cap", and leaves active unchanged', () => {
       for (let i = 0; i < MAX_OPEN_PROJECTS; i++) {
         jotaiStore.set(addOpenProjectAtom, project(`/ws/${i}`));
       }
       expect(jotaiStore.get(openProjectsAtom)).toHaveLength(MAX_OPEN_PROJECTS);
       expect(jotaiStore.get(activeWorkspacePathAtom)).toBe(`/ws/${MAX_OPEN_PROJECTS - 1}`);
 
-      jotaiStore.set(addOpenProjectAtom, project('/ws/overflow'));
+      const outcome = jotaiStore.set(addOpenProjectAtom, project('/ws/overflow'));
 
+      expect(outcome).toBe('at-cap');
       expect(jotaiStore.get(openProjectsAtom)).toHaveLength(MAX_OPEN_PROJECTS);
       expect(jotaiStore.get(activeWorkspacePathAtom)).toBe(`/ws/${MAX_OPEN_PROJECTS - 1}`);
+    });
+
+    // Regression coverage for defect (A) in the single-window-multi-project
+    // contract: a non-activating add must never flip the visible project,
+    // on either the newly-added or the already-open branch.
+    it('activate: false appends a new project without touching the active path', () => {
+      jotaiStore.set(addOpenProjectAtom, project('/ws/primary'));
+      expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/primary');
+
+      const outcome = jotaiStore.set(addOpenProjectAtom, project('/ws/sibling'), { activate: false });
+
+      expect(outcome).toBe('added');
+      expect(jotaiStore.get(openProjectsAtom).map((p) => p.path)).toEqual(['/ws/primary', '/ws/sibling']);
+      expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/primary');
+    });
+
+    it('activate: false on an already-open project still does not touch the active path', () => {
+      jotaiStore.set(addOpenProjectAtom, project('/ws/primary'));
+      jotaiStore.set(addOpenProjectAtom, project('/ws/sibling'), { activate: false });
+      expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/primary');
+
+      const outcome = jotaiStore.set(addOpenProjectAtom, project('/ws/sibling'), { activate: false });
+
+      expect(outcome).toBe('already-open');
+      expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/primary');
     });
   });
 
@@ -293,6 +325,56 @@ describe('openProjects atoms', () => {
         activePath: '/ws/a',
       });
     });
+
+    it('reserves a slot for the primary workspace when restore would fill the rail', () => {
+      // A full persisted set that does NOT contain the window's own project.
+      // Without the reservation the primary seed is refused at the cap and the
+      // window renders without its own project.
+      const persistedPaths = Array.from(
+        { length: MAX_OPEN_PROJECTS },
+        (_, i) => `/ws/restored-${i}`,
+      );
+
+      const result = resolveInitialOpenProjectsState({
+        persistedPaths,
+        persistedActivePath: `/ws/restored-${MAX_OPEN_PROJECTS - 1}`,
+        restorePreviousProjects: true,
+        windowState: {
+          mode: 'workspace',
+          workspacePath: '/ws/primary',
+          activeWorkspacePath: '/ws/primary',
+          openProjectPaths: ['/ws/primary'],
+        },
+      });
+
+      expect(result.paths).toHaveLength(MAX_OPEN_PROJECTS - 1);
+      expect(result.paths).not.toContain(`/ws/restored-${MAX_OPEN_PROJECTS - 1}`);
+      // The dropped path was also the persisted active one, so the active
+      // selection must fall back into the surviving set rather than dangle.
+      expect(result.paths).toContain(result.activePath!);
+    });
+
+    it('does not reserve a slot when the primary is already in the restored set', () => {
+      const persistedPaths = [
+        '/ws/primary',
+        ...Array.from({ length: MAX_OPEN_PROJECTS - 1 }, (_, i) => `/ws/restored-${i}`),
+      ];
+
+      const result = resolveInitialOpenProjectsState({
+        persistedPaths,
+        persistedActivePath: '/ws/primary',
+        restorePreviousProjects: true,
+        windowState: {
+          mode: 'workspace',
+          workspacePath: '/ws/primary',
+          activeWorkspacePath: '/ws/primary',
+          openProjectPaths: ['/ws/primary'],
+        },
+      });
+
+      expect(result.paths).toHaveLength(MAX_OPEN_PROJECTS);
+      expect(result.paths).toContain('/ws/primary');
+    });
   });
 
   // NIM-757 (#548): restored non-primary rail projects must be registered with
@@ -315,6 +397,122 @@ describe('openProjects atoms', () => {
         '/ws/a',
         '/ws/b',
       ]);
+    });
+  });
+
+  describe('mergeOpenProjects', () => {
+    it('returns base unchanged when concurrent has no extra paths', () => {
+      const base = [project('/ws/a'), project('/ws/b')];
+      expect(mergeOpenProjects(base, [project('/ws/a')])).toBe(base);
+    });
+
+    it('appends concurrent-only paths after base, in their existing order', () => {
+      const base = [project('/ws/a')];
+      const concurrent = [project('/ws/a'), project('/ws/c'), project('/ws/b')];
+
+      expect(mergeOpenProjects(base, concurrent).map((p) => p.path)).toEqual([
+        '/ws/a',
+        '/ws/c',
+        '/ws/b',
+      ]);
+    });
+
+    it('base wins for a path both sides know about', () => {
+      const base = [{ path: '/ws/a', name: 'from-base', openedAt: 1 }];
+      const concurrent = [{ path: '/ws/a', name: 'from-concurrent', openedAt: 2 }];
+
+      expect(mergeOpenProjects(base, concurrent)).toEqual(base);
+    });
+  });
+
+  // Regression coverage for the `initOpenProjects` overwrite race: App.tsx's
+  // `loadInitialState` effect (`addOpenProject` for the window's own primary)
+  // and the `rail:add-project` listener (restore-seeded siblings) are
+  // independent, unawaited writers to `openProjectsAtom` that can append
+  // before `initOpenProjects`'s own IPC round trips resolve. Uses the real
+  // `@nimbalyst/runtime/store` singleton -- `initOpenProjects` is hardcoded
+  // to it, not to a `createStore()` instance.
+  describe('initOpenProjects', () => {
+    afterEach(() => {
+      teardownOpenProjects();
+      store.set(openProjectsAtom, []);
+      store.set(activeWorkspacePathAtom, null);
+      delete (globalThis as any).window;
+    });
+
+    it('merges a concurrently-appended project instead of dropping it on overwrite', async () => {
+      let resolveRegisterAdditional!: (value: { success: boolean }) => void;
+      (globalThis as any).window = {
+        electronAPI: {
+          invoke: vi.fn((channel: string) => {
+            switch (channel) {
+              case 'app:get-multi-project-mode':
+                return Promise.resolve(false);
+              case 'app:get-restore-previous-projects':
+                return Promise.resolve(false);
+              case 'app:get-open-projects':
+                return Promise.resolve([]);
+              case 'app:get-active-project-path':
+                return Promise.resolve(null);
+              case 'workspace:register-additional':
+                // Never resolves before the assertion below reads
+                // `openProjectsAtom` -- simulates the concurrent writer
+                // (loadInitialState / rail:add-project) landing while
+                // `initOpenProjects` is still awaiting main.
+                return new Promise((resolve) => {
+                  resolveRegisterAdditional = resolve;
+                });
+              default:
+                return Promise.resolve(undefined);
+            }
+          }),
+          getInitialState: vi.fn(() =>
+            Promise.resolve({
+              mode: 'workspace',
+              workspacePath: '/ws/primary',
+              activeWorkspacePath: '/ws/primary',
+              openProjectPaths: ['/ws/primary', '/ws/sibling'],
+            }),
+          ),
+          send: vi.fn(),
+        },
+      };
+
+      const initPromise = initOpenProjects();
+
+      // Wait for the module's own IPC round trips to reach the
+      // `workspace:register-additional` await.
+      await vi.waitFor(() => {
+        expect(resolveRegisterAdditional).toBeDefined();
+      });
+
+      // The eager merge (before the registration await) already painted
+      // the computed initial set -- the rail is not blank while
+      // registration is in flight.
+      expect(store.get(openProjectsAtom).map((p) => p.path)).toEqual(['/ws/primary', '/ws/sibling']);
+
+      // Simulate the concurrent writer (loadInitialState's `addOpenProject`
+      // for the primary, or the `rail:add-project` listener for a seeded
+      // sibling) appending a project via the real `addOpenProjectAtom` path
+      // -- same as production -- while `initOpenProjects` is still awaiting
+      // main.
+      store.set(
+        addOpenProjectAtom,
+        { path: '/ws/concurrent', name: 'concurrent', openedAt: 2 },
+        { activate: false },
+      );
+
+      resolveRegisterAdditional({ success: true });
+      await initPromise;
+
+      const paths = store.get(openProjectsAtom).map((p) => p.path);
+      // The computed initial set (primary + sibling from openProjectPaths)
+      // is present, AND the concurrently-appended path survived the second
+      // (post-registration) merge instead of being wiped out by an
+      // overwrite.
+      expect(paths).toContain('/ws/primary');
+      expect(paths).toContain('/ws/sibling');
+      expect(paths).toContain('/ws/concurrent');
     });
   });
 });

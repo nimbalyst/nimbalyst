@@ -12,6 +12,9 @@ const mocks = vi.hoisted(() => {
     handlers,
     startWorkspaceWatcher: vi.fn(),
     stopWorkspaceWatcher: vi.fn(),
+    startWarmWorkspaceWatch: vi.fn(),
+    releaseWarmWatchOnPromotion: vi.fn(),
+    stopWarmWorkspaceWatch: vi.fn(),
     setFileSystemService: vi.fn(),
     clearFileSystemService: vi.fn(),
     setFileSystemServiceFor: vi.fn(),
@@ -38,6 +41,9 @@ vi.mock('../../utils/ipcRegistry', () => ({
 vi.mock('../../file/WorkspaceWatcher.ts', () => ({
   startWorkspaceWatcher: mocks.startWorkspaceWatcher,
   stopWorkspaceWatcher: mocks.stopWorkspaceWatcher,
+  startWarmWorkspaceWatch: mocks.startWarmWorkspaceWatch,
+  releaseWarmWatchOnPromotion: mocks.releaseWarmWatchOnPromotion,
+  stopWarmWorkspaceWatch: mocks.stopWarmWorkspaceWatch,
 }));
 
 vi.mock('@nimbalyst/runtime', () => ({
@@ -166,6 +172,9 @@ describe('MultiProjectRailHandlers', () => {
     mocks.windowStates.clear();
     mocks.startWorkspaceWatcher.mockReset();
     mocks.stopWorkspaceWatcher.mockReset();
+    mocks.startWarmWorkspaceWatch.mockReset();
+    mocks.releaseWarmWatchOnPromotion.mockReset();
+    mocks.stopWarmWorkspaceWatch.mockReset();
     mocks.setFileSystemService.mockReset();
     mocks.clearFileSystemService.mockReset();
     registerMultiProjectRailHandlers();
@@ -203,6 +212,12 @@ describe('MultiProjectRailHandlers', () => {
       mocks.windowStates.set(1, makeState({ workspacePath: '/ws/a' }));
       await invoke('workspace:register-additional', { workspacePath: '/ws/b' }, 1);
       expect(mocks.setFileSystemService).not.toHaveBeenCalled();
+    });
+
+    it('starts a warm (background-only) watch for the newly registered path', async () => {
+      mocks.windowStates.set(1, makeState({ workspacePath: '/ws/a' }));
+      await invoke('workspace:register-additional', { workspacePath: '/ws/b' }, 1);
+      expect(mocks.startWarmWorkspaceWatch).toHaveBeenCalledWith('/ws/b');
     });
 
     it('is idempotent for an already-registered path', async () => {
@@ -254,6 +269,29 @@ describe('MultiProjectRailHandlers', () => {
       expect(mocks.windowStates.get(1)?.activeWorkspacePath).toBe('/ws/b');
     });
 
+    it('demotes the outgoing path to a background watch and promotes the incoming one (Phase 2 staleness fix)', async () => {
+      await invoke('workspace:set-active', { workspacePath: '/ws/a' }, 1);
+      mocks.startWarmWorkspaceWatch.mockClear();
+      mocks.releaseWarmWatchOnPromotion.mockClear();
+
+      await invoke('workspace:set-active', { workspacePath: '/ws/b' }, 1);
+
+      // /ws/a (outgoing) is demoted to a background watch so its open
+      // editors keep observing disk changes while it's not visible.
+      expect(mocks.startWarmWorkspaceWatch).toHaveBeenCalledWith('/ws/a');
+      // /ws/b (incoming) drops its now-redundant background subscription
+      // once promoted to the full watch.
+      expect(mocks.releaseWarmWatchOnPromotion).toHaveBeenCalledWith('/ws/b');
+
+      // Demote must happen before the full watcher is torn down, so the
+      // shared OS watcher for the outgoing path survives the handoff.
+      const demoteOrder = mocks.startWarmWorkspaceWatch.mock.invocationCallOrder[0];
+      const stopOrder = mocks.stopWorkspaceWatcher.mock.invocationCallOrder[
+        mocks.stopWorkspaceWatcher.mock.invocationCallOrder.length - 1
+      ];
+      expect(demoteOrder).toBeLessThan(stopOrder);
+    });
+
     it('is idempotent when the path is already active', async () => {
       await invoke('workspace:set-active', { workspacePath: '/ws/a' }, 1);
       mocks.stopWorkspaceWatcher.mockClear();
@@ -301,6 +339,20 @@ describe('MultiProjectRailHandlers', () => {
 
       expect(mocks.documentServices.has('/ws/warm')).toBe(true);
       expect(mocks.fileSystemServices.has('/ws/warm')).toBe(true);
+    });
+
+    it('releases the warm watch (GitRefWatcher + background subscription) when no other window references the path', async () => {
+      await invoke('workspace:unregister-additional', { workspacePath: '/ws/warm' }, 1);
+
+      expect(mocks.stopWarmWorkspaceWatch).toHaveBeenCalledWith('/ws/warm');
+    });
+
+    it('does not release the warm watch when another window still references the path', async () => {
+      mocks.windowStates.set(2, makeState({ workspacePath: '/ws/warm' }));
+
+      await invoke('workspace:unregister-additional', { workspacePath: '/ws/warm' }, 1);
+
+      expect(mocks.stopWarmWorkspaceWatch).not.toHaveBeenCalled();
     });
 
     it('does not stop the watcher when the closed path was not active', async () => {

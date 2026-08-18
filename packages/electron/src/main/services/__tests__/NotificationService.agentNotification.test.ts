@@ -18,8 +18,8 @@ const mocks = vi.hoisted(() => ({
   notifyWhenFocusedEnabled: vi.fn(() => false),
   sessionBlockedNotificationsEnabled: vi.fn(() => true),
   findWindowByWorkspace: vi.fn(),
-  createWindow: vi.fn(),
   getMostRecentlyFocusedWorkspaceWindow: vi.fn(),
+  openOrFocusWorkspaceWindowAwaitingRailSeed: vi.fn(),
 }));
 
 vi.mock('electron', () => {
@@ -96,7 +96,6 @@ vi.mock('../../utils/store', () => ({
 
 vi.mock('../../window/WindowManager', () => ({
   findWindowByWorkspace: mocks.findWindowByWorkspace,
-  createWindow: mocks.createWindow,
   getMostRecentlyFocusedWorkspaceWindow: mocks.getMostRecentlyFocusedWorkspaceWindow,
 }));
 
@@ -104,6 +103,14 @@ vi.mock('../../window/WindowManager', () => ({
 // also prove the assets exist on disk.
 vi.mock('../../utils/appPaths', () => ({
   getPackageRoot: () => fileURLToPath(new URL('../../../../', import.meta.url)),
+}));
+
+// Mocks the ref module, which is what NotificationService actually imports.
+// Pointing this at `window/WorkspaceManagerWindow` would be a silent no-op
+// (CLAUDE.md: a vi.mock whose specifier the module no longer imports does
+// nothing) AND would let the real heavy module load.
+vi.mock('../../window/workspaceOpenRef', () => ({
+  openWorkspaceAwaitingRailSeed: mocks.openOrFocusWorkspaceWindowAwaitingRailSeed,
 }));
 
 import { existsSync } from 'node:fs';
@@ -157,6 +164,16 @@ function makeFakeWindow(): FakeWindow {
   };
 }
 
+/**
+ * `openWorkspaceForNavigation` awaits `openOrFocusWorkspaceWindowAwaitingRailSeed`
+ * (see Fix 2: sequencing the live `notification-clicked` send after the rail
+ * seed lands instead of racing it) -- flush the microtask queue so mocked
+ * promise resolutions settle before assertions run.
+ */
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function clickNotification(options: {
   sessionId?: string;
   workspacePath: string;
@@ -168,6 +185,7 @@ async function clickNotification(options: {
     ...options,
   });
   mocks.notificationListeners.get('click')?.();
+  await flushMicrotasks();
 }
 
 describe('NotificationService agent notifications', () => {
@@ -183,7 +201,7 @@ describe('NotificationService agent notifications', () => {
     mocks.sessionBlockedNotificationsEnabled.mockReturnValue(true);
     mocks.findWindowByWorkspace.mockReturnValue(null);
     mocks.getMostRecentlyFocusedWorkspaceWindow.mockReturnValue(null);
-    mocks.createWindow.mockReturnValue(makeFakeWindow());
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockResolvedValue({ kind: 'new-window', window: makeFakeWindow() });
     clearNotificationIconCache();
   });
 
@@ -346,19 +364,168 @@ describe('NotificationService agent notifications', () => {
       sourceLabel: 'Build release',
     });
     mocks.notificationListeners.get('click')?.();
+    await flushMicrotasks();
 
-    expect(mocks.createWindow).toHaveBeenCalledTimes(1);
-    expect(mocks.createWindow).toHaveBeenCalledWith(
-      false,
-      true,
-      '/workspace/unloaded',
-    );
+    expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).toHaveBeenCalledTimes(1);
+    expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).toHaveBeenCalledWith('/workspace/unloaded');
     expect(
       (notificationService as any).consumePendingNavigation('/workspace/unloaded'),
     ).toEqual({
       sessionId: 'session-unloaded',
       workspacePath: '/workspace/unloaded',
       sourceLabel: 'Build release',
+    });
+  });
+
+  it('delivers the navigation live instead of queuing when Multi-Project Mode adds the project to an already-loaded rail window', async () => {
+    const railWindow = makeFakeWindow();
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockResolvedValue({ kind: 'add-to-rail', window: railWindow });
+
+    await clickNotification({
+      sessionId: 'session-rail',
+      workspacePath: '/workspace/rail',
+      sourceLabel: 'Rail task',
+    });
+
+    expect(railWindow.focus).toHaveBeenCalled();
+    expect(railWindow.show).toHaveBeenCalled();
+    expect(railWindow.webContents.send).toHaveBeenCalledWith('notification-clicked', {
+      sessionId: 'session-rail',
+      workspacePath: '/workspace/rail',
+      sourceLabel: 'Rail task',
+    });
+    // No fresh mount to drain a queue entry from -- it must not be queued.
+    expect(notificationService.consumePendingNavigation('/workspace/rail')).toBeNull();
+  });
+
+  it('does not deliver notification-clicked anywhere when the rail seed is refused at the project cap (Fix 2: avoids a duplicate "rail full" toast)', async () => {
+    // `openOrFocusWorkspaceWindowAwaitingRailSeed` focuses the rail window
+    // before seeding, so in production `getMostRecentlyFocusedWorkspaceWindow`
+    // resolves to that SAME window once the seed is refused -- not some
+    // other window. Modeling them as the same fake is what pins the bug:
+    // `reportNavigationFailure` sending `notification-clicked` here would
+    // land in the rail window whose renderer already showed the "rail full"
+    // toast for this exact refused add.
+    const railWindow = makeFakeWindow();
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockResolvedValue({
+      kind: 'blocked',
+      reason: 'at-cap',
+      window: railWindow,
+    });
+    mocks.getMostRecentlyFocusedWorkspaceWindow.mockReturnValue(railWindow);
+
+    await clickNotification({
+      sessionId: 'session-capped',
+      workspacePath: '/workspace/capped',
+      sourceLabel: 'Capped task',
+    });
+
+    // The renderer's own `rail:add-project` listener already showed the
+    // "rail full" toast for the refused seed -- delivering
+    // `notification-clicked` anywhere here would make `activateWorkspace()`
+    // retry the same add and show a second, differently-worded toast for
+    // one click. No window should receive it.
+    expect(railWindow.webContents.send).not.toHaveBeenCalledWith(
+      'notification-clicked',
+      expect.anything(),
+    );
+    expect(notificationService.consumePendingNavigation('/workspace/capped')).toBeNull();
+  });
+
+  it('reports the failure once when the rail seed ack times out (Fix 2: distinct from at-cap, nothing was shown to the user)', async () => {
+    const railWindow = makeFakeWindow();
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockResolvedValue({
+      kind: 'blocked',
+      reason: 'timeout',
+      window: railWindow,
+    });
+    const fallback = makeFakeWindow();
+    mocks.getMostRecentlyFocusedWorkspaceWindow.mockReturnValue(fallback);
+
+    await clickNotification({
+      sessionId: 'session-timeout',
+      workspacePath: '/workspace/timeout',
+      sourceLabel: 'Timeout task',
+    });
+
+    expect(fallback.webContents.send).toHaveBeenCalledTimes(1);
+    expect(fallback.webContents.send).toHaveBeenCalledWith('notification-clicked', {
+      sessionId: 'session-timeout',
+      workspacePath: '/workspace/timeout',
+      sourceLabel: 'Timeout task',
+    });
+    expect(notificationService.consumePendingNavigation('/workspace/timeout')).toBeNull();
+  });
+
+  it('does not race a second rail seed when the same still-opening workspace is clicked again before the first seed resolves (Fix 2)', async () => {
+    const railWindow = makeFakeWindow();
+    let resolveSeed: (outcome: { kind: 'add-to-rail'; window: typeof railWindow }) => void;
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSeed = resolve;
+      }),
+    );
+
+    await notificationService.showNotification({
+      title: 'Response Ready',
+      body: 'Ready for review',
+      sessionId: 'session-first-click',
+      workspacePath: '/workspace/racy',
+      sourceLabel: 'Racy task',
+    });
+    // First click: the seed is in flight, unresolved.
+    mocks.notificationListeners.get('click')?.();
+    // Second click lands before the seed resolves -- the synchronous
+    // `pendingNavigations` write from the first click must make this one a
+    // no-op ("still opening") rather than firing a second seed.
+    mocks.notificationListeners.get('click')?.();
+
+    expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).toHaveBeenCalledTimes(1);
+
+    resolveSeed!({ kind: 'add-to-rail', window: railWindow });
+    await flushMicrotasks();
+
+    expect(railWindow.webContents.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers the LATEST clicked session, not the first, when a second click lands on the same still-opening rail add before the seed resolves (Fix 2)', async () => {
+    const railWindow = makeFakeWindow();
+    let resolveSeed: (outcome: { kind: 'add-to-rail'; window: typeof railWindow }) => void;
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSeed = resolve;
+      }),
+    );
+
+    await notificationService.showNotification({
+      title: 'First task -- Response Ready',
+      body: 'First response',
+      sessionId: 'session-first',
+      workspacePath: '/workspace/racy-sessions',
+      sourceLabel: 'First task',
+    });
+    mocks.notificationListeners.get('click')?.();
+
+    await notificationService.showNotification({
+      title: 'Second task -- Response Ready',
+      body: 'Second response',
+      sessionId: 'session-second',
+      workspacePath: '/workspace/racy-sessions',
+      sourceLabel: 'Second task',
+    });
+    // Still opening -- this click overwrites the queued target with
+    // session-second instead of firing a second seed.
+    mocks.notificationListeners.get('click')?.();
+    expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).toHaveBeenCalledTimes(1);
+
+    resolveSeed!({ kind: 'add-to-rail', window: railWindow });
+    await flushMicrotasks();
+
+    expect(railWindow.webContents.send).toHaveBeenCalledTimes(1);
+    expect(railWindow.webContents.send).toHaveBeenCalledWith('notification-clicked', {
+      sessionId: 'session-second',
+      workspacePath: '/workspace/racy-sessions',
+      sourceLabel: 'Second task',
     });
   });
 
@@ -370,6 +537,9 @@ describe('NotificationService agent notifications', () => {
       workspacePath: '/workspace/opening',
       sourceLabel: 'First task',
     });
+    // `pendingNavigations` is written synchronously (before any await), so
+    // the second click below sees "still opening" immediately -- no flush
+    // needed between the two clicks.
     mocks.notificationListeners.get('click')?.();
 
     await notificationService.showNotification({
@@ -380,8 +550,9 @@ describe('NotificationService agent notifications', () => {
       sourceLabel: 'Second task',
     });
     mocks.notificationListeners.get('click')?.();
+    await flushMicrotasks();
 
-    expect(mocks.createWindow).toHaveBeenCalledTimes(1);
+    expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).toHaveBeenCalledTimes(1);
     expect(notificationService.consumePendingNavigation('/workspace/opening')).toEqual({
       sessionId: 'session-second',
       workspacePath: '/workspace/opening',
@@ -391,14 +562,14 @@ describe('NotificationService agent notifications', () => {
 
   it('re-opens the workspace after the opening window is lost before draining', async () => {
     const opened = makeFakeWindow();
-    mocks.createWindow.mockReturnValue(opened);
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockResolvedValue({ kind: 'new-window', window: opened });
 
     await clickNotification({
       sessionId: 'session-lost',
       workspacePath: '/workspace/lost',
       sourceLabel: 'Lost task',
     });
-    expect(mocks.createWindow).toHaveBeenCalledTimes(1);
+    expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).toHaveBeenCalledTimes(1);
 
     // The window dies before its renderer ever drains the queued target.
     opened.lifecycleListeners.get('closed')?.();
@@ -409,7 +580,7 @@ describe('NotificationService agent notifications', () => {
       sourceLabel: 'Lost task',
     });
 
-    expect(mocks.createWindow).toHaveBeenCalledTimes(2);
+    expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).toHaveBeenCalledTimes(2);
     expect(notificationService.consumePendingNavigation('/workspace/lost')).toEqual({
       sessionId: 'session-lost-again',
       workspacePath: '/workspace/lost',
@@ -419,7 +590,7 @@ describe('NotificationService agent notifications', () => {
 
   it('keeps the queued navigation when only a sub-frame fails to load', async () => {
     const opened = makeFakeWindow();
-    mocks.createWindow.mockReturnValue(opened);
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockResolvedValue({ kind: 'new-window', window: opened });
 
     await clickNotification({
       sessionId: 'session-subframe',
@@ -447,7 +618,7 @@ describe('NotificationService agent notifications', () => {
         workspacePath: '/workspace/stale',
         sourceLabel: 'Stale task',
       });
-      expect(mocks.createWindow).toHaveBeenCalledTimes(1);
+      expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).toHaveBeenCalledTimes(1);
 
       nowSpy.mockReturnValue(1_000 + 120_000);
       expect(notificationService.consumePendingNavigation('/workspace/stale')).toBeNull();
@@ -457,7 +628,7 @@ describe('NotificationService agent notifications', () => {
         workspacePath: '/workspace/stale',
         sourceLabel: 'Stale task',
       });
-      expect(mocks.createWindow).toHaveBeenCalledTimes(2);
+      expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).toHaveBeenCalledTimes(2);
     } finally {
       nowSpy.mockRestore();
     }
@@ -468,7 +639,7 @@ describe('NotificationService agent notifications', () => {
     mocks.browserWindows = [offscreen];
     const workspaceWindow = makeFakeWindow();
     mocks.getMostRecentlyFocusedWorkspaceWindow.mockReturnValue(workspaceWindow);
-    mocks.createWindow.mockImplementation(() => {
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockImplementation(() => {
       throw new Error('workspace is not trusted');
     });
 
@@ -490,7 +661,7 @@ describe('NotificationService agent notifications', () => {
 
   it('falls back to an OS notification when no workspace window can report the failure', async () => {
     mocks.getMostRecentlyFocusedWorkspaceWindow.mockReturnValue(null);
-    mocks.createWindow.mockImplementation(() => {
+    mocks.openOrFocusWorkspaceWindowAwaitingRailSeed.mockImplementation(() => {
       throw new Error('workspace is not trusted');
     });
 
@@ -519,7 +690,7 @@ describe('NotificationService agent notifications', () => {
       'notification-clicked',
       expect.anything(),
     );
-    expect(mocks.createWindow).not.toHaveBeenCalled();
+    expect(mocks.openOrFocusWorkspaceWindowAwaitingRailSeed).not.toHaveBeenCalled();
   });
 
   it('bounds a blocked notification title built from a long session name', async () => {

@@ -59,6 +59,15 @@ export interface SessionWindow {
     mode: 'document' | 'workspace' | 'agentic-coding';
     filePath?: string;
     workspacePath?: string;
+    /**
+     * Rail contents (Multi-Project Mode) that were warm in this window's
+     * live `WindowState.additionalWorkspacePaths` at save time. Optional
+     * because sessions saved before this field existed have none -- treat
+     * missing as "no rail contents recorded", never as an error. See
+     * `computeSessionRestorePlan` in `session/SessionState.ts` for how this
+     * is combined with legacy multi-window saves on restore.
+     */
+    additionalWorkspacePaths?: string[];
     bounds: {
         x: number;
         y: number;

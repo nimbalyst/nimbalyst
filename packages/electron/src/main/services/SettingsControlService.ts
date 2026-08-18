@@ -55,8 +55,7 @@ import { FeatureUsageService, FEATURES } from './FeatureUsageService';
 import { SessionNamingService } from './SessionNamingService';
 import { setTrackerIssueKeyPrefix } from './TrackerSyncManager';
 import { updateNativeTheme, updateWindowTitleBars } from '../theme/ThemeManager';
-import { createWindow, findWindowByWorkspace } from '../window/WindowManager';
-import { getWorkspaceWindowState } from '../utils/store';
+import { openWorkspace } from '../window/workspaceOpenRef';
 
 // ─── Allow / deny lists ─────────────────────────────────────────────
 
@@ -257,13 +256,10 @@ export class SettingsControlService {
   }
 
   private openWorkspaceInternal(workspacePath: string): void {
-    const existing = findWindowByWorkspace(workspacePath);
-    if (existing && !existing.isDestroyed()) {
-      existing.focus();
-      return;
-    }
-    const savedState = getWorkspaceWindowState(workspacePath);
-    createWindow(false, true, workspacePath, savedState?.bounds);
+    // Via the ref, not a direct import: pulling in the chokepoint's module
+    // here would drag the tracker-sync/tutorial/autoUpdater graph into every
+    // suite that touches the MCP settings server.
+    openWorkspace(workspacePath);
   }
 
   // ── Sync ─────────────────────────────────────────────────────────

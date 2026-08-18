@@ -130,6 +130,8 @@ import { initCollabScopeListeners } from './store/listeners/collabScopeListeners
 import { initCollabReplicaListeners } from './store/listeners/collabReplicaListeners';
 import { initCollabConversionListeners } from './store/listeners/collabConversionListeners';
 import { initNotificationListeners } from './store/listeners/notificationListeners';
+import { collectPendingRailSeeds, initRailProjectListeners } from './store/listeners/railProjectListeners';
+import { initWindowCloseFlushListeners } from './store/listeners/windowCloseFlushListeners';
 import { initExtensionPermissionListeners } from './store/listeners/extensionPermissionListeners';
 import { initPermissionListeners } from './store/listeners/permissionListeners';
 import { initSoundListeners } from './store/listeners/soundListeners';
@@ -371,6 +373,8 @@ export default function App() {
     const cleanupMcp = initMcpListeners();
     const cleanupMenuCommand = initMenuCommandListeners();
     const cleanupNotification = initNotificationListeners();
+    const cleanupRailProject = initRailProjectListeners();
+    const cleanupWindowCloseFlush = initWindowCloseFlushListeners();
     const cleanupExtensionPermission = initExtensionPermissionListeners();
     const cleanupPermission = initPermissionListeners();
     const cleanupSound = initSoundListeners();
@@ -414,6 +418,8 @@ export default function App() {
       cleanupMcp?.();
       cleanupMenuCommand?.();
       cleanupNotification?.();
+      cleanupRailProject?.();
+      cleanupWindowCloseFlush?.();
       cleanupExtensionPermission?.();
       cleanupPermission?.();
       cleanupSound?.();
@@ -2217,6 +2223,13 @@ export default function App() {
                 name: initialState.workspaceName ?? initialState.workspacePath,
                 openedAt: Date.now(),
               });
+
+              // Now that the window's own project is established, pull any
+              // rail projects main parked for us during session restore.
+              // Deliberately here and not in `initRailProjectListeners()`:
+              // adding a project re-subscribes session state for it, which
+              // requires the workspace's state to be initialized first.
+              void collectPendingRailSeeds();
             }
           }
         }

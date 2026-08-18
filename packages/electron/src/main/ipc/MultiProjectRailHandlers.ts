@@ -26,7 +26,13 @@ import {
     windowStates,
     documentServices,
 } from '../window/WindowManager';
-import { startWorkspaceWatcher, stopWorkspaceWatcher } from '../file/WorkspaceWatcher.ts';
+import {
+    startWorkspaceWatcher,
+    stopWorkspaceWatcher,
+    startWarmWorkspaceWatch,
+    releaseWarmWatchOnPromotion,
+    stopWarmWorkspaceWatch,
+} from '../file/WorkspaceWatcher.ts';
 import { anyWindowReferencesWorkspace, resolveDocumentServicePath } from '../window/windowState';
 import { ElectronDocumentService, setupDocumentServiceHandlers } from '../services/ElectronDocumentService';
 import { ElectronFileSystemService } from '../services/ElectronFileSystemService';
@@ -132,6 +138,13 @@ export function registerMultiProjectRailHandlers(): void {
         state.additionalWorkspacePaths = [...additional, workspacePath];
 
         ensureServicesForPath(window, workspacePath);
+        // Keep this warm-but-invisible project's editors observing disk
+        // changes and its commit detection running (see WorkspaceWatcher.ts
+        // for why this is safe to multiplex while the file tree push is
+        // deliberately not). Does NOT start the FULL watcher or flip the
+        // global FileSystemService -- those stay reserved for the active
+        // path (regression guard: workspace:set-active owns both).
+        startWarmWorkspaceWatch(workspacePath);
         addToRecentItems('workspaces', workspacePath, basename(workspacePath));
 
         return { success: true };
@@ -195,6 +208,20 @@ export function registerMultiProjectRailHandlers(): void {
             } catch (error) {
                 logger.main.error('[MultiProject] Error stopping MCP config watcher:', error);
             }
+
+            // Release the warm-project watch started by register-additional
+            // (or by the demote step in workspace:set-active). If the path
+            // was `wasActive` above, its background subscription was never
+            // created (it went straight from full-active to closed), so
+            // this just stops GitRefWatcher; for a plain rail close of a
+            // background project it releases both. `stopWorkspaceWatcher`
+            // above also sweeps any orphaned background watch for this
+            // window's OTHER paths, so this call plus that sweep together
+            // cover every path that was ever registered in this window
+            // except one still its window's active (never-backgrounded)
+            // path at close time -- see the sweep's comment in
+            // WorkspaceWatcher.ts for that residual gap.
+            stopWarmWorkspaceWatch(workspacePath);
         }
 
         return { success: true };
@@ -230,15 +257,32 @@ export function registerMultiProjectRailHandlers(): void {
             return { success: true, alreadyActive: true };
         }
 
-        // Transition: stop the watcher tied to the previous active path,
-        // start a fresh one for the new active path. The watcher API is
-        // single-active-per-window, so we always tear down + restart on
-        // every flip. Watcher is the only "active-only" main-process
-        // resource (services in `documentServices`/`fileSystemServices`
-        // remain warm for inactive rail projects).
+        // Transition: stop the FULL watcher tied to the previous active
+        // path, start a fresh one for the new active path. The
+        // OptimizedWorkspaceWatcher active-tree-push API is
+        // single-active-per-window, so we always tear down + restart that
+        // part on every flip. Watcher is otherwise not an "active-only"
+        // resource anymore (services in `documentServices`/
+        // `fileSystemServices` remain warm for inactive rail projects, and
+        // so now do file-change notifications + git commit detection --
+        // see WorkspaceWatcher.ts's warm-watch functions):
+        //
+        // 1. Demote the outgoing path to a background (content-only) watch
+        //    *before* tearing down its full subscription, so the shared OS
+        //    watcher for that path stays alive across the handoff instead
+        //    of being torn down and immediately recreated.
+        if (previousActive) {
+            startWarmWorkspaceWatch(previousActive);
+        }
         stopWorkspaceWatcher(windowId);
         state.activeWorkspacePath = workspacePath;
+
+        // 2. Promote the incoming path from a background watch (if it was
+        //    warm) to the full active watch, then drop the now-redundant
+        //    background subscription. GitRefWatcher.start() below is a
+        //    no-op if startWarmWorkspaceWatch already had it running.
         startWorkspaceWatcher(window, workspacePath);
+        releaseWarmWatchOnPromotion(workspacePath);
 
         // Flip the runtime-global FileSystemService so AI tools that resolve
         // via `getFileSystemService()` (no-arg) read from the visible
