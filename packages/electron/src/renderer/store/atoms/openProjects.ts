@@ -81,7 +81,7 @@ export const activeWorkspacePathAtom = atom<string | null>(null);
  * `initOpenProjects()`'s `app:get-multi-project-mode` round trip resolves
  * and overwrites it.
  */
-export const multiProjectModeAtom = atom<boolean>(false);
+export const multiProjectModeAtom = atom<boolean>(true);
 
 /**
  * When true, the rail rehydrates with the projects that were open at last

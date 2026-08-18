@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening an editor no longer fetches a font from a third-party server.
 - Codex no longer offers slash commands it cannot actually run.
 - The Compact action is now hidden for agents that cannot compact, instead of offering a button that quietly does nothing.
+- Multi-project mode is now on by default for new installs; if you already work with several windows open, Nimbalyst leaves your setup alone until you turn it on yourself.
 
 ### Fixed
 <!-- Bug fixes go here -->

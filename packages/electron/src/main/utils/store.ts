@@ -2651,12 +2651,58 @@ export function updateMarketplaceInstall(extensionId: string, updates: Partial<M
 }
 
 // Multi-Project Rail Settings
-// `multiProjectMode` is the opt-in toggle that lets users open several
-// projects in a single window via the project rail. The `openProjects` list
-// and `activeProjectPath` are restored on launch so the rail rehydrates.
+// `multiProjectMode` lets users open several projects in a single window via
+// the project rail. Defaults ON (Phase 3 of single-window-multi-project) --
+// users who explicitly toggled it before this change keep their own choice,
+// since this is only a fallback for a key that was never written. The
+// `openProjects` list and `activeProjectPath` are restored on launch so the
+// rail rehydrates.
+
+/**
+ * Whether an upgrading install should be grandfathered OUT of the new
+ * default-on behavior.
+ *
+ * Defaulting the mode on is right for new installs, but for someone already
+ * running several windows it silently turns "6 windows" into "1 window with a
+ * rail sidebar I have never seen" on the very next launch. No projects are
+ * lost (restore seeds them all into the rail), but it is an unannounced change
+ * in shape, and this ships to users who never asked for it.
+ *
+ * So: only grandfather when BOTH are true -- the user never expressed a
+ * preference (key absent), and their saved session actually has more than one
+ * workspace window to collapse. Someone with zero or one workspace window sees
+ * no visible change from the new default, so there is nothing to protect them
+ * from.
+ *
+ * Pure and exported so the decision is testable without an electron-store.
+ */
+export function shouldGrandfatherMultiProjectMode(
+  hasExplicitPreference: boolean,
+  savedWindows: SessionWindow[] | undefined,
+): boolean {
+  if (hasExplicitPreference) return false;
+  const workspaceWindowCount = (savedWindows ?? []).filter(
+    (w) => w.mode === 'workspace' || w.mode === 'agentic-coding',
+  ).length;
+  return workspaceWindowCount > 1;
+}
 
 export function getMultiProjectMode(): boolean {
-  return getAppStore().get('multiProjectMode', false);
+  const store = getAppStore();
+  if (store.has('multiProjectMode')) {
+    return store.get('multiProjectMode', true);
+  }
+
+  // First read after upgrading. Decide once, then persist, so the answer is
+  // stable for the rest of this install's life and the user's later toggles
+  // behave like any other explicit preference.
+  const grandfathered = shouldGrandfatherMultiProjectMode(
+    false,
+    store.get('sessionState')?.windows,
+  );
+  const value = !grandfathered;
+  store.set('multiProjectMode', value);
+  return value;
 }
 
 export function setMultiProjectMode(enabled: boolean): void {
