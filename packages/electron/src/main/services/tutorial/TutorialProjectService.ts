@@ -7,6 +7,7 @@ import type {
 } from "../../../shared/tutorial";
 import {
   addToRecentItems,
+  getMultiProjectMode,
   getWorkspaceWindowState,
   saveAgentPermissions,
   setWorkspaceTrusted,
@@ -16,7 +17,12 @@ import {
 import {
   createWindow,
   findWindowByWorkspace,
+  getMostRecentlyFocusedWorkspaceWindow,
 } from "../../window/WindowManager";
+import {
+  RAIL_ADD_PROJECT_CHANNEL,
+  resolveProjectOpenTarget,
+} from "../../window/resolveProjectOpenTarget";
 import { seedTutorialSessions } from "./TutorialSessionSeeder";
 import {
   deleteTutorialTrackers,
@@ -60,6 +66,10 @@ export interface TutorialProjectServiceDependencies {
   getWorkspaceWindowState: typeof getWorkspaceWindowState;
   createWindow: typeof createWindow;
   findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null;
+  /** Multi-Project Mode: whether opening a project should add it to the
+   *  focused window's rail instead of spawning a new window. */
+  getMultiProjectMode: typeof getMultiProjectMode;
+  getMostRecentlyFocusedWorkspaceWindow: typeof getMostRecentlyFocusedWorkspaceWindow;
   addToRecentItems: typeof addToRecentItems;
   closeWorkspaceManagerWindow: () => void;
   seedTutorialTrackers: (
@@ -88,6 +98,8 @@ const defaultDependencies: TutorialProjectServiceDependencies = {
   getWorkspaceWindowState,
   createWindow,
   findWindowByWorkspace,
+  getMultiProjectMode,
+  getMostRecentlyFocusedWorkspaceWindow,
   addToRecentItems,
   closeWorkspaceManagerWindow: () => undefined,
   seedTutorialTrackers,
@@ -362,11 +374,29 @@ export class TutorialProjectService {
 
   private openProject(workspacePath: string): void {
     // The tutorial can be started repeatedly (Help menu, Workspace Manager),
-    // so focus the window that already has it rather than opening a duplicate.
+    // so focus the window that already has it rather than opening a
+    // duplicate. Mirrors `openOrFocusWorkspaceWindow`'s decision (inlined
+    // via the shared pure resolver, not imported directly, to avoid a
+    // circular import -- WorkspaceManagerWindow already imports this class).
     const existingWindow =
       this.dependencies.findWindowByWorkspace(workspacePath);
-    if (existingWindow && !existingWindow.isDestroyed()) {
-      existingWindow.focus();
+    const target = resolveProjectOpenTarget({
+      workspacePath,
+      multiProjectModeEnabled: this.dependencies.getMultiProjectMode(),
+      existingWindowForPath:
+        existingWindow && !existingWindow.isDestroyed() ? existingWindow : null,
+      focusedWorkspaceWindow: existingWindow
+        ? null
+        : this.dependencies.getMostRecentlyFocusedWorkspaceWindow(),
+    });
+
+    if (target.kind === "focus-existing") {
+      target.window.focus();
+    } else if (target.kind === "add-to-rail") {
+      target.window.focus();
+      target.window.webContents.send(RAIL_ADD_PROJECT_CHANNEL, {
+        workspacePath,
+      });
     } else {
       const savedState =
         this.dependencies.getWorkspaceWindowState(workspacePath);

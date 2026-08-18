@@ -44,7 +44,22 @@ interface ResolveInitialOpenProjectsInput {
   windowState: InitialWorkspaceWindowState | null;
 }
 
-const MAX_OPEN_PROJECTS = 8;
+/**
+ * Cap on warm rail projects. Each warm project holds a DocumentService, a
+ * FileSystemService, a file watcher, and a persistent tab slot, so this is
+ * a hard resource cap, not a taste preference.
+ *
+ * Raised from 8 to 12 for Phase 1.5 of single-window-multi-project: with
+ * multi-project mode meant to hold "every project in one window", 8 was
+ * too easy to hit. 12 still fits the rail without scrolling at typical
+ * window heights (12 * (40px icon + 8px gap) + ~120px for the org
+ * switcher/divider/add-button chrome is well under a 900px-tall window),
+ * and the per-project resource cost (watcher + 2 services + tab slot)
+ * makes an unbounded rail the wrong answer — kept as a hard stop rather
+ * than a soft warning so `isOpenProjectsAtCapAtom` / `atCap`-disabled UI
+ * stays a single source of truth other call sites can rely on.
+ */
+export const MAX_OPEN_PROJECTS = 12;
 
 /**
  * Path of the workspace currently visible in this window.
@@ -61,10 +76,12 @@ export const activeWorkspacePathAtom = atom<string | null>(null);
  * opening a new project spawns a fresh window (legacy behavior). When true,
  * opening a project adds it to the rail in the current window.
  *
- * Persisted via `app:set-multi-project-mode` IPC; seeded from store on
- * launch by an effect that reads `app:get-multi-project-mode`.
+ * Defaults `true` to match `getMultiProjectMode()`'s store default
+ * (`main/utils/store.ts`) -- this is only the value shown before
+ * `initOpenProjects()`'s `app:get-multi-project-mode` round trip resolves
+ * and overwrites it.
  */
-export const multiProjectModeAtom = atom<boolean>(false);
+export const multiProjectModeAtom = atom<boolean>(true);
 
 /**
  * When true, the rail rehydrates with the projects that were open at last
@@ -99,29 +116,67 @@ export const isOpenProjectsAtCapAtom = atom((get) => {
 });
 
 /**
+ * Outcome of `addOpenProjectAtom`, so callers can react instead of the add
+ * silently doing nothing at the cap:
+ *   - `'added'` — new project appended and activated.
+ *   - `'already-open'` — path was already in the rail; just activated.
+ *   - `'at-cap'` — rail is at `MAX_OPEN_PROJECTS`; nothing changed, caller
+ *     should surface this to the user (e.g. via `errorNotificationService`).
+ */
+export type AddOpenProjectOutcome = 'added' | 'already-open' | 'at-cap';
+
+export interface AddOpenProjectOptions {
+  /**
+   * Whether to also flip `activeWorkspacePathAtom` to the added (or
+   * already-open) project's path. Defaults to `true` so every pre-existing
+   * caller (rail "+" button, `loadInitialState`'s primary seed, the
+   * notification-click reference implementation) keeps its current
+   * behavior unchanged.
+   *
+   * Pass `false` for a non-activating add — e.g. seeding several restored
+   * rail projects into one window (`SessionState.ts`'s `seedRailProjects`):
+   * only the intended primary should end up visible, and every other
+   * seed's `workspace:register-additional` round trip resolves at an
+   * unpredictable time relative to the primary's, so any of them flipping
+   * `activeWorkspacePathAtom` can steal focus from the primary depending on
+   * network/IPC timing. See NIM single-window-multi-project plan.
+   */
+  activate?: boolean;
+}
+
+/**
  * Add a project to the rail. No-op if it already exists. When the rail
- * has reached the cap, returns without adding (caller should show a UI
- * hint via `isOpenProjectsAtCapAtom`).
+ * has reached the cap, returns `'at-cap'` without adding — callers must
+ * not treat a silent return as success; surface it to the user (the `+`
+ * button hint uses `isOpenProjectsAtCapAtom`, but callers that add a
+ * project programmatically, e.g. from a main-process `rail:add-project`
+ * message, have no button to disable and must react to the return value
+ * directly).
  *
- * Activates the added project so the renderer immediately switches to it.
+ * Activates the added (or already-open) project so the renderer
+ * immediately switches to it, unless `options.activate` is explicitly
+ * `false` — see `AddOpenProjectOptions`. At the cap, the active project is
+ * left untouched regardless.
  */
 export const addOpenProjectAtom = atom(
   null,
-  (get, set, project: OpenProject) => {
+  (get, set, project: OpenProject, options?: AddOpenProjectOptions): AddOpenProjectOutcome => {
+    const activate = options?.activate ?? true;
     const current = get(openProjectsAtom);
 
     const existing = current.find((p) => p.path === project.path);
     if (existing) {
-      set(activeWorkspacePathAtom, existing.path);
-      return;
+      if (activate) set(activeWorkspacePathAtom, existing.path);
+      return 'already-open';
     }
 
     if (current.length >= MAX_OPEN_PROJECTS) {
-      return;
+      return 'at-cap';
     }
 
     set(openProjectsAtom, [...current, project]);
-    set(activeWorkspacePathAtom, project.path);
+    if (activate) set(activeWorkspacePathAtom, project.path);
+    return 'added';
   }
 );
 
@@ -190,6 +245,31 @@ function getWindowBootstrapState(initialState: unknown): InitialWorkspaceWindowS
 }
 
 /**
+ * Merge the freshly computed initial rail state (`base`) with whatever is
+ * already in `openProjectsAtom` (`concurrent`) at the moment `initOpenProjects`
+ * is finally ready to write it.
+ *
+ * `initOpenProjects` awaits several IPC round trips before it can compute
+ * `base`. Two other writers run in that same window without awaiting this
+ * function: App.tsx's `loadInitialState` effect appends this window's own
+ * primary project via `addOpenProjectAtom`, and the `rail:add-project`
+ * listener (`store/listeners/railProjectListeners.ts`) appends any restore
+ * -seeded sibling projects main sends on `did-finish-load`
+ * (`SessionState.ts`'s `seedRailProjects`). A raw `store.set(openProjectsAtom,
+ * base)` would silently drop whatever either of those already appended by
+ * this point, even though main's `windowStates` already references them.
+ *
+ * `base` wins for any path both sides know about (its `OpenProject` shape
+ * here is the authoritative bootstrap identity); paths present only in
+ * `concurrent` are appended after it, preserving their existing order.
+ */
+export function mergeOpenProjects(base: OpenProject[], concurrent: OpenProject[]): OpenProject[] {
+  const basePaths = new Set(base.map((p) => p.path));
+  const extra = concurrent.filter((p) => !basePaths.has(p.path));
+  return extra.length > 0 ? [...base, ...extra] : base;
+}
+
+/**
  * NIM-757: which restored rail projects must be registered with the main
  * process via `workspace:register-additional`. The window's primary workspace
  * is already registered at bootstrap, so only the non-primary restored paths
@@ -236,12 +316,24 @@ export function resolveInitialOpenProjectsState({
   }
 
   if (restorePreviousProjects && normalizedPersistedPaths.length > 0) {
+    // Reserve a slot for the window's own primary workspace when the restored
+    // set doesn't already contain it. `initOpenProjects` and App.tsx's
+    // `loadInitialState` are two independent, unawaited effects: if restore
+    // fills every slot first, the primary seed is refused at the cap and the
+    // window renders WITHOUT its own project, with some other project active.
+    // Truncating here makes the outcome order-independent rather than racy.
+    const primaryPath = windowState?.workspacePath ?? null;
+    const primaryNeedsSlot = primaryPath != null && !normalizedPersistedPaths.includes(primaryPath);
+    const restoredPaths = primaryNeedsSlot
+      ? normalizedPersistedPaths.slice(0, MAX_OPEN_PROJECTS - 1)
+      : normalizedPersistedPaths;
+
     return {
-      paths: normalizedPersistedPaths,
+      paths: restoredPaths,
       activePath:
-        persistedActivePath && normalizedPersistedPaths.includes(persistedActivePath)
+        persistedActivePath && restoredPaths.includes(persistedActivePath)
           ? persistedActivePath
-          : normalizedPersistedPaths[0] ?? null,
+          : restoredPaths[0] ?? null,
     };
   }
 
@@ -296,7 +388,14 @@ export async function initOpenProjects(): Promise<void> {
         name: basenameFromPath(path),
         openedAt: Date.now(),
       }));
-      store.set(openProjectsAtom, projects);
+
+      // Merge (never overwrite) rather than a single late write so the rail
+      // still paints immediately -- see `mergeOpenProjects` doc comment for
+      // why a raw overwrite is unsafe. Written once now, before the awaited
+      // registration round trips below, and once more after -- both merges,
+      // so the second is a no-op unless a concurrent writer (loadInitialState
+      // / the `rail:add-project` listener) appended something in between.
+      store.set(openProjectsAtom, mergeOpenProjects(projects, store.get(openProjectsAtom)));
 
       // NIM-757 (#548 / reopen #441): register restored non-primary projects
       // with the main process BEFORE flipping the active path. The "+"-add flow
@@ -318,6 +417,11 @@ export async function initOpenProjects(): Promise<void> {
           ),
         );
       }
+
+      // Second merge: pick up anything a concurrent writer appended while
+      // the registration awaits above were in flight. Idempotent if nothing
+      // did.
+      store.set(openProjectsAtom, mergeOpenProjects(projects, store.get(openProjectsAtom)));
 
       if (initialActivePath && initialPaths.includes(initialActivePath)) {
         store.set(activeWorkspacePathAtom, initialActivePath);

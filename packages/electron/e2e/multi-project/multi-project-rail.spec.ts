@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import type { ElectronApplication, Page } from 'playwright';
 import { launchElectronApp, createTempWorkspace, TEST_TIMEOUTS } from '../helpers';
+import { openFileFromTree, PLAYWRIGHT_TEST_SELECTORS } from '../utils/testHelpers';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -17,7 +18,8 @@ test.describe.configure({ mode: 'serial' });
  *   3. Per-workspace UI state (sidebar width, tabs) survives a switch.
  *   4. Closing the active project from the rail promotes the next entry
  *      and tears down only the closed project's services.
- *   5. Cap at 8 projects: the 9th add is rejected without altering the rail.
+ *   5. Cap at 12 projects (`MAX_OPEN_PROJECTS`): the 13th add is rejected
+ *      without altering the rail.
  *
  * Tests assume the dev server is running (helpers.ts enforces this) and
  * that the renderer exposes `window.electronAPI`. Reads/writes go through
@@ -106,7 +108,10 @@ test.describe('Multi-Project Rail', () => {
     const items = rail.locator('[data-testid="project-rail-item"]');
     await expect(items).toHaveCount(2);
 
-    const active = rail.locator('[data-testid="project-rail-item"].active');
+    // NB: the rendered class is `is-active` (see ProjectRail.tsx /
+    // ProjectRail.css), not `active` -- `.active` as a CSS class selector
+    // never matches and silently returns zero elements.
+    const active = rail.locator('[data-testid="project-rail-item"].is-active');
     await expect(active).toHaveCount(1);
   });
 
@@ -160,6 +165,61 @@ test.describe('Multi-Project Rail', () => {
     await expect(page.locator('.agent-mode-empty')).toBeVisible({ timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
   });
 
+  test('switching rail entries rescopes the file tree without losing the other project\'s tab state', async () => {
+    // Scenario 3 of the single-window-multi-project plan: rail switch must
+    // rescope the visible project (file tree / active indicator) while
+    // *not* tearing down the tab state of the project switching away.
+    // `TabsContext` keeps a persistent tab slot per workspace path
+    // specifically so this works -- this is the first E2E test to actually
+    // exercise it via real tab opens rather than just the workspace-context
+    // (summary header / agent panel) checks the previous test covers.
+    const rail = page.locator('[data-testid="project-rail"]');
+    const items = rail.locator('[data-testid="project-rail-item"]');
+    await expect(items).toHaveCount(2);
+
+    // Scoped to the file tabs strip (not `.tab` unscoped) so this can never
+    // match an unrelated `.tab`-classed element elsewhere in the DOM (e.g. a
+    // hidden AgentMode session tab) -- same scoping `closeTabByFileName`
+    // uses.
+    const fileTabs = page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTabsContainer).locator(PLAYWRIGHT_TEST_SELECTORS.tab);
+
+    // Coming out of the previous test, the second item (workspaceB) is
+    // active. Open b.md there.
+    await openFileFromTree(page, 'b.md');
+    await expect(fileTabs.filter({ hasText: 'b.md' })).toBeVisible();
+
+    // Switch to the first item (workspaceA) and confirm the file tree
+    // rescoped: a.md is the file this project actually has on disk.
+    await items.first().click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('.file-tree-name', { hasText: 'a.md' })).toBeVisible({
+      timeout: TEST_TIMEOUTS.FILE_TREE_LOAD,
+    });
+    await openFileFromTree(page, 'a.md');
+    await expect(fileTabs.filter({ hasText: 'a.md' })).toBeVisible();
+
+    // Switch back to workspaceB: its b.md tab must still be open, and
+    // workspaceA's a.md tab (a different project's tab slot) must not leak
+    // across.
+    await items.nth(1).click();
+    await page.waitForTimeout(300);
+    await expect(fileTabs.filter({ hasText: 'b.md' })).toBeVisible();
+    await expect(fileTabs.filter({ hasText: 'a.md' })).toHaveCount(0);
+
+    // Switch to workspaceA again: a.md's tab must still be there too --
+    // opening it once, in the earlier switch, was not lost.
+    await items.first().click();
+    await page.waitForTimeout(300);
+    await expect(fileTabs.filter({ hasText: 'a.md' })).toBeVisible();
+    await expect(fileTabs.filter({ hasText: 'b.md' })).toHaveCount(0);
+
+    // Return to workspaceB so the rail is in the state the next test
+    // ("closing the active project") expects: 2 items, workspaceB active.
+    await items.nth(1).click();
+    await page.waitForTimeout(300);
+    await expect(items.nth(1)).toHaveClass(/is-active/);
+  });
+
   test('closing the active project promotes the next entry', async () => {
     const rail = page.locator('[data-testid="project-rail"]');
     const items = rail.locator('[data-testid="project-rail-item"]');
@@ -167,7 +227,8 @@ test.describe('Multi-Project Rail', () => {
 
     // Click the active item to surface its close button (CSS shows it on
     // hover or when active).
-    const activeItem = rail.locator('[data-testid="project-rail-item"].active');
+    // See the earlier `.is-active` note -- `active` is not a real class here.
+    const activeItem = rail.locator('[data-testid="project-rail-item"].is-active');
     await activeItem.hover();
 
     // Auto-accept the streaming-confirm dialog (none expected here, but
@@ -214,7 +275,8 @@ test.describe('Multi-Project Rail', () => {
       // panel must show its empty state — no leaked tabs from the
       // previously active workspace.
       const rail = page.locator('[data-testid="project-rail"]');
-      const activeItem = rail.locator('[data-testid="project-rail-item"].active');
+      // See the earlier `.is-active` note -- `active` is not a real class here.
+      const activeItem = rail.locator('[data-testid="project-rail-item"].is-active');
       await expect(activeItem).toHaveCount(1);
 
       const empty = page.locator('.agent-mode-empty');
@@ -225,8 +287,10 @@ test.describe('Multi-Project Rail', () => {
   });
 
   test('rail rejects projects beyond the cap', async () => {
+    // MAX_OPEN_PROJECTS (openProjects.ts) is 12; one over that exercises the
+    // truncation in `normalizeProjectPaths` on reload.
     const extraPaths: string[] = [];
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < 13; i++) {
       const dir = await createTempWorkspace();
       await fs.writeFile(path.join(dir, 'x.md'), `# ${i}\n`, 'utf8');
       extraPaths.push(dir);
@@ -244,7 +308,7 @@ test.describe('Multi-Project Rail', () => {
       await page.waitForSelector('.workspace-sidebar', { timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
 
       const items = page.locator('[data-testid="project-rail"] [data-testid="project-rail-item"]');
-      await expect(items).toHaveCount(8);
+      await expect(items).toHaveCount(12);
     } finally {
       await Promise.all(extraPaths.map((p) => fs.rm(p, { recursive: true, force: true }).catch(() => undefined)));
     }

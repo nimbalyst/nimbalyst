@@ -57,8 +57,9 @@ import { TrayManager } from '../../tray/TrayManager';
 import { logger } from '../../utils/logger';
 import { getSettingsService } from '../SettingsService';
 import { subscribeProviderSettingsInvalidation } from './providerSettingsCacheInvalidation';
-import { windowStates, findWindowByWorkspace, getWindowId, createWindow, isAppQuitting } from '../../window/WindowManager';
+import { windowStates, findWindowByWorkspace, getWindowId, createWindow, getMostRecentlyFocusedWorkspaceWindow, isAppQuitting } from '../../window/WindowManager';
 import { resolveActiveWorkspacePathForWindowId } from '../../window/windowState';
+import { RAIL_ADD_PROJECT_CHANNEL, resolveProjectOpenTarget } from '../../window/resolveProjectOpenTarget';
 import { sessionFileTracker } from '../SessionFileTracker';
 import { extractFilePath } from './tools/extractFilePath';
 import { handleBackendTool } from '../../mcp/tools/backendToolHandler';
@@ -82,7 +83,8 @@ import {
   shouldShowCommunityPopup,
   wasCommunityPopupShownThisLaunch,
   getDefaultEffortLevel,
-  getDefaultThinkingMode
+  getDefaultThinkingMode,
+  getMultiProjectMode
 } from '../../utils/store';
 import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../../utils/aiSettingsMerge';
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
@@ -323,7 +325,24 @@ export class AIService {
     findWindow: (workspacePath) => findWindowByWorkspace(workspacePath),
     isDestroyed: (window) => window.isDestroyed(),
     workspaceExists: (workspacePath) => fs.existsSync(workspacePath),
-    createWindow: (workspacePath) => createWindow(false, true, workspacePath),
+    // Same "focus existing / add to rail / new window" decision the
+    // openOrFocusWorkspaceWindow chokepoint makes, inlined via the shared
+    // pure resolver rather than importing WorkspaceManagerWindow directly
+    // (this dep interface exists specifically to avoid that coupling).
+    openWorkspace: (workspacePath) => {
+      const target = resolveProjectOpenTarget({
+        workspacePath,
+        multiProjectModeEnabled: getMultiProjectMode(),
+        existingWindowForPath: null, // caller already confirmed no live window has this path
+        focusedWorkspaceWindow: getMostRecentlyFocusedWorkspaceWindow(),
+      });
+      if (target.kind === 'add-to-rail') {
+        target.window.focus();
+        target.window.webContents.send(RAIL_ADD_PROJECT_CHANNEL, { workspacePath });
+        return { window: target.window, isNewWindow: false };
+      }
+      return { window: createWindow(false, true, workspacePath), isNewWindow: true };
+    },
     waitForLoad: (window) =>
       new Promise<void>((resolve) => {
         window.webContents.once('did-finish-load', () => resolve());

@@ -23,8 +23,10 @@ import {
     getMostRecentlyFocusedWorkspaceWindow,
 } from './window/WindowManager';
 import { beginStartupActivation, finishStartupWindowCreation } from './window/StartupActivation';
-import { loadFileIntoWindow } from './file/FileOperations';
-import { createApplicationMenu } from './menu/ApplicationMenu';
+import { loadFileIntoWindow, deliverAfterWorkspaceSeed } from './file/FileOperations';
+import { createApplicationMenu, updateApplicationMenu } from './menu/ApplicationMenu';
+import { setApplicationMenuRefresher } from './menu/applicationMenuRef';
+import { setWorkspaceOpener } from './window/workspaceOpenRef';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
 import { setSafeModeSessionStateProtection } from './session/safeModeSessionState';
@@ -35,7 +37,7 @@ import {
     dispatchAppActionLink,
     type AppAction,
 } from './utils/appActionLinks';
-import { createWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
+import { createWorkspaceManagerWindow, openOrFocusWorkspaceWindow, openOrFocusWorkspaceWindowAwaitingRailSeed, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
 import { createTeamManagementWindow, setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { setupTrayPanelHandlers } from './window/TrayPanelWindow';
 import { applyDockIcon } from './utils/dockIcon';
@@ -102,7 +104,6 @@ import {
     shouldShowRosettaWarning,
     dismissRosettaWarning,
     getSessionSyncConfig,
-    addToRecentItems,
     getTheme,
     hasCheckedClaudeCodeInstallation,
     getLaunchCount,
@@ -497,6 +498,11 @@ let mcpConfigServiceCleanedUp = false;
 // live MCPConfigService without back-importing this entry-point file (which
 // would drag the whole app graph in at module load). See mcpConfigServiceRef.
 setMcpConfigServiceGetter(() => mcpConfigService);
+// Lets settings handlers rebuild the menu without importing the menu graph.
+setApplicationMenuRefresher(() => updateApplicationMenu());
+// Lets the MCP settings server open a project without importing the menu/
+// tracker-sync graph that the chokepoint's own module pulls in.
+setWorkspaceOpener((workspacePath) => openOrFocusWorkspaceWindow(workspacePath));
 
 export { getMcpConfigService } from './mcpConfigServiceRef';
 
@@ -1234,10 +1240,40 @@ async function openSharedDocumentFromDeepLink(documentId: string, orgId: string)
         return true;
     }
 
-    // No window has this workspace open — create one. The renderer's
-    // deep-link listener will drain the pending queue once it mounts.
-    logger.main.info('[DeepLink] Opening new window for shared doc workspace:', { workspacePath, documentId });
-    createWindow(false, true, workspacePath);
+    // No window has this workspace open — focus/add-to-rail/create one via
+    // the shared chokepoint. In Multi-Project Mode this may add the project
+    // to an already-loaded window's rail rather than a fresh one, in which
+    // case there is no mount for the renderer's deep-link listener to drain
+    // the pending queue from -- deliver the live event ourselves, same as
+    // the "existing window" branch above. The awaiting variant makes sure
+    // that live send only fires after the rail registration actually lands
+    // -- otherwise it can race the renderer and land on whichever project
+    // was visible before the switch (see WorkspaceManagerWindow.ts).
+    logger.main.info('[DeepLink] Opening window for shared doc workspace:', { workspacePath, documentId });
+    await deliverAfterWorkspaceSeed(
+        openOrFocusWorkspaceWindowAwaitingRailSeed(workspacePath),
+        (outcome) => {
+            if (outcome.kind !== 'new-window') {
+                outcome.window.webContents.send('deep-link:open-shared-document', {
+                    documentId,
+                    orgId,
+                    workspacePath,
+                });
+            }
+        },
+        (outcome) => {
+            // pendingSharedDocLinks already has this entry queued above; leave
+            // it queued rather than deleting it -- if a window for this
+            // workspace ever mounts later, its deep-link listener still
+            // drains it. There is no window it is currently safe to deliver
+            // the live event into.
+            logger.main.warn('[DeepLink] Rail seed did not land for shared doc workspace, not delivering:', {
+                workspacePath,
+                documentId,
+                reason: outcome?.reason ?? 'no-opener',
+            });
+        },
+    );
     return true;
 }
 
@@ -1276,8 +1312,29 @@ async function openSharedFolderFromDeepLink(folderId: string, orgId: string): Pr
         return;
     }
 
-    logger.main.info('[DeepLink] Opening new window for shared folder workspace:', { workspacePath, folderId });
-    createWindow(false, true, workspacePath);
+    logger.main.info('[DeepLink] Opening window for shared folder workspace:', { workspacePath, folderId });
+    await deliverAfterWorkspaceSeed(
+        openOrFocusWorkspaceWindowAwaitingRailSeed(workspacePath),
+        (outcome) => {
+            if (outcome.kind !== 'new-window') {
+                outcome.window.webContents.send('deep-link:open-shared-folder', {
+                    folderId,
+                    orgId,
+                    workspacePath,
+                });
+            }
+        },
+        (outcome) => {
+            // pendingSharedFolderLinks already has this entry queued above;
+            // leave it queued for a later mount, same reasoning as the
+            // shared-doc path.
+            logger.main.warn('[DeepLink] Rail seed did not land for shared folder workspace, not delivering:', {
+                workspacePath,
+                folderId,
+                reason: outcome?.reason ?? 'no-opener',
+            });
+        },
+    );
 }
 
 /**
@@ -1409,12 +1466,32 @@ async function openTrackerFromDeepLink(
         return true;
     }
 
-    logger.main.info('[DeepLink] Opening new window for tracker workspace:', {
+    logger.main.info('[DeepLink] Opening window for tracker workspace:', {
         workspacePath,
         trackerId,
         view,
     });
-    createWindow(false, true, workspacePath);
+    await deliverAfterWorkspaceSeed(
+        openOrFocusWorkspaceWindowAwaitingRailSeed(workspacePath),
+        (outcome) => {
+            if (outcome.kind !== 'new-window') {
+                outcome.window.webContents.send('deep-link:open-tracker', {
+                    ...trackerLink,
+                    workspacePath,
+                });
+            }
+        },
+        (outcome) => {
+            // pendingTrackerLinks already has this entry queued above; leave
+            // it queued for a later mount, same reasoning as the other deep
+            // links.
+            logger.main.warn('[DeepLink] Rail seed did not land for tracker workspace, not delivering:', {
+                workspacePath,
+                trackerId,
+                reason: outcome?.reason ?? 'no-opener',
+            });
+        },
+    );
     return true;
 }
 
@@ -1432,7 +1509,10 @@ app.on('open-file', (event, path) => {
 });
 
 // Helper function to open a file with workspace detection
-async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
+async function openFileWithWorkspaceDetection(
+    filePath: string,
+    options?: { seedTimeoutMs?: number },
+): Promise<void> {
     // Check if file is already open in a window
     const existingWindow = findWindowByFilePath(filePath);
     if (existingWindow) {
@@ -1440,68 +1520,71 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
         return;
     }
 
+    // Find/focus/add-to-rail/create the workspace window via the shared
+    // chokepoint, then deliver `filePath` into it. Sequenced through
+    // `openOrFocusWorkspaceWindowAwaitingRailSeed` so a rail add-to-rail
+    // outcome is not acted on until the project is actually registered and
+    // active in the target window -- delivering `open-document` before that
+    // lands would open the file against whatever project was visible before
+    // the switch (see WorkspaceManagerWindow.ts's doc comment). If the seed
+    // never lands ('at-cap' / 'timeout'), the file is not delivered anywhere
+    // rather than risk the wrong project.
+    const openWorkspaceAndLoadFile = async (targetWorkspacePath: string): Promise<void> => {
+        await deliverAfterWorkspaceSeed(
+            openOrFocusWorkspaceWindowAwaitingRailSeed(targetWorkspacePath, {
+                startupReveal: true,
+                startupFrontmost: true,
+                seedTimeoutMs: options?.seedTimeoutMs,
+            }),
+            (outcome) => {
+                if (outcome.kind === 'new-window') {
+                    updateTrackerSchemaWorkspace(targetWorkspacePath);
+                    // createWindow reveals the window itself — inactive while this
+                    // runs during launch, activating for a file opened later.
+                    outcome.window.once('ready-to-show', () => {
+                        loadFileIntoWindow(outcome.window, filePath, targetWorkspacePath);
+                    });
+                } else {
+                    // Window already loaded (existing, or just added to the rail)
+                    // - no need to focus, let macOS handle window ordering.
+                    loadFileIntoWindow(outcome.window, filePath, targetWorkspacePath);
+                }
+            },
+            (outcome) => {
+                logger.main.warn('[FileOpen] Rail seed did not land for workspace, not delivering file:', {
+                    workspacePath: targetWorkspacePath,
+                    filePath,
+                    reason: outcome?.reason ?? 'no-opener',
+                });
+            },
+        );
+    };
+
     // Detect which workspace this file belongs to
     const workspacePath = detectFileWorkspace(filePath);
 
     if (workspacePath) {
         // File belongs to a known workspace
         logger.main.info(`File belongs to workspace: ${workspacePath}`);
-
-        // Find or create workspace window
-        let workspaceWindow = findWindowByWorkspace(workspacePath);
-
-        if (workspaceWindow) {
-            // Workspace window exists, use it - no need to focus, let macOS handle window ordering
-            await loadFileIntoWindow(workspaceWindow, filePath);
-        } else {
-            // Create new workspace window for this workspace
-            workspaceWindow = createWindow(false, true, workspacePath, undefined, {
-                startupReveal: true,
-                startupFrontmost: true,
-            });
-            updateTrackerSchemaWorkspace(workspacePath);
-            // createWindow reveals the window itself — inactive while this runs
-            // during launch, activating for a file opened later.
-            workspaceWindow.once('ready-to-show', async () => {
-                // Window state is already set by createWindow with workspace path
-                // Just load the file
-                await loadFileIntoWindow(workspaceWindow!, filePath);
-            });
-        }
+        await openWorkspaceAndLoadFile(workspacePath);
     } else {
         // File is not in a known workspace - open it in the frontmost workspace window as an external file
         logger.main.info(`File not in known workspace, opening as external file in frontmost window`);
 
         const frontmostWindow = getMostRecentlyFocusedWorkspaceWindow();
         if (frontmostWindow) {
-            await loadFileIntoWindow(frontmostWindow, filePath);
+            loadFileIntoWindow(frontmostWindow, filePath);
         } else {
             // No workspace windows open - try to detect a project root and open it
             const suggestedWorkspace = suggestWorkspaceForFile(filePath);
             if (suggestedWorkspace && suggestedWorkspace !== path.dirname(filePath)) {
                 logger.main.info(`Opening suggested workspace: ${suggestedWorkspace}`);
-                addToRecentItems('workspaces', suggestedWorkspace, path.basename(suggestedWorkspace));
-                const newWindow = createWindow(false, true, suggestedWorkspace, undefined, {
-                    startupReveal: true,
-                    startupFrontmost: true,
-                });
-                updateTrackerSchemaWorkspace(suggestedWorkspace);
-                newWindow.once('ready-to-show', async () => {
-                    await loadFileIntoWindow(newWindow, filePath);
-                });
+                await openWorkspaceAndLoadFile(suggestedWorkspace);
             } else {
                 // No project root detected - use the file's directory as workspace
                 const fileDir = path.dirname(filePath);
                 logger.main.info(`Using file directory as workspace: ${fileDir}`);
-                addToRecentItems('workspaces', fileDir, path.basename(fileDir));
-                const newWindow = createWindow(false, true, fileDir, undefined, {
-                    startupReveal: true,
-                    startupFrontmost: true,
-                });
-                updateTrackerSchemaWorkspace(fileDir);
-                newWindow.once('ready-to-show', async () => {
-                    await loadFileIntoWindow(newWindow, filePath);
-                });
+                await openWorkspaceAndLoadFile(fileDir);
             }
         }
     }
@@ -2998,7 +3081,14 @@ app.whenReady().then(async () => {
         // Handle pending file with workspace detection
         const fileToOpen = pendingFilePath;
         pendingFilePath = null;
-        await openFileWithWorkspaceDetection(fileToOpen);
+        // This await gates `finishStartupWindowCreation()` below, so a
+        // rail-seed 'timeout' (default 2000ms, see railSeeding.ts) would
+        // delay Nimbalyst coming to the front by that much in the rare case
+        // multi-project restore already created a focused workspace window
+        // by the time this runs. Bound that worst case with a shorter
+        // startup-only timeout rather than threading a startup flag through
+        // every deep-link path too.
+        await openFileWithWorkspaceDetection(fileToOpen, { seedTimeoutMs: 750 });
     }
 
     // Handle pending deep link URL (e.g., auth callback)

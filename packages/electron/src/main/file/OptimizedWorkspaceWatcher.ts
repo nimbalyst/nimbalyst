@@ -1,7 +1,8 @@
 import { BrowserWindow } from 'electron';
 import { getFolderContents } from '../utils/FileTree';
 import { logger } from '../utils/logger';
-import { getWindowId, markRecentlyDeleted } from '../window/WindowManager';
+import { getWindowId, markRecentlyDeleted, windows, windowStates } from '../window/WindowManager';
+import { windowReferencesWorkspace } from '../window/windowState';
 import * as workspaceEventBus from './WorkspaceEventBus';
 
 /**
@@ -17,6 +18,19 @@ export class OptimizedWorkspaceWatcher {
     private watchedPaths = new Map<number, Set<string>>();
     /** Subscriber IDs we've registered with the bus, keyed by windowId */
     private subscriberIds = new Map<number, string>();
+
+    /**
+     * Content-only watches kept alive for rail projects that are registered
+     * (warm) in a window but not the window's currently-visible project.
+     * Keyed by resolved workspacePath -> number of logical callers that
+     * asked for a background watch on that path (normally 1; can exceed 1
+     * if two windows both keep the same path warm). Only ever forwards
+     * `file-changed-on-disk` / `file-deleted` -- never rebuilds or pushes
+     * the file tree, because `workspace-file-tree-updated` lands in a
+     * renderer atom that isn't workspace-scoped (see WorkspaceWatcher.ts
+     * docs on `startBackgroundWorkspaceWatch`).
+     */
+    private backgroundRefCounts = new Map<string, number>();
 
     async start(window: BrowserWindow, workspacePath: string) {
         const windowId = getWindowId(window);
@@ -101,6 +115,133 @@ export class OptimizedWorkspaceWatcher {
     }
 
     // ---------------------------------------------------------------
+    // Background (warm, non-visible rail project) watching
+    // ---------------------------------------------------------------
+
+    /**
+     * Send an IPC event to every window that actually references
+     * `workspacePath` (primary or warm rail path) instead of broadcasting to
+     * every window in the process, so the fan-out stays bounded by how many
+     * windows chose to keep the project warm.
+     */
+    private sendToReferencingWindows(workspacePath: string, channel: string, payload: unknown): void {
+        for (const [windowId, window] of windows) {
+            if (window.isDestroyed()) continue;
+            if (!windowReferencesWorkspace(windowStates.get(windowId), workspacePath)) continue;
+            window.webContents.send(channel, payload);
+        }
+    }
+
+    /**
+     * Start a content-only watch for a warm rail project that is registered
+     * in a window but not currently visible. Forwards `file-changed-on-disk`
+     * / `file-deleted` so open editor buffers for that project stay correct
+     * while it's in the background, but deliberately never triggers a file
+     * tree rebuild/push: `workspace-file-tree-updated` lands in a single
+     * global renderer atom with no workspacePath on the payload, so pushing
+     * a background project's tree would silently clobber whatever tree is
+     * currently visible. The visible project's tree is always fetched fresh
+     * on activation instead (`initFileTreeListeners` -> `getFolderContents`,
+     * an uncached disk read), so no push channel is needed for correctness.
+     *
+     * Ref-counted per workspacePath (not per window) so multiple callers
+     * asking for the same background path don't create duplicate bus
+     * subscriptions or race each other's unsubscribe.
+     */
+    async startBackground(workspacePath: string): Promise<void> {
+        const count = this.backgroundRefCounts.get(workspacePath) ?? 0;
+        this.backgroundRefCounts.set(workspacePath, count + 1);
+        if (count > 0) {
+            // Already subscribed for this path; just tracked another caller.
+            return;
+        }
+
+        const subscriberId = `workspace-watcher-bg-${workspacePath}`;
+        await workspaceEventBus.subscribe(workspacePath, subscriberId, {
+            onChange: (filePath: string) => {
+                this.sendToReferencingWindows(workspacePath, 'file-changed-on-disk', { path: filePath });
+            },
+            onAdd: (filePath: string, gitignoreBypassed?: boolean) => {
+                if (gitignoreBypassed) return; // SessionFileWatcher handles editor notifications
+                this.sendToReferencingWindows(workspacePath, 'file-changed-on-disk', { path: filePath });
+            },
+            onUnlink: (filePath: string, gitignoreBypassed?: boolean) => {
+                markRecentlyDeleted(filePath);
+                if (gitignoreBypassed) return; // SessionFileWatcher handles editor notifications
+                this.sendToReferencingWindows(workspacePath, 'file-changed-on-disk', { path: filePath });
+                this.sendToReferencingWindows(workspacePath, 'file-deleted', { filePath });
+            },
+            // This listener does editor-buffer notification, not file-tree
+            // structure tracking (it never rebuilds the tree), so it should
+            // NOT opt in to gitignored structural events -- WorkspaceEventBus
+            // reserves that flag for tree listeners and explicitly calls out
+            // "editor notification" listeners as the case that should leave
+            // it off. We already discard gitignoreBypassed events above, so
+            // this only saves the bus the round trip of calling us for them.
+            receiveGitignoredStructureEvents: false,
+        });
+    }
+
+    /**
+     * Release ONE caller's hold on a background watch started via
+     * `startBackground`. No-op if the path was never backgrounded, or if
+     * other callers still hold it warm.
+     *
+     * This is the "I know exactly which single reference I'm dropping"
+     * variant -- its only caller is `releaseWarmWatchOnPromotion` (a window
+     * promoting ITS OWN warm path to active), which is NOT gated on
+     * `anyWindowReferencesWorkspace`: other windows may legitimately still
+     * hold the same path warm, and a plain decrement is what keeps their
+     * subscription alive. Any release site that has already proven (via
+     * `anyWindowReferencesWorkspace`) that NO window references the path
+     * anymore must use `releaseAllBackgroundRefs` instead -- decrementing by
+     * one there is the bug this pair of methods exists to avoid: with two
+     * windows both keeping a path warm, only the LAST window's release call
+     * ever runs while the boolean gate is false, so a plain decrement never
+     * reaches zero and leaks the bus subscription forever.
+     */
+    stopBackground(workspacePath: string): void {
+        const count = this.backgroundRefCounts.get(workspacePath) ?? 0;
+        if (count <= 0) return;
+
+        const next = count - 1;
+        if (next > 0) {
+            this.backgroundRefCounts.set(workspacePath, next);
+            return;
+        }
+
+        this.backgroundRefCounts.delete(workspacePath);
+        workspaceEventBus.unsubscribe(workspacePath, `workspace-watcher-bg-${workspacePath}`);
+    }
+
+    /**
+     * Fully release a background watch for `workspacePath`, regardless of
+     * how many callers `startBackground` ever counted for it. Callers MUST
+     * have independently proven -- via `anyWindowReferencesWorkspace` --
+     * that no window references this path anymore before calling this; once
+     * that is true there is no live window left to still need the shared bus
+     * subscription, no matter what the refcount says. Idempotent: safe to
+     * call for a path that was never backgrounded, or one another caller
+     * already released.
+     */
+    releaseAllBackgroundRefs(workspacePath: string): void {
+        if (!this.backgroundRefCounts.has(workspacePath)) return;
+
+        this.backgroundRefCounts.delete(workspacePath);
+        workspaceEventBus.unsubscribe(workspacePath, `workspace-watcher-bg-${workspacePath}`);
+    }
+
+    /** Number of paths currently held warm in the background. Test/diagnostics only. */
+    getBackgroundWatchCount(): number {
+        return this.backgroundRefCounts.size;
+    }
+
+    /** Paths currently held warm in the background. Used to sweep orphans on `stop`/`stopAll`. */
+    getBackgroundWatchPaths(): string[] {
+        return [...this.backgroundRefCounts.keys()];
+    }
+
+    // ---------------------------------------------------------------
     // Folder expansion tracking
     // ---------------------------------------------------------------
 
@@ -179,11 +320,18 @@ export class OptimizedWorkspaceWatcher {
     }
 
     async stopAll() {
-        logger.workspaceWatcher.info(`[CLEANUP] Stopping all workspace watchers (${this.workspacePaths.size} windows)`);
+        logger.workspaceWatcher.info(
+            `[CLEANUP] Stopping all workspace watchers (${this.workspacePaths.size} windows, ${this.backgroundRefCounts.size} background)`
+        );
 
         for (const windowId of [...this.subscriberIds.keys()]) {
             this.stop(windowId);
         }
+
+        for (const workspacePath of [...this.backgroundRefCounts.keys()]) {
+            workspaceEventBus.unsubscribe(workspacePath, `workspace-watcher-bg-${workspacePath}`);
+        }
+        this.backgroundRefCounts.clear();
 
         for (const timer of this.updateTimers.values()) {
             clearTimeout(timer);
@@ -207,6 +355,7 @@ export class OptimizedWorkspaceWatcher {
             type: busStats.type,
             activeWorkspaces: this.workspacePaths.size,
             workspaces: stats,
+            backgroundWorkspaces: [...this.backgroundRefCounts.keys()],
         };
     }
 }

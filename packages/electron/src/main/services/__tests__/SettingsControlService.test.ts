@@ -55,9 +55,8 @@ vi.mock('../../theme/ThemeManager', () => ({
   updateWindowTitleBars: vi.fn(),
 }));
 
-vi.mock('../../window/WindowManager', () => ({
-  createWindow: vi.fn(),
-  findWindowByWorkspace: vi.fn(() => null),
+vi.mock('../../window/WorkspaceManagerWindow', () => ({
+  openOrFocusWorkspaceWindow: vi.fn(),
 }));
 
 vi.mock('../../utils/logger', () => ({

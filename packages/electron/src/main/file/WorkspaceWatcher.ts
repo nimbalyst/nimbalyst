@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getWindowId, windowStates } from '../window/WindowManager';
+import { anyWindowReferencesWorkspace } from '../window/windowState';
 import { clearGitStatusCache } from '../ipc/GitStatusHandlers';
 import { optimizedWorkspaceWatcher } from './OptimizedWorkspaceWatcher';
 import { gitRefWatcher } from './GitRefWatcher';
@@ -113,6 +114,88 @@ export function startWorkspaceWatcher(window: BrowserWindow, workspacePath: stri
     });
 }
 
+// ============================================================================
+// Warm (rail-registered, not-currently-visible) workspace watching
+//
+// The rail lets a window keep several projects registered while only one is
+// visible. `OptimizedWorkspaceWatcher` is single-active-per-window (the
+// `start`/`stop` pair above), so a warm-but-invisible project historically
+// had no watcher at all: its open editor buffers never learned about disk
+// changes, and its GitRefWatcher (commit detection / pending-review
+// auto-approve / git-status cache invalidation) went dark the moment it
+// stopped being the visible project.
+//
+// The three functions below keep a warm project's *content* events flowing
+// without paying the cost -- or the renderer-side risk -- of also pushing
+// `workspace-file-tree-updated` for it:
+//   - `workspace-file-tree-updated` lands in a single global (not
+//     workspace-scoped) renderer atom with no workspacePath on the payload,
+//     so pushing a background project's tree would silently clobber
+//     whatever tree is currently visible.
+//   - The visible project's tree is already fetched fresh on every
+//     activation (`initFileTreeListeners` -> `getFolderContents`, an
+//     uncached disk read), so no push channel is needed there for
+//     correctness -- multiplexing it would be pure waste.
+//   - `file-changed-on-disk` / `file-deleted`, by contrast, are consumed by
+//     per-file-path atom families (`fileChangedOnDiskAtomFamily`,
+//     `fileDeletedAtomFamily`) that DiskBackedStore subscribes to per open
+//     tab regardless of which project is visible, so multiplexing those two
+//     is both safe and the only way an inactive project's open editor
+//     buffers ever learn a file changed underneath them.
+// ============================================================================
+
+/**
+ * Start (or keep alive) a content-only background watch for a rail project
+ * that is registered in a window but not currently visible: forwards
+ * `file-changed-on-disk` / `file-deleted`, never pushes a file tree rebuild,
+ * and keeps GitRefWatcher running for it (idempotent if already running).
+ *
+ * Called both when a path is first registered as warm
+ * (`workspace:register-additional`) and when the previously-active path is
+ * demoted during a rail switch (`workspace:set-active`).
+ */
+export function startWarmWorkspaceWatch(workspacePath: string): void {
+    optimizedWorkspaceWatcher.startBackground(workspacePath).catch((error) => {
+        logger.workspaceWatcher.error('Failed to start background workspace watch:', error);
+    });
+    gitRefWatcher.start(workspacePath).catch((error) => {
+        logger.workspaceWatcher.error('Failed to start GitRefWatcher for warm project:', error);
+    });
+}
+
+/**
+ * Release the content-only background watch for a path that is being
+ * promoted to a window's full/active watch. Deliberately does NOT touch
+ * GitRefWatcher: `startWorkspaceWatcher` starts it for the active path
+ * (idempotent no-op if `startWarmWorkspaceWatch` already had it running),
+ * and it should keep running uninterrupted across the promotion rather than
+ * being stopped and immediately restarted.
+ */
+export function releaseWarmWatchOnPromotion(workspacePath: string): void {
+    optimizedWorkspaceWatcher.stopBackground(workspacePath);
+}
+
+/**
+ * Fully release the resources started by `startWarmWorkspaceWatch` because a
+ * path is no longer referenced by any window (closed from the rail). Callers
+ * must gate this on `!anyWindowReferencesWorkspace(path)` first -- see
+ * `workspace:unregister-additional` in MultiProjectRailHandlers.ts.
+ *
+ * Uses `releaseAllBackgroundRefs`, NOT a plain decrement: every caller has
+ * already proven no window references this path anymore, which can be true
+ * while `startWarmWorkspaceWatch` was called more than once for it (two
+ * windows both kept it warm). A plain per-caller decrement only ever gets
+ * called once here -- by definition, the boolean gate flips to "unreferenced"
+ * exactly once, on whichever window's release happens last -- so it would
+ * never fully unwind a refcount above 1 and would leak the bus subscription.
+ */
+export function stopWarmWorkspaceWatch(workspacePath: string): void {
+    optimizedWorkspaceWatcher.releaseAllBackgroundRefs(workspacePath);
+    gitRefWatcher.stop(workspacePath).catch((error) => {
+        logger.workspaceWatcher.error('Failed to stop GitRefWatcher:', error);
+    });
+}
+
 // Stop watching a workspace
 export function stopWorkspaceWatcher(windowId: number) {
     // Stop project file sync for any workspace this window referenced
@@ -140,8 +223,40 @@ export function stopWorkspaceWatcher(windowId: number) {
     }
 
     optimizedWorkspaceWatcher.stop(windowId);
-    // Note: gitRefWatcher is keyed by workspacePath, not windowId.
-    // It will be stopped when stopAllWorkspaceWatchers is called.
+
+    // Sweep orphaned warm-project watches: a path can end up backgrounded
+    // (via startWarmWorkspaceWatch, called both from register-additional and
+    // from the demote step in workspace:set-active) and then never
+    // explicitly released if its owning window closes outright rather than
+    // going through workspace:unregister-additional. This runs on every
+    // call (switch, unregister, window close) but is a no-op unless a
+    // background path has actually gone unreferenced, so it's cheap; it is
+    // the only reliable place to catch the window-close case, since by the
+    // time WindowManager's 'closed' handler runs, `windowStates` no longer
+    // has an entry for this window to read paths off of.
+    //
+    // `releaseAllBackgroundRefs`, not `stopBackground`: this loop has already
+    // proven `!anyWindowReferencesWorkspace(path)`, so whatever the refcount
+    // is, there is no live window left to need the subscription -- a plain
+    // decrement would leak it when more than one window had kept the path
+    // warm (see the leak this replaced, NIM single-window-multi-project
+    // review Fix 1).
+    for (const path of optimizedWorkspaceWatcher.getBackgroundWatchPaths()) {
+        if (anyWindowReferencesWorkspace(path)) continue;
+        optimizedWorkspaceWatcher.releaseAllBackgroundRefs(path);
+        gitRefWatcher.stop(path).catch((error) => {
+            logger.workspaceWatcher.error('Failed to stop orphaned GitRefWatcher:', error);
+        });
+    }
+    // Note: gitRefWatcher for a path that is still its window's *active*
+    // (never-backgrounded) path at the moment that window closes is not
+    // caught by the sweep above -- it was never demoted to a background
+    // watch, so it isn't in `getBackgroundWatchPaths()`. That is pre-existing
+    // behavior (gitRefWatcher has always only fully stopped at app quit via
+    // stopAllWorkspaceWatchers) and releasing it here would need the
+    // window's pre-close path list, which WindowManager.ts already captures
+    // as `savedState` for its own doc/fs-service cleanup -- see the 'closed'
+    // handler there for the equivalent pattern.
 }
 
 // Get workspace watcher info for debugging

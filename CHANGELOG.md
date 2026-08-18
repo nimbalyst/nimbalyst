@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ask a teammate for structured feedback: your agent drafts the question, you approve it, and it arrives in their inbox to answer, with results and outstanding replies in their own tab. Copy a link to send anyone who does not have Nimbalyst installed, and they can answer and discuss the request in a browser.
 - Tracker items that have not been shared yet now show a number of their own, like NIM.12, so you can refer to one before it is published.
 - Desktop notifications now carry their own icon, so you can tell a finished agent, a question, an approval request, and a teammate's message apart at a glance.
+- Multi-project mode now keeps every project in one window: opening a project adds it to the project rail, your projects come back together after a restart, and Window > Merge All Windows folds windows you already have open into one.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening an editor no longer fetches a font from a third-party server.
 - Codex no longer offers slash commands it cannot actually run.
 - The Compact action is now hidden for agents that cannot compact, instead of offering a button that quietly does nothing.
+- Multi-project mode is now on by default for new installs; if you already work with several windows open, Nimbalyst leaves your setup alone until you turn it on yourself.
 
 ### Fixed
 <!-- Bug fixes go here -->

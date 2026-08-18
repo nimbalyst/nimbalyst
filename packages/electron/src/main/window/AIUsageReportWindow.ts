@@ -1,12 +1,10 @@
-import electron from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { join } from 'path';
 import { getPreloadPath } from '../utils/appPaths';
 
-const { app, BrowserWindow } = electron;
+let usageReportWindow: BrowserWindow | null = null;
 
-let usageReportWindow: electron.BrowserWindow | null = null;
-
-export function createAIUsageReportWindow(): electron.BrowserWindow {
+export function createAIUsageReportWindow(): BrowserWindow {
   // If window already exists, focus it
   if (usageReportWindow && !usageReportWindow.isDestroyed()) {
     usageReportWindow.focus();
@@ -58,7 +56,7 @@ export function createAIUsageReportWindow(): electron.BrowserWindow {
   return usageReportWindow;
 }
 
-export function getAIUsageReportWindow(): electron.BrowserWindow | null {
+export function getAIUsageReportWindow(): BrowserWindow | null {
   return usageReportWindow;
 }
 

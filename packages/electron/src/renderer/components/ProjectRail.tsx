@@ -34,8 +34,10 @@ import {
   isOpenProjectsAtCapAtom,
   addOpenProjectAtom,
   closeOpenProjectAtom,
+  MAX_OPEN_PROJECTS,
   type OpenProject,
 } from '../store/atoms/openProjects';
+import { showRailFullNotification } from '../store/actions/railFullNotification';
 import {
   globalSessionActivityAtom,
   projectActivitySummaryAtom,
@@ -214,8 +216,15 @@ export function ProjectRail() {
         openedAt: Date.now(),
       };
       // `addOpenProjectAtom` flips `activeWorkspacePathAtom` to this path;
-      // the atom subscriber dispatches `workspace:set-active` to main.
-      addProject(project);
+      // the atom subscriber dispatches `workspace:set-active` to main. The
+      // `+` button already disables at the cap, but the add menu can still
+      // be open from before the rail filled up (e.g. another window's
+      // project joined this rail via `rail:add-project` while the menu was
+      // open), so still handle `'at-cap'` here.
+      const outcome = addProject(project);
+      if (outcome === 'at-cap') {
+        showRailFullNotification();
+      }
     } catch (err) {
       console.error('[ProjectRail] addProjectByPath failed:', err);
     }
@@ -249,7 +258,7 @@ export function ProjectRail() {
 
   const handleOpenAddMenu = useCallback(() => {
     if (atCap) {
-      window.alert('You can have at most 8 projects open in the rail. Close one first or open in a new window.');
+      showRailFullNotification();
       return;
     }
     refreshRecents();
@@ -445,7 +454,7 @@ export function ProjectRail() {
         onClick={handleOpenAddMenu}
         disabled={atCap}
         data-testid="project-rail-add"
-        aria-label="Add project to rail"
+        aria-label={atCap ? `Rail full (${MAX_OPEN_PROJECTS} projects max)` : 'Add project to rail'}
         {...getAddTooltipRefProps()}
       >
         +
@@ -458,7 +467,7 @@ export function ProjectRail() {
             style={addTooltipFloatingStyles}
             {...getAddTooltipFloatingProps()}
           >
-            {atCap ? 'Rail full (8 projects max)' : 'Add project'}
+            {atCap ? `Rail full (${MAX_OPEN_PROJECTS} projects max)` : 'Add project'}
           </div>
         </FloatingPortal>
       )}

@@ -17,10 +17,10 @@ function createHarness(overrides: Partial<WorkspaceWindowResolverDeps<FakeWindow
   let clock = 1_000;
   let resolveLoad: (() => void) | null = null;
 
-  const createWindow = vi.fn((workspacePath: string) => {
+  const openWorkspace = vi.fn((workspacePath: string) => {
     const window = { id: nextId++, destroyed: false };
     windows.set(workspacePath, window);
-    return window;
+    return { window, isNewWindow: true };
   });
 
   const waitForLoad = vi.fn(
@@ -34,7 +34,7 @@ function createHarness(overrides: Partial<WorkspaceWindowResolverDeps<FakeWindow
     findWindow: (workspacePath) => windows.get(workspacePath) ?? null,
     isDestroyed: (window) => window.destroyed,
     workspaceExists: () => true,
-    createWindow,
+    openWorkspace,
     waitForLoad,
     isQuitting: () => false,
     now: () => clock,
@@ -46,7 +46,7 @@ function createHarness(overrides: Partial<WorkspaceWindowResolverDeps<FakeWindow
   return {
     resolver: createWorkspaceWindowResolver(deps),
     windows,
-    createWindow,
+    createWindow: openWorkspace,
     finishLoad: () => resolveLoad?.(),
     advance: (ms: number) => {
       clock += ms;
@@ -75,6 +75,20 @@ describe('resolveWorkspaceWindow', () => {
     expect(harness.createWindow).toHaveBeenCalledTimes(1);
     expect(result.kind).toBe('window');
     expect(result.kind === 'window' && result.opened).toBe(true);
+  });
+
+  it('does not wait for load when the workspace was added to an already-loaded rail window', async () => {
+    const railWindow: FakeWindow = { id: 99, destroyed: false };
+    const waitForLoad = vi.fn(() => new Promise<void>(() => {}));
+    const harness = createHarness({
+      openWorkspace: vi.fn(() => ({ window: railWindow, isNewWindow: false })),
+      waitForLoad,
+    });
+
+    const result = await harness.resolver.resolve('/ws');
+
+    expect(waitForLoad).not.toHaveBeenCalled();
+    expect(result).toEqual({ kind: 'window', window: railWindow, opened: true });
   });
 
   it('opens one window for two rapid prompts on the same workspace', async () => {

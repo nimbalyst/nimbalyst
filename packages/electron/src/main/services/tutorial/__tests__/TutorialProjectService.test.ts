@@ -57,6 +57,8 @@ async function createHarness() {
     getWorkspaceWindowState: vi.fn(() => undefined),
     createWindow: vi.fn(),
     findWindowByWorkspace: vi.fn(() => null),
+    getMultiProjectMode: vi.fn(() => false),
+    getMostRecentlyFocusedWorkspaceWindow: vi.fn(() => null),
     addToRecentItems: vi.fn(),
     closeWorkspaceManagerWindow: vi.fn(),
     seedTutorialTrackers: vi.fn(async () => [EXAMPLE_BUG]),
@@ -200,6 +202,29 @@ describe("TutorialProjectService", () => {
     expect(second).toMatchObject({ success: true, reused: true });
     expect(focus).toHaveBeenCalledOnce();
     expect(harness.dependencies.createWindow).not.toHaveBeenCalled();
+  });
+
+  it("adds the tutorial project to the focused window's rail in Multi-Project Mode instead of opening a new window", async () => {
+    const harness = await createHarness();
+    const focus = vi.fn();
+    const send = vi.fn();
+    vi.mocked(harness.dependencies.getMultiProjectMode).mockReturnValue(true);
+    vi.mocked(
+      harness.dependencies.getMostRecentlyFocusedWorkspaceWindow
+    ).mockReturnValue({
+      isDestroyed: () => false,
+      focus,
+      webContents: { send },
+    } as never);
+
+    const result = await harness.service.startTutorial();
+    if (!result.success) throw new Error(result.error);
+
+    expect(harness.dependencies.createWindow).not.toHaveBeenCalled();
+    expect(focus).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith("rail:add-project", {
+      workspacePath: result.workspacePath,
+    });
   });
 
   it("fails loudly when the template directory is missing and leaves no project behind", async () => {

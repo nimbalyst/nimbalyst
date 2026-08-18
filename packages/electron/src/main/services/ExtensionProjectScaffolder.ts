@@ -2,10 +2,8 @@ import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { basename, dirname, join } from 'path';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'fs';
 import { templates } from '../../../../extensions/extension-dev-kit/src/templates.ts';
-import { createWindow, findWindowByWorkspace } from '../window/WindowManager';
+import { openOrFocusWorkspaceWindow } from '../window/WorkspaceManagerWindow';
 import {
-  addToRecentItems,
-  getWorkspaceWindowState,
   isExtensionProjectIntroShown,
   setExtensionProjectIntroShown,
 } from '../utils/store';
@@ -49,16 +47,7 @@ function writeTemplateFiles(projectPath: string, files: Record<string, string>):
 }
 
 function openWorkspace(projectPath: string): void {
-  addToRecentItems('workspaces', projectPath, basename(projectPath));
-
-  const existingWindow = findWindowByWorkspace(projectPath);
-  if (existingWindow && !existingWindow.isDestroyed()) {
-    existingWindow.focus();
-    return;
-  }
-
-  const savedState = getWorkspaceWindowState(projectPath);
-  createWindow(false, true, projectPath, savedState?.bounds);
+  openOrFocusWorkspaceWindow(projectPath);
 }
 
 interface ExtensionProjectIntroDialogOptions {

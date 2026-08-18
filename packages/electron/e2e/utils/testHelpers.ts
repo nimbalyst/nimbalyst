@@ -1128,3 +1128,61 @@ export async function getWalkthroughProgress(page: Page): Promise<string> {
   const progress = page.locator(PLAYWRIGHT_TEST_SELECTORS.walkthroughCalloutProgress);
   return await progress.textContent() ?? '';
 }
+
+/**
+ * Multi-Project Mode: primary workspace paths of every open workspace-mode
+ * (`state.mode === 'workspace'`) `BrowserWindow`, via the existing
+ * `workspace-manager:get-open-workspaces` IPC handler
+ * (`WorkspaceManagerWindow.ts`). This is the right way to count/verify
+ * "workspace windows" in a multi-window test -- it walks main's
+ * `windowStates` map, which auxiliary windows (WorkspaceManager, About,
+ * TrayPanel, DeveloperDashboard, AIUsageReport, ...) never register into, so
+ * it naturally excludes them without the test needing to know their titles
+ * or filter `BrowserWindow.getAllWindows()` itself. Rail-additional paths
+ * (Multi-Project Mode) are NOT included -- only each window's own primary
+ * path -- so this is also a direct proxy for "how many separate workspace
+ * windows are open".
+ *
+ * Takes the `ElectronApplication` rather than a single `Page` because a
+ * multi-window test (e.g. "Merge All Windows") may close the specific page
+ * a caller would otherwise have cached -- this picks any currently-open,
+ * non-closed page to make the (window-agnostic, main-process-global) IPC
+ * call.
+ */
+export async function getOpenWorkspaceWindowPaths(app: ElectronApplication): Promise<string[]> {
+  const candidates = app.windows().filter((candidate) => !candidate.isClosed());
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      return await candidate.evaluate(() =>
+        window.electronAPI.invoke('workspace-manager:get-open-workspaces')
+      );
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(
+    `getOpenWorkspaceWindowPaths: no open window could answer workspace-manager:get-open-workspaces (${candidates.length} candidate(s) tried): ${String(lastError)}`
+  );
+}
+
+/**
+ * Find the `Page` for the workspace-mode window whose PRIMARY path is
+ * `workspacePath`, by matching `WindowManager.ts`'s window title
+ * (`basename(workspacePath)` for workspace-mode windows). Returns `null` if
+ * no open window currently has that title -- e.g. the path only lives in
+ * some other window's rail as an *additional* path, or no window has it at
+ * all.
+ */
+export async function findWorkspaceWindowByPath(
+  app: ElectronApplication,
+  workspacePath: string
+): Promise<Page | null> {
+  const target = path.basename(workspacePath);
+  for (const candidate of app.windows()) {
+    if (candidate.isClosed()) continue;
+    const title = await candidate.title().catch(() => null);
+    if (title === target) return candidate;
+  }
+  return null;
+}
