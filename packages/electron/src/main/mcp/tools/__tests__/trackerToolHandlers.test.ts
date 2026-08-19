@@ -647,6 +647,135 @@ describe('handleTrackerGet', () => {
     expect(payload.structured.item.issueKeyStatus).toBe('unassigned');
     expect(payload.summary).toContain('This item has no key until it is published.');
   });
+
+  // MUL-26: `structured.item` was built from a 12-key whitelist that omitted
+  // `archived`, so an archived item read back as active through `tracker_get`
+  // forever -- while `tracker_list` and the markdown summary both said archived.
+  // `nim`'s LiveGateway then turned the absent key into a confident `false`.
+  it('reports archive state in the structured payload, not just the summary', async () => {
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+    mockDocService.getTrackerItemById.mockResolvedValueOnce(
+      makeItem({ archived: true, archivedAt: '2026-08-10T16:38:19.899Z' }),
+    );
+
+    const payload = JSON.parse(
+      (await handleTrackerGet({ id: 'NIM-1' }, '/tmp/ws')).content[0].text!,
+    );
+
+    expect(payload.summary).toContain('**Archived**: yes');
+    expect(payload.structured.item.archived).toBe(true);
+    expect(payload.structured.item.archivedAt).toBe('2026-08-10T16:38:19.899Z');
+  });
+
+  it('defaults archive state to false rather than dropping the key', async () => {
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+    mockDocService.getTrackerItemById.mockResolvedValueOnce(makeItem());
+
+    const payload = JSON.parse(
+      (await handleTrackerGet({ id: 'NIM-1' }, '/tmp/ws')).content[0].text!,
+    );
+
+    expect(payload.structured.item.archived).toBe(false);
+    expect(payload.structured.item.archivedAt).toBeUndefined();
+  });
+
+  it('agrees with tracker_list on archive state for the same item', async () => {
+    const item = makeItem({ id: 'gone', archived: true, syncStatus: 'synced' });
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+    mockDocService.getTrackerItemById.mockResolvedValueOnce(item);
+    mockDocService.listTrackerItems.mockResolvedValue([item]);
+
+    const got = JSON.parse(
+      (await handleTrackerGet({ id: 'gone' }, '/tmp/ws')).content[0].text!,
+    ).structured.item;
+    const listed = JSON.parse(
+      (await handleTrackerList({ archived: true }, '/tmp/ws')).content[0].text!,
+    ).structured.items[0];
+
+    expect(got.archived).toBe(listed.archived);
+    expect(got.syncStatus).toBe(listed.syncStatus);
+  });
+
+  // The comment write path canonicalizes to `data.comments`, which
+  // `rowToTrackerItem` lifts into the customFields bag -- and
+  // `internalCustomFieldKeys` then stripped it back out, so a posted comment
+  // was readable through no MCP surface at all.
+  it('surfaces comments that reach the item through the customFields bag', async () => {
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+    mockDocService.getTrackerItemById.mockResolvedValueOnce(
+      makeItem({
+        customFields: {
+          prUrl: 'https://example.test/pr/1',
+          comments: [
+            {
+              id: 'comment_1',
+              authorIdentity: { displayName: 'Test User' },
+              body: 'PROBE-XYZZY',
+              createdAt: 1785790418549,
+              deleted: false,
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = JSON.parse(
+      (await handleTrackerGet({ id: 'NIM-1' }, '/tmp/ws')).content[0].text!,
+    );
+
+    expect(payload.structured.item.comments).toHaveLength(1);
+    expect(payload.structured.item.comments[0].body).toBe('PROBE-XYZZY');
+    // Genuine schema fields keep their place in the bag, and `comments` is not
+    // duplicated into it (the summary would render it as a stray field line).
+    expect(payload.structured.item.customFields).toEqual({
+      prUrl: 'https://example.test/pr/1',
+    });
+  });
+
+  it('reports an empty comment list rather than dropping the key', async () => {
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+    mockDocService.getTrackerItemById.mockResolvedValueOnce(makeItem());
+
+    const payload = JSON.parse(
+      (await handleTrackerGet({ id: 'NIM-1' }, '/tmp/ws')).content[0].text!,
+    );
+
+    expect(payload.structured.item.comments).toEqual([]);
+  });
+});
+
+// The fix above reads comments out of `item.customFields`. That only holds
+// because neither row mapper lists `comments` in its "known" first-class key
+// set, so `extractItemCustomFields` leaves it in the bag. Guard that here: if a
+// mapper ever promotes `comments` to a top-level field, tracker_get goes quiet
+// again rather than failing loudly.
+describe('rowToTrackerItem archive and comment mapping', () => {
+  it('carries data.comments into the customFields bag', () => {
+    const item = rowToTrackerItem(
+      makeRow({
+        data: JSON.stringify({
+          title: 'Scoped bug',
+          comments: [{ id: 'comment_1', body: 'PROBE-XYZZY', deleted: false }],
+        }),
+      }),
+    );
+
+    expect(item.comments).toBeUndefined();
+    expect(item.customFields?.comments).toEqual([
+      { id: 'comment_1', body: 'PROBE-XYZZY', deleted: false },
+    ]);
+  });
+
+  it('maps the archive columns onto first-class fields', () => {
+    const archived = rowToTrackerItem(
+      makeRow({ archived: 1, archived_at: '2026-08-10T16:38:19.899Z' }),
+    );
+    expect(archived.archived).toBe(1);
+    expect(archived.archivedAt).toBe('2026-08-10T16:38:19.899Z');
+
+    const active = rowToTrackerItem(makeRow({ archived: 0, archived_at: null }));
+    expect(active.archivedAt).toBeUndefined();
+  });
 });
 
 describe('tracker schema tools', () => {
