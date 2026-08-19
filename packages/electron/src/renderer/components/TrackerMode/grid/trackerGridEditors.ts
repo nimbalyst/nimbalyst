@@ -80,7 +80,28 @@ function createInputEditor(
         // focus lands after the cell is actually in the DOM.
         await new Promise(resolve => setTimeout(resolve, 0));
         input?.focus();
-        input?.select();
+        if (!input) return;
+        // When an edit begins from a keystroke, RevoGrid seeds the edit value
+        // with that first character while the cell's stored value is still the
+        // original, so select() would highlight the typed character and the
+        // next keystroke would replace it ("Alpha" -> "lpha", #1199). Put the
+        // caret at the end in that case so the rest of the word appends. For
+        // Enter/F2 edits (val still equals the stored value) keep select-all so
+        // typing replaces the whole cell.
+        const editCell = editor.editCell;
+        const original = editCell
+          ? (editCell.model as Record<PropertyKey, unknown> | undefined)?.[editCell.prop]
+          : undefined;
+        const startedFromKeystroke =
+          editCell != null && String(editCell.val ?? '') !== String(original ?? '');
+        if (startedFromKeystroke) {
+          const end = input.value.length;
+          // Some input types (e.g. number) reject setSelectionRange; focus alone
+          // already leaves the caret at the end for those, so ignore the throw.
+          try { input.setSelectionRange(end, end); } catch { /* unsupported input type */ }
+        } else {
+          input.select();
+        }
       },
       render(createElement: HyperFunc<VNode>) {
         return createElement('input', {
