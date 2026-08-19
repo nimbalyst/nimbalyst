@@ -122,6 +122,50 @@ import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import type { WorkspaceFileAttributionMode } from '../WorkspaceFileAttributionPolicy';
 
+type SessionTokenUsage = NonNullable<SessionData['tokenUsage']>;
+
+type MidTurnContextUsageSession = {
+  id: string;
+  tokenUsage?: SessionData['tokenUsage'];
+};
+
+/**
+ * Project a provider's mid-turn context snapshot without persisting it.
+ * Completion remains the durable token-usage boundary; per-chunk observations
+ * update only the live renderer and in-memory session.
+ */
+export function applyMidTurnContextUsage(params: {
+  session: MidTurnContextUsageSession;
+  contextFillTokens: number | undefined;
+  contextWindow: number | undefined;
+  send: (payload: { sessionId: string; tokenUsage: SessionTokenUsage }) => void;
+}): SessionTokenUsage | undefined {
+  const { session, contextFillTokens, contextWindow } = params;
+  if (contextFillTokens === undefined || !contextWindow) return undefined;
+
+  const updatedUsage: SessionTokenUsage = {
+    ...(session.tokenUsage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 }),
+    contextWindow,
+    currentContext: { tokens: contextFillTokens, contextWindow },
+  };
+  params.send({ sessionId: session.id, tokenUsage: updatedUsage });
+  session.tokenUsage = updatedUsage;
+  return updatedUsage;
+}
+
+/**
+ * Legacy sessions may still carry raw `/context` markdown in currentContext.
+ * Completion is a durable boundary, so every fallback snapshot must discard
+ * that provider response before it is persisted again.
+ */
+export function sanitizePersistedCurrentContext(
+  currentContext: SessionTokenUsage['currentContext'],
+): SessionTokenUsage['currentContext'] {
+  if (!currentContext) return undefined;
+  const { rawResponse: _rawResponse, ...persistedContext } = currentContext;
+  return persistedContext;
+}
+
 function resolveWorkspaceFileAttributionMode(
   providerName: string,
   provider: AIProvider | null | undefined,
@@ -1528,40 +1572,12 @@ export class MessageStreamingHandler {
             // input/output counters -- those settle on the 'complete' chunk.
             const partialContextFill: number | undefined = chunk.contextFillTokens;
             const partialContextWindow = selectedModelContextWindow || session.tokenUsage?.contextWindow;
-            if (partialContextFill !== undefined && partialContextWindow) {
-              const currentUsage = session.tokenUsage ?? {
-                inputTokens: 0,
-                outputTokens: 0,
-                totalTokens: 0,
-              };
-              const updatedUsage: NonNullable<SessionData['tokenUsage']> = {
-                ...currentUsage,
-                contextWindow: partialContextWindow,
-                currentContext: { tokens: partialContextFill, contextWindow: partialContextWindow },
-              };
-
-              await this.svc.sessionManager.updateSessionTokenUsage(session.id, updatedUsage);
-              safeSend(event, 'ai:tokenUsageUpdated', {
-                sessionId: session.id,
-                tokenUsage: updatedUsage,
-              });
-
-              // Push live context usage to mobile sync
-              const syncProvider = getSyncProvider();
-              if (syncProvider) {
-                syncProvider.pushChange(session.id, {
-                  type: 'metadata_updated',
-                  metadata: {
-                    currentContext: {
-                      tokens: partialContextFill,
-                      contextWindow: partialContextWindow,
-                    },
-                  } as any,
-                });
-              }
-
-              session.tokenUsage = updatedUsage;
-            }
+            applyMidTurnContextUsage({
+              session,
+              contextFillTokens: partialContextFill,
+              contextWindow: partialContextWindow,
+              send: (payload) => safeSend(event, 'ai:tokenUsageUpdated', payload),
+            });
             break;
           }
 
@@ -2368,7 +2384,7 @@ export class MessageStreamingHandler {
                   ? undefined
                   : (contextFillTokens !== undefined && contextWindowForDisplay)
                     ? { tokens: contextFillTokens, contextWindow: contextWindowForDisplay }
-                    : currentUsage.currentContext,
+                    : sanitizePersistedCurrentContext(currentUsage.currentContext),
               };
 
               await this.svc.sessionManager.updateSessionTokenUsage(session.id, updatedUsage);
@@ -2476,8 +2492,8 @@ export class MessageStreamingHandler {
                   isCodexProvider && !contextCompacted
                     ? (contextFillTokens !== undefined && codexContextWindow
                       ? { tokens: contextFillTokens, contextWindow: codexContextWindow }
-                      : currentUsage.currentContext)
-                    : currentUsage.currentContext,
+                      : sanitizePersistedCurrentContext(currentUsage.currentContext))
+                    : sanitizePersistedCurrentContext(currentUsage.currentContext),
               };
 
               await this.svc.sessionManager.updateSessionTokenUsage(session.id, updatedUsage);

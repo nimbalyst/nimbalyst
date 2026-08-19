@@ -30,6 +30,17 @@ import {
 
 type Backend = 'pglite' | 'sqlite';
 
+interface StorageHealth {
+  databaseSizeBytes: number;
+  aiSessionsRelationSizeBytes: number;
+  aiSessionsLiveRowBytes: number;
+  retainedBackupBytes: number;
+  projectedPeakBytes: number;
+  sessionPhysicalToLiveRatio: number;
+  maintenanceRecommended: boolean;
+  operatorGuidance: string | null;
+}
+
 interface MigrationStatus {
   activeBackend: Backend;
   pgliteDirExists: boolean;
@@ -37,6 +48,7 @@ interface MigrationStatus {
   migratedDirs: string[];
   running: boolean;
   runningDryRun: boolean;
+  storageHealth: StorageHealth | null;
 }
 
 interface DryRunResult {
@@ -121,6 +133,7 @@ export function DatabasePanel(): React.ReactElement {
         migratedDirs: resp.migratedDirs,
         running: resp.running,
         runningDryRun: resp.runningDryRun,
+        storageHealth: resp.storageHealth,
       });
     } catch (err) {
       setStatusError(String((err as Error).message ?? err));
@@ -339,6 +352,41 @@ export function DatabasePanel(): React.ReactElement {
           </div>
         )}
       </div>
+
+      {/* Read-only storage assessment ----------------------------------- */}
+      {status?.activeBackend === 'pglite' && status.storageHealth && (
+        <div className="provider-panel-section mb-6 nim-database-storage-health">
+          <h4 className="provider-panel-section-title text-base font-semibold mb-2 text-[var(--nim-text)]">
+            Physical storage
+          </h4>
+          <div className="grid grid-cols-2 gap-3 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
+            <Stat label="Database" value={formatBytes(status.storageHealth.databaseSizeBytes)} />
+            <Stat label="Sessions relation" value={formatBytes(status.storageHealth.aiSessionsRelationSizeBytes)} />
+            <Stat label="Live session rows" value={formatBytes(status.storageHealth.aiSessionsLiveRowBytes)} />
+            <Stat label="Retained backups" value={formatBytes(status.storageHealth.retainedBackupBytes)} />
+            <Stat label="Projected backup peak" value={formatBytes(status.storageHealth.projectedPeakBytes)} />
+            <Stat
+              label="Physical / live ratio"
+              value={Number.isFinite(status.storageHealth.sessionPhysicalToLiveRatio)
+                ? `${status.storageHealth.sessionPhysicalToLiveRatio.toFixed(1)}×`
+                : '∞'}
+              ok={!status.storageHealth.maintenanceRecommended}
+            />
+          </div>
+          {status.storageHealth.maintenanceRecommended && status.storageHealth.operatorGuidance ? (
+            <div className="mt-3 rounded-md border border-[rgba(245,158,11,0.35)] bg-[rgba(245,158,11,0.1)] p-3 text-sm text-[var(--nim-text)]">
+              <div className="font-medium">Maintenance recommended</div>
+              <div className="mt-1 text-xs leading-relaxed text-[var(--nim-text-muted)]">
+                {status.storageHealth.operatorGuidance}
+              </div>
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-[var(--nim-text-muted)]">
+              No abnormal session-metadata amplification detected.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Dry run section ------------------------------------------------- */}
       {status?.activeBackend === 'pglite' && (

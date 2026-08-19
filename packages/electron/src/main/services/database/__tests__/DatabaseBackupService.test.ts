@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { PGlite } from '@electric-sql/pglite';
 
 // PGLite backup service is `app.getPath('userData')`-backed for the legacy
 // cleanup scan; stub it before the import.
@@ -96,5 +97,88 @@ describe('DatabaseBackupService temp-dir cleanup', () => {
     // Sanity: the synthetic tempPath was never created (real code uses a
     // timestamped name), but no temp-backup-* should remain anywhere.
     expect(fs.existsSync(tempPath)).toBe(false);
+  });
+
+  it('reports physical session bloat and dry-run guidance before another rolling copy', async () => {
+    const gib = 1024 ** 3;
+    const mib = 1024 ** 2;
+    const query = vi.fn(async (_sql: string) => ({
+      rows: [{
+        database_size_bytes: String(5 * gib),
+        ai_sessions_relation_size_bytes: String(1800 * mib),
+        ai_sessions_live_row_bytes: String(2 * mib),
+      }],
+    }));
+
+    const service = new DatabaseBackupService(
+      path.join(tmp, 'pglite-db'),
+      { query } as never,
+    );
+    const serviceWithGrowthProbe = service as unknown as {
+      assessPhysicalGrowth: () => Promise<{
+        databaseSizeBytes: number;
+        aiSessionsRelationSizeBytes: number;
+        aiSessionsLiveRowBytes: number;
+        retainedBackupBytes: number;
+        projectedPeakBytes: number;
+        sessionPhysicalToLiveRatio: number;
+        maintenanceRecommended: boolean;
+        operatorGuidance: string | null;
+      }>;
+    };
+    const retainedSizes = [11, 13, 17];
+    for (const [index, slot] of [
+      'pglite-db.backup-current',
+      'pglite-db.backup-previous',
+      'pglite-db.backup-oldest',
+    ].entries()) {
+      const slotPath = path.join(backupDir, slot);
+      await fsp.mkdir(slotPath, { recursive: true });
+      await fsp.writeFile(path.join(slotPath, 'page'), Buffer.alloc(retainedSizes[index]));
+    }
+
+    const assessment = await serviceWithGrowthProbe.assessPhysicalGrowth();
+
+    expect(query).toHaveBeenCalledOnce();
+    expect(query.mock.calls[0]?.[0]).toContain('pg_database_size(current_database())');
+    expect(query.mock.calls[0]?.[0]).toContain("pg_table_size('ai_sessions')");
+    expect(query.mock.calls[0]?.[0]).toContain('pg_column_size(s)');
+    expect(assessment).toMatchObject({
+      databaseSizeBytes: 5 * gib,
+      aiSessionsRelationSizeBytes: 1800 * mib,
+      aiSessionsLiveRowBytes: 2 * mib,
+      retainedBackupBytes: 41,
+      projectedPeakBytes: (10 * gib) + 41,
+      sessionPhysicalToLiveRatio: 900,
+      maintenanceRecommended: true,
+    });
+    expect(assessment.operatorGuidance).toMatch(/Settings.*dry-run.*before the next backup/i);
+  });
+
+  it('compares physical table storage with live complete-row bytes in PGlite', async () => {
+    const db = new PGlite({ dataDir: path.join(tmp, 'growth-query-db') });
+    try {
+      await db.exec(`
+        CREATE TABLE ai_sessions (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          metadata JSONB NOT NULL DEFAULT '{}'
+        );
+        INSERT INTO ai_sessions (id, title, metadata)
+        VALUES ('s1', 'Session', '{"tokenUsage":{"totalTokens":16}}');
+      `);
+      const service = new DatabaseBackupService(
+        path.join(tmp, 'growth-query-db'),
+        { query: (sql: string) => db.query(sql) } as never,
+      );
+
+      const assessment = await service.assessPhysicalGrowth();
+
+      expect(assessment.aiSessionsRelationSizeBytes).toBeGreaterThan(0);
+      expect(assessment.aiSessionsLiveRowBytes).toBeGreaterThan(0);
+      expect(assessment.sessionPhysicalToLiveRatio).toBeGreaterThan(0);
+    } finally {
+      await db.close();
+    }
   });
 });
