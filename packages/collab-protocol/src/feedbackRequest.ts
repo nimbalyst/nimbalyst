@@ -46,6 +46,63 @@ export function parseFeedbackRequestUrn(urn: string): string | null {
   }
 }
 
+/**
+ * A resource the request points at, carried with the display metadata the
+ * author stamped on it at send time.
+ *
+ * The label is not a convenience. It follows `BoundedPreview` for the same
+ * reason `BoundedPreview` exists: the recipient may have never synced the
+ * project the resource lives in, so nothing on their side can derive a title
+ * from the ref. Worse, publishing rewrites a `file` ref to the created
+ * `document`, so by the time a subject reaches a recipient its `sourceId` is an
+ * opaque document id. A surface holding only the ref can render an identifier
+ * and nothing else.
+ */
+export interface FeedbackArtifact {
+  ref: ResourceRef;
+  /** Author-stamped title. Never derived from the ref by the recipient. */
+  label: string;
+  /** Muted second line, e.g. the containing folder. */
+  context?: string;
+}
+
+/**
+ * A `FeedbackArtifact` bound to one entry of a select-like ask, which is what
+ * makes "pick one of these three mockups" a visual question rather than three
+ * strings.
+ *
+ * Bound by id from outside the entry rather than by a field inside it, because
+ * `StructuredInputSingleSelectOption` and `StructuredInputReorderItem` share
+ * nothing but an `id` -- and because those types live in `structuredInput.ts`,
+ * which is deliberately free of any collaboration dependency so local prompts
+ * can reuse it. A `ResourceRef` inside an option would take that away.
+ */
+export interface FeedbackAskArtifact extends FeedbackArtifact {
+  /** A `singleSelect` option id or a `reorder` item id. */
+  entryId: string;
+}
+
+/**
+ * Ask types that can carry per-entry artifacts. `multiSelect` is excluded: an
+ * artifact per checkbox row has no scenario behind it, and adding one later is
+ * additive.
+ */
+export type FeedbackArtifactBearingAskType = "singleSelect" | "reorder";
+
+/**
+ * Accepts a subject stored before subjects carried display metadata and gives
+ * it the shape the current surfaces read. A legacy row is a bare `ResourceRef`,
+ * so its best available label is its own `sourceId` -- which is exactly the
+ * opaque-id rendering this type exists to end, and is therefore a floor rather
+ * than something to be satisfied with.
+ */
+export function normalizeFeedbackArtifact(
+  subject: FeedbackArtifact | ResourceRef
+): FeedbackArtifact {
+  if ("ref" in subject) return subject;
+  return { ref: subject, label: subject.sourceId };
+}
+
 export interface FeedbackRatingAsk {
   type: "rating";
   id: string;
@@ -64,7 +121,9 @@ type FeedbackStructuredAskForType<Type extends StructuredInputFieldType> = Omit<
   "description"
 > & {
   description: string;
-};
+} & (Type extends FeedbackArtifactBearingAskType
+    ? { artifacts?: FeedbackAskArtifact[] }
+    : unknown);
 
 export type FeedbackAskByType = {
   [Type in StructuredInputFieldType]: FeedbackStructuredAskForType<Type>;
@@ -193,7 +252,7 @@ export interface FeedbackRequest {
   urn: FeedbackRequestUrn;
   orgId: string;
   author: Actor;
-  subjects: ResourceRef[];
+  subjects: FeedbackArtifact[];
   asks: FeedbackAsk[];
   recipients: FeedbackRequestRecipient[];
   assignments: FeedbackAskAssignment[];
@@ -214,6 +273,29 @@ export interface FeedbackRequestProgress {
   answeredRecipientCount: number;
   totalRecipientCount: number;
   quorumReached: boolean;
+}
+
+/**
+ * Small org-index projection used to enumerate feedback requests without
+ * opening every request room. Rich request content deliberately stays in the
+ * request Durable Object and is fetched only when a participant opens it.
+ */
+export interface FeedbackRequestIndexEntry {
+  requestId: string;
+  urn: FeedbackRequestUrn;
+  orgId: string;
+  /** Stable list title derived from the request's first ask or subject. */
+  title: string;
+  author: Actor;
+  recipients: FeedbackRequestRecipient[];
+  lifecycle: FeedbackRequestLifecycle;
+  progress: FeedbackRequestProgress;
+  /** Frozen resource labels are preserved so the index is useful offline. */
+  subjects: FeedbackArtifact[];
+  createdAt: number;
+  updatedAt: number;
+  /** Terminal lifecycle timestamp; omitted while the request is open. */
+  closedAt?: number;
 }
 
 export type FeedbackResponseValidationErrorCode =
@@ -253,7 +335,9 @@ export type FeedbackRequestValidationErrorCode =
   | "duplicateAssignment"
   | "unknownAssignedAsk"
   | "orphanedAssignment"
-  | "recipientWithoutAsks";
+  | "recipientWithoutAsks"
+  | "unknownArtifactEntry"
+  | "duplicateArtifactEntry";
 
 export type FeedbackRequestValidationError =
   FeedbackValidationError<FeedbackRequestValidationErrorCode>;
@@ -388,6 +472,49 @@ export function getFeedbackRequestProgress(
  * downstream re-checks this: an unreachable quorum is accepted, never
  * completes, and the author's session is never woken.
  */
+/**
+ * The selectable entry ids of an ask, in display order, or `null` for an ask
+ * type that has no entries. `null` rather than `[]` so a caller can tell "this
+ * ask cannot carry artifacts" apart from "this ask has none".
+ */
+export function feedbackAskEntryIds(ask: FeedbackAsk): string[] | null {
+  if (ask.type === "singleSelect") return ask.options.map((option) => option.id);
+  if (ask.type === "reorder") return ask.items.map((item) => item.id);
+  return null;
+}
+
+/**
+ * An artifact bound to an entry the ask does not define would render nowhere,
+ * and the author would never see that it failed -- the card would simply look
+ * the way it looks today. So it is rejected at validation rather than dropped.
+ */
+function feedbackAskArtifactErrors(
+  ask: FeedbackAsk
+): FeedbackRequestValidationError[] {
+  const artifacts = "artifacts" in ask ? ask.artifacts : undefined;
+  if (!artifacts?.length) return [];
+
+  const errors: FeedbackRequestValidationError[] = [];
+  const entryIds = new Set(feedbackAskEntryIds(ask) ?? []);
+  const seen = new Set<string>();
+  for (const artifact of artifacts) {
+    if (!entryIds.has(artifact.entryId)) {
+      errors.push({
+        code: "unknownArtifactEntry",
+        message: `Ask ${ask.id} binds an artifact to entry ${artifact.entryId}, which the ask does not define.`,
+      });
+    }
+    if (seen.has(artifact.entryId)) {
+      errors.push({
+        code: "duplicateArtifactEntry",
+        message: `Ask ${ask.id} binds more than one artifact to entry ${artifact.entryId}.`,
+      });
+    }
+    seen.add(artifact.entryId);
+  }
+  return errors;
+}
+
 export function validateFeedbackRequest(
   request: FeedbackRequestQuorumShape
 ): FeedbackRequestValidationResult {
@@ -402,6 +529,7 @@ export function validateFeedbackRequest(
       });
     }
     askIds.add(ask.id);
+    errors.push(...feedbackAskArtifactErrors(ask));
   }
   const recipientIds = new Set<string>();
   for (const recipient of request.recipients) {

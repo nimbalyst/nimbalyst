@@ -5,6 +5,7 @@ export interface IntentAwareAuthCallbackParams {
   targetPersonalOrgId?: string;
   sessionToken: string;
   sessionJwt?: string;
+  // identity-scope-allow: raw callback payload is scoped only after the callback org is validated
   userId?: string;
   email?: string;
   expiresAt?: string;

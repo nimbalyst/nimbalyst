@@ -1,14 +1,14 @@
 {
   "id": "com.nimbalyst.csv-spreadsheet",
   "name": "CSV Spreadsheet",
-  "version": "1.1.3",
+  "version": "1.3.0",
   "description": "Edit CSV files with a spreadsheet interface and formula support",
   "author": "Nimbalyst",
   "main": "dist/index.js",
   "styles": "dist/index.css",
   "apiVersion": "1.0.0",
   "marketplace": {
-    "changelog": "1.1.3: Editing a shared spreadsheet in a browser no longer reports a save it did not make.\n1.1.2: A collaborator editing a cell stays visible while they type.\n1.1.1: Shared spreadsheets keep every edit.\n1.1.0: Formulas now compute live and survive a save, plus find and replace, per-column filters, selections that cross frozen columns, right-aligned numbers, and AI tools for analyzing data and applying formulas.\n1.0.2: See collaborator presence in shared spreadsheets, share selected cells with AI, and reopen shared documents more reliably.\n1.0.1: Collaborative editing support, currency/percent/number cell formatting, and full ISO date rendering.",
+    "changelog": "1.3.0: Style any range of cells with bold, italic, underline, colors, and alignment; date formulas now do arithmetic; and formatting a shared sheet no longer overwrites a collaborator's.\n1.2.0: Date and time, checkbox, link, and tracker-item columns, more number and date formats, type detection, and type-aware sorting and filtering.\n1.1.3: Editing a shared spreadsheet in a browser no longer reports a save it did not make.\n1.1.2: A collaborator editing a cell stays visible while they type.\n1.1.1: Shared spreadsheets keep every edit.\n1.1.0: Formulas now compute live and survive a save, plus find and replace, per-column filters, selections that cross frozen columns, right-aligned numbers, and AI tools for analyzing data and applying formulas.\n1.0.2: See collaborator presence in shared spreadsheets, share selected cells with AI, and reopen shared documents more reliably.\n1.0.1: Collaborative editing support, currency/percent/number cell formatting, and full ISO date rendering.",
     "categories": ["data"],
     "tags": ["csv", "tsv", "spreadsheet", "data", "table", "formula"],
     "icon": "table_chart",
@@ -17,6 +17,8 @@
     "longDescription": "Open CSV and TSV files in a full spreadsheet interface with formula support, column resizing, frozen rows/columns, and sortable headers. Edit data visually while the underlying CSV stays clean and git-friendly. Toggle to source mode to see and edit the raw text.",
     "highlights": [
       "Spreadsheet UI for CSV and TSV files",
+      "Typed columns: dates and times, currency, checkboxes, links, and tracker items",
+      "Cell and range styling with colors, weight, and alignment",
       "Formula support with cell references",
       "Frozen rows and columns, sortable headers",
       "Source mode toggle for raw CSV editing"

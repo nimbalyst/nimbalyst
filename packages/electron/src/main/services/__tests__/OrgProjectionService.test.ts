@@ -11,6 +11,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 vi.mock('electron', () => ({
   app: {
@@ -34,6 +35,9 @@ import {
   upsertProject,
 } from '../OrgProjectionService';
 import { canAccess } from '../OrgAccessResolver';
+
+const teamId = asTeamMemberId;
+const teamViewer = (memberId: string) => ({ teamMemberId: teamId(memberId) });
 
 const SCHEMA_DIR = path.resolve(__dirname, '..', '..', 'database', 'sqlite', 'schemas');
 
@@ -62,9 +66,9 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
       {
         org: { orgId: 'org-aaaaaa', name: 'Acme Team', flavor: 'team', teamProjectId: 'proj-1', gitOriginHash: 'gh1' },
         members: [
-          { userId: 'owner1', email: 'o@x.io', role: 'owner' },
-          { userId: 'member1', email: 'm@x.io', role: 'member' },
-          { userId: 'guest1', role: 'guest' },
+          { teamMemberId: teamId('owner1'), email: 'o@x.io', role: 'owner' },
+          { teamMemberId: teamId('member1'), email: 'm@x.io', role: 'member' },
+          { teamMemberId: teamId('guest1'), role: 'guest' },
         ],
       },
     ]);
@@ -87,7 +91,7 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
     expect(byUser.get('guest1')).toBe('project-viewer');
 
     // End-to-end through the resolver: the member can edit the project.
-    const r = await canAccess(db, 'member1', { projectId: 'proj-1', action: 'edit' });
+    const r = await canAccess(db, teamViewer('member1'), { projectId: 'proj-1', action: 'edit' });
     expect(r.allowed).toBe(true);
     expect(r.projectRole).toBe('project-editor');
   });
@@ -95,7 +99,7 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
   it('seeds an organization viewer as a project viewer', async () => {
     await backfillProjection(db, [{
       org: { orgId: 'org-viewer', name: 'Viewer Org', flavor: 'team', teamProjectId: 'proj-viewer' },
-      members: [{ userId: 'viewer1', role: 'viewer' }],
+      members: [{ teamMemberId: teamId('viewer1'), role: 'viewer' }],
     }]);
 
     const grant = await db.query<{ project_role: string }>(
@@ -115,16 +119,16 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
     await backfillProjection(db, [{
       org: { orgId: 'org-recon', name: 'Recon', flavor: 'team', teamProjectId: 'proj-recon' },
       members: [
-        { userId: 'seeded-editor', role: 'member' },
-        { userId: 'seeded-phantom', role: 'member' },
+        { teamMemberId: teamId('seeded-editor'), role: 'member' },
+        { teamMemberId: teamId('seeded-phantom'), role: 'member' },
       ],
     }]);
-    expect((await canAccess(db, 'seeded-editor', {
+    expect((await canAccess(db, teamViewer('seeded-editor'), {
       orgId: 'org-recon', projectId: 'proj-recon', action: 'edit',
     })).allowed).toBe(true);
 
     await reconcileProjectAccessFromServer(db, 'proj-recon', [
-      { userId: 'seeded-editor', projectRole: 'project-viewer' },
+      { teamMemberId: teamId('seeded-editor'), projectRole: 'project-viewer' },
     ]);
 
     const rows = await db.query<{ user_id: string; project_role: string }>(
@@ -132,7 +136,7 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
     expect(rows.rows).toEqual([
       { user_id: 'seeded-editor', project_role: 'project-viewer' },
     ]);
-    expect((await canAccess(db, 'seeded-editor', {
+    expect((await canAccess(db, teamViewer('seeded-editor'), {
       orgId: 'org-recon', projectId: 'proj-recon', action: 'edit',
     })).allowed).toBe(false);
   });
@@ -140,9 +144,9 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
   it('reconcile leaves other projects untouched', async () => {
     await backfillProjection(db, [{
       org: { orgId: 'org-multi', name: 'Multi', flavor: 'team', teamProjectId: 'proj-keep' },
-      members: [{ userId: 'member1', role: 'member' }],
+      members: [{ teamMemberId: teamId('member1'), role: 'member' }],
     }]);
-    await applyProjectGrant(db, 'proj-other', 'member1', 'project-editor');
+    await applyProjectGrant(db, 'proj-other', teamId('member1'), 'project-editor');
 
     await reconcileProjectAccessFromServer(db, 'proj-keep', []);
 
@@ -154,7 +158,7 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
   it('is idempotent and refreshes mutable fields on re-run', async () => {
     const orgs = [{
       org: { orgId: 'org-bbbbbb', name: 'Beta', flavor: 'team' as const, teamProjectId: 'proj-2', gitOriginHash: 'gh-old' },
-      members: [{ userId: 'm1', role: 'member' }],
+      members: [{ teamMemberId: teamId('m1'), role: 'member' }],
     }];
     await backfillProjection(db, orgs);
     orgs[0].org.gitOriginHash = 'gh-new';
@@ -170,33 +174,33 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
   it('write-through reconcile: add, role-change, grant, revoke, remove', async () => {
     await backfillProjection(db, [{
       org: { orgId: 'org-cccccc', name: 'Gamma', flavor: 'team', teamProjectId: 'proj-3' },
-      members: [{ userId: 'owner1', role: 'owner' }],
+      members: [{ teamMemberId: teamId('owner1'), role: 'owner' }],
     }]);
 
     // New member added via DO broadcast.
-    await applyMemberUpserted(db, 'org-cccccc', { userId: 'newbie', email: 'n@x.io', role: 'member' });
-    expect((await canAccess(db, 'newbie', { orgId: 'org-cccccc', action: 'view' })).allowed).toBe(true);
+    await applyMemberUpserted(db, 'org-cccccc', { teamMemberId: teamId('newbie'), email: 'n@x.io', role: 'member' });
+    expect((await canAccess(db, teamViewer('newbie'), { orgId: 'org-cccccc', action: 'view' })).allowed).toBe(true);
     // No project grant yet -> denied on the project.
-    expect((await canAccess(db, 'newbie', { projectId: 'proj-3', action: 'view' })).allowed).toBe(false);
+    expect((await canAccess(db, teamViewer('newbie'), { projectId: 'proj-3', action: 'view' })).allowed).toBe(false);
 
     // Grant broadcast.
-    await applyProjectGrant(db, 'proj-3', 'newbie', 'project-viewer');
-    expect((await canAccess(db, 'newbie', { projectId: 'proj-3', action: 'view' })).allowed).toBe(true);
-    expect((await canAccess(db, 'newbie', { projectId: 'proj-3', action: 'edit' })).allowed).toBe(false);
+    await applyProjectGrant(db, 'proj-3', teamId('newbie'), 'project-viewer');
+    expect((await canAccess(db, teamViewer('newbie'), { projectId: 'proj-3', action: 'view' })).allowed).toBe(true);
+    expect((await canAccess(db, teamViewer('newbie'), { projectId: 'proj-3', action: 'edit' })).allowed).toBe(false);
 
     // Role bumped to admin -> implicit project-admin.
-    await applyMemberRoleChanged(db, 'org-cccccc', 'newbie', 'admin');
-    expect((await canAccess(db, 'newbie', { projectId: 'proj-3', action: 'admin' })).allowed).toBe(true);
+    await applyMemberRoleChanged(db, 'org-cccccc', teamId('newbie'), 'admin');
+    expect((await canAccess(db, teamViewer('newbie'), { projectId: 'proj-3', action: 'admin' })).allowed).toBe(true);
 
     // Revoke the explicit grant (admin still allowed via org role).
-    await applyProjectRevoke(db, 'proj-3', 'newbie');
-    expect((await canAccess(db, 'newbie', { projectId: 'proj-3', action: 'admin' })).allowed).toBe(true);
+    await applyProjectRevoke(db, 'proj-3', teamId('newbie'));
+    expect((await canAccess(db, teamViewer('newbie'), { projectId: 'proj-3', action: 'admin' })).allowed).toBe(true);
 
     // Remove the member entirely -> denied everywhere; grants cleaned up.
-    await applyMemberRoleChanged(db, 'org-cccccc', 'newbie', 'member');
-    await applyProjectGrant(db, 'proj-3', 'newbie', 'project-editor');
-    await applyMemberRemoved(db, 'org-cccccc', 'newbie');
-    expect((await canAccess(db, 'newbie', { orgId: 'org-cccccc', action: 'view' })).allowed).toBe(false);
+    await applyMemberRoleChanged(db, 'org-cccccc', teamId('newbie'), 'member');
+    await applyProjectGrant(db, 'proj-3', teamId('newbie'), 'project-editor');
+    await applyMemberRemoved(db, 'org-cccccc', teamId('newbie'));
+    expect((await canAccess(db, teamViewer('newbie'), { orgId: 'org-cccccc', action: 'view' })).allowed).toBe(false);
     const leftover = await db.query<{ c: number }>(
       `SELECT COUNT(*) AS c FROM project_access WHERE user_id = 'newbie'`);
     expect(leftover.rows[0].c).toBe(0);
@@ -205,7 +209,7 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
   it('H3 P0: upsertProject adds a SECOND project to an org without slug collision', async () => {
     await backfillProjection(db, [{
       org: { orgId: 'org-dddddd', name: 'Delta', flavor: 'team', teamProjectId: 'proj-primary', gitOriginHash: 'gh-a' },
-      members: [{ userId: 'owner1', role: 'owner' }],
+      members: [{ teamMemberId: teamId('owner1'), role: 'owner' }],
     }]);
 
     // Add a second project under the same org (Epic H3 P0).

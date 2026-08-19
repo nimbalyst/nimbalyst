@@ -63,6 +63,7 @@ import {
   type CollaborativeEmbedReference,
 } from '../../services/CollaborativeEmbedProviderCache';
 import { resolveSharedSpaceEmbedReference } from './sharedSpaceEmbedResolution';
+import { resolveCollaborativeEmbedRequest } from './resolveCollaborativeEmbedRequest';
 import {
   activeCollabScopeAtom,
   activeTeamOrgIdAtom,
@@ -72,6 +73,7 @@ import {
 } from '../../store/atoms/collabDocuments';
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
+import { openSharedDocumentInTab as openSharedDocument } from '../../utils/openSharedDocumentInTab';
 import { getCollaborativeDocumentTypeCatalog } from '../../services/CollaborativeDocumentTypeCatalog';
 import { isCollabUri, parseCollabUri } from '@nimbalyst/collab-protocol';
 
@@ -180,17 +182,9 @@ function openFileInTab(absolutePath: string): void {
     });
 }
 
-function openSharedDocumentInTab(documentId: string): void {
-  const scope = store.get(activeCollabScopeAtom);
-  if (!scope) return;
-  store.set(setWindowModeAtom, 'collab');
-  store.set(pendingCollabDocumentAtom, {
-    documentId,
-    scopeKey: scope.scopeKey,
-    orgId: scope.orgId,
-    analyticsSource: 'embedded_document',
-  });
-}
+const openSharedDocumentInTab = (documentId: string): void => {
+  openSharedDocument(documentId, 'embedded_document');
+};
 
 type ReadFileResult =
   | null
@@ -482,52 +476,24 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
       return { error: 'This embedded document belongs to a different team.' };
     }
 
-    const catalog = getCollaborativeDocumentTypeCatalog();
-    const hintedExtension = attrs.embedType?.trim().toLowerCase();
-    const metadataResolution = sharedDocumentType
-      ? catalog.resolveMetadata(
-          sharedDocumentType,
-          sharedFileExtension ?? undefined,
-          sharedEditorId ?? undefined,
-        )
-      : hintedExtension
-        ? catalog.resolveShareability(`embedded${hintedExtension}`)
-        : null;
-    if (!metadataResolution || metadataResolution.state !== 'ready') {
-      return { error: 'The collaborative editor for this embed is unavailable.' };
-    }
-    const descriptor = metadataResolution.descriptor;
-    if (descriptor.editor.kind !== 'extension') {
-      return { error: 'Only collaborative custom-editor documents can be embedded.' };
-    }
-    const fileExtension = sharedFileExtension
-      ?? hintedExtension
-      ?? descriptor.defaultExtension;
-    const editorId = sharedEditorId
-      ?? catalog.editorIdForDescriptor(descriptor);
-    const registration = customEditorRegistry.findRegistrationForFile(
-      `embedded${fileExtension}`,
-    );
-    if (!registration || registration.collaboration?.supported !== true) {
-      return { error: 'The installed editor does not support collaborative embeds.' };
-    }
-    const displayName = sharedTitle || label || collaborativeReference.documentId;
-    return {
-      displayName,
-      registration,
-      request: {
-        workspacePath: activeWorkspacePath,
-        orgId: collaborativeReference.orgId,
-        documentId: collaborativeReference.documentId,
-        title: displayName,
-        documentType: sharedDocumentType ?? descriptor.documentType,
-        metadata: {
-          metadataVersion: 2,
-          fileExtension,
-          editorId,
-        },
-      },
-    };
+    const resolution = resolveCollaborativeEmbedRequest({
+      orgId: collaborativeReference.orgId,
+      documentId: collaborativeReference.documentId,
+      workspacePath: activeWorkspacePath,
+      sharedTitle,
+      sharedDocumentType,
+      sharedFileExtension,
+      sharedEditorId,
+      hintedExtension: attrs.embedType,
+      fallbackTitle: label,
+    });
+    return resolution.status === 'ready'
+      ? {
+          displayName: resolution.displayName,
+          registration: resolution.registration,
+          request: resolution.request,
+        }
+      : { error: resolution.error };
   }, [
     activeWorkspacePath,
     attrs.embedType,

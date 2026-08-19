@@ -1,5 +1,6 @@
 import type { TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import { describe, expect, it } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import type { ConversationDirectoryEntry } from '../../../../shared/conversationDirectory';
 import {
@@ -34,7 +35,7 @@ function delivery(
 ): TeamInboxSnapshot['deliveries'][number] {
   return {
     id: 'delivery-1',
-    recipientUserId: 'member-a',
+    teamMemberId: asTeamMemberId('member-a'),
     orgId: 'org-a',
     orgName: 'Acme',
     createdAt: 10,

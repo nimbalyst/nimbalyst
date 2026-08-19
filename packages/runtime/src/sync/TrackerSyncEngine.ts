@@ -71,6 +71,7 @@ import {
   decodeTrackerSavedViewEnvelopePlaintext,
 } from './TrackerEnvelopeCrypto';
 import type { TrackerPersistence, TrackerRowSnapshot } from './trackerPersistence';
+import type { TeamJwt, TeamMemberId } from '../auth/jwtScopes';
 
 // ============================================================================
 // Public types
@@ -182,8 +183,8 @@ export interface TrackerSyncEngineConfig {
    */
   teamProjectId: string;
 
-  /** The current user's ID (informational; not used in auth). */
-  userId: string;
+  /** The current user's member id in this team organization. */
+  teamMemberId: TeamMemberId;
 
   /** PGLite (or in-memory test) storage seam. */
   persistence: TrackerPersistence;
@@ -208,7 +209,7 @@ export interface TrackerSyncEngineConfig {
    * during reconnect retries -- the JWT can expire during long
    * disconnections.
    */
-  getJwt: () => Promise<string>;
+  getJwt: () => Promise<TeamJwt>;
 
   // --- Observers (all optional) -------------------------------------------
 

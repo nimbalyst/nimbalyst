@@ -12,6 +12,7 @@
  */
 
 import type { HydratedInboxDelivery } from './inboxTypes';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -25,7 +26,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
   return [
     {
       id: 'delivery-mention-room',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-acme',
       orgName: 'Acme',
       projectId: 'proj-editor',
@@ -45,7 +46,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
     },
     {
       id: 'delivery-agent-mention',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-acme',
       orgName: 'Acme',
       projectId: 'proj-editor',
@@ -71,7 +72,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
     },
     {
       id: 'delivery-agent-reply',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-acme',
       orgName: 'Acme',
       projectId: 'proj-editor',
@@ -99,7 +100,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
     },
     {
       id: 'delivery-assignment',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-acme',
       orgName: 'Acme',
       projectId: 'proj-editor',
@@ -118,7 +119,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
     },
     {
       id: 'delivery-dm',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-acme',
       orgName: 'Acme',
       source: { orgId: 'org-acme', sourceKind: 'dmMessage', sourceId: 'dm-4471', commentId: 'msg-3' },
@@ -133,7 +134,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
     },
     {
       id: 'delivery-doc-discussion',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-acme',
       orgName: 'Acme',
       projectId: 'proj-docs',
@@ -153,7 +154,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
     },
     {
       id: 'delivery-read-only',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-northwind',
       orgName: 'Northwind',
       projectId: 'proj-platform',
@@ -174,7 +175,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
     },
     {
       id: 'delivery-follow-watermark',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-acme',
       orgName: 'Acme',
       source: { orgId: 'org-acme', sourceKind: 'roomMessage', sourceId: 'room-design', commentId: 'msg-990' },
@@ -190,7 +191,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
     },
     {
       id: 'delivery-access-removed',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-northwind',
       orgName: 'Northwind',
       projectId: 'proj-corp-dev',
@@ -207,7 +208,7 @@ export function createInboxFixtures({ now }: FixtureOptions): HydratedInboxDeliv
     },
     {
       id: 'delivery-deleted-source',
-      recipientUserId: 'me',
+      teamMemberId: asTeamMemberId('me'),
       orgId: 'org-acme',
       orgName: 'Acme',
       projectId: 'proj-editor',

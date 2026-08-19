@@ -2,6 +2,7 @@
 import type { TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import { createStore } from 'jotai';
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import { parseFeedbackRequestDeepLink } from '../../../../../shared/feedbackRequestLinks';
 import { teamInboxSnapshotAtom } from '../../../../store/atoms/teamInbox';
@@ -15,7 +16,7 @@ describe('createAtomInboxProvider', () => {
       status: 'ready',
       deliveries: [{
         id: 'delivery-a',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-a',
         orgName: 'Acme',
         createdAt: 100,
@@ -114,7 +115,7 @@ describe('createAtomInboxProvider', () => {
     const store = createStore();
     const activity = (resourceKind: 'tracker' | 'document' | 'feedbackRequest') => ({
       id: `delivery-${resourceKind}`,
-      recipientUserId: 'member-a',
+      teamMemberId: asTeamMemberId('member-a'),
       orgId: 'org-a',
       orgName: 'Acme',
       createdAt: 100,

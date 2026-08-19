@@ -38,6 +38,17 @@ type SubjectInput = {
   projectId?: string;
 };
 
+/**
+ * A subject bound to one entry of a select-like ask. Parsed out of the ask and
+ * carried alongside it because the org id an artifact's `ResourceRef` needs is
+ * not known until the recipient directory has been resolved -- exactly how
+ * subjects are already handled.
+ */
+type AskArtifactInput = SubjectInput & {
+  askId: string;
+  entryId: string;
+};
+
 type AssignmentInput = {
   askId: string;
   recipientKey: string;
@@ -46,6 +57,7 @@ type AssignmentInput = {
 type RequestFeedbackInput = {
   recipients: RecipientInput[];
   asks: FeedbackAsk[];
+  askArtifacts: AskArtifactInput[];
   assignments?: AssignmentInput[];
   subjects: SubjectInput[];
   visibility: FeedbackRequestVisibility;
@@ -173,6 +185,29 @@ const STRUCTURED_ASK_SCHEMA = {
     initialValue: { type: 'number' },
     minLabel: { type: 'string' },
     maxLabel: { type: 'string' },
+    artifacts: {
+      type: 'array',
+      description:
+        'singleSelect and reorder only. Binds a resource to one entry so the recipient sees the artifact itself rather than a label. entryId is an option id or a reorder item id. Sharing is checked and publishing is handled exactly as for subjects; a resource that is also listed in subjects is published once.',
+      items: {
+        type: 'object',
+        properties: {
+          entryId: {
+            type: 'string',
+            description: 'The option id or reorder item id this resource belongs to.',
+          },
+          kind: { type: 'string', enum: ['document', 'tracker', 'file', 'session'] },
+          sourceId: { type: 'string' },
+          label: {
+            type: 'string',
+            description: 'Shown to the recipient. Defaults to sourceId, which reads as an opaque id.',
+          },
+          context: { type: 'string' },
+          projectId: { type: 'string' },
+        },
+        required: ['entryId', 'kind', 'sourceId'],
+      },
+    },
   },
   required: ['type', 'id', 'label', 'description'],
 };
@@ -321,7 +356,45 @@ function requireArray(value: unknown, label: string): unknown[] {
   return value;
 }
 
-function parseAsk(value: unknown, index: number): FeedbackAsk {
+function parseSubjectRecord(subject: Record<string, unknown>, label: string): SubjectInput {
+  if (!['document', 'tracker', 'file', 'session'].includes(String(subject.kind))) {
+    throw new Error(`RequestFeedback ${label}.kind must be document, tracker, file, or session.`);
+  }
+  return {
+    kind: subject.kind as ResourceSharingKind,
+    sourceId: requiredString(subject.sourceId, `${label}.sourceId`),
+    label: optionalString(subject.label, `${label}.label`),
+    context: optionalString(subject.context, `${label}.context`),
+    projectId: optionalString(subject.projectId, `${label}.projectId`),
+  };
+}
+
+/**
+ * Artifacts are only accepted on the ask types that can show one. Silently
+ * dropping them from a `multiSelect` would leave the caller believing the
+ * binding took, and the failure would look identical to no binding at all.
+ */
+function parseAskArtifacts(
+  ask: Record<string, unknown>,
+  askId: string,
+  label: string,
+): AskArtifactInput[] {
+  if (ask.artifacts === undefined) return [];
+  return requireArray(ask.artifacts, `${label}.artifacts`).map((value, index) => {
+    const entry = asRecord(value, `${label}.artifacts[${index}]`);
+    return {
+      ...parseSubjectRecord(entry, `${label}.artifacts[${index}]`),
+      askId,
+      entryId: requiredString(entry.entryId, `${label}.artifacts[${index}].entryId`),
+    };
+  });
+}
+
+function parseAsk(
+  value: unknown,
+  index: number,
+  artifacts: AskArtifactInput[],
+): FeedbackAsk {
   const label = `asks[${index}]`;
   const ask = asRecord(value, label);
   const type = requiredString(ask.type, `${label}.type`);
@@ -330,9 +403,15 @@ function parseAsk(value: unknown, index: number): FeedbackAsk {
     label: requiredString(ask.label, `${label}.label`),
     description: requiredString(ask.description, `${label}.description`),
   };
+  if (ask.artifacts !== undefined && type !== 'singleSelect' && type !== 'reorder') {
+    throw new Error(
+      `RequestFeedback ${label}.artifacts is only supported on singleSelect and reorder asks.`,
+    );
+  }
 
   switch (type) {
     case 'singleSelect':
+      artifacts.push(...parseAskArtifacts(ask, base.id, label));
       return {
         ...base,
         type,
@@ -352,6 +431,7 @@ function parseAsk(value: unknown, index: number): FeedbackAsk {
         maxSelected: optionalFiniteNumber(ask.maxSelected, `${label}.maxSelected`),
       };
     case 'reorder':
+      artifacts.push(...parseAskArtifacts(ask, base.id, label));
       return {
         ...base,
         type,
@@ -421,7 +501,10 @@ function parseInput(args: unknown): RequestFeedbackInput {
     throw new Error('RequestFeedback recipient keys must be unique.');
   }
 
-  const asks = requireArray(input.asks, 'asks').map(parseAsk);
+  const askArtifacts: AskArtifactInput[] = [];
+  const asks = requireArray(input.asks, 'asks').map((value, index) =>
+    parseAsk(value, index, askArtifacts),
+  );
   if (new Set(asks.map((ask) => ask.id)).size !== asks.length) {
     throw new Error('RequestFeedback ask ids must be unique.');
   }
@@ -445,21 +528,9 @@ function parseInput(args: unknown): RequestFeedbackInput {
     ? []
     : (Array.isArray(input.subjects) ? input.subjects : (() => {
         throw new Error('RequestFeedback subjects must be an array when provided.');
-      })()).map((value, index) => {
-        const subject = asRecord(value, `subjects[${index}]`);
-        if (!['document', 'tracker', 'file', 'session'].includes(String(subject.kind))) {
-          throw new Error(
-            `RequestFeedback subjects[${index}].kind must be document, tracker, file, or session.`,
-          );
-        }
-        return {
-          kind: subject.kind as ResourceSharingKind,
-          sourceId: requiredString(subject.sourceId, `subjects[${index}].sourceId`),
-          label: optionalString(subject.label, `subjects[${index}].label`),
-          context: optionalString(subject.context, `subjects[${index}].context`),
-          projectId: optionalString(subject.projectId, `subjects[${index}].projectId`),
-        };
-      });
+      })()).map((value, index) =>
+        parseSubjectRecord(asRecord(value, `subjects[${index}]`), `subjects[${index}]`),
+      );
 
   if (input.visibility !== undefined
     && input.visibility !== 'hiddenUntilAnswered'
@@ -479,11 +550,22 @@ function parseInput(args: unknown): RequestFeedbackInput {
   return {
     recipients,
     asks,
+    askArtifacts,
     assignments,
     subjects,
     visibility: (input.visibility as FeedbackRequestVisibility | undefined) ?? 'hiddenUntilAnswered',
     quorum: { requiredRecipientCount },
     deadline: optionalFiniteNumber(input.deadline, 'deadline'),
+  };
+}
+
+function subjectRef(subject: SubjectInput, orgId: string, projectId?: string) {
+  const resolvedProjectId = projectId ?? subject.projectId;
+  return {
+    orgId,
+    kind: subject.kind,
+    sourceId: subject.sourceId,
+    ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
   };
 }
 
@@ -568,8 +650,26 @@ export async function draftRequestFeedback(
         return { askId: assignment.askId, target: { kind: 'user' as const, userId } };
       });
 
+  // Attach bindings before validation. Validating the parsed asks first made
+  // unknown and duplicate entry ids invisible to validateFeedbackRequest; the
+  // same invalid draft then reached the compose surface and failed only after
+  // the author had approved publishing.
+  const asks = input.asks.map((ask) => {
+    const bound = input.askArtifacts.filter((artifact) => artifact.askId === ask.id);
+    if (bound.length === 0) return ask;
+    return {
+      ...ask,
+      artifacts: bound.map((artifact) => ({
+        entryId: artifact.entryId,
+        ref: subjectRef(artifact, org.orgId, org.teamProjectId),
+        label: artifact.label ?? artifact.sourceId,
+        ...(artifact.context ? { context: artifact.context } : {}),
+      })),
+    };
+  });
+
   const validation = validateFeedbackRequest({
-    asks: input.asks,
+    asks,
     recipients,
     assignments,
     quorum: input.quorum,
@@ -594,14 +694,31 @@ export async function draftRequestFeedback(
     };
   }
 
+  // An artifact bound to an option is a subject in every way that matters --
+  // it has to exist, belong to this org, and be published before a recipient
+  // can open it. So the two lists are checked and published as one, deduped by
+  // resource: a mockup listed as a subject *and* bound to an option is one
+  // thing to share, not two.
+  const subjectKey = (subject: SubjectInput) => `${subject.kind}\u0000${subject.sourceId}`;
+  const publishable: SubjectInput[] = [];
+  const publishableIndex = new Map<string, number>();
+  for (const subject of [...input.subjects, ...input.askArtifacts]) {
+    const key = subjectKey(subject);
+    if (publishableIndex.has(key)) continue;
+    publishableIndex.set(key, publishable.length);
+    publishable.push(subject);
+  }
+
   const sharingStatuses = await Promise.all(
-    input.subjects.map((subject) =>
+    publishable.map((subject) =>
       dependencies.getResourceSharingStatus(subject.kind, subject.sourceId, workspacePath),
     ),
   );
+  const sharingFor = (subject: SubjectInput) =>
+    sharingStatuses[publishableIndex.get(subjectKey(subject))!]!;
   for (let index = 0; index < sharingStatuses.length; index += 1) {
     const sharing = sharingStatuses[index]!;
-    const subject = input.subjects[index]!;
+    const subject = publishable[index]!;
     if (sharing.reason === 'notFound') {
       return {
         status: 'subjectNotFound',
@@ -634,18 +751,13 @@ export async function draftRequestFeedback(
     draft: {
       orgId: org.orgId,
       recipients,
-      asks: input.asks,
+      asks,
       assignments,
-      subjects: input.subjects.map((subject, index) => ({
-        ref: {
-          orgId: sharingStatuses[index]!.orgId ?? org.orgId,
-          kind: subject.kind,
-          sourceId: subject.sourceId,
-          ...(subject.projectId ? { projectId: subject.projectId } : {}),
-        },
+      subjects: publishable.map((subject) => ({
+        ref: subjectRef(subject, sharingFor(subject).orgId ?? org.orgId, org.teamProjectId),
         label: subject.label ?? subject.sourceId,
         ...(subject.context ? { context: subject.context } : {}),
-        shared: sharingStatuses[index]!.teamVisible,
+        shared: sharingFor(subject).teamVisible,
       })),
       visibility: input.visibility,
       quorum: input.quorum,

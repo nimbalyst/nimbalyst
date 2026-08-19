@@ -1,6 +1,7 @@
 import { getCollabSyncHttpUrl, getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { getSessionSyncConfig } from '../utils/store';
 import { getPersonalSessionJwt, refreshPersonalSessionDetailed } from './StytchAuthService';
+import type { PersonalJwt } from '@nimbalyst/runtime/auth/jwtScopes';
 
 export interface PersonalSyncDevice {
   deviceId: string;
@@ -18,7 +19,7 @@ export type PersonalSyncDevicesResult =
   | { success: true; devices: PersonalSyncDevice[]; sessionCount: number; projectCount: number }
   | { success: false; devices: []; error: string };
 
-function fetchPersonalSyncDevices(httpUrl: string, jwt: string): Promise<Response> {
+function fetchPersonalSyncDevices(httpUrl: string, jwt: PersonalJwt): Promise<Response> {
   return fetch(`${httpUrl}/api/sessions`, {
     method: 'GET',
     headers: {

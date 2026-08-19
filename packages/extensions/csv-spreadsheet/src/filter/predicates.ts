@@ -1,5 +1,6 @@
 import type { ColumnFilter, ColumnFilterState, FilterScalar, TrimmedRows } from '../types';
 import { columnIndexToLetter } from '../utils/csvParser';
+import { parseDateTime, parseNumber } from '../utils/formatters';
 
 export type FilterRow = Readonly<Record<string, unknown>>;
 
@@ -23,10 +24,37 @@ export function matchesColumnFilter(value: unknown, filter: ColumnFilter): boole
     return filter.operator === 'isBlank' ? isBlank(value) : !isBlank(value);
   }
 
+  if (filter.kind === 'date') {
+    if (isBlank(value)) return false;
+    const parsed = parseDateTime(
+      typeof value === 'number' || typeof value === 'string' ? value : String(value),
+    );
+    if (parsed === null) return false;
+    const time = parsed.getTime();
+    switch (filter.operator) {
+      case 'before': return time < filter.value;
+      case 'after': return time > filter.value;
+      case 'between': return time >= filter.value && time <= (filter.valueEnd ?? filter.value);
+      case 'on': {
+        // `on` means the whole calendar day the bound falls in, so a datetime
+        // cell still matches the date the user picked.
+        const dayStart = new Date(filter.value);
+        dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(dayStart);
+        dayEnd.setDate(dayEnd.getDate() + 1);
+        return time >= dayStart.getTime() && time < dayEnd.getTime();
+      }
+    }
+  }
+
   if (filter.kind === 'number') {
     if (isBlank(value)) return false;
-    const numericValue = typeof value === 'number' ? value : Number(String(value).trim());
-    if (!Number.isFinite(numericValue)) return false;
+    // `parseNumber`, not `Number(...)`: a currency column holds `$1,200`, which
+    // `Number` reads as NaN and would drop from every numeric filter.
+    const numericValue = typeof value === 'number'
+      ? value
+      : parseNumber(String(value).trim());
+    if (numericValue === null || !Number.isFinite(numericValue)) return false;
     switch (filter.operator) {
       case 'equals': return numericValue === filter.value;
       case 'notEquals': return numericValue !== filter.value;

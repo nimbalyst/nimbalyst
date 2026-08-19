@@ -103,7 +103,7 @@ describe('registerCollabTestIdentityHandlers', () => {
     });
     expect(open.config).toMatchObject({
       orgId: 'e2e-org',
-      userId: 'e2e-user-a',
+      teamMemberId: 'e2e-user-a',
       accountId: 'e2e-user-a',
       documentType: 'mindmap',
       serverUrl: 'ws://127.0.0.1:8797',

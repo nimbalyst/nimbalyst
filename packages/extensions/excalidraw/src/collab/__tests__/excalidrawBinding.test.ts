@@ -18,6 +18,11 @@ vi.mock('@excalidraw/excalidraw', () => ({
 }));
 
 import * as Y from 'yjs';
+import {
+  applyAwarenessUpdate,
+  Awareness,
+  encodeAwarenessUpdate,
+} from 'y-protocols/awareness';
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { ExcalidrawBinding } from '../excalidrawBindings';
 import { isExcalidrawYDocEmpty, seedExcalidrawYDoc } from '../seed';
@@ -301,6 +306,64 @@ describe('ExcalidrawBinding initial render', () => {
 
     binding.destroy();
     doc.destroy();
+  });
+
+  it('reattaches document and awareness updates to a replacement Excalidraw API', () => {
+    const doc = new Y.Doc();
+    seedExcalidrawYDoc(doc, SAMPLE_FILE);
+    const awareness = new Awareness(doc);
+    const remoteDoc = new Y.Doc();
+    const remoteAwareness = new Awareness(remoteDoc);
+    remoteAwareness.setLocalState({
+      user: { name: 'Browser Rowan', color: '#E06B8F' },
+    });
+    applyAwarenessUpdate(
+      awareness,
+      encodeAwarenessUpdate(remoteAwareness, [remoteAwareness.clientID]),
+      'test',
+    );
+
+    const originalApi = createMockApi();
+    const replacementApi = createMockApi();
+    const binding = new ExcalidrawBinding(
+      doc.getArray('elements'),
+      doc.getMap('assets'),
+      originalApi,
+      awareness,
+    );
+
+    binding.replaceApi(replacementApi);
+
+    expect(replacementApi.__sceneElements.map((element) => element.id))
+      .toEqual(['rect-1']);
+    const replacementCalls = vi.mocked(replacementApi.updateScene).mock.calls;
+    expect(replacementCalls.some(([payload]) => (
+      payload.collaborators instanceof Map
+      && [...payload.collaborators.values()].some(
+        (collaborator) => collaborator.username === 'Browser Rowan',
+      )
+    ))).toBe(true);
+
+    remoteAwareness.setLocalStateField('pointer', { x: 42, y: 17, tool: 'pointer' });
+    applyAwarenessUpdate(
+      awareness,
+      encodeAwarenessUpdate(remoteAwareness, [remoteAwareness.clientID]),
+      'test',
+    );
+    const latestCollaborators = vi.mocked(replacementApi.updateScene).mock.calls
+      .map(([payload]) => payload.collaborators)
+      .filter((value) => value instanceof Map)
+      .at(-1);
+    expect([...latestCollaborators!.values()][0]).toMatchObject({
+      username: 'Browser Rowan',
+      pointer: { x: 42, y: 17, tool: 'pointer' },
+    });
+
+    binding.destroy();
+    awareness.destroy();
+    remoteAwareness.destroy();
+    doc.destroy();
+    remoteDoc.destroy();
   });
 
   it('keeps a local element whose change callback is dispatched after the remote repaint', async () => {

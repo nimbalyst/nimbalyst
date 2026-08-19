@@ -8,6 +8,16 @@ import type {
   FeedbackRequestRespondIpcRequest,
   FeedbackRequestServiceTarget,
 } from '../../shared/feedbackRequest';
+import type {
+  FeedbackRequestIndexSnapshotIpcRequest,
+  FeedbackRequestIndexSubjectIpcRequest,
+  FeedbackRequestIndexTarget,
+  FeedbackRequestIndexUpsertIpcRequest,
+} from '../../shared/feedbackRequestIndex';
+import {
+  getFeedbackRequestIndexService,
+  shutdownFeedbackRequestIndexService,
+} from '../services/FeedbackRequestIndexService';
 import {
   getFeedbackRequestService,
   shutdownFeedbackRequestService,
@@ -15,14 +25,23 @@ import {
 import { safeHandle } from '../utils/ipcRegistry';
 
 let cleanupSubscription: (() => void) | null = null;
+let cleanupIndexSubscription: (() => void) | null = null;
 
 export function registerFeedbackRequestHandlers(): void {
   if (cleanupSubscription) return;
   const service = getFeedbackRequestService();
+  const indexService = getFeedbackRequestIndexService();
   cleanupSubscription = service.subscribe((state) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) {
         window.webContents.send('feedback-request:state-changed', state);
+      }
+    }
+  });
+  cleanupIndexSubscription = indexService.subscribe((payload) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send('feedback-request-index:changed', payload);
       }
     }
   });
@@ -77,10 +96,35 @@ export function registerFeedbackRequestHandlers(): void {
       input.recipientUserIds,
     ),
   );
+  safeHandle(
+    'feedback-request-index:replace-snapshot',
+    async (_event, input: FeedbackRequestIndexSnapshotIpcRequest) => (
+      indexService.replaceSnapshot(input)
+    ),
+  );
+  safeHandle(
+    'feedback-request-index:upsert',
+    async (_event, input: FeedbackRequestIndexUpsertIpcRequest) => (
+      indexService.enqueueUpsert(input)
+    ),
+  );
+  safeHandle(
+    'feedback-request-index:list',
+    async (_event, target: FeedbackRequestIndexTarget) => indexService.list(target),
+  );
+  safeHandle(
+    'feedback-request-index:find-by-subject',
+    async (_event, input: FeedbackRequestIndexSubjectIpcRequest) => (
+      indexService.findBySubject(input)
+    ),
+  );
 }
 
 export function shutdownFeedbackRequestHandlers(): void {
   cleanupSubscription?.();
   cleanupSubscription = null;
+  cleanupIndexSubscription?.();
+  cleanupIndexSubscription = null;
+  shutdownFeedbackRequestIndexService();
   shutdownFeedbackRequestService();
 }

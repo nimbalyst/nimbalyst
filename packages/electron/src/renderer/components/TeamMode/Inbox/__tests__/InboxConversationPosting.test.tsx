@@ -11,6 +11,7 @@ import {
 } from '@testing-library/react';
 import { Provider, createStore } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import { FeedbackRequestService } from '../../../../../main/services/FeedbackRequestService';
 import {
@@ -185,7 +186,7 @@ describe('Inbox conversation posting', () => {
     } as unknown as FeedbackRequestReadModel;
     const feedbackState = {
       ...target,
-      viewerUserId,
+      teamMemberId: asTeamMemberId(viewerUserId),
       status: 'connected' as const,
       request,
       progress: {
@@ -200,7 +201,7 @@ describe('Inbox conversation posting', () => {
     const delivery: HydratedInboxDelivery = {
       ...fixture,
       id: 'delivery-feedback',
-      recipientUserId: viewerUserId,
+      teamMemberId: asTeamMemberId(viewerUserId),
       orgId: target.orgId,
       source: {
         orgId: target.orgId,
@@ -246,8 +247,8 @@ describe('Inbox conversation posting', () => {
       destroy: vi.fn(),
     };
     const service = new FeedbackRequestService({
-      getTeamJwt: vi.fn(async () => 'team-jwt' as never),
-      getTeamMemberId: vi.fn(() => viewerUserId),
+      getTeamJwt: vi.fn(async () => asTeamJwt('team-jwt')),
+      getTeamMemberId: vi.fn(() => asTeamMemberId(viewerUserId)),
       getServerUrl: vi.fn(() => 'https://sync.example.test'),
       persistence: {
         load: vi.fn().mockResolvedValue(undefined),
@@ -279,12 +280,12 @@ describe('Inbox conversation posting', () => {
     const jotaiStore = createStore();
     jotaiStore.set(
       feedbackRequestActiveViewerAtomFamily(feedbackRequestTargetKey(target)),
-      viewerUserId,
+      asTeamMemberId(viewerUserId),
     );
     jotaiStore.set(
       feedbackRequestStateAtomFamily(feedbackRequestAtomKey({
         ...target,
-        viewerUserId,
+        teamMemberId: asTeamMemberId(viewerUserId),
       })),
       feedbackState,
     );

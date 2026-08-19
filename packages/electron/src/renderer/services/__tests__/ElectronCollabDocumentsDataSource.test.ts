@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TeamSyncConfig } from '@nimbalyst/runtime/sync';
 import type { CollabScope } from '@nimbalyst/collab-client/core';
+import { asTeamJwt, asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { ElectronCollabDocumentsDataSource } from '../ElectronCollabDocumentsDataSource';
 
 const scope: CollabScope = {
@@ -11,7 +12,7 @@ const scope: CollabScope = {
   indexConfig: {
     serverUrl: 'wss://example.test',
     teamProjectId: 'project-one',
-    userId: 'member-one',
+    teamMemberId: asTeamMemberId('member-one'),
   },
 };
 
@@ -47,7 +48,7 @@ describe('ElectronCollabDocumentsDataSource', () => {
     };
     const source = new ElectronCollabDocumentsDataSource({
       scope,
-      getJwt: async () => 'team-jwt',
+      getJwt: async () => asTeamJwt('team-jwt'),
       events: { observeStatus },
       createProvider: (nextConfig) => {
         config = nextConfig;
@@ -98,7 +99,7 @@ describe('ElectronCollabDocumentsDataSource', () => {
       let config!: TeamSyncConfig;
       new ElectronCollabDocumentsDataSource({
         scope,
-        getJwt: async () => 'team-jwt',
+        getJwt: async () => asTeamJwt('team-jwt'),
         createProvider: (nextConfig) => {
           config = nextConfig;
           return { getStatus: () => 'disconnected' } as any;
@@ -118,7 +119,7 @@ describe('ElectronCollabDocumentsDataSource', () => {
     let config!: TeamSyncConfig;
     new ElectronCollabDocumentsDataSource({
       scope,
-      getJwt: async () => 'team-jwt',
+      getJwt: async () => asTeamJwt('team-jwt'),
       createProvider: (nextConfig) => {
         config = nextConfig;
         return { getStatus: () => 'disconnected' } as any;

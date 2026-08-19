@@ -6,7 +6,7 @@
  */
 
 import { useState, useCallback, useRef, useMemo } from 'react';
-import type { SortConfig, ColumnFormat, CSVMetadata } from '../types';
+import type { SortConfig, ColumnFormat, CSVMetadata, CellStyleRanges } from '../types';
 import { parseCSV, serializeMetadata } from '../utils/csvParser';
 
 export interface SpreadsheetMetadata {
@@ -14,6 +14,7 @@ export interface SpreadsheetMetadata {
   frozenColumnCount: number;
   columnFormats: Record<number, ColumnFormat>;
   columnWidths: Record<number, number>;
+  cellStyles: CellStyleRanges;
   columnCount: number;
   hasHeaders: boolean;
 }
@@ -33,10 +34,19 @@ export interface UseSpreadsheetMetadataResult {
   initialSource: Record<string, string | number>[];
   initialPinnedTop: Record<string, string | number>[];
 
+  /**
+   * Adopt metadata a collaborator changed. Deliberately does not mark dirty:
+   * the edit is already in the shared document, and flagging the file as
+   * modified locally would make every collaborator's session claim unsaved
+   * changes the moment anyone formatted a column.
+   */
+  applyRemoteMetadata: (patch: Partial<SpreadsheetMetadata>) => void;
+
   // Metadata mutations
   setHeaderRowCount: (count: number) => void;
   setFrozenColumnCount: (count: number) => void;
   setColumnFormat: (columnIndex: number, format: ColumnFormat | null) => void;
+  setCellStyles: (ranges: CellStyleRanges) => void;
   setColumnWidth: (columnIndex: number, width: number) => void;
   setColumnCount: (count: number) => void;
   setSortConfig: (config: SortConfig | null) => void;
@@ -177,6 +187,7 @@ export function useSpreadsheetMetadata(
           frozenColumnCount: 0,
           columnFormats: {} as Record<number, ColumnFormat>,
           columnWidths: {} as Record<number, number>,
+          cellStyles: {} as CellStyleRanges,
           columnCount: 5,
           hasHeaders: false,
         },
@@ -194,6 +205,7 @@ export function useSpreadsheetMetadata(
         frozenColumnCount: data.frozenColumnCount,
         columnFormats: data.columnFormats,
         columnWidths: csvMetadata?.columnWidths ?? {},
+        cellStyles: data.cellStyles,
         columnCount: data.columnCount,
         hasHeaders: data.hasHeaders,
       },
@@ -258,6 +270,11 @@ export function useSpreadsheetMetadata(
     markDirty();
   }, [markDirty]);
 
+  const setCellStyles = useCallback((ranges: CellStyleRanges) => {
+    setMetadata(prev => ({ ...prev, cellStyles: ranges }));
+    markDirty();
+  }, [markDirty]);
+
   const setColumnWidth = useCallback((columnIndex: number, width: number) => {
     setMetadata(prev => {
       const newWidths = { ...prev.columnWidths };
@@ -266,6 +283,15 @@ export function useSpreadsheetMetadata(
     });
     markDirty();
   }, [markDirty]);
+
+  const applyRemoteMetadata = useCallback((patch: Partial<SpreadsheetMetadata>) => {
+    setMetadata(prev => {
+      const next = { ...prev, ...patch };
+      // `hasHeaders` is derived, so a remote header-row change has to carry it.
+      if (patch.headerRowCount !== undefined) next.hasHeaders = patch.headerRowCount > 0;
+      return next;
+    });
+  }, []);
 
   const setColumnCount = useCallback((count: number) => {
     setMetadata(prev => ({
@@ -293,6 +319,7 @@ export function useSpreadsheetMetadata(
       frozenColumnCount: data.frozenColumnCount,
       columnFormats: data.columnFormats,
       columnWidths: csvMetadata?.columnWidths ?? {},
+      cellStyles: data.cellStyles,
       columnCount: data.columnCount,
       hasHeaders: data.hasHeaders,
     });
@@ -308,12 +335,14 @@ export function useSpreadsheetMetadata(
   const serializeMetadataForSave = useCallback((): string => {
     const hasColumnFormats = Object.keys(metadata.columnFormats).length > 0;
     const hasColumnWidths = Object.keys(metadata.columnWidths).length > 0;
+    const hasCellStyles = Object.keys(metadata.cellStyles).length > 0;
     const csvMetadata: CSVMetadata = {
       hasHeaders: metadata.hasHeaders,
       headerRowCount: metadata.headerRowCount,
       frozenColumnCount: metadata.frozenColumnCount,
       ...(hasColumnFormats ? { columnFormats: metadata.columnFormats } : {}),
       ...(hasColumnWidths ? { columnWidths: metadata.columnWidths } : {}),
+      ...(hasCellStyles ? { cellStyles: metadata.cellStyles } : {}),
     };
     return serializeMetadata(csvMetadata);
   }, [metadata]);
@@ -325,9 +354,11 @@ export function useSpreadsheetMetadata(
     isDirty,
     initialSource: initialGridDataRef.current.source,
     initialPinnedTop: initialGridDataRef.current.pinnedTop,
+    applyRemoteMetadata,
     setHeaderRowCount,
     setFrozenColumnCount,
     setColumnFormat,
+    setCellStyles,
     setColumnWidth,
     setColumnCount,
     setSortConfig,

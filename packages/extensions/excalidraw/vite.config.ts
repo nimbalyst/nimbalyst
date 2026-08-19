@@ -8,6 +8,22 @@ if (typeof process === 'undefined') {
 }
 `;
 
+const sharedOutput = {
+  format: 'es' as const,
+  globals: {
+    react: 'React',
+    'react-dom': 'ReactDOM',
+    'react/jsx-runtime': 'jsxRuntime',
+  },
+  banner: PROCESS_SHIM_BANNER,
+  assetFileNames: (assetInfo: { names?: string[] }) => {
+    if (assetInfo.names?.some((name) => name.endsWith('.css'))) {
+      return 'index.css';
+    }
+    return assetInfo.names?.[0] || 'asset';
+  },
+};
+
 // mermaid >= 11.13 prefixes every SVG element id with the render id
 // (e.g. "mermaid-to-excalidraw-6-Client" instead of "Client"), but
 // @excalidraw/mermaid-to-excalidraw 2.2.2 still looks subgraphs up by their
@@ -46,7 +62,6 @@ export default defineConfig({
     lib: {
       entry: resolve(__dirname, 'src/index.tsx'),
       name: 'ExcalidrawExtension',
-      formats: ['es'],
       fileName: () => 'index.js',
     },
     rollupOptions: {
@@ -65,22 +80,23 @@ export default defineConfig({
         'yjs',
         /^y-protocols(\/.*)?$/,
       ],
-      output: {
-        globals: {
-          react: 'React',
-          'react-dom': 'ReactDOM',
-          'react/jsx-runtime': 'jsxRuntime',
+      output: [
+        {
+          ...sharedOutput,
+          entryFileNames: 'index.js',
+          chunkFileNames: '[name]-[hash].mjs',
+          // The web console consumes this entry as a hierarchical module URL,
+          // so tool-only dependencies remain lazy sibling chunks.
         },
-        banner: PROCESS_SHIM_BANNER,
-        assetFileNames: (assetInfo) => {
-          if (assetInfo.names?.some((name) => name.endsWith('.css'))) {
-            return 'index.css';
-          }
-          return assetInfo.names?.[0] || 'asset';
+        {
+          ...sharedOutput,
+          entryFileNames: 'desktop.js',
+          // Electron currently loads extension modules from blob URLs. Keep a
+          // self-contained desktop entry so its import_mermaid tool retains the
+          // same behavior while the browser entry stops paying for Mermaid.
+          inlineDynamicImports: true,
         },
-        // Inline dynamic imports to prevent code splitting issues in extension context
-        inlineDynamicImports: true,
-      },
+      ],
     },
     // Excalidraw 0.18 ships fonts as external .woff2 files referenced by
     // relative url() in its CSS (and via bundled font-loading code). The host

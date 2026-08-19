@@ -2708,6 +2708,20 @@ export class AIService {
           cancelled: false,
         });
 
+        // The auto-resume is an in-process recovery: it re-enters the provider
+        // with the answer so the SDK resumes from its stored providerSessionId.
+        // `claude-code-cli` has nothing of the sort to resume -- sendMessageHandler
+        // submits into a live CLI composer, so this would type "[Resuming after
+        // answering a question]" into whatever that terminal is doing now, as if
+        // the user had written it. The answer is already durable: the response row
+        // above settles the waiting MCP handler through its DB poll (see
+        // interactiveToolHandlers), and the tool_result just persisted completes
+        // the widget.
+        if (session.provider === 'claude-code-cli') {
+          logger.main.info(`[AIService] No live handler for AskUserQuestion on ${session.provider}; leaving the answer for the MCP handler rather than auto-resuming: ${resolvedSessionId}`);
+          return { success: true };
+        }
+
         const answerText = Object.entries(answers)
           .map(([question, answer]) => `${question}: ${answer}`)
           .join('\n');

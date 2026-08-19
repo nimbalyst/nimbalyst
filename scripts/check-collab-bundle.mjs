@@ -268,31 +268,43 @@ function checkPublicJwtTypeBoundary() {
 }
 
 /**
- * Comments are stripped before scanning for workspace specifiers. The inlined
- * SDK declarations carry JSDoc examples that show extensions importing from
- * `@nimbalyst/runtime`, and a documentation line is not a boundary leak -- only
- * a real import/export is. (Block-comment stripping is naive; a `/*` inside a
- * string literal in a `.d.ts` would confuse it, and none exists.)
+ * Comments are stripped before scanning: these declaration files document the
+ * public API, and documenting the recommended `@nimbalyst/runtime` import means
+ * writing that import in an example. A raw source scan reads the example as a
+ * real one and fails on a tree that has no leak at all, which is worse than
+ * useless — it makes the check unpassable, so every push has to skip the hook
+ * and the check stops guarding anything.
+ *
+ * A `//` inside a string literal is not a comment (`"virtual://shared-home"`
+ * appears in the scanned declarations), so line stripping only applies when
+ * nothing quoted precedes the `//` on that line. Block-comment stripping is
+ * naive; a `/*` inside a string literal would confuse it, and none exists.
  */
-function stripDeclarationComments(source) {
+export function stripComments(source) {
+  // Replace with a space rather than nothing: `from/**/'@nimbalyst/runtime'`
+  // must not be spliced into a token that no longer matches.
   return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^[^\n'"`]*\/\/.*$/gm, '');
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/^([^\n'"`]*)\/\/[^\n]*$/gm, '$1 ');
+}
+
+export function findPublicTypeLeaks(declarationFiles, readFile) {
+  return declarationFiles.flatMap((fileName) => Array.from(
+    stripComments(readFile(fileName)).matchAll(
+      /(?:from\s+|import\s*\()(['"])(@nimbalyst\/(?:collab-client|runtime|extension-sdk)(?:\/[^'"]*)?)\1/g,
+    ),
+    (match) => `${fileName}: ${match[2]}`,
+  ));
 }
 
 function checkSelfContainedPublicTypes() {
   const typesRoot = path.join(packageRoot, 'types');
   const declarationFiles = fs.readdirSync(typesRoot, { recursive: true })
     .filter((fileName) => fileName.endsWith('.d.ts'));
-  const leaks = declarationFiles.flatMap((fileName) => {
-    const source = stripDeclarationComments(
-      fs.readFileSync(path.join(typesRoot, fileName), 'utf8'),
-    );
-    return Array.from(
-      source.matchAll(/(?:from\s+|import\s*\()(['"])(@nimbalyst\/(?:collab-client|runtime|extension-sdk)(?:\/[^'\"]*)?)\1/g),
-      (match) => `${fileName}: ${match[2]}`,
-    );
-  });
+  const leaks = findPublicTypeLeaks(
+    declarationFiles,
+    (fileName) => fs.readFileSync(path.join(typesRoot, fileName), 'utf8'),
+  );
   if (leaks.length > 0) {
     throw new Error(
       'public declarations leak private workspace package boundaries:\n'

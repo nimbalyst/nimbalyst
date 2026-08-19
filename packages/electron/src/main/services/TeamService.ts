@@ -30,7 +30,7 @@ import { getGitRemoteIdentities, getRawGitRemote, normalizeGitRemote } from '../
 import type { GitRemoteIdentities } from '../utils/gitUtils';
 import { resolveTeamForRemoteHash } from './teamProjectResolver';
 import { getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
-import { assertJwtMatchesOrg, getJwtExp, AuthContextMismatchError } from './jwtOrg';
+import { assertJwtMatchesOrg, getJwtExp, getSubFromJwt, AuthContextMismatchError } from './jwtOrg';
 import { createSingleFlight } from '../utils/asyncCache';
 import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
 import { setHasOrganizationsForMenu } from '../menu/organizationMenuState';
@@ -51,7 +51,14 @@ import {
   getPersonalUserId,
   getSyncAccount,
 } from './StytchAuthService';
-import { asTeamJwt, type PersonalJwt, type TeamJwt } from '@nimbalyst/runtime';
+import {
+  asTeamJwt,
+  asTeamMemberId,
+  asPersonalMemberId,
+  type PersonalJwt,
+  type TeamJwt,
+  type TeamMemberId,
+} from '@nimbalyst/runtime';
 import type {
   ConversationDirectoryEntry,
   ConversationDirectoryMembersResult,
@@ -81,7 +88,12 @@ import {
   type ProjectionDb,
   type ProjectRole,
 } from './OrgProjectionService';
-import { canAccess, type CanAccessInput, type AccessDatabase } from './OrgAccessResolver';
+import {
+  canAccess,
+  type AccessDatabase,
+  type AccessViewerIdentity,
+  type CanAccessInput,
+} from './OrgAccessResolver';
 import { setTeamServerManagedCustody } from './TeamCustodyService';
 // TrackerSyncManager already imports from this module (findTeamForWorkspace).
 // The cycle is safe because both sides only reference the imported symbols
@@ -149,11 +161,29 @@ export interface TeamDetails {
   /** Explicit server-side account binding projected from the org TeamRoom. */
   owningPersonalOrgId?: string | null;
   /** The Stytch member id in this team org (different from the personal member id). */
-  teamMemberId?: string | null;
+  teamMemberId?: TeamMemberId | null;
   /** All explicit bindings when more than one signed-in account belongs to the same org. */
-  accountBindings?: Array<{ personalOrgId: string; teamMemberId: string }>;
+  accountBindings?: Array<{ personalOrgId: string; teamMemberId: TeamMemberId }>;
   /** Account selected from the explicit local binding for workspace operations. */
   boundPersonalOrgId?: string | null;
+}
+
+// identity-scope-allow: raw team-list response is branded by brandTeamDetails
+type RawTeamDetails = Omit<TeamDetails, 'teamMemberId' | 'accountBindings'> & {
+  teamMemberId?: string | null;
+  // identity-scope-allow: raw team-list binding is branded by brandTeamDetails
+  accountBindings?: Array<{ personalOrgId: string; teamMemberId: string }>;
+};
+
+function brandTeamDetails(team: RawTeamDetails): TeamDetails {
+  return {
+    ...team,
+    teamMemberId: team.teamMemberId == null ? null : asTeamMemberId(team.teamMemberId),
+    accountBindings: team.accountBindings?.map((binding) => ({
+      ...binding,
+      teamMemberId: asTeamMemberId(binding.teamMemberId),
+    })),
+  };
 }
 
 /**
@@ -222,7 +252,7 @@ export interface MergeResultSummary {
 }
 
 export interface TeamMember {
-  memberId: string;
+  memberId: TeamMemberId;
   email: string;
   name: string;
   status: string;
@@ -355,6 +385,20 @@ export async function getOrgScopedJwt(
   );
 }
 
+/** Resolve the team JWT and the member id carried by that same JWT together. */
+export async function getOrgScopedIdentity(
+  orgId: string,
+  accountOrgId?: string,
+  forceRefresh = false,
+): Promise<{ jwt: TeamJwt; teamMemberId: TeamMemberId }> {
+  const jwt = await getOrgScopedJwt(orgId, accountOrgId, forceRefresh);
+  const teamMemberId = getSubFromJwt(jwt);
+  if (!teamMemberId) {
+    throw new Error(`Org-scoped JWT for ${orgId} has no member identity`);
+  }
+  return { jwt, teamMemberId };
+}
+
 async function exchangeOrgScopedJwt(
   orgId: string,
   accountOrgId?: string,
@@ -429,6 +473,7 @@ async function exchangeOrgScopedJwt(
   const data = await response.json() as {
     sessionJwt: string;
     sessionToken: string;
+    // identity-scope-allow: raw org-switch response is branded after org validation
     teamMemberId?: string;
     owningPersonalOrgId?: string;
     bindingRecorded?: boolean;
@@ -462,7 +507,7 @@ async function exchangeOrgScopedJwt(
         db,
         sourcePersonalOrgId,
         orgId,
-        data.teamMemberId,
+        asTeamMemberId(data.teamMemberId),
         data.owningPersonalOrgId,
         'server-exchange',
       );
@@ -559,7 +604,7 @@ async function fetchTeamApi(
   const jwtSource = orgId ? 'org-scoped' : 'personal';
   // logger.main.info(`[TeamService] ${method} ${path} (jwt: ${jwtSource}${orgId ? `, org: ${orgId}` : ''}${accountOrgId ? `, account: ${accountOrgId}` : ''})`);
 
-  const makeRequest = async (jwt: string) => {
+  const makeRequest = async (jwt: TeamJwt | PersonalJwt) => {
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${jwt}`,
     };
@@ -795,24 +840,11 @@ async function captureWorkspaceRemote(
   };
 }
 
-/**
- * Extract the member ID (sub claim) from a Stytch B2B JWT.
- * The JWT is a standard 3-part base64url-encoded token.
- */
-function getMemberIdFromJwt(jwt: string): string | null {
-  try {
-    const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString());
-    return payload.sub || null;
-  } catch {
-    return null;
-  }
-}
-
 async function persistServerAccountOrgBinding(
   db: ProjectionDb,
   expectedPersonalOrgId: string,
   teamOrgId: string,
-  teamMemberId: string,
+  teamMemberId: TeamMemberId,
   serverPersonalOrgId: string,
   source: AccountOrgBindingSource,
 ): Promise<boolean> {
@@ -954,12 +986,12 @@ export async function archiveConversation(
 export async function setConversationMembership(
   orgId: string,
   conversationId: string,
-  userId: string,
+  teamMemberId: TeamMemberId,
   input: SetConversationMembershipInput,
 ): Promise<SetConversationMembershipResult> {
   requireConversationIdentifier(orgId, 'Organization id');
   requireConversationIdentifier(conversationId, 'Conversation id');
-  requireConversationIdentifier(userId, 'Conversation member user id');
+  requireConversationIdentifier(teamMemberId, 'Conversation member user id');
   if (typeof input?.active !== 'boolean') {
     throw new Error('Conversation membership active state is required');
   }
@@ -971,7 +1003,7 @@ export async function setConversationMembership(
     throw new Error('Conversation membership role is invalid');
   }
   return await fetchTeamApi(
-    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(userId)}`,
+    `/api/teams/${encodeURIComponent(orgId)}/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(teamMemberId)}`,
     input.active ? 'PUT' : 'DELETE',
     input.active ? { role: input.role ?? 'member' } : undefined,
     orgId,
@@ -1113,9 +1145,9 @@ export async function listTeams(): Promise<TeamDetails[]> {
     // Query teams for each signed-in account in parallel
     const results = await Promise.allSettled(
       allAccounts.map(async (account) => {
-        const data = await fetchTeamApi('/api/teams', 'GET', undefined, undefined, account.personalOrgId) as { teams: TeamDetails[] };
-        return (data.teams || []).map((team) => ({
-          ...team,
+        const data = await fetchTeamApi('/api/teams', 'GET', undefined, undefined, account.personalOrgId) as { teams: RawTeamDetails[] };
+        return (data.teams || []).map((rawTeam) => ({
+          ...brandTeamDetails(rawTeam),
           sourcePersonalOrgId: account.personalOrgId,
           sourceEmail: account.email,
         }));
@@ -1462,6 +1494,7 @@ async function createTeam(name: string, workspacePath?: string, accountOrgId?: s
     orgId: string;
     name: string;
     creatorMemberId: string;
+    // identity-scope-allow: raw create-team response is branded before projection or return
     teamMemberId?: string;
     owningPersonalOrgId?: string;
   };
@@ -1475,7 +1508,7 @@ async function createTeam(name: string, workspacePath?: string, accountOrgId?: s
         db,
         sourcePersonalOrgId,
         result.orgId,
-        result.teamMemberId,
+        asTeamMemberId(result.teamMemberId),
         result.owningPersonalOrgId,
         'server-create',
       );
@@ -1495,12 +1528,12 @@ async function createTeam(name: string, workspacePath?: string, accountOrgId?: s
   // next roster sync is a no-op instead of a role flip.
   {
     const db = getDatabase() as ProjectionDb | null;
-    const creatorMemberId = result.teamMemberId ?? result.creatorMemberId;
+    const creatorMemberId = asTeamMemberId(result.teamMemberId ?? result.creatorMemberId);
     if (db && creatorMemberId) {
       try {
         await upsertOrg(db, { orgId: result.orgId, name: result.name, flavor: 'team', gitOriginHash: gitRemoteHash ?? null });
         await applyMemberUpserted(db, result.orgId, {
-          userId: creatorMemberId,
+          teamMemberId: creatorMemberId,
           email: creatorEmailForAccount(accountOrgId),
           role: 'admin',
         });
@@ -1539,6 +1572,8 @@ async function createTeam(name: string, workspacePath?: string, accountOrgId?: s
     gitRemoteHash: gitRemoteHash || null,
     createdAt: new Date().toISOString(),
     role: 'admin',
+    teamMemberId: asTeamMemberId(result.teamMemberId ?? result.creatorMemberId),
+    sourcePersonalOrgId: sourcePersonalOrgId ?? undefined,
   };
 }
 
@@ -1934,10 +1969,16 @@ export async function listMembersWithTeamJwt(
     undefined,
     { teamJwt },
   ) as {
-    members: TeamMember[];
+    members: Array<Omit<TeamMember, 'memberId'> & { memberId: string }>;
     callerRole: string;
   };
-  return data;
+  return {
+    callerRole: data.callerRole,
+    members: data.members.map((member) => ({
+      ...member,
+      memberId: asTeamMemberId(member.memberId),
+    })),
+  };
 }
 
 /**
@@ -1998,29 +2039,33 @@ async function clearProjectIdentity(orgId: string): Promise<void> {
 
 /** Grant a member a project-scoped role. Admin only. */
 async function grantProjectAccess(
-  orgId: string, projectId: string, userId: string, projectRole: string,
+  orgId: string, projectId: string, teamMemberId: TeamMemberId, projectRole: string,
 ): Promise<void> {
   await fetchTeamApi(
     `/api/teams/${orgId}/project-access`, 'POST',
-    { projectId, userId, projectRole }, orgId,
+    { projectId, userId: teamMemberId, projectRole }, orgId,
   );
 }
 
 /** Revoke a member's access to a project. Admin only. */
-async function revokeProjectAccess(orgId: string, projectId: string, userId: string): Promise<void> {
-  const qp = `projectId=${encodeURIComponent(projectId)}&userId=${encodeURIComponent(userId)}`;
+async function revokeProjectAccess(orgId: string, projectId: string, teamMemberId: TeamMemberId): Promise<void> {
+  const qp = `projectId=${encodeURIComponent(projectId)}&userId=${encodeURIComponent(teamMemberId)}`;
   await fetchTeamApi(`/api/teams/${orgId}/project-access?${qp}`, 'DELETE', undefined, orgId);
 }
 
 /** List the grants for a project. Admin only. */
 async function listProjectAccess(
   orgId: string, projectId: string,
-): Promise<Array<{ userId: string; projectRole: string }>> {
+): Promise<Array<{ teamMemberId: TeamMemberId; projectRole: string }>> {
   const qp = `projectId=${encodeURIComponent(projectId)}`;
   const data = await fetchTeamApi(
     `/api/teams/${orgId}/project-access?${qp}`, 'GET', undefined, orgId,
+  // identity-scope-allow: raw team API wire field is branded immediately below
   ) as { grants?: Array<{ userId: string; projectRole: string }> };
-  return data.grants || [];
+  return (data.grants ?? []).map((grant) => ({
+    teamMemberId: asTeamMemberId(grant.userId),
+    projectRole: grant.projectRole,
+  }));
 }
 
 /**
@@ -2101,7 +2146,7 @@ export async function syncOrgProjectionFromServer(knownTeams?: TeamDetails[]): P
     if (personalOrgId && personalUserId) {
       orgs.push({
         org: { orgId: personalOrgId, name: 'Personal', flavor: 'personal' },
-        members: [{ userId: personalUserId, email: getUserEmail(), role: 'owner' }],
+        members: [{ personalMemberId: personalUserId, email: getUserEmail(), role: 'owner' }],
       });
     }
 
@@ -2111,7 +2156,7 @@ export async function syncOrgProjectionFromServer(knownTeams?: TeamDetails[]): P
       try {
         const data = await listMembers(team.orgId);
         members = (data.members || []).map((m) => ({
-          userId: m.memberId,
+          teamMemberId: m.memberId,
           email: m.email,
           role: m.role,
         }));
@@ -2211,7 +2256,7 @@ export async function canAccessForCurrentUser(input: CanAccessInput): Promise<{
   if (!db) return { allowed: false, orgRole: null, projectRole: null, reason: 'db-unavailable' };
 
   const signedInAccounts = getAccounts();
-  let viewerUserId = '';
+  let viewer: AccessViewerIdentity | null = null;
 
   // Resolve the org first (from projectId if needed), then resolve its bound
   // signed-in account, preferring the sync account when the org is ambiguous.
@@ -2222,8 +2267,8 @@ export async function canAccessForCurrentUser(input: CanAccessInput): Promise<{
   }
   if (orgId) {
     const personalAccount = signedInAccounts.find((account) => account.personalOrgId === orgId);
-    if (personalAccount) {
-      viewerUserId = personalAccount.personalUserId ?? '';
+    if (personalAccount?.personalUserId) {
+      viewer = { personalMemberId: asPersonalMemberId(personalAccount.personalUserId) };
     } else {
       let binding = await resolveTeamOrgAccountBinding(
         db,
@@ -2249,11 +2294,14 @@ export async function canAccessForCurrentUser(input: CanAccessInput): Promise<{
           if (binding) break;
         }
       }
-      viewerUserId = binding?.teamMemberId ?? '';
+      if (binding) viewer = { teamMemberId: binding.teamMemberId };
     }
   }
 
-  return canAccess(db, viewerUserId, input);
+  if (!viewer) {
+    return { allowed: false, orgRole: null, projectRole: null, reason: 'no-viewer' };
+  }
+  return canAccess(db, viewer, input);
 }
 
 export function registerTeamHandlers(): void {
@@ -2272,9 +2320,9 @@ export function registerTeamHandlers(): void {
     }
   });
 
-  safeHandle('org:grant-project-access', async (_event, orgId: string, projectId: string, userId: string, projectRole: string) => {
+  safeHandle('org:grant-project-access', async (_event, orgId: string, projectId: string, teamMemberId: TeamMemberId, projectRole: string) => {
     try {
-      await grantProjectAccess(orgId, projectId, userId, projectRole);
+      await grantProjectAccess(orgId, projectId, teamMemberId, projectRole);
       // Reflect the grant in the local projection immediately.
       await syncOrgProjectionFromServer();
       return { success: true };
@@ -2283,9 +2331,9 @@ export function registerTeamHandlers(): void {
     }
   });
 
-  safeHandle('org:revoke-project-access', async (_event, orgId: string, projectId: string, userId: string) => {
+  safeHandle('org:revoke-project-access', async (_event, orgId: string, projectId: string, teamMemberId: TeamMemberId) => {
     try {
-      await revokeProjectAccess(orgId, projectId, userId);
+      await revokeProjectAccess(orgId, projectId, teamMemberId);
       await syncOrgProjectionFromServer();
       return { success: true };
     } catch (error) {
@@ -2305,14 +2353,14 @@ export function registerTeamHandlers(): void {
   // Epic H1 live write-through: the renderer's TeamSync config forwards DO
   // broadcasts here so the local projection (org_members / project_access)
   // stays current without a full re-sync. Each is targeted + idempotent.
-  safeHandle('org:apply-project-access', async (_event, projectId: string, userId: string, projectRole: string | null) => {
+  safeHandle('org:apply-project-access', async (_event, projectId: string, teamMemberId: TeamMemberId, projectRole: string | null) => {
     try {
       const db = getDatabase() as ProjectionDb | null;
       if (!db) return { success: false, error: 'db-unavailable' };
       if (projectRole) {
-        await applyProjectGrant(db, projectId, userId, projectRole as ProjectRole);
+        await applyProjectGrant(db, projectId, teamMemberId, projectRole as ProjectRole);
       } else {
-        await applyProjectRevoke(db, projectId, userId);
+        await applyProjectRevoke(db, projectId, teamMemberId);
       }
       return { success: true };
     } catch (error) {
@@ -2320,33 +2368,33 @@ export function registerTeamHandlers(): void {
     }
   });
 
-  safeHandle('org:apply-member-upserted', async (_event, orgId: string, userId: string, email: string | null, role: string) => {
+  safeHandle('org:apply-member-upserted', async (_event, orgId: string, teamMemberId: TeamMemberId, email: string | null, role: string) => {
     try {
       const db = getDatabase() as ProjectionDb | null;
       if (!db) return { success: false, error: 'db-unavailable' };
-      await applyMemberUpserted(db, orgId, { userId, email, role });
+      await applyMemberUpserted(db, orgId, { teamMemberId, email, role });
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   });
 
-  safeHandle('org:apply-member-role-changed', async (_event, orgId: string, userId: string, role: string) => {
+  safeHandle('org:apply-member-role-changed', async (_event, orgId: string, teamMemberId: TeamMemberId, role: string) => {
     try {
       const db = getDatabase() as ProjectionDb | null;
       if (!db) return { success: false, error: 'db-unavailable' };
-      await applyMemberRoleChanged(db, orgId, userId, role);
+      await applyMemberRoleChanged(db, orgId, teamMemberId, role);
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   });
 
-  safeHandle('org:apply-member-removed', async (_event, orgId: string, userId: string) => {
+  safeHandle('org:apply-member-removed', async (_event, orgId: string, teamMemberId: TeamMemberId) => {
     try {
       const db = getDatabase() as ProjectionDb | null;
       if (!db) return { success: false, error: 'db-unavailable' };
-      await applyMemberRemoved(db, orgId, userId);
+      await applyMemberRemoved(db, orgId, teamMemberId);
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };

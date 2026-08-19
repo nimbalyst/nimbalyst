@@ -158,7 +158,7 @@ export async function createDefaultResource(
       serverUrl: config.serverUrl,
       getJwt: config.getJwt,
       orgId: config.orgId,
-      userId: config.userId,
+      teamMemberId: config.teamMemberId,
       documentId: config.documentId,
       createWebSocket: config.createWebSocket,
       initialPendingUpdateBase64: config.pendingUpdateBase64,
@@ -178,8 +178,8 @@ export async function createDefaultResource(
       syncProvider,
       yDoc: syncProvider.getYDoc(),
       user: {
-        id: config.userId,
-        name: config.userName ?? config.userId,
+        id: config.teamMemberId,
+        name: config.userName ?? config.teamMemberId,
         color: '#3A8FD6',
       },
     });

@@ -19,15 +19,25 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
-import type { ColumnFilter, FilterScalar } from '../types';
+import type { ColumnFilter, ColumnFormat, DateFilterOperator, FilterScalar } from '../types';
 import { columnIndexToLetter } from '../utils/csvParser';
+import { isTemporalColumnType, parseDateTime } from '../utils/formatters';
 
 type ConditionOperator =
   | { kind: 'text'; operator: 'contains' | 'equals' | 'startsWith'; label: string }
   | { kind: 'number'; operator: 'equals' | 'notEquals' | 'greaterThan' | 'greaterThanOrEqual' | 'lessThan' | 'lessThanOrEqual'; label: string }
+  | { kind: 'date'; operator: DateFilterOperator; label: string }
   | { kind: 'blank'; operator: 'isBlank' | 'isNotBlank'; label: string };
 
-const CONDITIONS: readonly ConditionOperator[] = [
+/** Offered only on date/datetime/time columns, where they are the useful ones. */
+const DATE_CONDITIONS: readonly ConditionOperator[] = [
+  { kind: 'date', operator: 'on', label: 'Date is' },
+  { kind: 'date', operator: 'before', label: 'Date is before' },
+  { kind: 'date', operator: 'after', label: 'Date is after' },
+  { kind: 'date', operator: 'between', label: 'Date is between' },
+];
+
+const BASE_CONDITIONS: readonly ConditionOperator[] = [
   { kind: 'text', operator: 'contains', label: 'Text contains' },
   { kind: 'text', operator: 'equals', label: 'Text is exactly' },
   { kind: 'text', operator: 'startsWith', label: 'Text starts with' },
@@ -40,6 +50,19 @@ const CONDITIONS: readonly ConditionOperator[] = [
   { kind: 'blank', operator: 'isBlank', label: 'Is empty' },
   { kind: 'blank', operator: 'isNotBlank', label: 'Is not empty' },
 ];
+
+function conditionsFor(format: ColumnFormat | undefined): readonly ConditionOperator[] {
+  return format && isTemporalColumnType(format.type)
+    ? [...DATE_CONDITIONS, ...BASE_CONDITIONS]
+    : BASE_CONDITIONS;
+}
+
+/** `YYYY-MM-DD` for an `<input type="date">`, from epoch millis. */
+function toDateInputValue(epochMillis: number): string {
+  const date = new Date(epochMillis);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
 
 const BUTTON_CLASS =
   'px-2 py-1 text-[12px] bg-transparent border border-nim rounded cursor-pointer text-nim-muted transition-colors duration-150 hover:enabled:bg-nim-hover hover:enabled:text-nim disabled:opacity-40 disabled:cursor-not-allowed';
@@ -55,9 +78,12 @@ function scalarLabel(value: FilterScalar): string {
   return value === null || value === '' ? '(Blank)' : String(value);
 }
 
-function conditionIndexOf(filter: ColumnFilter | undefined): number {
+function conditionIndexOf(
+  conditions: readonly ConditionOperator[],
+  filter: ColumnFilter | undefined,
+): number {
   if (!filter || filter.kind === 'values') return 0;
-  return Math.max(0, CONDITIONS.findIndex((c) => c.kind === filter.kind && c.operator === filter.operator));
+  return Math.max(0, conditions.findIndex((c) => c.kind === filter.kind && c.operator === filter.operator));
 }
 
 export interface ColumnFilterDropdownProps {
@@ -66,6 +92,8 @@ export interface ColumnFilterDropdownProps {
   /** Every distinct value in the column, ignoring this column's own filter. */
   distinctValues: readonly FilterScalar[];
   currentFilter: ColumnFilter | undefined;
+  /** The column's format, which decides whether date conditions are offered. */
+  columnFormat?: ColumnFormat;
   onApply: (filter: ColumnFilter | null) => void;
   onClose: () => void;
 }
@@ -75,16 +103,22 @@ export function ColumnFilterDropdown({
   anchor,
   distinctValues,
   currentFilter,
+  columnFormat,
   onApply,
   onClose,
 }: ColumnFilterDropdownProps) {
+  const conditions = useMemo(() => conditionsFor(columnFormat), [columnFormat]);
   const [mode, setMode] = useState<'values' | 'condition'>(
     currentFilter && currentFilter.kind !== 'values' ? 'condition' : 'values',
   );
-  const [conditionIndex, setConditionIndex] = useState(() => conditionIndexOf(currentFilter));
-  const [conditionValue, setConditionValue] = useState(() =>
-    currentFilter && currentFilter.kind !== 'values' && currentFilter.kind !== 'blank'
-      ? String(currentFilter.value)
+  const [conditionIndex, setConditionIndex] = useState(() => conditionIndexOf(conditions, currentFilter));
+  const [conditionValue, setConditionValue] = useState(() => {
+    if (!currentFilter || currentFilter.kind === 'values' || currentFilter.kind === 'blank') return '';
+    return currentFilter.kind === 'date' ? toDateInputValue(currentFilter.value) : String(currentFilter.value);
+  });
+  const [conditionValueEnd, setConditionValueEnd] = useState(() =>
+    currentFilter?.kind === 'date' && currentFilter.valueEnd !== undefined
+      ? toDateInputValue(currentFilter.valueEnd)
       : '',
   );
   const [valueSearch, setValueSearch] = useState('');
@@ -120,11 +154,23 @@ export function ColumnFilterDropdown({
     return distinctValues.filter((value) => scalarLabel(value).toLocaleLowerCase().includes(query));
   }, [distinctValues, valueSearch]);
 
-  const condition = CONDITIONS[conditionIndex];
+  const condition = conditions[conditionIndex] ?? conditions[0];
 
   const buildFilter = (): ColumnFilter | null => {
     if (mode === 'condition') {
       if (condition.kind === 'blank') return { kind: 'blank', operator: condition.operator };
+      if (condition.kind === 'date') {
+        const start = parseDateTime(conditionValue.trim());
+        if (start === null) return null;
+        if (condition.operator === 'between') {
+          const end = parseDateTime(conditionValueEnd.trim());
+          if (end === null) return null;
+          // A bare end date means "through the end of that day".
+          end.setHours(23, 59, 59, 999);
+          return { kind: 'date', operator: 'between', value: start.getTime(), valueEnd: end.getTime() };
+        }
+        return { kind: 'date', operator: condition.operator, value: start.getTime() };
+      }
       if (condition.kind === 'number') {
         const value = Number(conditionValue.trim());
         return Number.isFinite(value) && conditionValue.trim() !== ''
@@ -190,11 +236,29 @@ export function ColumnFilterDropdown({
               value={conditionIndex}
               onChange={(event) => setConditionIndex(Number(event.target.value))}
             >
-              {CONDITIONS.map((entry, index) => (
+              {conditions.map((entry, index) => (
                 <option key={entry.label} value={index}>{entry.label}</option>
               ))}
             </select>
-            {condition.kind !== 'blank' && (
+            {condition.kind === 'date' ? (
+              <>
+                <input
+                  className={FIELD_CLASS}
+                  type="date"
+                  value={conditionValue}
+                  onChange={(event) => setConditionValue(event.target.value)}
+                  autoFocus
+                />
+                {condition.operator === 'between' && (
+                  <input
+                    className={FIELD_CLASS}
+                    type="date"
+                    value={conditionValueEnd}
+                    onChange={(event) => setConditionValueEnd(event.target.value)}
+                  />
+                )}
+              </>
+            ) : condition.kind !== 'blank' && (
               <input
                 className={FIELD_CLASS}
                 value={conditionValue}

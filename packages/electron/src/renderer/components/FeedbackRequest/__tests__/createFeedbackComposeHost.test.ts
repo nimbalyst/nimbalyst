@@ -133,7 +133,7 @@ describe('createFeedbackComposeHost', () => {
     });
     // Both subjects travel with the request; the author is the drafting
     // session, with the org-scoped member id left for main to stamp.
-    expect(request.request.subjects.map((ref) => ref.sourceId)).toEqual([
+    expect(request.request.subjects.map((subject) => subject.ref.sourceId)).toEqual([
       'item-shared',
       'item-unshared',
     ]);
@@ -158,9 +158,13 @@ describe('createFeedbackComposeHost', () => {
 
     expect(result.success).toBe(true);
     // A path on the author's disk means nothing to the recipient, so the
-    // request must carry what the publish produced.
+    // request must carry what the publish produced -- and the author's label
+    // has to survive that swap, because the published ref is an opaque
+    // document id the recipient cannot render.
     const request = invoke.mock.calls[0][1] as FeedbackRequestCreateIpcRequest;
-    expect(request.request.subjects).toEqual([published]);
+    expect(request.request.subjects).toEqual([
+      { ref: published, label: 'direction-a.mockup.html' },
+    ]);
   });
 
   it('refuses a publish ref that is not one of the request subjects, before publishing anything', async () => {

@@ -62,7 +62,7 @@ function renderDocsUI(children: React.ReactNode) {
     scope: {
       scopeKey: 'web-console:org-folder-test:project-primary',
       orgId: 'org-folder-test',
-      indexConfig: { serverUrl: 'ws://sync.test', teamProjectId: 'project-primary', userId: 'member-self' },
+      indexConfig: { serverUrl: 'ws://sync.test', teamProjectId: 'project-primary', teamMemberId: 'member-self' },
     },
     host,
     uiCapabilities: { personalState: false, readReceipts: false },

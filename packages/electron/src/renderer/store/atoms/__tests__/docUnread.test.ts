@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { createStore } from 'jotai';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import {
   applyDocReceiptAtom,
   docReceiptsAtom,
@@ -18,7 +19,7 @@ const TEAMMATE = 'member-teammate';
 const SCOPE: CollabScope = {
   scopeKey: 'doc-unread-test',
   orgId: ORG,
-  indexConfig: { serverUrl: 'ws://sync.test', userId: ME },
+  indexConfig: { serverUrl: 'ws://sync.test', teamMemberId: asTeamMemberId(ME) },
 };
 
 function createScopedStore() {

@@ -25,6 +25,7 @@ import type {
   CommentRef,
   InboxDelivery,
 } from '@nimbalyst/collab-protocol';
+import type { TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 /** Delivery reason, in the precedence order the router applies. */
 export type InboxDeliveryReason = InboxDelivery['reason'];
@@ -82,7 +83,8 @@ export type InboxSubscriptionState = 'following' | 'muted';
 export type InboxAgentDispatchState = 'pending' | 'dispatched';
 
 export interface HydratedInboxDelivery
-  extends Omit<InboxDelivery, 'source' | 'actor' | 'preview'> {
+  extends Omit<InboxDelivery, 'source' | 'actor' | 'preview' | 'recipientUserId'> {
+  teamMemberId: TeamMemberId;
   orgName: string;
   projectId?: string;
   projectName?: string;
@@ -135,7 +137,7 @@ export interface InboxActorView {
 export interface InboxRowView {
   id: string;
   /** Current team member id for the row's organization. */
-  viewerUserId: string;
+  teamMemberId: TeamMemberId;
   reason: InboxDeliveryReason;
   reasonLabel: string;
   availability: InboxAvailability;

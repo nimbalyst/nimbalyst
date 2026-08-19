@@ -75,6 +75,8 @@ export type {
   TextFormatType,
 } from './types';
 export {
+  asTeamJwt,
+  asTeamMemberId,
   asTeamDocumentId,
   asTeamOrgId,
   asTeamProjectId,

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '../../auth/jwtScopes';
 import { DocumentSyncProvider } from '../DocumentSync';
 import type { DocumentSyncStatus } from '../documentSyncTypes';
 
@@ -14,9 +15,9 @@ async function createDocumentKey(): Promise<CryptoKey> {
 function createProvider(documentKey: CryptoKey): DocumentSyncProvider {
   return new DocumentSyncProvider({
     serverUrl: 'ws://example.test',
-    getJwt: async () => 'token',
+    getJwt: async () => asTeamJwt('token'),
     orgId: 'org-1',
-    userId: 'user-1',
+    teamMemberId: asTeamMemberId('user-1'),
     documentId: 'doc-1',
   });
 }
@@ -68,9 +69,9 @@ describe('DocumentSyncProvider write rejection without a local replica', () => {
     const statuses: DocumentSyncStatus[] = [];
     const provider = new DocumentSyncProvider({
       serverUrl: 'ws://example.test',
-      getJwt: async () => 'token',
+      getJwt: async () => asTeamJwt('token'),
       orgId: 'org-1',
-      userId: 'user-1',
+      teamMemberId: asTeamMemberId('user-1'),
       documentId: 'doc-1',
       onStatusChange: (status) => statuses.push(status),
     });
@@ -96,9 +97,9 @@ describe('DocumentSyncProvider write rejection without a local replica', () => {
   it('leaves a retryable rejection queued for another attempt', async () => {
     const provider = new DocumentSyncProvider({
       serverUrl: 'ws://example.test',
-      getJwt: async () => 'token',
+      getJwt: async () => asTeamJwt('token'),
       orgId: 'org-1',
-      userId: 'user-1',
+      teamMemberId: asTeamMemberId('user-1'),
       documentId: 'doc-1',
     });
     const internals = provider as any;

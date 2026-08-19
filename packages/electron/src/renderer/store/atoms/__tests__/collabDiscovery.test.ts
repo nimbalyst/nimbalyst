@@ -12,6 +12,7 @@ vi.mock('../../../services/RendererReadReceiptService', () => ({
 }));
 
 import { store } from '@nimbalyst/runtime/store';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import {
   collabFavoritesAtom,
   markAllSharedDocsViewed,
@@ -51,7 +52,7 @@ describe('markAllSharedDocsViewed', () => {
     const scope: CollabScope = {
       scopeKey,
       orgId: `org-${wsSeq}`,
-      indexConfig: { serverUrl: 'wss://example.test', userId: `user-${wsSeq}` },
+      indexConfig: { serverUrl: 'wss://example.test', teamMemberId: asTeamMemberId(`user-${wsSeq}`) },
     };
     store.set(activeCollabScopeAtom, scope);
     store.set(docReceiptsAtom, new Map());

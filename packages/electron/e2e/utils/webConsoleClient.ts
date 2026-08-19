@@ -89,7 +89,10 @@ export class WebConsoleClient {
   /** A fresh browser context, so two console clients are separate identities. */
   async openPage(target: WebConsoleDocumentTarget): Promise<Page> {
     if (!this.browser) throw new Error('The web console client is not started');
-    const context = await this.browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const context = await this.browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      permissions: ['clipboard-read', 'clipboard-write'],
+    });
     const page = await context.newPage();
     // Collected rather than asserted here: the harness route's Stytch SDK call
     // always 400s on an unregistered origin, and a spec that failed on any

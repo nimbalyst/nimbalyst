@@ -122,7 +122,7 @@ function mapDelivery(
   const preview = delivery.preview;
   return {
     id: delivery.id,
-    recipientUserId: delivery.recipientUserId,
+    teamMemberId: delivery.teamMemberId,
     orgId: delivery.orgId,
     orgName: delivery.orgName,
     source: {

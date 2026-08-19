@@ -78,6 +78,7 @@ vi.mock('../CollabConversionClient', () => ({
 
 vi.mock('../TeamService', () => ({
   findTeamForWorkspace: vi.fn(async () => ({ orgId: 'org-1', teamProjectId: 'proj-1' })),
+  getOrgScopedIdentity: vi.fn(async () => ({ jwt: 'jwt', teamMemberId: 'member-1' })),
   getOrgScopedJwt: vi.fn(async () => 'jwt'),
 }));
 

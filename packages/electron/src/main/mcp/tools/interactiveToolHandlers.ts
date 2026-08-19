@@ -1405,7 +1405,7 @@ export async function handleRequestUserInput(
   if (fields.length === 0) {
     return {
       content: [
-        { type: "text", text: "Error: at least one field is required in RequestUserInput" },
+        { type: "text", text: "Error: at least one field is required in PromptForUserInput" },
       ],
       isError: true,
     };
@@ -1490,7 +1490,7 @@ export async function handleRequestUserInput(
   const fallbackResponseChannel = getRequestUserInputFallbackResponseChannel(sessionKey);
 
   console.log(
-    `[MCP Server] RequestUserInput waiting for response: promptId=${promptId}, sessionId=${sessionId}`,
+    `[MCP Server] PromptForUserInput waiting for response: promptId=${promptId}, sessionId=${sessionId}`,
   );
 
   // Update session status so all windows show the pending indicator.
@@ -1533,7 +1533,7 @@ export async function handleRequestUserInput(
       }
     }
   } catch (err) {
-    console.warn("[MCP Server] RequestUserInput: failed to notify renderer:", err);
+    console.warn("[MCP Server] PromptForUserInput: failed to notify renderer:", err);
   }
 
   // Show OS notification if the app is backgrounded.
@@ -1574,7 +1574,7 @@ export async function handleRequestUserInput(
       if (sessionId) clearLiveInteractivePrompt(sessionId);
 
       console.log(
-        `[MCP Server] RequestUserInput settled via ${source}: promptId=${promptId}, cancelled=${result?.cancelled}`,
+        `[MCP Server] PromptForUserInput settled via ${source}: promptId=${promptId}, cancelled=${result?.cancelled}`,
       );
 
       if (sessionId) {
@@ -1648,7 +1648,7 @@ export async function handleRequestUserInput(
             }),
           });
         } catch (err) {
-          console.warn("[MCP Server] Failed to persist synthetic RequestUserInput tool_result:", err);
+          console.warn("[MCP Server] Failed to persist synthetic PromptForUserInput tool_result:", err);
         }
       }
 

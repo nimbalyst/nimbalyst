@@ -49,6 +49,7 @@ const documentOpenSource = enumRule(
   'agent_tool',
   'share_to_team',
   'embedded_document',
+  'feedback_request',
 );
 const teamErrorCategory = enumRule(
   'not_signed_in',
@@ -286,7 +287,7 @@ export const TEAM_ANALYTICS_EVENT_SCHEMAS = {
   collab_operation_failed: {
     surface,
     operation: enumRule('create_document', 'open_document', 'edit_document', 'share_to_team', 'folder_action', 'document_action', 'search'),
-    source: enumRule('new_document', 'share_to_team', 'embedded_document', 'sidebar', 'home', 'quick_open', 'deep_link', 'restart_restore', 'history', 'agent_tool', 'unknown'),
+    source: enumRule('new_document', 'share_to_team', 'embedded_document', 'feedback_request', 'sidebar', 'home', 'quick_open', 'deep_link', 'restart_restore', 'history', 'agent_tool', 'unknown'),
     actorType,
     documentType: categoryRule,
     errorCategory: collabErrorCategory,

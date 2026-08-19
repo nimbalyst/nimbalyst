@@ -8,7 +8,7 @@
  * (ProjectFileSyncService) uses this to push/receive file content.
  *
  * Architecture:
- *   - Single WebSocket per project: org:{orgId}:user:{userId}:project:{projectId}
+ *   - Single WebSocket per project: org:{orgId}:user:{personalMemberId}:project:{projectId}
  *   - Sends projectSyncRequest on connect with manifest of local file state
  *   - Receives projectSyncResponse with deltas (updated, new, deleted files)
  *   - Handles realtime broadcasts (fileContentBroadcast, fileDeleteBroadcast, etc.)
@@ -32,13 +32,14 @@ import type {
   FileDeleteBroadcastMessage,
 } from '@nimbalyst/collab-protocol';
 import { appendSyncClientParams } from './syncClientInfo';
+import type { PersonalJwt, PersonalMemberId } from '../auth/jwtScopes';
 
 
 export interface ProjectSyncConfig {
   serverUrl: string;
-  getJwt: () => Promise<string>;
+  getJwt: () => Promise<PersonalJwt>;
   orgId: string;
-  userId: string;
+  personalMemberId: PersonalMemberId;
   encryptionKey: CryptoKey;
 }
 
@@ -139,7 +140,7 @@ export class ProjectSyncProvider {
 
     try {
       const jwt = await this.config.getJwt();
-      const roomId = `org:${this.config.orgId}:user:${this.config.userId}:project:${projectId}`;
+      const roomId = `org:${this.config.orgId}:user:${this.config.personalMemberId}:project:${projectId}`;
       const wsBase = this.config.serverUrl
         .replace('https://', 'wss://')
         .replace('http://', 'ws://')

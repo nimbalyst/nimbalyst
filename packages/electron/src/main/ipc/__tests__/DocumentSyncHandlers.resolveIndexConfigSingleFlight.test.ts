@@ -78,6 +78,7 @@ vi.mock('../../services/TeamService', () => ({
 vi.mock('../../services/jwtOrg', () => ({
   getOrgIdFromJwt: vi.fn(),
   getJwtExp: vi.fn(() => Date.now() + 60_000),
+  getSubFromJwt: vi.fn(() => 'team-member-1'),
 }));
 
 vi.mock('../../utils/store', () => ({
@@ -116,6 +117,7 @@ import { getOrgScopedJwt } from '../../services/TeamService';
 import { getPersonalSessionJwt, refreshPersonalSessionDetailed } from '../../services/StytchAuthService';
 import { getJwtExp } from '../../services/jwtOrg';
 
+// @vitest-environment node
 /**
  * This handler used to ignore the refresh result entirely and hand back
  * whatever JWT happened to be cached -- including an expired one, after either
@@ -232,13 +234,32 @@ describe('document-sync:open performs no client-side key work (NIM-2036)', () =>
     expect(registerCollabAssetDocumentMock).toHaveBeenCalledTimes(2);
   });
 
+  it('routes the shared room with the team JWT member id, not the ambient personal member id', async () => {
+    const result = await handlers.get('document-sync:open')!(
+      { sender: { id: 3027, isDestroyed: () => false, once: vi.fn() } },
+      { workspacePath: '/workspace/one', documentId: 'doc-team', documentType: 'markdown' },
+    );
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      config: expect.objectContaining({
+        accountId: 'account-a',
+        teamMemberId: 'team-member-1',
+      }),
+    }));
+    expect(result.config).not.toHaveProperty('userId');
+  });
+
   it('resolves the index config without any key probe', async () => {
     const result = await handlers.get('document-sync:resolve-index-config')!(
       null,
       { workspacePath: '/workspace/one' },
     );
 
-    expect(result).toEqual(expect.objectContaining({ success: true }));
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      config: expect.objectContaining({ teamMemberId: 'team-member-1' }),
+    }));
   });
 });
 

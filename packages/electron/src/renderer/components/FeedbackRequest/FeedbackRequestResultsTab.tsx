@@ -14,6 +14,7 @@ import {
   createFeedbackResultsHost,
   startFeedbackRequestSync,
 } from './createFeedbackResultsHost';
+import { useFeedbackArtifactActionResolver } from './feedbackArtifactActions';
 import { parseFeedbackRequestTabUri } from './feedbackRequestTab';
 
 export interface FeedbackRequestResultsTabProps {
@@ -44,6 +45,7 @@ export const FeedbackRequestResultsTab: React.FC<FeedbackRequestResultsTabProps>
     () => (target ? createFeedbackResultsHost({ target }) : undefined),
     [target],
   );
+  const resolveArtifactAction = useFeedbackArtifactActionResolver(workspacePath);
 
   if (!target) {
     return (
@@ -58,7 +60,11 @@ export const FeedbackRequestResultsTab: React.FC<FeedbackRequestResultsTabProps>
 
   return (
     <div className="feedback-request-results-tab h-full overflow-auto p-4">
-      <FeedbackRequestResults target={target} host={host} />
+      <FeedbackRequestResults
+        target={target}
+        host={host}
+        resolveArtifactAction={resolveArtifactAction}
+      />
     </div>
   );
 };

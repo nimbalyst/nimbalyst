@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const updateMetadata = vi.fn();
+const getSession = vi.fn();
+const requestMobilePush = vi.fn();
 const trayManager = { onPromptCreated: vi.fn(), onPromptResolved: vi.fn() };
 
 vi.mock('@nimbalyst/runtime', () => ({
   AISessionsRepository: {
     updateMetadata: (...args: unknown[]) => updateMetadata(...args),
+    get: (...args: unknown[]) => getSession(...args),
   },
 }));
 vi.mock('../../SyncManager', () => ({ getSyncProvider: () => null }));
+vi.mock('../mobilePushRequest', () => ({
+  requestMobilePush: (...args: unknown[]) => requestMobilePush(...args),
+}));
 vi.mock('../../../tray/TrayManager', () => ({
   TrayManager: { getInstance: () => trayManager },
 }));
@@ -99,5 +105,65 @@ describe('tray notification is part of persisting the bit', () => {
     await setSessionPendingPrompt('s1', true);
 
     expect(trayManager.onPromptCreated).toHaveBeenCalledWith('s1');
+  });
+});
+
+/**
+ * #1268: a session blocked on a human is the case the reporter could not
+ * express -- the desktop used to decide locally whether the user was reachable,
+ * and suppressed the alert exactly when they were. The decision now belongs to
+ * the server, so this path must send `force` unconditionally.
+ */
+describe('blocked session pages the phone', () => {
+  beforeEach(() => {
+    resetPendingPromptTracking();
+    updateMetadata.mockReset().mockResolvedValue(undefined);
+    getSession.mockReset().mockResolvedValue({ title: 'Fix the parser' });
+    requestMobilePush.mockReset().mockResolvedValue({
+      accepted: true,
+      attemptedCount: 1,
+      deliveredCount: 1,
+      skipped: [],
+    });
+    trayManager.onPromptCreated.mockReset();
+    trayManager.onPromptResolved.mockReset();
+  });
+
+  it('requests a forced push when a prompt opens', async () => {
+    await setSessionPendingPrompt('s1', true);
+
+    await vi.waitFor(() => expect(requestMobilePush).toHaveBeenCalledTimes(1));
+    expect(requestMobilePush).toHaveBeenCalledWith(
+      's1',
+      'Fix the parser',
+      'Waiting for your response',
+      { force: true, reason: 'awaiting_human' },
+    );
+  });
+
+  it('does not push again while the same prompt is still open', async () => {
+    await setSessionPendingPrompt('s1', true);
+    await vi.waitFor(() => expect(requestMobilePush).toHaveBeenCalledTimes(1));
+
+    await setSessionPendingPrompt('s1', true);
+    await setSessionPendingPrompt('s1', true);
+
+    expect(requestMobilePush).toHaveBeenCalledTimes(1);
+  });
+
+  it('pushes again once the prompt has been answered and a new one opens', async () => {
+    await setSessionPendingPrompt('s1', true);
+    await vi.waitFor(() => expect(requestMobilePush).toHaveBeenCalledTimes(1));
+
+    await setSessionPendingPrompt('s1', false);
+    await setSessionPendingPrompt('s1', true);
+
+    await vi.waitFor(() => expect(requestMobilePush).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not push when a prompt resolves', async () => {
+    await setSessionPendingPrompt('s1', false);
+
+    expect(requestMobilePush).not.toHaveBeenCalled();
   });
 });

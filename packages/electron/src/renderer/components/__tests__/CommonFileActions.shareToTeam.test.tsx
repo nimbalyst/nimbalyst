@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
     scope: {
       scopeKey: '/workspace',
       orgId: 'team-1',
-      indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+      indexConfig: { serverUrl: 'ws://sync', teamMemberId: 'user-1' },
     },
     retryable: false,
   })),

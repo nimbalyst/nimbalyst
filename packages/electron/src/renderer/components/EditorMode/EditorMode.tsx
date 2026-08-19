@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 import { useSetAtom, useAtomValue, useAtom } from 'jotai';
 import type { ConfigTheme } from '@nimbalyst/runtime';
+import { asTeamJwt } from '@nimbalyst/runtime/auth/jwtScopes';
 import { useTabsActions, useTabNavigationShortcuts, type TabData } from '../../contexts/TabsContext';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
@@ -454,7 +455,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       documentType?: string;
       serverUrl: string;
       orgId: string;
-      userId: string;
+      teamMemberId: string;
       /** Optional query-string suffix appended to the WS URL (no leading ?). */
       urlExtraQuery?: string;
     }) => {
@@ -466,7 +467,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         {
           serverUrl: params.serverUrl,
           orgId: params.orgId,
-          userId: params.userId,
+          teamMemberId: params.teamMemberId,
           documentId: params.documentId,
           title: params.title ?? params.documentId,
         },
@@ -491,21 +492,21 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         scope: {
           scopeKey: workspacePath,
           orgId: cfg.orgId,
-          indexConfig: { serverUrl: cfg.serverUrl, userId: cfg.userId },
+          indexConfig: { serverUrl: cfg.serverUrl, teamMemberId: cfg.teamMemberId },
         },
         orgId: cfg.orgId,
         documentId: cfg.documentId,
         title: cfg.title,
         documentType: params.documentType,
         serverUrl: cfg.serverUrl,
-        accountId: cfg.accountId ?? cfg.userId,
-        userId: cfg.userId,
+        accountId: cfg.accountId ?? cfg.teamMemberId,
+        teamMemberId: cfg.teamMemberId,
         userName: cfg.userName ?? 'Test User',
         userEmail: cfg.userEmail ?? 'test@test.com',
         initialContent: params.initialContent,
         urlExtraQuery: params.urlExtraQuery,
         createWebSocket,
-        getJwt: async () => 'test-jwt',
+        getJwt: async () => asTeamJwt('test-jwt'),
         addTab: tabsActions.addTab,
       });
       console.log('[openCollabDocTest] Opened tab:', tabId);
@@ -522,7 +523,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       documentType?: string;
       serverUrl: string;
       orgId: string;
-      userId: string;
+      teamMemberId: string;
       urlExtraQuery?: string;
     }) => {
       if (!workspacePath) {
@@ -533,7 +534,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         {
           serverUrl: params.serverUrl,
           orgId: params.orgId,
-          userId: params.userId,
+          teamMemberId: params.teamMemberId,
           documentId: params.documentId,
           title: params.title ?? params.documentId,
         },
@@ -557,20 +558,20 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         scope: {
           scopeKey: workspacePath,
           orgId: cfg.orgId,
-          indexConfig: { serverUrl: cfg.serverUrl, userId: cfg.userId },
+          indexConfig: { serverUrl: cfg.serverUrl, teamMemberId: cfg.teamMemberId },
         },
         orgId: cfg.orgId,
         documentId: cfg.documentId,
         title: cfg.title,
         documentType: params.documentType,
         serverUrl: cfg.serverUrl,
-        accountId: cfg.accountId ?? cfg.userId,
-        userId: cfg.userId,
+        accountId: cfg.accountId ?? cfg.teamMemberId,
+        teamMemberId: cfg.teamMemberId,
         userName: cfg.userName ?? 'Test User',
         userEmail: cfg.userEmail ?? 'test@test.com',
         urlExtraQuery: params.urlExtraQuery,
         createWebSocket,
-        getJwt: async () => 'test-jwt',
+        getJwt: async () => asTeamJwt('test-jwt'),
       });
     };
 

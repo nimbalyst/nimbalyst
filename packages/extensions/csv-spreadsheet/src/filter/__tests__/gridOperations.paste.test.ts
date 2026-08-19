@@ -26,6 +26,7 @@ describe('filtered paste', () => {
       getDelimiter: () => ',',
       getColumnFormats: () => ({}),
       getColumnWidths: () => ({}),
+      getCellStyles: () => ({}),
       getFrozenColumnCount: () => 0,
       onDirty: () => undefined,
       getUndoPlugin: () => null,

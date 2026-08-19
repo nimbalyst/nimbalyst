@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId, type TeamJwt } from '../../auth/jwtScopes';
 import { DocumentSyncProvider } from '../DocumentSync';
 import type { DocumentSyncStatus } from '../documentSyncTypes';
 
@@ -23,11 +24,11 @@ describe('DocumentSync connect() retries a failed token exchange', () => {
     vi.useRealTimers();
   });
 
-  function createProvider(getJwt: () => Promise<string>, statuses: DocumentSyncStatus[]) {
+  function createProvider(getJwt: () => Promise<TeamJwt>, statuses: DocumentSyncStatus[]) {
     return new DocumentSyncProvider({
       serverUrl: 'wss://sync.test',
       orgId: 'org-1',
-      userId: 'member-1',
+      teamMemberId: asTeamMemberId('member-1'),
       documentId: 'doc-1',
       getJwt,
       onStatusChange: status => statuses.push(status),
@@ -44,13 +45,13 @@ describe('DocumentSync connect() retries a failed token exchange', () => {
     const getJwt = vi.fn(async () => {
       attempts += 1;
       if (attempts === 1) throw new Error('session service unavailable');
-      return 'jwt-token';
+      return asTeamJwt('jwt-token');
     });
 
     provider = new DocumentSyncProvider({
       serverUrl: 'wss://sync.test',
       orgId: 'org-1',
-      userId: 'member-1',
+      teamMemberId: asTeamMemberId('member-1'),
       documentId: 'doc-1',
       getJwt,
       onStatusChange: status => statuses.push(status),

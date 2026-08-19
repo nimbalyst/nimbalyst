@@ -21,6 +21,7 @@
  */
 
 import type {
+  FeedbackArtifact,
   FeedbackAsk,
   FeedbackAskAssignment,
   FeedbackRequestRecipient,
@@ -344,7 +345,12 @@ export const FEEDBACK_COMPOSE_BLOCKED_MESSAGES: Record<FeedbackComposeBlockedRea
 export interface FeedbackComposeSendPayload {
   draftId: string;
   orgId: string;
-  subjects: ResourceRef[];
+  /**
+   * Carries the author's label, not just the ref. Publishing rewrites a `file`
+   * ref to the created `document`, so a recipient handed only refs would have
+   * nothing to render but an opaque document id.
+   */
+  subjects: FeedbackArtifact[];
   asks: FeedbackAsk[];
   recipients: FeedbackRequestRecipient[];
   assignments: FeedbackAskAssignment[];
@@ -367,7 +373,11 @@ export function feedbackComposeSendPayload(
   return {
     draftId: draft.draftId,
     orgId: draft.orgId,
-    subjects: draft.subjects.map((subject) => subject.ref),
+    subjects: draft.subjects.map((subject) => ({
+      ref: subject.ref,
+      label: subject.label,
+      ...(subject.context ? { context: subject.context } : {}),
+    })),
     asks: draft.asks,
     recipients: draft.recipients,
     assignments: draft.assignments,

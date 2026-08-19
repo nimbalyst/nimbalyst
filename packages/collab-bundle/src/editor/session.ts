@@ -189,7 +189,7 @@ export function createCollabDocumentSession(
       serverUrl: source.serverUrl,
       orgId: source.room.orgId,
       documentId: source.room.documentId,
-      userId: source.auth.memberId,
+      teamMemberId: source.auth.memberId,
       getJwt: source.auth.getTeamJwt,
       createWebSocket: (url) => {
         const socket = source.createWebSocket?.(url) ?? new WebSocket(url);

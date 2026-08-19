@@ -8,6 +8,12 @@
 
 import type { Doc } from 'yjs';
 import type { LocalDocumentReplica } from './LocalDocumentReplica';
+import type {
+  PersonalJwt,
+  PersonalMemberId,
+  TeamJwt,
+  TeamMemberId,
+} from '../auth/jwtScopes';
 
 export type {
   DocClientMessage,
@@ -30,7 +36,7 @@ export type {
 // Configuration
 // ============================================================================
 
-export interface DocumentSyncConfig {
+interface DocumentSyncCommonConfig {
   /** Existing durable replica to attach to. The provider never destroys it. */
   replica?: LocalDocumentReplica;
 
@@ -39,18 +45,8 @@ export interface DocumentSyncConfig {
   /** WebSocket server URL (e.g., wss://sync.nimbalyst.com) */
   serverUrl: string;
 
-  /**
-   * Function to get a fresh JWT for WebSocket auth.
-   * `forceRefresh` (NIM-949) bypasses any cached org-scoped token so a reconnect
-   * after an auth-style rejection (HTTP 400 wrong-org/expired) re-exchanges.
-   */
-  getJwt: (opts?: { forceRefresh?: boolean }) => Promise<string>;
-
   /** B2B organization ID */
   orgId: string;
-
-  /** Current user's ID */
-  userId: string;
 
   /** Document ID (used to construct room ID) */
   documentId: string;
@@ -145,6 +141,31 @@ export interface DocumentSyncConfig {
    * restrictions that block browser WebSocket upgrades.
    */
   createWebSocket?: (url: string) => WebSocket;
+}
+
+type TeamDocumentSyncIdentity = {
+  /** Fresh team-org JWT for a shared document room. */
+  getJwt: (opts?: { forceRefresh?: boolean }) => Promise<TeamJwt>;
+  teamMemberId: TeamMemberId;
+  personalMemberId?: never;
+};
+
+type PersonalDocumentSyncIdentity = {
+  /** Fresh personal-org JWT for a personal/mobile document room. */
+  getJwt: (opts?: { forceRefresh?: boolean }) => Promise<PersonalJwt>;
+  personalMemberId: PersonalMemberId;
+  teamMemberId?: never;
+};
+
+/** JWT scope and room member identity must travel as one compiler-checked pair. */
+export type DocumentSyncConfig = DocumentSyncCommonConfig & (
+  TeamDocumentSyncIdentity | PersonalDocumentSyncIdentity
+);
+
+export type DocumentSyncMemberId = TeamMemberId | PersonalMemberId;
+
+export function documentSyncMemberId(config: DocumentSyncConfig): DocumentSyncMemberId {
+  return config.teamMemberId ?? config.personalMemberId;
 }
 
 // ============================================================================

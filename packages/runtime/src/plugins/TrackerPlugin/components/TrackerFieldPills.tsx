@@ -46,6 +46,23 @@ const DEFAULT_TEST_ID_BASE = 'tracker-field';
 /** How long a text-like edit sits before it is written through. */
 const TEXT_SAVE_DEBOUNCE_MS = 500;
 
+/**
+ * Field types whose value never says which field it belongs to. A date reads
+ * "May 29, 2026" and a URL reads "drive.google.com" whether it is the shoot
+ * date or the delivery date, the brief or the final cut — so a schema with two
+ * of them produces two chips a reader can only tell apart by opening them
+ * (#1166). These carry their label in the chip; select and boolean values are
+ * already their own label, and text and number chips read as themselves.
+ */
+const SELF_ANONYMOUS_FIELD_TYPES = new Set([
+  'date',
+  'datetime',
+  'url',
+  'user',
+  'relationship',
+  'reference',
+]);
+
 export interface TrackerFieldPillsProps {
   /** Fields to render, already ordered — see `useTrackerFieldLayout`. */
   fields: FieldDefinition[];
@@ -208,6 +225,8 @@ export const TrackerFieldPill: React.FC<TrackerFieldPillProps> = ({
   const isCollectionField = isCollectionRelationshipField(field);
   const label = formatTrackerFieldLabel(field.name);
   const displayValue = fieldDisplayValue(field, localValue, members, relationshipCandidates);
+  // An empty chip already reads as its label, so only a filled one needs one.
+  const showLabel = !empty && SELF_ANONYMOUS_FIELD_TYPES.has(field.type);
 
   useEffect(() => {
     if (!hasPendingSaveRef.current) {
@@ -318,7 +337,7 @@ export const TrackerFieldPill: React.FC<TrackerFieldPillProps> = ({
         ref={floating.refs.setReference}
         {...getReferenceProps()}
         type="button"
-        className={`tracker-field-pill ${empty ? 'tracker-field-pill-empty' : 'tracker-field-pill-set'}`}
+        className={`tracker-field-pill ${empty ? 'tracker-field-pill-empty' : 'tracker-field-pill-set'}${showLabel ? ' tracker-field-pill-labeled' : ''}`}
         disabled={!editable}
         onClick={() => {
           if (togglesDirectly) {
@@ -352,6 +371,9 @@ export const TrackerFieldPill: React.FC<TrackerFieldPillProps> = ({
             className="tracker-field-pill-icon"
             style={selectedOption?.color ? { color: selectedOption.color } : undefined}
           />
+        )}
+        {showLabel && (
+          <span className="tracker-field-pill-label">{label}</span>
         )}
         <span className="tracker-field-pill-value">{displayValue}</span>
       </button>

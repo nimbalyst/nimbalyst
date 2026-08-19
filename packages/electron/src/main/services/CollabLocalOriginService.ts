@@ -24,7 +24,7 @@ import { logger } from '../utils/logger';
 import { uploadCollabAsset } from './CollabAssetUploader';
 import { getCollabAssetStore } from './CollabAssetStore';
 import { getPersonalUserId } from './StytchAuthService';
-import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
+import { findTeamForWorkspace, getOrgScopedIdentity, getOrgScopedJwt } from './TeamService';
 import {
   getLocalOriginTeamOverride,
   type LocalOriginTeam,
@@ -90,7 +90,7 @@ export interface ReuploadLocalOriginResult {
    * On a `conflict`, who last edited the shared doc and when (server clock, ms),
    * so the overwrite confirm can name who/when the push will clobber. Sourced
    * from the DocumentRoom's last content update (not the title-index timestamp).
-   * `lastEditorId` is a room-authed userId the renderer resolves to a member.
+   * `lastEditorId` is a room-authenticated member id the renderer resolves to a member.
    */
   lastEditorId?: string | null;
   lastEditedAt?: number | null;
@@ -386,12 +386,13 @@ async function resolveDocumentSyncConfig(
 ): Promise<DocumentSyncConfig | null> {
   const team = await findTeamForWorkspace(workspacePath);
   if (!team) return null;
+  const { teamMemberId } = await getOrgScopedIdentity(team.orgId);
 
   return {
     serverUrl: getCollabSyncWsUrl(),
     getJwt: () => getOrgScopedJwt(team.orgId),
     orgId: team.orgId,
-    userId: '',
+    teamMemberId,
     documentId,
     createWebSocket: ((url: string) => new WebSocket(url)) as unknown as DocumentSyncConfig['createWebSocket'],
   };

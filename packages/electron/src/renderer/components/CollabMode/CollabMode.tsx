@@ -46,6 +46,12 @@ import {
 } from '../../store/atoms/collabDocuments';
 import { changedDocIdsAtom } from '../../store/atoms/collabDiscovery';
 import { SHARED_HOME_TAB_URI, SHARED_HOME_TAB_TITLE, isSharedHomeTab } from './sharedHomeTab';
+import {
+  SHARED_FEEDBACK_TAB_TITLE,
+  SHARED_FEEDBACK_TAB_URI,
+  isSharedFeedbackTab,
+} from './sharedFeedbackTab';
+import { SharedFeedbackTabButton } from './Feedback';
 import { isCollabUri, parseCollabUri } from '@nimbalyst/collab-protocol';
 import {
   getCollabNodeName,
@@ -223,6 +229,13 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeInnerProps>(f
   // dedupes by URI, so this focuses the existing tab if present.
   const openSharedHomeTab = useCallback((switchToTab = true) => {
     tabsActions.addTab(SHARED_HOME_TAB_URI, '', switchToTab, SHARED_HOME_TAB_TITLE);
+  }, [tabsActions]);
+
+  // The feedback list is a singleton tab for the same reason the home is: it is
+  // a surface over the whole shared area rather than one document, and a second
+  // copy of it would be a second copy of the same list.
+  const openSharedFeedbackTab = useCallback(() => {
+    tabsActions.addTab(SHARED_FEEDBACK_TAB_URI, '', true, SHARED_FEEDBACK_TAB_TITLE);
   }, [tabsActions]);
 
   // Refs for sidebar resize drag (avoids re-renders during drag)
@@ -695,6 +708,12 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeInnerProps>(f
     return tab ? isSharedHomeTab(tab.filePath) : false;
   }, [activeTabId, tabs]);
 
+  const activeTabIsFeedback = useMemo(() => {
+    if (!activeTabId) return false;
+    const tab = tabs.find((t) => t.id === activeTabId);
+    return tab ? isSharedFeedbackTab(tab.filePath) : false;
+  }, [activeTabId, tabs]);
+
   // File path of the active collab document, so the chat panel scopes its
   // "+ selection" chips to the doc the user is actually looking at. Without a
   // currentFilePath the chip row falls back to "most recent" and leaks a stale
@@ -768,6 +787,12 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeInnerProps>(f
               activeDocumentId={activeCollabDocumentId}
               onShowHome={() => openSharedHomeTab(true)}
               homeActive={activeTabIsHome}
+              headerActions={(
+                <SharedFeedbackTabButton
+                  active={activeTabIsFeedback}
+                  onOpen={openSharedFeedbackTab}
+                />
+              )}
             />
           </div>
 

@@ -26,4 +26,5 @@ export const workspaceLocalKeyStore: LocalKeyStateStore = {
     });
   },
   takenPrefixes: (workspacePath) => getTakenLocalKeyPrefixes(workspacePath),
+  teamPrefix: (workspacePath) => getWorkspaceState(workspacePath).issueKeyPrefix,
 };

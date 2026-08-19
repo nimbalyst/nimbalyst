@@ -227,6 +227,49 @@ describe('InboxSection', () => {
     screen.getByTestId('inbox-row-delivery-read-only');
   });
 
+  it('drops the scope control when there is nothing to scope by', async () => {
+    // One org and no project stamps is what production actually delivers today
+    // — the menu used to open onto an empty box.
+    const deliveries = createInboxFixtures({ now: NOW })
+      .filter((delivery) => delivery.orgId === 'org-acme')
+      .map(({ projectId: _projectId, projectName: _projectName, ...rest }) => rest);
+    renderInbox({ deliveries });
+    await screen.findByTestId('inbox-list');
+
+    expect(screen.queryByTestId('inbox-scope-trigger')).toBeNull();
+  });
+
+  it('resizes the context pane and remembers the width', async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { invoke } });
+
+    renderInbox();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('app-settings:get', 'inboxViewPreferences'));
+    expect(screen.getByTestId('inbox-context-slot').getAttribute('data-width')).toBe('340');
+
+    const resizer = screen.getByTestId('inbox-context-resizer');
+    fireEvent.keyDown(resizer, { key: 'ArrowLeft' });
+
+    expect(screen.getByTestId('inbox-context-slot').getAttribute('data-width')).toBe('364');
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      'app-settings:set',
+      'inboxViewPreferences',
+      expect.objectContaining({ contextPaneWidth: 364 }),
+    ));
+  });
+
+  it('restores the persisted pane width, clamped to a usable range', async () => {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      // A width captured on a much wider display must not squeeze the list out.
+      value: { invoke: vi.fn().mockResolvedValue({ scope: {}, contextPaneWidth: 4000 }) },
+    });
+
+    renderInbox();
+
+    await waitFor(() => expect(screen.getByTestId('inbox-context-slot').getAttribute('data-width')).toBe('1600'));
+  });
+
   it('persists the filter and scope through app settings, never localStorage', async () => {
     const invoke = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window, 'electronAPI', { configurable: true, value: { invoke } });

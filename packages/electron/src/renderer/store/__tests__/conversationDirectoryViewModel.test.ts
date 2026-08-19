@@ -1,6 +1,7 @@
 // @vitest-environment node
 import type { TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import { describe, expect, it } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import type { ConversationDirectoryEntry } from '../../../shared/conversationDirectory';
 import { unreadCountsByConversation } from '../../components/TeamMode/orgSidebarViewModel';
@@ -73,7 +74,7 @@ describe('conversation unread derivation', () => {
   it('uses unread deliveries and materialized conversation watermark advances', () => {
     const unread = inboxSnapshot([{
       id: 'delivery-1',
-      recipientUserId: 'member-a',
+      teamMemberId: asTeamMemberId('member-a'),
       orgId: 'org-a',
       orgName: 'Acme',
       source: {
@@ -99,7 +100,7 @@ describe('conversation unread derivation', () => {
     const snapshot = inboxSnapshot([
       {
         id: 'read',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-a',
         orgName: 'Acme',
         source: {
@@ -114,7 +115,7 @@ describe('conversation unread derivation', () => {
       },
       {
         id: 'dismissed',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-a',
         orgName: 'Acme',
         source: {
@@ -129,7 +130,7 @@ describe('conversation unread derivation', () => {
       },
       {
         id: 'other-org',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-b',
         orgName: 'Other',
         source: {
@@ -143,7 +144,7 @@ describe('conversation unread derivation', () => {
       },
       {
         id: 'activity',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-a',
         orgName: 'Acme',
         source: {
@@ -165,7 +166,7 @@ describe('conversation unread derivation', () => {
     const open = inboxSnapshot([
       {
         id: 'delivery-1',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-a',
         orgName: 'Acme',
         source: {
@@ -179,7 +180,7 @@ describe('conversation unread derivation', () => {
       },
       {
         id: 'delivery-2',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-a',
         orgName: 'Acme',
         source: {

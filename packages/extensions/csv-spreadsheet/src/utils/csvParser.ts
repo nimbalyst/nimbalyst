@@ -3,7 +3,7 @@
  */
 
 import Papa from 'papaparse';
-import type { SpreadsheetData, Cell, CSVMetadata, ColumnFormat } from '../types';
+import type { SpreadsheetData, Cell, CSVMetadata, CellStyleRanges, ColumnFormat } from '../types';
 
 /** Comment prefix for nimbalyst metadata */
 const METADATA_PREFIX = '# nimbalyst:';
@@ -114,6 +114,7 @@ export function parseCSV(content: string): { data: SpreadsheetData; delimiter: '
 
   // Use metadata columnFormats if present, otherwise default to empty
   const columnFormats: Record<number, ColumnFormat> = metadata?.columnFormats ?? {};
+  const cellStyles: CellStyleRanges = metadata?.cellStyles ?? {};
 
   return {
     data: {
@@ -124,6 +125,7 @@ export function parseCSV(content: string): { data: SpreadsheetData; delimiter: '
       headerRowCount,
       frozenColumnCount,
       columnFormats,
+      cellStyles,
     },
     delimiter,
     metadata,
@@ -131,16 +133,25 @@ export function parseCSV(content: string): { data: SpreadsheetData; delimiter: '
 }
 
 /**
- * ISO-style calendar date pattern (YYYY-MM-DD, YYYY-M-D, etc.). Kept here
- * as a literal rather than importing from `formatters.ts` to avoid pulling
- * the formatting layer into the parsing layer.
+ * A string that is a number *in its entirety*.
  *
- * The check is intentionally narrow: it only matches the full-string
- * `YYYY-(M)M-(D)D` shape. Other date shapes (slash-delimited, dot-delimited,
- * date-with-time, partial dates) are out of scope for this guard; they fall
- * through to the existing string branch and render as plain text.
+ * `parseFloat` stops at the first character it cannot read, so it happily
+ * turns `06/01/2001` into 6, `1,234` into 1, and `12 apples` into 12. Because
+ * `toGridSource` writes `cell.computed` into the RevoGrid model, and the cell
+ * editor renders that model value, every one of those became the truncated
+ * number the moment you opened the cell to edit it — the file on disk stayed
+ * correct, since `serializeToCSV` reads `cell.raw`.
+ *
+ * Issue #329 patched the one shape that had been reported (`YYYY-MM-DD`) with
+ * a targeted guard. This replaces that guard: requiring a full-string match
+ * closes the whole family at once — slash and dot dates, dates with times,
+ * thousands separators, and numeric-prefixed prose.
+ *
+ * Exponent notation stays numeric; grouped values like `1,234` do not, so the
+ * cell keeps the text the user typed. Column formatting is what turns a stored
+ * `1234` into `1,234` on screen.
  */
-const ISO_DATE_PATTERN = /^\d{4}-\d{1,2}-\d{1,2}$/;
+const FULLY_NUMERIC_PATTERN = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
 
 /**
  * Create a Cell from a raw string value
@@ -156,33 +167,14 @@ export function createCell(value: string): Cell {
     };
   }
 
-  // ISO date guard (issue #329).
-  //
-  // `parseFloat("2026-05-15")` returns `2026` because parseFloat stops at
-  // the first non-numeric character. Without this guard, `2026-05-15` got
-  // stored as `{ raw: "2026-05-15", computed: 2026 }` and the spreadsheet
-  // grid wrote `cell.computed` (2026) into the rendered cell, truncating
-  // the displayed value to the year. The raw file content stayed correct
-  // on disk because `serializeToCSV` reads `cell.raw`; only the rendered
-  // cell was wrong.
-  //
-  // Treat ISO-date-shaped strings as strings so the displayed value matches
-  // the file contents. Numeric values like `2026` (a year on its own) stay
-  // on the numeric path below.
-  if (ISO_DATE_PATTERN.test(trimmed)) {
-    return {
-      raw: trimmed,
-      computed: trimmed,
-    };
-  }
-
-  // Check if it's a number
-  const num = parseFloat(trimmed);
-  if (!isNaN(num) && trimmed !== '') {
-    return {
-      raw: trimmed,
-      computed: num,
-    };
+  if (FULLY_NUMERIC_PATTERN.test(trimmed)) {
+    const num = Number(trimmed);
+    if (Number.isFinite(num)) {
+      return {
+        raw: trimmed,
+        computed: num,
+      };
+    }
   }
 
   // Otherwise it's a string
@@ -215,9 +207,11 @@ export function serializeToCSV(data: SpreadsheetData, delimiter: ',' | '\t' = ',
   // Prepend metadata comment if requested AND if using non-default features
   if (includeMetadata) {
     const hasColumnFormats = Object.keys(data.columnFormats || {}).length > 0;
+    const hasCellStyles = Object.keys(data.cellStyles || {}).length > 0;
     const headerRowCount = data.headerRowCount || (data.hasHeaders ? 1 : 0);
     const frozenColumnCount = data.frozenColumnCount || 0;
-    const hasNonDefaultMetadata = headerRowCount > 0 || frozenColumnCount > 0 || hasColumnFormats;
+    const hasNonDefaultMetadata = headerRowCount > 0 || frozenColumnCount > 0
+      || hasColumnFormats || hasCellStyles;
 
     if (hasNonDefaultMetadata) {
       const metadata: CSVMetadata = {
@@ -225,6 +219,7 @@ export function serializeToCSV(data: SpreadsheetData, delimiter: ',' | '\t' = ',
         headerRowCount,
         frozenColumnCount,
         ...(hasColumnFormats ? { columnFormats: data.columnFormats } : {}),
+        ...(hasCellStyles ? { cellStyles: data.cellStyles } : {}),
       };
       return `${serializeMetadata(metadata)}\n${csvContent}`;
     }

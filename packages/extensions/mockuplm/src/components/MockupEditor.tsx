@@ -27,7 +27,7 @@ import {
   describeScreenshotCaptureError,
   sanitizeScreenshotCloneForXml,
 } from "../utils/screenshotUtils";
-import { renderMockupHtml } from "../utils/mockupDomUtils";
+import { mockupHasScript, renderMockupHtml } from "../utils/mockupDomUtils";
 import { remapCaretAcrossReplace } from "../utils/sourcePaneCaret";
 import { MockupDiffViewer } from "./MockupDiffViewer";
 import { injectTheme, type MockupTheme } from "../utils/themeEngine";
@@ -38,10 +38,17 @@ import {
   seedMockupYDoc,
 } from "../collab/seed";
 
-// Import shared types for mockup annotations from runtime package
+// Shared types for mockup annotations. These resolve against the ambient
+// `declare module '@nimbalyst/runtime'` in globals.d.ts and are erased at build
+// time, so they cost the bundle nothing.
+//
+// There is deliberately no side-effect import of the runtime beside them. The
+// desktop host maps that specifier to a curated re-export of a handful of UI
+// members, which registers no globals; the Window members this editor uses are
+// declared in globals.d.ts and set by the editor itself. In the browser console
+// the specifier has no provider at all, so importing it for its non-existent
+// side effect made the whole extension unresolvable there.
 import type { DrawingPath, MockupSelection } from "@nimbalyst/runtime";
-// Side effect import to register Window globals
-import "@nimbalyst/runtime";
 
 // electronAPI is declared globally in electron.d.ts
 
@@ -250,6 +257,13 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(
     // practice. When the host can't provide source mode we open an in-editor
     // source pane instead and write straight into the shared Y.Text.
     const [isInlineSourceOpen, setIsInlineSourceOpen] = useState(false);
+    /**
+     * This mockup declares scripts and the host's CSP refused to run them --
+     * true on the web console, false on desktop. Measured per render rather
+     * than asked of the host, which cannot see the policy the page was served
+     * with. See `mockupDomUtils.MockupRenderResult`.
+     */
+    const [areScriptsBlocked, setAreScriptsBlocked] = useState(false);
 
     const handleToggleSource = useCallback(() => {
       if (host.toggleSourceMode) {
@@ -407,7 +421,7 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(
         return;
       }
 
-      renderMockupHtml(iframeRef.current, contentRef.current, {
+      const { scriptsRan } = renderMockupHtml(iframeRef.current, contentRef.current, {
         onAfterRender: (iframeDoc) => {
           injectTheme(iframeDoc, mockupTheme);
 
@@ -422,6 +436,10 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(
           iframeDoc.head.appendChild(style);
         },
       });
+
+      // Only worth saying when this mockup actually has a script to lose. Most
+      // do not, and a notice on every mockup in the browser would be noise.
+      setAreScriptsBlocked(!scriptsRan && mockupHasScript(contentRef.current));
     }, [contentVersion, diffState, mockupTheme]);
 
     // Separate effect for click handler -- toggling interactive mode shouldn't re-render iframe
@@ -1117,6 +1135,16 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-nim-secondary border border-nim rounded-md px-4 py-2 shadow-lg z-[1001] text-xs text-nim">
               Drawing mode active - Circle elements, draw arrows, or annotate
               for AI
+            </div>
+          )}
+
+          {areScriptsBlocked && !isInlineSourceOpen && (
+            <div
+              className="mockup-scripts-blocked-notice absolute bottom-4 left-4 z-[1000] max-w-xs rounded-md border border-nim bg-nim-secondary px-3 py-2 text-xs text-nim-secondary shadow-lg select-text"
+              role="status"
+            >
+              This mockup&rsquo;s scripts are not running here. Its layout and styles are
+              unaffected; anything driven by script stays in its starting state.
             </div>
           )}
 

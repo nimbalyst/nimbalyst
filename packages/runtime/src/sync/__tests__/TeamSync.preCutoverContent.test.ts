@@ -11,15 +11,16 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '../../auth/jwtScopes';
 import { TeamSyncProvider } from '../TeamSync';
 import type { TeamSyncConfig } from '../teamSyncTypes';
 
 function createProvider(overrides: Partial<TeamSyncConfig> = {}): TeamSyncProvider {
   const config: TeamSyncConfig = {
     serverUrl: 'ws://example.test',
-    getJwt: async () => 'token',
+    getJwt: async () => asTeamJwt('token'),
     orgId: 'org-1',
-    userId: 'user-1',
+    teamMemberId: asTeamMemberId('user-1'),
     ...overrides,
   };
   return new TeamSyncProvider(config);

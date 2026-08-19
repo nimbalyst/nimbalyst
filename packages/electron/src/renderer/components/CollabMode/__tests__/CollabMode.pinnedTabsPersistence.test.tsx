@@ -3,11 +3,12 @@ import React, { createRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { CollabScope } from '@nimbalyst/collab-client/core';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 const SCOPE: CollabScope = {
   scopeKey: '/workspace',
   orgId: 'test-org',
-  indexConfig: { serverUrl: 'wss://example.test', userId: 'test-user' },
+  indexConfig: { serverUrl: 'wss://example.test', teamMemberId: asTeamMemberId('test-user') },
 };
 
 const persistenceMocks = vi.hoisted(() => ({

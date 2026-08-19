@@ -19,7 +19,7 @@
  * compose-time view model (a subject's display label and shared flag are
  * presentation, not wire format) and carries no transport of its own.
  */
-import type { FeedbackAsk, FeedbackAskAssignment, FeedbackRequestRecipient, FeedbackRequestVisibility, FeedbackRequestWakePolicy, ResourceRef } from '@nimbalyst/collab-protocol';
+import type { FeedbackArtifact, FeedbackAsk, FeedbackAskAssignment, FeedbackRequestRecipient, FeedbackRequestVisibility, FeedbackRequestWakePolicy, ResourceRef } from '@nimbalyst/collab-protocol';
 /**
  * A subject as the author sees it while composing: the wire `ResourceRef` plus
  * the label, context line, and team-visibility flag needed to render the
@@ -115,7 +115,12 @@ export declare const FEEDBACK_COMPOSE_BLOCKED_MESSAGES: Record<FeedbackComposeBl
 export interface FeedbackComposeSendPayload {
     draftId: string;
     orgId: string;
-    subjects: ResourceRef[];
+    /**
+     * Carries the author's label, not just the ref. Publishing rewrites a `file`
+     * ref to the created `document`, so a recipient handed only refs would have
+     * nothing to render but an opaque document id.
+     */
+    subjects: FeedbackArtifact[];
     asks: FeedbackAsk[];
     recipients: FeedbackRequestRecipient[];
     assignments: FeedbackAskAssignment[];

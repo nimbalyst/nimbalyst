@@ -206,7 +206,7 @@ export class TeamInboxNotificationService {
     }
     if (
       delivery.actor?.onBehalfOfUserId &&
-      delivery.actor.onBehalfOfUserId === delivery.recipientUserId
+      delivery.actor.onBehalfOfUserId === delivery.teamMemberId
     ) {
       return;
     }

@@ -6,7 +6,6 @@
 
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 import { convertToExcalidrawElements } from '@excalidraw/excalidraw';
-import { parseMermaidToExcalidraw } from '@excalidraw/mermaid-to-excalidraw';
 import type { BinaryFileData, ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 
 /**
@@ -53,9 +52,17 @@ function normalizeColor(color?: string): string | undefined {
   return colorMap[color.toLowerCase()] || color;
 }
 
-// Expose for testing
+async function loadMermaidParser() {
+  const { parseMermaidToExcalidraw } = await import('@excalidraw/mermaid-to-excalidraw');
+  return parseMermaidToExcalidraw;
+}
+
+// Expose the same async test hook without eagerly loading Mermaid.
 if (typeof window !== 'undefined') {
-  (window as any).__excalidraw_parseMermaidToExcalidraw = parseMermaidToExcalidraw;
+  (window as any).__excalidraw_parseMermaidToExcalidraw = async (
+    mermaid: string,
+    options?: Record<string, unknown>,
+  ) => (await loadMermaidParser())(mermaid, options);
   (window as any).__excalidraw_convertToExcalidrawElements = convertToExcalidrawElements;
 }
 
@@ -719,6 +726,7 @@ export const aiTools = [
       }
 
       try {
+        const parseMermaidToExcalidraw = await loadMermaidParser();
         const { elements, files } = await parseMermaidToExcalidraw(params.mermaid, {
           themeVariables: { fontSize: '16px' },
         });

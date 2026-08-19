@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { store } from '@nimbalyst/runtime/store';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import {
   CollabScopeResolutionError,
   type CollabHost,
@@ -27,27 +28,27 @@ import {
 const SCOPE: CollabScope = {
   scopeKey: 'session-test-scope',
   orgId: 'org-session-test',
-  indexConfig: { serverUrl: 'ws://sync.test', userId: 'member-self' },
+  indexConfig: { serverUrl: 'ws://sync.test', teamMemberId: asTeamMemberId('member-self') },
 };
 const OTHER_SCOPE: CollabScope = {
   scopeKey: 'session-test-other-scope',
   orgId: 'org-session-other',
-  indexConfig: { serverUrl: 'ws://sync.test', userId: 'member-other-self' },
+  indexConfig: { serverUrl: 'ws://sync.test', teamMemberId: asTeamMemberId('member-other-self') },
 };
 const LIFECYCLE_SCOPE: CollabScope = {
   scopeKey: 'session-lifecycle-scope',
   orgId: 'org-session-lifecycle',
-  indexConfig: { serverUrl: 'ws://sync.test', userId: 'member-lifecycle' },
+  indexConfig: { serverUrl: 'ws://sync.test', teamMemberId: asTeamMemberId('member-lifecycle') },
 };
 const REPLACEMENT_SCOPE: CollabScope = {
   scopeKey: 'session-lifecycle-replacement',
   orgId: 'org-session-lifecycle-replacement',
-  indexConfig: { serverUrl: 'ws://sync.test', userId: 'member-replacement' },
+  indexConfig: { serverUrl: 'ws://sync.test', teamMemberId: asTeamMemberId('member-replacement') },
 };
 const UNAVAILABLE_SCOPE: CollabScope = {
   scopeKey: 'session-unavailable-scope',
   orgId: 'org-session-unavailable',
-  indexConfig: { serverUrl: 'ws://sync.test', userId: 'member-unavailable' },
+  indexConfig: { serverUrl: 'ws://sync.test', teamMemberId: asTeamMemberId('member-unavailable') },
 };
 const ALL_SCOPE_KEYS = [
   SCOPE.scopeKey,

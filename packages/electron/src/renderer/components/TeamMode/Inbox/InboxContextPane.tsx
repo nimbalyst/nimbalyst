@@ -3,18 +3,10 @@ import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { useAtomValue, useStore } from 'jotai';
 
 import { settingAtom } from '../../../store/atoms/settingAtomFamily';
-import {
-  feedbackRequestStateForTargetAtomFamily,
-  feedbackRequestTargetKey,
-} from '../../../store/atoms/feedbackRequests';
-import type { FeedbackRequestCommentIpcRequest } from '../../../../shared/feedbackRequest';
 import { CommentThread } from '../../Comments/CommentThread';
 import { createConversationCommentAdapter } from '../../Comments/ConversationCommentAdapter';
 import type { CommentCapabilities } from '../../Comments/commentTypes';
-import { FeedbackRequestRespond } from '../../FeedbackRequest/FeedbackRequestRespond';
-import { createFeedbackRespondHost } from '../../FeedbackRequest/createFeedbackRespondHost';
-import { createFeedbackDiscussionAdapter } from '../../FeedbackRequest/feedbackDiscussionAdapter';
-import { startFeedbackRequestSync } from '../../FeedbackRequest/createFeedbackResultsHost';
+import { FeedbackRequestSurface } from '../../FeedbackRequest/FeedbackRequestSurface';
 import { openActionLabel } from './inboxViewModel';
 import type { InboxRowView, InboxSubscriptionState } from './inboxTypes';
 
@@ -49,7 +41,7 @@ export function InboxContextPane({
   if (!row) {
     return (
       <aside
-        className="inbox-context-pane inbox-context-pane-empty flex min-w-0 flex-col items-center justify-center gap-2 border-l border-[var(--nim-border)] p-8 text-center"
+        className="inbox-context-pane inbox-context-pane-empty flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 border-l border-[var(--nim-border)] p-8 text-center"
         data-testid="inbox-context-pane"
         data-component="InboxContextPane"
       >
@@ -78,7 +70,10 @@ export function InboxContextPane({
 
   return (
     <aside
-      className="inbox-context-pane flex min-w-0 flex-col border-l border-[var(--nim-border)]"
+      // `min-h-0 flex-1` is what makes the scroll regions below actually
+      // scroll: they are `min-h-0 flex-1 overflow-y-auto`, so the pane itself
+      // has to end at the bottom of its slot instead of growing with content.
+      className="inbox-context-pane flex min-h-0 min-w-0 flex-1 flex-col border-l border-[var(--nim-border)]"
       data-testid="inbox-context-pane"
       data-component="InboxContextPane"
     >
@@ -234,91 +229,20 @@ function InboxFeedbackRequest({
   row: InboxRowView;
   requestId: string;
 }) {
-  const { orgId } = row;
-  const target = useMemo(
-    () => ({ workspacePath, orgId, requestId }),
-    [workspacePath, orgId, requestId],
-  );
-  const targetStore = useStore();
-  const host = useMemo(() => createFeedbackRespondHost({ target }), [target]);
-  const state = useAtomValue(
-    feedbackRequestStateForTargetAtomFamily(feedbackRequestTargetKey(target)),
-  );
-  const viewerUserId = state.viewerUserId || row.viewerUserId;
-  const viewerActor = useMemo(() => ({
-    kind: 'user' as const,
-    userId: viewerUserId,
-    onBehalfOfUserId: viewerUserId,
-  }), [viewerUserId]);
-  const capabilities = useMemo<CommentCapabilities>(() => ({
-    read: true,
-    comment: row.canReply && state.request?.lifecycle.status === 'open',
-    react: false,
-    editOwn: false,
-    deleteOwn: false,
-    moderate: false,
-    manageRoom: false,
-  }), [row.canReply, state.request?.lifecycle.status]);
-  const adapter = useMemo(
-    () => createFeedbackDiscussionAdapter({
-      target,
-      viewerActor,
-      capabilities,
-      store: targetStore,
-      post: (input) => {
-        const request: FeedbackRequestCommentIpcRequest = {
-          target,
-          clientMutationId: input.clientMutationId,
-          body: input.body,
-          replyToCommentId: input.replyToCommentId,
-        };
-        return window.electronAPI.invoke('feedback-request:comment', request);
-      },
-    }),
-    [capabilities, target, targetStore, viewerActor],
-  );
-  const directory = useMemo(() => ({
-    people: [{
-      userId: viewerUserId,
-      displayName: 'You',
-      handle: 'you',
-      avatarInitials: 'YO',
-    }],
-    agents: [],
-    displayNames: { [viewerUserId]: 'You' },
-  }), [viewerUserId]);
-  const density = useAtomValue(settingAtom('team.messages.density'));
-
-  React.useEffect(() => {
-    void startFeedbackRequestSync(target);
-  }, [target]);
-
   return (
     <div className="inbox-feedback-request min-h-0 flex-1 overflow-y-auto p-3">
-      <FeedbackRequestRespond
-        state={state}
-        host={host}
-        discussion={(
-          <div className="feedback-request-discussion-thread h-[320px] min-h-[240px]">
-            <CommentThread
-              adapter={adapter}
-              capabilities={capabilities}
-              context={{
-                conversationId: requestId,
-                conversationTitle: row.sourceTitle,
-                agentPostingEnabled: false,
-                attachedAgentSessionIds: [],
-                surfaceLabel: row.sourceTitle ?? 'Feedback request',
-              }}
-              directory={directory}
-              orgId={orgId}
-              viewerUserId={viewerUserId}
-              viewerActor={viewerActor}
-              emptyLabel="No discussion yet."
-              density={density}
-            />
-          </div>
-        )}
+      {/* Pinned to the recipient card: a delivery is an ask addressed to this
+          reader, and it stays that shape after they answer. The shared area's
+          feedback list is where a request is met as a resource and flips to
+          tallies once nothing is owed. */}
+      <FeedbackRequestSurface
+        workspacePath={workspacePath}
+        orgId={row.orgId}
+        requestId={requestId}
+        teamMemberId={row.teamMemberId}
+        title={row.sourceTitle}
+        canComment={row.canReply}
+        view="respond"
       />
     </div>
   );
@@ -343,9 +267,9 @@ function InboxConversationThread({
   }), [row.canReply]);
   const viewerActor = useMemo(() => ({
     kind: 'user' as const,
-    userId: row.viewerUserId,
-    onBehalfOfUserId: row.viewerUserId,
-  }), [row.viewerUserId]);
+    userId: row.teamMemberId,
+    onBehalfOfUserId: row.teamMemberId,
+  }), [row.teamMemberId]);
   // Same org-window preference the room view reads: the inbox shows the same
   // messages and must not disagree with the room about how they look.
   const density = useAtomValue(settingAtom('team.messages.density'));
@@ -374,14 +298,14 @@ function InboxConversationThread({
   );
   const directory = useMemo(() => ({
     people: [{
-      userId: row.viewerUserId,
+      userId: row.teamMemberId,
       displayName: 'You',
       handle: 'you',
       avatarInitials: 'YO',
     }],
     agents: [],
-    displayNames: { [row.viewerUserId]: 'You' },
-  }), [row.viewerUserId]);
+    displayNames: { [row.teamMemberId]: 'You' },
+  }), [row.teamMemberId]);
 
   return (
     <div
@@ -404,7 +328,7 @@ function InboxConversationThread({
         }}
         directory={directory}
         orgId={row.orgId}
-        viewerUserId={row.viewerUserId}
+        viewerUserId={row.teamMemberId}
         viewerActor={viewerActor}
         density={density}
       />

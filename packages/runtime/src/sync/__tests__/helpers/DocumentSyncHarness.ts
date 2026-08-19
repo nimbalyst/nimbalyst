@@ -3,6 +3,7 @@ import * as Y from "yjs";
 import { DocumentSyncProvider } from "../../DocumentSync";
 import { LocalDocumentReplica } from "../../LocalDocumentReplica";
 import { OutboxDrainer } from "../../OutboxDrainer";
+import { asTeamJwt, asTeamMemberId } from "../../../auth/jwtScopes";
 import type {
   AppendLocalReplicaUpdateInput,
   AppendRemoteReplicaUpdatesInput,
@@ -1016,10 +1017,10 @@ export class HarnessClient {
     });
     this.provider = new DocumentSyncProvider({
       serverUrl: "ws://document-harness.test",
-      getJwt: async () => "harness-token",
+      getJwt: async () => asTeamJwt("harness-token"),
       orgId: "org-harness",
       documentId: "doc-harness",
-      userId: this.userId,
+      teamMemberId: asTeamMemberId(this.userId),
       replica: this.replica,
       initialPendingUpdateBase64:
         this.persisted.pendingUpdateBase64 ?? undefined,

@@ -1,5 +1,6 @@
 import type { TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import { describe, expect, it } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import {
   formatUnreadCount,
@@ -26,7 +27,7 @@ function delivery(
 ): TeamInboxSnapshot['deliveries'][number] {
   return {
     id,
-    recipientUserId: 'member-a',
+    teamMemberId: asTeamMemberId('member-a'),
     orgId,
     orgName,
     createdAt: 10,

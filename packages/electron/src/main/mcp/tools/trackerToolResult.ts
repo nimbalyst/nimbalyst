@@ -1,4 +1,4 @@
-import { isLocalIssueKey } from '../../../shared/localIssueKey';
+import { isLocalIssueKey, resolveDisplayIssueKey } from '../../../shared/localIssueKey';
 import { TrackerSchemaChangeBlockedError } from '../../services/tracker/trackerSchemaChangeGuard';
 
 export type McpToolResult = {
@@ -79,14 +79,11 @@ export function getAssignedIssueKey(item: { issueKey?: string | null }): string 
 }
 
 /**
- * The best reference to show an agent for an item.
- *
- * A team key first, because it is the only form that means the same thing to
- * everyone. Then this machine's local number, which at least reads as a number
- * and resolves in this project. The raw id last.
+ * The best reference to show an agent for an item: the same precedence the
+ * tracker's Key column shows, with the raw id as a last resort.
  */
 export function getTrackerDisplayRef(item: { issueKey?: string; localKey?: string; id: string }): string {
-  return getAssignedIssueKey(item) ?? item.localKey ?? item.id;
+  return resolveDisplayIssueKey(item) ?? item.id;
 }
 
 export function issueKeyAvailabilityNote(

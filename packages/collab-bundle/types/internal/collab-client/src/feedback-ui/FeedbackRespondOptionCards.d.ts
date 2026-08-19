@@ -21,16 +21,39 @@
  * image the option never had.
  */
 import React from 'react';
-import type { StructuredInputSingleSelectOption } from '@nimbalyst/collab-protocol';
-export type FeedbackOptionPreviewRenderer = (option: StructuredInputSingleSelectOption, index: number) => React.ReactNode;
+import type { FeedbackAskArtifact, StructuredInputSingleSelectOption } from '@nimbalyst/collab-protocol';
+import type { FeedbackArtifactActionResolver } from './FeedbackArtifactSubjects';
+/**
+ * Returning nullish is a supported answer, not a failure: "I have a renderer,
+ * and this particular artifact has nothing worth showing." The card then falls
+ * through to the titled placeholder.
+ */
+export type FeedbackOptionPreviewRenderer = (option: StructuredInputSingleSelectOption, index: number, artifact?: FeedbackAskArtifact) => React.ReactNode;
 export interface FeedbackRespondOptionCardsProps {
     askId: string;
     options: readonly StructuredInputSingleSelectOption[];
+    /** Bound per-entry resources, keyed to option ids. */
+    artifacts?: readonly FeedbackAskArtifact[];
     selectedId?: string;
     onSelect: (optionId: string) => void;
     disabled?: boolean;
     renderPreview?: FeedbackOptionPreviewRenderer;
-    /** Shown as an expand affordance on each preview when a caller can open one. */
-    onExpand?: (option: StructuredInputSingleSelectOption) => void;
+    /**
+     * Shown as an expand affordance on each preview when a caller can open one.
+     * Only rendered for options that actually have an artifact to open -- an
+     * expand button over a placeholder is a promise the card cannot keep.
+     */
+    onExpand?: (artifact: FeedbackAskArtifact) => void;
+    resolveAction?: FeedbackArtifactActionResolver;
 }
+/**
+ * The fallback, and it covers more than "no artifact". An artifact whose kind
+ * has no registered editor, or one the host could not resolve, lands here too:
+ * a titled card is honest about having nothing to show, where an empty scaled
+ * frame looks like a preview that failed to load.
+ */
+export declare const FeedbackOptionPlaceholderPreview: React.FC<{
+    label: string;
+    artifactLabel?: string;
+}>;
 export declare const FeedbackRespondOptionCards: React.FC<FeedbackRespondOptionCardsProps>;

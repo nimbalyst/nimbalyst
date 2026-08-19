@@ -3,6 +3,7 @@ import React from 'react';
 import { Provider, createStore } from 'jotai';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import type { TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import type { ConversationDirectoryEntry } from '../../../../shared/conversationDirectory';
@@ -60,7 +61,7 @@ function snapshotWith(
 function delivery(id: string, conversationId: string) {
   return {
     id,
-    recipientUserId: 'member-a',
+    teamMemberId: asTeamMemberId('member-a'),
     orgId: 'org-1',
     orgName: 'Acme',
     source: {

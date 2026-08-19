@@ -291,6 +291,10 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
   ) => {
     if (!initialSceneObservedRef.current) {
       initialSceneObservedRef.current = true;
+      const api = excalidrawAPIRef.current;
+      if (api && bindingRef.current && bindingRef.current.api !== api) {
+        bindingRef.current.replaceApi(api);
+      }
       resolveApiReady();
     }
     if (isUpdatingFromExternalRef.current) return;
@@ -487,6 +491,9 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
         onChange={onChange}
         onPointerUpdate={isCollaborative ? onPointerUpdate : undefined}
         excalidrawAPI={(api: any) => {
+          if (api && api !== excalidrawAPIRef.current) {
+            initialSceneObservedRef.current = false;
+          }
           excalidrawAPIRef.current = api;
           if (api) {
             host.registerEditorAPI(createWrappedAPI(api));

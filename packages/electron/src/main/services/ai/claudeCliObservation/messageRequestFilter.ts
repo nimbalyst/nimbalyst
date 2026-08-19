@@ -3,10 +3,11 @@
  * Claude CLI proxy observation backend (NIM-806, Phase 3 / B3).
  *
  * The genuine `claude` CLI issues side requests over the same API connection
- * that are NOT part of the user-visible conversation — most notably the
- * "generate a session title" request. Teeing those into the transcript would
- * inject a stray assistant turn, so we skip them. The request still forwards
- * upstream byte-for-byte; we only suppress *observation*, never the proxying.
+ * that are NOT part of the user-visible conversation — the "generate a session
+ * title" request, and the `--prompt-suggestions` fork. Teeing those into the
+ * transcript would inject a stray assistant turn, so we skip them. The request
+ * still forwards upstream byte-for-byte; we only suppress *observation*, never
+ * the proxying.
  *
  */
 
@@ -15,9 +16,50 @@ const SESSION_TITLE_PROMPT_MARKERS = [
   'Return JSON with a single "title" field',
 ];
 
+/**
+ * The CLI's prompt-suggestion fork appends this instruction as the final user
+ * message. Marker text extracted from CLI 2.1.233 and confirmed against a
+ * captured request body; nothing else on the request distinguishes it — headers,
+ * model, and sampling params are identical to a real turn's.
+ */
+const PROMPT_SUGGESTION_PROMPT_MARKER = "[SUGGESTION MODE:";
+
 /** True when this `/v1/messages` body is a real conversational turn to observe. */
 export function shouldObserveMessagesRequest(body: Record<string, unknown>): boolean {
-  return !isClaudeSessionTitleRequest(body);
+  return !isClaudeSessionTitleRequest(body) && !isPromptSuggestionRequest(body);
+}
+
+/**
+ * The `--prompt-suggestions` fork: after each turn the CLI runs a second,
+ * short-lived agent that predicts what the user might type next and renders it
+ * as Tab-to-accept ghost text in its own composer. It never reaches the CLI's
+ * transcript (the fork carries `skipTranscript`), but it does hit `/v1/messages`
+ * through our proxy — so unfiltered, its reply is assembled and persisted as a
+ * genuine assistant turn: a message the user never received and the agent never
+ * wrote, phrased as something the user would say.
+ *
+ * Match narrowly — only the LAST message, only when it is the user turn, only on
+ * a leading marker. A whole-body scan would drop real turns whose tool_results
+ * happen to quote this file.
+ */
+function isPromptSuggestionRequest(body: Record<string, unknown>): boolean {
+  const messages = body.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+  const last = messages[messages.length - 1] as Record<string, unknown> | null;
+  if (!last || typeof last !== "object" || last.role !== "user") return false;
+  return leadingText(last.content).trimStart().startsWith(PROMPT_SUGGESTION_PROMPT_MARKER);
+}
+
+/** A message's leading text — content is either a bare string or a block list. */
+function leadingText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const obj = block as Record<string, unknown>;
+    if (obj.type === "text" && typeof obj.text === "string") return obj.text;
+  }
+  return "";
 }
 
 function isClaudeSessionTitleRequest(body: Record<string, unknown>): boolean {

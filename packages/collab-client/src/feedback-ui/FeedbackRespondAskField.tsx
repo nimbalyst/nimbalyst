@@ -12,6 +12,7 @@ import {
   getFeedbackTextAnswerMaxLength,
   type FeedbackAnswer,
   type FeedbackAsk,
+  type FeedbackAskArtifact,
 } from '@nimbalyst/collab-protocol';
 import {
   WidgetOptionList,
@@ -23,6 +24,7 @@ import {
   FeedbackRespondOptionCards,
   type FeedbackOptionPreviewRenderer,
 } from './FeedbackRespondOptionCards';
+import type { FeedbackArtifactActionResolver } from './FeedbackArtifactSubjects';
 import { OTHER_OPTION_ID } from '@nimbalyst/collab-client/feedback';
 
 export interface FeedbackRespondAskFieldProps {
@@ -31,7 +33,26 @@ export interface FeedbackRespondAskFieldProps {
   onChange: (answer: FeedbackAnswer) => void;
   disabled?: boolean;
   renderOptionPreview?: FeedbackOptionPreviewRenderer;
+  /** Opens a bound artifact; absent means no expand affordance is offered. */
+  onExpandArtifact?: (artifact: FeedbackAskArtifact) => void;
+  resolveArtifactAction?: FeedbackArtifactActionResolver;
 }
+
+/** An opener for one reorder row, so ranked artifacts are reachable too. */
+const ReorderArtifactButton: React.FC<{
+  artifact: FeedbackAskArtifact;
+  onExpand: (artifact: FeedbackAskArtifact) => void;
+}> = ({ artifact, onExpand }) => (
+  <button
+    type="button"
+    data-testid="feedback-respond-reorder-open"
+    aria-label={`Open ${artifact.label}`}
+    onClick={() => onExpand(artifact)}
+    className="feedback-respond-reorder-artifact-button shrink-0 rounded border border-nim bg-nim px-1.5 py-0.5 text-[0.6875rem] text-nim-muted cursor-pointer hover:text-nim"
+  >
+    Open
+  </button>
+);
 
 export const FeedbackRespondAskField: React.FC<FeedbackRespondAskFieldProps> = ({
   ask,
@@ -39,7 +60,10 @@ export const FeedbackRespondAskField: React.FC<FeedbackRespondAskFieldProps> = (
   onChange,
   disabled = false,
   renderOptionPreview,
+  onExpandArtifact,
+  resolveArtifactAction,
 }) => {
+  const artifacts = 'artifacts' in ask ? ask.artifacts : undefined;
   switch (ask.type) {
     case 'singleSelect': {
       const selectedId = answer?.type === 'singleSelect' ? answer.selectedId : undefined;
@@ -49,9 +73,12 @@ export const FeedbackRespondAskField: React.FC<FeedbackRespondAskFieldProps> = (
           <FeedbackRespondOptionCards
             askId={ask.id}
             options={ask.options}
+            artifacts={artifacts}
             selectedId={selectedId}
             disabled={disabled}
             renderPreview={renderOptionPreview}
+            onExpand={onExpandArtifact}
+            resolveAction={resolveArtifactAction}
             onSelect={(optionId) =>
               onChange({ type: 'singleSelect', selectedId: optionId })}
           />
@@ -121,6 +148,17 @@ export const FeedbackRespondAskField: React.FC<FeedbackRespondAskFieldProps> = (
             row: 'feedback-respond-reorder-row',
             remove: 'feedback-respond-reorder-remove',
           }}
+          renderTrailing={onExpandArtifact || resolveArtifactAction
+            ? (itemId) => {
+                const artifact = artifacts?.find((entry) => entry.entryId === itemId);
+                if (!artifact) return null;
+                const open = resolveArtifactAction?.(artifact).open
+                  ?? (onExpandArtifact ? () => onExpandArtifact(artifact) : undefined);
+                return open
+                  ? <ReorderArtifactButton artifact={artifact} onExpand={() => open()} />
+                  : null;
+              }
+            : undefined}
           onChange={(next) => onChange({ type: 'reorder', ...next })}
         />
       );

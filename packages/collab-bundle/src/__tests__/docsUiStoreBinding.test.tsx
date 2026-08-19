@@ -7,6 +7,7 @@ import {
   createCollabDocsSession,
   pruneCollabDocsSession,
 } from '@nimbalyst/collab-bundle/docs-ui';
+import { asTeamMemberId } from '@nimbalyst/collab-bundle/editor';
 
 const SCOPE_KEY = 'built-docs-ui-store-binding';
 
@@ -24,7 +25,7 @@ describe('built Shared Docs UI store binding', () => {
       indexConfig: {
         serverUrl: 'ws://sync.test',
         teamProjectId: 'project-built-entry',
-        userId: 'member-built-entry',
+        teamMemberId: asTeamMemberId('member-built-entry'),
       },
     };
     const dataSource: CreateSessionArgs[1] = {

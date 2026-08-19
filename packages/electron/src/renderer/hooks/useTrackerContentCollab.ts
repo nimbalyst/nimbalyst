@@ -241,7 +241,7 @@ export function useTrackerContentCollab({
         serverUrl: config.serverUrl,
         getJwt: config.getJwt,
         orgId: config.orgId,
-        userId: config.userId,
+        teamMemberId: config.teamMemberId,
         userName: config.userName,
         userEmail: config.userEmail,
         documentId: config.documentId,
@@ -332,7 +332,7 @@ export function useTrackerContentCollab({
       acquisition = acq;
       syncProviderRef.current = acq.syncProvider;
       acquisitionConfigRef.current = acq.config;
-      userNameRef.current = acq.config.userName || acq.config.userEmail || acq.config.userId;
+      userNameRef.current = acq.config.userName || acq.config.userEmail || acq.config.teamMemberId;
       // `deferInitialSync` suppresses the immediate `sync(true)` that
       // CollabLexicalProvider normally fires on listener registration.
       // Instead, sync(true) fires only when the DocumentSyncProvider reaches
@@ -410,8 +410,8 @@ export function useTrackerContentCollab({
     if (!config || providerEpoch === 0 || !workspacePath) return null;
 
     const currentUser = {
-      id: config.userId,
-      name: config.userName || config.userEmail || config.userId,
+      id: config.teamMemberId,
+      name: config.userName || config.userEmail || config.teamMemberId,
     };
     const documentUri = buildCollabUri(config.orgId, config.documentId);
     return {

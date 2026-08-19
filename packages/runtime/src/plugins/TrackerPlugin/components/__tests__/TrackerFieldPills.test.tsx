@@ -94,6 +94,37 @@ describe('TrackerFieldPills', () => {
     expect(screen.queryByTestId('tracker-field-popover-tags')).toBeNull();
   });
 
+  it('labels filled chips whose value cannot name its own field', () => {
+    const shotField: FieldDefinition = { name: 'shootDate', type: 'date' };
+    const briefField: FieldDefinition = { name: 'brief', type: 'url' };
+    renderPills(
+      [statusField, dueField, shotField, briefField, ownerField],
+      {
+        state: 'open',
+        dueDate: '2026-05-29',
+        shootDate: '2026-05-01',
+        brief: { url: 'https://drive.example/brief' },
+        owner: '',
+      },
+    );
+
+    const labelOf = (field: string): string | undefined => screen
+      .getByTestId(`tracker-field-pill-${field}`)
+      .querySelector('.tracker-field-pill-label')?.textContent ?? undefined;
+
+    // Two dates and a URL are indistinguishable as bare values (#1166).
+    expect(labelOf('dueDate')).toBe('Due Date');
+    expect(labelOf('shootDate')).toBe('Shoot Date');
+    expect(labelOf('brief')).toBe('Brief');
+
+    // A select value is already its own label, so labelling it would duplicate.
+    expect(labelOf('state')).toBeUndefined();
+
+    // An empty chip renders the label as its value; it must not show up twice.
+    expect(labelOf('owner')).toBeUndefined();
+    expect(screen.getByTestId('tracker-field-pill-owner').textContent).toContain('Owner');
+  });
+
   it('honours a surface-specific test id base and row class', () => {
     renderPills([statusField], { state: 'open' }, {
       testIdBase: 'tracker-document-field',

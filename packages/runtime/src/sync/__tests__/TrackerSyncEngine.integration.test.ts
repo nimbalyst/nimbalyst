@@ -20,6 +20,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '../../auth/jwtScopes';
 import {
   TrackerSyncEngine,
   type TrackerSyncEngineConfig,
@@ -95,10 +96,10 @@ async function buildEngine(opts: {
     serverUrl: 'ws://fake',
     orgId: 'test-org',
     teamProjectId: 'tracker-test-project',
-    userId: `user-${Math.random().toString(36).slice(2, 8)}`,
+    teamMemberId: asTeamMemberId(`user-${Math.random().toString(36).slice(2, 8)}`),
     persistence,
     initializeIssueKeyPrefix: opts.initializeIssueKeyPrefix,
-    getJwt: async () => 'fake-jwt',
+    getJwt: async () => asTeamJwt('fake-jwt'),
     createWebSocket: () => opts.serverConnect(),
   };
   const engine = new TrackerSyncEngine(config);

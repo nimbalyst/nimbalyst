@@ -28,6 +28,7 @@ import React from 'react';
 import type { FeedbackAnswer } from '@nimbalyst/collab-protocol';
 import type { FeedbackRequestServiceState } from '../feedback/index';
 import type { FeedbackOptionPreviewRenderer } from './FeedbackRespondOptionCards';
+import { type FeedbackArtifactActionResolver, type FeedbackSubjectOpener } from './FeedbackArtifactSubjects';
 export interface FeedbackRespondSubmitResult {
     success: boolean;
     error?: string;
@@ -49,6 +50,15 @@ export interface FeedbackRequestRespondProps {
     discussion?: React.ReactNode;
     /** Per-option artifact previews, when the embedding surface has them. */
     renderOptionPreview?: FeedbackOptionPreviewRenderer;
+    /**
+     * Opens a subject or a bound artifact. Host-supplied because the mechanics
+     * differ per host -- a tab in the desktop app, a route in the browser -- and
+     * neither belongs in this tree. Absent means the subjects still render, as
+     * text.
+     */
+    onOpenSubject?: FeedbackSubjectOpener;
+    /** Resolves each artifact before an open affordance is rendered. */
+    resolveArtifactAction?: FeedbackArtifactActionResolver;
     /** Overridden in tests; deadline copy is the only thing that reads it. */
     now?: number;
 }

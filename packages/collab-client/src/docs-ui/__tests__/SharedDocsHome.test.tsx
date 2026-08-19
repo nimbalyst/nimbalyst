@@ -12,7 +12,7 @@ import type { CollabDocsSession, SharedDocument } from '@nimbalyst/collab-client
 const TEST_SCOPE = {
   scopeKey: '/workspace',
   orgId: 'org-1',
-  indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+  indexConfig: { serverUrl: 'ws://sync', teamMemberId: 'user-1' },
 };
 
 // MaterialSymbol pulls in font/asset side-effects we don't need for a layout test.

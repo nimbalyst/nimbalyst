@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 const syncMocks = vi.hoisted(() => ({
   providerOptions: [] as any[],
@@ -153,7 +154,7 @@ describe('CollaborativeEmbedProviderCache', () => {
       scope: {
         scopeKey: '/workspace',
         orgId: 'team-1',
-        indexConfig: { serverUrl: 'ws://collab.test', userId: 'user-1' },
+        indexConfig: { serverUrl: 'ws://collab.test', teamMemberId: asTeamMemberId('user-1') },
       },
       orgId: 'team-1',
       documentId: 'mockup-1',
@@ -161,8 +162,8 @@ describe('CollaborativeEmbedProviderCache', () => {
       documentType: 'mockup.html',
       serverUrl: 'ws://collab.test',
       accountId: 'account-1',
-      userId: 'user-1',
-      getJwt: async () => 'token',
+      teamMemberId: asTeamMemberId('user-1'),
+      getJwt: async () => asTeamJwt('token'),
     });
     const setReplicaProviderAttached = vi.fn(async () => {});
     const closeDoc = vi.fn(async () => ({ success: true }));

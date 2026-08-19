@@ -1,5 +1,9 @@
 import type { TextFormatType } from 'lexical';
-import type { TeamJwt, TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
+import {
+  asTeamJwt,
+  asTeamMemberId,
+  type TeamJwt,
+} from '@nimbalyst/runtime/auth/jwtScopes';
 
 import { mountCollabEditor } from './mount';
 import type {
@@ -25,7 +29,9 @@ export interface BridgeMountRequest {
     };
     auth: {
       scope: 'team';
+      // identity-scope-allow: serialized WebView input is branded at the bridge boundary
       memberId: string;
+      // identity-scope-allow: serialized WebView input is branded at the bridge boundary
       jwt: string;
     };
   };
@@ -36,6 +42,7 @@ export interface BridgeMountRequest {
 export interface BridgeAuthResponse {
   requestId: string;
   scope: 'team';
+  // identity-scope-allow: serialized WebView response is branded by BridgeTeamJwtBroker
   jwt: string;
 }
 
@@ -106,7 +113,7 @@ class BridgeTeamJwtBroker {
     const resolve = this.pending.get(response.requestId);
     if (!resolve) throw new Error(`Unknown team JWT request: ${response.requestId}`);
     this.pending.delete(response.requestId);
-    this.currentJwt = response.jwt as TeamJwt;
+    this.currentJwt = asTeamJwt(response.jwt);
     resolve(this.currentJwt);
   }
 
@@ -149,7 +156,7 @@ export function installCollabEditorBridge(
         mounted?.destroy();
         authBroker?.destroy();
         authBroker = new BridgeTeamJwtBroker(
-          request.source.auth.jwt as TeamJwt,
+          asTeamJwt(request.source.auth.jwt),
           postMessage,
         );
         mounted = mountEditor({
@@ -164,13 +171,13 @@ export function installCollabEditorBridge(
             },
             auth: {
               scope: 'team',
-              memberId: request.source.auth.memberId as TeamMemberId,
+              memberId: asTeamMemberId(request.source.auth.memberId),
               getTeamJwt: authBroker.getTeamJwt,
             },
           },
           user: {
             ...request.user,
-            memberId: request.source.auth.memberId as TeamMemberId,
+            memberId: asTeamMemberId(request.source.auth.memberId),
           },
           readOnly: request.readOnly,
           onReady: () => postMessage({ type: 'editorReady' }),

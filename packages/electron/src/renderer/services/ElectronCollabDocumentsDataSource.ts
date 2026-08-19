@@ -26,6 +26,8 @@ export interface ElectronCollabDocumentsDataSourceEvents {
   observeStatus?: (status: ReturnType<TeamSyncProvider['getStatus']>, error?: unknown) => void;
   onOrgSettingsUpdated?: NonNullable<TeamSyncConfig['onOrgSettingsUpdated']>;
   onConversationDescriptorUpdated?: NonNullable<TeamSyncConfig['onConversationDescriptorUpdated']>;
+  onFeedbackIndexLoaded?: NonNullable<TeamSyncConfig['onFeedbackIndexLoaded']>;
+  onFeedbackIndexChanged?: NonNullable<TeamSyncConfig['onFeedbackIndexChanged']>;
   onMemberAdded?: NonNullable<TeamSyncConfig['onMemberAdded']>;
   onMemberRemoved?: NonNullable<TeamSyncConfig['onMemberRemoved']>;
   onMemberRoleChanged?: NonNullable<TeamSyncConfig['onMemberRoleChanged']>;
@@ -107,7 +109,7 @@ export class ElectronCollabDocumentsDataSource implements CollabDocsDataSource {
       serverUrl: scope.indexConfig.serverUrl,
       orgId: scope.orgId,
       teamProjectId: scope.indexConfig.teamProjectId,
-      userId: scope.indexConfig.userId,
+      teamMemberId: scope.indexConfig.teamMemberId,
       getJwt: options.getJwt,
       onTeamStateLoaded: emitSnapshot,
       onDocumentsLoaded: emitSnapshot,

@@ -107,8 +107,8 @@ export async function acquireHeadlessCollabCommentController(
     );
     const config = acquisition.resource.config;
     const currentUser = {
-      id: config.userId,
-      name: config.userName || config.userEmail || config.userId,
+      id: config.teamMemberId,
+      name: config.userName || config.userEmail || config.teamMemberId,
     };
     const teamProvider = getTeamSyncProviderForScopeKey(workspacePath);
     const getMembers = () =>

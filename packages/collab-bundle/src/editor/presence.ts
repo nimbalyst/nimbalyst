@@ -1,4 +1,7 @@
-import type { TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
+import {
+  asTeamMemberId,
+  type TeamMemberId,
+} from '@nimbalyst/runtime/auth/jwtScopes';
 import type {
   AwarenessState,
   DocumentSyncStatus,
@@ -76,7 +79,7 @@ function participantFromAwareness(
   state: AwarenessState,
 ): CollabEditorParticipant {
   return {
-    memberId: memberId as TeamMemberId,
+    memberId: asTeamMemberId(memberId),
     displayName: state.user.name?.trim() || memberId,
     cursorColor: state.user.color,
     hasSelection: Boolean(state.cursor),

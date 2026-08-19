@@ -3124,6 +3124,42 @@ class PGLiteWorker {
       console.error('[PGLite Worker] Failed to create feedback_request_cache table:', error);
       throw error;
     }
+
+    // Migration: participant-filtered Feedback Request index (schema version 34).
+    // Mirror of SQLite 0034_feedback_request_index.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS feedback_request_index (
+          workspace_path TEXT NOT NULL,
+          org_id         TEXT NOT NULL,
+          viewer_user_id TEXT NOT NULL,
+          request_id     TEXT NOT NULL,
+          data           JSONB NOT NULL,
+          created_at     TIMESTAMPTZ NOT NULL,
+          updated_at     TIMESTAMPTZ NOT NULL,
+          closed_at      TIMESTAMPTZ,
+          snapshot_id    TEXT,
+          PRIMARY KEY (workspace_path, org_id, viewer_user_id, request_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_feedback_request_index_org
+          ON feedback_request_index
+            (workspace_path, org_id, viewer_user_id, updated_at);
+
+        CREATE TABLE IF NOT EXISTS feedback_request_index_backfill (
+          workspace_path    TEXT NOT NULL,
+          org_id            TEXT NOT NULL,
+          viewer_user_id    TEXT NOT NULL,
+          cutoff_at         TIMESTAMPTZ NOT NULL,
+          cursor_request_id TEXT,
+          completed_at      TIMESTAMPTZ,
+          PRIMARY KEY (workspace_path, org_id, viewer_user_id)
+        );
+      `);
+      console.log('[PGLite Worker] feedback_request_index tables created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create feedback_request_index tables:', error);
+      throw error;
+    }
   }
 
   async query(message) {

@@ -727,7 +727,7 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
   const [issueKeyPrefix, setIssueKeyPrefix] = useState(() => deriveIssueKeyPrefix(workspacePath ?? ''));
   const [localKeyPrefixConfig, setLocalKeyPrefixConfig] = useState<LocalKeyPrefixConfig>(() => ({
     prefix: deriveIssueKeyPrefix(workspacePath ?? ''),
-    locked: false,
+    hasIssuedNumbers: false,
     matchesTeamPrefix: true,
   }));
   const [isSyncConnected, setIsSyncConnected] = useState(false);

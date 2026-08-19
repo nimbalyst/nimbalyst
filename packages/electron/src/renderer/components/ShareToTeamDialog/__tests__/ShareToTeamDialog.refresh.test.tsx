@@ -4,6 +4,7 @@ import { Provider } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { store } from '@nimbalyst/runtime/store';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { activeWorkspacePathAtom } from '../../../store/atoms/openProjects';
 import {
   activeCollabScopeAtom,
@@ -29,7 +30,7 @@ const workspacePath = '/workspace/share-picker-refresh';
 const collabScope = {
   scopeKey: workspacePath,
   orgId: 'team-1',
-  indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+  indexConfig: { serverUrl: 'ws://sync', teamMemberId: asTeamMemberId('user-1') },
 };
 const markdownDescriptor = {
   documentType: 'markdown',

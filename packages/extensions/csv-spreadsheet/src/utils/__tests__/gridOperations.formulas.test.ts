@@ -61,6 +61,7 @@ function createFormulaGrid(content: string) {
     getDelimiter: () => parsed.delimiter,
     getColumnFormats: () => parsed.data.columnFormats,
     getColumnWidths: () => ({}),
+    getCellStyles: () => ({}),
     getFrozenColumnCount: () => parsed.data.frozenColumnCount,
     onDirty: () => undefined,
     getUndoPlugin: () => null,

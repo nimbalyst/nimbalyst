@@ -63,6 +63,13 @@ export class JsonRpcClient {
     const rl = readline.createInterface({ input: this.child.stdout, crlfDelay: Infinity });
     rl.on('line', (line) => this.handleLine(line));
     this.child.once('exit', () => this.handleExit());
+    // A child that never starts emits 'error' + 'close' and NEVER 'exit' -- so
+    // listening only for 'exit' left every pending request hanging until its
+    // timeout, five idle minutes on a session that could not possibly start.
+    // Subscribing to 'error' also keeps a failed spawn from surfacing as an
+    // unhandled 'error' event (which reads as a crash inside child_process).
+    this.child.once('error', (err: Error) => this.handleSpawnFailure(err));
+    this.child.once('close', () => this.handleExit());
   }
 
   /**
@@ -203,5 +210,10 @@ export class JsonRpcClient {
 
   private handleExit(): void {
     this.close('[CodexAppServer] child process exited');
+  }
+
+  private handleSpawnFailure(err: Error): void {
+    this.logger.warn('[CodexAppServer] child process failed to start:', err);
+    this.close(`[CodexAppServer] child process failed to start: ${err.message}`);
   }
 }

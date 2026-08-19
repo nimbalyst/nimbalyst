@@ -86,7 +86,7 @@ export function useTrackerBodyPrewarm({
           serverUrl: config.serverUrl,
           getJwt: config.getJwt,
           orgId: config.orgId,
-          userId: config.userId,
+          teamMemberId: config.teamMemberId,
           documentId: config.documentId,
           workspacePath,
           createWebSocket: config.createWebSocket,

@@ -102,7 +102,9 @@ vi.mock('../StytchAuthService', () => ({
 
 vi.mock('@nimbalyst/runtime', () => ({
   asPersonalJwt: (jwt: string) => jwt,
+  asPersonalMemberId: (id: string) => id,
   asTeamJwt: (jwt: string) => jwt,
+  asTeamMemberId: (id: string) => id,
 }));
 
 vi.mock('../../database/initialize', () => ({}));

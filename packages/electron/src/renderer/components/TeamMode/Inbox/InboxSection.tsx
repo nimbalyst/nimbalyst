@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExtern
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 import { InboxContextPane } from './InboxContextPane';
+import { InboxContextSlot } from './InboxContextSlot';
 import { InboxEmptyState, InboxOfflineWithoutCache } from './InboxEmptyState';
 import { InboxFilterBar } from './InboxFilterBar';
 import { InboxRow } from './InboxRow';
@@ -39,9 +40,9 @@ const RELATIVE_LABEL_TICK_MS = 60_000;
  * leaking its former source. With no provider mounted above it, the surface
  * shows an empty inbox — fixtures only arrive when a caller injects them.
  *
- * Layout: list plus a right-hand context pane. The pane is a container query
- * away — below `inbox-surface` 900px it collapses and the list takes the full
- * width, which is what the org window's default size produces today.
+ * Layout: list plus a right-hand context pane the user sizes by dragging its
+ * divider (width persisted per user). The pane collapses only once the surface
+ * is too narrow to hold both it and a readable list.
  */
 export function InboxSection({
   provider: providerProp,
@@ -81,6 +82,7 @@ export function InboxSection({
   const [filter, setFilter] = useState<InboxFilterId>(DEFAULT_INBOX_PREFERENCES.filter);
   const [unreadOnly, setUnreadOnly] = useState<boolean>(DEFAULT_INBOX_PREFERENCES.unreadOnly);
   const [scope, setScope] = useState<InboxScope>(DEFAULT_INBOX_PREFERENCES.scope);
+  const [contextPaneWidth, setContextPaneWidth] = useState<number>(DEFAULT_INBOX_PREFERENCES.contextPaneWidth);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activationNotice, setActivationNotice] = useState<string | null>(null);
@@ -140,6 +142,7 @@ export function InboxSection({
       setFilter(preferences.filter);
       setUnreadOnly(preferences.unreadOnly);
       setScope(preferences.scope);
+      setContextPaneWidth(preferences.contextPaneWidth);
       preferencesLoaded.current = true;
     });
     return () => { cancelled = true; };
@@ -148,8 +151,10 @@ export function InboxSection({
   useEffect(() => {
     // Don't write back the defaults before the stored value has been read.
     if (!preferencesLoaded.current) return;
-    void persistInboxPreferences({ filter, unreadOnly, scope });
-  }, [filter, unreadOnly, scope]);
+    // `contextPaneWidth` only changes when a drag ends, so this stays one write
+    // per resize rather than one per pointermove.
+    void persistInboxPreferences({ filter, unreadOnly, scope, contextPaneWidth });
+  }, [filter, unreadOnly, scope, contextPaneWidth]);
 
   const loading = snapshot.status === 'loading';
   const offline = snapshot.status === 'offlineWithCache' || snapshot.status === 'offlineWithoutCache';
@@ -384,7 +389,7 @@ export function InboxSection({
           )}
         </div>
 
-        <div className="inbox-context-slot w-[340px] shrink-0" data-testid="inbox-context-slot">
+        <InboxContextSlot width={contextPaneWidth} onWidthChange={setContextPaneWidth}>
           <InboxContextPane
             row={selectedRow}
             workspacePath={workspacePath}
@@ -393,7 +398,7 @@ export function InboxSection({
             onSubscriptionChange={handleSubscription}
             onOpenSource={(row) => { void handleOpen(row); }}
           />
-        </div>
+        </InboxContextSlot>
       </div>
 
       {provider.simulateStatus && (

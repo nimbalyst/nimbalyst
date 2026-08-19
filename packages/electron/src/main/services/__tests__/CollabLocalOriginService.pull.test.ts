@@ -46,6 +46,7 @@ vi.mock('../TeamService', () => ({
     teamProjectId: 'project-1',
     gitRemoteHash: null,
   }),
+  getOrgScopedIdentity: vi.fn().mockResolvedValue({ jwt: 'jwt', teamMemberId: 'member-1' }),
   getOrgScopedJwt: vi.fn().mockResolvedValue('jwt'),
 }));
 

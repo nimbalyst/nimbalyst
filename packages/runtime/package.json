@@ -162,6 +162,10 @@
       "import": "./dist/plugins/TrackerPlugin/models/index.js",
       "types": "./dist/plugins/TrackerPlugin/models/index.d.ts"
     },
+    "./plugins/TrackerPlugin/models/localIssueKey": {
+      "import": "./dist/plugins/TrackerPlugin/models/localIssueKey.js",
+      "types": "./dist/plugins/TrackerPlugin/models/localIssueKey.d.ts"
+    },
     "./ai/permissions": {
       "import": "./dist/ai/permissions/index.js",
       "types": "./dist/ai/permissions/index.d.ts"

@@ -14,6 +14,12 @@ import type {
   ReplaceLocalReplicaSnapshotInput,
 } from '@nimbalyst/runtime/sync';
 import type { ConversationSubscription } from '@nimbalyst/collab-protocol';
+import type {
+  PersonalJwt,
+  PersonalMemberId,
+  TeamJwt,
+  TeamMemberId,
+} from '@nimbalyst/runtime/auth/jwtScopes';
 import type { ConversationSetSubscriptionRequest } from '../shared/conversationDirectory.ts';
 import type {
   FeedbackRequestCloseIpcRequest,
@@ -1076,7 +1082,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
           documentType?: string;
           serverUrl: string;
           accountId: string;
-          userId: string;
+          teamMemberId: TeamMemberId;
           userName?: string;
           userEmail?: string;
           urlExtraQuery?: string;
@@ -1380,7 +1386,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getJwt: (orgId: string, forceRefresh?: boolean) =>
       ipcRenderer.invoke('document-sync:get-jwt', { orgId, forceRefresh }) as Promise<{
         success: boolean;
-        jwt?: string;
+        jwt?: TeamJwt;
         error?: string;
       }>,
     resolveIndexConfig: (workspacePath: string) =>
@@ -1389,7 +1395,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         config?: {
           orgId: string;
           serverUrl: string;
-          userId: string;
+          teamMemberId: TeamMemberId;
         };
         error?: string;
       }>,
@@ -1437,7 +1443,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         config?: {
           serverUrl: string;
           orgId: string;
-          userId: string;
+          personalMemberId: PersonalMemberId;
           encryptionKeyBase64: string;
           syncId: string;
           userName: string;
@@ -1447,7 +1453,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPersonalJwt: () =>
       ipcRenderer.invoke('document-sync:get-personal-jwt') as Promise<{
         success: boolean;
-        jwt?: string;
+        jwt?: PersonalJwt;
         error?: string;
       }>,
 

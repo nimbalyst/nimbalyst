@@ -89,6 +89,27 @@ describe('ClaudeCliSessionLauncher', () => {
     expect(opts.spawnConfig.executable).toBe('/usr/local/bin/claude');
   });
 
+  /**
+   * #844: the effort selector had no effect on a CLI session because the
+   * resolved level never reached the spawned process. The SDK path sets the
+   * same variable via sdkOptionsBuilder.
+   */
+  it('forwards the resolved effort level to the spawned CLI as CLAUDE_CODE_EFFORT_LEVEL', async () => {
+    const { launcher, createClaudeCliTerminal } = makeHarness();
+    await launcher.launch({ ...baseInput, effortLevel: 'max' });
+
+    const [, opts] = createClaudeCliTerminal.mock.calls[0];
+    expect(opts.spawnConfig.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
+  });
+
+  it('leaves CLAUDE_CODE_EFFORT_LEVEL unset when no effort is resolved', async () => {
+    const { launcher, createClaudeCliTerminal } = makeHarness();
+    await launcher.launch(baseInput);
+
+    const [, opts] = createClaudeCliTerminal.mock.calls[0];
+    expect(opts.spawnConfig.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+
   // NIM-2372: on a machine with an enterprise managed-mcp.json the binary exits 1
   // on ANY --mcp-config we pass, so the launcher must not build one at all. The
   // session then runs on the enterprise's own servers, without Nimbalyst's tools.

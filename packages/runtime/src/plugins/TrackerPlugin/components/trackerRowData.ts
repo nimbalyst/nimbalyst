@@ -21,7 +21,12 @@ import {
   type TrackerGroupBy,
   type TrackerRelationshipLabelResolver,
 } from '../models/trackerGrouping';
-import { getCellValue, getEffectiveUpdatedDate } from './trackerColumns';
+import {
+  getCellValue,
+  getEffectiveUpdatedDate,
+  resolveColumnFieldName,
+  type TrackerColumnDef,
+} from './trackerColumns';
 
 /**
  * Stamp `system.lastIndexed` with the record's effective updated date so
@@ -45,6 +50,7 @@ export function searchMatchesRecord(item: TrackerRecord, query: string): boolean
   const tags = getFieldByRole(item, 'tags');
   return Boolean(
     item.issueKey?.toLowerCase().includes(q)
+    || item.localKey?.toLowerCase().includes(q)
     || String(item.issueNumber ?? '').includes(q)
     || getRecordTitle(item).toLowerCase().includes(q)
     || (item.system.documentPath ?? '').toLowerCase().includes(q)
@@ -125,8 +131,17 @@ export function compareCellValues(
  * Empty values sort as "greater", so they land last ascending and first
  * descending. That is the ordering the table view has always had, and callers
  * negate this result for `desc` -- see {@link sortTrackerRecords}.
+ *
+ * Pass `columns` when the rows can span types (the "All" view): a role column reads a
+ * different field per record, so sorting without them compares the wrong field -- or
+ * nothing at all -- for any type that names it differently.
  */
-export function compareRecords(a: TrackerRecord, b: TrackerRecord, sortBy: string): number {
+export function compareRecords(
+  a: TrackerRecord,
+  b: TrackerRecord,
+  sortBy: string,
+  columns?: TrackerColumnDef[],
+): number {
   switch (sortBy) {
     case 'type':
       return a.primaryType.localeCompare(b.primaryType);
@@ -144,8 +159,12 @@ export function compareRecords(a: TrackerRecord, b: TrackerRecord, sortBy: strin
       };
       return identityValue(a).localeCompare(identityValue(b));
     }
-    default:
-      return compareCellValues(getCellValue(a, sortBy), getCellValue(b, sortBy));
+    default: {
+      const column = columns?.find(candidate => candidate.id === sortBy);
+      const aValue = getCellValue(a, column ? resolveColumnFieldName(a.primaryType, column) : sortBy);
+      const bValue = getCellValue(b, column ? resolveColumnFieldName(b.primaryType, column) : sortBy);
+      return compareCellValues(aValue, bValue, column?.render);
+    }
   }
 }
 
@@ -153,9 +172,10 @@ export function sortTrackerRecords(
   records: TrackerRecord[],
   sortBy: string,
   direction: 'asc' | 'desc',
+  columns?: TrackerColumnDef[],
 ): TrackerRecord[] {
   return [...records].sort((a, b) => {
-    const compareValue = compareRecords(a, b, sortBy);
+    const compareValue = compareRecords(a, b, sortBy, columns);
     return direction === 'asc' ? compareValue : -compareValue;
   });
 }

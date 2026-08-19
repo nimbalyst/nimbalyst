@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '../../auth/jwtScopes';
 import { DocumentSyncProvider } from '../DocumentSync';
 import {
   encodeDocumentRoomId,
@@ -52,9 +53,9 @@ describe('DocumentSyncProvider.connect with a filename-shaped documentId', () =>
 
     const provider = new DocumentSyncProvider({
       serverUrl: 'ws://example.test',
-      getJwt: async () => 'token',
+      getJwt: async () => asTeamJwt('token'),
       orgId: 'org-1',
-      userId: 'user-1',
+      teamMemberId: asTeamMemberId('user-1'),
       documentId: 'Integration 80% of Everything.md',
       createWebSocket: createWebSocket as unknown as (url: string) => WebSocket,
     });

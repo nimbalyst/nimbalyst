@@ -3,6 +3,7 @@ import type { AgentWakePromptOrigin } from '@nimbalyst/runtime/ai/server/types';
 import type { TeamInboxMaterializedDelivery, TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import type { FeedbackRequest } from '@nimbalyst/collab-protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import {
   AgentMentionDispatchService,
@@ -27,7 +28,7 @@ function delivery(
 ): TeamInboxMaterializedDelivery {
   return {
     id,
-    recipientUserId: 'owner',
+    teamMemberId: asTeamMemberId('owner'),
     orgId: 'org-a',
     orgName: 'Acme',
     source: {
@@ -229,7 +230,7 @@ function setup(options?: {
           workspacePath,
           orgId,
           requestId,
-          viewerUserId: 'owner',
+          teamMemberId: asTeamMemberId('owner'),
           status: 'connected',
           request: feedbackState,
           progress: {
@@ -364,7 +365,7 @@ describe('AgentMentionDispatchService integration', () => {
       }),
       loadState: async (target) => ({
         ...target,
-        viewerUserId: 'owner',
+        teamMemberId: asTeamMemberId('owner'),
         status: 'connected',
         request,
         progress: {

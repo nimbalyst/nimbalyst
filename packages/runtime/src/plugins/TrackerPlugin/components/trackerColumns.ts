@@ -12,6 +12,7 @@ import type { TrackerSchemaRole, FieldDefinition } from '../models/TrackerDataMo
 import { globalRegistry } from '../models';
 import { defaultTrackerTypeColor, defaultTrackerTypeIcon } from '../models/trackerTypeIdentity';
 import { isDateOnlyValue, parseDate } from '../models/dateUtils';
+import { resolveDisplayIssueKey } from '../models/localIssueKey';
 import { resolveRoleFieldName, getFieldByRole, getItemPublicationState } from '../trackerRecordAccessors';
 import { resolveCellEditor, READONLY_STRUCTURAL_COLUMNS, type CellEditorKind } from './trackerCellEditors';
 
@@ -75,6 +76,32 @@ const STRUCTURAL_COLUMNS: TrackerColumnDef[] = [
 ];
 
 /**
+ * Columns used when no schema model is registered for the requested type -- which is
+ * how the cross-tracker "All" view resolves its columns (it passes the empty string).
+ *
+ * Every entry carries a `role`, so the row layer resolves it to whatever field each
+ * item's own type maps that role to: `assignee` reads `owner` on most schemas but
+ * `dueDate` reads `targetDate` on `goal`. Without these, the All view could only ever
+ * show title/status/priority, so "what's overdue?" and "who owns this?" were
+ * unanswerable across trackers (nimbalyst#1129).
+ *
+ * The ids are the conventional field names from ROLE_DEFAULTS rather than the role
+ * names, so a persisted column config or filter clause means the same thing whether it
+ * was saved from the All view or from a single-tracker view.
+ */
+const ROLE_FALLBACK_COLUMNS: TrackerColumnDef[] = [
+  { id: 'title', label: 'Title', width: 'auto', minWidth: 200, sortable: true, render: 'text', defaultVisible: true, builtin: true, role: 'title', editable: true, edit: 'text' },
+  { id: 'status', label: 'Status', width: 120, sortable: true, render: 'badge', defaultVisible: true, builtin: true, role: 'workflowStatus', editable: true, edit: 'select' },
+  { id: 'priority', label: 'Priority', width: 100, sortable: true, render: 'badge', defaultVisible: true, builtin: true, role: 'priority', editable: true, edit: 'select' },
+  { id: 'owner', label: 'Owner', width: 120, minWidth: 100, sortable: true, render: 'avatar', defaultVisible: true, builtin: true, role: 'assignee', editable: true, edit: 'user' },
+  { id: 'dueDate', label: 'Due Date', width: 100, sortable: true, render: 'date', defaultVisible: true, builtin: true, role: 'dueDate', editable: true, edit: 'date' },
+  { id: 'startDate', label: 'Start Date', width: 100, sortable: true, render: 'date', defaultVisible: false, builtin: true, role: 'startDate', editable: true, edit: 'date' },
+  { id: 'reporterEmail', label: 'Reporter', width: 120, minWidth: 100, sortable: true, render: 'avatar', defaultVisible: false, builtin: true, role: 'reporter', editable: true, edit: 'user' },
+  { id: 'tags', label: 'Tags', width: 120, sortable: true, render: 'tags', defaultVisible: false, builtin: true, role: 'tags', editable: true, edit: 'multiselect' },
+  { id: 'progress', label: 'Progress', width: 60, sortable: true, render: 'progress', defaultVisible: false, builtin: true, role: 'progress', editable: true, edit: 'number' },
+];
+
+/**
  * Infer the column render type from a FieldDefinition.
  */
 function inferRenderType(field: FieldDefinition): ColumnRenderType {
@@ -118,12 +145,7 @@ export function resolveColumnsForType(type: string): TrackerColumnDef[] {
   if (!model) {
     // No model: return structural columns + conventional field columns. These stay
     // editable so an unregistered type still gets inline title/status/priority edits.
-    return [
-      ...STRUCTURAL_COLUMNS,
-      { id: 'title', label: 'Title', width: 'auto', minWidth: 200, sortable: true, render: 'text', defaultVisible: true, builtin: true, role: 'title', editable: true, edit: 'text' },
-      { id: 'status', label: 'Status', width: 120, sortable: true, render: 'badge', defaultVisible: true, builtin: true, role: 'workflowStatus', editable: true, edit: 'select' },
-      { id: 'priority', label: 'Priority', width: 100, sortable: true, render: 'badge', defaultVisible: true, builtin: true, role: 'priority', editable: true, edit: 'select' },
-    ];
+    return [...STRUCTURAL_COLUMNS, ...ROLE_FALLBACK_COLUMNS];
   }
 
   // Build role reverse lookup: fieldName -> role
@@ -169,6 +191,19 @@ export function resolveColumnsForType(type: string): TrackerColumnDef[] {
   columns.push({ id: 'created', label: 'Created', width: 100, sortable: true, render: 'date', defaultVisible: false, builtin: true, editable: false, edit: 'readonly' });
 
   return columns;
+}
+
+/**
+ * Resolve the record field one column reads for one item.
+ *
+ * A role-bearing column resolves per record, because the same column can be backed by
+ * a different field on each type -- `dueDate` is `dueDate` on most schemas but
+ * `targetDate` on `goal`. In a single-type view this is a no-op (the column id already
+ * is the field name); in the cross-tracker "All" view it is what makes the column
+ * show anything at all.
+ */
+export function resolveColumnFieldName(recordType: string, column: TrackerColumnDef): string {
+  return column.role ? resolveRoleFieldName(recordType, column.role) : column.id;
 }
 
 /**
@@ -385,7 +420,7 @@ export function getEffectiveUpdatedDate(record: TrackerRecord): Date | undefined
 export function getCellValue(record: TrackerRecord, columnId: string): any {
   switch (columnId) {
     case 'type': return record.primaryType;
-    case 'key': return record.issueKey ?? '';
+    case 'key': return resolveDisplayIssueKey(record) ?? '';
     case 'updated': return getEffectiveUpdatedDate(record);
     case 'viewed': return record.fields.viewed;
     case 'created': return record.system.createdAt;

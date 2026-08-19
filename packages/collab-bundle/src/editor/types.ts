@@ -1,5 +1,10 @@
 import type { TextFormatType } from 'lexical';
-import type { TeamJwt, TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
+import {
+  asTeamJwt,
+  asTeamMemberId,
+  type TeamJwt,
+  type TeamMemberId,
+} from '@nimbalyst/runtime/auth/jwtScopes';
 import type {
   CommentMember,
   CommentMentionPayload,
@@ -19,6 +24,7 @@ export type TeamDocumentId = string & { readonly [teamDocumentIdBrand]: true };
 export const asTeamOrgId = (value: string): TeamOrgId => value as TeamOrgId;
 export const asTeamProjectId = (value: string): TeamProjectId => value as TeamProjectId;
 export const asTeamDocumentId = (value: string): TeamDocumentId => value as TeamDocumentId;
+export { asTeamJwt, asTeamMemberId };
 
 export interface TeamRoomIdentity {
   orgId: TeamOrgId;

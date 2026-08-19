@@ -116,7 +116,7 @@ export async function inspectSharedDocumentEmptiness(
     serverUrl: config.serverUrl,
     getJwt: config.getJwt,
     orgId: config.orgId,
-    userId: config.userId,
+    teamMemberId: config.teamMemberId,
     documentId: config.documentId,
     createWebSocket: config.createWebSocket,
     onFirstSyncComplete: resolveFirstSync,
@@ -250,7 +250,7 @@ export async function exportSharedDocument(params: Omit<SeedParams, 'content'>):
     serverUrl: config.serverUrl,
     getJwt: config.getJwt,
     orgId: config.orgId,
-    userId: config.userId,
+    teamMemberId: config.teamMemberId,
     documentId: config.documentId,
     createWebSocket: config.createWebSocket,
   });
@@ -370,7 +370,7 @@ async function attemptHeadlessRoomWrite(
     serverUrl: config.serverUrl,
     getJwt: config.getJwt,
     orgId: config.orgId,
-    userId: config.userId,
+    teamMemberId: config.teamMemberId,
     documentId: config.documentId,
     createWebSocket: config.createWebSocket,
   });

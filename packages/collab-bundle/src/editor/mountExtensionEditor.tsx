@@ -210,6 +210,10 @@ export function mountExtensionEditor(
       name: resolvedUser.displayName,
       color: resolvedUser.cursorColor,
     },
+    // CollabPresenceSurface already re-announces on its own cadence and stamps
+    // the freshness metadata bundle peers expire each other on. A second
+    // heartbeat here would just double the traffic.
+    heartbeatIntervalMs: 0,
   });
 
   const collaboration = createBrowserCollaborationContext({

@@ -22,6 +22,7 @@ declare const teamProjectIdBrand: unique symbol;
 declare const teamDocumentIdBrand: unique symbol;
 
 export type { TeamJwt, TeamMemberId } from './internal/runtime/src/auth/jwtScopes';
+export { asTeamJwt, asTeamMemberId } from './internal/runtime/src/auth/jwtScopes';
 export type TeamOrgId = string & { readonly [teamOrgIdBrand]: true };
 export type TeamProjectId = string & { readonly [teamProjectIdBrand]: true };
 export type TeamDocumentId = string & { readonly [teamDocumentIdBrand]: true };

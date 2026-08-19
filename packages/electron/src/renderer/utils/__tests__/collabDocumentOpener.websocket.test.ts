@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 vi.mock('../logger', () => ({
   logger: { ui: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } },
@@ -14,7 +15,7 @@ import {
 const scopeA = {
   scopeKey: 'scope-a',
   orgId: 'org-1',
-  indexConfig: { serverUrl: 'wss://sync.example.test', userId: 'user-1' },
+  indexConfig: { serverUrl: 'wss://sync.example.test', teamMemberId: asTeamMemberId('user-1') },
 };
 const scopeB = { ...scopeA, scopeKey: 'scope-b' };
 
@@ -36,8 +37,8 @@ describe('createProxiedWebSocket', () => {
       documentId: 'doc-1',
       title: 'Document',
       serverUrl: 'wss://sync.example.test',
-      getJwt: async () => 'token',
-      userId: 'user-1',
+      getJwt: async () => asTeamJwt('token'),
+      teamMemberId: asTeamMemberId('user-1'),
       accountId: 'account-1',
     };
     const configA = { ...baseConfig, scope: scopeA, title: 'Scope A' };

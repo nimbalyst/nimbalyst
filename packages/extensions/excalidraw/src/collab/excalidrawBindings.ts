@@ -19,7 +19,10 @@ import type {
   ExcalidrawImperativeAPI,
   SocketId,
 } from '@excalidraw/excalidraw/types';
-import type { NonDeletedExcalidrawElement } from '@excalidraw/excalidraw/element/types';
+import type {
+  ExcalidrawElement,
+  NonDeletedExcalidrawElement,
+} from '@excalidraw/excalidraw/element/types';
 import type * as awarenessProtocol from 'y-protocols/awareness';
 import * as Y from 'yjs';
 import { CaptureUpdateAction, restoreElements } from '@excalidraw/excalidraw';
@@ -116,6 +119,7 @@ export class ExcalidrawBinding {
     readonly { id: string; version: number }[]
   > = [];
   private remoteElementEchoTimers = new Set<ReturnType<typeof setTimeout>>();
+  private apiChangeUnsubscribe: (() => void) | null = null;
   /**
    * The debounced local-to-shared push. Held on the instance so `syncNow` can
    * flush a pending scene into the Y.Doc on demand -- the host drains this
@@ -260,60 +264,11 @@ export class ExcalidrawBinding {
       }
     }, 50);
 
-    this.subscriptions.push(
-      this.api.onChange(
-        (elements, state, files) => {
-          const nonDeletedElements = elements.filter(
-            (element): element is NonDeletedExcalidrawElement =>
-              !element.isDeleted,
-          );
-          if (this.consumeRemoteElementsEcho(nonDeletedElements)) return;
-          if (this.isApplyingRemoteElements) return;
-          // Excalidraw also fires onChange for updateScene(). Do not let a
-          // remote repaint replace an already-queued local snapshot in the
-          // trailing-edge debounce. The repaint is exactly the current Y.Doc
-          // projection, while a real local change differs from it.
-          const sharedElements = yjsToExcalidraw(this.yElements).filter(
-            (element): element is NonDeletedExcalidrawElement =>
-              !element.isDeleted,
-          );
-          if (areElementsSame(sharedElements, nonDeletedElements)) {
-            if (this.awareness) {
-              this.awareness.setLocalStateField(
-                'selectedElementIds',
-                state.selectedElementIds,
-              );
-            }
-            return;
-          }
-          // Excalidraw dispatches onChange asynchronously, so the canvas can
-          // have moved on since this callback was queued -- typically a remote
-          // repaint that landed between a local edit and its dispatch. Dropping
-          // the callback outright loses that edit for good: it is then on
-          // neither the canvas nor the Y.Doc, and the repaint's own callback is
-          // consumed as an echo. Skip a stale snapshot only once everything in
-          // it survives elsewhere; otherwise flush it and let the reconcile in
-          // flushLocalChange merge it with what arrived in the meantime.
-          const currentSceneElements = this.api.getSceneElements();
-          if (
-            !areElementsSame(currentSceneElements, nonDeletedElements) &&
-            isSupersededSnapshot(
-              nonDeletedElements,
-              currentSceneElements,
-              sharedElements,
-            )
-          ) {
-            return;
-          }
-          this.flushLocalChange(
-            nonDeletedElements,
-            this.lastKnownElements.map((element) => ({ ...element })),
-            state.selectedElementIds,
-            files,
-          );
-        },
-      ),
-    );
+    this.subscribeToApi(api);
+    this.subscriptions.push(() => {
+      this.apiChangeUnsubscribe?.();
+      this.apiChangeUnsubscribe = null;
+    });
 
     // Remote element changes -> Excalidraw scene.
     const _remoteElementsChangeHandler = (
@@ -538,6 +493,90 @@ export class ExcalidrawBinding {
     }
     this.api.updateScene({ collaborators });
     this.collaborators = collaborators;
+  }
+
+  private readonly handleApiChange = (
+    elements: readonly ExcalidrawElement[],
+    state: AppState,
+    files: BinaryFiles,
+  ): void => {
+    const nonDeletedElements = elements.filter(
+      (element): element is NonDeletedExcalidrawElement => !element.isDeleted,
+    );
+    if (this.consumeRemoteElementsEcho(nonDeletedElements)) return;
+    if (this.isApplyingRemoteElements) return;
+    // Excalidraw also fires onChange for updateScene(). Do not let a remote
+    // repaint replace an already-queued local snapshot in the trailing-edge
+    // debounce. The repaint is exactly the current Y.Doc projection, while a
+    // real local change differs from it.
+    const sharedElements = yjsToExcalidraw(this.yElements).filter(
+      (element): element is NonDeletedExcalidrawElement => !element.isDeleted,
+    );
+    if (areElementsSame(sharedElements, nonDeletedElements)) {
+      if (this.awareness) {
+        this.awareness.setLocalStateField(
+          'selectedElementIds',
+          state.selectedElementIds,
+        );
+      }
+      return;
+    }
+    // Excalidraw dispatches onChange asynchronously, so the canvas can have
+    // moved on since this callback was queued -- typically a remote repaint
+    // that landed between a local edit and its dispatch. Dropping the callback
+    // outright loses that edit for good: it is then on neither the canvas nor
+    // the Y.Doc, and the repaint's own callback is consumed as an echo. Skip a
+    // stale snapshot only once everything in it survives elsewhere; otherwise
+    // flush it and let the reconcile in flushLocalChange merge it with what
+    // arrived in the meantime.
+    const currentSceneElements = this.api.getSceneElements();
+    if (
+      !areElementsSame(currentSceneElements, nonDeletedElements)
+      && isSupersededSnapshot(
+        nonDeletedElements,
+        currentSceneElements,
+        sharedElements,
+      )
+    ) {
+      return;
+    }
+    this.flushLocalChange(
+      nonDeletedElements,
+      this.lastKnownElements.map((element) => ({ ...element })),
+      state.selectedElementIds,
+      files,
+    );
+  };
+
+  private subscribeToApi(api: ExcalidrawImperativeAPI): void {
+    this.apiChangeUnsubscribe = api.onChange(this.handleApiChange);
+  }
+
+  /**
+   * Reattach the binding after Excalidraw remounts its imperative API.
+   *
+   * The Y.Doc and awareness outlive theme-keyed canvas mounts. Repaint their
+   * current projection onto the replacement API so remote changes and
+   * collaborator presence do not continue targeting the retired canvas.
+   */
+  public replaceApi(api: ExcalidrawImperativeAPI): void {
+    if (api === this.api) return;
+    this.apiChangeUnsubscribe?.();
+    this.api = api;
+    this.subscribeToApi(api);
+
+    const elements = yjsToExcalidraw(this.yElements).filter(
+      (element): element is NonDeletedExcalidrawElement => !element.isDeleted,
+    );
+    const restored = restoreElements(elements, null, {
+      repairBindings: true,
+      refreshDimensions: true,
+    });
+    this.updateRemoteElements(restored);
+    api.addFiles(
+      [...this.yAssets.keys()].map((key) => this.yAssets.get(key) as BinaryFileData),
+    );
+    api.updateScene({ collaborators: new Map(this.collaborators) });
   }
 
   /** Awareness pointer/button update. Mirrors Excalidraw's onPointerUpdate prop. */

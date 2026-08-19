@@ -18,10 +18,23 @@ test.describe.configure({ mode: 'serial' });
  * each look right in isolation can diverge without either one noticing. Only a
  * cross-host assertion catches it.
  *
- * Each row must be a type the console can actually load -- today that is the
- * pinned CSV spreadsheet. Adding the next certified type is a row here plus a
- * pin in the console's vite config; no new plumbing.
+ * Each row must be a type the console can actually load -- today the pinned CSV
+ * spreadsheet and the pinned mockup editor.
+ *
+ * The descriptor below owns everything type-shaped. It used to be mostly
+ * RevoGrid vocabulary (`readCells`, cell targets) with the grid's edit, presence
+ * and fingerprint helpers hardcoded in the test body, which made a second type
+ * infrastructure work rather than a row. Now each row brings its own reader,
+ * editor and -- where the extension has one -- its own presence and structural
+ * parity check.
  */
+interface PresenceSnapshot {
+  overlays: number;
+  cells: number;
+  editing: number;
+  labels: string[];
+}
+
 interface CrossHostTypeDescriptor {
   documentType: string;
   displayName: string;
@@ -30,16 +43,29 @@ interface CrossHostTypeDescriptor {
   editorSelector: string;
   seedContent: string;
   seedMarkers: string[];
+  /** The content both hosts must agree on, normalised and sorted. */
+  readContent(page: Page): Promise<string[]>;
+  /** Make one user-visible edit carrying `marker`, in whichever host is passed. */
+  applyEdit(page: Page, role: 'desktop' | 'browser', marker: string): Promise<void>;
   /**
-   * Seeded cell values each host overwrites. Addressed by text, not by
-   * coordinates: with a frozen column and a pinned header row, RevoGrid splits
-   * the grid into sections whose `data-rgcol`/`data-rgrow` restart per section,
-   * so a logical (col,row) is not a stable address -- and it is exactly the
-   * sort of internals a parity test should not be re-encoding.
+   * A structural parity check, when the type has layout that could diverge
+   * without the content doing so. Omitted when it would only compare two
+   * identically featureless renders.
    */
-  desktopTarget: string;
-  browserTarget: string;
-  readCells(page: Page): Promise<string[]>;
+  fingerprint?(page: Page): Promise<unknown>;
+  /**
+   * How this editor paints a remote collaborator, when it paints one at all.
+   *
+   * Omitted is a real answer, not a gap in the test: an extension may publish
+   * awareness without rendering anyone else's. `presenceGap` records why, and
+   * the test asserts the absence rather than quietly skipping it.
+   */
+  presence?: {
+    /** Enter the state the other host should see. Resolves to a teardown. */
+    beginEditing(page: Page, marker: string): Promise<() => Promise<void>>;
+    snapshot(page: Page, timeoutMs?: number): Promise<PresenceSnapshot>;
+  };
+  presenceGap?: string;
 }
 
 const BROWSER_MEMBER_ID = 'e2e-cross-host-browser';
@@ -126,13 +152,6 @@ async function editCell(page: Page, target: string, value: string) {
     .toContain(value);
 }
 
-interface PresenceSnapshot {
-  overlays: number;
-  cells: number;
-  editing: number;
-  labels: string[];
-}
-
 /** What one host renders for the other's live cursor. */
 async function pollPresence(page: Page, timeoutMs = 30_000): Promise<PresenceSnapshot> {
   const deadline = Date.now() + timeoutMs;
@@ -151,11 +170,277 @@ async function pollPresence(page: Page, timeoutMs = 30_000): Promise<PresenceSna
   return snapshot;
 }
 
-async function waitForCells(page: Page, markers: string[], timeout = 40_000): Promise<string[]> {
+/**
+ * The mockup source pane, opened if it is not already.
+ *
+ * A mockup has no other content-editing control -- the rendered preview is an
+ * iframe -- so this textarea is both the only way to change a shared mockup and
+ * the only host-neutral way to read one. It is the *inline* pane rather than the
+ * host's source mode: neither the browser host nor Electron's collab host
+ * defines `toggleSourceMode`, so both fall through to the same textarea. (The
+ * Electron *local file* host does define it, and there the same button swaps in
+ * Monaco -- which is why this helper is only correct for shared documents.)
+ */
+async function mockupSourcePane(page: Page) {
+  const editor = page.locator('.mockup-editor').filter({ visible: true });
+  const textarea = editor.locator('.mockup-source-editor');
+  if ((await textarea.count()) === 0) {
+    await editor.locator('.mockup-view-source-button').click();
+  }
+  await expect(textarea).toBeVisible({ timeout: 15_000 });
+  return textarea;
+}
+
+function mockupComments(html: string): string[] {
+  return [...html.matchAll(/<!--\s*([\s\S]*?)\s*-->/g)]
+    .map((match) => match[1].trim())
+    .filter(Boolean)
+    .sort();
+}
+
+/**
+ * The mockup's comment markers, read out of the live source pane.
+ *
+ * Deliberately not `__testHelpers.getExtensionEditorAPI` -- that is an Electron
+ * harness affordance and does not exist in the browser, so a cross-host reader
+ * cannot use it. The pane is kept current by the binding's remote-content
+ * handler, so it reflects converged state in either host.
+ */
+async function readMockupComments(page: Page): Promise<string[]> {
+  return mockupComments(await (await mockupSourcePane(page)).inputValue());
+}
+
+async function appendMockupComment(page: Page, marker: string): Promise<void> {
+  const textarea = await mockupSourcePane(page);
+  await textarea.focus();
+  // End of document, not the top: both clients appending at the same offset is
+  // the stronger convergence case, and the seeded head/style block above is not
+  // something a stray keystroke should land in.
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End');
+  await page.keyboard.insertText(`\n<!-- ${marker} -->`);
   await expect
-    .poll(() => readCells(page), { timeout, message: `waiting for ${markers.join(', ')}` })
+    .poll(() => readMockupComments(page), { timeout: 20_000, message: `local commit of ${marker}` })
+    .toContain(marker);
+}
+
+interface ExcalidrawClipboardElement {
+  id?: string;
+  type?: string;
+  text?: string;
+  x?: number;
+  y?: number;
+}
+
+function excalidrawTextElement(
+  id: string,
+  text: string,
+  x: number,
+  y: number,
+  seed: number,
+): Record<string, unknown> {
+  return {
+    id,
+    type: 'text',
+    x,
+    y,
+    width: 260,
+    height: 25,
+    angle: 0,
+    strokeColor: '#1e1e1e',
+    backgroundColor: 'transparent',
+    fillStyle: 'solid',
+    strokeWidth: 1,
+    strokeStyle: 'solid',
+    roughness: 1,
+    opacity: 100,
+    groupIds: [],
+    frameId: null,
+    roundness: null,
+    seed,
+    version: 1,
+    versionNonce: seed + 1000,
+    isDeleted: false,
+    boundElements: null,
+    updated: 1,
+    link: null,
+    locked: false,
+    text,
+    fontSize: 20,
+    fontFamily: 1,
+    textAlign: 'left',
+    verticalAlign: 'top',
+    containerId: null,
+    originalText: text,
+    autoResize: true,
+    lineHeight: 1.25,
+  };
+}
+
+function visibleExcalidrawCanvas(page: Page) {
+  return page
+    .locator('.excalidraw-editor')
+    .filter({ visible: true })
+    .locator('canvas.excalidraw__canvas.interactive');
+}
+
+/**
+ * Read the selected scene through Excalidraw's own clipboard command.
+ *
+ * This is intentionally host-neutral UI, not
+ * `__testHelpers.getExtensionEditorAPI`: that helper exists only in Electron.
+ * The browser and desktop both serialize the selected scene as the public
+ * `excalidraw/clipboard` payload.
+ */
+async function readExcalidrawElements(page: Page): Promise<ExcalidrawClipboardElement[]> {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  // Select the rendered scene with Excalidraw's context-menu command. The
+  // browser host accepts Cmd+A but leaves selectedElementIds unchanged, and a
+  // marquee can retain the locally selected element when a remote selection is
+  // also painted. The menu is deterministic across both hosts and still uses
+  // public UI rather than a test-only API.
+  const canvas = visibleExcalidrawCanvas(page);
+  const canvasBox = await canvas.boundingBox();
+  if (!canvasBox) throw new Error('Visible Excalidraw canvas has no bounds');
+  await page.mouse.click(
+    canvasBox.x + canvasBox.width * 0.5,
+    canvasBox.y + canvasBox.height * 0.3,
+    { button: 'right' },
+  );
+  await page.getByText('Select all', { exact: true }).last().click();
+  const editor = page.locator('.excalidraw-container').filter({ visible: true });
+  await editor.focus();
+  await expect.poll(
+    () => editor.evaluate((element) => element === document.activeElement),
+    { message: 'Excalidraw owns keyboard focus' },
+  ).toBe(true);
+  // Selection state is committed asynchronously in the browser bundle.
+  await page.waitForTimeout(100);
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+c' : 'Control+c');
+  await expect.poll(
+    () => page.evaluate(() => navigator.clipboard.readText()),
+    { timeout: 10_000, message: 'Excalidraw scene copied to the clipboard' },
+  ).not.toBe('');
+  const serialized = await page.evaluate(() => navigator.clipboard.readText());
+  // Excalidraw omits elements currently selected by another collaborator from
+  // Select all. Clear the temporary selection and allow awareness to publish
+  // that clear before another host performs its read, otherwise the assertion
+  // itself can hide the elements it is trying to observe.
+  await editor.focus();
+  await page.keyboard.press('v');
+  await page.mouse.click(
+    canvasBox.x + canvasBox.width * 0.5,
+    canvasBox.y + canvasBox.height * 0.3,
+  );
+  await page.waitForTimeout(600);
+  const payload = JSON.parse(serialized) as {
+    type?: string;
+    elements?: ExcalidrawClipboardElement[];
+  };
+  if (payload.type !== 'excalidraw/clipboard' || !Array.isArray(payload.elements)) {
+    throw new Error(`Unexpected Excalidraw clipboard payload: ${serialized.slice(0, 120)}`);
+  }
+  return payload.elements;
+}
+
+async function readExcalidrawLabels(page: Page): Promise<string[]> {
+  return (await readExcalidrawElements(page))
+    .filter((element) => element.type === 'text')
+    .map((element) => String(element.text ?? '').trim())
+    .filter(Boolean)
+    .sort();
+}
+
+async function editExcalidrawText(
+  page: Page,
+  role: 'desktop' | 'browser',
+  marker: string,
+): Promise<void> {
+  await expect(page.locator('.excalidraw-editor').filter({ visible: true }))
+    .toHaveAttribute('data-collab-binding-ready', 'true', { timeout: 30_000 });
+  const canvas = visibleExcalidrawCanvas(page);
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error('Visible Excalidraw canvas has no bounds');
+  await page.locator('.excalidraw-container').filter({ visible: true }).focus();
+  await page.keyboard.press('t');
+  await page.mouse.click(
+    box.x + (role === 'desktop' ? box.width * 0.35 : box.width * 0.65),
+    box.y + box.height * 0.7,
+  );
+  await page.keyboard.insertText(marker);
+  await expect(page.locator('textarea.excalidraw-wysiwyg')).toHaveValue(marker);
+  await page.keyboard.press('Escape');
+  await page.locator('.excalidraw-container').filter({ visible: true }).focus();
+  await page.keyboard.press('v');
+  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.3);
+  await page.waitForTimeout(600);
+}
+
+async function excalidrawFingerprint(page: Page): Promise<unknown> {
+  return (await readExcalidrawElements(page))
+    .map((element) => ({
+      id: element.id,
+      text: element.text,
+      type: element.type,
+      x: element.x,
+      y: element.y,
+    }))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+}
+
+async function pollExcalidrawPresence(
+  page: Page,
+  timeoutMs = 30_000,
+): Promise<PresenceSnapshot> {
+  const deadline = Date.now() + timeoutMs;
+  let labels: string[] = [];
+  while (Date.now() < deadline) {
+    const initials = await page
+      .locator('.UserList__collaborator--avatar-only')
+      .filter({ visible: true })
+      .allTextContents();
+    labels = initials.map((initial) => {
+      if (initial.trim() === 'B') return BROWSER_DISPLAY_NAME;
+      if (initial.trim() === 'P') return DESKTOP_DISPLAY_NAME;
+      return initial.trim();
+    }).filter(Boolean);
+    // Excalidraw replaces direct avatars with a public "+N" overflow menu
+    // when the editor is narrow. Read the same collaborator names from that
+    // menu so the assertion works at both the desktop and browser widths.
+    if (labels.length === 0) {
+      const overflow = page.locator('.UserList__more').filter({ visible: true });
+      if (await overflow.isVisible()) {
+        await overflow.click();
+        labels = (await page
+          .locator('.UserList__collaborator-name')
+          .filter({ visible: true })
+          .allTextContents())
+          .map((name) => name.trim())
+          .filter(Boolean);
+        await page.keyboard.press('Escape');
+      }
+    }
+    if (labels.length > 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return {
+    overlays: labels.length,
+    cells: 0,
+    editing: labels.length,
+    labels,
+  };
+}
+
+async function waitForContent(
+  type: CrossHostTypeDescriptor,
+  page: Page,
+  markers: string[],
+  timeout = 40_000,
+): Promise<string[]> {
+  await expect
+    .poll(() => type.readContent(page), { timeout, message: `waiting for ${markers.join(', ')}` })
     .toEqual(expect.arrayContaining(markers));
-  return readCells(page);
+  return type.readContent(page);
 }
 
 const crossHostTypes: CrossHostTypeDescriptor[] = [
@@ -175,11 +460,91 @@ const crossHostTypes: CrossHostTypeDescriptor[] = [
       '',
     ].join('\n'),
     seedMarkers: ['Seeded alpha row', 'Seeded bravo row', 'North', 'South'],
-    desktopTarget: 'Seeded alpha row',
-    browserTarget: 'Seeded bravo row',
-    readCells,
+    readContent: readCells,
+    applyEdit(page, role, marker) {
+      // Each host overwrites a different seeded cell, addressed by text rather
+      // than coordinates: with a frozen column and a pinned header row, RevoGrid
+      // splits the grid into sections whose `data-rgcol`/`data-rgrow` restart per
+      // section, so a logical (col,row) is not a stable address -- and it is
+      // exactly the sort of internals a parity test should not be re-encoding.
+      return editCell(page, role === 'desktop' ? 'Seeded alpha row' : 'Seeded bravo row', marker);
+    },
+    fingerprint: gridFingerprint,
+    presence: {
+      async beginEditing(page, marker) {
+        const editor = await openCellEditor(page, marker);
+        return () => editor.press('Escape');
+      },
+      snapshot: pollPresence,
+    },
   },
-];
+  {
+    documentType: 'mockup.html',
+    displayName: 'Mockup',
+    suffix: '.mockup.html',
+    editorSelector: '.mockup-editor',
+    seedContent: [
+      '<!DOCTYPE html>',
+      '<html>',
+      '<head><style>body { font-family: Inter, sans-serif; }</style></head>',
+      '<body>',
+      '  <!-- Seeded alpha panel -->',
+      '  <h1>Cross-host certification mockup</h1>',
+      '  <!-- Seeded bravo panel -->',
+      '  <p>Seeded body copy.</p>',
+      '</body>',
+      '</html>',
+      '',
+    ].join('\n'),
+    seedMarkers: ['Seeded alpha panel', 'Seeded bravo panel'],
+    readContent: readMockupComments,
+    // Both hosts append at the end of the same Y.Text, which is the stronger
+    // convergence case than editing disjoint regions.
+    applyEdit: (page, _role, marker) => appendMockupComment(page, marker),
+    // No fingerprint: a mockup's layout is the author's own HTML inside an
+    // iframe, so a structural comparison would assert that two hosts rendered
+    // the same string -- which is what the content check already proves.
+    presenceGap: 'The mockup editor publishes local awareness but never passes '
+      + '`onRemoteAwareness` to its binding, so no remote collaborator is painted in '
+      + 'either host. Nothing to assert until the extension renders presence.',
+  },
+  {
+    documentType: 'excalidraw',
+    displayName: 'Excalidraw',
+    suffix: '.excalidraw',
+    editorSelector: '.excalidraw-editor',
+    seedContent: JSON.stringify({
+      type: 'excalidraw',
+      version: 2,
+      source: 'https://excalidraw.com',
+      elements: [
+        excalidrawTextElement('seed-alpha', 'Seeded alpha shape', 120, 120, 1001),
+        excalidrawTextElement('seed-bravo', 'Seeded bravo shape', 420, 120, 1002),
+      ],
+      appState: { viewBackgroundColor: '#ffffff' },
+      files: {},
+    }, null, 2),
+    seedMarkers: ['Seeded alpha shape', 'Seeded bravo shape'],
+    readContent: readExcalidrawLabels,
+    applyEdit: editExcalidrawText,
+    fingerprint: excalidrawFingerprint,
+    presence: {
+      async beginEditing(page) {
+        const canvas = visibleExcalidrawCanvas(page);
+        const box = await canvas.boundingBox();
+        if (!box) throw new Error('Visible Excalidraw canvas has no bounds');
+        await page.keyboard.press('Escape');
+        await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.82);
+        await page.mouse.down();
+        return () => page.mouse.up();
+      },
+      snapshot: pollExcalidrawPresence,
+    },
+  },
+].filter((type) => (
+  !process.env.CROSS_HOST_DOCUMENT_TYPE
+  || type.documentType === process.env.CROSS_HOST_DOCUMENT_TYPE
+));
 
 let harness: TwoClientCollabHarness;
 let webConsole: WebConsoleClient;
@@ -275,52 +640,98 @@ test('extension editors converge across an Electron and a browser host', async (
         'live',
         { timeout: 30_000 },
       );
-      await waitForCells(browser, type.seedMarkers);
+      await waitForContent(type, browser, type.seedMarkers);
 
       // ---- 2. Two-way convergence on one document.
       const desktopMarker = `Desktop ${runSuffix}`;
       const browserMarker = `Browser ${runSuffix}`;
-      await editCell(desktop, type.desktopTarget, desktopMarker);
-      await editCell(browser, type.browserTarget, browserMarker);
-      const [desktopCells, browserCells] = await Promise.all([
-        waitForCells(desktop, [desktopMarker, browserMarker]),
-        waitForCells(browser, [desktopMarker, browserMarker]),
-      ]);
+      await type.applyEdit(desktop, 'desktop', desktopMarker);
+      await type.applyEdit(browser, 'browser', browserMarker);
+      const desktopContent = await waitForContent(
+        type,
+        desktop,
+        [desktopMarker, browserMarker],
+      );
+      const browserContent = await waitForContent(
+        type,
+        browser,
+        [desktopMarker, browserMarker],
+      );
       // Structure first, so a failure names WHERE the two hosts differ rather
-      // than only that a flat cell list did.
-      const [desktopGrid, browserGrid] = await Promise.all([
-        gridFingerprint(desktop),
-        gridFingerprint(browser),
-      ]);
-      console.log(`[cross-host] desktop grid: ${JSON.stringify(desktopGrid)}`);
-      console.log(`[cross-host] browser grid: ${JSON.stringify(browserGrid)}`);
+      // than only that a flat content list did.
+      const [desktopShape, browserShape] = type.fingerprint
+        ? await Promise.all([type.fingerprint(desktop), type.fingerprint(browser)])
+        : [null, null];
+      if (type.fingerprint) {
+        console.log(`[cross-host] desktop shape: ${JSON.stringify(desktopShape)}`);
+        console.log(`[cross-host] browser shape: ${JSON.stringify(browserShape)}`);
+      }
       // The assertion that only a cross-host run can make. Each host showing
       // its own edit proves nothing about the other's document state.
-      expect(desktopCells).toEqual(browserCells);
+      expect(desktopContent).toEqual(browserContent);
 
-      // ---- 3. Presence across hosts. The label only renders for an *editing*
-      // collaborator, so each side opens a cell editor and the other reads the
-      // name off the overlay -- covering `selectedCell` and `editingCell`.
-      const browserEditor = await openCellEditor(browser, browserMarker);
-      const desktopSeen = await pollPresence(desktop);
-      await browserEditor.press('Escape');
+      // ---- 3. Presence across hosts, for the types that paint it. The label
+      // only renders for an *editing* collaborator, so each side enters its
+      // editing state and the other reads the name off the overlay.
+      let desktopSeen: PresenceSnapshot | null = null;
+      let browserSeen: PresenceSnapshot | null = null;
+      if (type.presence) {
+        const endBrowserEdit = await type.presence.beginEditing(browser, browserMarker);
+        desktopSeen = await type.presence.snapshot(desktop);
+        if (type.documentType === 'excalidraw' && desktopSeen.labels.length === 0) {
+          console.log('[cross-host-debug] desktop Excalidraw presence state:', JSON.stringify(
+            await desktop.evaluate(() => {
+              const filePath = document.querySelector('.tab.active')?.getAttribute('title');
+              const api = filePath
+                ? (window as any).__testHelpers?.getExtensionEditorAPI?.(filePath)
+                : null;
+              const collaborators = api?.getAppState?.().collaborators;
+              return {
+                filePath,
+                collaboratorCount: collaborators?.size ?? null,
+                collaborators: collaborators
+                  ? [...collaborators].map(([id, value]: [string, any]) => ({
+                    id,
+                    username: value.username,
+                    pointer: value.pointer,
+                  }))
+                  : null,
+                visibleEditors: [...document.querySelectorAll('.excalidraw-editor')]
+                  .filter((element) => (element as HTMLElement).offsetParent !== null).length,
+                userLists: document.querySelectorAll('.UserList').length,
+                overflowMenus: document.querySelectorAll('.UserList__more').length,
+              };
+            }),
+          ));
+        }
+        await endBrowserEdit();
 
-      const desktopEditor = await openCellEditor(desktop, desktopMarker);
-      const browserSeen = await pollPresence(browser);
-      await desktopEditor.press('Escape');
+        const endDesktopEdit = await type.presence.beginEditing(desktop, desktopMarker);
+        browserSeen = await type.presence.snapshot(browser);
+        await endDesktopEdit();
 
-      // Both directions reported together: a one-way failure and a dead
-      // awareness channel look identical from a single assertion. The asserts
-      // are deferred to the end of the step so a presence regression does not
-      // hide the state of everything after it.
-      console.log(`[cross-host] desktop saw browser presence: ${JSON.stringify(desktopSeen)}`);
-      console.log(`[cross-host] browser saw desktop presence: ${JSON.stringify(browserSeen)}`);
+        // Both directions reported together: a one-way failure and a dead
+        // awareness channel look identical from a single assertion. The asserts
+        // are deferred to the end of the step so a presence regression does not
+        // hide the state of everything after it.
+        console.log(`[cross-host] desktop saw browser presence: ${JSON.stringify(desktopSeen)}`);
+        console.log(`[cross-host] browser saw desktop presence: ${JSON.stringify(browserSeen)}`);
+      } else {
+        // An unasserted gap is indistinguishable from an untested one, so the
+        // absence is checked rather than skipped: if the extension grows remote
+        // presence, this fails and the row gains a `presence` block.
+        console.log(`[cross-host] ${type.displayName} paints no presence: ${type.presenceGap}`);
+        expect(type.presenceGap, `${type.displayName} needs a presence block or a recorded gap`)
+          .toBeTruthy();
+        const stray = await pollPresence(browser, 5_000);
+        expect(stray.labels).toEqual([]);
+      }
 
-      // ---- 5. Frozen column and header row render identically in both hosts.
+      // ---- 5. Structural parity, for the types that have structure to compare.
       // Parity, not a hardcoded layout: the claim under test is that one editor
       // in two hosts produces one result, and a fingerprint asserted against a
-      // literal would just re-encode RevoGrid's internals here.
-      expect(desktopGrid).toEqual(browserGrid);
+      // literal would just re-encode the grid's internals here.
+      if (type.fingerprint) expect(desktopShape).toEqual(browserShape);
 
       // ---- 4. Creating a shared document of an extension type from the
       // console is deliberately NOT offered: nothing seeds the new room from
@@ -353,8 +764,10 @@ test('extension editors converge across an Electron and a browser host', async (
       // editing frame in between -- so the desktop painted a presence cell with
       // `data-editing` unset, and the 5s presence heartbeat kept re-affirming
       // it. See `collab/localPresence.ts` in the CSV extension.
-      expect(browserSeen.labels).toEqual([DESKTOP_DISPLAY_NAME]);
-      expect(desktopSeen.labels).toEqual([BROWSER_DISPLAY_NAME]);
+      if (type.presence) {
+        expect(browserSeen?.labels).toEqual([DESKTOP_DISPLAY_NAME]);
+        expect(desktopSeen?.labels).toEqual([BROWSER_DISPLAY_NAME]);
+      }
     });
   }
 });
