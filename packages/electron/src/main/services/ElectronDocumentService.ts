@@ -1255,6 +1255,47 @@ export class ElectronDocumentService implements DocumentService {
     }
   }
 
+  /**
+   * Re-read frontmatter for tracker-backed files whose file mtime no longer
+   * matches the cached state, so a read reflects the file on disk even when no
+   * watcher event arrived for it.
+   *
+   * The workspace watcher (startTrackerMetadataWatch) keeps the cache warm for
+   * ordinary edits, but it cannot be the only guard: gitignored tracker files
+   * get no `change` events from the bus, OS watch events can be dropped, and
+   * the MCP tool path builds a throwaway ElectronDocumentService with no
+   * watcher at all when no window holds the workspace. Without this, an
+   * external edit stayed invisible to `tracker_list` until the next restart.
+   *
+   * Bounded by the number of full-document tracker items, not workspace size,
+   * and each hit is a 4KB bounded read behind refreshFileMetadata's hash guard.
+   * Cold services have an empty cache, so this is a no-op before the first scan
+   * rather than a reason to block on it.
+   */
+  private async revalidateFullDocumentMetadata(): Promise<void> {
+    const trackerPaths: string[] = [];
+    for (const metadata of this.metadataCache.values()) {
+      if (resolveFullDocumentFrontmatter(metadata.frontmatter)) {
+        trackerPaths.push(metadata.path);
+      }
+    }
+
+    await Promise.all(trackerPaths.map(async (relativePath) => {
+      const cachedState = this.fileStateCache.get(relativePath);
+      if (!cachedState) return;
+
+      try {
+        const stats = await fs.stat(path.join(this.workspacePath, relativePath));
+        // mtime only: a scan records `size: 0` for every file, so comparing
+        // size here would force a re-read on every single call.
+        if (stats.mtimeMs === cachedState.mtime) return;
+        await this.refreshFileMetadata(relativePath);
+      } catch {
+        // Unreadable or deleted since the scan; a full refresh reconciles it.
+      }
+    }));
+  }
+
   private async listFullDocumentTrackerItemsFromMetadata(): Promise<TrackerItem[]> {
     this.startScanIfNeeded();
 
@@ -1334,6 +1375,12 @@ export class ElectronDocumentService implements DocumentService {
   }
 
   private async listMergedTrackerItems(): Promise<TrackerItem[]> {
+    // Read path only. The scan path reaches
+    // listFullDocumentTrackerItemsFromMetadata directly, and it has just re-read
+    // every changed file itself -- revalidating there would be redundant work
+    // and would re-enter refreshFileMetadata mid-scan.
+    await this.revalidateFullDocumentMetadata();
+
     const result = await database.query<any>(
       `SELECT * FROM tracker_items WHERE workspace = $1 ORDER BY kanban_sort_order ASC NULLS LAST, last_indexed DESC`,
       [this.workspacePath]
