@@ -255,76 +255,109 @@ function generateWindowsYml() {
 }
 
 // Function to generate latest-linux.yml (for Linux)
-function generateLinuxYml() {
-  // Use the artifactName from package.json: "${productName}-Linux.${ext}"
-  const appImageFile = `${productName}-Linux.AppImage`;
-  const appImagePath = path.join(releaseDir, appImageFile);
+function generateLinuxYml(dir = releaseDir) {
+  // artifactName in package.json is "${productName}-Linux-${arch}.${ext}",
+  // so builds produce Nimbalyst-Linux-x64.AppImage and Nimbalyst-Linux-arm64.AppImage.
+  //
+  // afterAllArtifactBuild.js also copies the x64 AppImage to Nimbalyst-Linux.AppImage
+  // for backwards-compatible download links, but latest-linux.yml only references
+  // the arch-suffixed files so electron-updater can route each machine to the
+  // correct binary.
 
-  if (!fs.existsSync(appImagePath)) {
-    console.log(`Linux AppImage not found: ${appImagePath}, skipping latest-linux.yml`);
+  const files = [];
+
+  const x64AppImage = `${productName}-Linux-x64.AppImage`;
+  const x64Path = path.join(dir, x64AppImage);
+  const arm64AppImage = `${productName}-Linux-arm64.AppImage`;
+  const arm64Path = path.join(dir, arm64AppImage);
+
+  if (fs.existsSync(x64Path)) {
+    files.push({
+      url: x64AppImage,
+      sha512: calculateSHA512(x64Path),
+      size: getFileSize(x64Path),
+      arch: 'x64'
+    });
+  }
+
+  if (fs.existsSync(arm64Path)) {
+    files.push({
+      url: arm64AppImage,
+      sha512: calculateSHA512(arm64Path),
+      size: getFileSize(arm64Path),
+      arch: 'arm64'
+    });
+  }
+
+  if (files.length === 0) {
+    console.log(`No Linux AppImage files found in ${dir}, skipping latest-linux.yml`);
     return false;
   }
 
-  const yamlContent = {
-    version: version,
-    files: [{
-      url: appImageFile,
-      sha512: calculateSHA512(appImagePath),
-      size: getFileSize(appImagePath)
-    }],
-    path: appImageFile,
-    sha512: calculateSHA512(appImagePath),
-    releaseDate: new Date().toISOString()
-  };
+  // x64 is the primary file -- it matches the backwards-compatible
+  // Nimbalyst-Linux.AppImage download. If only arm64 is present (per-job
+  // generation before the release merge), fall back to it.
+  const primaryFile = files.find((f) => f.arch === 'x64') || files[0];
 
   // Convert to YAML format
-  let yamlString = `version: ${yamlContent.version}\n`;
+  let yamlString = `version: ${version}\n`;
   yamlString += `files:\n`;
-  yamlContent.files.forEach(file => {
+  files.forEach(file => {
     yamlString += `  - url: ${file.url}\n`;
     yamlString += `    sha512: ${file.sha512}\n`;
     yamlString += `    size: ${file.size}\n`;
+    yamlString += `    arch: ${file.arch}\n`;
   });
-  yamlString += `path: ${yamlContent.path}\n`;
-  yamlString += `sha512: ${yamlContent.sha512}\n`;
-  yamlString += `releaseDate: '${yamlContent.releaseDate}'\n`;
+  yamlString += `path: ${primaryFile.url}\n`;
+  yamlString += `sha512: ${primaryFile.sha512}\n`;
+  yamlString += `releaseDate: '${new Date().toISOString()}'\n`;
 
   // Write the file
-  const outputPath = path.join(releaseDir, 'latest-linux.yml');
+  const outputPath = path.join(dir, 'latest-linux.yml');
   fs.writeFileSync(outputPath, yamlString);
-  console.log(`Generated ${outputPath}`);
+  console.log(`Generated ${outputPath} with ${files.length} arch(es): ${files.map((f) => f.arch).join(', ')}`);
   return true;
 }
 
-// Check if release directory exists
-if (!fs.existsSync(releaseDir)) {
-  console.error('Release directory does not exist:', releaseDir);
-  process.exit(1);
+function main() {
+  // Check if release directory exists
+  if (!fs.existsSync(releaseDir)) {
+    console.error('Release directory does not exist:', releaseDir);
+    process.exit(1);
+  }
+
+  // Generate update files
+  console.log(`Generating update metadata files for version ${version}...`);
+
+  const macSuccess = generateMacYml();
+  const windowsSuccess = generateWindowsYml();
+  const linuxSuccess = generateLinuxYml();
+  const alphaMacSuccess = duplicateChannelFile('latest-mac.yml', 'alpha-mac.yml');
+  const alphaWindowsSuccess = duplicateChannelFile('latest.yml', 'alpha.yml');
+  const alphaLinuxSuccess = duplicateChannelFile('latest-linux.yml', 'alpha-linux.yml');
+
+  console.log('');
+  console.log('Generation results:');
+  console.log(`  latest-mac.yml: ${macSuccess ? 'OK' : 'SKIPPED (no macOS files found)'}`);
+  console.log(`  latest.yml (Windows): ${windowsSuccess ? 'OK' : 'SKIPPED (no Windows exe found)'}`);
+  console.log(`  latest-linux.yml: ${linuxSuccess ? 'OK' : 'SKIPPED (no Linux AppImage found)'}`);
+  console.log(`  alpha-mac.yml: ${alphaMacSuccess ? 'OK' : 'SKIPPED (no latest-mac.yml found)'}`);
+  console.log(`  alpha.yml (Windows): ${alphaWindowsSuccess ? 'OK' : 'SKIPPED (no latest.yml found)'}`);
+  console.log(`  alpha-linux.yml: ${alphaLinuxSuccess ? 'OK' : 'SKIPPED (no latest-linux.yml found)'}`);
+
+  if (!macSuccess && !windowsSuccess && !linuxSuccess) {
+    console.error('Failed to generate any update metadata files');
+    process.exit(1);
+  }
+
+  console.log('');
+  console.log('Update metadata files generated successfully');
 }
 
-// Generate update files
-console.log(`Generating update metadata files for version ${version}...`);
-
-const macSuccess = generateMacYml();
-const windowsSuccess = generateWindowsYml();
-const linuxSuccess = generateLinuxYml();
-const alphaMacSuccess = duplicateChannelFile('latest-mac.yml', 'alpha-mac.yml');
-const alphaWindowsSuccess = duplicateChannelFile('latest.yml', 'alpha.yml');
-const alphaLinuxSuccess = duplicateChannelFile('latest-linux.yml', 'alpha-linux.yml');
-
-console.log('');
-console.log('Generation results:');
-console.log(`  latest-mac.yml: ${macSuccess ? 'OK' : 'SKIPPED (no macOS files found)'}`);
-console.log(`  latest.yml (Windows): ${windowsSuccess ? 'OK' : 'SKIPPED (no Windows exe found)'}`);
-console.log(`  latest-linux.yml: ${linuxSuccess ? 'OK' : 'SKIPPED (no Linux AppImage found)'}`);
-console.log(`  alpha-mac.yml: ${alphaMacSuccess ? 'OK' : 'SKIPPED (no latest-mac.yml found)'}`);
-console.log(`  alpha.yml (Windows): ${alphaWindowsSuccess ? 'OK' : 'SKIPPED (no latest.yml found)'}`);
-console.log(`  alpha-linux.yml: ${alphaLinuxSuccess ? 'OK' : 'SKIPPED (no latest-linux.yml found)'}`);
-
-if (!macSuccess && !windowsSuccess && !linuxSuccess) {
-  console.error('Failed to generate any update metadata files');
-  process.exit(1);
+if (require.main === module) {
+  main();
 }
 
-console.log('');
-console.log('Update metadata files generated successfully');
+module.exports = {
+  generateLinuxYml
+};
