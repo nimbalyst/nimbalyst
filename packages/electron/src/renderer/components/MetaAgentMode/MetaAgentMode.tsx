@@ -1,9 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { atom } from 'jotai';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { store } from '@nimbalyst/runtime/store';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
+import {
+  metaAgentDashboardCollapsedAtom,
+  toggleMetaAgentDashboardCollapsedAtom,
+} from '../../store/atoms/agentMode';
 import { sessionRegistryAtom } from '../../store';
 import { sessionTokenUsageAtom } from '../../store/atoms/sessions';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
@@ -184,6 +188,8 @@ export function MetaAgentMode({
   onOpenSessionInAgent,
 }: MetaAgentModeProps) {
   const defaultModel = useAtomValue(defaultAgentModelAtom);
+  const dashboardCollapsed = useAtomValue(metaAgentDashboardCollapsedAtom);
+  const toggleDashboard = useSetAtom(toggleMetaAgentDashboardCollapsedAtom);
   const [metaSessionId, setMetaSessionId] = useState<string | null>(externalSessionId ?? null);
   const [loadingSession, setLoadingSession] = useState(!externalSessionId);
   const [loadingChildren, setLoadingChildren] = useState(false);
@@ -433,7 +439,20 @@ export function MetaAgentMode({
 
   return (
     <div className="meta-agent-mode relative flex-1 flex min-h-0" data-testid="meta-agent-mode">
-      <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden border-r border-nim">
+      <div className="relative flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden border-r border-nim">
+        {dashboardCollapsed && (
+          <button
+            type="button"
+            className="nim-btn-secondary absolute right-2 top-2 z-10 flex items-center gap-1 rounded px-2 py-1 text-xs"
+            onClick={toggleDashboard}
+            title="Show delegated sessions"
+            aria-label="Show delegated sessions"
+            data-testid="meta-agent-expand-dashboard"
+          >
+            <MaterialSymbol icon="chevron_left" size={14} />
+            {summary.total > 0 && <span>{summary.total}</span>}
+          </button>
+        )}
         <SessionTranscript
           sessionId={metaSessionId}
           workspacePath={workspacePath}
@@ -444,6 +463,7 @@ export function MetaAgentMode({
         />
       </div>
 
+      {!dashboardCollapsed && (
       <aside className="w-[360px] max-w-[420px] min-w-[320px] flex flex-col min-h-0 bg-[var(--nim-bg-secondary)]" data-testid="meta-agent-dashboard">
         <div className="px-4 py-4 border-b border-nim">
           <div className="flex items-center justify-between gap-3">
@@ -452,6 +472,16 @@ export function MetaAgentMode({
               <p className="text-xs text-[var(--nim-text-muted)]">Child sessions created by this meta-agent.</p>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="nim-btn-secondary text-xs px-2 py-1 rounded"
+                onClick={toggleDashboard}
+                title="Hide delegated sessions"
+                aria-label="Hide delegated sessions"
+                data-testid="meta-agent-collapse-dashboard"
+              >
+                <MaterialSymbol icon="chevron_right" size={14} />
+              </button>
               <button
                 type="button"
                 className="nim-btn-secondary text-xs px-2.5 py-1 rounded disabled:opacity-50"
@@ -562,6 +592,7 @@ export function MetaAgentMode({
           )}
         </div>
       </aside>
+      )}
 
       {showTimeline && (
         <div className="absolute inset-4 z-20 flex flex-col rounded-2xl border border-nim bg-[var(--nim-bg)] shadow-2xl" data-testid="meta-agent-gantt-view">
