@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from 'vitest';
 import { store } from '@nimbalyst/runtime/store';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { activeCollabScopeAtom, registerDocumentInIndex, sharedDocumentsAtom } from '../collabDocuments';
 import { pendingDocRegistrations } from '../pendingDocRegistrations';
 import type { CollabScope } from '@nimbalyst/collab-client/core';
@@ -9,7 +10,7 @@ const WS = '/workspace/register-test';
 const SCOPE: CollabScope = {
   scopeKey: WS,
   orgId: 'org-register',
-  indexConfig: { serverUrl: 'wss://example.test', userId: 'user-register' },
+  indexConfig: { serverUrl: 'wss://example.test', teamMemberId: asTeamMemberId('user-register') },
 };
 
 afterEach(() => {

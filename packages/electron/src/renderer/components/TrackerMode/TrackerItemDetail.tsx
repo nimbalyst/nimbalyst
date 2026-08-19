@@ -50,6 +50,7 @@ import { TrackerCollabAvatars, TrackerCollabSyncDot } from './trackerCollabChrom
 import { formatTrackerActivity } from './trackerActivityPresentation';
 import { createCollectionItem } from './createCollectionItem';
 import { TabEditor } from '../TabEditor/TabEditor';
+import { FeedbackBacklinkSection } from '../FeedbackRequest/FeedbackBacklinks';
 import {
   collabAwarenessAtom,
   collabProductStatusAtom,
@@ -1899,6 +1900,11 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
 
         {/* Linked From (incoming relationships, Epic C Phase 2) */}
         {!focusActive && <BacklinksSection itemId={item.id} onOpenItem={onOpenItem} />}
+
+        {/* Feedback gathered about this item; renders nothing when there is none */}
+        {!focusActive && (
+          <FeedbackBacklinkSection subject={{ kind: 'tracker', sourceId: item.id }} />
+        )}
 
         {/* Comments section */}
         {!focusActive && item.source !== 'inline' && item.source !== 'frontmatter' && (

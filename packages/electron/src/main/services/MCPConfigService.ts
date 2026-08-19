@@ -25,6 +25,7 @@ import {
   resolveMcpRemoteRequirementOptions,
   type McpRemoteRequirementOptions,
 } from './mcpRemoteRequirement';
+import { normalizeProjectPathKey, resolveProjectConfigKey } from './mcpProjectKey';
 
 /**
  * Service for managing MCP server configurations.
@@ -333,8 +334,12 @@ export class MCPConfigService {
         projects?: Record<string, { mcpServers?: Record<string, MCPServerConfig> }>;
       };
 
-      if (claudeConfig.projects && claudeConfig.projects[workspacePath]) {
-        claudeJsonServers = claudeConfig.projects[workspacePath].mcpServers || {};
+      // Match on the normalized path: Claude Code writes forward-slash keys,
+      // Nimbalyst passes native Windows paths, and an exact comparison never
+      // matched the two.
+      const projectKey = resolveProjectConfigKey(claudeConfig.projects, workspacePath);
+      if (projectKey && claudeConfig.projects) {
+        claudeJsonServers = claudeConfig.projects[projectKey].mcpServers || {};
       }
     } catch (error: any) {
       if (error.code !== 'ENOENT') {
@@ -411,13 +416,19 @@ export class MCPConfigService {
           claudeConfig.projects = {};
         }
 
-        // Initialize this project's entry if it doesn't exist
-        if (!claudeConfig.projects[workspacePath]) {
-          claudeConfig.projects[workspacePath] = {};
+        // Write into the entry Claude Code already owns when there is one, and
+        // otherwise create it in the forward-slash form Claude Code reads.
+        // Writing the native Windows path here forked a second entry that
+        // Claude Code could never see.
+        const existingKey = resolveProjectConfigKey(claudeConfig.projects, workspacePath);
+        const projectKey = existingKey ?? normalizeProjectPathKey(workspacePath);
+
+        if (!claudeConfig.projects[projectKey]) {
+          claudeConfig.projects[projectKey] = {};
         }
 
         // Update the mcpServers for this project
-        claudeConfig.projects[workspacePath].mcpServers = config.mcpServers;
+        claudeConfig.projects[projectKey].mcpServers = config.mcpServers;
 
         // Write back to ~/.claude.json
         const claudeContent = JSON.stringify(claudeConfig, null, 2);

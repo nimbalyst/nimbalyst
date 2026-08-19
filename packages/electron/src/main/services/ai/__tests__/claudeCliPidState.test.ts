@@ -27,6 +27,10 @@ describe('parseClaudePidFile', () => {
     expect(parseClaudePidFile('{"status":"waiting"}')?.status).toBe('waiting');
   });
 
+  it('parses shell (CLI 2.1.141+ writes it in place of idle when a local_bash task is live)', () => {
+    expect(parseClaudePidFile('{"status":"shell","pid":4321}')?.status).toBe('shell');
+  });
+
   it('is case-insensitive and trims', () => {
     expect(parseClaudePidFile('{"status":" Busy "}')?.status).toBe('busy');
   });
@@ -54,7 +58,7 @@ describe('parseClaudePidFile', () => {
 });
 
 describe('isClaudePidFileStale', () => {
-  const at = (status: 'busy' | 'idle' | 'waiting', updatedAt?: number) =>
+  const at = (status: 'busy' | 'shell' | 'idle' | 'waiting', updatedAt?: number) =>
     ({ status, updatedAt, raw: {} } as ReturnType<typeof parseClaudePidFile> & object);
 
   it('flags an active file whose updatedAt is older than the threshold', () => {
@@ -66,8 +70,9 @@ describe('isClaudePidFileStale', () => {
     expect(isClaudePidFileStale(at('busy', 90_000), 100_000, 60_000)).toBe(false);
   });
 
-  it('never flags idle, and treats a missing updatedAt as fresh (cannot judge)', () => {
+  it('never flags idle or shell, and treats a missing updatedAt as fresh (cannot judge)', () => {
     expect(isClaudePidFileStale(at('idle', 1), 1e15, 60_000)).toBe(false);
+    expect(isClaudePidFileStale(at('shell', 1), 1e15, 60_000)).toBe(false);
     expect(isClaudePidFileStale(at('busy', undefined), 1e15, 60_000)).toBe(false);
   });
 });
@@ -77,6 +82,10 @@ describe('mapPidStatusToTurnState', () => {
     expect(mapPidStatusToTurnState('busy')).toBe('running');
     expect(mapPidStatusToTurnState('idle')).toBe('idle');
     expect(mapPidStatusToTurnState('waiting')).toBe('waiting_for_input');
+  });
+
+  it('resolves shell as idle: the turn is over, only a background shell remains', () => {
+    expect(mapPidStatusToTurnState('shell')).toBe('idle');
   });
 });
 
@@ -129,6 +138,25 @@ describe('watchClaudePidState liveness backstop', () => {
     });
     await vi.advanceTimersByTimeAsync(60_000);
     expect(states).toEqual(['running']);
+    stop();
+  });
+
+  it('releases running to idle when the turn ends as shell, with the process still alive', async () => {
+    // The regression: a turn that ends with a live local_bash task writes
+    // `shell` where the watcher expects `idle`. An unrecognized status parses
+    // to null, so the watcher holds `running`, and the liveness backstop stays
+    // quiet because the CLI is alive. The session sat on "Thinking".
+    let contents = JSON.stringify({ status: 'busy', pid: 999, updatedAt: 1_000 });
+    const { states, stop } = setup({
+      readFile: async () => contents,
+      isProcessAlive: () => true,
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(states).toEqual(['running']);
+
+    contents = JSON.stringify({ status: 'shell', pid: 999, updatedAt: 2_000 });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(states).toEqual(['running', 'idle']);
     stop();
   });
 

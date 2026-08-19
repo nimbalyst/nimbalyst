@@ -41,14 +41,14 @@ import {
   type TrackerRoomConfig,
   type LabelsMap,
 } from '@nimbalyst/runtime/sync';
-import type { TrackerItem } from '@nimbalyst/runtime';
+import { asTeamJwt, asTeamMemberId, type TrackerItem } from '@nimbalyst/runtime';
 import { trackerItemToRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import WebSocket from 'ws';
 
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { isAuthenticated } from './StytchAuthService';
-import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
+import { findTeamForWorkspace, getOrgScopedIdentity, getOrgScopedJwt } from './TeamService';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { getDatabase } from '../database/initialize';
 import { TrackerPGLiteStore } from './tracker/TrackerPGLiteStore';
@@ -320,12 +320,13 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
   }
 
   const persistence = new TrackerPGLiteStore(db, workspacePath);
+  const { teamMemberId } = await getOrgScopedIdentity(team.orgId);
 
   const config: TrackerSyncEngineConfig = {
     serverUrl: getCollabSyncWsUrl(),
     orgId: team.orgId,
     teamProjectId: team.teamProjectId,
-    userId: '',  // informational only; the JWT carries the authoritative sub
+    teamMemberId,
     persistence,
     initializeIssueKeyPrefix: getWorkspaceState(workspacePath).issueKeyPrefix,
     schemaSync: {
@@ -893,7 +894,8 @@ export function registerTrackerSyncHandlers(): void {
       serverUrl: string;
       teamProjectId: string;
       orgId: string;
-      userId: string;
+      // identity-scope-allow: Playwright IPC payload is branded at the test-only handler boundary
+      teamMemberId: string;
     }) => {
       try {
         if (!payload?.workspacePath || !payload?.teamProjectId || !payload?.orgId) {
@@ -919,7 +921,7 @@ export function registerTrackerSyncHandlers(): void {
           serverUrl: payload.serverUrl,
           orgId: payload.orgId,
           teamProjectId: payload.teamProjectId,
-          userId: payload.userId,
+          teamMemberId: asTeamMemberId(payload.teamMemberId),
           persistence,
           schemaSync: {
                   listUnsynced: async () =>
@@ -933,13 +935,13 @@ export function registerTrackerSyncHandlers(): void {
             listUnsynced: () => listUnsyncedTrackerNavigationEntries(workspacePath),
             applyRemote: (def) => applyRemoteWorkspaceTrackerNavigationEntry(workspacePath, def),
           },
-          getJwt: async () => 'test-jwt',
+          getJwt: async () => asTeamJwt('test-jwt'),
           buildUrl: (roomId) => {
             const wsBase = payload.serverUrl
               .replace(/^http:/, 'ws:')
               .replace(/^https:/, 'wss:')
               .replace(/\/$/, '');
-            return `${wsBase}/sync/${roomId}?test_user_id=${encodeURIComponent(payload.userId)}&test_org_id=${encodeURIComponent(payload.orgId)}`;
+            return `${wsBase}/sync/${roomId}?test_user_id=${encodeURIComponent(payload.teamMemberId)}&test_org_id=${encodeURIComponent(payload.orgId)}`;
           },
           createWebSocket: ((url: string) => new WebSocket(url)) as unknown as TrackerSyncEngineConfig['createWebSocket'],
           onStatusChange: (status) => {

@@ -19,7 +19,6 @@ import type {
   SharedDocument,
   SharedFolder,
 } from '@nimbalyst/collab-client/docs';
-import { asTeamJwt } from '@nimbalyst/runtime/auth/jwtScopes';
 import { store } from '@nimbalyst/runtime/store';
 import { errorNotificationService } from './ErrorNotificationService';
 import {
@@ -336,7 +335,7 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
     if (!result.success || !result.jwt) {
       throw new Error(result.error || 'Failed to get team JWT');
     }
-    return asTeamJwt(result.jwt);
+    return result.jwt;
   }
 
   async getMembers(orgId: string): Promise<TeamMemberSummary[]> {
@@ -449,11 +448,11 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
         retryable: !message.includes('Not authenticated') && !message.includes('No team found'),
       });
     }
-    const { orgId, teamProjectId, serverUrl, userId, userName, userEmail, urlExtraQuery } = result.config;
+    const { orgId, teamProjectId, serverUrl, teamMemberId, userName, userEmail, urlExtraQuery } = result.config;
     return {
       scopeKey: requestedScopeKey,
       orgId,
-      indexConfig: { teamProjectId, serverUrl, userId, userName, userEmail, urlExtraQuery },
+      indexConfig: { teamProjectId, serverUrl, teamMemberId, userName, userEmail, urlExtraQuery },
     };
   }
 
@@ -471,6 +470,24 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
       },
       onConversationDescriptorUpdated: (descriptor) => {
         void applyConversationDescriptorBroadcast({ orgId: scope.orgId, descriptor });
+      },
+      onFeedbackIndexLoaded: (entries) => {
+        void window.electronAPI.invoke('feedback-request-index:replace-snapshot', {
+          target: { workspacePath: scope.scopeKey, orgId: scope.orgId },
+          teamMemberId: scope.indexConfig.teamMemberId,
+          entries,
+        }).catch((error) => {
+          console.error('[ElectronCollabHost] Failed to persist feedback index snapshot:', error);
+        });
+      },
+      onFeedbackIndexChanged: (entry) => {
+        void window.electronAPI.invoke('feedback-request-index:upsert', {
+          target: { workspacePath: scope.scopeKey, orgId: scope.orgId },
+          teamMemberId: scope.indexConfig.teamMemberId,
+          entry,
+        }).catch((error) => {
+          console.error('[ElectronCollabHost] Failed to persist feedback index update:', error);
+        });
       },
       onMemberAdded: (member) => {
         void (window as any).electronAPI.org.applyMemberUpserted(
@@ -498,6 +515,12 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
         scope,
         getJwt: () => this.getTeamJwt(scope.orgId),
         events: this.createDataSourceEvents(scope),
+      });
+      void window.electronAPI.invoke('feedback-request-index:list', {
+        workspacePath: scope.scopeKey,
+        orgId: scope.orgId,
+      }).catch((error) => {
+        console.error('[ElectronCollabHost] Failed to load cached feedback index:', error);
       });
       this.dataSource = source;
       return source;

@@ -17,7 +17,7 @@ import {
   getFieldForColumn,
   formatTrackerDateCell,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin';
-import { resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import { resolveColumnFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
 import { compareCellValues } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerRowData';
 import { resolveCellEditor } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerCellEditors';
 import {
@@ -33,10 +33,6 @@ export const ROW_ITEM_TYPE = '__trackerItemType';
 /** Structural pinned column that owns the row action trigger. */
 export const ROW_ACTIONS = '__trackerActions';
 
-function fieldNameForColumn(recordType: string, column: TrackerColumnDef): string {
-  return column.role ? resolveRoleFieldName(recordType, column.role) : column.id;
-}
-
 /** Build one RevoGrid source row per record, keyed by column id. */
 export function buildGridSource(
   items: TrackerRecord[],
@@ -48,7 +44,7 @@ export function buildGridSource(
       [ROW_ITEM_TYPE]: item.primaryType,
     };
     for (const col of columns) {
-      row[col.id] = getCellValue(item, fieldNameForColumn(item.primaryType, col));
+      row[col.id] = getCellValue(item, resolveColumnFieldName(item.primaryType, col));
     }
     return row;
   });
@@ -115,7 +111,7 @@ function formatValue(col: TrackerColumnDef, value: unknown, trackerType: string)
     }
     case 'badge': {
       // Prefer the schema option's label over the raw stored value.
-      const field = getFieldForColumn(trackerType, fieldNameForColumn(trackerType, col));
+      const field = getFieldForColumn(trackerType, resolveColumnFieldName(trackerType, col));
       const option = field?.options?.find(o => o.value === String(value));
       return option?.label ?? String(value);
     }
@@ -374,7 +370,7 @@ export function buildGridColumns(
         ? createTrackerCellEditor(descriptor, editorContext)
         : createRowAwareTrackerCellEditor((editCell) => {
           const rowType = String(editCell?.model?.[ROW_ITEM_TYPE] ?? '');
-          const rowField = getFieldForColumn(rowType, fieldNameForColumn(rowType, col));
+          const rowField = getFieldForColumn(rowType, resolveColumnFieldName(rowType, col));
           return resolveCellEditor(rowField);
         }, editorContext);
 
@@ -395,7 +391,7 @@ export function buildGridColumns(
         const itemId = model?.[ROW_ITEM_ID];
         if (!trackerType) {
           const rowType = String(model?.[ROW_ITEM_TYPE] ?? '');
-          const rowField = getFieldForColumn(rowType, fieldNameForColumn(rowType, col));
+          const rowField = getFieldForColumn(rowType, resolveColumnFieldName(rowType, col));
           if (resolveCellEditor(rowField).kind === 'readonly') return true;
         }
         return typeof itemId === 'string' ? !isRowEditable(itemId) : true;

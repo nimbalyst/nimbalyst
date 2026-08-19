@@ -12,8 +12,34 @@ describe('filter predicates', () => {
     ['Quarterly Report', { kind: 'text', operator: 'startsWith', value: 'quarterly' }, true],
     ['  ', { kind: 'blank', operator: 'isBlank' }, true],
     ['not a number', { kind: 'number', operator: 'lessThan', value: 10 }, false],
+    // Currency and accounting text has to reach the numeric operators; `Number`
+    // reads both of these as NaN and would drop them from every numeric filter.
+    ['$1,200', { kind: 'number', operator: 'greaterThan', value: 1000 }, true],
+    ['(300)', { kind: 'number', operator: 'lessThan', value: 0 }, true],
   ])('matches %j against %j', (value, filter, expected) => {
     expect(matchesColumnFilter(value, filter)).toBe(expected);
+  });
+
+  describe('date filters', () => {
+    const at = (iso: string) => new Date(iso).getTime();
+
+    it.each<[unknown, ColumnFilter, boolean]>([
+      ['2026-08-18', { kind: 'date', operator: 'before', value: at('2026-08-19T00:00:00') }, true],
+      ['2026-08-20', { kind: 'date', operator: 'before', value: at('2026-08-19T00:00:00') }, false],
+      ['08/20/2026', { kind: 'date', operator: 'after', value: at('2026-08-19T00:00:00') }, true],
+      [
+        '2026-08-18',
+        { kind: 'date', operator: 'between', value: at('2026-08-01T00:00:00'), valueEnd: at('2026-08-31T23:59:59') },
+        true,
+      ],
+      // `on` covers the whole calendar day, so a datetime still matches the date.
+      ['2026-08-18 13:30:00', { kind: 'date', operator: 'on', value: at('2026-08-18T00:00:00') }, true],
+      ['2026-08-19 00:30:00', { kind: 'date', operator: 'on', value: at('2026-08-18T00:00:00') }, false],
+      ['not a date', { kind: 'date', operator: 'before', value: at('2026-08-19T00:00:00') }, false],
+      ['', { kind: 'date', operator: 'before', value: at('2026-08-19T00:00:00') }, false],
+    ])('matches %j against %j', (value, filter, expected) => {
+      expect(matchesColumnFilter(value, filter)).toBe(expected);
+    });
   });
 
   it('combines active columns with AND', () => {

@@ -7,6 +7,7 @@ import {
   getSupportedFunctions,
   recalculateFormulas,
 } from '../formulaEngine';
+import { parseUrlCell } from '../formatters';
 
 const cell = (raw: string, computed: Cell['computed']): Cell => ({ raw, computed });
 
@@ -54,6 +55,111 @@ describe('formula engine', () => {
     { formula: '=SUM(1,)', expected: { value: null, error: '#VALUE!' } },
   ])('evaluates $formula', ({ formula, expected }) => {
     expect(evaluateFormula(formula, data, 0, 3)).toEqual(expected);
+  });
+
+  /**
+   * `Date` results used to be truncated with `toISOString().slice(0, 10)`,
+   * which made time-of-day unreachable and shifted the day east of Greenwich.
+   * formula.js is not consistent about which midnight it returns, so both
+   * conventions have to survive the round trip.
+   */
+  describe('date and time results', () => {
+    it('keeps the time of day on a result that has one', () => {
+      // The whole point of the change: this used to come back as a bare date.
+      expect(evaluateFormula('=NOW()', data, 0, 3).value).toMatch(
+        /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+      );
+    });
+
+    it('still renders a midnight result as a bare date', () => {
+      expect(evaluateFormula('=TODAY()', data, 0, 3).value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('renders a local-midnight date as a bare calendar date', () => {
+      // DATE() returns local midnight; reading it as UTC would move the day.
+      expect(evaluateFormula('=DATE(2026,8,18)', data, 0, 3)).toEqual({ value: '2026-08-18' });
+    });
+
+    it('renders a UTC-midnight date as the same calendar date', () => {
+      // DATEVALUE() returns UTC midnight; reading it locally would move the day.
+      expect(evaluateFormula('=DATEVALUE("2026-08-18")', data, 0, 3)).toEqual({ value: '2026-08-18' });
+    });
+
+  });
+
+  /**
+   * Every spreadsheet models a date as a number of days, which is what makes
+   * `=A1+7` and `=B1-A1` work at all. A date column here stores *text*, so
+   * reaching that number means parsing the cell — strictly, or `="March"+1`
+   * would quietly become arithmetic.
+   */
+  describe('date arithmetic', () => {
+    const dates: FormulaEvalData = {
+      rows: [[
+        cell('2026-08-18', '2026-08-18'),
+        cell('2026-08-25', '2026-08-25'),
+        cell('March', 'March'),
+        cell('', ''),
+      ]],
+      columnCount: 4,
+    };
+
+    it('counts the days between two dates', () => {
+      expect(evaluateFormula('=B1-A1', dates, 0, 3)).toEqual({ value: 7 });
+    });
+
+    it('offsets a date by a number of days', () => {
+      // The result is a serial; a date-formatted column renders it as a date.
+      const serial = evaluateFormula('=A1+7', dates, 0, 3).value as number;
+      expect(evaluateFormula('=B1', dates, 0, 3).value).toBe('2026-08-25');
+      expect(serial).toBe(evaluateFormula('=B1+0', dates, 0, 3).value);
+    });
+
+    it('compares dates chronologically rather than as text', () => {
+      expect(evaluateFormula('=A1<B1', dates, 0, 3)).toEqual({ value: 'TRUE' });
+      expect(evaluateFormula('=B1<A1', dates, 0, 3)).toEqual({ value: 'FALSE' });
+    });
+
+    it('refuses to do arithmetic on a word that merely parses as a date', () => {
+      // `new Date("March")` is a valid date, which is why the strict parser
+      // exists — this has to stay an error.
+      expect(evaluateFormula('=C1+1', dates, 0, 3).error).toBe('#VALUE!');
+    });
+
+    it('concatenates a date result as its rendered form', () => {
+      expect(evaluateFormula('="Due "&A1', dates, 0, 3)).toEqual({ value: 'Due 2026-08-18' });
+    });
+
+    it('does not reach into date text from range aggregates', () => {
+      // Pre-existing and unchanged: range values go to formula.js as-is, and it
+      // ignores strings. Coercing them in `resolveRange` would also rewrite the
+      // keys VLOOKUP and MATCH compare against, so the gap stays pinned here
+      // rather than papered over.
+      expect(evaluateFormula('=MAX(A1:B1)', dates, 0, 3)).toEqual({ value: 0 });
+    });
+  });
+
+  describe('HYPERLINK', () => {
+    it('packs the label and the target into one value', () => {
+      const result = evaluateFormula('=HYPERLINK("https://example.com","Report")', data, 0, 3);
+      expect(result.error).toBeUndefined();
+      expect(parseUrlCell(result.value as string)).toEqual({
+        href: 'https://example.com',
+        label: 'Report',
+      });
+    });
+
+    it('falls back to the target when no label is given', () => {
+      const result = evaluateFormula('=HYPERLINK("https://example.com")', data, 0, 3);
+      expect(parseUrlCell(result.value as string)).toEqual({
+        href: 'https://example.com',
+        label: 'https://example.com',
+      });
+    });
+
+    it('rejects an empty target', () => {
+      expect(evaluateFormula('=HYPERLINK("")', data, 0, 3).error).toBe('#VALUE!');
+    });
   });
 
   it('rejects ranges and references that exceed formula budgets', () => {
@@ -153,5 +259,6 @@ function makeSpreadsheet(rows: Cell[][]): SpreadsheetData {
     headerRowCount: 0,
     frozenColumnCount: 0,
     columnFormats: {},
+    cellStyles: {},
   };
 }

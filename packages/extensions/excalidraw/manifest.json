@@ -4,7 +4,7 @@
   "version": "1.0.3",
   "description": "Excalidraw diagram editor with AI-assisted editing",
   "author": "Nimbalyst",
-  "main": "dist/index.js",
+  "main": "dist/desktop.js",
   "styles": "dist/index.css",
   "apiVersion": "1.0.0",
   "marketplace": {

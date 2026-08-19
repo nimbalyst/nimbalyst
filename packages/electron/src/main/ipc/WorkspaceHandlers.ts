@@ -32,10 +32,11 @@ import {
 import { loadFileIntoWindow } from '../file/FileOperations';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import {
-    configureLocalKeyPrefix,
     getLocalKeyPrefixConfig,
+    reassignLocalKeyPrefix,
 } from '../services/tracker/localKeyAllocator';
 import { workspaceLocalKeyStore } from '../services/tracker/workspaceLocalKeyStore';
+import { database } from '../database/PGLiteDatabaseWorker';
 
 /**
  * Deep merge utility for workspace state updates.
@@ -744,7 +745,10 @@ export function registerWorkspaceHandlers() {
             throw new Error('tracker-local-key:set-prefix requires prefix');
         }
         const teamPrefix = getWorkspaceState(payload.workspacePath).issueKeyPrefix;
-        return configureLocalKeyPrefix(
+        // Moves any numbers already issued onto the new letters, so a project
+        // that auto-pinned a prefix it never chose is not stuck with it.
+        return reassignLocalKeyPrefix(
+            database,
             workspaceLocalKeyStore,
             payload.workspacePath,
             payload.prefix,

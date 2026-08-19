@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 const { fetchMock } = vi.hoisted(() => ({
   fetchMock: vi.fn(),
@@ -59,7 +60,9 @@ vi.mock('../StytchAuthService', () => ({
   getPersonalUserId: vi.fn(() => 'user-1'),
 }));
 vi.mock('@nimbalyst/runtime', () => ({
+  asPersonalMemberId: (id: string) => id,
   asTeamJwt: (jwt: string) => jwt,
+  asTeamMemberId: (id: string) => id,
 }));
 vi.mock('../../database/initialize', () => ({}));
 vi.mock('../AccountOrgBindingService', () => ({
@@ -170,13 +173,13 @@ describe('TeamService conversation directory REST client', () => {
     await setConversationMembership(
       orgId,
       'design',
-      'member-b',
+      asTeamMemberId('member-b'),
       { active: true, role: 'roomAdmin' },
     );
     await setConversationMembership(
       orgId,
       'design',
-      'member-b',
+      asTeamMemberId('member-b'),
       { active: false },
     );
     await setAgentPosting(orgId, 'design', false);

@@ -22,22 +22,39 @@
  */
 
 import React from 'react';
-import type { StructuredInputSingleSelectOption } from '@nimbalyst/collab-protocol';
+import type {
+  FeedbackAskArtifact,
+  StructuredInputSingleSelectOption,
+} from '@nimbalyst/collab-protocol';
+import type { FeedbackArtifactActionResolver } from './FeedbackArtifactSubjects';
 
+/**
+ * Returning nullish is a supported answer, not a failure: "I have a renderer,
+ * and this particular artifact has nothing worth showing." The card then falls
+ * through to the titled placeholder.
+ */
 export type FeedbackOptionPreviewRenderer = (
   option: StructuredInputSingleSelectOption,
   index: number,
+  artifact?: FeedbackAskArtifact,
 ) => React.ReactNode;
 
 export interface FeedbackRespondOptionCardsProps {
   askId: string;
   options: readonly StructuredInputSingleSelectOption[];
+  /** Bound per-entry resources, keyed to option ids. */
+  artifacts?: readonly FeedbackAskArtifact[];
   selectedId?: string;
   onSelect: (optionId: string) => void;
   disabled?: boolean;
   renderPreview?: FeedbackOptionPreviewRenderer;
-  /** Shown as an expand affordance on each preview when a caller can open one. */
-  onExpand?: (option: StructuredInputSingleSelectOption) => void;
+  /**
+   * Shown as an expand affordance on each preview when a caller can open one.
+   * Only rendered for options that actually have an artifact to open -- an
+   * expand button over a placeholder is a promise the card cannot keep.
+   */
+  onExpand?: (artifact: FeedbackAskArtifact) => void;
+  resolveAction?: FeedbackArtifactActionResolver;
 }
 
 const OptionRadio: React.FC<{ selected: boolean }> = ({ selected }) => (
@@ -52,23 +69,43 @@ const OptionRadio: React.FC<{ selected: boolean }> = ({ selected }) => (
   </span>
 );
 
-const PlaceholderPreview: React.FC<{ label: string }> = ({ label }) => (
+/**
+ * The fallback, and it covers more than "no artifact". An artifact whose kind
+ * has no registered editor, or one the host could not resolve, lands here too:
+ * a titled card is honest about having nothing to show, where an empty scaled
+ * frame looks like a preview that failed to load.
+ */
+export const FeedbackOptionPlaceholderPreview: React.FC<{
+  label: string;
+  artifactLabel?: string;
+}> = ({
+  label,
+  artifactLabel,
+}) => (
   <div
-    aria-hidden="true"
-    className="feedback-respond-option-placeholder flex h-full w-full items-center justify-center rounded bg-nim-tertiary text-lg font-semibold text-nim-faint"
+    className="feedback-respond-option-placeholder flex h-full w-full flex-col items-center justify-center gap-1 rounded bg-nim-tertiary text-nim-faint"
   >
-    {label.trim().charAt(0).toUpperCase() || '?'}
+    <span aria-hidden="true" className="text-lg font-semibold">
+      {label.trim().charAt(0).toUpperCase() || '?'}
+    </span>
+    {artifactLabel && (
+      <span className="max-w-full truncate px-2 text-[0.6875rem] text-nim-muted">
+        {artifactLabel}
+      </span>
+    )}
   </div>
 );
 
 export const FeedbackRespondOptionCards: React.FC<FeedbackRespondOptionCardsProps> = ({
   askId,
   options,
+  artifacts,
   selectedId,
   onSelect,
   disabled = false,
   renderPreview,
   onExpand,
+  resolveAction,
 }) => (
   <div
     data-testid="feedback-respond-option-cards"
@@ -76,6 +113,12 @@ export const FeedbackRespondOptionCards: React.FC<FeedbackRespondOptionCardsProp
   >
     {options.map((option, index) => {
       const selected = option.id === selectedId;
+      const artifact = artifacts?.find((entry) => entry.entryId === option.id);
+      const preview = renderPreview?.(option, index, artifact);
+      const open = artifact
+        ? resolveAction?.(artifact).open
+          ?? (onExpand ? () => onExpand(artifact) : undefined)
+        : undefined;
       return (
         <div
           key={option.id}
@@ -90,16 +133,19 @@ export const FeedbackRespondOptionCards: React.FC<FeedbackRespondOptionCardsProp
           }
         >
           <div className="feedback-respond-option-preview relative h-32 border-b border-nim bg-nim p-2.5">
-            {renderPreview
-              ? renderPreview(option, index)
-              : <PlaceholderPreview label={option.label} />}
-            {onExpand && (
+            {preview ?? (
+              <FeedbackOptionPlaceholderPreview
+                label={option.label}
+                artifactLabel={artifact?.label}
+              />
+            )}
+            {open && artifact && (
               <button
                 type="button"
                 data-testid="feedback-respond-option-expand"
-                aria-label={`Open ${option.label}`}
-                onClick={() => onExpand(option)}
-                className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded border border-nim bg-nim-secondary text-nim-muted cursor-pointer hover:text-nim"
+                aria-label={`Open ${artifact.label}`}
+                onClick={open}
+                className="feedback-respond-option-expand absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded border border-nim bg-nim-secondary text-nim-muted cursor-pointer hover:text-nim"
               >
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                   <path

@@ -132,6 +132,12 @@ export interface LaunchClaudeCliSessionInput {
   model?: string;
   /** Resume an existing CLI session id (`--resume <id>`). */
   resumeSessionId?: string;
+  /**
+   * Resolved effort level for this session, forwarded to the CLI as
+   * `CLAUDE_CODE_EFFORT_LEVEL` (parity with the Agent SDK path). Omit to leave
+   * the CLI on its own default.
+   */
+  effortLevel?: string;
   cols?: number;
   rows?: number;
   /**
@@ -319,6 +325,7 @@ export class ClaudeCliSessionLauncher {
       baseEnv: this.deps.baseEnv ?? process.env,
       enhancedPath: this.deps.getEnhancedPath(),
       extraEnv,
+      effortLevel: input.effortLevel,
       allowedMcpServerNames,
       settingsJson,
       dangerouslySkipPermissions,

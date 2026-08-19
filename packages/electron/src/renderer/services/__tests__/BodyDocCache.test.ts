@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { BodyDocCache } from '../BodyDocCache';
 import type { BodyDocConfigFactory } from '../BodyDocCache';
 
@@ -63,11 +64,11 @@ vi.mock('@nimbalyst/runtime/sync', () => {
 function makeFactory(): BodyDocConfigFactory {
   return async (itemId: string) => ({
     serverUrl: 'wss://test',
-    getJwt: async () => 'jwt',
+    getJwt: async () => asTeamJwt('jwt'),
     orgId: 'org',
     documentKey: 'key' as unknown as CryptoKey,
     orgKeyFingerprint: 'fp',
-    userId: 'user',
+    teamMemberId: asTeamMemberId('user'),
     documentId: `tracker-content/${itemId}`,
     createWebSocket: ((url: string) => ({ url } as unknown as WebSocket)),
   });
@@ -230,11 +231,11 @@ describe('BodyDocCache', () => {
       inFlight -= 1;
       return {
         serverUrl: 'wss://test',
-        getJwt: async () => 'jwt',
+        getJwt: async () => asTeamJwt('jwt'),
         orgId: 'org',
         documentKey: 'k' as unknown as CryptoKey,
         orgKeyFingerprint: 'fp',
-        userId: 'user',
+        teamMemberId: asTeamMemberId('user'),
         documentId: `tracker-content/${id}`,
         createWebSocket: ((url: string) => ({ url } as unknown as WebSocket)),
       };

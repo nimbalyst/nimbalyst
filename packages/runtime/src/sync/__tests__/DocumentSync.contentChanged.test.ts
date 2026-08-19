@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '../../auth/jwtScopes';
 
 import { DocumentSyncProvider } from '../DocumentSync';
 
@@ -9,9 +10,9 @@ describe('DocumentSyncProvider content change signal', () => {
     const onLocalUpdate = vi.fn();
     const provider = new DocumentSyncProvider({
       serverUrl: 'wss://example.invalid',
-      getJwt: async () => 'jwt',
+      getJwt: async () => asTeamJwt('jwt'),
       orgId: 'org-1',
-      userId: 'user-1',
+      teamMemberId: asTeamMemberId('user-1'),
       documentId: 'doc-1',
       onContentChanged,
       onLocalUpdate,
@@ -29,9 +30,9 @@ describe('DocumentSyncProvider content change signal', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const provider = new DocumentSyncProvider({
       serverUrl: 'wss://example.invalid',
-      getJwt: async () => 'jwt',
+      getJwt: async () => asTeamJwt('jwt'),
       orgId: 'org-1',
-      userId: 'user-1',
+      teamMemberId: asTeamMemberId('user-1'),
       documentId: 'doc-1',
       onContentChanged: () => { throw new Error('host serialization failed'); },
     });
@@ -52,9 +53,9 @@ describe('DocumentSyncProvider content change signal', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const provider = new DocumentSyncProvider({
       serverUrl: 'wss://example.invalid',
-      getJwt: async () => 'jwt',
+      getJwt: async () => asTeamJwt('jwt'),
       orgId: 'org-1',
-      userId: 'user-1',
+      teamMemberId: asTeamMemberId('user-1'),
       documentId: 'doc-1',
       onLocalUpdate: () => { throw new Error('analytics unavailable'); },
     });

@@ -3,6 +3,7 @@ import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import {
   activeCollabScopeAtom,
@@ -49,7 +50,7 @@ const WORKSPACE = '/Users/ghinkle/sources/crystal';
 const TEAM_SCOPE = {
   scopeKey: WORKSPACE,
   orgId: 'team-1',
-  indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+  indexConfig: { serverUrl: 'ws://sync', teamMemberId: asTeamMemberId('user-1') },
 };
 
 function activateTeam(store: ReturnType<typeof createStore>): void {

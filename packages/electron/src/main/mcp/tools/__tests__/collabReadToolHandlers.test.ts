@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import {
   loadOrgDirectory,
   matchOrgMembers,
@@ -7,10 +8,14 @@ import {
 } from '../collabReadToolHandlers';
 import type { TeamDetails, TeamMember } from '../../../services/TeamService';
 
-const TEAM = { orgId: 'org-design', name: 'Design Team' } as TeamDetails;
+const TEAM = {
+  orgId: 'org-design',
+  name: 'Design Team',
+  teamProjectId: 'project-design',
+} as TeamDetails;
 
 function member(memberId: string, name: string, email: string): TeamMember {
-  return { memberId, name, email, status: 'active', role: 'member', createdAt: '2026-01-01' };
+  return { memberId: asTeamMemberId(memberId), name, email, status: 'active', role: 'member', createdAt: '2026-01-01' };
 }
 
 describe('collaboration read tools', () => {
@@ -23,6 +28,7 @@ describe('collaboration read tools', () => {
 
     expect(matchOrgMembers(TEAM, roster, 'Karl')).toMatchObject({
       status: 'ambiguous',
+      org: { teamProjectId: 'project-design' },
       members: [
         { memberId: 'member-karl-one', displayName: 'Karl Jones', email: 'karl.jones@example.test' },
         { memberId: 'member-karl-two', displayName: 'Karl Smith', email: 'karl.smith@example.test' },

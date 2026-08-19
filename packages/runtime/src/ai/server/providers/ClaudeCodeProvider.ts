@@ -55,6 +55,7 @@ import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
 import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
 import { TeammateManager, type TeammateToLeadMessage } from './TeammateManager';
+import { describeUnusableWorkspacePath } from './workspacePreconditions';
 import path from 'path';
 import os from 'os';
 import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
@@ -831,9 +832,12 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         });
       }
 
-      // Require workspace path
-      if (!workspacePath) {
-        throw new Error('[CLAUDE-CODE] workspacePath is required but was not provided');
+      // Require a workspace path that still exists on disk. Without this the
+      // Agent SDK spawns into a dead cwd and misreports the ENOENT as a
+      // libc/musl mismatch on the bundled binary.
+      const unusableWorkspace = describeUnusableWorkspacePath(workspacePath);
+      if (unusableWorkspace || !workspacePath) {
+        throw new Error(unusableWorkspace ?? 'No project folder is set for this session.');
       }
 
       // Build SDK options (settings, MCP config, env, session resumption, prompt input)

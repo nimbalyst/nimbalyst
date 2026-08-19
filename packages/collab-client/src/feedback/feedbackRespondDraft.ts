@@ -29,6 +29,7 @@ import type {
   FeedbackResponse,
   FeedbackResponseValidationError,
 } from '@nimbalyst/collab-protocol';
+import type { TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import {
   getFeedbackTextAnswerMaxLength,
   getFeedbackAsksForRecipient,
@@ -78,21 +79,21 @@ export type FeedbackRespondSubmitPlan =
  */
 export function feedbackRespondAsks(
   request: FeedbackRequestReadModel,
-  viewerUserId: string,
+  teamMemberId: TeamMemberId,
 ): FeedbackAsk[] {
-  if (!viewerUserId) return [];
-  return getFeedbackAsksForRecipient(request, viewerUserId);
+  if (!teamMemberId) return [];
+  return getFeedbackAsksForRecipient(request, teamMemberId);
 }
 
 /** Answers the server already attributed to this viewer, keyed by ask id. */
 export function attributedAnswersForViewer(
   request: FeedbackRequestReadModel,
-  viewerUserId: string,
+  teamMemberId: TeamMemberId,
 ): Record<string, FeedbackAnswer> {
   const answers: Record<string, FeedbackAnswer> = {};
-  if (!viewerUserId) return answers;
+  if (!teamMemberId) return answers;
   for (const response of request.responses) {
-    if (response.recipientUserId !== viewerUserId) continue;
+    if (response.recipientUserId !== teamMemberId) continue;
     answers[response.askId] = response.answer;
   }
   return answers;
@@ -138,11 +139,11 @@ export function seedAnswerForAsk(ask: FeedbackAsk): FeedbackAnswer | undefined {
 
 export function initialFeedbackRespondDraft(
   request: FeedbackRequestReadModel,
-  viewerUserId: string,
+  teamMemberId: TeamMemberId,
 ): FeedbackRespondDraft {
-  const attributed = attributedAnswersForViewer(request, viewerUserId);
+  const attributed = attributedAnswersForViewer(request, teamMemberId);
   const answers: Record<string, FeedbackAnswer> = {};
-  for (const ask of feedbackRespondAsks(request, viewerUserId)) {
+  for (const ask of feedbackRespondAsks(request, teamMemberId)) {
     const seed = attributed[ask.id] ?? seedAnswerForAsk(ask);
     if (seed) answers[ask.id] = seed;
   }
@@ -206,11 +207,11 @@ export function isAnswerComplete(
  */
 export function feedbackRespondSubmitPlan(
   request: FeedbackRequestReadModel,
-  viewerUserId: string,
+  teamMemberId: TeamMemberId,
   draft: FeedbackRespondDraft,
   now: number,
 ): FeedbackRespondSubmitPlan {
-  const asks = feedbackRespondAsks(request, viewerUserId);
+  const asks = feedbackRespondAsks(request, teamMemberId);
   if (asks.length === 0) {
     return { kind: 'blocked', reason: 'notARecipient' };
   }
@@ -225,10 +226,10 @@ export function feedbackRespondSubmitPlan(
     // Deterministic, and never sent: the wire carries only the ask id and the
     // answer, and the server stamps identity from the team JWT. This id exists
     // so the shared validator has a complete response to check.
-    id: `${request.id}:${ask.id}:${viewerUserId}`,
+    id: `${request.id}:${ask.id}:${teamMemberId}`,
     requestId: request.id,
     askId: ask.id,
-    recipientUserId: viewerUserId,
+    recipientUserId: teamMemberId,
     answer: draft.answers[ask.id],
     createdAt: now,
     updatedAt: now,

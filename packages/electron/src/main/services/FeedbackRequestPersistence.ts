@@ -3,13 +3,14 @@ import type {
   FeedbackRequestReadModel,
 } from '@nimbalyst/collab-protocol';
 import type { FeedbackRequestSyncState } from '@nimbalyst/runtime/sync';
+import type { TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import { database } from '../database/PGLiteDatabaseWorker';
 
 export interface FeedbackRequestPersistenceTarget {
   workspacePath: string;
   orgId: string;
-  viewerUserId: string;
+  teamMemberId: TeamMemberId;
   requestId: string;
 }
 
@@ -46,7 +47,7 @@ export class FeedbackRequestPersistence {
       [
         target.workspacePath,
         target.orgId,
-        target.viewerUserId,
+        target.teamMemberId,
         target.requestId,
       ],
     );
@@ -72,7 +73,7 @@ export class FeedbackRequestPersistence {
       [
         target.workspacePath,
         target.orgId,
-        target.viewerUserId,
+        target.teamMemberId,
         target.requestId,
         JSON.stringify(state),
       ],

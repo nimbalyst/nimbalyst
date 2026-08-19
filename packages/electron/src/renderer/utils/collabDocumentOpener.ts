@@ -21,6 +21,7 @@ import {
 import { toStableAnalyticsCategory } from '../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from './teamAnalytics';
 import type { CollabOpenSource, CollabScope } from '@nimbalyst/collab-client/core';
+import type { TeamJwt, TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { resolveDesktopCollabScope } from '../store/atoms/collabDocuments';
 
 /**
@@ -35,10 +36,10 @@ export interface CollabDocumentConfig {
   /** Last-known logical path used while the shared index resolves. */
   displayPath?: string;
   serverUrl: string;
-  getJwt: (opts?: { forceRefresh?: boolean }) => Promise<string>;
+  getJwt: (opts?: { forceRefresh?: boolean }) => Promise<TeamJwt>;
   /** Optional extra query appended to revision-history HTTP requests. */
   urlExtraQuery?: string;
-  userId: string;
+  teamMemberId: TeamMemberId;
   /** Stable local account identity used to partition encrypted replicas. */
   accountId: string;
   /** Human-readable display name (first+last from Stytch, falls back to email). */
@@ -184,7 +185,7 @@ export function findCollabConfigByDocumentId(
  *   documentKey: aesKey,
  *   serverUrl: 'wss://sync.nimbalyst.com',
  *   getJwt: () => stytchClient.getToken(),
- *   userId: 'user-xyz',
+ *   teamMemberId: asTeamMemberId('user-xyz'),
  *   addTab: tabsActions.addTab,
  * });
  */
@@ -315,7 +316,7 @@ export async function resolveCollabConfigForUri(
       return null;
     }
 
-    const { orgId, title: resolvedTitle, serverUrl, accountId, userId, userName, userEmail, pendingUpdateBase64 } = result.config;
+    const { orgId, title: resolvedTitle, serverUrl, accountId, teamMemberId, userName, userEmail, pendingUpdateBase64 } = result.config;
     if (orgId !== scope.orgId) {
       logger.ui.error('[collabDocumentOpener] Resolved document org does not match scope:', {
         documentId,
@@ -337,7 +338,7 @@ export async function resolveCollabConfigForUri(
       ...resolvedMetadata,
       serverUrl,
       accountId,
-      userId,
+      teamMemberId,
       userName,
       userEmail,
       urlExtraQuery,
@@ -466,7 +467,7 @@ export async function openCollabDocumentViaIPC(options: {
     title,
     serverUrl,
     accountId,
-    userId,
+    teamMemberId,
     userName,
     userEmail,
     urlExtraQuery,
@@ -503,7 +504,7 @@ export async function openCollabDocumentViaIPC(options: {
     isPinned: options.isPinned,
     serverUrl,
     accountId,
-    userId,
+    teamMemberId,
     userName,
     userEmail,
     urlExtraQuery,

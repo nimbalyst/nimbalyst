@@ -6,6 +6,7 @@ import {
   type FeedbackRequestTarget,
   type TeamJwt,
 } from '@nimbalyst/runtime';
+import type { TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import {
   validateFeedbackRequest,
   type FeedbackAnswer,
@@ -33,7 +34,7 @@ const PERSIST_DEBOUNCE_MS = 40;
 
 export interface FeedbackRequestServiceDependencies {
   getTeamJwt: (orgId: string) => Promise<TeamJwt>;
-  getTeamMemberId: (jwt: TeamJwt) => string | null;
+  getTeamMemberId: (jwt: TeamJwt) => TeamMemberId | null;
   getServerUrl: () => string;
   persistence: FeedbackRequestPersistence;
   createSync?: (
@@ -117,7 +118,7 @@ export class FeedbackRequestService {
     // to in this org.
     const authored: FeedbackRequestCreateInput = {
       ...request,
-      author: { ...request.author, onBehalfOfUserId: scopedTarget.viewerUserId },
+      author: { ...request.author, onBehalfOfUserId: scopedTarget.teamMemberId },
     };
     await this.loadCached(scopedTarget);
     const sync = await this.ensureSync(scopedTarget);
@@ -218,7 +219,7 @@ export class FeedbackRequestService {
     const syncTarget = { orgId: target.orgId, requestId: target.requestId };
     const getTeamJwt = async () => {
       const jwt = await this.dependencies.getTeamJwt(target.orgId);
-      if (this.dependencies.getTeamMemberId(jwt) !== target.viewerUserId) {
+      if (this.dependencies.getTeamMemberId(jwt) !== target.teamMemberId) {
         throw new Error('Feedback request team identity changed');
       }
       return jwt;
@@ -359,18 +360,18 @@ export class FeedbackRequestService {
     target: FeedbackRequestServiceTarget,
   ): Promise<FeedbackRequestPersistenceTarget> {
     const jwt = await this.dependencies.getTeamJwt(target.orgId);
-    const viewerUserId = this.dependencies.getTeamMemberId(jwt);
-    if (!viewerUserId) {
+    const teamMemberId = this.dependencies.getTeamMemberId(jwt);
+    if (!teamMemberId) {
       throw new Error('Feedback request team member identity is unavailable');
     }
-    this.discardOtherViewers(target.orgId, viewerUserId);
-    return { ...target, viewerUserId };
+    this.discardOtherViewers(target.orgId, teamMemberId);
+    return { ...target, teamMemberId };
   }
 
-  private discardOtherViewers(orgId: string, viewerUserId: string): void {
+  private discardOtherViewers(orgId: string, teamMemberId: TeamMemberId): void {
     for (const key of [...this.clients.keys()]) {
       const [, keyOrgId, keyViewerUserId] = JSON.parse(key) as string[];
-      if (keyOrgId !== orgId || keyViewerUserId === viewerUserId) continue;
+      if (keyOrgId !== orgId || keyViewerUserId === teamMemberId) continue;
       this.cleanups.get(key)?.();
       this.cleanups.delete(key);
       this.clients.get(key)?.destroy();
@@ -401,7 +402,7 @@ function targetKey(target: FeedbackRequestPersistenceTarget): string {
   return JSON.stringify([
     target.workspacePath,
     target.orgId,
-    target.viewerUserId,
+    target.teamMemberId,
     target.requestId,
   ]);
 }

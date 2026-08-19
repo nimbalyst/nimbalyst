@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId, type TeamMemberId } from '../../auth/jwtScopes';
 import * as Y from 'yjs';
 
 import { DocumentSyncProvider } from '../DocumentSync';
@@ -17,14 +18,19 @@ import { DocumentSyncProvider } from '../DocumentSync';
  *      a readable row in the same batch still applies, and sync survives.
  */
 
+type TeamDocumentSyncConfig = Extract<
+  ConstructorParameters<typeof DocumentSyncProvider>[0],
+  { teamMemberId: TeamMemberId }
+>;
+
 function createProvider(
-  overrides: Partial<ConstructorParameters<typeof DocumentSyncProvider>[0]> = {},
+  overrides: Partial<TeamDocumentSyncConfig> = {},
 ): DocumentSyncProvider {
   return new DocumentSyncProvider({
     serverUrl: 'ws://example.test',
-    getJwt: async () => 'token',
+    getJwt: async () => asTeamJwt('token'),
     orgId: 'org-1',
-    userId: 'user-1',
+    teamMemberId: asTeamMemberId('user-1'),
     documentId: 'doc-1',
     ...overrides,
   });

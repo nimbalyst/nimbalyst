@@ -29,11 +29,11 @@ const {
     orgs: [] as Array<{ id: string; flavor: string }>,
     members: [] as Array<{ org_id: string; user_id: string; email: string | null; role: string }>,
   },
-  canAccessMock: vi.fn(async (_db: unknown, viewerUserId: string) => ({
-    allowed: viewerUserId === 'team-member-bound',
-    orgRole: viewerUserId === 'team-member-bound' ? 'member' : null,
+  canAccessMock: vi.fn(async (_db: unknown, viewer: { teamMemberId?: string; personalMemberId?: string }) => ({
+    allowed: viewer.teamMemberId === 'team-member-bound',
+    orgRole: viewer.teamMemberId === 'team-member-bound' ? 'member' : null,
     projectRole: null,
-    reason: viewerUserId === 'team-member-bound' ? 'org-member' : 'not-a-member',
+    reason: viewer.teamMemberId === 'team-member-bound' ? 'org-member' : 'not-a-member',
   })),
   getPersonalSessionJwtForAccountMock: vi.fn((personalOrgId: string) => `personal-jwt:${personalOrgId}`),
   getSessionTokenForAccountMock: vi.fn((personalOrgId: string) => `session-token:${personalOrgId}`),
@@ -109,6 +109,7 @@ vi.mock('@nimbalyst/runtime', () => ({
   asPersonalJwt: (jwt: string) => jwt,
   asPersonalMemberId: (id: string) => id,
   asTeamJwt: (jwt: string) => jwt,
+  asTeamMemberId: (id: string) => id,
 }));
 vi.mock('../../utils/store', () => ({
   getSessionSyncConfig: vi.fn(() => ({ serverUrl: 'https://sync.example' })),
@@ -252,7 +253,7 @@ describe('TeamService account-to-org viewer binding', () => {
     expect(result.allowed).toBe(true);
     expect(canAccessMock).toHaveBeenCalledWith(
       expect.anything(),
-      'team-member-bound',
+      { teamMemberId: 'team-member-bound' },
       { orgId: 'team-org', action: 'view' },
     );
   });

@@ -1,5 +1,6 @@
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import { getItemPublicationState } from '../trackerRecordAccessors';
+import { resolveDisplayIssueKey } from './localIssueKey';
 
 export const MANUAL_TRACKER_ORDERING = 'manual';
 export const MANUAL_TRACKER_ORDER_FIELD = 'kanbanSortOrder';
@@ -30,8 +31,9 @@ export function resolveTrackerOrderingValue(item: TrackerRecord, ordering: Track
   const field = resolveTrackerOrderingField(ordering);
   switch (field) {
     case 'type': return item.primaryType;
+    // Sort on what the column shows, not on the raw field behind it.
     case 'key':
-    case 'issueKey': return item.issueKey;
+    case 'issueKey': return resolveDisplayIssueKey(item);
     case 'created': return item.system.createdAt;
     case 'updated':
     case 'lastIndexed': return item.system.lastIndexed ?? item.system.updatedAt;

@@ -543,7 +543,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         serverUrl: activeConfig.serverUrl,
         getJwt: activeConfig.getJwt,
         orgId: activeConfig.orgId,
-        userId: activeConfig.userId,
+        teamMemberId: activeConfig.teamMemberId,
         documentId: activeConfig.documentId,
         createWebSocket: activeConfig.createWebSocket,
         onContentChanged: (yDoc) => {
@@ -732,7 +732,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
             serverUrl: activeConfig.serverUrl,
             getJwt: activeConfig.getJwt,
             orgId: activeConfig.orgId,
-            userId: activeConfig.userId,
+            teamMemberId: activeConfig.teamMemberId,
             documentId: activeConfig.documentId,
             createWebSocket: activeConfig.createWebSocket,
             onContentChanged: (yDoc) => {
@@ -881,10 +881,10 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     providerFactory,
     shouldBootstrap: !!activeConfig.initialContent,
     initialContent: activeConfig.initialContent,
-    username: activeConfig.userName || activeConfig.userId,
+    username: activeConfig.userName || activeConfig.teamMemberId,
     cursorColor,
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [providerFactory, activeConfig.initialContent, activeConfig.userName, activeConfig.userId, cursorColor]);
+  }), [providerFactory, activeConfig.initialContent, activeConfig.userName, activeConfig.teamMemberId, cursorColor]);
 
   // Document comments config for the markdown collab branch. Comments live in
   // the same shared Y.Doc (top-level `comments` array); `onMention` / `onReply`
@@ -898,14 +898,14 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     getCapabilities: () => ({ read: true, comment: true }),
     isHydrated: () => hasHydratedRef.current,
     currentUser: {
-      id: activeConfig.userId,
-      name: activeConfig.userName || activeConfig.userEmail || activeConfig.userId,
+      id: activeConfig.teamMemberId,
+      name: activeConfig.userName || activeConfig.userEmail || activeConfig.teamMemberId,
     },
     getMembers: () => {
       const teamProvider = getTeamSyncProvider(activeConfig.scope);
       const members = teamProvider?.getTeamState()?.members ?? [];
       return members
-        .filter((m) => m.userId !== activeConfig.userId)
+        .filter((m) => m.userId !== activeConfig.teamMemberId)
         .map((m) => ({
           userId: m.userId,
           name: teamMemberDisplayName(m),
@@ -935,7 +935,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [
-    activeConfig.userId,
+    activeConfig.teamMemberId,
     activeConfig.userName,
     activeConfig.userEmail,
     activeConfig.scope.scopeKey,
@@ -1594,8 +1594,8 @@ const MonacoCollabBranch: React.FC<MonacoCollabBranchProps> = ({
       syncProvider,
       yDoc: syncProvider.getYDoc(),
       user: {
-        id: activeConfig.userId,
-        name: activeConfig.userName ?? activeConfig.userId,
+        id: activeConfig.teamMemberId,
+        name: activeConfig.userName ?? activeConfig.teamMemberId,
         color: '#3A8FD6',
       },
     });
@@ -1781,8 +1781,8 @@ const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
       syncProvider,
       yDoc: syncProvider.getYDoc(),
       user: {
-        id: activeConfig.userId,
-        name: activeConfig.userName ?? activeConfig.userId,
+        id: activeConfig.teamMemberId,
+        name: activeConfig.userName ?? activeConfig.teamMemberId,
         color: '#3A8FD6',
       },
     });

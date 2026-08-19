@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from 'vitest';
 import { store } from '@nimbalyst/runtime/store';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import {
   activeCollabScopeAtom,
   allSharedDocumentsAtom,
@@ -23,7 +24,7 @@ const WORKSPACE = '/workspace/collab-trash';
 const SCOPE: CollabScope = {
   scopeKey: WORKSPACE,
   orgId: 'org-trash',
-  indexConfig: { serverUrl: 'wss://example.test', userId: 'user-trash' },
+  indexConfig: { serverUrl: 'wss://example.test', teamMemberId: asTeamMemberId('user-trash') },
 };
 
 function doc(documentId: string, trashedAt: number | null = null): SharedDocument {
@@ -94,7 +95,7 @@ describe('shared document Trash projections', () => {
     const other: CollabScope = {
       scopeKey: '/workspace/other-trash',
       orgId: 'org-other',
-      indexConfig: { serverUrl: 'wss://example.test', userId: 'user-other' },
+      indexConfig: { serverUrl: 'wss://example.test', teamMemberId: asTeamMemberId('user-other') },
     };
     store.set(activeCollabScopeAtom, SCOPE);
     store.set(allSharedDocumentsAtom, [doc('scope-one')]);

@@ -1062,6 +1062,43 @@ describe("Feedback Request protocol", () => {
     ).toEqual(["duplicateRecipient", "quorumExceedsRecipients"]);
   });
 
+  it("rejects an artifact bound to an entry its ask does not define", () => {
+    // A misbound artifact is invisible rather than wrong-looking: the option
+    // card renders exactly as it does with no artifact at all, so nothing on
+    // screen tells the author the binding missed. Hence a validation error
+    // instead of a silent drop.
+    const artifact = (entryId: string) => ({
+      entryId,
+      ref: { orgId: "org-1", kind: "document" as const, sourceId: "doc-1" },
+      label: "Direction A",
+    });
+    const withArtifacts = (
+      askId: "single" | "order",
+      artifacts: ReturnType<typeof artifact>[]
+    ) =>
+      requestErrorCodes(
+        feedbackRequest({
+          asks: feedbackAsks.map((ask) =>
+            ask.id === askId ? { ...ask, artifacts } : ask
+          ),
+        })
+      );
+
+    expect(withArtifacts("single", [artifact("one")])).toEqual([]);
+    expect(withArtifacts("order", [artifact("one")])).toEqual([]);
+    expect(withArtifacts("single", [artifact("nonexistent")])).toEqual([
+      "unknownArtifactEntry",
+    ]);
+    expect(withArtifacts("order", [artifact("nonexistent")])).toEqual([
+      "unknownArtifactEntry",
+    ]);
+    // Two artifacts on one entry means one of them can never render, and which
+    // one survives would come down to iteration order.
+    expect(withArtifacts("single", [artifact("one"), artifact("one")])).toEqual([
+      "duplicateArtifactEntry",
+    ]);
+  });
+
   it("rejects a quorum of zero, which is reached before anyone answers", () => {
     const request = feedbackRequest({
       asks: feedbackAsks.slice(0, 1),

@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '../../auth/jwtScopes';
 import * as Y from 'yjs';
 import { DocumentSyncProvider } from '../DocumentSync';
 
@@ -17,9 +18,9 @@ const ME = 'member-me';
 function provider(): DocumentSyncProvider {
   return new DocumentSyncProvider({
     serverUrl: 'ws://example.test',
-    getJwt: async () => 'token',
+    getJwt: async () => asTeamJwt('token'),
     orgId: 'org-1',
-    userId: ME,
+    teamMemberId: asTeamMemberId(ME),
     documentId: 'doc-1',
   });
 }

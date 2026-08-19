@@ -59,6 +59,12 @@ export interface ReorderListProps {
   /** Semantic kebab-case DOM marker for the list root. */
   rootClassName?: string;
   testIds?: ReorderListTestIds;
+  /**
+   * Optional content rendered at the end of each row, before the remove
+   * button. Added for "rank these mockups", where each row needs a way to open
+   * the thing being ranked; the list itself stays ignorant of what that is.
+   */
+  renderTrailing?: (itemId: string) => React.ReactNode;
 }
 
 interface ReorderRowProps {
@@ -71,6 +77,7 @@ interface ReorderRowProps {
   onRemove: () => void;
   disabled: boolean;
   testIds: ReorderListTestIds;
+  trailing?: React.ReactNode;
 }
 
 function ReorderRow({
@@ -83,6 +90,7 @@ function ReorderRow({
   onRemove,
   disabled,
   testIds,
+  trailing,
 }: ReorderRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: itemId });
 
@@ -141,6 +149,7 @@ function ReorderRow({
         <div className="text-[0.8125rem] font-medium text-nim leading-snug">{title}</div>
         {subtitle && <div className="text-xs text-nim-muted leading-snug">{subtitle}</div>}
       </div>
+      {trailing}
       {removable && (
         <button
           type="button"
@@ -167,6 +176,7 @@ export const ReorderList: React.FC<ReorderListProps> = ({
   disabled = false,
   rootClassName,
   testIds = {},
+  renderTrailing,
 }) => {
   // Three sensors for cross-platform support:
   //  - MouseSensor (distance) for desktop click-drag
@@ -235,6 +245,7 @@ export const ReorderList: React.FC<ReorderListProps> = ({
                 onRemove={() => remove(id)}
                 disabled={disabled}
                 testIds={testIds}
+                trailing={renderTrailing?.(id)}
               />
             );
           })}

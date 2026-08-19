@@ -1181,7 +1181,7 @@ interface ElectronAPI {
         documentType?: string;
         serverUrl: string;
         accountId: string;
-        userId: string;
+        teamMemberId: import('@nimbalyst/runtime/auth/jwtScopes').TeamMemberId;
         userName?: string;
         userEmail?: string;
         urlExtraQuery?: string;
@@ -1468,7 +1468,7 @@ interface ElectronAPI {
     }>;
     getJwt: (orgId: string, forceRefresh?: boolean) => Promise<{
       success: boolean;
-      jwt?: string;
+      jwt?: import('@nimbalyst/runtime/auth/jwtScopes').TeamJwt;
       error?: string;
     }>;
     resolveIndexConfig: (workspacePath: string) => Promise<{
@@ -1477,7 +1477,7 @@ interface ElectronAPI {
         orgId: string;
         teamProjectId?: string | null;
         serverUrl: string;
-        userId: string;
+        teamMemberId: import('@nimbalyst/runtime/auth/jwtScopes').TeamMemberId;
         userName?: string;
         userEmail?: string;
         urlExtraQuery?: string;
@@ -1504,14 +1504,18 @@ interface ElectronAPI {
       config?: {
         serverUrl: string;
         orgId: string;
-        userId: string;
+        personalMemberId: import('@nimbalyst/runtime/auth/jwtScopes').PersonalMemberId;
         encryptionKeyBase64: string;
         syncId: string;
         userName: string;
       };
       error?: string;
     }>;
-    getPersonalJwt: () => Promise<{ success: boolean; jwt?: string; error?: string }>;
+    getPersonalJwt: () => Promise<{
+      success: boolean;
+      jwt?: import('@nimbalyst/runtime/auth/jwtScopes').PersonalJwt;
+      error?: string;
+    }>;
 
     // Collaborative document attachments
     closeDoc: (documentId: string) => Promise<{ success: boolean; error?: string }>;

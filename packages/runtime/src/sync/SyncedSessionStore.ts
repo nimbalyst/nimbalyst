@@ -271,7 +271,7 @@ export function createSyncedSessionStore(
  */
 export function createMessageSyncHandler(syncProvider: SyncProvider) {
   // Rate-limit the "Failed to connect session" log line. Without this, a
-  // single hung CollabV3 connection (e.g. JWT/userId mismatch) produces one
+  // single hung CollabV3 connection (e.g. JWT/personal-member mismatch) produces one
   // error per agent message -- 1686 of 4986 main.log lines during a mobile
   // build on 2026-05-21. One log per minute per session keeps the signal
   // without the flood.
@@ -297,7 +297,7 @@ export function createMessageSyncHandler(syncProvider: SyncProvider) {
      * @param sessionUpdatedAt Optional timestamp (ms) for session updated_at - MUST match local DB
      */
     async onMessageCreated(message: AgentMessage, sessionUpdatedAt?: number): Promise<void> {
-      // Provider-latched auth mismatch (JWT sub != configured userId) means
+      // Provider-latched auth mismatch (JWT sub != configured personalMemberId) means
       // the server will reject every connection until the user re-auths or
       // settings change. Skip the connect attempt entirely; the latch
       // clears on reconnectIndex() / disconnectAll() so legitimate auth

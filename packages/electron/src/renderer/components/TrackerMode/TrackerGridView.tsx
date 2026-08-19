@@ -239,8 +239,8 @@ export function TrackerGridView({
 
   const sortedItems = useMemo(() => {
     if (preserveItemOrder) return filteredItems;
-    return sortTrackerRecords(filteredItems, sortBy, sortDirection);
-  }, [filteredItems, sortBy, sortDirection, preserveItemOrder]);
+    return sortTrackerRecords(filteredItems, sortBy, sortDirection, allColumnDefs);
+  }, [allColumnDefs, filteredItems, sortBy, sortDirection, preserveItemOrder]);
 
   // The archive recorder needs `recordUndoEntry`, and the hook needs the
   // recorder so an archive undo inverts through the same callback. The ref

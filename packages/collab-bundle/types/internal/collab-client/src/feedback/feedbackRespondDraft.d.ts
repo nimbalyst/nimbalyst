@@ -22,6 +22,7 @@
  * response, which is the protocol's own behaviour.
  */
 import type { FeedbackAnswer, FeedbackAsk, FeedbackRequestReadModel, FeedbackResponse, FeedbackResponseValidationError } from '@nimbalyst/collab-protocol';
+import type { TeamMemberId } from '../../../runtime/src/auth/jwtScopes';
 /** The sentinel `RequestUserInput` already puts in `selectedId` for a write-in. */
 export declare const OTHER_OPTION_ID = "__other__";
 export interface FeedbackRespondDraft {
@@ -47,9 +48,9 @@ export type FeedbackRespondSubmitPlan = {
  * collapses the surface to read-only rather than showing a submit button that
  * the server would refuse.
  */
-export declare function feedbackRespondAsks(request: FeedbackRequestReadModel, viewerUserId: string): FeedbackAsk[];
+export declare function feedbackRespondAsks(request: FeedbackRequestReadModel, teamMemberId: TeamMemberId): FeedbackAsk[];
 /** Answers the server already attributed to this viewer, keyed by ask id. */
-export declare function attributedAnswersForViewer(request: FeedbackRequestReadModel, viewerUserId: string): Record<string, FeedbackAnswer>;
+export declare function attributedAnswersForViewer(request: FeedbackRequestReadModel, teamMemberId: TeamMemberId): Record<string, FeedbackAnswer>;
 /**
  * A starting answer for one ask, from whatever the ask itself states.
  *
@@ -59,7 +60,7 @@ export declare function attributedAnswersForViewer(request: FeedbackRequestReadM
  * first.
  */
 export declare function seedAnswerForAsk(ask: FeedbackAsk): FeedbackAnswer | undefined;
-export declare function initialFeedbackRespondDraft(request: FeedbackRequestReadModel, viewerUserId: string): FeedbackRespondDraft;
+export declare function initialFeedbackRespondDraft(request: FeedbackRequestReadModel, teamMemberId: TeamMemberId): FeedbackRespondDraft;
 export declare function setFeedbackRespondAnswer(draft: FeedbackRespondDraft, askId: string, answer: FeedbackAnswer): FeedbackRespondDraft;
 /** Whether an answer says enough to send, given the ask's own bounds. */
 export declare function isAnswerComplete(ask: FeedbackAsk, answer: FeedbackAnswer | undefined): boolean;
@@ -71,7 +72,7 @@ export declare function isAnswerComplete(ask: FeedbackAsk, answer: FeedbackAnswe
  * assignment check, so this surface and the server agree by construction about
  * which asks this person is allowed to answer.
  */
-export declare function feedbackRespondSubmitPlan(request: FeedbackRequestReadModel, viewerUserId: string, draft: FeedbackRespondDraft, now: number): FeedbackRespondSubmitPlan;
+export declare function feedbackRespondSubmitPlan(request: FeedbackRequestReadModel, teamMemberId: TeamMemberId, draft: FeedbackRespondDraft, now: number): FeedbackRespondSubmitPlan;
 /**
  * A stable stamp of what has been answered, used to tell "these are the answers
  * I already sent" from "I have changed something since".

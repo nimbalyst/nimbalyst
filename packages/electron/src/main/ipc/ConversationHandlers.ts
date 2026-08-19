@@ -35,6 +35,7 @@ import {
   unregisterCollabAssetDocument,
 } from "../protocols/collabAssetProtocol";
 import { safeHandle } from "../utils/ipcRegistry";
+import { asTeamMemberId } from "@nimbalyst/runtime/auth/jwtScopes";
 
 type ListRequest = ConversationTarget & {
   cursor?: string;
@@ -178,7 +179,7 @@ export function registerConversationHandlers(): void {
       const result = await setConversationMembership(
         request.orgId,
         request.conversationId,
-        request.userId,
+        asTeamMemberId(request.userId),
         {
           active: request.active,
           role: request.role,

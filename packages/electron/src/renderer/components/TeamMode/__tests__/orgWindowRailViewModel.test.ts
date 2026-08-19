@@ -1,5 +1,6 @@
 import type { TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import { describe, expect, it } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import { inboxUnreadCount } from '../orgSidebarViewModel';
 import {
@@ -19,7 +20,7 @@ function snapshot(): TeamInboxSnapshot {
     deliveries: [
       {
         id: 'delivery-a',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-a',
         orgName: 'Acme',
         createdAt: 1,
@@ -33,7 +34,7 @@ function snapshot(): TeamInboxSnapshot {
       },
       {
         id: 'delivery-b',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-b',
         orgName: 'Beta',
         createdAt: 2,
@@ -47,7 +48,7 @@ function snapshot(): TeamInboxSnapshot {
       },
       {
         id: 'delivery-read',
-        recipientUserId: 'member-a',
+        teamMemberId: asTeamMemberId('member-a'),
         orgId: 'org-b',
         orgName: 'Beta',
         createdAt: 3,

@@ -1,117 +1,105 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { createCell } from '../csvParser';
+import { createCell, parseCSV, serializeToCSV } from '../csvParser';
+import { spreadsheetDataToGridSource } from '../gridOperations';
 
-// Regression coverage for nimbalyst#329, date sub-bug. CSV file content
-// stored as `YYYY-MM-DD` rendered as just `YYYY` in the editor cell.
-// `parseFloat("2026-05-15")` returns `2026` (stops at the first non-numeric
-// character), so the cell was stored as `{ raw: "2026-05-15", computed: 2026 }`.
-// `convertToGridSource` then wrote `cell.computed` (2026) into the rendered
-// grid, truncating the displayed value to the year. The raw file content
-// stayed correct because the CSV serializer reads `cell.raw`.
-//
-// The fix is a single ISO-date guard in `createCell`. These tests pin the
-// shape of values that should and should NOT take the guard branch.
+/**
+ * `cell.computed` is what `toGridSource` writes into the RevoGrid model, and
+ * the cell editor renders that model value. So a value coerced to the wrong
+ * type here is a value the user sees mangled the moment they open the cell —
+ * `06/01/2001` opening as `6`, `1,234` opening as `1`.
+ *
+ * The cause is `parseFloat` stopping at the first character it cannot read.
+ * Issue #329 patched the reported shape (`YYYY-MM-DD`) with a targeted guard;
+ * the guard is now a full-string numeric check, so these cases are one rule
+ * rather than a growing list of exceptions.
+ */
+describe('createCell', () => {
+  it.each([
+    // Numbers stay numbers.
+    ['42', 42],
+    ['-1.5', -1.5],
+    ['+3', 3],
+    ['.5', 0.5],
+    ['3.14', 3.14],
+    ['1e5', 100000],
+    ['2026', 2026],
+    ['20260515', 20260515],
+    ['  42  ', 42],
 
-describe('createCell (issue #329, date sub-bug)', () => {
-  describe('ISO date strings stay as strings', () => {
-    it('"2026-05-15" keeps the full date string in computed', () => {
-      const cell = createCell('2026-05-15');
-      expect(cell.raw).toBe('2026-05-15');
-      expect(cell.computed).toBe('2026-05-15');
-    });
-
-    it('"2026-3-9" (single-digit month and day) keeps the full date string', () => {
-      // ISO_DATE_PATTERN allows YYYY-M-D in addition to YYYY-MM-DD because
-      // CSV exports from various tools do not always zero-pad.
-      const cell = createCell('2026-3-9');
-      expect(cell.raw).toBe('2026-3-9');
-      expect(cell.computed).toBe('2026-3-9');
-    });
-
-    it('"2026-05-15" surrounded by whitespace trims and keeps the date', () => {
-      const cell = createCell('  2026-05-15  ');
-      expect(cell.raw).toBe('2026-05-15');
-      expect(cell.computed).toBe('2026-05-15');
-    });
+    // Anything only *starting* with digits keeps the text the user typed.
+    ['2026-05-15', '2026-05-15'],
+    ['2026-3-9', '2026-3-9'],
+    ['06/01/2001', '06/01/2001'],
+    ['2026/05/15', '2026/05/15'],
+    ['01.02.2026', '01.02.2026'],
+    ['06/01/2001 12:00 AM', '06/01/2001 12:00 AM'],
+    ['2026-05-15T13:30', '2026-05-15T13:30'],
+    ['13:30', '13:30'],
+    ['1,234', '1,234'],
+    ['12 apples', '12 apples'],
+    ['$1,200', '$1,200'],
+    ['50%', '50%'],
+    ['NIM-123', 'NIM-123'],
+    ['hello world', 'hello world'],
+    ['', ''],
+  ])('%o -> %o', (input, expected) => {
+    expect(createCell(input).computed).toBe(expected);
   });
 
-  describe('non-ISO-date values keep their previous behaviour', () => {
-    it('"2026" (plain four-digit year) stays numeric', () => {
-      const cell = createCell('2026');
-      expect(cell.computed).toBe(2026);
-    });
-
-    it('"20260515" (no separators) stays numeric', () => {
-      const cell = createCell('20260515');
-      expect(cell.computed).toBe(20260515);
-    });
-
-    it('"2026/05/15" (slash-delimited, out of scope) keeps slash form as a plain string', () => {
-      // parseFloat("2026/05/15") returns 2026, but the ISO guard only matches
-      // hyphen-delimited dates. parseFloat would otherwise truncate here too.
-      // Document the current behaviour: this value still hits the numeric
-      // branch and gets stored as 2026. Out of scope for the date sub-bug;
-      // covered separately in #329's currency/percent and additional date-
-      // format sub-bugs.
-      const cell = createCell('2026/05/15');
-      expect(cell.computed).toBe(2026);
-    });
-
-    it('"3.14" (a decimal number) stays numeric', () => {
-      const cell = createCell('3.14');
-      expect(cell.computed).toBe(3.14);
-    });
-
-    it('"hello world" (plain text) stays as a string', () => {
-      const cell = createCell('hello world');
-      expect(cell.raw).toBe('hello world');
-      expect(cell.computed).toBe('hello world');
-    });
-
-    it('empty string stays as a string with empty computed', () => {
-      // The trimmed-empty check below parseFloat keeps empty values out of
-      // the numeric branch even when parseFloat("") returns NaN.
-      const cell = createCell('');
-      expect(cell.raw).toBe('');
-      expect(cell.computed).toBe('');
-    });
+  it('trims the raw value it stores for a numeric cell', () => {
+    expect(createCell('  42  ').raw).toBe('42');
   });
 
-  describe('formulas still take the formula branch', () => {
-    it('"=A1+B1" returns computed: null for formula', () => {
-      const cell = createCell('=A1+B1');
-      expect(cell.raw).toBe('=A1+B1');
-      expect(cell.computed).toBeNull();
-    });
-
-    it('"=2026-05-15" (formula that looks like a date) stays as a formula', () => {
-      // The formula branch runs before the ISO-date guard so a formula whose
-      // body happens to look like a date is still treated as a formula.
-      const cell = createCell('=2026-05-15');
-      expect(cell.raw).toBe('=2026-05-15');
-      expect(cell.computed).toBeNull();
-    });
+  it('preserves surrounding whitespace on a text cell', () => {
+    // `raw` is what gets serialized, so a text cell round-trips verbatim.
+    expect(createCell('  hello  ').raw).toBe('  hello  ');
   });
 
-  describe('edge cases', () => {
-    it('"9999-12-31" (far-future date) still matches the ISO guard', () => {
-      const cell = createCell('9999-12-31');
-      expect(cell.computed).toBe('9999-12-31');
-    });
+  it.each(['=A1+B1', '=2026-05-15'])('leaves %s for the formula engine', (formula) => {
+    const cell = createCell(formula);
+    expect(cell.raw).toBe(formula);
+    expect(cell.computed).toBeNull();
+  });
+});
 
-    it('"0001-01-01" (low boundary date) still matches the ISO guard', () => {
-      const cell = createCell('0001-01-01');
-      expect(cell.computed).toBe('0001-01-01');
-    });
+/**
+ * The truncation above was not merely a display bug, and testing `createCell`
+ * alone would not have caught why.
+ *
+ * The grid model — not `SpreadsheetData` — is what gets serialized back to the
+ * file. `spreadsheetDataToGridSource` writes `cell.computed` into that model, so
+ * a value `createCell` coerced was written back to disk on the next save, and
+ * the original text was gone. A user typed `06/01/2001`, the sheet reloaded, and
+ * the file permanently held `6`.
+ *
+ * This pins the whole chain rather than one function in it.
+ */
+describe('file -> grid -> file round trip', () => {
+  const roundTrip = (csv: string): string => {
+    const { data } = parseCSV(csv);
+    const { source } = spreadsheetDataToGridSource(data, 0, 0);
+    // What the grid would serialize back after a reload.
+    const reparsed = parseCSV(
+      source.map((row) => Object.values(row).join(',')).join('\n'),
+    );
+    return serializeToCSV(reparsed.data, ',', false);
+  };
 
-    it('"2026-13-45" (out-of-range month and day) still takes the ISO branch', () => {
-      // The guard is a shape check, not a semantic date validator. Values
-      // that look like ISO dates but are calendrically invalid still take
-      // the string branch; the display layer can choose to flag them.
-      // Keeping the value as a string preserves what the user typed.
-      const cell = createCell('2026-13-45');
-      expect(cell.computed).toBe('2026-13-45');
-    });
+  it.each([
+    'Due\n06/01/2001',
+    'Due\n06/01/2001 12:00 AM',
+    'Due\n2026-05-15',
+    'Due\n01.02.2026',
+    'Amount\n"1,234"',
+  ])('survives a reload without losing text: %j', (csv) => {
+    expect(roundTrip(csv)).toBe(roundTrip(roundTrip(csv)));
+    expect(roundTrip(csv)).toContain(csv.split('\n')[1].replace(/"/g, ''));
+  });
+
+  it('keeps a genuine number a number through the round trip', () => {
+    const { data } = parseCSV('Count\n42');
+    const { source } = spreadsheetDataToGridSource(data, 0, 0);
+    expect(source[0].A).toBe(42);
   });
 });

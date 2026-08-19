@@ -7,6 +7,7 @@
  */
 
 import { logger } from '../utils/logger';
+import { asTeamMemberId, type TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import type { ProjectionDb } from './OrgProjectionService';
 
 export type AccountOrgBindingSource = 'server-create' | 'server-exchange' | 'server-sync' | 'email-backfill';
@@ -14,7 +15,7 @@ export type AccountOrgBindingSource = 'server-create' | 'server-exchange' | 'ser
 export interface AccountOrgBinding {
   personalOrgId: string;
   teamOrgId: string;
-  teamMemberId: string;
+  teamMemberId: TeamMemberId;
   source: AccountOrgBindingSource;
 }
 
@@ -52,18 +53,20 @@ export async function resolveAccountOrgBinding(
   db: ProjectionDb,
   personalOrgId: string,
   teamOrgId: string,
-): Promise<string | null> {
+): Promise<TeamMemberId | null> {
   const result = await db.query<{ team_member_id: string }>(
     `SELECT team_member_id FROM account_org_bindings
       WHERE personal_org_id = $1 AND team_org_id = $2`,
     [personalOrgId, teamOrgId],
   );
-  return result.rows[0]?.team_member_id ?? null;
+  return result.rows[0]?.team_member_id
+    ? asTeamMemberId(result.rows[0].team_member_id)
+    : null;
 }
 
 export interface ResolvedTeamOrgAccountBinding {
   personalOrgId: string;
-  teamMemberId: string;
+  teamMemberId: TeamMemberId;
 }
 
 /**
@@ -103,7 +106,7 @@ export async function resolveTeamOrgAccountBinding(
   }
   const match = preferred ?? matches[0];
   return match
-    ? { personalOrgId: match.personal_org_id, teamMemberId: match.team_member_id }
+    ? { personalOrgId: match.personal_org_id, teamMemberId: asTeamMemberId(match.team_member_id) }
     : null;
 }
 
@@ -144,7 +147,7 @@ export async function repairAccountOrgBindingFromEmail(
   personalOrgId: string,
   teamOrgId: string,
   email: string,
-): Promise<{ outcome: BindingRepairOutcome; teamMemberId: string | null }> {
+): Promise<{ outcome: BindingRepairOutcome; teamMemberId: TeamMemberId | null }> {
   const prior = await db.query<{ outcome: string }>(
     `SELECT outcome FROM account_org_binding_repairs
       WHERE personal_org_id = $1 AND team_org_id = $2`,
@@ -163,7 +166,7 @@ export async function repairAccountOrgBindingFromEmail(
   const attemptedAt = nowIso();
 
   if (matchedCount === 1) {
-    const teamMemberId = matches.rows[0].user_id;
+    const teamMemberId = asTeamMemberId(matches.rows[0].user_id);
     await upsertAccountOrgBinding(db, {
       personalOrgId,
       teamOrgId,

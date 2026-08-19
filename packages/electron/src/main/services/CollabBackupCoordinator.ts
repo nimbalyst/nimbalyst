@@ -14,7 +14,7 @@ import {
 import { getDatabase } from '../database/initialize';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { logger } from '../utils/logger';
-import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
+import { findTeamForWorkspace, getOrgScopedIdentity, getOrgScopedJwt } from './TeamService';
 import { getEffectiveTrackerSharingPolicy, shouldSyncTrackerItem } from './TrackerPolicyService';
 import {
   getCollabBackupService,
@@ -60,11 +60,12 @@ interface ProjectRow {
 }
 
 async function resolveRoomConfig(orgId: string, documentId: string): Promise<DocumentSyncConfig> {
+  const { teamMemberId } = await getOrgScopedIdentity(orgId);
   return {
     serverUrl: getCollabSyncWsUrl(),
     getJwt: () => getOrgScopedJwt(orgId),
     orgId,
-    userId: '',
+    teamMemberId,
     documentId,
     createWebSocket: ((url: string) => new WebSocket(url)) as unknown as DocumentSyncConfig['createWebSocket'],
   };

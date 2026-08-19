@@ -31,6 +31,11 @@
  */
 
 import { app } from 'electron';
+import {
+  asTeamJwt,
+  asTeamMemberId,
+  type TeamMemberId,
+} from '@nimbalyst/runtime/auth/jwtScopes';
 import { removeHandler, safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getWorkspaceState } from '../utils/store';
@@ -44,7 +49,7 @@ import {
 interface CollabTestIdentity {
   serverUrl: string;
   orgId: string;
-  userId: string;
+  teamMemberId: TeamMemberId;
   /** Pre-authorized query the renderer appends to collab WebSocket URLs. */
   urlExtraQuery: string;
 }
@@ -54,7 +59,7 @@ interface CollabTestIdentity {
  * worker authorizes off `test_user_id` / `test_org_id` before it ever looks at
  * a token, so the value is opaque and never verified.
  */
-const TEST_BRIDGE_JWT = 'collab-test-bridge-jwt';
+const TEST_BRIDGE_JWT = asTeamJwt('collab-test-bridge-jwt');
 
 function resolveCollabTestIdentity(): CollabTestIdentity | null {
   if (app.isPackaged) return null;
@@ -62,8 +67,9 @@ function resolveCollabTestIdentity(): CollabTestIdentity | null {
 
   const serverUrl = process.env.NIMBALYST_E2E_COLLAB_SERVER_URL;
   const orgId = process.env.NIMBALYST_E2E_COLLAB_ORG_ID;
-  const userId = process.env.NIMBALYST_E2E_COLLAB_USER_ID;
-  if (!serverUrl || !orgId || !userId) return null;
+  const rawTeamMemberId = process.env.NIMBALYST_E2E_COLLAB_USER_ID;
+  if (!serverUrl || !orgId || !rawTeamMemberId) return null;
+  const teamMemberId = asTeamMemberId(rawTeamMemberId);
 
   const parsed = new URL(serverUrl);
   const isLoopback = parsed.hostname === 'localhost'
@@ -74,11 +80,11 @@ function resolveCollabTestIdentity(): CollabTestIdentity | null {
   }
 
   const urlExtraQuery = new URLSearchParams({
-    test_user_id: userId,
+    test_user_id: teamMemberId,
     test_org_id: orgId,
   }).toString();
 
-  return { serverUrl: parsed.origin, orgId, userId, urlExtraQuery };
+  return { serverUrl: parsed.origin, orgId, teamMemberId, urlExtraQuery };
 }
 
 /** Track WebContents we've already hooked so repeated opens don't stack listeners. */
@@ -149,10 +155,10 @@ export function registerCollabTestIdentityHandlers(): void {
         title: payload.title || payload.documentId,
         documentType: resolvedDocumentType,
         serverUrl: identity.serverUrl,
-        accountId: identity.userId,
-        userId: identity.userId,
+        accountId: identity.teamMemberId,
+        teamMemberId: identity.teamMemberId,
         userName: 'Playwright User',
-        userEmail: `${identity.userId}@example.test`,
+        userEmail: `${identity.teamMemberId}@example.test`,
         urlExtraQuery: identity.urlExtraQuery,
       },
     };
@@ -173,9 +179,9 @@ export function registerCollabTestIdentityHandlers(): void {
       orgId: identity.orgId,
       teamProjectId: null,
       serverUrl: identity.serverUrl,
-      userId: identity.userId,
+      teamMemberId: identity.teamMemberId,
       userName: 'Playwright User',
-      userEmail: `${identity.userId}@example.test`,
+      userEmail: `${identity.teamMemberId}@example.test`,
       urlExtraQuery: identity.urlExtraQuery,
     },
   }));

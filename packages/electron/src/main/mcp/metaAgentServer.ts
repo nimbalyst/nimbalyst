@@ -380,7 +380,8 @@ export const META_AGENT_TOOL_DEFS: Array<{
         urgency: {
           type: "string",
           enum: ["normal", "critical", "low"],
-          description: "Optional OS urgency hint. Defaults to normal.",
+          description:
+            "Optional urgency hint. Defaults to normal. 'critical' also sends a push notification to the user's phone, delivered even if they appear to be at their desk -- use it only when the human is genuinely blocking progress.",
         },
       },
       required: ["title", "body"],

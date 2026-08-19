@@ -143,8 +143,16 @@ export function createClaudeApiProxy(
           observe = shouldObserveMessagesRequest(parsedBody);
           info.observe = observe;
           if (observe) callbacks.onRequestBody?.(parsedBody, info);
+          // Say so out loud: a turn silently missing from the rich transcript is
+          // otherwise indistinguishable from the observation layer being broken.
+          else console.log(`[ClaudeApiProxy] CLI side request, not observed: ${requestId}`);
         } catch {
-          // Non-JSON body — forward it untouched; just don't observe.
+          // Non-JSON body — forward it untouched; just don't observe. Recognising
+          // a side request means reading its body, so a body we cannot parse is
+          // one we cannot clear: fail closed, or the request we understand least
+          // is the one we tee into the transcript as a genuine turn.
+          observe = false;
+          info.observe = false;
         }
       }
 
@@ -170,10 +178,13 @@ export function createClaudeApiProxy(
           const contentType = (upstreamRes.headers["content-type"] as string) || "";
           const isSSE = contentType.includes("text/event-stream");
 
-          if (statusCode >= 400 && callbacks.onUpstreamError) {
+          if (statusCode >= 400 && callbacks.onUpstreamError && (!isMessages || observe)) {
             // Forward the error body to the client byte-for-byte while capturing a
             // bounded slice so the observation layer can classify the failure and
-            // render it in the rich transcript.
+            // render it in the rich transcript. A turn we chose not to observe
+            // must not render its failures either — a side request's 400 is not
+            // the user's turn failing. Non-`/v1/messages` errors (auth, oauth)
+            // still surface; they are never filtered.
             let errBuf = "";
             upstreamRes.on("data", (chunk: Buffer) => {
               clientRes.write(chunk);

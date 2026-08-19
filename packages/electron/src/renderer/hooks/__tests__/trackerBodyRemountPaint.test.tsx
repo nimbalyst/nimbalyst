@@ -112,7 +112,7 @@ vi.mock('../../utils/collabDocumentOpener', () => ({
     scope: {
       scopeKey,
       orgId: 'org-1',
-      indexConfig: { serverUrl: 'wss://test.invalid', userId: 'user-1' },
+      indexConfig: { serverUrl: 'wss://test.invalid', teamMemberId: 'user-1' },
     },
     serverUrl: 'wss://test.invalid',
     getJwt: async () => 'jwt',

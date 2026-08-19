@@ -44,6 +44,20 @@ export {
   type FeedbackRequestTabRef,
 } from './feedbackRequestTab';
 export {
+  FeedbackBacklinkHeaderButton,
+  FeedbackBacklinkSection,
+  useFeedbackBacklinks,
+  type FeedbackBacklinkSectionProps,
+} from './FeedbackBacklinks';
+export {
+  feedbackBacklinkAuthorLabel,
+  feedbackBacklinkProgressLabel,
+  feedbackBacklinkStatus,
+  sortFeedbackBacklinks,
+  type FeedbackBacklinkStatus,
+  type FeedbackBacklinkTone,
+} from './feedbackBacklinkModel';
+export {
   buildFeedbackResults,
   consolidateRankedAnswers,
   feedbackResultsAreAttributed,

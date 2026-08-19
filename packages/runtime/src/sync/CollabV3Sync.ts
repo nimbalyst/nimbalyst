@@ -17,6 +17,7 @@
  */
 
 import type { AgentMessage } from '../ai/server/types';
+import type { PersonalJwt, PersonalMemberId } from '../auth/jwtScopes';
 import { shouldSyncMessageForSessionRoom, truncateContentForSync } from './syncContentTruncator';
 import { appendSyncClientParams } from './syncClientInfo';
 import { buildSyncedSessionIndexFields } from './sessionIndexEntryFields';
@@ -46,9 +47,18 @@ import type {
   SessionControlMessage,
   EncryptedAttachment,
   FileIndexData,
+  MobilePushOptions,
+  MobilePushResult,
 } from './types';
 import { filterSessionsForPersonalSync } from './types';
+import type { PushRejectionCause } from '@nimbalyst/collab-protocol';
 import type { SyncedReadReceipt } from '../readReceipts/readReceipts';
+
+/**
+ * How long to wait for the server's `mobilePushResult` before giving up. Older
+ * servers never send one, so this is also the ceiling on a no-op await.
+ */
+const MOBILE_PUSH_ACK_TIMEOUT_MS = 10_000;
 
 // ============================================================================
 // CollabV3 Protocol Types (matches server)
@@ -299,7 +309,16 @@ type ClientMessage =
   | { type: 'voiceToolRequest'; request: EncryptedVoiceToolRequest }
   | { type: 'voiceToolResponse'; response: EncryptedVoiceToolResponse }
   | { type: 'sessionControl'; message: { sessionId: string; messageType: string; payload?: Record<string, unknown>; timestamp: number; sentBy: 'desktop' | 'mobile' } }
-  | { type: 'requestMobilePush'; sessionId: string; title: string; body: string; requestingDeviceId?: string }
+  | {
+      type: 'requestMobilePush';
+      sessionId: string;
+      title: string;
+      body: string;
+      requestingDeviceId?: string;
+      requestId?: string;
+      force?: boolean;
+      reason?: string;
+    }
   | { type: 'settingsSync'; settings: EncryptedSettingsPayload }
   | { type: 'readReceipt'; receipt: EncryptedReadReceiptPayload }
   | { type: 'trackerPersonalState'; state: EncryptedTrackerPersonalStatePayload }
@@ -353,6 +372,7 @@ type ServerMessage =
   | { type: 'settingsSyncBroadcast'; settings: EncryptedSettingsPayload; fromConnectionId?: string }
   | { type: 'readReceiptBroadcast'; receipt: EncryptedReadReceiptPayload; fromConnectionId?: string }
   | { type: 'trackerPersonalStateBroadcast'; state: EncryptedTrackerPersonalStatePayload; fromConnectionId?: string }
+  | ({ type: 'mobilePushResult'; requestId: string; sessionId: string } & MobilePushResult)
   | { type: 'error'; code: string; message: string };
 
 // ============================================================================
@@ -369,7 +389,7 @@ interface JwtClaims {
  * Decode a JWT's payload claims. Does not verify the signature -- the server does that.
  * The JWT is a base64url encoded string in the format: header.payload.signature
  */
-function decodeJwtClaims(jwt: string): JwtClaims {
+function decodeJwtClaims(jwt: PersonalJwt): JwtClaims {
   try {
     const parts = jwt.split('.');
     if (parts.length !== 3) {
@@ -905,29 +925,29 @@ interface CachedSessionIndex {
 export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // We need to get the initial JWT synchronously for setup, but will refresh before each connection
   // The getJwt function is called before each WebSocket connection to ensure fresh JWT
-  let currentJwt: string | null = null;
-  let currentUserId: string | null = null;
+  let currentJwt: PersonalJwt | null = null;
+  let currentPersonalMemberId: PersonalMemberId | null = null;
 
   // Helper to get fresh JWT and extract user ID.
-  // Uses config.userId as the authoritative room routing ID.
-  // The JWT sub claim is validated against config.userId -- if they differ,
+  // Uses config.personalMemberId as the authoritative room routing ID.
+  // The JWT sub claim is validated against config.personalMemberId -- if they differ,
   // the JWT is from a different org (e.g., team) and the caller's getJwt()
   // should be returning a personal-org-scoped JWT. Log a warning so the
-  // mismatch is visible but still use config.userId for routing to ensure
+  // mismatch is visible but still use config.personalMemberId for routing to ensure
   // desktop and mobile always connect to the same index room.
-  async function ensureFreshJwt(): Promise<{ jwt: string; userId: string }> {
+  async function ensureFreshJwt(): Promise<{ jwt: PersonalJwt; personalMemberId: PersonalMemberId }> {
     const jwt = await config.getJwt();
     const claims = decodeJwtClaims(jwt);
     const jwtUserId = claims.sub;
     currentJwt = jwt;
 
-    // Use config.userId (personalUserId from SyncManager) as the canonical
+    // Use config.personalMemberId from SyncManager as the canonical
     // room routing ID. This must match iOS which also uses the personal
     // member ID. If the JWT sub doesn't match, the server WILL reject the
     // WebSocket auth (it validates JWT sub === room URL userId) -- but
     // routing to the wrong room is worse because it silently breaks
     // cross-device sync (prompts, drafts, etc.).
-    if (config.userId && jwtUserId !== config.userId) {
+    if (jwtUserId !== config.personalMemberId) {
       const jwtIsTeamScoped =
         !!claims.organization_id && !!config.orgId && claims.organization_id !== config.orgId;
       // Rate-limit: this used to log every 2s forever once the loop kicked in.
@@ -935,11 +955,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       if (now - lastJwtMismatchLogAt > JWT_MISMATCH_LOG_INTERVAL_MS) {
         lastJwtMismatchLogAt = now;
         console.warn(
-          '[CollabV3] JWT sub does not match sync config userId -- refusing to connect (would be server-rejected and throttle the client).',
+          '[CollabV3] JWT sub does not match sync config personalMemberId -- refusing to connect (would be server-rejected and throttle the client).',
           {
             jwtSub: jwtUserId,
             jwtOrgId: claims.organization_id ?? null,
-            configUserId: config.userId, // personalUserId from SyncManager
+            configPersonalMemberId: config.personalMemberId,
             configOrgId: config.orgId,   // personalOrgId from SyncManager
             likelyCause: jwtIsTeamScoped
               ? 'JWT is team-scoped (organization_id differs from personal orgId). getJwt() should return a personal-org-scoped JWT -- check StytchAuthService.refreshPersonalSession / getPersonalSessionJwt.'
@@ -950,22 +970,22 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       // Don't even attempt the connection -- the server will reject it and the
       // tight retry loop got us throttled in the past. Caller will set
       // `indexAuthBlocked` and stop scheduling reconnects.
-      const err = new Error('CollabV3 JWT/userId mismatch -- connection refused locally to avoid server throttling');
+      const err = new Error('CollabV3 JWT/personal-member mismatch -- connection refused locally to avoid server throttling');
       (err as any).code = 'AUTH_MISMATCH';
       throw err;
     }
-    currentUserId = config.userId || jwtUserId;
-    return { jwt, userId: currentUserId };
+    currentPersonalMemberId = config.personalMemberId;
+    return { jwt, personalMemberId: currentPersonalMemberId };
   }
 
   function isAuthMismatchError(err: unknown): boolean {
     return !!err && typeof err === 'object' && (err as any).code === 'AUTH_MISMATCH';
   }
 
-  // Get user ID synchronously if we have a cached JWT, otherwise use config.userId
-  function getUserId(): string {
-    if (currentUserId) return currentUserId;
-    if (config.userId) return config.userId;
+  // Get the personal member id synchronously after the JWT/config match is established.
+  function getPersonalMemberId(): PersonalMemberId {
+    if (currentPersonalMemberId) return currentPersonalMemberId;
+    if (config.personalMemberId) return config.personalMemberId;
     throw new Error('JWT not initialized - call ensureFreshJwt first');
   }
 
@@ -1000,14 +1020,14 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
    * `onopen`). Distinct from `indexReconnectAttempts` so we can keep the first
    * few retries fast (handles legitimate "network just came up" races) while
    * still ramping into a real backoff if the failures keep coming. Without this,
-   * a permanent server-side rejection (e.g. JWT/userId mismatch) used to hammer
+   * a permanent server-side rejection (e.g. JWT/personal-member mismatch) used to hammer
    * the server at 2s forever and get us throttled.
    */
   let indexPreOpenFailures = 0;
   let indexReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * When `ensureFreshJwt` detects that the JWT cannot possibly succeed against
-   * the configured room (JWT `sub` does not match `config.userId`), we set this
+   * the configured room (JWT `sub` does not match `config.personalMemberId`), we set this
    * flag and stop scheduling reconnects entirely. The server would only reject
    * us anyway, and repeated rejections get the client IP throttled. Cleared by
    * an explicit `reconnectIndex()` (network change / user toggles sync / app
@@ -1107,7 +1127,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
    *     rejection (e.g. stale JWT) would hammer the server at 2s forever and
    *     get the client throttled.
    *
-   * If `indexAuthBlocked` is set (JWT/userId mismatch detected), we don't
+   * If `indexAuthBlocked` is set (JWT/personal-member mismatch detected), we don't
    * schedule a reconnect at all. Recovery happens only via an explicit
    * `reconnectIndex()` call (network change, user toggles sync, app focus).
    */
@@ -1145,7 +1165,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         connectToIndex().catch(err => {
           if (isAuthMismatchError(err)) {
             // ensureFreshJwt already set indexAuthBlocked. Do not reschedule.
-            console.warn('[CollabV3] Index reconnect blocked: JWT/userId mismatch. Waiting for explicit reconnect trigger.');
+            console.warn('[CollabV3] Index reconnect blocked: JWT/personal-member mismatch. Waiting for explicit reconnect trigger.');
             return;
           }
           console.error('[CollabV3] Failed to reconnect to index:', err);
@@ -1187,6 +1207,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   // Settings sync listeners (for receiving synced settings from other devices)
   const settingsSyncListeners = new Set<(settings: SyncedSettings) => void>();
+
+  // In-flight mobile push requests, keyed by requestId so concurrent requests
+  // resolve to their own acknowledgements.
+  const pendingMobilePushes = new Map<string, {
+    resolve: (result: MobilePushResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   // Read-receipt listeners (unread-indicator state arriving from other devices)
   const readReceiptListeners = new Set<(receipt: SyncedReadReceipt) => void>();
@@ -1439,16 +1466,16 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     }
   }
 
-  function buildRoomId(userId: string, suffix: string): string {
-    return `org:${config.orgId}:user:${userId}:${suffix}`;
+  function buildRoomId(personalMemberId: PersonalMemberId, suffix: string): string {
+    return `org:${config.orgId}:user:${personalMemberId}:${suffix}`;
   }
 
   function getRoomId(sessionId: string): string {
-    return buildRoomId(getUserId(), `session:${sessionId}`);
+    return buildRoomId(getPersonalMemberId(), `session:${sessionId}`);
   }
 
   function getIndexRoomId(): string {
-    return buildRoomId(getUserId(), 'index');
+    return buildRoomId(getPersonalMemberId(), 'index');
   }
 
   function getWebSocketUrl(roomId: string): string {
@@ -1812,7 +1839,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     if (indexAuthBlocked) {
       // Auth is known-bad; throwing here lets callers (e.g. ad-hoc
       // sendSessionControlMessage) skip work that would never succeed.
-      const err = new Error('CollabV3 index connection blocked: JWT/userId mismatch');
+      const err = new Error('CollabV3 index connection blocked: JWT/personal-member mismatch');
       (err as any).code = 'AUTH_MISMATCH';
       throw err;
     }
@@ -1831,7 +1858,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     // Get fresh JWT before connecting. Throws AUTH_MISMATCH if the JWT cannot
     // succeed against the configured room (caught below to set indexAuthBlocked).
-    let jwt: string;
+    let jwt: PersonalJwt;
     try {
       ({ jwt } = await ensureFreshJwt());
     } catch (err) {
@@ -1846,7 +1873,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     }
 
     const indexRoomId = getIndexRoomId();
-    console.log('[CollabV3] connectToIndex() roomId:', indexRoomId, 'orgId:', config.orgId, 'userId:', getUserId());
+    console.log('[CollabV3] connectToIndex() roomId:', indexRoomId, 'orgId:', config.orgId, 'personalMemberId:', getPersonalMemberId());
     const url = getWebSocketUrl(indexRoomId);
     // Pass JWT via query parameter (WebSocket doesn't support custom headers in browsers)
     const wsUrl = appendSyncClientParams(`${url}?token=${encodeURIComponent(jwt)}`);
@@ -1963,7 +1990,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
                     try {
                       projectId = await decryptProjectId(entry.encryptedProjectId, entry.projectIdIv, config.encryptionKey);
                     } catch (err) {
-                      console.warn(`[CollabV3] Cannot decrypt session ${entry.sessionId} (wrong encryption key, likely from before userId migration). Deleting from server index so it re-syncs with correct key.`);
+                      console.warn(`[CollabV3] Cannot decrypt session ${entry.sessionId} (wrong encryption key, likely from before personal member id migration). Deleting from server index so it re-syncs with correct key.`);
                       decryptionFailedSessionIds.push(entry.sessionId);
                       return null;
                     }
@@ -2096,7 +2123,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
               )).filter((s): s is DecryptedSessionIndexEntry => s !== null);
 
               // Delete server-side index entries that couldn't be decrypted.
-              // They were encrypted with a different key (e.g., before userId migration).
+              // They were encrypted with a different key (e.g., before personal member id migration).
               // The next sync cycle will re-push them from the local PGLite database
               // with the correct encryption key.
               if (decryptionFailedSessionIds.length > 0 && indexWs && indexWs.readyState === WebSocket.OPEN) {
@@ -2322,6 +2349,21 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             connectedDevices.delete(message.deviceId);
             notifyDeviceStatusChange();
             break;
+
+          case 'mobilePushResult': {
+            const pending = pendingMobilePushes.get(message.requestId);
+            if (!pending) break;
+            clearTimeout(pending.timer);
+            pendingMobilePushes.delete(message.requestId);
+            pending.resolve({
+              accepted: message.accepted,
+              attemptedCount: message.attemptedCount,
+              deliveredCount: message.deliveredCount,
+              skipped: message.skipped,
+              rejection: message.rejection,
+            });
+            break;
+          }
 
           case 'createSessionRequestBroadcast': {
             // Another device (mobile) requested session creation
@@ -2643,11 +2685,11 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // Log the config being used
   // console.log('[CollabV3] Initializing with config:', {
   //   serverUrl: config.serverUrl,
-  //   userId: config.userId,
+  //   personalMemberId: config.personalMemberId,
   //   hasEncryptionKey: !!config.encryptionKey,
   // });
 
-  // Start index connection. If the JWT mismatches the configured userId,
+  // Start index connection. If the JWT mismatches the configured personalMemberId,
   // ensureFreshJwt sets indexAuthBlocked and throws -- we swallow it here so we
   // don't fire an unhandled promise rejection at startup. A later explicit
   // reconnectIndex() (network change / settings update / auth refresh) will
@@ -2655,7 +2697,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   // existing scheduleIndexReconnect path via the onclose handler.
   connectToIndex().catch(err => {
     if (isAuthMismatchError(err)) {
-      console.warn('[CollabV3] Initial index connect blocked: JWT/userId mismatch. Waiting for explicit reconnect trigger.');
+      console.warn('[CollabV3] Initial index connect blocked: JWT/personal-member mismatch. Waiting for explicit reconnect trigger.');
       return;
     }
     console.error('[CollabV3] Initial index connect failed:', err);
@@ -3056,7 +3098,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         return; // Already connected
       }
 
-      // Short-circuit when the JWT/userId mismatch latch is set. The server
+      // Short-circuit when the JWT/personal-member mismatch latch is set. The server
       // would reject any session WebSocket against this room, and an active
       // agent streams ~10 messages/sec -- without this guard every message
       // hit `ensureFreshJwt()`, threw AUTH_MISMATCH, and flooded main.log
@@ -3065,7 +3107,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       // signals (network change, settings update, auth refresh) still
       // unblock subsequent connects.
       if (indexAuthBlocked) {
-        const err = new Error('CollabV3 session connection blocked: JWT/userId mismatch');
+        const err = new Error('CollabV3 session connection blocked: JWT/personal-member mismatch');
         (err as any).code = 'AUTH_MISMATCH';
         throw err;
       }
@@ -3109,7 +3151,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       // covers the case where the per-session connect() is the first
       // sync call in the process and connectToIndex() hasn't latched
       // yet).
-      let jwt: string;
+      let jwt: PersonalJwt;
       try {
         ({ jwt } = await ensureFreshJwt());
       } catch (err) {
@@ -4134,7 +4176,20 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     /** Request the sync server to send a push notification to mobile devices */
-    async requestMobilePush(sessionId: string, title: string, body: string): Promise<void> {
+    async requestMobilePush(
+      sessionId: string,
+      title: string,
+      body: string,
+      options?: MobilePushOptions
+    ): Promise<MobilePushResult> {
+      const failed = (rejection: PushRejectionCause): MobilePushResult => ({
+        accepted: false,
+        attemptedCount: 0,
+        deliveredCount: 0,
+        skipped: [],
+        rejection,
+      });
+
       // Ensure we're connected before sending the request
       if (!indexWs || !indexConnected) {
         console.log('[CollabV3] Not connected to index, attempting to reconnect before requesting mobile push...');
@@ -4142,37 +4197,62 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           await connectToIndex();
         } catch (err) {
           console.error('[CollabV3] Failed to connect to index before requesting mobile push:', err);
-          return;
+          return failed('no_ack');
         }
       }
 
       // Double-check connection and WebSocket state after await
       if (!indexWs || !indexConnected) {
         console.error('[CollabV3] Cannot request mobile push - failed to establish connection');
-        return;
+        return failed('no_ack');
       }
 
       // Check actual WebSocket state
       if (indexWs.readyState !== WebSocket.OPEN) {
         console.error('[CollabV3] Cannot request mobile push - WebSocket not open, state:', indexWs.readyState);
-        return;
+        return failed('no_ack');
       }
 
       const deviceId = config.getDeviceInfo?.()?.deviceId ?? config.deviceInfo?.deviceId;
+      const requestId = `push-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       const msg: ClientMessage = {
         type: 'requestMobilePush',
         sessionId: sessionId,
         title,
         body,
         requestingDeviceId: deviceId,
+        requestId,
+        force: options?.force === true,
+        reason: options?.reason,
       };
       // console.log('[CollabV3] Requesting mobile push for session:', sessionId, 'deviceId:', deviceId, 'readyState:', indexWs.readyState);
+
+      const ack = new Promise<MobilePushResult>((resolve) => {
+        // A server that never answers must not leave the caller hanging -- and
+        // a silent timeout is itself the signal that something is wrong, which
+        // is exactly what this path used to lack.
+        const timer = setTimeout(() => {
+          pendingMobilePushes.delete(requestId);
+          console.warn('[CollabV3] No mobile push acknowledgement for request:', requestId);
+          resolve(failed('no_ack'));
+        }, MOBILE_PUSH_ACK_TIMEOUT_MS);
+        pendingMobilePushes.set(requestId, { resolve, timer });
+      });
+
       try {
         indexWs.send(JSON.stringify(msg));
         // console.log('[CollabV3] Mobile push message sent successfully');
       } catch (error) {
         console.error('[CollabV3] Failed to send mobile push message:', error);
+        const pending = pendingMobilePushes.get(requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingMobilePushes.delete(requestId);
+        }
+        return failed('no_ack');
       }
+
+      return ack;
     },
 
     syncFileToIndex(file: FileIndexData): void {

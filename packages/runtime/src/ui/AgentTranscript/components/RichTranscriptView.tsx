@@ -568,9 +568,28 @@ export function isTranscriptAtBottom(distanceFromBottom: number): boolean {
 
 export function shouldAutoScrollTranscript(
   wasAtBottom: boolean,
-  distanceFromBottom: number
+  distanceFromBottom: number,
+  hasActiveSelection = false
 ): boolean {
+  // Never yank the viewport while the user is dragging a text selection in the
+  // transcript — the jump collapses the highlight they are making, which is the
+  // single most common "I can't copy from the chat" complaint during streaming.
+  if (hasActiveSelection) return false;
   return wasAtBottom || isTranscriptAtBottom(distanceFromBottom);
+}
+
+/**
+ * True only when there is a live, non-collapsed text selection whose anchor sits
+ * inside the transcript root. Scopes the auto-scroll suppression to selections
+ * made in the transcript, so selecting text elsewhere (the composer, a sidebar)
+ * never blocks the chat from following new messages.
+ */
+export function hasActiveTranscriptSelection(root: HTMLElement | null): boolean {
+  if (!root || typeof window === 'undefined') return false;
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+  const anchor = selection.anchorNode;
+  return anchor != null && root.contains(anchor);
 }
 
 const isEditToolName = (name?: string): boolean => {
@@ -1546,7 +1565,8 @@ export const RichTranscriptView = React.forwardRef<
       const scrollOffset = vlistRef.current.scrollOffset;
       const distanceFromBottom = scrollSize - scrollOffset - viewportSize;
 
-      if (shouldAutoScrollTranscript(wasAtBottom, distanceFromBottom)) {
+      const hasActiveSelection = hasActiveTranscriptSelection(viewRootRef.current);
+      if (shouldAutoScrollTranscript(wasAtBottom, distanceFromBottom, hasActiveSelection)) {
         // Account for the "Thinking..." indicator which is an extra item after messages
         const lastIndex = isWaitingForResponse ? messages.length : messages.length - 1;
         vlistRef.current.scrollToIndex(lastIndex, { align: 'end' });

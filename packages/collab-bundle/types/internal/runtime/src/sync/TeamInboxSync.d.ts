@@ -1,5 +1,5 @@
 import type { ActivityRef, Actor, ConversationSubscription, InboxDelivery, InboxUnavailableDelivery, InboxWatermark, InboxWireDelivery, PresenceDesiredStatus, TeamPresenceMember } from '@nimbalyst/collab-protocol';
-import type { TeamJwt, TeamMemberId } from '../auth/jwtScopes';
+import { type TeamJwt, type TeamMemberId } from '../auth/jwtScopes';
 export declare const DEFAULT_TEAM_INBOX_CONNECT_CONCURRENCY = 4;
 export interface TeamInboxOrgDescriptor {
     orgId: string;
@@ -13,7 +13,7 @@ export type TeamInboxWireDelivery = InboxWireDelivery;
 export type { PresenceDesiredStatus, TeamPresenceMember };
 export interface TeamInboxMaterializedDelivery {
     id: string;
-    recipientUserId: string;
+    teamMemberId: TeamMemberId;
     orgId: string;
     orgName: string;
     createdAt: number;

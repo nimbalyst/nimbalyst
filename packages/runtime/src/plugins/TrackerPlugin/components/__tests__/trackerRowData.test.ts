@@ -11,6 +11,8 @@ import {
   resolveTrackerOrderingValue,
 } from '../../models/trackerOrdering';
 import { resolveColumnsForType } from '../trackerColumns';
+import { globalRegistry } from '../../models';
+import type { TrackerDataModel } from '../../models/TrackerDataModel';
 import {
   withEffectiveUpdated,
   searchMatchesRecord,
@@ -72,6 +74,15 @@ describe('searchMatchesRecord', () => {
     expect(searchMatchesRecord(item, 'design/')).toBe(true);
     expect(searchMatchesRecord(item, 'greg')).toBe(true);
     expect(searchMatchesRecord(item, 'sync')).toBe(true);
+  });
+
+  // The local number is now visible in the Key column, so it has to be
+  // something you can paste back into the search box.
+  it('matches on the local number of an item with no team key', () => {
+    const unshared = record({ id: 'b', localKey: 'NIC.42', fields: { title: 'Unshared' } });
+
+    expect(searchMatchesRecord(unshared, 'nic.42')).toBe(true);
+    expect(searchMatchesRecord(unshared, 'nic.7')).toBe(false);
   });
 
   it('treats an empty query as matching everything', () => {
@@ -304,5 +315,45 @@ describe('sortTrackerRecords by Updated', () => {
     ];
     expect(sortTrackerRecords(items, 'updated', 'desc').map(i => i.id)).toEqual(['jun', 'may', 'mar']);
     expect(sortTrackerRecords(items, 'updated', 'asc').map(i => i.id)).toEqual(['mar', 'may', 'jun']);
+  });
+});
+
+/**
+ * Sorting the cross-tracker "All" view by Due Date has to compare each record's own
+ * due-date field. Without the column defs, every type that names it something other
+ * than `dueDate` sorts as blank and lands in a block at one end -- which reads as a
+ * plausible ordering rather than as a bug (nimbalyst#1129).
+ */
+describe('sortTrackerRecords across tracker types', () => {
+  const remapped: TrackerDataModel = {
+    type: 'sortGoal',
+    displayName: 'Goal',
+    displayNamePlural: 'Goals',
+    icon: 'flag',
+    color: 'var(--nim-primary)',
+    modes: { inline: true, fullDocument: true },
+    idPrefix: 'SGL',
+    idFormat: 'ulid',
+    sharing: 'personal',
+    draftByDefault: false,
+    fields: [
+      { name: 'title', type: 'string', required: true },
+      { name: 'targetDate', type: 'date' },
+    ],
+    roles: { title: 'title', dueDate: 'targetDate' },
+  };
+
+  const items = [
+    record({ id: 'goal-late', primaryType: 'sortGoal', fields: { title: 'Goal', targetDate: '2026-09-01' } }),
+    record({ id: 'bug-early', fields: { title: 'Bug', dueDate: '2026-08-01' } }),
+    record({ id: 'goal-mid', primaryType: 'sortGoal', fields: { title: 'Goal', targetDate: '2026-08-15' } }),
+  ];
+
+  it('sorts a mixed list on whichever field each type maps the due-date role to', () => {
+    globalRegistry.register(remapped);
+    const columns = resolveColumnsForType('');
+
+    expect(sortTrackerRecords(items, 'dueDate', 'asc', columns).map(item => item.id))
+      .toEqual(['bug-early', 'goal-mid', 'goal-late']);
   });
 });

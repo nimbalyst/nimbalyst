@@ -36,5 +36,11 @@ export interface ReorderListProps {
     /** Semantic kebab-case DOM marker for the list root. */
     rootClassName?: string;
     testIds?: ReorderListTestIds;
+    /**
+     * Optional content rendered at the end of each row, before the remove
+     * button. Added for "rank these mockups", where each row needs a way to open
+     * the thing being ranked; the list itself stays ignorant of what that is.
+     */
+    renderTrailing?: (itemId: string) => React.ReactNode;
 }
 export declare const ReorderList: React.FC<ReorderListProps>;

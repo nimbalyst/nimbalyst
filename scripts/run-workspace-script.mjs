@@ -19,7 +19,12 @@ import { availableParallelism } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+/** npm's Windows shim is a .cmd file, which Node must launch through cmd.exe. */
+export function npmSpawnConfig(platform = process.platform, env = process.env) {
+  return platform === 'win32'
+    ? { command: env.ComSpec || 'cmd.exe', argsPrefix: ['/d', '/s', '/c', 'npm.cmd'] }
+    : { command: 'npm', argsPrefix: [] };
+}
 
 /**
  * Expand the `workspaces` patterns from a root package.json into directories.
@@ -59,9 +64,10 @@ export async function runPool(items, limit, run) {
   return results;
 }
 
-function runScriptIn(dir, script, rootDir) {
+export function runScriptIn(dir, script, rootDir) {
   return new Promise(resolve => {
-    const child = spawn(NPM, ['run', script], {
+    const { command, argsPrefix } = npmSpawnConfig();
+    const child = spawn(command, [...argsPrefix, 'run', script], {
       cwd: path.join(rootDir, dir),
       env: process.env,
     });
@@ -69,7 +75,7 @@ function runScriptIn(dir, script, rootDir) {
     child.stdout.on('data', chunk => chunks.push(chunk));
     child.stderr.on('data', chunk => chunks.push(chunk));
     child.on('error', error => {
-      resolve({ dir, code: 1, output: `failed to spawn ${NPM}: ${error.message}\n` });
+      resolve({ dir, code: 1, output: `failed to spawn ${command}: ${error.message}\n` });
     });
     child.on('close', code => {
       resolve({ dir, code: code ?? 1, output: Buffer.concat(chunks).toString('utf8') });

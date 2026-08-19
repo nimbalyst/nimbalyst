@@ -10,11 +10,12 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import type { CollabScope } from '@nimbalyst/collab-client/core';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 const scope: CollabScope = {
   scopeKey: '/workspace',
   orgId: 'org-1',
-  indexConfig: { serverUrl: 'wss://example.test', teamProjectId: 'p1', userId: 'u1' },
+  indexConfig: { serverUrl: 'wss://example.test', teamProjectId: 'p1', teamMemberId: asTeamMemberId('u1') },
 };
 const session = { scope, host: {}, atoms: {} };
 

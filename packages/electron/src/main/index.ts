@@ -234,6 +234,7 @@ import {
   getPersonalUserId,
   setAuthCallbackSuccessHandler,
 } from './services/StytchAuthService';
+import { requestMobilePush } from './services/ai/mobilePushRequest';
 import { registerTrackerSyncHandlers, initializeTrackerSync } from './services/TrackerSyncManager';
 import { initTrackerSchemaService, updateTrackerSchemaWorkspace } from './services/TrackerSchemaService';
 import { registerTrackerLifecycleIpc } from './services/tracker/trackerLifecycleService';
@@ -2717,6 +2718,8 @@ app.whenReady().then(async () => {
         await metaAgentService.start(
             aiService,
             (options) => notificationService.showNotificationWithResult(options),
+            (sessionId, title, body, options) =>
+                requestMobilePush(sessionId, title, body, options),
         );
     } catch (error) {
         logger.mcp.error('Failed to start meta-agent MCP server:', error);

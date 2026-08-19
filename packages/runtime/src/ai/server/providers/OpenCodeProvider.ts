@@ -15,6 +15,7 @@
 
 import { BaseAgentProvider } from './BaseAgentProvider';
 import { buildUserMessageAddition } from './documentContextUtils';
+import { describeUnusableWorkspacePath } from './workspacePreconditions';
 import { buildClaudeCodeSystemPrompt } from '../../prompt';
 import { DEFAULT_MODELS, OPENCODE_PRESET_MODELS } from '../../modelConstants';
 import {
@@ -266,8 +267,9 @@ export class OpenCodeProvider extends BaseAgentProvider {
     workspacePath?: string,
     attachments?: ChatAttachment[]
   ): AsyncIterableIterator<StreamChunk> {
-    if (!workspacePath) {
-      yield { type: 'error', error: '[OpenCodeProvider] workspacePath is required but was not provided' };
+    const unusableWorkspace = describeUnusableWorkspacePath(workspacePath);
+    if (unusableWorkspace || !workspacePath) {
+      yield { type: 'error', error: unusableWorkspace ?? 'No project folder is set for this session.' };
       return;
     }
 

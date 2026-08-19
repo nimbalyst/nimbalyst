@@ -3,6 +3,7 @@ import React from 'react';
 import type { TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import { Provider, createStore } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { OrgSwitcher } from '../OrgSwitcher';
@@ -61,7 +62,7 @@ function delivery(
 ): TeamInboxSnapshot['deliveries'][number] {
   return {
     id,
-    recipientUserId: 'member-a',
+    teamMemberId: asTeamMemberId('member-a'),
     orgId,
     orgName,
     createdAt: 10,

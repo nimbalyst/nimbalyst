@@ -43,6 +43,11 @@ import type { FeedbackRequestServiceState } from '@nimbalyst/collab-client/feedb
 import { FeedbackRespondAskField } from './FeedbackRespondAskField';
 import type { FeedbackOptionPreviewRenderer } from './FeedbackRespondOptionCards';
 import {
+  FeedbackArtifactSubjects,
+  type FeedbackArtifactActionResolver,
+  type FeedbackSubjectOpener,
+} from './FeedbackArtifactSubjects';
+import {
   FEEDBACK_RESPOND_BLOCKED_MESSAGES,
   feedbackRespondAsks,
   feedbackRespondSignature,
@@ -83,6 +88,15 @@ export interface FeedbackRequestRespondProps {
   discussion?: React.ReactNode;
   /** Per-option artifact previews, when the embedding surface has them. */
   renderOptionPreview?: FeedbackOptionPreviewRenderer;
+  /**
+   * Opens a subject or a bound artifact. Host-supplied because the mechanics
+   * differ per host -- a tab in the desktop app, a route in the browser -- and
+   * neither belongs in this tree. Absent means the subjects still render, as
+   * text.
+   */
+  onOpenSubject?: FeedbackSubjectOpener;
+  /** Resolves each artifact before an open affordance is rendered. */
+  resolveArtifactAction?: FeedbackArtifactActionResolver;
   /** Overridden in tests; deadline copy is the only thing that reads it. */
   now?: number;
 }
@@ -123,10 +137,12 @@ export const FeedbackRequestRespond: React.FC<FeedbackRequestRespondProps> = ({
   host,
   discussion,
   renderOptionPreview,
+  onOpenSubject,
+  resolveArtifactAction,
   now,
 }) => {
   const request = state.request;
-  const viewerUserId = state.viewerUserId;
+  const teamMemberId = state.teamMemberId;
 
   const [draft, setDraft] = useState<FeedbackRespondDraft | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -138,16 +154,16 @@ export const FeedbackRequestRespond: React.FC<FeedbackRequestRespondProps> = ({
   // Seed once per request, then leave it alone: a snapshot arriving while
   // someone is mid-answer must not overwrite what they have picked.
   useEffect(() => {
-    if (!request || !viewerUserId) return;
+    if (!request || !teamMemberId) return;
     setDraft((current) =>
       current && current.requestId === request.id
         ? current
-        : initialFeedbackRespondDraft(request, viewerUserId));
-  }, [request, viewerUserId]);
+        : initialFeedbackRespondDraft(request, teamMemberId));
+  }, [request, teamMemberId]);
 
   const asks = useMemo(
-    () => (request ? feedbackRespondAsks(request, viewerUserId) : []),
-    [request, viewerUserId],
+    () => (request ? feedbackRespondAsks(request, teamMemberId) : []),
+    [request, teamMemberId],
   );
 
   const handleAnswer = useCallback((askId: string, answer: FeedbackAnswer) => {
@@ -158,7 +174,7 @@ export const FeedbackRequestRespond: React.FC<FeedbackRequestRespondProps> = ({
 
   const handleSubmit = useCallback(async () => {
     if (!request || !draft || !host) return;
-    const plan = feedbackRespondSubmitPlan(request, viewerUserId, draft, clock);
+    const plan = feedbackRespondSubmitPlan(request, teamMemberId, draft, clock);
     if (plan.kind !== 'ready') return;
     setIsSubmitting(true);
     setSubmitError(null);
@@ -182,7 +198,7 @@ export const FeedbackRequestRespond: React.FC<FeedbackRequestRespondProps> = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [request, draft, host, viewerUserId, clock, asks]);
+  }, [request, draft, host, teamMemberId, clock, asks]);
 
   if (!request) {
     return (
@@ -203,7 +219,7 @@ export const FeedbackRequestRespond: React.FC<FeedbackRequestRespondProps> = ({
   }
 
   const plan = draft
-    ? feedbackRespondSubmitPlan(request, viewerUserId, draft, clock)
+    ? feedbackRespondSubmitPlan(request, teamMemberId, draft, clock)
     : ({ kind: 'blocked', reason: 'incomplete' } as const);
   const hasSubmitted = submittedSignature !== null;
   const isUnchangedSinceSubmit = Boolean(
@@ -257,6 +273,15 @@ export const FeedbackRequestRespond: React.FC<FeedbackRequestRespondProps> = ({
       />
 
       <InteractiveWidgetBody>
+        {/* Above the asks, because what the request is about is context for
+            every question below it -- and because an observer with nothing
+            assigned still needs it to follow the discussion. */}
+        <FeedbackArtifactSubjects
+          subjects={request.subjects}
+          onOpen={onOpenSubject}
+          resolveAction={resolveArtifactAction}
+        />
+
         {asks.map((ask, index) => (
           <WidgetBlock
             key={ask.id}
@@ -272,6 +297,10 @@ export const FeedbackRequestRespond: React.FC<FeedbackRequestRespondProps> = ({
               answer={draft?.answers[ask.id]}
               disabled={isSubmitting || request.lifecycle.status !== 'open'}
               renderOptionPreview={renderOptionPreview}
+              // A bound artifact opens exactly the way a subject does; there is
+              // no second mechanism, and no host has to supply two callbacks.
+              onExpandArtifact={onOpenSubject}
+              resolveArtifactAction={resolveArtifactAction}
               onChange={(answer) => handleAnswer(ask.id, answer)}
             />
           </WidgetBlock>

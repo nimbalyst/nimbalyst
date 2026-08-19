@@ -388,6 +388,36 @@ CREATE INDEX IF NOT EXISTS idx_feedback_request_cache_org
   ON feedback_request_cache(workspace_path, org_id, viewer_user_id, updated_at);
 
 -- ----------------------------------------------------------------------------
+-- feedback_request_index + one-time legacy cache backfill state
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS feedback_request_index (
+  workspace_path TEXT NOT NULL,
+  org_id         TEXT NOT NULL,
+  viewer_user_id TEXT NOT NULL,
+  request_id     TEXT NOT NULL,
+  data           TEXT NOT NULL,                                  -- JSON
+  created_at     TIMESTAMPTZ NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL,
+  closed_at      TIMESTAMPTZ,
+  snapshot_id    TEXT,
+  PRIMARY KEY (workspace_path, org_id, viewer_user_id, request_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_request_index_org
+  ON feedback_request_index(workspace_path, org_id, viewer_user_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS feedback_request_index_backfill (
+  workspace_path    TEXT NOT NULL,
+  org_id            TEXT NOT NULL,
+  viewer_user_id    TEXT NOT NULL,
+  cutoff_at         TIMESTAMPTZ NOT NULL,
+  cursor_request_id TEXT,
+  completed_at      TIMESTAMPTZ,
+  PRIMARY KEY (workspace_path, org_id, viewer_user_id)
+);
+
+-- ----------------------------------------------------------------------------
 -- super_loops + super_iterations
 -- ----------------------------------------------------------------------------
 

@@ -5,9 +5,10 @@
  * request. The server stamps actor identity on response and discussion writes.
  */
 
-import type { Actor, ResourceRef, RichCommentBody } from "./comments.js";
+import type { Actor, RichCommentBody } from "./comments.js";
 import type {
   FeedbackAnswer,
+  FeedbackArtifact,
   FeedbackAsk,
   FeedbackAskAssignment,
   FeedbackDiscussionComment,
@@ -31,7 +32,7 @@ export interface FeedbackRequestCreateInput {
   id: string;
   orgId: string;
   author: Actor;
-  subjects: ResourceRef[];
+  subjects: FeedbackArtifact[];
   asks: FeedbackAsk[];
   recipients: FeedbackRequestRecipient[];
   assignments: FeedbackAskAssignment[];

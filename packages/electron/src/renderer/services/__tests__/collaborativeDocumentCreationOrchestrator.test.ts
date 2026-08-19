@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 const { trackTeamAnalyticsEvent } = vi.hoisted(() => ({
   trackTeamAnalyticsEvent: vi.fn(),
@@ -54,7 +55,7 @@ import {
 const TEST_SCOPE = {
   scopeKey: '/workspace',
   orgId: 'org-1',
-  indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+  indexConfig: { serverUrl: 'ws://sync', teamMemberId: asTeamMemberId('user-1') },
 };
 
 const markdownDescriptor: CollaborativeDocumentTypeDescriptor = {

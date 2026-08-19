@@ -22,6 +22,10 @@
  */
 
 import { getDatabase } from '../database/initialize';
+import type {
+  PersonalMemberId,
+  TeamMemberId,
+} from '@nimbalyst/runtime/auth/jwtScopes';
 
 export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest' | 'unknown';
 export type ProjectRole = 'project-admin' | 'project-editor' | 'project-viewer';
@@ -58,6 +62,14 @@ export interface CanAccessResult {
 /** Minimal DB surface the resolver needs (PGLite or better-sqlite3). */
 export interface AccessDatabase {
   query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+}
+
+export type AccessViewerIdentity =
+  | { teamMemberId: TeamMemberId; personalMemberId?: never }
+  | { personalMemberId: PersonalMemberId; teamMemberId?: never };
+
+function accessMemberId(viewer: AccessViewerIdentity): TeamMemberId | PersonalMemberId {
+  return viewer.teamMemberId ?? viewer.personalMemberId;
 }
 
 /** Rank a project role for action comparison. Higher = more capable. */
@@ -111,16 +123,17 @@ function deny(orgRole: OrgRole | null, reason: string): CanAccessResult {
 }
 
 /**
- * Resolve whether `viewerUserId` may perform `action` on the given org/project,
+ * Resolve whether the scoped viewer identity may perform `action` on the given org/project,
  * reading the local projection. Pure over `db` so it can be unit-tested against
  * either backend.
  */
 export async function canAccess(
   db: AccessDatabase,
-  viewerUserId: string,
+  viewer: AccessViewerIdentity,
   input: CanAccessInput,
 ): Promise<CanAccessResult> {
-  if (!viewerUserId) return deny(null, 'no-viewer');
+  const memberId = accessMemberId(viewer);
+  if (!memberId) return deny(null, 'no-viewer');
 
   // Resolve the org. Prefer an explicit orgId; otherwise derive it from the
   // project. Without either we cannot answer.
@@ -139,7 +152,7 @@ export async function canAccess(
   // Roster check: not a member -> hard deny (mirrors the server).
   const memberRows = await db.query<{ role: string }>(
     `SELECT role FROM org_members WHERE org_id = $1 AND user_id = $2`,
-    [orgId, viewerUserId],
+    [orgId, memberId],
   );
   const rawOrgRole = memberRows.rows[0]?.role ?? null;
   if (!rawOrgRole) return deny(null, 'not-a-member');
@@ -163,7 +176,7 @@ export async function canAccess(
   // A project grant cannot exceed the enclosing organization role's ceiling.
   const grantRows = await db.query<{ project_role: string }>(
     `SELECT project_role FROM project_access WHERE project_id = $1 AND user_id = $2`,
-    [projectId, viewerUserId],
+    [projectId, memberId],
   );
   const rawGrant = grantRows.rows[0]?.project_role ?? null;
   if (!rawGrant) return deny(orgRole, 'no-project-grant');
@@ -189,10 +202,10 @@ export async function canAccess(
  * database is not yet initialized (fail-closed for the UX gate).
  */
 export async function canAccessLive(
-  viewerUserId: string,
+  viewer: AccessViewerIdentity,
   input: CanAccessInput,
 ): Promise<CanAccessResult> {
   const db = getDatabase() as AccessDatabase | null;
   if (!db) return deny(null, 'db-unavailable');
-  return canAccess(db, viewerUserId, input);
+  return canAccess(db, viewer, input);
 }

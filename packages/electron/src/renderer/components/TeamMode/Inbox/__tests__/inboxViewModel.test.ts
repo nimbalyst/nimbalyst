@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import { createInboxFixtures } from '../inboxFixtures';
 import {
@@ -33,7 +34,7 @@ function select(overrides: Partial<Parameters<typeof selectRows>[0]> = {}) {
  */
 const revoked: HydratedInboxDelivery = {
   id: 'delivery-revoked',
-  recipientUserId: 'me',
+  teamMemberId: asTeamMemberId('me'),
   orgId: 'org-1',
   orgName: 'Acme',
   projectId: 'proj-secret',

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '../../auth/jwtScopes';
 
 import { CollabLexicalProvider } from '../CollabLexicalProvider';
 import { DocumentSyncProvider } from '../DocumentSync';
@@ -44,9 +45,9 @@ class RecordingWebSocket {
 function makeNetworkProvider(socket: RecordingWebSocket): DocumentSyncProvider {
   return new DocumentSyncProvider({
     serverUrl: 'ws://example.test',
-    getJwt: async () => 'token',
+    getJwt: async () => asTeamJwt('token'),
     orgId: 'org-1',
-    userId: 'member-rowan',
+    teamMemberId: asTeamMemberId('member-rowan'),
     documentId: 'doc-1',
     createWebSocket: () => socket as unknown as WebSocket,
   });

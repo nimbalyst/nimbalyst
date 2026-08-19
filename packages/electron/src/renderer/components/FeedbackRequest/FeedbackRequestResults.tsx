@@ -36,7 +36,14 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
-import type { FeedbackRequestLifecycleStatus } from '@nimbalyst/collab-protocol';
+import type {
+  FeedbackAskArtifact,
+  FeedbackRequestLifecycleStatus,
+} from '@nimbalyst/collab-protocol';
+import {
+  FeedbackArtifactSubjects,
+  type FeedbackArtifactActionResolver,
+} from '@nimbalyst/collab-client/feedback-ui';
 import {
   InteractiveWidgetBody,
   InteractiveWidgetCard,
@@ -85,6 +92,10 @@ export interface FeedbackResultsHost {
 export interface FeedbackRequestResultsProps {
   target: FeedbackRequestServiceTarget;
   host?: FeedbackResultsHost;
+  /** Opens a bound artifact from the tally; absent leaves the labels inert. */
+  onOpenArtifact?: (artifact: FeedbackAskArtifact) => void;
+  /** Resolves subjects and bound artifacts before rendering an open control. */
+  resolveArtifactAction?: FeedbackArtifactActionResolver;
   /** Overridden in tests; deadline copy is the only thing that reads it. */
   now?: number;
 }
@@ -160,7 +171,43 @@ const VoterStack: React.FC<{ voters: FeedbackResultsVoter[] }> = ({ voters }) =>
   );
 };
 
-const ChoiceTally: React.FC<{ detail: FeedbackChoiceResult }> = ({ detail }) => (
+/**
+ * "B won" is only actionable if B is still reachable, so a bound artifact gets
+ * an opener right where the result is read. Silent when the host cannot open
+ * one, rather than a button that does nothing.
+ */
+const ArtifactLink: React.FC<{
+  artifact: FeedbackAskArtifact;
+  onOpen?: (artifact: FeedbackAskArtifact) => void;
+  resolveAction?: FeedbackArtifactActionResolver;
+}> = ({ artifact, onOpen, resolveAction }) => {
+  const action = resolveAction?.(artifact)
+    ?? (onOpen ? { open: () => onOpen(artifact) } : {});
+  if (!action.open) {
+    return action.unavailableReason ? (
+      <span className="feedback-results-artifact-unavailable mt-0.5 block text-[0.6875rem] font-normal text-nim-faint">
+        {action.unavailableReason}
+      </span>
+    ) : null;
+  }
+  return (
+    <button
+      type="button"
+      data-testid="feedback-results-open-artifact"
+      aria-label={`Open ${artifact.label}`}
+      onClick={action.open}
+      className="feedback-results-artifact-link mt-0.5 block max-w-full truncate text-left text-[0.6875rem] font-normal text-nim-muted underline decoration-dotted cursor-pointer hover:text-nim"
+    >
+      {artifact.label}
+    </button>
+  );
+};
+
+const ChoiceTally: React.FC<{
+  detail: FeedbackChoiceResult;
+  onOpenArtifact?: (artifact: FeedbackAskArtifact) => void;
+  resolveArtifactAction?: FeedbackArtifactActionResolver;
+}> = ({ detail, onOpenArtifact, resolveArtifactAction }) => (
   <div className="feedback-results-tally flex flex-col gap-2">
     {detail.options.map((option) => (
       <div
@@ -174,6 +221,13 @@ const ChoiceTally: React.FC<{ detail: FeedbackChoiceResult }> = ({ detail }) => 
             <span className="mt-0.5 block text-[0.6875rem] font-normal text-nim-faint @[max-420px]/feedback-results:hidden">
               {option.description}
             </span>
+          )}
+          {option.artifact && (
+            <ArtifactLink
+              artifact={option.artifact}
+              onOpen={onOpenArtifact}
+              resolveAction={resolveArtifactAction}
+            />
           )}
         </div>
         <div className="h-6 flex-1 overflow-hidden rounded border border-nim bg-nim-secondary">
@@ -210,7 +264,11 @@ const ChoiceTally: React.FC<{ detail: FeedbackChoiceResult }> = ({ detail }) => 
   </div>
 );
 
-const RankedConsolidation: React.FC<{ detail: FeedbackRankedResult }> = ({ detail }) => {
+const RankedConsolidation: React.FC<{
+  detail: FeedbackRankedResult;
+  onOpenArtifact?: (artifact: FeedbackAskArtifact) => void;
+  resolveArtifactAction?: FeedbackArtifactActionResolver;
+}> = ({ detail, onOpenArtifact, resolveArtifactAction }) => {
   const tallest = Math.max(
     1,
     ...detail.entries.flatMap((entry) => entry.positionCounts),
@@ -229,6 +287,13 @@ const RankedConsolidation: React.FC<{ detail: FeedbackRankedResult }> = ({ detai
           </span>
           <div className="min-w-0 flex-1">
             <div className="select-text text-[0.8125rem] font-medium text-nim">{entry.title}</div>
+            {entry.artifact && (
+              <ArtifactLink
+                artifact={entry.artifact}
+                onOpen={onOpenArtifact}
+                resolveAction={resolveArtifactAction}
+              />
+            )}
             <div
               className={
                 entry.contested
@@ -310,7 +375,11 @@ const RatingSummary: React.FC<{ detail: FeedbackRatingResult }> = ({ detail }) =
   </div>
 );
 
-const AskResultBlock: React.FC<{ result: FeedbackAskResult }> = ({ result }) => {
+const AskResultBlock: React.FC<{
+  result: FeedbackAskResult;
+  onOpenArtifact?: (artifact: FeedbackAskArtifact) => void;
+  resolveArtifactAction?: FeedbackArtifactActionResolver;
+}> = ({ result, onOpenArtifact, resolveArtifactAction }) => {
   const { detail } = result;
   const hint = detail.kind === 'ranked'
     ? `ranked · consolidated from ${detail.orderingCount} ${detail.orderingCount === 1 ? 'ordering' : 'orderings'}`
@@ -325,8 +394,20 @@ const AskResultBlock: React.FC<{ result: FeedbackAskResult }> = ({ result }) => 
       question={result.ask.description || result.ask.label}
       selectableQuestion
     >
-      {detail.kind === 'choice' && <ChoiceTally detail={detail} />}
-      {detail.kind === 'ranked' && <RankedConsolidation detail={detail} />}
+      {detail.kind === 'choice' && (
+        <ChoiceTally
+          detail={detail}
+          onOpenArtifact={onOpenArtifact}
+          resolveArtifactAction={resolveArtifactAction}
+        />
+      )}
+      {detail.kind === 'ranked' && (
+        <RankedConsolidation
+          detail={detail}
+          onOpenArtifact={onOpenArtifact}
+          resolveArtifactAction={resolveArtifactAction}
+        />
+      )}
       {detail.kind === 'text' && <TextAnswers detail={detail} />}
       {detail.kind === 'rating' && <RatingSummary detail={detail} />}
     </WidgetBlock>
@@ -403,6 +484,8 @@ const LifecycleMenu: React.FC<{
 export const FeedbackRequestResults: React.FC<FeedbackRequestResultsProps> = ({
   target,
   host,
+  onOpenArtifact,
+  resolveArtifactAction,
   now,
 }) => {
   const atomKey = useMemo(() => feedbackRequestTargetKey(target), [target]);
@@ -498,7 +581,7 @@ export const FeedbackRequestResults: React.FC<FeedbackRequestResultsProps> = ({
     );
   }
 
-  const isAuthor = request.author.onBehalfOfUserId === state.viewerUserId;
+  const isAuthor = request.author.onBehalfOfUserId === state.teamMemberId;
   const isOpen = request.lifecycle.status === 'open';
   const canAct = isAuthor && isOpen && Boolean(host) && pendingAction === null;
   const lifecyclePill = LIFECYCLE_PILL[request.lifecycle.status];
@@ -566,8 +649,22 @@ export const FeedbackRequestResults: React.FC<FeedbackRequestResultsProps> = ({
       />
 
       <InteractiveWidgetBody>
+        {/* Above the tallies, in the same slot the respond surface puts it: an
+            author reading "B won" a week later needs B in reach, and the two
+            views of one request should not be laid out differently. Renders
+            nothing at all when the request has no subjects. */}
+        <FeedbackArtifactSubjects
+          subjects={request.subjects}
+          resolveAction={resolveArtifactAction}
+        />
+
         {results.askResults.map((result) => (
-          <AskResultBlock key={result.ask.id} result={result} />
+          <AskResultBlock
+            key={result.ask.id}
+            result={result}
+            onOpenArtifact={onOpenArtifact}
+            resolveArtifactAction={resolveArtifactAction}
+          />
         ))}
 
         <WidgetBlock

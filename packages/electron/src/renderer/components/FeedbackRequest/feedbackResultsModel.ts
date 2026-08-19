@@ -17,6 +17,7 @@
 
 import type {
   FeedbackAsk,
+  FeedbackAskArtifact,
   FeedbackRequestProgress,
   FeedbackRequestReadModel,
   FeedbackResponseReadModel,
@@ -43,6 +44,11 @@ export interface FeedbackChoiceOptionTally {
   isLeader: boolean;
   /** Empty on a hidden request, always. */
   voters: FeedbackResultsVoter[];
+  /**
+   * The resource this option stood for, when one was bound. "B won" is not an
+   * answer the author can act on unless B is still reachable from the result.
+   */
+  artifact?: FeedbackAskArtifact;
 }
 
 export interface FeedbackChoiceResult {
@@ -64,6 +70,8 @@ export interface FeedbackRankedEntry {
   firstPlaceCount: number;
   lastPlaceCount: number;
   rankedByCount: number;
+  /** As on a choice tally: the ranked thing, when the ask bound one. */
+  artifact?: FeedbackAskArtifact;
   contested: boolean;
   /** The line the author reads instead of the mean. */
   summary: string;
@@ -366,12 +374,14 @@ function tallyChoice(
     (option) => (counts.get(option.id)?.count ?? 0) === highest,
   ).length;
 
+  const artifacts = 'artifacts' in ask ? ask.artifacts : undefined;
   return {
     kind: 'choice',
     otherNotes,
     options: options
       .map((option) => {
         const bucket = counts.get(option.id) ?? { count: 0, voters: [] };
+        const artifact = artifacts?.find((entry) => entry.entryId === option.id);
         return {
           optionId: option.id,
           label: option.label,
@@ -380,6 +390,7 @@ function tallyChoice(
           percent: answered > 0 ? Math.round((bucket.count / answered) * 100) : 0,
           isLeader: highest > 0 && leaderCount === 1 && bucket.count === highest,
           voters: bucket.voters,
+          ...(artifact ? { artifact } : {}),
         };
       })
       .sort((left, right) => right.count - left.count),
@@ -398,7 +409,19 @@ function detailForAsk(
       const removed = new Set(response.answer.removedIds);
       orderings.push(response.answer.orderedIds.filter((id) => !removed.has(id)));
     }
-    return consolidateRankedAnswers(ask.items, orderings);
+    // Bound artifacts are attached after consolidation rather than threaded
+    // through it: the ranking arithmetic has no opinion about what is being
+    // ranked, and giving it one would be the wrong seam.
+    const consolidated = consolidateRankedAnswers(ask.items, orderings);
+    const artifacts = ask.artifacts;
+    if (!artifacts?.length) return consolidated;
+    return {
+      ...consolidated,
+      entries: consolidated.entries.map((entry) => {
+        const artifact = artifacts.find((bound) => bound.entryId === entry.itemId);
+        return artifact ? { ...entry, artifact } : entry;
+      }),
+    };
   }
 
   if (ask.type === 'editText') {

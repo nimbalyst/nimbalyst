@@ -20,6 +20,7 @@ import { getPersonalDocSyncConfig } from './SyncManager';
 import { timeStartupPhase } from '../utils/startupTiming';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { dirtyEditorRegistry } from './DirtyEditorRegistry';
+import { getPersonalSessionJwt } from './StytchAuthService';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -73,7 +74,7 @@ export class ProjectFileSyncService {
     this.provider = new ProjectSyncProvider({
       serverUrl: config.serverUrl,
       orgId: config.orgId,
-      userId: config.userId,
+      personalMemberId: config.personalMemberId,
       encryptionKey: config.encryptionKeyRaw,
       getJwt: async () => {
         // Re-fetch config each time to get fresh JWT
@@ -81,8 +82,9 @@ export class ProjectFileSyncService {
         if (!fresh) throw new Error('Sync config unavailable');
         // The config doesn't directly expose a JWT getter, so we need
         // to get it from the SyncManager's auth flow
-        const { getPersonalSessionJwt } = await import('./StytchAuthService');
-        return getPersonalSessionJwt() ?? '';
+        const jwt = getPersonalSessionJwt();
+        if (!jwt) throw new Error('Personal sync JWT unavailable');
+        return jwt;
       },
     });
 

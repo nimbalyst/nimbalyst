@@ -5,7 +5,17 @@
 /**
  * Column format types
  */
-export type ColumnType = 'text' | 'number' | 'currency' | 'percentage' | 'date';
+export type ColumnType =
+  | 'text'
+  | 'number'
+  | 'currency'
+  | 'percentage'
+  | 'date'
+  | 'datetime'
+  | 'time'
+  | 'boolean'
+  | 'url'
+  | 'tracker';
 
 /**
  * Currency format options
@@ -16,6 +26,33 @@ export type CurrencyCode = 'USD' | 'EUR' | 'GBP' | 'JPY' | 'CNY';
  * Date format options
  */
 export type DateFormat = 'MM/DD/YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD' | 'MMM D, YYYY';
+
+/**
+ * Time-of-day format options
+ */
+export type TimeFormat = 'h:mm A' | 'h:mm:ss A' | 'HH:mm' | 'HH:mm:ss';
+
+/**
+ * Numeric presentation styles layered on top of the `number`/`currency` types.
+ * `standard` is the existing fixed-decimal behavior.
+ */
+export type NumberStyle = 'standard' | 'plain' | 'scientific' | 'accounting';
+
+/**
+ * How negative values are drawn. `red` variants add a CSS class rather than
+ * changing the string, so the value stays copy-pasteable.
+ */
+export type NegativeStyle = 'minus' | 'parens' | 'red' | 'parens-red';
+
+/**
+ * Rendering style for boolean columns.
+ */
+export type BooleanStyle = 'true-false' | 'yes-no' | 'check';
+
+/**
+ * Explicit horizontal alignment, overriding the type-derived default.
+ */
+export type CellAlignment = 'left' | 'center' | 'right';
 
 /**
  * Column format configuration
@@ -29,9 +66,74 @@ export interface ColumnFormat {
   showThousandsSeparator?: boolean;
   /** Currency code for currency type */
   currency?: CurrencyCode;
-  /** Date format string for date type */
+  /** Date format string for date/datetime types */
   dateFormat?: DateFormat;
+  /** Time format string for datetime/time types */
+  timeFormat?: TimeFormat;
+  /**
+   * Custom token pattern (`YYYY-MM-DD HH:mm`). When set it overrides
+   * `dateFormat`/`timeFormat` entirely — this is the "more formats" escape
+   * hatch for date, datetime, and time columns.
+   */
+  pattern?: string;
+  /** Numeric presentation style for number/currency types */
+  numberStyle?: NumberStyle;
+  /** How negatives are drawn for number/currency/percentage types */
+  negativeStyle?: NegativeStyle;
+  /**
+   * For `percentage`: whether stored values are fractions (0.5 means 50%) or
+   * whole percents (50 means 50%).
+   *
+   * `undefined` means "legacy" and falls back to a magnitude guess — see
+   * `formatCellValue`. Every format written by the format dialog sets this
+   * explicitly, so the guess only ever applies to columns formatted before
+   * the flag existed.
+   */
+  valuesAreFractions?: boolean;
+  /** Rendering style for boolean columns */
+  booleanStyle?: BooleanStyle;
+  /** Explicit alignment override; falls back to the type-derived default */
+  align?: CellAlignment;
 }
+
+/**
+ * Named colors for cell styling.
+ *
+ * A fixed palette rather than arbitrary hex: the swatches resolve to `--nim-*`
+ * derived CSS, so a sheet styled in the light theme stays readable in the dark
+ * one. Raw colors would look correct only in whichever theme they were picked in.
+ */
+export type CellColor =
+  | 'default'
+  | 'red'
+  | 'orange'
+  | 'yellow'
+  | 'green'
+  | 'blue'
+  | 'purple'
+  | 'gray';
+
+/**
+ * Presentation applied to a cell range, independent of the column's data type.
+ */
+export interface CellStyle {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  textColor?: CellColor;
+  fillColor?: CellColor;
+  align?: CellAlignment;
+}
+
+/**
+ * Cell styles keyed by A1 range (`B2` or `A1:C10`), 1-based and inclusive.
+ *
+ * Range-keyed rather than per-cell so the metadata line stays small: styling a
+ * whole column is one entry, not ten thousand. Later entries win where ranges
+ * overlap.
+ */
+export type CellStyleRanges = Record<string, CellStyle>;
 
 /**
  * Metadata stored in CSV comment header
@@ -44,6 +146,8 @@ export interface CSVMetadata {
   columnFormats?: Record<number, ColumnFormat>;
   /** Column widths, keyed by column index (only stored if user has resized) */
   columnWidths?: Record<number, number>;
+  /** Cell styling, keyed by A1 range */
+  cellStyles?: CellStyleRanges;
 }
 
 /**
@@ -87,6 +191,8 @@ export interface SpreadsheetData {
   frozenColumnCount: number;
   /** Column format configurations, keyed by column index */
   columnFormats: Record<number, ColumnFormat>;
+  /** Cell styling, keyed by A1 range */
+  cellStyles: CellStyleRanges;
 }
 
 /**
@@ -160,11 +266,18 @@ export type NumericFilterOperator =
 
 export type TextFilterOperator = 'contains' | 'equals' | 'startsWith';
 
+export type DateFilterOperator = 'on' | 'before' | 'after' | 'between';
+
 export type ColumnFilter =
   | { kind: 'values'; values: ReadonlySet<FilterScalar> }
   | { kind: 'number'; operator: NumericFilterOperator; value: number }
   | { kind: 'text'; operator: TextFilterOperator; value: string; caseSensitive?: boolean }
-  | { kind: 'blank'; operator: 'isBlank' | 'isNotBlank' };
+  | { kind: 'blank'; operator: 'isBlank' | 'isNotBlank' }
+  /**
+   * Bounds are epoch milliseconds. `on` matches the whole calendar day of
+   * `value`; `between` uses `value` and `valueEnd` inclusively.
+   */
+  | { kind: 'date'; operator: DateFilterOperator; value: number; valueEnd?: number };
 
 /** Session-only filter state keyed by zero-based column index. */
 export type ColumnFilterState = ReadonlyMap<number, ColumnFilter>;

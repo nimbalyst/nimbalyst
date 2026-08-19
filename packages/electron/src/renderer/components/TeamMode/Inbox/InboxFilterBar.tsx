@@ -1,7 +1,7 @@
 import React from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
-import { INBOX_FILTERS, SOURCE_KIND_LABELS, toggleScopeValue, typeIdentity } from './inboxViewModel';
+import { INBOX_FILTERS, SOURCE_KIND_LABELS, hasScopeChoices, toggleScopeValue, typeIdentity } from './inboxViewModel';
 import { InboxScopeMenu } from './InboxScopeMenu';
 import type { InboxFilterId, InboxScope, InboxScopeOptions, InboxSourceKind } from './inboxTypes';
 
@@ -46,6 +46,9 @@ export function InboxFilterBar({
   onScopeChange: (scope: InboxScope) => void;
 }) {
   const kinds = scopeOptions.sourceKinds;
+  // Same rule the type chips follow below: an axis with nothing to choose
+  // between is not rendered at all.
+  const showScope = hasScopeChoices(scopeOptions, scope);
 
   return (
     <div className="inbox-filter-bar flex flex-col gap-2" data-component="InboxFilterBar">
@@ -169,11 +172,13 @@ export function InboxFilterBar({
             );
           })}
           <div className="inbox-filter-bar-spacer ml-auto" />
-          <InboxScopeMenu scope={scope} options={scopeOptions} disabled={disabled} onChange={onScopeChange} />
+          {showScope && (
+            <InboxScopeMenu scope={scope} options={scopeOptions} disabled={disabled} onChange={onScopeChange} />
+          )}
         </div>
       )}
 
-      {kinds.length <= 1 && (
+      {kinds.length <= 1 && showScope && (
         <div className="inbox-filter-scope flex items-center">
           <div className="inbox-filter-bar-spacer ml-auto" />
           <InboxScopeMenu scope={scope} options={scopeOptions} disabled={disabled} onChange={onScopeChange} />

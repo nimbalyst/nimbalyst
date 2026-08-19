@@ -31,6 +31,8 @@ import { historyDialogFileAtom } from '../../store';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
 import { getDocumentService } from '../../services/RendererDocumentService';
 import { CommonFileActions } from '../CommonFileActions';
+import { FeedbackBacklinkHeaderButton } from '../FeedbackRequest/FeedbackBacklinks';
+import type { FeedbackRequestSubjectRef } from '../../../shared/feedbackRequestIndex';
 import { DocumentSessionControl, type DocumentSessionActions } from './DocumentSessionControl';
 import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
@@ -234,6 +236,18 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
     sharedDocLink.binding?.documentId,
     teamOrgId,
   ]);
+
+  /**
+   * The artifact feedback is asked about. Same two identity sources as the deep
+   * link -- a collaborative tab knows its own document, a local file knows the
+   * shared document it is bound to -- so a request about the shared document
+   * surfaces from either side of that pair.
+   */
+  const feedbackSubject = useMemo<FeedbackRequestSubjectRef | null>(() => {
+    const documentId = sharedDocumentLinkTarget?.documentId
+      ?? sharedDocLink.binding?.documentId;
+    return documentId ? { kind: 'document', sourceId: documentId } : null;
+  }, [sharedDocumentLinkTarget?.documentId, sharedDocLink.binding?.documentId]);
 
   const handleCopyDeepLink = useCallback(async () => {
     if (!sharedDocumentDeepLink) return;
@@ -630,6 +644,9 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
             </svg>
           </button>
         )}
+
+        {/* Feedback backlinks - renders only when this document has feedback */}
+        <FeedbackBacklinkHeaderButton subject={feedbackSubject} />
 
         {/* Shared Doc Button - local file is already linked to a team-shared doc */}
         {showSharedDocButton && sharedDocLink.binding && (

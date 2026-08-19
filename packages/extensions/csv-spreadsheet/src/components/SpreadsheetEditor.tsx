@@ -17,6 +17,7 @@ import type { RevoGridElement } from '../revogrid-types';
 import type {
   EditorHostProps,
   NormalizedSelectionRange,
+  CellStyle,
   ColumnFormat,
   DiffState,
   CellDiff,
@@ -26,15 +27,17 @@ import type {
 import {
   useEditorLifecycle,
   useCollaborativeEditor,
+  navigateToTrackerReference,
   readClipboard,
   type DiffConfig,
 } from '@nimbalyst/extension-sdk';
 import { CsvBinding } from '../collab/csvBinding';
+import { CsvMetaBinding, isMetaEmpty, type CsvMetaSnapshot } from '../collab/metaBinding';
 import { isCsvYDocEmpty, seedCsvYDoc, getYCsv } from '../collab/seed';
 import type { RemotePresence } from '../collab/presence';
 import { LocalPresenceTracker } from '../collab/localPresence';
 import { CollabPresenceOverlay } from './CollabPresenceOverlay';
-import { useSpreadsheetMetadata } from '../hooks/useSpreadsheetMetadata';
+import { useSpreadsheetMetadata, type SpreadsheetMetadata } from '../hooks/useSpreadsheetMetadata';
 import {
   createGridOperations,
   FormulaViewState,
@@ -47,10 +50,29 @@ import { UndoRedoPlugin } from '../plugins/UndoRedoPlugin';
 import { columnIndexToLetter, columnLetterToIndex, generateColumnHeaders, parseCSV } from '../utils/csvParser';
 import { computeDiff, getCellDiffClass, getCellPreviousValue } from '../utils/diffCompute';
 import { isFormula } from '../utils/formulaEngine';
-import { formatCellValue, getColumnTypeName, isNumericCellValue } from '../utils/formatters';
+import {
+  detectColumnType,
+  formatCellValue,
+  getColumnTypeName,
+  getDefaultAlignmentForType,
+  getDefaultFormatForType,
+  isNegativeFormattedValue,
+  isNumericCellValue,
+  usesRedNegatives,
+} from '../utils/formatters';
+import {
+  renderTrackerCell,
+  renderUrlCell,
+  TRACKER_CELL_ATTRIBUTE,
+  URL_CELL_ATTRIBUTE,
+} from '../cells/cellRendering';
+import { TrackerResolutionStore } from '../cells/trackerResolution';
+import { applyStyleToRange, CellStyleIndex, rangeKeyOf, styleClassNames } from '../cells/cellStyles';
+import { TrackerCellResolvers } from '../cells/TrackerCellResolvers';
 import { FormulaBar, type FormulaBarHandle } from './FormulaBar';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { ColumnFormatDialog } from './ColumnFormatDialog';
+import { CellFormatDialog } from './CellFormatDialog';
 import { FindBar } from './FindBar';
 import { ColumnFilterDropdown } from './ColumnFilterDropdown';
 import { useSpreadsheetFind, type FindContext } from '../hooks/useSpreadsheetFind';
@@ -134,22 +156,52 @@ function formatSelectionRef(selection: NormalizedSelectionRange | null): string 
   return `${startRef}:${endRef}`;
 }
 
+/** The subset of editor metadata that syncs between collaborators. */
+function metaSnapshotOf(metadata: SpreadsheetMetadata): CsvMetaSnapshot {
+  return {
+    headerRowCount: metadata.headerRowCount,
+    frozenColumnCount: metadata.frozenColumnCount,
+    columnFormats: metadata.columnFormats,
+    columnWidths: metadata.columnWidths,
+    cellStyles: metadata.cellStyles,
+  };
+}
+
 /**
- * Get CSS class for column alignment based on format type
+ * Which columns a format-dialog save applies to: every column in the current
+ * selection when the formatted column is part of it, otherwise just that column.
+ */
+function formatTargetColumns(
+  selection: NormalizedSelectionRange | null,
+  columnIndex: number,
+): number[] {
+  if (!selection || columnIndex < selection.startCol || columnIndex > selection.endCol) {
+    return [columnIndex];
+  }
+  const targets: number[] = [];
+  for (let column = selection.startCol; column <= selection.endCol; column++) {
+    targets.push(column);
+  }
+  return targets;
+}
+
+const ALIGNMENT_CLASSES = {
+  left: 'cell-align-left',
+  center: 'cell-align-center',
+  right: 'cell-align-right',
+} as const;
+
+/**
+ * Get CSS class for column alignment.
+ *
+ * An explicit `align` on the format wins; otherwise the column's type picks the
+ * conventional side (numbers and dates right, checkboxes centered, text left).
  */
 function getColumnAlignmentClass(format: ColumnFormat | undefined): string {
   if (!format) return '';
-  switch (format.type) {
-    case 'number':
-    case 'currency':
-    case 'percentage':
-      return 'cell-align-right';
-    case 'date':
-      return 'cell-align-center';
-    case 'text':
-    default:
-      return '';
-  }
+  if (format.align) return ALIGNMENT_CLASSES[format.align];
+  const fallback = getDefaultAlignmentForType(format.type);
+  return fallback ? ALIGNMENT_CLASSES[fallback] : '';
 }
 
 /**
@@ -171,6 +223,9 @@ function generateColumns(
   findHighlightRef: RefObject<FindHighlight> = { current: EMPTY_FIND_HIGHLIGHT },
   filteredColumnsRef: RefObject<ReadonlySet<number>> = { current: new Set() },
   aiFlashRef: RefObject<WeakMap<object, ReadonlySet<string>>> = { current: new WeakMap() },
+  trackerStore: TrackerResolutionStore | null = null,
+  cellStyleIndex: CellStyleIndex = new CellStyleIndex({}),
+  headerRowCount: number = 0,
 ): ColumnRegular[] {
   const columnHeaders = generateColumnHeaders(columnCount);
   const DEFAULT_COLUMN_WIDTH = 120;
@@ -211,6 +266,9 @@ function generateColumns(
         const value = typeof displayValue === 'string' || typeof displayValue === 'number'
           ? displayValue
           : null;
+        // Link and tracker cells draw structure, not just formatted text.
+        if (format?.type === 'url') return renderUrlCell(h, value);
+        if (format?.type === 'tracker' && trackerStore) return renderTrackerCell(h, value, trackerStore);
         return h('span', {}, format ? formatCellValue(value, format) : String(value ?? ''));
       },
       cellProperties: (cellData: { model: Record<string, unknown>; rowIndex: number }) => {
@@ -232,6 +290,29 @@ function generateColumns(
             ?? cellData.model[letter];
           if (isNumericCellValue(displayed)) {
             classes['cell-align-right'] = true;
+          }
+        }
+
+        // Red negatives are a class rather than a decorated string, so the cell
+        // still copies as a plain number.
+        if (format && !isPinned && usesRedNegatives(format.negativeStyle)) {
+          const displayed = formulaViewState.getDisplayValue(cellData.model, letter)
+            ?? cellData.model[letter];
+          const numeric = typeof displayed === 'string' || typeof displayed === 'number'
+            ? displayed
+            : null;
+          if (isNegativeFormattedValue(numeric, format)) {
+            classes['csv-cell-negative'] = true;
+          }
+        }
+
+        // Cell/range styling. Logical rows are what an A1 range key means, so a
+        // pinned header row is its own index rather than the body's row 0.
+        if (!cellStyleIndex.isEmpty) {
+          const logicalRow = isPinned ? cellData.rowIndex : cellData.rowIndex + headerRowCount;
+          const cellStyle = cellStyleIndex.styleAt(logicalRow, index);
+          if (cellStyle) {
+            for (const className of styleClassNames(cellStyle)) classes[className] = true;
           }
         }
 
@@ -444,6 +525,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
 
   // Column format dialog state
   const [formatDialogColumn, setFormatDialogColumn] = useState<number | null>(null);
+  const [cellFormatOpen, setCellFormatOpen] = useState(false);
 
   // Diff mode state for AI edit review
   const [diffState, setDiffState] = useState<DiffState | null>(null);
@@ -661,6 +743,9 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   // Y.Text changes flow back through the existing applyContent path so
   // every existing format/header/metadata invariant is preserved.
   const collabBindingRef = useRef<CsvBinding | null>(null);
+  const metaBindingRef = useRef<CsvMetaBinding | null>(null);
+  /** Guards the publish effect against echoing a snapshot we just received. */
+  const lastPublishedMetaRef = useRef<CsvMetaSnapshot | null>(null);
   const collabActiveRef = useRef(false);
   // Remote collaborator presence (selected/editing cells) for the in-grid
   // overlay. `presenceRepaintTick` forces the overlay to re-measure cell rects
@@ -698,7 +783,26 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         }
         spreadsheetMetaRef.current.loadFromCSV(content);
         spreadsheetMetaRef.current.markClean();
+        // `loadFromCSV` re-reads metadata from the comment line, which in a
+        // shared sheet is stale derived output. The map is the authority, so
+        // put it back on top of whatever the text happened to carry.
+        const metaBinding = metaBindingRef.current;
+        if (metaBinding && !isMetaEmpty(yDoc)) {
+          const snapshot = metaBinding.snapshot();
+          spreadsheetMetaRef.current.applyRemoteMetadata(snapshot);
+          lastPublishedMetaRef.current = snapshot;
+        }
       };
+
+      // Metadata syncs through its own map rather than the comment line inside
+      // the CSV text, so two people formatting two different columns merge.
+      const metaBinding = new CsvMetaBinding(yDoc, {
+        onRemoteMeta: (snapshot) => {
+          spreadsheetMetaRef.current.applyRemoteMetadata(snapshot);
+          lastPublishedMetaRef.current = snapshot;
+        },
+      });
+      metaBindingRef.current = metaBinding;
 
       // Initial baseline = whatever Y.Text already has (the seed we just
       // wrote OR the content sync'd from another client).
@@ -738,7 +842,21 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       if (initial.length > 0) {
         applyCsvContent(initial);
         binding.noteAppliedRemote(initial);
-      } else if (loadedCsvContentRef.current.length > 0) {
+      }
+
+      // Migration: a sheet shared before metadata had its own key carries it
+      // only in the comment line. Whoever opens it first seeds the map from
+      // what was just parsed; after that the map is the authority. Two clients
+      // racing here write identical values, so the result converges either way.
+      if (isMetaEmpty(yDoc)) {
+        metaBinding.publish(metaSnapshotOf(spreadsheetMetaRef.current.metadata));
+      } else {
+        const snapshot = metaBinding.snapshot();
+        spreadsheetMetaRef.current.applyRemoteMetadata(snapshot);
+        lastPublishedMetaRef.current = snapshot;
+      }
+
+      if (initial.length === 0 && loadedCsvContentRef.current.length > 0) {
         // First-share opens can render from host.loadContent() before the Y.Text
         // has been populated. Push that already-loaded local CSV immediately so a
         // close/reopen does not depend on the poll interval or unmount flush.
@@ -762,6 +880,9 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
           // The drain that can still read the grid is the one the host runs
           // through `registerContentFlush` before it destroys the mount.
           binding.destroy();
+          metaBindingRef.current?.destroy();
+          metaBindingRef.current = null;
+          lastPublishedMetaRef.current = null;
           collabBindingRef.current = null;
           collabActiveRef.current = false;
           setRemotePresences([]);
@@ -873,6 +994,21 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   const aiFlashPaintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiFlashCellsRef = useRef<((cells: readonly { row: number; column: number }[]) => Promise<void>) | null>(null);
 
+  // Tracker chips resolve through the same sample-at-paint-time contract as the
+  // refs above: templates read the store, the store asks for a repaint when a
+  // key resolves. `trackerKeys` only exists to mount one resolver hook per key.
+  const trackerStoreRef = useRef<TrackerResolutionStore | null>(null);
+  if (trackerStoreRef.current === null) trackerStoreRef.current = new TrackerResolutionStore();
+  const trackerStore = trackerStoreRef.current;
+  const [trackerKeys, setTrackerKeys] = useState<readonly string[]>([]);
+
+  // Rebuilt only when the styles themselves change; the index memoizes lookups
+  // internally so a repaint does not rescan every range for every cell.
+  const cellStyleIndex = useMemo(
+    () => new CellStyleIndex(spreadsheetMeta.metadata.cellStyles),
+    [spreadsheetMeta.metadata.cellStyles],
+  );
+
   // Memoized column definitions
   const columns = useMemo(
     () => generateColumns(
@@ -885,8 +1021,12 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       findHighlightRef,
       filteredColumnsRef,
       aiFlashRef,
+      trackerStore,
+      cellStyleIndex,
+      headerRowCount,
     ),
-    [displayColumnCount, frozenColumnCount, columnFormats, columnWidths, diffState]
+    [displayColumnCount, frozenColumnCount, columnFormats, columnWidths, diffState, trackerStore,
+     cellStyleIndex, headerRowCount]
   );
 
   // Note: We don't use RevoGrid's built-in themes (default/darkCompact) because
@@ -933,6 +1073,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       getDelimiter: () => spreadsheetMetaRef.current.delimiter,
       getColumnFormats: () => spreadsheetMetaRef.current.metadata.columnFormats,
       getColumnWidths: () => spreadsheetMetaRef.current.metadata.columnWidths,
+      getCellStyles: () => spreadsheetMetaRef.current.metadata.cellStyles,
       getFrozenColumnCount: () => spreadsheetMetaRef.current.metadata.frozenColumnCount,
       onDirty: () => {
         hostRef.current.setDirty(true);
@@ -1366,6 +1507,74 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
 
   const columnFilters = useColumnFilters(revoGridRef, repaintGrid);
   columnFiltersRef.current = columnFilters;
+
+  // Tracker chips: newly-painted keys mount a resolver, and a resolution
+  // repaints the cells already on screen.
+  useEffect(() => {
+    trackerStore.onKeysChanged((keys) => setTrackerKeys(keys));
+    trackerStore.onRepaintNeeded(repaintGrid);
+    return () => {
+      trackerStore.onKeysChanged(null);
+      trackerStore.onRepaintNeeded(null);
+    };
+  }, [trackerStore, repaintGrid]);
+
+  useEffect(() => () => trackerStore.destroy(), [trackerStore]);
+
+  // Push local metadata edits into the shared map. Keyed on the metadata object
+  // rather than on each setter so every path that changes it — the format
+  // dialog, a column resize, the header toggle — publishes the same way.
+  useEffect(() => {
+    const metaBinding = metaBindingRef.current;
+    if (!metaBinding) return;
+    metaBinding.publish(metaSnapshotOf(spreadsheetMeta.metadata));
+  }, [spreadsheetMeta.metadata]);
+
+  /**
+   * One delegated listener for link and tracker cells. Attaching handlers in the
+   * hyperscript templates would fight RevoGrid's own cell mousedown handling;
+   * this runs after selection has been applied, so a click both selects the cell
+   * and follows the target.
+   *
+   * The deps matter: this component returns early while `isLoading`, and again
+   * on `loadError`, so on the first commit the root div does not exist and the
+   * ref is null. With an empty dep array the listener attached to nothing and
+   * never retried — links and chips were inert. Re-running when either gate
+   * clears is what actually binds it.
+   */
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+
+      const link = target.closest(`[${URL_CELL_ATTRIBUTE}]`);
+      if (link) {
+        const href = link.getAttribute(URL_CELL_ATTRIBUTE);
+        if (href) {
+          event.preventDefault();
+          void hostRef.current.openExternal?.(href);
+        }
+        return;
+      }
+
+      const chip = target.closest(`[${TRACKER_CELL_ATTRIBUTE}]`);
+      if (chip) {
+        const itemId = chip.getAttribute(TRACKER_CELL_ATTRIBUTE);
+        if (itemId) {
+          event.preventDefault();
+          // Through the SDK seam rather than dispatching the event ourselves, so
+          // the navigation contract stays in one place.
+          navigateToTrackerReference({ id: itemId, title: '' });
+        }
+      }
+    };
+
+    editor.addEventListener('click', handleClick);
+    return () => editor.removeEventListener('click', handleClick);
+  }, [isLoading, loadError]);
 
   useEffect(() => {
     filteredColumnsRef.current = new Set(columnFilters.filters.keys());
@@ -1974,6 +2183,45 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     return items;
   }, [spreadsheetMeta, headerRowCount, updateSelection]);
 
+  /**
+   * Infer a column's type from its data and apply the matching default format.
+   *
+   * Deliberately an explicit action rather than something that runs on open: a
+   * wrong auto-format applied to someone's data without asking is worse than no
+   * format at all. Mixed columns come back as text and leave the column alone.
+   */
+  const applyDetectedColumnType = useCallback(async (colIndex: number): Promise<void> => {
+    const gridOps = gridOpsRef.current;
+    if (!gridOps) return;
+
+    const { source } = await gridOps.getData();
+    const prop = columnIndexToLetter(colIndex);
+    const samples: (string | number | null)[] = [];
+    for (const row of source) {
+      const value = row[prop];
+      if (value === null || value === undefined || value === '') continue;
+      samples.push(typeof value === 'number' ? value : String(value));
+      // A few hundred rows is plenty to characterize a column, and keeps the
+      // scan bounded on large sheets.
+      if (samples.length >= 200) break;
+    }
+
+    const detected = detectColumnType(samples);
+    spreadsheetMeta.setColumnFormat(colIndex, detected === 'text' ? null : getDefaultFormatForType(detected));
+  }, [spreadsheetMeta]);
+
+  /**
+   * Apply a styling change to the current selection. Styling is presentation
+   * only: it never touches cell values, so it is safe on a formula or a date.
+   */
+  const applyCellStyle = useCallback((change: CellStyle) => {
+    const selection = selectionRangeRef.current;
+    if (!selection) return;
+    spreadsheetMeta.setCellStyles(
+      applyStyleToRange(spreadsheetMeta.metadata.cellStyles, selection, change),
+    );
+  }, [spreadsheetMeta]);
+
   const getColumnHeaderContextMenuItems = useCallback((colIndex: number): ContextMenuItem[] => {
     const colLetter = columnIndexToLetter(colIndex);
     const currentFrozenCount = frozenColumnCount;
@@ -1987,6 +2235,13 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         action: () => {
           setContextMenu(null);
           setFormatDialogColumn(colIndex);
+        },
+      },
+      {
+        label: 'Detect Column Type',
+        action: () => {
+          setContextMenu(null);
+          void applyDetectedColumnType(colIndex);
         },
       },
       { label: '', action: () => {}, separator: true },
@@ -2064,7 +2319,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     });
 
     return items;
-  }, [spreadsheetMeta, frozenColumnCount, columnFormats, updateSelection]);
+  }, [spreadsheetMeta, frozenColumnCount, columnFormats, updateSelection, applyDetectedColumnType]);
 
   const getContextMenuItems = useCallback((): ContextMenuItem[] => {
     const cell = selectedCellRef.current;
@@ -2109,6 +2364,25 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         action: () => {
           if (range && gridOps) gridOps.clearCells(range);
         },
+        disabled: !hasSelection,
+      },
+      { label: '', action: () => {}, separator: true },
+      // Styling is presentation only, so it is safe on a formula or a date --
+      // neither of these touches the cell's value.
+      {
+        label: hasMultipleSelected ? `Format Cells (${cellCount})...` : 'Format Cells...',
+        action: () => {
+          setContextMenu(null);
+          setCellFormatOpen(true);
+        },
+        disabled: !hasSelection,
+      },
+      {
+        label: 'Clear formatting',
+        action: () => applyCellStyle({
+          bold: false, italic: false, underline: false, strikethrough: false,
+          textColor: 'default', fillColor: 'default',
+        }),
         disabled: !hasSelection,
       },
       { label: '', action: () => {}, separator: true },
@@ -2225,6 +2499,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         </div>
       )}
       {!readOnly && find.isOpen && <FindBar find={find} readOnly={isDiffActive} />}
+      <TrackerCellResolvers keys={trackerKeys} store={trackerStore} />
       <div
         ref={gridContainerRef}
         className="flex-1 overflow-hidden relative"
@@ -2286,11 +2561,22 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
             anchor={filterDropdown.anchor}
             distinctValues={filterValues}
             currentFilter={columnFilters.filters.get(filterDropdown.columnIndex)}
+            columnFormat={columnFormats[filterDropdown.columnIndex]}
             onApply={(filter) => { void columnFilters.setColumnFilter(filterDropdown.columnIndex, filter); }}
             onClose={() => setFilterDropdown(null)}
           />
         )}
       </div>
+
+      <CellFormatDialog
+        isOpen={cellFormatOpen}
+        rangeLabel={selectionRangeRef.current ? rangeKeyOf(selectionRangeRef.current) : ''}
+        currentStyle={selectionRangeRef.current
+          ? cellStyleIndex.styleAt(selectionRangeRef.current.startRow, selectionRangeRef.current.startCol)
+          : null}
+        onSave={(style) => applyCellStyle(style)}
+        onClose={() => setCellFormatOpen(false)}
+      />
 
       <ColumnFormatDialog
         isOpen={formatDialogColumn !== null}
@@ -2298,8 +2584,12 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         columnLetter={formatDialogColumn !== null ? columnIndexToLetter(formatDialogColumn) : ''}
         currentFormat={formatDialogColumn !== null ? columnFormats[formatDialogColumn] : undefined}
         onSave={(format) => {
-          if (formatDialogColumn !== null) {
-            spreadsheetMeta.setColumnFormat(formatDialogColumn, format);
+          if (formatDialogColumn === null) return;
+          // Formatting one column at a time is tedious for a wide sheet, so when
+          // the click landed inside a multi-column selection the format applies
+          // to all of them.
+          for (const columnIndex of formatTargetColumns(selectionRangeRef.current, formatDialogColumn)) {
+            spreadsheetMeta.setColumnFormat(columnIndex, format);
           }
         }}
         onClose={() => setFormatDialogColumn(null)}

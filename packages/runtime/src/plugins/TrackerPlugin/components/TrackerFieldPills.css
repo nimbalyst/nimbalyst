@@ -68,6 +68,36 @@
   white-space: nowrap;
 }
 
+/*
+ * Chips whose value can't name its own field carry the label too, so they get
+ * the extra room the second run of text needs.
+ */
+.tracker-field-pill-labeled {
+  max-width: 250px;
+}
+
+/*
+ * The label is the quieter half of the chip: it identifies, the value informs.
+ * It never gives up its own width -- a truncated label defeats the point -- so
+ * the value is what shortens when the chip runs out of room.
+ */
+.tracker-field-pill-label {
+  flex: none;
+  color: var(--nim-text-faint);
+  white-space: nowrap;
+}
+
+/* A separator keeps a two-word label from reading as part of the value. */
+.tracker-field-pill-label::after {
+  content: '\00b7';
+  margin-left: 4px;
+}
+
+.tracker-field-pill:hover .tracker-field-pill-label,
+.tracker-field-pill[aria-expanded='true'] .tracker-field-pill-label {
+  color: var(--nim-text-muted);
+}
+
 .tracker-field-pill-icon {
   flex: none;
 }

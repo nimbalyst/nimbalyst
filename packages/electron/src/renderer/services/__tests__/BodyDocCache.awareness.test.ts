@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AwarenessState } from '@nimbalyst/runtime/sync';
+import { asTeamJwt, asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 interface FakeProvider {
   destroyed: boolean;
@@ -54,9 +55,9 @@ import {
 function makeFactory(): BodyDocConfigFactory {
   return async (itemId) => ({
     serverUrl: 'wss://test.invalid',
-    getJwt: async () => 'jwt',
+    getJwt: async () => asTeamJwt('jwt'),
     orgId: 'org-1',
-    userId: 'user-1',
+    teamMemberId: asTeamMemberId('user-1'),
     documentId: `tracker-content/${itemId}`,
     createWebSocket: (() => {
       throw new Error('WebSocket construction is not expected in this test');

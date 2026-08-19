@@ -12,6 +12,12 @@
  * unsynced changes" editor. `assertJwtMatchesOrg` makes that mismatch a hard,
  * typed error instead of a silent wrong-org token.
  */
+import type {
+  PersonalJwt,
+  PersonalMemberId,
+  TeamJwt,
+  TeamMemberId,
+} from '@nimbalyst/runtime/auth/jwtScopes';
 
 /** Raised when a JWT's organization_id does not match the org it was requested for. */
 export class AuthContextMismatchError extends Error {
@@ -31,6 +37,7 @@ export class AuthContextMismatchError extends Error {
  * Decode a JWT payload without verifying the signature (the server verifies).
  * Returns null on any malformed input.
  */
+// identity-scope-allow: scope-neutral decoder is also used to prove a raw token before branding
 export function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
   try {
     const parts = jwt.split('.');
@@ -54,6 +61,7 @@ export function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
  * correctly scoped). Check the namespaced claim first; fall back to a
  * top-level `organization_id` for any non-Stytch/test tokens.
  */
+// identity-scope-allow: scope-neutral claim reader supports both brands and pre-brand validation
 export function getOrgIdFromJwt(jwt: string): string | null {
   const payload = decodeJwtPayload(jwt);
   if (!payload) return null;
@@ -67,12 +75,18 @@ export function getOrgIdFromJwt(jwt: string): string | null {
 }
 
 /** Extract the `exp` claim (epoch seconds), or null. */
+// identity-scope-allow: expiry parsing is scope-neutral and does not establish identity
 export function getJwtExp(jwt: string): number | null {
   const payload = decodeJwtPayload(jwt);
   return typeof payload?.exp === 'number' ? (payload.exp as number) : null;
 }
 
 /** Extract the `sub` (member id) claim, or null. */
+export function getSubFromJwt(jwt: TeamJwt): TeamMemberId | null;
+export function getSubFromJwt(jwt: PersonalJwt): PersonalMemberId | null;
+// identity-scope-allow: raw overload is reserved for provenance-establishing boundaries
+export function getSubFromJwt(jwt: string): string | null;
+// identity-scope-allow: implementation serves branded overloads plus the raw validation overload
 export function getSubFromJwt(jwt: string): string | null {
   const payload = decodeJwtPayload(jwt);
   return typeof payload?.sub === 'string' ? (payload.sub as string) : null;
@@ -82,6 +96,7 @@ export function getSubFromJwt(jwt: string): string | null {
  * Throw AuthContextMismatchError unless the token's organization_id equals the
  * requested orgId. A missing org claim is treated as a mismatch.
  */
+// identity-scope-allow: this function proves a raw exchange response before asTeamJwt minting
 export function assertJwtMatchesOrg(jwt: string, requestedOrgId: string): void {
   const tokenOrgId = getOrgIdFromJwt(jwt);
   if (tokenOrgId !== requestedOrgId) {

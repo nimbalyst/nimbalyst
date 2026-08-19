@@ -31,7 +31,7 @@ type DirectoryStatus = 'listed' | 'matched' | 'ambiguous' | 'notFound' | 'noTeam
 export type OrgDirectoryResult = {
   status: DirectoryStatus;
   message: string;
-  org: { orgId: string; name: string } | null;
+  org: { orgId: string; name: string; teamProjectId?: string } | null;
   members: DirectoryMember[];
 };
 
@@ -133,7 +133,7 @@ function directoryMember(member: TeamMember): DirectoryMember {
 }
 
 export function matchOrgMembers(
-  team: Pick<TeamDetails, 'orgId' | 'name'>,
+  team: Pick<TeamDetails, 'orgId' | 'name' | 'teamProjectId'>,
   members: TeamMember[],
   query?: string,
 ): OrgDirectoryResult {
@@ -141,7 +141,11 @@ export function matchOrgMembers(
     .filter((member) => member.status !== 'pending')
     .map(directoryMember)
     .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.email.localeCompare(b.email));
-  const org = { orgId: team.orgId, name: team.name };
+  const org = {
+    orgId: team.orgId,
+    name: team.name,
+    ...(team.teamProjectId ? { teamProjectId: team.teamProjectId } : {}),
+  };
   const normalizedQuery = query?.trim().toLocaleLowerCase();
 
   if (!normalizedQuery) {

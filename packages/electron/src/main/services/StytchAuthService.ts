@@ -101,6 +101,7 @@ interface StytchAuthState {
 interface StoredStytchCredentials {
   sessionToken: string;
   sessionJwt: string;
+  // identity-scope-allow: raw Stytch credential field is scoped only after its org metadata is restored
   userId: string;
   email?: string;
   expiresAt: number;
@@ -1182,14 +1183,16 @@ export function setSyncAccount(personalOrgId: string): boolean {
  * haven't done a team session exchange (personal org is the default).
  */
 export function getPersonalSessionJwt(): PersonalJwt | null {
-  const jwt = authState.personalSessionJwt || authState.sessionJwt;
+  const jwt = authState.personalSessionJwt
+    || (authState.orgId === authState.personalOrgId ? authState.sessionJwt : null);
   return jwt ? asPersonalJwt(jwt) : null;
 }
 
 /** Personal/mobile-sync JWT for an explicit signed-in account. */
 export function getPersonalSessionJwtForAccount(personalOrgId: string): PersonalJwt | null {
   if (personalOrgId === syncAccountId) return getPersonalSessionJwt();
-  const jwt = accounts.get(personalOrgId)?.sessionJwt;
+  const account = accounts.get(personalOrgId);
+  const jwt = account?.orgId === personalOrgId ? account.sessionJwt : null;
   return jwt ? asPersonalJwt(jwt) : null;
 }
 
@@ -1419,7 +1422,13 @@ export async function refreshPersonalSessionForAccountDetailed(
   }
 
   const outcome = await refreshSessionForAccountDetailed(personalOrgId);
-  return outcome.ok ? { ok: true, jwt: asPersonalJwt(outcome.jwt) } : outcome;
+  if (!outcome.ok) return outcome;
+  const account = accounts.get(personalOrgId);
+  if (account?.orgId !== personalOrgId) {
+    logger.main.warn(`[StytchAuthService] Refusing to brand refreshed account JWT as personal: active org is ${account?.orgId ?? '(unknown)'}`);
+    return { ok: false, reason: 'auth' };
+  }
+  return { ok: true, jwt: asPersonalJwt(outcome.jwt) };
 }
 
 export async function refreshPersonalSessionForAccount(
@@ -2007,6 +2016,7 @@ async function doRefreshSessionForAccount(personalOrgId: string): Promise<Accoun
       userId: data.user_id || creds.userId,
       email: data.email || creds.email,
       expiresAt: expiresAtMs,
+      orgId: data.org_id,
     });
 
     logger.main.info(`[StytchAuthService] Account session refreshed for ${personalOrgId}`);

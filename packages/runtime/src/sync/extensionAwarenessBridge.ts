@@ -24,12 +24,32 @@
  * re-affirms the retraction indefinitely, so nothing self-heals. An extension
  * publishing a latch needs a single writer whose lifetime is the thing being
  * latched; see the CSV editor's `collab/localPresence.ts`.
+ *
+ * Reconnect recovery (#3006) is the other thing this file owns, and the reason
+ * it heartbeats. A dropped socket makes DocumentSync clear its awareness map,
+ * which is honest -- we no longer know who is in the room -- but nothing in the
+ * protocol replays a roster afterwards. `docSyncRequest` asks for content only,
+ * and the server treats awareness as broadcast-only with no persistence. So the
+ * two directions recover differently:
+ *
+ *  - "peers see me" is fixed by re-announcing on the transition to `connected`.
+ *    The announcement that introduced us went down with the old socket.
+ *  - "I see peers" cannot be fixed locally at all. It depends on peers speaking
+ *    again, which is what the heartbeat guarantees: every client re-announces on
+ *    a bounded cadence, so a reconnected client refills its map within one
+ *    interval instead of waiting for someone to happen to move a cursor.
+ *
+ * A host that already owns presence freshness passes `heartbeatIntervalMs: 0`
+ * rather than beating twice -- see the browser bundle's `CollabPresenceSurface`.
  */
 
 import { Awareness } from 'y-protocols/awareness';
 import type { Doc } from 'yjs';
 
-import type { AwarenessState as WireAwarenessState } from './documentSyncTypes';
+import type {
+  AwarenessState as WireAwarenessState,
+  DocumentSyncStatus,
+} from './documentSyncTypes';
 
 /**
  * The slice of `DocumentSyncProvider` this bridge needs. Narrow on purpose:
@@ -39,7 +59,20 @@ import type { AwarenessState as WireAwarenessState } from './documentSyncTypes';
 export interface ExtensionAwarenessTransport {
   setLocalAwareness(state: WireAwarenessState): void;
   onAwarenessChange(listener: (states: Map<string, WireAwarenessState>) => void): () => void;
+  /**
+   * Optional: lets the bridge re-announce the moment a reconnect completes.
+   * Without it the heartbeat still recovers presence, just a tick later.
+   */
+  onStatusChange?(listener: (status: DocumentSyncStatus) => void): () => void;
+  /** Optional: seeds the heartbeat when the bridge attaches to a live provider. */
+  getStatus?(): DocumentSyncStatus;
 }
+
+/**
+ * Matches `CollabLexicalProvider`'s cadence and stays well inside DocumentSync's
+ * 30s stale sweep, so a peer never ages out between beats.
+ */
+const DEFAULT_AWARENESS_HEARTBEAT_MS = 10_000;
 
 /** Standard awareness block every host publishes for generic presence UI. */
 export interface ExtensionAwarenessUser {
@@ -62,13 +95,27 @@ export function createExtensionAwarenessBridge(args: {
   yDoc: Doc;
   /** Local user identity to set on the Awareness instance immediately. */
   user: ExtensionAwarenessUser;
+  /**
+   * Cadence for re-announcing local awareness while connected. 0 disables it,
+   * for hosts that already run their own presence heartbeat.
+   */
+  heartbeatIntervalMs?: number;
 }): ExtensionAwarenessBridge {
   const { syncProvider, yDoc, user } = args;
+  const heartbeatIntervalMs = args.heartbeatIntervalMs ?? DEFAULT_AWARENESS_HEARTBEAT_MS;
 
   const awareness = new Awareness(yDoc);
   // Seed the local state with the standard user block so other clients can
   // dedupe and render avatars before the extension publishes anything.
   awareness.setLocalState({ user });
+
+  /** Put our current local state on the DocumentSync wire. */
+  const publishLocalState = () => {
+    const state = awareness.getLocalState();
+    if (state) {
+      syncProvider.setLocalAwareness(state as WireAwarenessState);
+    }
+  };
 
   // Forward local awareness changes -> DocumentSync wire.
   // We listen to the 'update' event so we catch every state change (including
@@ -79,17 +126,47 @@ export function createExtensionAwarenessBridge(args: {
     origin: unknown
   ) => {
     if (origin === REMOTE_AWARENESS_ORIGIN) return;
-    const state = awareness.getLocalState();
-    if (state) {
-      syncProvider.setLocalAwareness(state as WireAwarenessState);
-    }
+    publishLocalState();
   };
   awareness.on('update', localUpdateHandler);
+
+  let destroyed = false;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+  const stopHeartbeat = () => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  };
+
+  const startHeartbeat = () => {
+    stopHeartbeat();
+    if (destroyed || heartbeatIntervalMs <= 0) return;
+    heartbeatTimer = setInterval(publishLocalState, heartbeatIntervalMs);
+  };
+
+  const statusUnsub = syncProvider.onStatusChange?.((status) => {
+    if (destroyed) return;
+    if (status !== 'connected') {
+      stopHeartbeat();
+      return;
+    }
+    publishLocalState();
+    startHeartbeat();
+  }) ?? null;
+
+  // Transports that report status seed from it, so attaching to an already-live
+  // provider (a cached one, a second mount) still beats without waiting for a
+  // transition that has already happened. Transports that do not are assumed
+  // live -- an unconnected one turns every beat into a no-op anyway.
+  if (!syncProvider.getStatus || syncProvider.getStatus() === 'connected') {
+    startHeartbeat();
+  }
 
   // Map remote userIds (string) to stable numeric clientIDs in our Awareness.
   // Never reuse our own awareness.clientID for a remote user.
   const userIdToClientId = new Map<string, number>();
   let nextRemoteClientId = awareness.clientID + 1;
+  // identity-scope-allow: awareness wire ids can come from either document-sync identity lane
   const allocateClientId = (userId: string): number => {
     const existing = userIdToClientId.get(userId);
     if (existing !== undefined) return existing;
@@ -149,6 +226,9 @@ export function createExtensionAwarenessBridge(args: {
   return {
     awareness,
     destroy: () => {
+      destroyed = true;
+      stopHeartbeat();
+      statusUnsub?.();
       awarenessUnsub();
       awareness.off('update', localUpdateHandler);
       awareness.destroy();

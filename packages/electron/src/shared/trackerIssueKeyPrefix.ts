@@ -84,10 +84,23 @@ export function resolveLocalKeyPrefix(params: {
   projectNameOrPath: string;
   /** Local prefixes already pinned by other projects on this machine. */
   takenPrefixes?: Iterable<string>;
+  /**
+   * This project's team prefix, when it has one.
+   *
+   * Sharing those letters leaves `NIM.42` and `NIM-42` differing by a single
+   * character, and the dot is the only thing standing between a private number
+   * and a shared key. A project folder named after the team is the ordinary
+   * case, so the derivation avoids the collision rather than warning about it
+   * afterwards. Only the automatic choice avoids it -- a user who types the
+   * team prefix gets it.
+   */
+  avoidPrefix?: string;
 }): string {
   const taken = new Set(
     Array.from(params.takenPrefixes ?? [], (prefix) => prefix.trim().toUpperCase()).filter(Boolean),
   );
+  const avoid = params.avoidPrefix?.trim().toUpperCase();
+  if (avoid) taken.add(avoid);
   const candidates = localPrefixCandidates(params.projectNameOrPath);
   return candidates.find((candidate) => !taken.has(candidate)) ?? candidates[0];
 }

@@ -206,6 +206,11 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'tracker_local_key',
       sqlFile: path.join(schemaDir, '0033_tracker_local_key.sql'),
     },
+    {
+      version: 34,
+      name: 'feedback_request_index',
+      sqlFile: path.join(schemaDir, '0034_feedback_request_index.sql'),
+    },
   ];
 }
 

@@ -504,16 +504,18 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   }
 }
 
-/* Inbox (org-management window): the delivery list and its right-hand context
-   pane only both fit once the surface is wide. Below the threshold the pane is
-   dropped and the list takes the full width -- the org window's default size
-   lands in that narrow band, so this is the common case, not the exception.
+/* Inbox (org-management window): the context pane is user-sized (see
+   InboxContextSlot), so it is dropped only once the surface cannot hold the
+   narrowest pane beside the narrowest list -- 280 + 320 in inboxPreferences.
+   Above that the drag clamp keeps both readable; the old 900px threshold hid
+   the pane at widths where it fits perfectly well.
    .inbox-surface sets container-type/name via [container-type:inline-size], so
    this resolves against the surface itself rather than the OS window (the left
-   nav is 200px of it). Native CSS because the @tailwindcss/container-queries
-   plugin is not installed. */
-@container inbox-surface (max-width: 900px) {
-  .inbox-context-slot {
+   nav is 200px of it). Qualified by .inbox-surface so it outranks the
+   equal-specificity Tailwind `flex` utility on the slot. Native CSS because the
+   @tailwindcss/container-queries plugin is not installed. */
+@container inbox-surface (max-width: 600px) {
+  .inbox-surface .inbox-context-slot {
     display: none;
   }
 }

@@ -46,7 +46,7 @@ vi.mock('../../../store/atoms/collabDocuments', async () => {
     activeCollabScopeAtom: atom({
       scopeKey: '/workspace',
       orgId: 'different-active-org',
-      indexConfig: { serverUrl: 'wss://test.invalid', userId: 'user-1' },
+      indexConfig: { serverUrl: 'wss://test.invalid', teamMemberId: 'user-1' },
     }),
     activeTeamOrgIdAtom: atom(null),
     buildSharedDocumentDeepLink,

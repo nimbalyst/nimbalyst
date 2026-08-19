@@ -13,7 +13,7 @@ import type {
 } from '@nimbalyst/collab-protocol';
 import { teamInboxRoomId } from '@nimbalyst/collab-protocol';
 
-import type { TeamJwt, TeamMemberId } from '../auth/jwtScopes';
+import { asTeamMemberId, type TeamJwt, type TeamMemberId } from '../auth/jwtScopes';
 import { appendSyncClientParams } from './syncClientInfo';
 
 export const DEFAULT_TEAM_INBOX_CONNECT_CONCURRENCY = 4;
@@ -40,7 +40,7 @@ export type { PresenceDesiredStatus, TeamPresenceMember };
 
 export interface TeamInboxMaterializedDelivery {
   id: string;
-  recipientUserId: string;
+  teamMemberId: TeamMemberId;
   orgId: string;
   orgName: string;
   createdAt: number;
@@ -909,8 +909,10 @@ function materializeDelivery(
   delivery: TeamInboxWireDelivery,
 ): TeamInboxMaterializedDelivery {
   if ('unavailable' in delivery) {
+    const { recipientUserId, ...rest } = delivery;
     return {
-      ...delivery,
+      ...rest,
+      teamMemberId: asTeamMemberId(recipientUserId),
       orgName: state.descriptor.orgName,
       hasUnreadActivity: false,
     };
@@ -925,8 +927,10 @@ function materializeDelivery(
   const receipt = conversationId
     ? state.readReceipts.get(conversationId) ?? 0
     : 0;
+  const { recipientUserId, ...rest } = delivery;
   return {
-    ...delivery,
+    ...rest,
+    teamMemberId: asTeamMemberId(recipientUserId),
     orgName: state.descriptor.orgName,
     subscription: subscription?.state,
     hasUnreadActivity:

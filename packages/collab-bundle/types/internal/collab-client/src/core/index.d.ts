@@ -12,7 +12,7 @@ export type CollabCapabilityAvailability<TCapability> = {
 export interface CollabIndexConfig {
     serverUrl: string;
     teamProjectId?: string | null;
-    userId: string;
+    teamMemberId: TeamMemberId;
     userName?: string;
     userEmail?: string;
     /**
@@ -108,7 +108,7 @@ export type CollabArtifactRef = {
     scope: CollabScope;
     trackerId: string;
 };
-export type CollabOpenSource = 'sidebar' | 'home' | 'quick_open' | 'deep_link' | 'restart_restore' | 'history' | 'agent_tool' | 'share_to_team' | 'embedded_document';
+export type CollabOpenSource = 'sidebar' | 'home' | 'quick_open' | 'deep_link' | 'restart_restore' | 'history' | 'agent_tool' | 'share_to_team' | 'embedded_document' | 'feedback_request';
 /** Browser-safe projection of a host's document/editor catalog. */
 export interface CollabDocumentTypeDescriptor {
     documentType: string;

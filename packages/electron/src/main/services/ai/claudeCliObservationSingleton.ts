@@ -62,7 +62,8 @@ import { AnalyticsService } from '../analytics/AnalyticsService';
 import { notificationService } from '../NotificationService';
 import { composeNotificationTitle } from '../../../shared/notificationTitle';
 import { SoundNotificationService } from '../SoundNotificationService';
-import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
+import { isDesktopTrulyAway } from '../SyncManager';
+import { requestMobilePush } from './mobilePushRequest';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { getClaudeCodeApiUpstreamUrl } from '../../utils/store';
 import type { AssembledAssistantMessage } from './claudeCliObservation/claudeApiMessageAssembler';
@@ -103,7 +104,7 @@ async function notifyClaudeCliTurnComplete(
     // locked / idle past threshold) — otherwise the OS notification above
     // already covers it and a push would duplicate via Continuity.
     if (isDesktopTrulyAway()) {
-      getSyncProvider()?.requestMobilePush?.(sessionId, title, body);
+      void requestMobilePush(sessionId, title, body, { reason: 'cli_turn_complete' });
     }
   } catch (err) {
     console.warn('[ClaudeCliObservation] Failed to fire turn-complete notification:', err);

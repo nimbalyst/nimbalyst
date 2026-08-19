@@ -207,7 +207,7 @@ describe('OpenCodeProvider', () => {
 
     const errorChunk = chunks.find((c) => c.type === 'error');
     expect(errorChunk).toBeDefined();
-    expect(errorChunk.error).toContain('workspacePath is required');
+    expect(errorChunk.error).toMatch(/no project folder/i);
   });
 
   it('saves provider session ID after stream completes', async () => {

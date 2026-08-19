@@ -1,5 +1,5 @@
 /**
- * Per-user Inbox UI state (active filter, scope selection).
+ * Per-user Inbox UI state (active filter, scope selection, context-pane width).
  *
  * Goes through the app-settings store over IPC, never `localStorage` — same
  * path `defaultOrg.ts` uses for the org window's last selection. Reads and
@@ -13,17 +13,42 @@ import { SOURCE_KIND_LABELS } from './inboxViewModel';
 
 export const INBOX_PREFERENCES_SETTING_KEY = 'inboxViewPreferences';
 
+/**
+ * Bounds on the context pane. The minimum is what the feedback-request card and
+ * the conversation composer need before they start wrapping into uselessness.
+ * The maximum only guards against a stored width captured on a much wider
+ * display — what actually stops a drag on any given window is the list's own
+ * minimum below, so this is deliberately generous.
+ */
+export const INBOX_CONTEXT_PANE_MIN_WIDTH = 280;
+export const INBOX_CONTEXT_PANE_MAX_WIDTH = 1600;
+/** Width the list needs to stay readable, which caps the pane while dragging. */
+export const INBOX_LIST_PANE_MIN_WIDTH = 320;
+
 export interface InboxPreferences {
   filter: InboxFilterId;
   unreadOnly: boolean;
   scope: InboxScope;
+  /** Width of the right-hand context pane, in CSS pixels. */
+  contextPaneWidth: number;
 }
 
 export const DEFAULT_INBOX_PREFERENCES: InboxPreferences = {
   filter: 'all',
   unreadOnly: false,
   scope: EMPTY_INBOX_SCOPE,
+  contextPaneWidth: 340,
 };
+
+export function clampInboxContextPaneWidth(width: number, available?: number): number {
+  // `available` is the surface width at drag time: the pane may not grow past
+  // what leaves the list its minimum, or a drag to the far edge would hide the
+  // very thing the pane is describing.
+  const max = available !== undefined && available > 0
+    ? Math.max(INBOX_CONTEXT_PANE_MIN_WIDTH, Math.min(INBOX_CONTEXT_PANE_MAX_WIDTH, available - INBOX_LIST_PANE_MIN_WIDTH))
+    : INBOX_CONTEXT_PANE_MAX_WIDTH;
+  return Math.round(Math.max(INBOX_CONTEXT_PANE_MIN_WIDTH, Math.min(max, width)));
+}
 
 const FILTERS: InboxFilterId[] = ['all', 'mentions', 'assigned', 'follows'];
 // Derived from the label map rather than restated, so a source kind added to
@@ -61,6 +86,9 @@ export function normalizeInboxPreferences(raw: unknown): InboxPreferences {
   return {
     filter,
     unreadOnly,
+    contextPaneWidth: typeof record.contextPaneWidth === 'number' && Number.isFinite(record.contextPaneWidth)
+      ? clampInboxContextPaneWidth(record.contextPaneWidth)
+      : DEFAULT_INBOX_PREFERENCES.contextPaneWidth,
     scope: {
       orgIds: stringArrayOrNull(scopeRecord.orgIds),
       sourceKinds: stringArrayOrNull(scopeRecord.sourceKinds, SOURCE_KINDS) as InboxSourceKind[] | null,

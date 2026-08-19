@@ -21,6 +21,7 @@ import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
 import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 import type { NotificationOptions, NotificationResult } from './NotificationService';
+import type { MobilePushResult } from '@nimbalyst/runtime/sync/types';
 import { composeNotificationTitle } from '../../shared/notificationTitle';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
@@ -129,6 +130,18 @@ type ShowNotificationWithResult = (
   options: NotificationOptions
 ) => Promise<NotificationResult>;
 
+/**
+ * Injected rather than imported: `SyncManager` pulls in the runtime barrel, the
+ * window manager and the Stytch client, and this service is imported by a lot of
+ * tests that have no business loading any of that.
+ */
+type RequestMobilePush = (
+  sessionId: string,
+  title: string,
+  body: string,
+  options: { force?: boolean; reason?: string }
+) => Promise<MobilePushResult | null>;
+
 /** Notification-only bound for the reinjected original task text. The stored,
  *  returned `SessionResultData.originalPrompt` value itself stays unbounded --
  *  only the text appended into a `[Child Session Update]` notification (which
@@ -185,6 +198,7 @@ export class MetaAgentService {
   private notificationSignatures = new Map<string, string>();
   private ipcHandlersRegistered = false;
   private showNotificationWithResult: ShowNotificationWithResult | null = null;
+  private requestMobilePush: RequestMobilePush | null = null;
 
   private constructor() {}
 
@@ -225,7 +239,8 @@ export class MetaAgentService {
 
   public async start(
     aiService: AIService,
-    showNotificationWithResult: ShowNotificationWithResult
+    showNotificationWithResult: ShowNotificationWithResult,
+    requestMobilePush?: RequestMobilePush
   ): Promise<void> {
     if (this.started) {
       return;
@@ -239,6 +254,7 @@ export class MetaAgentService {
     this.starting = (async () => {
       this.aiService = aiService;
       this.showNotificationWithResult = showNotificationWithResult;
+      this.requestMobilePush = requestMobilePush ?? null;
       this.sessionManager = new SessionManager();
       await this.sessionManager.initialize();
 
@@ -1066,10 +1082,27 @@ export class MetaAgentService {
       urgency: args.urgency || 'normal',
     });
 
+    // Forced (#1268): `urgency: 'critical'` is the agent saying the human is
+    // needed now, which is exactly the case the server's presence suppression
+    // must not swallow. Anything below critical stays desktop-only.
+    const isUrgent = args.urgency === 'critical';
+    let mobilePush: MobilePushResult | null = null;
+    if (isUrgent && this.requestMobilePush) {
+      try {
+        mobilePush = await this.requestMobilePush(targetSessionId, sourceLabel, boundedBody, {
+          force: true,
+          reason: 'notify_urgent',
+        });
+      } catch (err) {
+        console.warn('[MetaAgentService] notify_user mobile push failed:', err);
+      }
+    }
+
     return JSON.stringify({
       tool: 'notify_user',
-      deliveryChannel: 'os_notification',
-      mobilePushAttempted: false,
+      deliveryChannel: mobilePush ? 'os_notification+mobile_push' : 'os_notification',
+      mobilePushAttempted: mobilePush !== null,
+      mobilePush: mobilePush ?? undefined,
       sessionId: targetSessionId,
       bypassFocusCheck: args.bypassFocusCheck === true,
       result,

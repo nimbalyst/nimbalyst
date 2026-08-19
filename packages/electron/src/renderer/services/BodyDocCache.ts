@@ -74,6 +74,7 @@ import type {
   DocumentSyncConfig,
   DocumentSyncStatus,
 } from '@nimbalyst/runtime/sync';
+import type { TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 // ============================================================================
 // Tunables
@@ -102,7 +103,9 @@ const DEFAULT_SERVER_ACK_TIMEOUT_MS = 5_000;
  * subscribers via the entry's event bus. Callers should pass `undefined`
  * (or stub no-ops) for these fields.
  */
-export interface BodyDocConfig extends DocumentSyncConfig {
+type TeamDocumentSyncConfig = Extract<DocumentSyncConfig, { teamMemberId: TeamMemberId }>;
+
+export type BodyDocConfig = TeamDocumentSyncConfig & {
   userName?: string;
   userEmail?: string;
   /**
@@ -113,7 +116,7 @@ export interface BodyDocConfig extends DocumentSyncConfig {
    * the owning surface must check this first.
    */
   workspacePath?: string;
-}
+};
 
 export type BodyDocConfigFactory = (itemId: string) => Promise<BodyDocConfig | null>;
 
@@ -439,6 +442,14 @@ export class BodyDocCache {
     // cache is the sole owner of the provider's lifecycle signals.
     const cacheConfig: DocumentSyncConfig = {
       ...config,
+      // Explicit even though the spread above already carries it: the
+      // renderer-sync-sockets checker (scripts/check-renderer-sync-sockets.mjs)
+      // only resolves one level of `{ ...other }` spread within the same file,
+      // and `config` arrives as a parameter from a factory defined elsewhere --
+      // so it can't see this field through the spread. Behavior-neutral
+      // (config.createWebSocket is always the same value at runtime); this
+      // just makes the invariant visible to the checker and to readers.
+      createWebSocket: config.createWebSocket,
       onStatusChange: (status) => {
         entry.lastStatus = status;
         for (const l of entry.listeners) {

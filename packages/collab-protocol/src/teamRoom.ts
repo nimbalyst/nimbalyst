@@ -10,6 +10,7 @@ import type {
   BoundedPreview,
   ConversationDescriptor,
 } from './conversation.js';
+import type { FeedbackRequestIndexEntry } from './feedbackRequest.js';
 
 export interface OrgSettings {
   version: 1;
@@ -26,6 +27,7 @@ export interface OrgSettings {
 
 export type TeamClientMessage =
   | TeamSyncRequestMessage
+  | FeedbackIndexSyncRequestMessage
   | TeamDocumentCommentNotifyMessage
   | TeamDocIndexSyncRequestMessage
   | TeamDocIndexRegisterMessage
@@ -43,6 +45,11 @@ export type TeamClientMessage =
 /** Request full team state snapshot */
 export interface TeamSyncRequestMessage {
   type: 'teamSync';
+}
+
+/** Request the participant-filtered feedback-request index. */
+export interface FeedbackIndexSyncRequestMessage {
+  type: 'feedbackIndexSync';
 }
 
 /** Request the full document list */
@@ -199,6 +206,8 @@ export interface TeamDocumentCommentNotifyMessage {
 
 export type TeamServerMessage =
   | TeamSyncResponseMessage
+  | FeedbackIndexSyncResponseMessage
+  | FeedbackIndexBroadcastMessage
   | TeamOrgSettingsUpdatedMessage
   | TeamConversationDescriptorUpdatedMessage
   | TeamMemberAddedMessage
@@ -219,6 +228,18 @@ export type TeamServerMessage =
 export interface TeamSyncResponseMessage {
   type: 'teamSyncResponse';
   team: TeamState;
+}
+
+/** Full feedback index visible to this team-scoped viewer. */
+export interface FeedbackIndexSyncResponseMessage {
+  type: 'feedbackIndexSyncResponse';
+  entries: FeedbackRequestIndexEntry[];
+}
+
+/** One participant-filtered feedback index upsert. */
+export interface FeedbackIndexBroadcastMessage {
+  type: 'feedbackIndexBroadcast';
+  entry: FeedbackRequestIndexEntry;
 }
 
 /** Broadcast: organization settings changed. */

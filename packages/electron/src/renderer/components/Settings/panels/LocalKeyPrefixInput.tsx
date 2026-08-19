@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 
 export interface LocalKeyPrefixConfig {
   prefix: string;
-  locked: boolean;
+  hasIssuedNumbers: boolean;
   matchesTeamPrefix: boolean;
   warning?: string;
 }
@@ -30,6 +30,18 @@ export function LocalKeyPrefixInput({ config, teamPrefix, onChange }: {
       return;
     }
     if (upper === config.prefix) return;
+
+    // Renumbering is not what happens -- `NIM.42` becomes `NIC.42` -- but an
+    // already-written reference to the old letters stops resolving, so say so
+    // before doing it rather than after.
+    if (config.hasIssuedNumbers && !window.confirm(
+      `Rename this project's existing local numbers from ${config.prefix}. to ${upper}.?\n\n`
+      + `The numbers themselves stay the same. Anything already referring to a `
+      + `${config.prefix}. number will stop resolving.`,
+    )) {
+      setDraft(config.prefix);
+      return;
+    }
 
     setSaving(true);
     setError('');
@@ -61,7 +73,7 @@ export function LocalKeyPrefixInput({ config, teamPrefix, onChange }: {
         <input
           type="text"
           value={draft}
-          disabled={config.locked || saving}
+          disabled={saving}
           onChange={(event) => {
             setDraft(event.target.value.toUpperCase());
             setError('');
@@ -80,9 +92,9 @@ export function LocalKeyPrefixInput({ config, teamPrefix, onChange }: {
         <p className="local-key-prefix-warning text-[11px] text-[var(--nim-warning)] mt-1.5">{config.warning}</p>
       )}
       <p className="text-[11px] text-[var(--nim-text-faint)] mt-2">
-        {config.locked
-          ? `Locked because this project has already issued local numbers. Its team prefix is ${teamPrefix || 'not assigned'}.`
-          : 'You can choose a different prefix until this project issues its first local number. Another local project cannot use the same prefix.'}
+        {config.hasIssuedNumbers
+          ? `Changing this renames the numbers this project has already issued, keeping each number. Its team prefix is ${teamPrefix || 'not assigned'}.`
+          : 'This project has not issued a local number yet, so changing the prefix affects nothing. Another local project cannot use the same prefix.'}
       </p>
     </div>
   );

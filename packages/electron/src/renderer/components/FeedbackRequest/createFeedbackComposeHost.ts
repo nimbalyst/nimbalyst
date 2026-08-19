@@ -114,7 +114,7 @@ export function createFeedbackComposeHost(
         return { success: false, error: 'This session has no workspace to send from.' };
       }
 
-      const subjectKeys = new Set(payload.subjects.map(refKey));
+      const subjectKeys = new Set(payload.subjects.map((subject) => refKey(subject.ref)));
       const stray = payload.publishSubjectRefs.find((ref) => !subjectKeys.has(refKey(ref)));
       if (stray) {
         return {
@@ -172,7 +172,21 @@ export function createFeedbackComposeHost(
         if (!outcome.success) return { success: false, error: outcome.error };
         if (outcome.ref) publishedRefs.set(refKey(ref), outcome.ref);
       }
-      const subjects = payload.subjects.map((ref) => publishedRefs.get(refKey(ref)) ?? ref);
+      // The published ref replaces the local one; the author's label rides
+      // through untouched, because it is the only thing a recipient who never
+      // synced the project can read.
+      const republish = <T extends { ref: ResourceRef }>(artifact: T): T => {
+        const published = publishedRefs.get(refKey(artifact.ref));
+        return published ? { ...artifact, ref: published } : artifact;
+      };
+      const subjects = payload.subjects.map(republish);
+      // Option-bound artifacts carry their own copy of the ref, so a rewrite
+      // that stopped at `subjects` would leave every option card pointing at a
+      // path on the author's disk.
+      const asks = payload.asks.map((ask) =>
+        'artifacts' in ask && ask.artifacts?.length
+          ? { ...ask, artifacts: ask.artifacts.map(republish) }
+          : ask);
 
       const requestId = newRequestId();
       const target: FeedbackRequestServiceTarget = {
@@ -192,7 +206,7 @@ export function createFeedbackComposeHost(
             ...(config.sessionName ? { sessionName: config.sessionName } : {}),
           },
           subjects,
-          asks: payload.asks,
+          asks,
           recipients: payload.recipients,
           assignments: payload.assignments,
           visibility: payload.visibility,

@@ -278,6 +278,20 @@ export interface RequestMobilePushMessage {
   body: string;
   /** Device ID of the requesting device, used for active-device routing */
   requestingDeviceId?: string;
+  /**
+   * Correlates the `mobilePushResult` frame with this request. Absent on older
+   * clients, and the server only acknowledges when it is present — an unknown
+   * discriminator is a decoding risk for clients that predate the result frame.
+   */
+  requestId?: string;
+  /**
+   * Explicit user-authorized attention request. Bypasses presence suppression:
+   * the notification is delivered even when the user is demonstrably at another
+   * device. Subject to a server-side rate limit.
+   */
+  force?: boolean;
+  /** Short machine-readable cause, for rate limiting and audit. */
+  reason?: string;
 }
 
 /** Update project config (encrypted blob with commands, etc.) */
@@ -390,6 +404,7 @@ export type ServerMessage =
   | SettingsSyncBroadcastMessage
   | ReadReceiptSyncBroadcastMessage
   | TrackerPersonalStateSyncBroadcastMessage
+  | MobilePushResultMessage
   | ErrorMessage;
 
 /** Response to syncRequest */
@@ -548,6 +563,42 @@ export interface TrackerPersonalStateSyncBroadcastMessage {
   type: 'trackerPersonalStateBroadcast';
   state: EncryptedTrackerPersonalStatePayload;
   fromConnectionId?: string;
+}
+
+/** Why a reachable device was not sent a given push. */
+export type SkipReason =
+  /** The device that asked for the push. */
+  | 'requesting_device'
+  /** Connected, foreground, and recently used — the user is already looking at it. */
+  | 'device_present'
+  /** APNs/FCM rejected the token; the server drops it. */
+  | 'bad_token'
+  /** The push provider failed for this token. */
+  | 'send_failed';
+
+/** Why a push request produced no delivery at all. */
+export type PushRejectionCause =
+  | 'no_registered_tokens'
+  | 'rate_limited'
+  | 'suppressed_active_device'
+  | 'unknown_session'
+  | 'provider_error'
+  /** Client-side only: no result frame arrived before the timeout. */
+  | 'no_ack';
+
+/**
+ * Acknowledgement for a `requestMobilePush`. Sent only when the request carried
+ * a `requestId`, so it is strictly opt-in for older clients.
+ */
+export interface MobilePushResultMessage {
+  type: 'mobilePushResult';
+  requestId: string;
+  sessionId: string;
+  accepted: boolean;
+  attemptedCount: number;
+  deliveredCount: number;
+  skipped: Array<{ deviceId: string; reason: SkipReason }>;
+  rejection?: PushRejectionCause;
 }
 
 /** Error response */

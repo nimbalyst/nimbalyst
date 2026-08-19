@@ -7,6 +7,7 @@ import {
   findBundledSingletons,
   findEmbeddedLaneViolations,
   findEntrySeparationViolations,
+  findPublicTypeLeaks,
 } from '../check-collab-bundle.mjs';
 import { findBrowserDependencyViolations } from '../browser-bundle-graph.mjs';
 
@@ -124,5 +125,57 @@ test('eager entry closure follows static imports but stops at dynamic imports', 
   assert.deepEqual(
     findEagerEntryFiles(report, 'editor'),
     ['editor.js', 'chunks/editor-core.js', 'chunks/static-transitive.js'],
+  );
+});
+
+// The public .d.ts files document the recommended `@nimbalyst/runtime` import,
+// which means writing that import inside an example block. Scanning raw source
+// reads the example as a real dependency and fails a tree with no leak in it —
+// and an unpassable check is not a stricter check, it is one everyone bypasses.
+test('ignores a private-package import that only appears in a comment', () => {
+  const source = [
+    '/**',
+    ' * New pattern (recommended):',
+    ' * ```typescript',
+    " * import type { EditorHostProps } from '@nimbalyst/runtime';",
+    ' * ```',
+    ' */',
+    '// see also: import { x } from "@nimbalyst/collab-client";',
+    'export type Foo = string;',
+  ].join('\n');
+  assert.deepEqual(findPublicTypeLeaks(['editor.d.ts'], () => source), []);
+});
+
+test('still catches a real private-package import outside comments', () => {
+  const source = [
+    '/** Docs mentioning @nimbalyst/runtime harmlessly. */',
+    "import type { Host } from '@nimbalyst/runtime';",
+    "export type { Doc } from '@nimbalyst/collab-client/doc';",
+    "export type { Manifest } from '@nimbalyst/extension-sdk';",
+  ].join('\n');
+  assert.deepEqual(
+    findPublicTypeLeaks(['editor.d.ts'], () => source),
+    [
+      'editor.d.ts: @nimbalyst/runtime',
+      'editor.d.ts: @nimbalyst/collab-client/doc',
+      'editor.d.ts: @nimbalyst/extension-sdk',
+    ],
+  );
+});
+
+test('a // inside a string literal does not swallow the rest of the line', () => {
+  const source = "export declare const URI = \"virtual://shared-home\"; import('@nimbalyst/runtime');";
+  assert.deepEqual(
+    findPublicTypeLeaks(['editor.d.ts'], () => source),
+    ['editor.d.ts: @nimbalyst/runtime'],
+  );
+});
+
+test('a comment between the keyword and the specifier does not splice a new token', () => {
+  // Stripping to empty would turn this into a valid-looking `from'@nimbalyst/runtime'`.
+  const source = "export type { A } from/**/'@nimbalyst/runtime';";
+  assert.deepEqual(
+    findPublicTypeLeaks(['editor.d.ts'], () => source),
+    ['editor.d.ts: @nimbalyst/runtime'],
   );
 });

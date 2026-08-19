@@ -82,6 +82,7 @@ import { ToolUsageService } from '../ToolUsageService';
 import { historyManager } from '../../HistoryManager';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
+import { requestMobilePush } from './mobilePushRequest';
 import { setSessionPendingPrompt } from './pendingPromptPersistence';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
@@ -2706,10 +2707,11 @@ export class MessageStreamingHandler {
               // the Electron notification above already covers it -- sending a mobile push
               // too causes duplicates via iPhone Mirroring / Continuity.
               if (syncProvider && isDesktopTrulyAway()) {
-                syncProvider.requestMobilePush?.(
+                void requestMobilePush(
                   session.id,
                   session.title || 'AI Session',
-                  notificationBody
+                  notificationBody,
+                  { reason: 'session_complete' }
                 );
               }
 
@@ -2947,14 +2949,16 @@ export class MessageStreamingHandler {
             metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
           });
 
-          // Request mobile push notification for agent error (only when truly away)
-          if (isDesktopTrulyAway()) {
-            syncProvider.requestMobilePush?.(
-              session.id,
-              session.title || 'AI Session',
-              'Error occurred'
-            );
-          }
+          // Forced (#1268): a session that died unattended is exactly when the
+          // user needs to hear about it, so the server -- not this process --
+          // decides whether the desktop counts as present. Gating on
+          // isDesktopTrulyAway() here would stop `force` ever being sent.
+          void requestMobilePush(
+            session.id,
+            session.title || 'AI Session',
+            'Error occurred',
+            { force: true, reason: 'agent_error' }
+          );
         }
       }
 

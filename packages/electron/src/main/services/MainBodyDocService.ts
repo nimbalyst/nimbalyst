@@ -30,7 +30,7 @@ import {
 import { convertExportToFile, convertFromFileIntoDoc, convertRecoveryPlaintext } from './CollabConversionClient';
 import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
-import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
+import { findTeamForWorkspace, getOrgScopedIdentity, getOrgScopedJwt } from './TeamService';
 import { getCollabBackupService } from './CollabBackupService';
 import { windows, windowStates } from '../window/windowState';
 
@@ -224,14 +224,13 @@ async function resolveConfig(
   if (!team) return null;
 
   const documentId = `tracker-content/${itemId}`;
+  const { teamMemberId } = await getOrgScopedIdentity(team.orgId);
 
   return {
     serverUrl: getCollabSyncWsUrl(),
     getJwt: () => getOrgScopedJwt(team.orgId),
     orgId: team.orgId,
-    // `userId` is informational; the server treats the JWT sub as
-    // authoritative. Empty is fine.
-    userId: '',
+    teamMemberId,
     documentId,
     onContentChanged: (yDoc) => {
       getCollabBackupService().onContentChanged({

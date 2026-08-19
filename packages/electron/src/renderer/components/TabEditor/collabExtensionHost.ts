@@ -82,9 +82,9 @@ export function createCollaborationContext(args: {
     yDoc: syncProvider.getYDoc(),
     awareness,
     user: {
-      id: activeConfig.userId,
-      name: activeConfig.userName ?? activeConfig.userId,
-      color: pickCursorColor(activeConfig.userId),
+      id: activeConfig.teamMemberId,
+      name: activeConfig.userName ?? activeConfig.teamMemberId,
+      color: pickCursorColor(activeConfig.teamMemberId),
     },
     getStatus: () => syncProvider.getStatus() as CollaborationStatus,
     onStatusChange: (cb) => statusFanout(syncProvider).subscribe(cb),

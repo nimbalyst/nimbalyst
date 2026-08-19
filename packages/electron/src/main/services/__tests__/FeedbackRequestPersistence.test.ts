@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { PGlite } from '@electric-sql/pglite';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
@@ -16,7 +17,7 @@ const temporaryDirectories: string[] = [];
 const target = {
   workspacePath: '/workspace/a',
   orgId: 'org-a',
-  viewerUserId: 'member-a',
+  teamMemberId: asTeamMemberId('member-a'),
   requestId: 'request-a',
 };
 

@@ -1,6 +1,7 @@
 import type { TeamInboxSnapshot } from '@nimbalyst/runtime/sync';
 import { createStore } from 'jotai';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import { teamInboxSnapshotAtom } from '../../atoms/teamInbox';
 import { initTeamInboxListeners } from '../teamInboxListeners';
@@ -79,7 +80,7 @@ describe('initTeamInboxListeners', () => {
         id: 'delivery-1',
         orgId: 'org-a',
         orgName: 'Acme',
-        recipientUserId: 'member-1',
+        teamMemberId: asTeamMemberId('member-1'),
         hasUnreadActivity: true,
         createdAt: 1,
         source: {

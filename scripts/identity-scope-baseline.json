@@ -1,0 +1,65 @@
+{
+  "packages/runtime/src/sync/DocumentSync.ts": [
+    "private lastWriterUserId: string | null = null;"
+  ],
+  "packages/runtime/src/sync/teamSyncTypes.ts": [
+    "lastWriterUserId?: string | null;"
+  ],
+  "packages/electron/src/main/services/CollabLocalOriginService.ts": [
+    "lastWriterUserId: string | null;"
+  ],
+  "packages/electron/src/main/services/CredentialService.ts": [
+    "personalUserId?: string,",
+    "personalUserId?: string;"
+  ],
+  "packages/electron/src/main/services/PersonalSyncProfiles.ts": [
+    "personalUserId?: string;",
+    "account: { personalOrgId: string; personalUserId?: string },"
+  ],
+  "packages/electron/src/main/services/StytchAuthService.ts": [
+    "sessionJwt: string | null;",
+    "personalUserId: string | null;",
+    "personalSessionJwt: string | null;",
+    "sessionJwt: string;",
+    "personalUserId?: string;",
+    "personalUserId: string | null;",
+    "incomingUserId: string | undefined,",
+    "sessionJwt: string;",
+    "sessionJwt: string;",
+    "session_jwt: string;",
+    "session_jwt: string;"
+  ],
+  "packages/electron/src/main/services/TeamCustodyService.ts": [
+    "orgScopedJwt: string,",
+    "async function fetchTeamKeyStatusUncached(orgId: string, orgScopedJwt: string): Promise<TeamKeyStatus> {",
+    "export function fetchTeamKeyStatus(orgId: string, orgScopedJwt: string): Promise<TeamKeyStatus> {",
+    "export async function setTeamServerManagedCustody(orgId: string, orgScopedJwt: string): Promise<void> {"
+  ],
+  "packages/electron/src/main/services/TeamInboxNotificationService.ts": [
+    "memberId: string"
+  ],
+  "packages/electron/src/main/services/TeamService.ts": [
+    "sessionJwt: string;",
+    "creatorMemberId: string;",
+    "members: Array<Omit<TeamMember, 'memberId'> & { memberId: string }>;",
+    "async function removeMember(orgId: string, memberId: string): Promise<void> {",
+    "async function updateMemberRole(orgId: string, memberId: string, role: string): Promise<void> {",
+    "safeHandle('team:remove-member', async (_event, orgId: string, memberId: string) => {",
+    "safeHandle('team:update-role', async (_event, orgId: string, memberId: string, role: string) => {"
+  ],
+  "packages/electron/src/main/services/auth/AuthCallbackRouting.ts": [
+    "sessionJwt?: string;"
+  ],
+  "packages/electron/src/main/services/auth/personalUserIdReconcile.ts": [
+    "): { personalUserId: string | null; changed: boolean } {"
+  ],
+  "packages/electron/src/main/ipc/DocumentSyncHandlers.ts": [
+    "function getUserDisplayName(memberId: string): string {"
+  ],
+  "packages/collab-bundle/src/editor/presence.ts": [
+    "memberId: string,"
+  ],
+  "packages/collab-bundle/src/editor/presenceAnnouncements.ts": [
+    "memberId: string;"
+  ]
+}

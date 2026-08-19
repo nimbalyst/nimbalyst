@@ -1,6 +1,7 @@
 import type { InboxDelivery } from "@nimbalyst/collab-protocol";
 import type { TeamInboxMaterializedDelivery } from "@nimbalyst/runtime/sync";
 import { describe, expect, it, vi } from "vitest";
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 import {
   TeamInboxNotificationService,
@@ -12,7 +13,7 @@ function delivery(
 ): TeamInboxMaterializedDelivery {
   return {
     id: "delivery-1",
-    recipientUserId: "member-viewer",
+    teamMemberId: asTeamMemberId("member-viewer"),
     orgId: "org-a",
     orgName: "Acme",
     source: {

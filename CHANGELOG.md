@@ -10,11 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Shared spreadsheets now open and edit in the web console, with live presence between the desktop app and the browser.
+- Shared spreadsheets, mockups, and Excalidraw diagrams now open and edit in the web console, with live presence for spreadsheets and diagrams between the desktop app and the browser.
 - Entities and relationships a teammate has selected in a shared data model now show their name and color.
-- Ask a teammate for structured feedback: your agent drafts the question, you approve it, and it arrives in their inbox to answer, with results and outstanding replies in their own tab. Copy a link to send anyone who does not have Nimbalyst installed, and they can answer and discuss the request in a browser.
+- Ask a teammate for structured feedback: your agent drafts the question, you approve it, and it arrives in their inbox to answer, with results and outstanding replies in their own tab. A request can carry the mockups, documents, or tracker items it is about, so "which of these do you prefer" shows the real thing to look at and open instead of a list of names. Every request you sent or were asked stays findable afterwards in Shared Docs, filtered by what still needs your response, and a document or tracker item shows the feedback that was gathered about it. Copy a link to send anyone who does not have Nimbalyst installed, and they can answer and discuss the request in a browser.
 - Tracker items that have not been shared yet now show a number of their own, like NIM.12, so you can refer to one before it is published.
 - Desktop notifications now carry their own icon, so you can tell a finished agent, a question, an approval request, and a teammate's message apart at a glance.
+- Spreadsheet columns can now hold dates with times, times, checkboxes, links, and tracker items, alongside accounting and scientific number styles, custom date patterns, red or parenthesized negatives, and your own alignment. A tracker cell shows the item's live title and status and opens it when clicked, columns can detect their own type, and sorting and filtering now follow the column's type instead of its text. You can also style any range of cells — bold, italic, underline, strikethrough, text and fill color, alignment — and date formulas now do arithmetic, so `=A1+7` and `=B1-A1` work.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -22,23 +23,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening an editor no longer fetches a font from a third-party server.
 - Codex no longer offers slash commands it cannot actually run.
 - The Compact action is now hidden for agents that cannot compact, instead of offering a button that quietly does nothing.
+- The inbox's message pane can now be dragged to the width you want, and it stays on screen at far more window sizes instead of disappearing.
+- The tracker's All view now shows Owner and Due Date across every type, so you can sort and filter one list by who is responsible and what is overdue.
 
 ### Fixed
 <!-- Bug fixes go here -->
 - A Claude Code CLI session no longer hangs when the CLI asks you to confirm a model switch.
+- Opening an extension panel while an agent session is running no longer takes the whole window down.
+- Starting an agent after moving, renaming, or deleting the project folder now says the folder is gone and names it, instead of reporting a broken agent binary and then hanging for minutes.
+- Feedback requests now validate attached artifacts before publishing, keep artifact links in their originating team project, and reliably hand live-preview capacity to the next waiting preview.
+- Push notifications now reach your phone when you walk away from your desk, and a session blocked on your answer or one that hit an error will reach you even while you are at your computer.
 - Shared spreadsheets, diagrams, mockups, and data models no longer drop edits when two people work in them at once.
 - Opening a shared document whose editor you do not have now names the extension you need and offers to install it, instead of showing only the document type.
 - Shared mockup files now have a source pane, so their content can be edited collaboratively.
 - The results column in a shared calc sheet no longer goes blank until you type again.
 - Picking a grouping or ordering in the tracker's Display Settings now works instead of closing the panel without changing anything.
 - Grouping by milestone or goal names each lane, row, and card chip after the milestone itself, instead of showing a raw id or an out-of-date name.
+- Tracker date, link, and people chips now carry their field name, so an item with two dates or several links no longer needs a hover to tell them apart.
 - Collaborator avatars and the sync indicator no longer flicker on every character you type in a shared document.
+- Collaborators in a shared spreadsheet, diagram, or mockup come back after a network blip, instead of the list emptying and staying empty.
 - Codex file edits show a red/green diff in the transcript again, instead of a raw tool call.
 - Codex sessions now show context usage, and Compact actually compacts instead of quietly doing nothing.
 - Your skills now reach Codex, so a plan made with the planning tools can be carried out.
 - A Codex session that cannot resume now says so, instead of starting over with an empty history while still showing the old conversation.
 - A Codex tool server that fails to start now shows as failed, instead of the agent quietly losing its tools.
 - Team messages, mentions, and notifications now arrive when the app finishes starting before you are signed in, instead of going quiet for the rest of the session.
+- The inbox's organization filter no longer opens onto an empty menu when there is nothing to narrow by.
+- The effort level you select now applies to Claude Code CLI sessions instead of being ignored. (#996, contributed by @Derazien)
+- MCP servers configured for a specific project in Claude Code now load on Windows instead of being silently ignored. (#1317, contributed by @Derazien)
 
 ### Removed
 <!-- Removed features go here -->
@@ -372,6 +384,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Menus and popups that open over the title bar respond to clicks again on Windows and Linux, including "Open folder…" in the project switcher (#1052).
 - Tracker types defined in one project no longer overwrite another open project's identically-named types (#1035).
 - Codex sessions now reach for Nimbalyst's browser tools instead of dead-ending on the ChatGPT desktop app's in-app browser plugin.
+- An active content search no longer gets silently reset to zero results by unrelated session activity elsewhere in the workspace.
 
 ### Removed
 <!-- Removed features go here -->

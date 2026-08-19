@@ -10,6 +10,7 @@
  * plugin and rendering a blank pane.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import {
   getPersistedCollabDocType,
   getPersistedCollabDocMetadata,
@@ -21,7 +22,7 @@ import {
 const TEST_SCOPE = {
   scopeKey: '/ws',
   orgId: 'org-1',
-  indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+  indexConfig: { serverUrl: 'ws://sync', teamMemberId: asTeamMemberId('user-1') },
 };
 
 interface MockState {

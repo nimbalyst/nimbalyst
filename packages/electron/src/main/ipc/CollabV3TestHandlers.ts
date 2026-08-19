@@ -22,6 +22,10 @@ import type {
   SyncConfig,
 } from '@nimbalyst/runtime/sync';
 import type { AgentMessage } from '@nimbalyst/runtime';
+import {
+  asPersonalJwt,
+  asPersonalMemberId,
+} from '@nimbalyst/runtime/auth/jwtScopes';
 import { safeHandle } from '../utils/ipcRegistry';
 
 interface ReproState {
@@ -74,7 +78,7 @@ export function registerCollabV3TestHandlers(): void {
       // Reset any prior repro state in this process so a re-run starts clean.
       teardown();
 
-      const configUserId = 'user-A-personal';
+      const configPersonalMemberId = 'user-A-personal';
       const jwtSub = 'user-B-team'; // mismatched on purpose
 
       const config: SyncConfig = {
@@ -83,13 +87,13 @@ export function registerCollabV3TestHandlers(): void {
         // mismatch and sets indexAuthBlocked before any WebSocket opens.
         serverUrl: 'ws://127.0.0.1:0',
         getJwt: async () =>
-          makeUnsignedJwt({
+          asPersonalJwt(makeUnsignedJwt({
             sub: jwtSub,
             organization_id: 'org-team',
             exp: Math.floor(Date.now() / 1000) + 300,
-          }),
+          })),
         orgId: 'org-personal',
-        userId: configUserId,
+        personalMemberId: asPersonalMemberId(configPersonalMemberId),
       };
 
       const realProvider = syncModule.createCollabV3Sync(config);
@@ -195,7 +199,7 @@ export function registerCollabV3TestHandlers(): void {
         syncFailureLogs: state.syncFailureLogs,
         // The provider's own latch state, observable for the test's
         // sanity guard. After construction connectToIndex() has settled,
-        // a JWT/userId mismatch flips this to true even though no
+        // a JWT/personal-member mismatch flips this to true even though no
         // connect() call landed.
         providerIsAuthMismatched:
           state.provider.isAuthMismatched?.() ?? null,

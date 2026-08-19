@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 const { warnMock, errorMock } = vi.hoisted(() => ({
   warnMock: vi.fn(),
@@ -121,13 +122,13 @@ describe('AccountOrgBindingService', () => {
     await upsertAccountOrgBinding(db, {
       personalOrgId: 'org-a-sorts-first',
       teamOrgId: 'team',
-      teamMemberId: 'member-a',
+      teamMemberId: asTeamMemberId('member-a'),
       source: 'server-exchange',
     });
     await upsertAccountOrgBinding(db, {
       personalOrgId: 'org-b-sorts-second',
       teamOrgId: 'team',
-      teamMemberId: 'member-b',
+      teamMemberId: asTeamMemberId('member-b'),
       source: 'server-sync',
     });
     const signedIn = ['org-a-sorts-first', 'org-b-sorts-second'];
@@ -156,13 +157,13 @@ describe('AccountOrgBindingService', () => {
     await upsertAccountOrgBinding(db, {
       personalOrgId: 'personal-1',
       teamOrgId: 'team',
-      teamMemberId: 'member-healthy',
+      teamMemberId: asTeamMemberId('member-healthy'),
       source: 'server-sync',
     });
     await upsertAccountOrgBinding(db, {
       personalOrgId: 'personal-1',
       teamOrgId: 'team-never-projected',
-      teamMemberId: 'member-dangling',
+      teamMemberId: asTeamMemberId('member-dangling'),
       source: 'server-exchange',
     });
 

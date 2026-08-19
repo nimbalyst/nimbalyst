@@ -19,6 +19,7 @@ import os from 'os';
 import path from 'path';
 import { BaseAgentProvider } from './BaseAgentProvider';
 import { buildUserMessageAddition } from './documentContextUtils';
+import { describeUnusableWorkspacePath } from './workspacePreconditions';
 import { buildClaudeCodeSystemPrompt } from '../../prompt';
 import { DEFAULT_MODELS } from '../../modelConstants';
 import {
@@ -227,8 +228,9 @@ export class CopilotCLIProvider extends BaseAgentProvider {
     workspacePath?: string,
     attachments?: ChatAttachment[]
   ): AsyncIterableIterator<StreamChunk> {
-    if (!workspacePath) {
-      yield { type: 'error', error: '[CopilotCLIProvider] workspacePath is required but was not provided' };
+    const unusableWorkspace = describeUnusableWorkspacePath(workspacePath);
+    if (unusableWorkspace || !workspacePath) {
+      yield { type: 'error', error: unusableWorkspace ?? 'No project folder is set for this session.' };
       return;
     }
 

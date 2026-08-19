@@ -26,6 +26,7 @@ import type {
   DocRevisionPayload,
 } from '@nimbalyst/collab-protocol';
 import { encodeDocumentRoomId } from './collabDocumentId';
+import type { TeamJwt } from '../auth/jwtScopes';
 
 const REVISION_ENCODING_VERSION = 1;
 
@@ -33,7 +34,7 @@ export interface CollabHistoryClientConfig {
   /** Sync server URL, e.g. `wss://sync.nimbalyst.com`. Converted to https://. */
   serverUrl: string;
   /** Async accessor for the room JWT (same as DocumentSyncConfig.getJwt). */
-  getJwt: () => Promise<string>;
+  getJwt: () => Promise<TeamJwt>;
   /** Optional extra query appended to revision HTTP requests (test seam). */
   urlExtraQuery?: string;
   /** Org owning the room. */

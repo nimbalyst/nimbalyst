@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { asTeamJwt, asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 
 const mocks = vi.hoisted(() => ({
   storeSet: vi.fn(),
@@ -39,14 +40,14 @@ describe('createCollabExtensionHost embedded mode', () => {
         scope: {
           scopeKey: '/workspace',
           orgId: 'team-1',
-          indexConfig: { serverUrl: 'ws://sync', userId: 'user-1' },
+          indexConfig: { serverUrl: 'ws://sync', teamMemberId: asTeamMemberId('user-1') },
         },
         orgId: 'team-1',
         documentId: 'mockup-1',
         title: 'Wireframe',
         serverUrl: 'ws://sync',
-        getJwt: async () => 'token',
-        userId: 'user-1',
+        getJwt: async () => asTeamJwt('token'),
+        teamMemberId: asTeamMemberId('user-1'),
         accountId: 'account-1',
       },
       collaboration,
@@ -80,7 +81,7 @@ describe('flushCollaborativeContent', () => {
         flushLocalState: async () => {},
       } as never,
       awareness: {} as never,
-      activeConfig: { userId: 'user-1', userName: 'User One' } as never,
+      activeConfig: { teamMemberId: 'user-1', userName: 'User One' } as never,
     });
   }
 

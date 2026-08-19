@@ -10,7 +10,7 @@ import type {
 } from '../collabReadToolHandlers';
 
 const WORKSPACE = '/workspace/design';
-const ORG = { orgId: 'org-design', name: 'Design Team' };
+const ORG = { orgId: 'org-design', name: 'Design Team', teamProjectId: 'project-design' };
 
 function matched(memberId: string, displayName: string, email: string): OrgDirectoryResult {
   return {
@@ -172,7 +172,10 @@ describe('RequestFeedback drafting', () => {
           { askId: 'approve', target: { kind: 'user', userId: 'karl' } },
           { askId: 'requirements-note', target: { kind: 'user', userId: 'dana' } },
         ],
-        subjects: [{ shared: false, ref: { kind: 'file', sourceId: 'mockups/a.html' } }],
+        subjects: [{
+          shared: false,
+          ref: { kind: 'file', sourceId: 'mockups/a.html', projectId: ORG.teamProjectId },
+        }],
       },
     });
     expect(payload.draft).not.toHaveProperty('author');
@@ -180,5 +183,86 @@ describe('RequestFeedback drafting', () => {
     expect(payload.draft).not.toHaveProperty('responses');
     expect(findOrgMembers).toHaveBeenCalledTimes(2);
     expect(getResourceSharingStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds option artifacts and publishes each resource once', async () => {
+    const getResourceSharingStatus = vi.fn(async (kind, sourceId) =>
+      sharing(kind, sourceId, false));
+    const result = await draftRequestFeedback({
+      recipients: [{ key: 'reviewer', nameOrEmail: 'karl@example.test' }],
+      asks: [{
+        type: 'singleSelect',
+        id: 'direction',
+        label: 'Direction',
+        description: 'Which of these should we build?',
+        options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }],
+        artifacts: [
+          { entryId: 'a', kind: 'file', sourceId: 'mockups/a.html', label: 'Direction A' },
+          { entryId: 'b', kind: 'file', sourceId: 'mockups/b.html', label: 'Direction B' },
+        ],
+      }],
+      // Also listed as a subject. Publishing it twice would walk the author
+      // through the share dialog twice for one mockup.
+      subjects: [{ kind: 'file', sourceId: 'mockups/a.html', label: 'Direction A' }],
+    }, WORKSPACE, {
+      findOrgMembers: vi.fn(async () => matched('karl', 'Karl Jones', 'karl@example.test')),
+      getResourceSharingStatus,
+    });
+
+    expect(result).toMatchObject({
+      status: 'draftReady',
+      draft: {
+        asks: [{
+          artifacts: [
+            { entryId: 'a', label: 'Direction A', ref: { sourceId: 'mockups/a.html' } },
+            { entryId: 'b', label: 'Direction B', ref: { sourceId: 'mockups/b.html' } },
+          ],
+        }],
+        // Both mockups are publishable subjects, and the one named twice
+        // appears once.
+        subjects: [
+          { shared: false, ref: { sourceId: 'mockups/a.html' } },
+          { shared: false, ref: { sourceId: 'mockups/b.html' } },
+        ],
+      },
+    });
+    expect(getResourceSharingStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses artifacts on an ask type that cannot show one', async () => {
+    await expect(draftRequestFeedback({
+      recipients: [{ key: 'reviewer', nameOrEmail: 'karl@example.test' }],
+      asks: [{
+        ...confirmAsk,
+        artifacts: [{ entryId: 'approve', kind: 'file', sourceId: 'mockups/a.html' }],
+      }],
+    }, WORKSPACE, {
+      findOrgMembers: vi.fn(async () => matched('karl', 'Karl Jones', 'karl@example.test')),
+      getResourceSharingStatus: vi.fn(),
+    })).rejects.toThrow(/only supported on singleSelect and reorder/);
+  });
+
+  it('rejects an artifact bound to an unknown entry before checking sharing', async () => {
+    const getResourceSharingStatus = vi.fn();
+    const result = await draftRequestFeedback({
+      recipients: [{ key: 'reviewer', nameOrEmail: 'karl@example.test' }],
+      asks: [{
+        type: 'singleSelect',
+        id: 'direction',
+        label: 'Direction',
+        description: 'Which should we build?',
+        options: [{ id: 'a', label: 'A' }],
+        artifacts: [{ entryId: 'missing', kind: 'file', sourceId: 'mockups/a.html' }],
+      }],
+    }, WORKSPACE, {
+      findOrgMembers: vi.fn(async () => matched('karl', 'Karl Jones', 'karl@example.test')),
+      getResourceSharingStatus,
+    });
+
+    expect(result).toMatchObject({
+      status: 'invalidDraft',
+      errors: [{ code: 'unknownArtifactEntry' }],
+    });
+    expect(getResourceSharingStatus).not.toHaveBeenCalled();
   });
 });
