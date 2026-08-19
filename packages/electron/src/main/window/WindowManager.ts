@@ -189,17 +189,7 @@ export function createWindow(
     try {
         // console.log('[MAIN] Creating window at', new Date().toISOString());
 
-        // Set up icon path - icon.png is at the package root in both dev and packaged builds
-        // (included in electron-builder's `files` array, so it's inside the ASAR at the root)
-        let iconPath: string | undefined = join(app.getAppPath(), 'icon.png');
-
-        // Check if icon exists
-        if (!existsSync(iconPath)) {
-            console.log('[MAIN] Icon not found at:', iconPath);
-            iconPath = undefined;
-        } else {
-            // console.log('[MAIN] Using icon at:', iconPath);
-        }
+        const iconPath = resolveWindowIconPath();
 
         // Calculate window position with cascading effect
         let x: number | undefined;
@@ -759,6 +749,26 @@ export function createWindow(
         console.error('Error creating window:', error);
         throw error;
     }
+}
+
+function resolveWindowIconPath(): string | undefined {
+    const candidates = [
+        // Windows taskbar/window chrome needs the packaged ICO. In unpacked
+        // builds this lives next to app.asar under resources.
+        ...(process.platform === 'win32' ? [join(process.resourcesPath, 'icon.ico')] : []),
+        // Packaged ASAR currently carries nimbalyst-logo.png, not icon.png.
+        join(app.getAppPath(), 'nimbalyst-logo.png'),
+        join(app.getAppPath(), 'icon.png'),
+    ];
+
+    for (const candidate of candidates) {
+        if (candidate && existsSync(candidate)) {
+            return candidate;
+        }
+    }
+
+    console.log('[MAIN] Window icon not found in candidates:', candidates);
+    return undefined;
 }
 
 // Find window by file path
