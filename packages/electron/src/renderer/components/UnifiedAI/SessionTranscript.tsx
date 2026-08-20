@@ -122,6 +122,7 @@ import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPee
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
 import { sessionFileEditsAtom } from '../../store/atoms/sessionFiles';
 import { SESSION_PHASE_COLUMNS, setSessionPhaseAtom, type SessionPhase } from '../../store/atoms/sessionKanban';
+import { reconcileBuiltInProviderControlValues } from '@nimbalyst/runtime/ai/server';
 
 /**
  * Detect a metadata value that's the artifact of `{...stringValue, ...}` -
@@ -664,6 +665,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
 
   // Track if we're currently queueing a message (prevents double-submission)
   const [isQueueing, setIsQueueing] = useState(false);
+  const [reasoningControlsNotice, setReasoningControlsNotice] = useState<string | undefined>();
 
   // claude-code-cli (NIM-806, Phase 3): the rich transcript is primary; the
   // genuine TUI lives in a collapsible "raw terminal" drawer. Default EXPANDED so
@@ -1571,6 +1573,21 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     // Save as the default model for new sessions
     setAgentModeSettings({ defaultModel: modelId });
     try {
+      const reconciled = reconcileBuiltInProviderControlValues(modelId, {
+        'effort-level': effortLevel,
+        'thinking-mode': thinkingMode,
+      });
+      const nextEffort = reconciled.values['effort-level'];
+      const nextThinking = reconciled.values['thinking-mode'];
+      if (typeof nextEffort === 'string' && nextEffort !== effortLevel) {
+        await updateSessionMetadataField(sessionId, 'effortLevel', nextEffort, null, updateSessionStore);
+      }
+      if (typeof nextThinking === 'string' && nextThinking !== thinkingMode) {
+        await updateSessionMetadataField(sessionId, 'thinkingMode', nextThinking, null, updateSessionStore);
+      }
+      setReasoningControlsNotice(reconciled.resets.length
+        ? `Reset unsupported controls for ${modelId}: ${reconciled.resets.map((reset) => `${reset.settingId} ${reset.from} → ${reset.to}`).join(', ')}`
+        : undefined);
       // claude-code-cli (NIM-806): a RUNNING CLI session retunes via the
       // genuine CLI's `/model` slash command typed into its PTY (main-process
       // IPC) — no respawn. Must happen before the metadata update so a failed
@@ -1585,7 +1602,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       setCurrentModel(previousModel);
       setAgentModeSettings({ defaultModel: previousModel });
     }
-  }, [currentModel, sessionId, setCurrentModel, setAgentModeSettings, provider, cliSessionCommitted]);
+  }, [currentModel, sessionId, setCurrentModel, setAgentModeSettings, provider, cliSessionCommitted, effortLevel, thinkingMode, updateSessionStore]);
 
   const handleEffortLevelChange = useCallback(async (level: EffortLevel) => {
     const previousLevel = effortLevel;
@@ -2715,6 +2732,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         thinkingMode={thinkingMode}
         onThinkingModeChange={handleThinkingModeChange}
         showThinkingToggle={isClaudeCliTerminalSession(provider) && cliSessionCommitted ? false : showThinkingToggle}
+        reasoningControlsNotice={reasoningControlsNotice}
         tokenUsage={tokenUsage}
         provider={provider}
         onQueue={handleQueue}

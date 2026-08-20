@@ -13,6 +13,7 @@ import {
   normalizeClaudeCodeVariant,
 } from '../modelConstants';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
+import type { ProviderControlSnapshot } from './providers/claudeCode/providerControlContract';
 export type { ToolDefinition } from '../tools';
 export { ModelIdentifier } from './ModelIdentifier';
 export type { ToolResult } from './protocols/ProtocolInterface';
@@ -444,6 +445,7 @@ export interface ProviderConfig {
   allowedTools?: string[];  // List of allowed tool names, ['*'] for all tools
   effortLevel?: EffortLevel;  // Effort level for Opus 4.6 adaptive reasoning (low/medium/high/max)
   thinkingMode?: ThinkingMode;  // Extended thinking mode for Claude Agent (enabled/disabled)
+  providerControlSnapshot?: Readonly<ProviderControlSnapshot>; // Immutable reviewed route/control receipt
   responseFormat?: ProviderResponseFormat;  // Response format constraint (extension chat completions)
   skipLogging?: boolean;  // Skip message logging to DB (extension stateless completions)
 }

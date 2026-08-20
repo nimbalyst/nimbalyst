@@ -13,6 +13,7 @@ import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { hasEnterpriseManagedMcpConfig } from './enterpriseMcpConfig';
 import { type ThinkingMode } from '../../effortLevels';
+import type { ProviderControlSnapshot } from './providerControlContract';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
 
@@ -43,7 +44,7 @@ export interface BuildSdkOptionsDeps {
     resolveTeamContext: (sessionId?: string) => Promise<string | undefined>;
   };
   sessions: { getSessionId: (sessionId: string) => string | null | undefined };
-  config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode };
+  config: { model?: string; apiKey?: string; effortLevel?: string; thinkingMode?: ThinkingMode; providerControlSnapshot?: Readonly<ProviderControlSnapshot> };
   abortController: AbortController;
   /**
    * True when an enterprise `managed-mcp.json` forbids passing MCP servers at
@@ -309,7 +310,13 @@ export async function buildSdkOptions(
     },
   };
 
-  if (config.thinkingMode === 'disabled') {
+  const thinkingParameter = config.providerControlSnapshot?.parameters.find(
+    (parameter) => parameter.target === 'sdk.thinking.type'
+  );
+  const thinkingMode = thinkingParameter
+    ? (thinkingParameter.operation === 'set' ? thinkingParameter.value : undefined)
+    : config.thinkingMode;
+  if (thinkingMode === 'disabled') {
     if (canDisableThinkingForModel(resolvedModel)) {
       options.thinking = { type: 'disabled' as const };
     } else {
@@ -369,6 +376,12 @@ export async function buildSdkOptions(
   const { ANTHROPIC_API_KEY: _settingsAnthropicKey, OPENAI_API_KEY: _settingsOpenaiKey, ...sanitizedSettingsEnv } = settingsEnv;
 
   const enableAgentTeams = sanitizedSettingsEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1';
+  const effortParameter = config.providerControlSnapshot?.parameters.find(
+    (parameter) => parameter.target === 'env.CLAUDE_CODE_EFFORT_LEVEL'
+  );
+  const resolvedEffort = effortParameter
+    ? (effortParameter.operation === 'set' ? String(effortParameter.value) : undefined)
+    : config.effortLevel;
   const env: any = {
     ...sanitizedProcessEnv,
     ...sanitizedShellEnv,
@@ -401,8 +414,8 @@ export async function buildSdkOptions(
     // The Claude CLI currently defaults to xhigh when this variable is absent.
     // Always forward a resolved Nimbalyst selection, including "high", so the
     // effort shown in the selector matches the request sent to the CLI.
-    ...(config.effortLevel && {
-      CLAUDE_CODE_EFFORT_LEVEL: config.effortLevel
+    ...(resolvedEffort && {
+      CLAUDE_CODE_EFFORT_LEVEL: resolvedEffort
     }),
     // The bundled claude binary runs a per-tool idle-timeout watchdog (default
     // 300s) over MCP servers whose transport is http/sse/ws. ALL Nimbalyst
@@ -525,6 +538,13 @@ export async function buildSdkOptions(
   }
 
   options.env = env;
+  // Subagent/team consumers inherit the exact reviewed environment snapshot
+  // in both development and packaged builds. The executable path remains
+  // packaged-only, but semantic controls must not disappear in development.
+  teammateManager.packagedBuildOptions = {
+    ...teammateManager.packagedBuildOptions,
+    env: env as Record<string, string | undefined>,
+  };
 
   // Handle session resumption and branching
   if (sessionId) {

@@ -165,6 +165,7 @@ interface AIServiceInternal {
   getSettingsStore(): Store<Record<string, unknown>>;
   getApiKeyForProvider(provider: string, workspacePath?: string): string | undefined;
   buildClaudeCodeRuntimeConfig(session: SessionData, workspacePath?: string): Promise<ProviderConfig>;
+  buildProviderControlRuntimeConfig(session: SessionData): Promise<Pick<ProviderConfig, 'providerControlSnapshot' | 'effortLevel' | 'thinkingMode'>>;
   continueQueuedPromptChain(
     sessionId: string,
     workspacePath: string,
@@ -590,6 +591,7 @@ export class MessageStreamingHandler {
         ...(isProviderClaudeCode ? {
           thinkingMode: resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode()),
         } : {}),
+        ...(await this.svc.buildProviderControlRuntimeConfig(session)),
       };
 
       // Add baseUrl for LMStudio
@@ -1281,6 +1283,7 @@ export class MessageStreamingHandler {
           maxTokens: (session.providerConfig as any)?.maxTokens,
           temperature: (session.providerConfig as any)?.temperature,
           ...(turnEffortLevel && { effortLevel: turnEffortLevel }),
+          ...(await this.svc.buildProviderControlRuntimeConfig(session)),
         };
         const fullTurnModel = session.model || session.providerConfig?.model;
         if (fullTurnModel) {

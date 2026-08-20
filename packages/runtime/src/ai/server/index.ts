@@ -22,6 +22,8 @@ export {
   isInternalMcpServerEnabled,
 } from './services/mcpServerConfig';
 export type { SharedMcpServerConfig, PerProviderMcpDeps } from './services/mcpServerConfig';
+export * from './providers/claudeCode/providerControlContract';
+export * from './providers/claudeCode/providerControlCatalogDefaults';
 export * from './services/mcpTopology';
 export * from './services/mcpTokenBudget';
 export * from './attachments/attachmentDenyMatcher';
