@@ -5,13 +5,19 @@ export interface WorkingFile {
   path: string;
   /** Single-letter git status: M, A, D, ? (untracked) or C (conflicted). */
   status: string;
+  /**
+   * `path` joined against the repository root. That is NOT the workspace when
+   * the workspace is opened at a subfolder of the repo (#124), so anything
+   * resolving a real file on disk must use this rather than `path`.
+   */
+  absolutePath?: string;
 }
 
 export interface WorkingChangesResult {
-  staged: Array<{ path: string; status: string }>;
-  unstaged: Array<{ path: string; status: string }>;
-  untracked: Array<{ path: string }>;
-  conflicted: Array<{ path: string }>;
+  staged: Array<{ path: string; status: string; absolutePath?: string }>;
+  unstaged: Array<{ path: string; status: string; absolutePath?: string }>;
+  untracked: Array<{ path: string; absolutePath?: string }>;
+  conflicted: Array<{ path: string; absolutePath?: string }>;
 }
 
 /**
@@ -38,21 +44,29 @@ function mergeStatus(a: string, b: string): string {
  */
 export function mergeWorkingChanges(result: WorkingChangesResult): WorkingFile[] {
   const statusByPath = new Map<string, string>();
+  const absolutePathByPath = new Map<string, string>();
   // Conflicts are listed separately and are never selectable, so they must not
   // leak into the selectable list even if git also reports them as modified.
   const conflictedPaths = new Set(result.conflicted.map(f => f.path));
 
-  const add = (path: string, status: string) => {
+  const add = (path: string, status: string, absolutePath?: string) => {
     if (conflictedPaths.has(path)) return;
     const existing = statusByPath.get(path);
     statusByPath.set(path, existing === undefined ? status : mergeStatus(existing, status));
+    if (absolutePath && !absolutePathByPath.has(path)) {
+      absolutePathByPath.set(path, absolutePath);
+    }
   };
 
-  result.staged.forEach(f => add(f.path, f.status));
-  result.unstaged.forEach(f => add(f.path, f.status));
-  result.untracked.forEach(f => add(f.path, '?'));
+  result.staged.forEach(f => add(f.path, f.status, f.absolutePath));
+  result.unstaged.forEach(f => add(f.path, f.status, f.absolutePath));
+  result.untracked.forEach(f => add(f.path, '?', f.absolutePath));
 
-  return Array.from(statusByPath, ([path, status]) => ({ path, status }));
+  return Array.from(statusByPath, ([path, status]) => ({
+    path,
+    status,
+    absolutePath: absolutePathByPath.get(path),
+  }));
 }
 
 export type ChangeRow =

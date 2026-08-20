@@ -329,7 +329,11 @@ export function ChangesTab({
     try {
       const result = await ipc.invoke('git:working-changes', workspacePath) as WorkingChangesResult;
       setChanges(mergeWorkingChanges(result));
-      setConflicted(result.conflicted.map(f => ({ path: f.path, status: 'C' })));
+      setConflicted(result.conflicted.map(f => ({
+        path: f.path,
+        status: 'C',
+        absolutePath: f.absolutePath,
+      })));
       setLoadError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -644,13 +648,19 @@ export function ChangesTab({
   }, [focusedPath, peekedPath, pinnedPath, moveFocus, togglePeek, promoteToPin, closePopover]);
 
   // Open the active file in the editor (used by the popover's "Open in editor" link).
+  // `target` is repo-root-relative; resolve the matching absolutePath (joined
+  // against gitRoot) so this still works when workspacePath is a subfolder of the
+  // repo (#124). Falls back to the relative path if absolutePath wasn't returned.
   const handleOpenInEditor = useCallback(() => {
     const target = popoverPath ?? activePath;
     if (!target) return;
-    ipc.invoke('workspace:open-file', { workspacePath, filePath: target }).catch((err) => {
+    const filePath = changes.find(f => f.path === target)?.absolutePath
+      ?? conflicted.find(f => f.path === target)?.absolutePath
+      ?? target;
+    ipc.invoke('workspace:open-file', { workspacePath, filePath }).catch((err) => {
       console.error('[ChangesTab] workspace:open-file failed:', err);
     });
-  }, [popoverPath, activePath, workspacePath]);
+  }, [popoverPath, activePath, workspacePath, changes, conflicted]);
 
   if (loading) {
     return <div className="git-log-empty">Loading changes...</div>;

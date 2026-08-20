@@ -556,4 +556,63 @@ describe('GitCommitService', () => {
       error: 'HOOK_DETAIL: lint failed',
     });
   });
+
+  it('commits files at the repo root when the workspace is a subfolder (#124)', async () => {
+    await git(['init', '-q'], tmpRoot);
+    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
+    await git(['config', 'user.name', 'Test User'], tmpRoot);
+
+    const sub = path.join(tmpRoot, 'home');
+    await fs.mkdir(sub, { recursive: true });
+    await fs.writeFile(path.join(sub, 'inner.txt'), 'inner\n', 'utf8');
+    await fs.writeFile(path.join(tmpRoot, 'root.txt'), 'root\n', 'utf8');
+
+    const result = await executeGitCommit(
+      sub, // workspace is the SUBFOLDER, not the repo root
+      'subfolder commit',
+      [path.join(sub, 'inner.txt'), path.join(tmpRoot, 'root.txt')],
+      { logContext: '[test:git-commit]' }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.commitHash).toBeTruthy();
+
+    const { stdout } = await execFileAsync(
+      'git',
+      ['show', '--name-only', '--format='],
+      { cwd: tmpRoot }
+    );
+    const committed = stdout.trim().split('\n');
+    expect(committed).toContain('home/inner.txt');
+    expect(committed).toContain('root.txt');
+  });
+
+  it('commits a staged deletion from a subfolder workspace', async () => {
+    await git(['init', '-q'], tmpRoot);
+    await git(['config', 'user.email', 'test@example.com'], tmpRoot);
+    await git(['config', 'user.name', 'Test User'], tmpRoot);
+
+    const sub = path.join(tmpRoot, 'home');
+    await fs.mkdir(sub, { recursive: true });
+    await fs.writeFile(path.join(sub, 'del.txt'), 'bye\n', 'utf8');
+    await git(['add', '.'], tmpRoot);
+    await git(['commit', '-q', '-m', 'init'], tmpRoot);
+    await fs.rm(path.join(sub, 'del.txt'));
+
+    const result = await executeGitCommit(
+      sub,
+      'delete file',
+      [path.join(sub, 'del.txt')],
+      { logContext: '[test:git-commit]' }
+    );
+
+    expect(result.success).toBe(true);
+
+    const { stdout } = await execFileAsync(
+      'git',
+      ['show', '--name-only', '--format='],
+      { cwd: tmpRoot }
+    );
+    expect(stdout.trim().split('\n')).toContain('home/del.txt');
+  });
 });

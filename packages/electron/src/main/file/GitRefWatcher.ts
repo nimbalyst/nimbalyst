@@ -4,6 +4,7 @@ import simpleGit, { SimpleGit } from 'simple-git';
 import { BrowserWindow } from 'electron';
 import { logger } from '../utils/logger';
 import { clearGitStatusCache } from '../ipc/GitStatusHandlers';
+import { resolveGitContext } from '../services/GitContextService';
 
 type NativeFileWatchListener = (curr: fs.Stats, prev: fs.Stats) => void;
 
@@ -18,6 +19,7 @@ interface WatcherEntry {
   lastCommitHash: string;
   currentBranch: string;
   git: SimpleGit;
+  gitRoot: string;
 }
 
 /**
@@ -95,7 +97,11 @@ function unwatchGitFile(watcher: NativeFileWatcher): void {
  * @returns GitDirInfo with both directories, or null if not a git repo
  */
 async function resolveGitDirs(workspacePath: string): Promise<GitDirInfo | null> {
-  const gitPath = path.join(workspacePath, '.git');
+  const { gitRoot } = resolveGitContext(workspacePath);
+  if (!gitRoot) {
+    return null;
+  }
+  const gitPath = path.join(gitRoot, '.git');
 
   try {
     const stat = await fs.promises.stat(gitPath);
@@ -113,7 +119,7 @@ async function resolveGitDirs(workspacePath: string): Promise<GitDirInfo | null>
         let gitDir = match[1].trim();
         // The gitdir path may be relative or absolute
         if (!path.isAbsolute(gitDir)) {
-          gitDir = path.resolve(workspacePath, gitDir);
+          gitDir = path.resolve(gitRoot, gitDir);
         }
 
         // For worktrees, the commondir is in the gitDir/commondir file
@@ -196,8 +202,32 @@ export class GitRefWatcher {
       }
 
       const { gitDir, commonDir } = gitDirs;
+      const { gitRoot } = resolveGitContext(workspacePath);
 
-      const git: SimpleGit = simpleGit(workspacePath);
+      const git: SimpleGit = simpleGit(gitRoot ?? workspacePath);
+
+      // Committed-file paths are later joined against entry.gitRoot and handed
+      // to HistoryManager (auto-approve) and renderer consumers, both of which
+      // key off the LOGICAL workspacePath the user opened -- not git's
+      // physical toplevel. When workspacePath is a symlink whose target IS
+      // the git root (workspace == repo root, just reached via a symlink),
+      // joining on the physical path would silently stop matching those
+      // logical paths. Detect that case via realpath and keep the join base
+      // as workspacePath so paths round-trip to HistoryManager keys. A
+      // subfolder workspace (#124, physical gitRoot is an ancestor of
+      // workspacePath) still needs the physical root, so it is left alone.
+      const commitFileJoinBase = ((): string => {
+        if (!gitRoot) return workspacePath;
+        try {
+          if (fs.realpathSync(gitRoot) === fs.realpathSync(workspacePath)) {
+            return workspacePath;
+          }
+        } catch {
+          // If either path can't be resolved, treat them as not-equal and
+          // fall back to the physical root (previous behavior).
+        }
+        return gitRoot;
+      })();
 
       // Pre-flight: get current branch + HEAD hash. Both can fail on a
       // fresh-init repo with zero commits ("fatal: your current branch X
@@ -269,6 +299,7 @@ export class GitRefWatcher {
         lastCommitHash,
         currentBranch,
         git,
+        gitRoot: commitFileJoinBase,
       });
 
       logger.main.info('[GitRefWatcher] Started watching:', {
@@ -354,14 +385,14 @@ export class GitRefWatcher {
         const diffRef = oldCommitHash ? `${oldCommitHash}..${newCommitHash}` : newCommitHash;
         const diffSummary = await entry.git.diffSummary([diffRef]);
         committedFiles = diffSummary.files.map((file) =>
-          path.join(workspacePath, file.file)
+          path.join(entry.gitRoot, file.file)
         );
       } catch (diffError) {
         // Fallback: just get the files from the latest commit
         try {
           const diffSummary = await entry.git.diffSummary([`${newCommitHash}~1`, newCommitHash]);
           committedFiles = diffSummary.files.map((file) =>
-            path.join(workspacePath, file.file)
+            path.join(entry.gitRoot, file.file)
           );
         } catch {
           // Initial commit or other edge case - get files from show
