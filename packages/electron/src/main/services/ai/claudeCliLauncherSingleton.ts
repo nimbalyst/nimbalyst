@@ -31,6 +31,7 @@ import { resolveClaudePermissionHookScriptPath } from './claudeCliPermissionHook
 import { getPermissionService } from '../PermissionService';
 import { startClaudeCliProxyObservation, fireClaudeCliTurnCompletion } from './claudeCliObservationSingleton';
 import { flushNextClaudeCliQueuedPromptForSession } from './claudeCliQueueFlushSingleton';
+import { claudeCliSubmitLatch } from './claudeCliSubmitLatch';
 import { maybeAutoNameClaudeCliSessionProduction } from './claudeCliSessionAutoNameSingleton';
 import type { ClaudeTurnState } from './claudeCliPidState';
 
@@ -322,6 +323,11 @@ export async function ensureClaudeCliSession(
           // Root the file watcher at the spawn cwd (the worktree for worktree
           // sessions), where edits actually land.
           const watchRoot = resolvedCwd ?? input.workspacePath;
+          if (state !== 'idle') {
+            // The CLI has demonstrably consumed whatever we last wrote, so the
+            // submit latch can lift and the queue can drain on the next idle.
+            claudeCliSubmitLatch.clear(input.sessionId);
+          }
           if (state === 'idle') {
             void stateManager.updateActivity({ sessionId: input.sessionId, status: 'idle', isStreaming: false });
             // Delay the watcher stop so post-turn fs events still attribute.

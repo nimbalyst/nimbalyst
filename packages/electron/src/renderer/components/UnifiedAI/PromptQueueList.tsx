@@ -1,10 +1,11 @@
 import React from 'react';
+import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
 
-interface QueuedPromptAttachment {
-  id: string;
-  filename: string;
-  type: 'image' | 'pdf' | 'document';
-}
+/**
+ * Full `ChatAttachment`s, not a display-only subset: `onEdit` hands these back
+ * so the draft can be restored with the on-disk `filepath` each one carries.
+ */
+type QueuedPromptAttachment = ChatAttachment;
 
 export interface QueuedPrompt {
   id: string;
@@ -16,7 +17,7 @@ export interface QueuedPrompt {
 interface PromptQueueListProps {
   queue: QueuedPrompt[];
   onCancel: (id: string) => void;
-  onEdit?: (id: string, prompt: string) => void;
+  onEdit?: (id: string, prompt: string, attachments?: QueuedPromptAttachment[]) => void;
   onSendNow?: (id: string, prompt: string) => void;
 }
 
@@ -92,7 +93,7 @@ export function PromptQueueList({ queue, onCancel, onEdit, onSendNow }: PromptQu
             {onEdit && (
               <button
                 className="prompt-queue-edit shrink-0 w-5 h-5 flex items-center justify-center bg-transparent border-none rounded text-nim-muted cursor-pointer text-sm leading-none p-0 transition-all duration-150 hover:bg-nim-hover hover:text-nim-primary"
-                onClick={() => onEdit(item.id, item.prompt)}
+                onClick={() => onEdit(item.id, item.prompt, item.attachments)}
                 title="Edit this prompt"
                 type="button"
               >
