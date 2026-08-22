@@ -4,6 +4,11 @@ import {
     type TrackerDeepLinkTarget,
     type TrackerDeepLinkView,
 } from '../shared/trackerDeepLinks';
+import {
+    OPEN_FILE_DEEP_LINK_HOST,
+    parseOpenFileDeepLink,
+    type OpenFileDeepLinkTarget,
+} from './utils/openFileLinks';
 import { parseInviteDeepLink, type InviteDeepLinkTarget } from '../shared/inviteDeepLinks';
 import { resolveOrgMessagingDestination } from '../shared/orgMessagingRouting';
 import { safeHandle, safeOn } from './utils/ipcRegistry';
@@ -1117,6 +1122,15 @@ async function handleDeepLink(url: string): Promise<void> {
                 trackerLink.orgId,
                 trackerLink.view,
             );
+        } else if (parsed.host === OPEN_FILE_DEEP_LINK_HOST || parsed.pathname === `/${OPEN_FILE_DEEP_LINK_HOST}`) {
+            // Open a local file, optionally at a line:
+            // nimbalyst://open?path=/abs/file[&line=N][&workspace=/abs/ws]
+            const target = parseOpenFileDeepLink(url);
+            if (!target) {
+                logger.main.warn('[DeepLink] Invalid open-file link:', summarizeDeepLink(url));
+                return;
+            }
+            await openFileFromDeepLink(target);
         } else {
             logger.main.warn('[DeepLink] Unknown deep link:', summarizeDeepLink(url));
         }
@@ -1501,6 +1515,48 @@ async function openTrackerFromDeepLink(
     return true;
 }
 
+/**
+ * Deep-link twin of the OS open-file path. Deliberately stricter than
+ * openFileWithWorkspaceDetection's fallbacks: a link any web page can mint
+ * must not enroll new workspaces or land arbitrary files in the frontmost
+ * window. The target must exist, be a regular file, and resolve (post-symlink)
+ * into a known workspace — or into the hinted workspace when that workspace is
+ * already open — else we warn and stop.
+ */
+async function openFileFromDeepLink(target: OpenFileDeepLinkTarget): Promise<boolean> {
+    let realPath: string;
+    try {
+        realPath = fs.realpathSync(target.path);
+    } catch {
+        logger.main.warn('[DeepLink] Open-file target does not exist:', { path: target.path });
+        return false;
+    }
+    let stats: fs.Stats;
+    try {
+        stats = fs.statSync(realPath);
+    } catch {
+        logger.main.warn('[DeepLink] Open-file target is not readable:', { path: realPath });
+        return false;
+    }
+    if (!stats.isFile()) {
+        logger.main.warn('[DeepLink] Open-file target is not a regular file:', { path: realPath });
+        return false;
+    }
+
+    const detectedWorkspace = detectFileWorkspace(realPath);
+    const hintedWindow = target.workspacePath ? findWindowByWorkspace(target.workspacePath) : null;
+    const hintContains = target.workspacePath
+        ? realPath.startsWith(path.normalize(target.workspacePath) + path.sep)
+        : false;
+    if (!detectedWorkspace && !(hintedWindow && !hintedWindow.isDestroyed() && hintContains)) {
+        logger.main.warn('[DeepLink] Open-file target is outside known workspaces:', { path: realPath });
+        return false;
+    }
+
+    await openFileWithWorkspaceDetection(realPath, target.line ? { line: target.line } : undefined);
+    return true;
+}
+
 // Handle file open from OS (macOS)
 app.on('open-file', (event, path) => {
     event.preventDefault();
@@ -1515,11 +1571,16 @@ app.on('open-file', (event, path) => {
 });
 
 // Helper function to open a file with workspace detection
-async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
+async function openFileWithWorkspaceDetection(filePath: string, reveal?: { line: number }): Promise<void> {
     // Check if file is already open in a window
     const existingWindow = findWindowByFilePath(filePath);
     if (existingWindow) {
-        // Window is already open - no need to focus, let macOS handle window ordering
+        // Window is already open - no need to focus, let macOS handle window
+        // ordering. A requested line still travels: re-sending open-document
+        // switches to the tab and scrolls without reloading anything.
+        if (reveal) {
+            await loadFileIntoWindow(existingWindow, filePath, reveal);
+        }
         return;
     }
 
@@ -1535,7 +1596,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
 
         if (workspaceWindow) {
             // Workspace window exists, use it - no need to focus, let macOS handle window ordering
-            await loadFileIntoWindow(workspaceWindow, filePath);
+            await loadFileIntoWindow(workspaceWindow, filePath, reveal);
         } else {
             // Create new workspace window for this workspace
             workspaceWindow = createWindow(false, true, workspacePath, undefined, {
@@ -1548,7 +1609,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
             workspaceWindow.once('ready-to-show', async () => {
                 // Window state is already set by createWindow with workspace path
                 // Just load the file
-                await loadFileIntoWindow(workspaceWindow!, filePath);
+                await loadFileIntoWindow(workspaceWindow!, filePath, reveal);
             });
         }
     } else {
@@ -1557,7 +1618,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
 
         const frontmostWindow = getMostRecentlyFocusedWorkspaceWindow();
         if (frontmostWindow) {
-            await loadFileIntoWindow(frontmostWindow, filePath);
+            await loadFileIntoWindow(frontmostWindow, filePath, reveal);
         } else {
             // No workspace windows open - try to detect a project root and open it
             const suggestedWorkspace = suggestWorkspaceForFile(filePath);
@@ -1570,7 +1631,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
                 });
                 updateTrackerSchemaWorkspace(suggestedWorkspace);
                 newWindow.once('ready-to-show', async () => {
-                    await loadFileIntoWindow(newWindow, filePath);
+                    await loadFileIntoWindow(newWindow, filePath, reveal);
                 });
             } else {
                 // No project root detected - use the file's directory as workspace
@@ -1583,7 +1644,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
                 });
                 updateTrackerSchemaWorkspace(fileDir);
                 newWindow.once('ready-to-show', async () => {
-                    await loadFileIntoWindow(newWindow, filePath);
+                    await loadFileIntoWindow(newWindow, filePath, reveal);
                 });
             }
         }
