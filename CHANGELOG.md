@@ -25,6 +25,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
+## [0.74.4] - 2026-08-22
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Installs that came up with an empty database now open the one that actually holds their sessions.
+
+### Removed
+<!-- Removed features go here -->
+
 ## [0.74.3] - 2026-08-21
 
 

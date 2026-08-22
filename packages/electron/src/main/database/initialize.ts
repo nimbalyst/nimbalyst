@@ -235,6 +235,18 @@ export async function initializeDatabase(): Promise<SessionStore> {
       await timeStartupPhase('SQLite.initialize', () => database.initialize());
       logger.main.info('[Database] SQLite initialized successfully (worker-hosted)');
     } else {
+      // Opening PGLite here CREATES `pglite-db/` when it is absent, so this is
+      // the exact point at which #1347 turned a bad flag file into an empty
+      // database. `resolveBackend` now heals that contradiction before we get
+      // here, which leaves only two ways to reach this line without a store:
+      // a rollback install whose PGLite was moved by hand, or a bug in the
+      // guard. Neither may be silent again.
+      if (!fs.existsSync(dbPath)) {
+        logger.main.error(
+          `[Database] Resolved to PGLite (reason: ${backendChoice.reason}) but ${dbPath} does not exist; ` +
+            'a new empty database is about to be created. If this install had sessions, they are not in PGLite.',
+        );
+      }
       backupService = new DatabaseBackupService(dbPath, legacyPgliteDatabase);
       await timeStartupPhase('BackupService.initialize', () => backupService!.initialize());
       legacyPgliteDatabase.setBackupService(backupService);
