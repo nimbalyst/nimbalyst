@@ -108,6 +108,7 @@ import {
   setSessionTagsAtom,
 } from '../../store/atoms/sessionKanban';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
+import { reconcileActiveSessionId } from '../../../shared/sessionHierarchy';
 
 export interface AgentWorkstreamPanelRef {
   closeActiveTab: () => void;
@@ -827,7 +828,13 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
 
   // Get sessions in this workstream
   const sessions = useAtomValue(workstreamSessionsAtom(workstreamId));
-  const activeSessionId = useAtomValue(workstreamActiveChildAtom(workstreamId));
+  const persistedActiveSessionId = useAtomValue(workstreamActiveChildAtom(workstreamId));
+  const activeSessionId = reconcileActiveSessionId({
+    containerId: workstreamId,
+    childSessionIds: sessions,
+    activeSessionId: persistedActiveSessionId,
+    isStructuralContainer: workstreamType === 'workstream',
+  });
   const setActiveSession = useSetAtom(setActiveSessionInWorkstreamAtom);
 
   // Worktree state - read cached worktree path from atom (available synchronously on remount)
@@ -837,6 +844,12 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
   const sessionWorktreeId = useAtomValue(sessionWorktreeIdAtom(workstreamId));
   const worktreeRecord = useAtomValue(worktreeRecordAtom(sessionWorktreeId ?? NO_WORKTREE_KEY));
   const setWorktreeRecord = useSetAtom(setWorktreeRecordAtom);
+
+  useEffect(() => {
+    if (persistedActiveSessionId !== activeSessionId) {
+      setWorkstreamState({ activeChildId: activeSessionId });
+    }
+  }, [persistedActiveSessionId, activeSessionId, setWorkstreamState]);
 
   // Debug: log when activeSessionId changes
   // useEffect(() => {
