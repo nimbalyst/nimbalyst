@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- A `nimbalyst://open` link can open a specific file — optionally at a line — landing in the workspace that contains it, so external tools can link straight into your notes and code.
 - OpenCode's model picker now lists the models you are actually signed in for, discovered live instead of a fixed built-in list, with per-model hiding and a refresh control in settings.
 - OpenCode sessions support slash commands and Compact, and can run as one of your configured agent roles.
 

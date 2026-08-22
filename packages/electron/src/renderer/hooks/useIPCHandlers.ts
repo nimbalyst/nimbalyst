@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useAtomValue } from 'jotai';
+import type { EditorRevealPosition } from '../components/TabEditor/editorRevealCommand';
 import type { LexicalCommand, TextReplacement } from '@nimbalyst/runtime';
 import {
   APPROVE_DIFF_COMMAND,
@@ -129,7 +130,7 @@ interface UseIPCHandlersProps {
   handleOpen: () => Promise<void>;
   handleSave: () => Promise<void>;
   handleSaveAs: () => Promise<void>;
-  handleWorkspaceFileSelect: (filePath: string) => Promise<void>;
+  handleWorkspaceFileSelect: (filePath: string, location?: EditorRevealPosition) => Promise<void>;
   openWelcomeTab: () => Promise<void>;
   openFeedback: () => void;
   // State setters
@@ -360,10 +361,10 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     }
 
     if (window.electronAPI.onOpenDocument) {
-      cleanupFns.push(window.electronAPI.onOpenDocument(async ({ path }) => {
+      cleanupFns.push(window.electronAPI.onOpenDocument(async ({ path, line }) => {
         // console.log('[DOCUMENT_LINK] Renderer received open-document for path:', path);
         try {
-          await handlersRef.current.handleWorkspaceFileSelect(path);
+          await handlersRef.current.handleWorkspaceFileSelect(path, line ? { line } : undefined);
         } catch (error) {
           console.error('[DOCUMENT_LINK] Failed to open document reference:', error);
         }

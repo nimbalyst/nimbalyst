@@ -266,7 +266,7 @@ interface ElectronAPI {
   // Workspace callbacks
   onWorkspaceOpened: (callback: (data: { workspacePath: string; workspaceName: string; fileTree: FileTreeItem[] }) => void) => () => void;
   onOpenWorkspaceFile: (callback: (filePath: string) => void) => () => void;
-  onOpenDocument: (callback: (data: { path: string }) => void) => () => void;
+  onOpenDocument: (callback: (data: { path: string; line?: number }) => void) => () => void;
   onOpenWorkspaceFromCLI: (callback: (workspacePath: string) => void) => () => void;
   onWorkspaceFileTreeUpdated: (callback: (data: { fileTree: FileTreeItem[]; addedPath?: string; removedPath?: string }) => void) => () => void;
 
