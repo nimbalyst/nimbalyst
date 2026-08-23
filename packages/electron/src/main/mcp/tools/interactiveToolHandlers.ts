@@ -871,6 +871,24 @@ export async function handleGitCommitProposal(
 
   const targetSessionId = sessionId || "unknown";
 
+  // Check if auto-commit is enabled.
+  //
+  // This must be read BEFORE the proposal is announced. When auto-commit is
+  // on, this handler resolves the proposal itself a few lines below, so the
+  // session is never actually blocked on a human -- but marking it pending
+  // fires a forced "Waiting for your response" mobile push (see
+  // notifyMobileOfBlockedSession in services/ai/pendingPromptPersistence.ts,
+  // which passes force: true) for a commit that lands milliseconds later
+  // without any input. Reading the setting first lets us skip the announce.
+  let isAutoCommit = false;
+  try {
+    const Store = (await import("electron-store")).default;
+    const aiSettingsStore = new Store({ name: "ai-settings" });
+    isAutoCommit = aiSettingsStore.get("autoCommitEnabled", false) as boolean;
+  } catch {
+    // If we can't read settings, fall through to manual mode
+  }
+
   // Persist the proposal to database for durability
   try {
     const now = new Date();
@@ -951,21 +969,15 @@ export async function handleGitCommitProposal(
       console.warn("[MCP Server] No commitWindow found to send IPC event");
     }
 
-    // Persist pending-prompt bit + push to mobile (this also notifies the tray)
-    void setSessionPendingPrompt(targetSessionId, true);
+    // Persist pending-prompt bit + push to mobile (this also notifies the tray).
+    // Under auto-commit nothing is waiting on the user, so announcing a pending
+    // prompt would be a false "blocked on human" signal.
+    if (!isAutoCommit) {
+      void setSessionPendingPrompt(targetSessionId, true);
+    }
   } catch (error) {
     console.error("[MCP Server] Failed to persist git commit proposal:", error);
     // Continue anyway - worst case is no durability
-  }
-
-  // Check if auto-commit is enabled
-  let isAutoCommit = false;
-  try {
-    const Store = (await import("electron-store")).default;
-    const aiSettingsStore = new Store({ name: "ai-settings" });
-    isAutoCommit = aiSettingsStore.get("autoCommitEnabled", false) as boolean;
-  } catch {
-    // If we can't read settings, fall through to manual mode
   }
 
   if (isAutoCommit) {
