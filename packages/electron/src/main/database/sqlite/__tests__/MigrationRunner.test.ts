@@ -23,6 +23,11 @@ class FakeDb {
   private migrations: Array<{ version: number; name: string }> = [];
   public execs: string[] = [];
 
+  /** Pre-seed a ledger row, as an already-migrated database would have. */
+  seed(version: number, name: string) {
+    this.migrations.push({ version, name });
+  }
+
   exec(sql: string) {
     this.execs.push(sql);
     if (/CREATE TABLE IF NOT EXISTS _migrations/i.test(sql)) {
@@ -31,9 +36,9 @@ class FakeDb {
   }
 
   prepare(sql: string) {
-    if (/SELECT version FROM _migrations/i.test(sql)) {
+    if (/SELECT version, name FROM _migrations/i.test(sql)) {
       return {
-        all: () => this.migrations.map((m) => ({ version: m.version })),
+        all: () => this.migrations.map((m) => ({ version: m.version, name: m.name })),
         get: (version: number) => this.migrations.find((m) => m.version === version),
       };
     }
@@ -263,6 +268,47 @@ describe('runMigrations', () => {
     runMigrations(db as unknown as import('better-sqlite3').Database, tmp);
     expect(db.execs.some((s) => s.includes('CREATE TABLE foo'))).toBe(true);
     expect(db.execs.some((s) => s.includes('CREATE INDEX bar'))).toBe(true);
+  });
+
+  /**
+   * The ledger records (version, name), but the runner used to key its
+   * applied-set on version alone. A row written by a build whose migration N
+   * was a *different* migration therefore made this build's N look applied:
+   * it was skipped, the ledger kept claiming it had run, and the schema it was
+   * supposed to create never existed. Nothing downstream could detect that.
+   */
+  describe('ledger identity', () => {
+    const writeSchemaDir = (dir: string) => {
+      for (const m of getMigrations(dir)) {
+        if (m.sqlFile) fs.writeFileSync(m.sqlFile, '-- noop\n');
+      }
+    };
+
+    it('refuses to migrate when a ledger row claims a version under a different name', () => {
+      writeSchemaDir(tmp);
+      const db = new FakeDb();
+      const target = getMigrations(tmp).find((m) => m.name === 'feedback_request_cache');
+      expect(target).toBeDefined();
+      db.seed(target!.version, 'some_other_builds_migration');
+
+      expect(() =>
+        runMigrations(db as unknown as import('better-sqlite3').Database, tmp),
+      ).toThrow(/ledger conflict at version/i);
+    });
+
+    it('still skips a version whose recorded name matches this build', () => {
+      writeSchemaDir(tmp);
+      const db = new FakeDb();
+      const target = getMigrations(tmp).find((m) => m.name === 'feedback_request_cache');
+      db.seed(target!.version, target!.name);
+
+      const result = runMigrations(
+        db as unknown as import('better-sqlite3').Database,
+        tmp,
+      );
+      expect(result.skipped).toContain(target!.version);
+      expect(result.applied).not.toContain(target!.version);
+    });
   });
 
   it('is idempotent when two SQLite connections initialize the same database concurrently', async () => {

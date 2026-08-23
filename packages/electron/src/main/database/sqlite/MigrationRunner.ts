@@ -224,9 +224,12 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
   `);
 
   const appliedRows = db
-    .prepare('SELECT version FROM _migrations ORDER BY version ASC')
-    .all() as Array<{ version: number }>;
-  const applied = new Set(appliedRows.map((r) => r.version));
+    .prepare('SELECT version, name FROM _migrations ORDER BY version ASC')
+    .all() as Array<{ version: number; name: string }>;
+  // Key the applied-set on (version, name), not version alone. A ledger row is
+  // only proof that *this* migration ran if its name matches too -- see the
+  // identity check in the loop below.
+  const appliedNameByVersion = new Map(appliedRows.map((r) => [r.version, r.name]));
 
   const result: MigrationResult = { applied: [], skipped: [] };
   const migrations = getMigrations(schemaDir).sort((a, b) => a.version - b.version);
@@ -241,11 +244,25 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
   }
 
   const findAppliedVersion = db.prepare(
-    'SELECT version FROM _migrations WHERE version = ?',
+    'SELECT version, name FROM _migrations WHERE version = ?',
   );
 
   for (const m of migrations) {
-    if (applied.has(m.version)) {
+    const recordedName = appliedNameByVersion.get(m.version);
+    if (recordedName !== undefined) {
+      if (recordedName !== m.name) {
+        // The ledger owns this version under a different name, so it is not
+        // proof that this migration ran. Skipping it would leave the database
+        // missing schema the ledger claims is present -- a silently wrong
+        // schema that no later run can detect. Refuse loudly instead: that is
+        // recoverable by reinstalling, and a wrong schema is not.
+        throw new Error(
+          `Migration ledger conflict at version ${m.version}: recorded as ` +
+            `'${recordedName}', but this build expects '${m.name}'. Refusing to ` +
+            `migrate -- applying it would corrupt the schema, and skipping it ` +
+            `would leave '${m.name}' permanently unapplied.`,
+        );
+      }
       result.skipped.push(m.version);
       continue;
     }
@@ -260,7 +277,18 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
       // Another app process or worker may have initialized the same database
       // after our applied-version snapshot. Re-check while holding the
       // immediate write lock so only one connection can apply this version.
-      if (findAppliedVersion.get(m.version)) {
+      // Same identity rule as the snapshot: only a matching name proves it was
+      // this migration that landed.
+      const raced = findAppliedVersion.get(m.version) as
+        | { version: number; name: string }
+        | undefined;
+      if (raced) {
+        if (raced.name !== m.name) {
+          throw new Error(
+            `Migration ledger conflict at version ${m.version}: recorded as ` +
+              `'${raced.name}', but this build expects '${m.name}'.`,
+          );
+        }
         return false;
       }
       if (m.sqlFile) {
