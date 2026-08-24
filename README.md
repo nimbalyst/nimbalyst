@@ -1,17 +1,35 @@
-# Nimbalyst is the visual workspace for building with Codex and Claude Code
+<div align="center">
 
-[Nimbalyst](https://nimbalyst.com) is a free, open-source, local, interactive visual editor & session/task manager for developers, product managers, designers, builders. 
-- Maximize speed, bandwidth, and context with Codex, Claude Code, Opencode (alpha), Copilot (alpha) by collaborating visually on integrated files, sessions, and tasks
-- Iterate visually with coding agents in your markdown, mockups, diagrams, csv, Excalidraw, data models, and code. Approve the coding agent's changes in red/green WYSIWYG, edit, annotate.
-- Manage multiple sessions in parallel and in kanban. Search, resume, link sessions to files and files to sessions. For developers we include git management, AI commit, workstreams, worktrees, and terminal.
-- Manage tasks. Keep track of your plans, bugs, todos, etc. Have the agent edit tasks and items, add them, move them, and execute them. Humans see and edit this as well.
-- Extend Nimbalyst. Build your own custom editors and visual interfaces integrated with the rest of Nimbalyst and your agents.
-- Mobile app. Start, manage, and respond to your Codex and Claude Code sessions while on the go.
+<h1>Nimbalyst: Open-source visual workspace for building with Codex, Claude Code, OpenCode, and other coding agents. </h1><p><strong> Work on everything in one place: sessions, worktrees, tasks, docs, diagrams, mockups, commits, and code.</br> Visually editable. Deeply linked. </br>Free and MIT licensed. Desktop app for macOS, Windows, and Linux, with an iOS companion app.</p>
 
 ![Version](https://img.shields.io/github/v/release/nimbalyst/nimbalyst)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 
+
+<p>
+<a href="https://nimbalyst.com">Website</a> ·
+<a href="#download">Download</a> ·
+<a href="https://docs.nimbalyst.com/">Documentation</a> ·
+<a href="https://discord.gg/FgD9S2MCYB">Discord</a>
+</p>
+
+</div>
+
 https://github.com/user-attachments/assets/bfd89552-61f4-4db1-8301-cc2495423b89
+
+## What you get
+
+- **Visual editing of the agent's work.** WYSIWYG editors for markdown, mockups, Mermaid, Excalidraw, CSV, data models, and code in Monaco. You and the coding agent edit the same files.
+- **Red/green diff review.** Step through the agent's proposed edits in the rendered document and accept or reject each one.
+- **Parallel agent sessions.** Run several coding agents at once, each isolated in its own git worktree.
+- **Session kanban.** Track every session on a board. Search, resume, and link sessions to the files they touched.
+- **Task tracking.** Plans, bugs, features, and todos in trackers your agents read and update alongside you.
+- **Heterogeneous agents.** Codex and Claude Code side by side, plus OpenCode and GitHub Copilot in alpha and a Gemini provider.
+- **Git built in.** Branch and worktree management, staging, AI-drafted commits, and an embedded terminal.
+- **MCP client and servers.** Connect any MCP server, with tool results rendered as visual widgets rather than raw JSON.
+- **Extension SDK.** Every editor, including the built-in ones, goes through the same `EditorHost` contract, so an editor you build is first-class. Ask your agent to build one for a file type we do not ship.
+- **Plain files on disk.** Content and status in markdown, workflows in slash commands, everything in your git repo. No proprietary store to migrate out of.
+- **iOS companion.** See which agents need you, reply by text or voice, swipe through diffs, queue the next task, and get a push when an agent is waiting.
 
 ## Features
 **Visual Editors:** Built-in WYSIWYG editors where you and your coding agents collaborate visually. Approve agent changes as red/green diffs, edit, annotate, and iterate.
@@ -37,6 +55,8 @@ https://github.com/user-attachments/assets/bfd89552-61f4-4db1-8301-cc2495423b89
 **Task Tracking:** Keep track of your plans, bugs, features, todos etc.
 - Have the agent edit tasks, add them, move them, and execute them
 - Humans view and edit them too
+<img width="1920" height="1080" alt="feature-task-tracker DY6lbNml_Z19R6rW" src="https://github.com/user-attachments/assets/4c08c79f-aa3d-4234-ad20-c28043a9cad5" />
+
 
 **For Developers**
 - Manage git state
@@ -52,8 +72,6 @@ https://github.com/user-attachments/assets/bfd89552-61f4-4db1-8301-cc2495423b89
 - Visual diff review: swipe through changes, tap to approve
 - Queue next tasks: keep the pipeline full, don't let agents sit idle
 - Push notifications: agents tell you when they need you
-
-**Open** storage of content and status in markdown, workflow in slash commands, and plain files on disk or in git.
 
 **Extension System**
 - Pluggable editors for any file type. Every editor (including built-ins) goes through the same `EditorHost` contract, so custom editors are first-class.
