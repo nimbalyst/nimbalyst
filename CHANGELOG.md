@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Sending a queued prompt while a background sub-agent is running no longer leaves the session stuck on "Thinking..." or later claims a sub-agent was interrupted when none was.
 
 ### Removed
 <!-- Removed features go here -->

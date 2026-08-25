@@ -2359,6 +2359,19 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       console.warn('[CLAUDE-CODE] interruptCurrentTurn: interrupt() failed (transport may be closed):', err);
     }
 
+    // Background sub-agent tasks stream their task_notification on the query we
+    // just interrupted, and the streaming loop breaks on that interrupt, so a
+    // terminal status can no longer reach handleSystemTask -- the same reason
+    // abort() reaps them. Left 'running', they make the NEXT turn's `result`
+    // defer teardown to the drain loop: the session sits 'running' with its
+    // queued prompts stalled behind it, and a silent drain then tells the
+    // session a sub-agent was interrupted when none was. #1269.
+    const orphanedTasks = reapRunningTasks(this.activeTasks.values());
+    if (orphanedTasks.length > 0) {
+      console.warn(`[CLAUDE-CODE] SUBAGENT_TASK: interrupt orphaned ${orphanedTasks.length} running task(s); marking stopped. tasks=[${orphanedTasks.join(', ')}]`);
+      this.emitTaskUpdate(this.currentSessionId).catch(() => {});
+    }
+
     return { method: 'interrupt' };
   }
 
