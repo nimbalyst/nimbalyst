@@ -1917,7 +1917,84 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     // The openai.models.list() API does not include all Codex-available models
     // (e.g., gpt-5.4 works via the SDK but isn't listed in the API).
     // The SDK itself will fail with a proper error if the model doesn't exist.
-    return OpenAICodexProvider.MODEL_REPLACEMENTS.get(normalized) || resolved;
+    const finalModel = OpenAICodexProvider.MODEL_REPLACEMENTS.get(normalized) || resolved;
+    return OpenAICodexProvider.toBedrockModelId(finalModel);
+  }
+
+  /**
+   * Bedrock's OpenAI-compatible endpoint (bedrock-mantle) namespaces OpenAI
+   * models as `openai.<id>` (e.g. `openai.gpt-5.6-luna`). When Codex is
+   * configured with `model_provider = "amazon-bedrock"` (in the shared
+   * `~/.codex/config.toml`), sending the bare id (`gpt-5.6-luna`) yields a
+   * 404 "model does not exist" from bedrock-mantle.
+   *
+   * We auto-detect that provider from the same config file Codex itself reads,
+   * so no user-facing setting is required: on Bedrock we namespace bare OpenAI
+   * model ids; on the public OpenAI API (or when the provider can't be
+   * determined) we leave them bare. Model ids are matched by pattern
+   * (`gpt-`, `o<n>`, `codex`) rather than a hardcoded list, so new models are
+   * handled automatically.
+   */
+  private static toBedrockModelId(modelId: string): string {
+    if (!OpenAICodexProvider.isBedrockCodexProvider()) {
+      return modelId;
+    }
+    // Already Bedrock-namespaced (openai./amazon./anthropic. etc.) or a
+    // provider-qualified id ("openai-codex:..."): leave untouched. We match an
+    // explicit known-provider prefix rather than any "." because model ids like
+    // "gpt-5.6-luna" legitimately contain a dot in the version.
+    if (/^(openai|amazon|anthropic|meta|mistral|cohere|deepseek)\./i.test(modelId)
+        || modelId.includes(':')) {
+      return modelId;
+    }
+    if (/^(gpt-|o[0-9]|codex)/i.test(modelId)) {
+      return `openai.${modelId}`;
+    }
+    return modelId;
+  }
+
+  /** Cached result of the config-file provider probe (undefined = not yet read). */
+  private static bedrockProviderCache: boolean | undefined;
+
+  /**
+   * Test/override hook. When set, its return value replaces the config-file
+   * probe (mirrors the other static loader/resolver hooks on this class).
+   * Lets unit tests pin the provider without touching the developer's real
+   * ~/.codex/config.toml.
+   */
+  static bedrockDetectionOverride: (() => boolean) | null = null;
+
+  /**
+   * Returns true when the shared Codex config declares
+   * `model_provider = "amazon-bedrock"`. Reads `$CODEX_HOME/config.toml`
+   * (default `~/.codex/config.toml`). Fails open (returns false) when the file
+   * is missing or unreadable, so the public OpenAI path is never affected.
+   * Result is cached for the process lifetime (or supplied via the override).
+   */
+  private static isBedrockCodexProvider(): boolean {
+    if (OpenAICodexProvider.bedrockDetectionOverride) {
+      return OpenAICodexProvider.bedrockDetectionOverride();
+    }
+    if (OpenAICodexProvider.bedrockProviderCache !== undefined) {
+      return OpenAICodexProvider.bedrockProviderCache;
+    }
+    let detected = false;
+    try {
+      // Lazy require keeps this off the hot path and avoids adding top-level
+      // node builtins to a module that also runs in non-node contexts.
+      const fs = require('fs') as typeof import('fs');
+      const os = require('os') as typeof import('os');
+      const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+      const configPath = path.join(codexHome, 'config.toml');
+      const raw = fs.readFileSync(configPath, 'utf8');
+      // Match a top-level `model_provider = "amazon-bedrock"` assignment,
+      // tolerant of single/double quotes and surrounding whitespace.
+      detected = /^\s*model_provider\s*=\s*["']amazon-bedrock["']\s*$/m.test(raw);
+    } catch {
+      detected = false;
+    }
+    OpenAICodexProvider.bedrockProviderCache = detected;
+    return detected;
   }
 
   private buildCodexPrompt(options: {
