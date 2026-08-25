@@ -5,6 +5,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import log from "electron-log/main";
 import { getGitSubprocessEnv } from "./gitEnv";
+import { resolveGitContext } from "./GitContextService";
 
 export type GitOperationStatus =
   | "running"
@@ -197,7 +198,8 @@ export class GitOperationLogService {
 
   async start(
     workspacePath: string,
-    args: string[]
+    args: string[],
+    cwd: string = workspacePath
   ): Promise<GitOperationLogEntry> {
     this.requireWorkspacePath(workspacePath);
     const state = await this.ensureLoaded(workspacePath);
@@ -210,7 +212,7 @@ export class GitOperationLogService {
       command: formatted.command,
       executable: "git",
       args: formatted.args,
-      cwd: workspacePath,
+      cwd,
       status: "running",
       output: "",
       stdout: "",
@@ -500,11 +502,12 @@ export async function runGitCommandStreaming(
   workspacePath: string,
   args: string[]
 ): Promise<RunGitCommandResult> {
-  const entry = await service.start(workspacePath, args);
+  const cwd = resolveGitContext(workspacePath).gitRoot ?? workspacePath;
+  const entry = await service.start(workspacePath, args, cwd);
 
   return await new Promise<RunGitCommandResult>((resolve) => {
     const child = spawn("git", args, {
-      cwd: workspacePath,
+      cwd,
       env: getGitSubprocessEnv(),
       windowsHide: true,
     });
