@@ -63,10 +63,14 @@ function calculateNextDaily(time: string, now: Date): Date {
 }
 
 function calculateNextWeekly(days: DayOfWeek[], time: string, now: Date): Date | null {
-  if (days.length === 0) return null;
+  // Frontmatter is hand-editable YAML, so `days` isn't guaranteed to be an
+  // array by the time it gets here (e.g. `days: mon` parses to the string
+  // "mon", not ["mon"]). Coerce instead of trusting the type. See nimbalyst#1374.
+  const dayList = Array.isArray(days) ? days : days ? [days] : [];
+  if (dayList.length === 0) return null;
 
   const { hours, minutes } = parseTime(time);
-  const targetDays = new Set(days.map((d) => DAY_MAP[d]));
+  const targetDays = new Set(dayList.map((d) => DAY_MAP[d]));
 
   // Check up to 8 days ahead (covers all cases including same day)
   for (let offset = 0; offset <= 7; offset++) {
