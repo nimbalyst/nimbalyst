@@ -277,7 +277,7 @@ export class CodexAppServerRawParser implements IRawMessageParser {
     }
 
     if (this.isGenericToolLikeItem(item)) {
-      return this.parseGenericToolLikeItem(msg, item, context);
+      return this.parseGenericToolLikeItem(msg, item, context, false);
     }
 
     return [];
@@ -323,7 +323,7 @@ export class CodexAppServerRawParser implements IRawMessageParser {
       }
       default: {
         if (this.isGenericToolLikeItem(item)) {
-          descriptors.push(...await this.parseGenericToolLikeItem(msg, item, context));
+          descriptors.push(...await this.parseGenericToolLikeItem(msg, item, context, true));
         }
         break;
       }
@@ -472,6 +472,7 @@ export class CodexAppServerRawParser implements IRawMessageParser {
     msg: RawMessage,
     item: AppServerItem,
     context: ParseContext,
+    completedNotification: boolean,
   ): Promise<CanonicalEventDescriptor[]> {
     if (!item.id || !item.type) return [];
 
@@ -495,8 +496,12 @@ export class CodexAppServerRawParser implements IRawMessageParser {
       });
     }
 
-    if (item.status === 'completed' || item.status === 'failed') {
-      const isError = item.status !== 'completed';
+    // `item/completed` is the lifecycle authority. Generic Codex items such
+    // as webSearch may omit `status` entirely even on their terminal
+    // notification, so requiring a duplicated payload status leaves the
+    // started tool call unresolved forever after live render or reparse.
+    if (completedNotification) {
+      const isError = item.status === 'failed' || !!item.error;
       descriptors.push({
         type: 'tool_call_completed',
         providerToolCallId: editGroupId,
@@ -738,7 +743,10 @@ export class CodexAppServerRawParser implements IRawMessageParser {
     const record = item as Record<string, unknown>;
     const args: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(record)) {
-      if (value === undefined) continue;
+      // App-server started notifications include null/empty output
+      // placeholders (`action`, `results`, and an empty `query`) for some
+      // generic tools. They are lifecycle state, not call arguments.
+      if (value == null || value === '') continue;
       if (['id', 'type', 'status', 'result', 'error', 'aggregated_output', 'aggregatedOutput', 'exit_code', 'exitCode', 'text', 'content', 'items'].includes(key)) {
         continue;
       }

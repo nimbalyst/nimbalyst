@@ -480,4 +480,56 @@ describe('CodexAppServerRawParser', () => {
       result: 'search complete',
     });
   });
+
+  it('completes generic tools from the lifecycle envelope when optional status and singular result are absent', async () => {
+    const parser = new CodexAppServerRawParser();
+    const context = makeContext();
+    const started = await parser.parseMessage(makeRawMessage({
+      id: 60,
+      content: envelope('item/started', {
+        threadId: 't-1',
+        turnId: 'turn-1',
+        item: {
+          id: 'web-production-shape-1',
+          type: 'webSearch',
+          status: null,
+          query: '',
+          action: null,
+          results: null,
+        },
+      }),
+    }), context);
+
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({
+      type: 'tool_call_started',
+      toolName: 'webSearch',
+      arguments: {},
+    });
+    const providerToolCallId = (started[0] as { providerToolCallId: string }).providerToolCallId;
+
+    const completed = await parser.parseMessage(makeRawMessage({
+      id: 61,
+      content: envelope('item/completed', {
+        threadId: 't-1',
+        turnId: 'turn-1',
+        item: {
+          id: 'web-production-shape-1',
+          type: 'webSearch',
+          status: null,
+          query: 'writing process representations',
+          action: { type: 'search', queries: ['writing process representations'] },
+          results: [{ title: 'Result', url: 'https://example.com' }],
+        },
+      }),
+    }), context);
+
+    expect(completed).toEqual([expect.objectContaining({
+      type: 'tool_call_completed',
+      providerToolCallId,
+      status: 'completed',
+      isError: false,
+    })]);
+    expect((completed[0] as { result: string }).result).toContain('"results"');
+  });
 });

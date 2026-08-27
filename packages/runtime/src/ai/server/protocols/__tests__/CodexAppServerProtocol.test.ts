@@ -931,6 +931,70 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
+  it('does not leak null placeholders and treats item/completed as success when webSearch omits status', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 't-web-production-shape' } } });
+    const session = await sessionPromise;
+
+    const events: ProtocolEvent[] = [];
+    const collector = (async () => {
+      for await (const ev of protocol.sendMessage(session, { content: 'search the web' })) {
+        events.push(ev);
+      }
+    })();
+
+    const turnReq = await nextWrittenMatching(child, 'turn/start');
+    child.emitLine({ id: turnReq.id, result: { turn: { id: 'turn-1', items: [], status: 'inProgress' } } });
+    child.emitLine({
+      method: 'item/started',
+      params: {
+        threadId: 't-web-production-shape',
+        turnId: 'turn-1',
+        item: {
+          id: 'web-production-shape-1',
+          type: 'webSearch',
+          status: null,
+          query: '',
+          action: null,
+          results: null,
+        },
+      },
+    });
+    child.emitLine({
+      method: 'item/completed',
+      params: {
+        threadId: 't-web-production-shape',
+        turnId: 'turn-1',
+        item: {
+          id: 'web-production-shape-1',
+          type: 'webSearch',
+          status: null,
+          query: 'writing process representations',
+          action: { type: 'search', queries: ['writing process representations'] },
+          results: [{ title: 'Result', url: 'https://example.com' }],
+        },
+      },
+    });
+    child.emitLine({ method: 'turn/completed', params: { threadId: 't-web-production-shape', turn: { id: 'turn-1', status: 'completed' } } });
+    await collector;
+
+    const toolCalls = events.filter((event) => event.type === 'tool_call');
+    expect(toolCalls).toHaveLength(2);
+    expect(toolCalls[0].toolCall?.arguments).toEqual({});
+    expect(toolCalls[1].toolCall?.result).toMatchObject({
+      success: true,
+      result: {
+        results: [{ title: 'Result', url: 'https://example.com' }],
+      },
+    });
+
+    protocol.cleanupSession(session);
+  });
+
   it('does not duplicate notifications across multiple sendMessage calls on the same session', async () => {
     const protocol = new CodexAppServerProtocol();
     const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });

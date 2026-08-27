@@ -1199,7 +1199,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
     const record = item as Record<string, unknown>;
     const args: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(record)) {
-      if (value === undefined) continue;
+      // Generic started items can carry null/empty output placeholders (for
+      // example webSearch's `action`, `results`, and empty `query`). Do not
+      // expose those placeholders as user-visible tool arguments.
+      if (value == null || value === '') continue;
       if (['id', 'type', 'status', 'result', 'error', 'aggregated_output', 'exit_code', 'text', 'content', 'items'].includes(key)) {
         continue;
       }
@@ -1211,18 +1214,22 @@ export class CodexAppServerProtocol implements AgentProtocol {
   private buildGenericToolLikeResult(item: AnyItem): ToolResult | string {
     const record = item as Record<string, unknown>;
     const error = record.error as { message?: string } | undefined;
+    // This helper is called only from item/completed. The envelope is the
+    // lifecycle authority: current Codex webSearch payloads omit `status`, so
+    // equality with the optional duplicate field would mislabel success.
+    const success = record.status !== 'failed' && !error?.message;
     if (error?.message) {
       return { success: false, error: error.message } as ToolResult;
     }
     if (record.result !== undefined) {
       return {
-        success: record.status === 'completed',
+        success,
         result: record.result,
       } as ToolResult;
     }
     if (typeof record.aggregated_output === 'string' || typeof record.exit_code === 'number') {
       return {
-        success: record.status === 'completed',
+        success,
         output: record.aggregated_output,
         exit_code: record.exit_code,
       } as ToolResult;
@@ -1235,7 +1242,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       summary[key] = value;
     }
     return {
-      success: record.status === 'completed',
+      success,
       result: summary,
     } as ToolResult;
   }
