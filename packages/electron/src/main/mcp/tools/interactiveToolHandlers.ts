@@ -587,7 +587,11 @@ function waitForToolPermissionAnswer(
       request: undefined,
       extra: { signal },
       toolName: 'ToolPermission',
-      onAbort: () => settle({ decision: 'deny', scope: 'once', cancelled: true }, 'client-abort'),
+      onAbort: () =>
+        settle(
+          { decision: 'deny', scope: 'once', cancelled: true, unansweredReason: 'client-abort' },
+          'client-abort',
+        ),
     });
 
     const POLL_INTERVAL = 1000;
@@ -612,7 +616,10 @@ function waitForToolPermissionAnswer(
       console.warn(
         `[MCP Server] ToolPermission timed out (deny): requestId=${requestId}`,
       );
-      settle({ decision: "deny", scope: "once", cancelled: true }, "timeout");
+      settle(
+        { decision: "deny", scope: "once", cancelled: true, unansweredReason: "timeout" },
+        "timeout",
+      );
     }, MAX_WAIT);
   });
 }

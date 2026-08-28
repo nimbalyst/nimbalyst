@@ -68,10 +68,32 @@ export function decideAutoPermission(args: {
 }
 
 /** Decision + scope the `ToolPermissionWidget` sends back. */
+/**
+ * Why a permission request settled without anyone answering it.
+ *
+ * Every one of these fail-closed paths used to settle as `cancelled: true`,
+ * which is also what a real user cancellation sets, so the CLI was told "Tool
+ * call cancelled by user" for requests no user was ever shown (#1348). The
+ * deny is correct; the attribution was not.
+ */
+export type ToolPermissionUnansweredReason =
+  /** The requesting CLI went away, so the approval surface answers nobody. */
+  | 'client-abort'
+  /** MAX_WAIT elapsed with no response from any surface. */
+  | 'timeout'
+  /** The wait itself rejected, so the prompt never reached a person. */
+  | 'wait-failed';
+
 export interface ToolPermissionAnswer {
   decision: 'allow' | 'deny';
   scope: 'once' | 'session' | 'always' | 'always-all';
   cancelled?: boolean;
+  /**
+   * Set only when the request settled with no human involved. Absent means the
+   * answer came from a person. Never accepted from a renderer payload — see
+   * `normalizeToolPermissionAnswer`.
+   */
+  unansweredReason?: ToolPermissionUnansweredReason;
 }
 
 export interface ToolPermissionResponseRecord {
@@ -181,14 +203,24 @@ export function buildToolPermissionResultPayload(answer: ToolPermissionAnswer): 
   decision: 'allow' | 'deny';
   scope: ToolPermissionAnswer['scope'];
   cancelled: boolean;
+  unansweredReason?: ToolPermissionUnansweredReason;
 } {
   return {
     decision: answer.decision,
     scope: answer.scope,
     cancelled: answer.cancelled === true,
+    // Persisted so the transcript record distinguishes an unshown prompt from a
+    // dismissed one. The widget does not read it yet.
+    ...(answer.unansweredReason ? { unansweredReason: answer.unansweredReason } : {}),
   };
 }
 
+/**
+ * Normalize an answer that arrived from a surface (IPC payload, mobile, DB
+ * record). `unansweredReason` is deliberately NOT read here: it means "no one
+ * answered", so an answer that arrived cannot carry it, and a renderer must not
+ * be able to make its own decision look like an infrastructure failure.
+ */
 export function normalizeToolPermissionAnswer(payload: any): ToolPermissionAnswer {
   const r = (payload && payload.response) || payload || {};
   const decision = r.decision === 'allow' ? 'allow' : 'deny';
@@ -239,6 +271,24 @@ export function parseToolPermissionResponseRecord(
   }
 }
 
+/**
+ * The message the agent receives when a request settled with nobody answering.
+ * The shared tail is the load-bearing part: it tells the agent not to report
+ * this as a user decision, which is what made #1348's failure read as a script
+ * defect rather than an unshown prompt.
+ */
+const UNANSWERED_DENY_MESSAGES: Record<ToolPermissionUnansweredReason, string> = {
+  'client-abort':
+    'Permission request was not answered: the requesting session ended before the prompt could be answered.',
+  timeout:
+    'Permission request was not answered: it timed out waiting for a response.',
+  'wait-failed':
+    'Permission request was not answered: it could not be delivered for approval.',
+};
+
+/** Appended to every unanswered deny so the distinction cannot be missed. */
+const NO_USER_DECISION = 'Denied by default. No user decision was made, and no prompt was answered.';
+
 /** Map a widget answer to the Claude Code permission-prompt-tool return contract. */
 export function buildToolPermissionBehaviorResult(
   answer: ToolPermissionAnswer,
@@ -246,6 +296,12 @@ export function buildToolPermissionBehaviorResult(
 ): ToolPermissionBehaviorResult {
   if (answer.decision === 'allow' && !answer.cancelled) {
     return { behavior: 'allow', updatedInput: input };
+  }
+  if (answer.unansweredReason) {
+    return {
+      behavior: 'deny',
+      message: `${UNANSWERED_DENY_MESSAGES[answer.unansweredReason]} ${NO_USER_DECISION}`,
+    };
   }
   return {
     behavior: 'deny',
@@ -383,9 +439,10 @@ export async function resolveClaudeCliToolPermission(
   try {
     answer = await deps.waitForAnswer({ sessionId, requestId });
   } catch (err) {
-    // Aborted / failed wait → deny (fail closed) and settle.
+    // Aborted / failed wait → deny (fail closed) and settle. The reason is
+    // carried so the CLI is not told the user cancelled something no user saw.
     deps.log?.(`[ToolPermission] wait failed for ${requestId}: ${err instanceof Error ? err.message : String(err)}`);
-    answer = { decision: 'deny', scope: 'once', cancelled: true };
+    answer = { decision: 'deny', scope: 'once', cancelled: true, unansweredReason: 'wait-failed' };
   }
 
   await deps.persistToolResult({
