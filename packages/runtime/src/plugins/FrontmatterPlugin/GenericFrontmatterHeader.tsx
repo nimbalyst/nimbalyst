@@ -7,6 +7,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import type { DocumentHeaderComponentProps } from '../TrackerPlugin/documentHeader/DocumentHeaderRegistry';
+import { detectTrackerFromFrontmatter } from '../TrackerPlugin/documentHeader/frontmatterUtils';
 import {
   extractFrontmatterWithError,
   parseFields,
@@ -360,9 +361,21 @@ export function shouldRenderGenericFrontmatter(content: string, filePath: string
     return false;
   }
 
-  // todo: this is an aweful hack and we  need a better solution.
-  // Skip if it's a tracker document or automation (handled by specialized headers)
-  if (result.data.planStatus || result.data.decisionStatus || result.data.trackerStatus || result.data.automationStatus) {
+  // Stand down only when the tracker header will actually claim the document.
+  //
+  // This used to test a hardcoded list of status keys for truthiness, which
+  // diverged from `detectTrackerFromFrontmatter` in two ways. It was missing
+  // `bugStatus` / `taskStatus` / `ideaStatus`, and -- the reported bug -- it
+  // abdicated on any truthy value while every tracker branch requires the key
+  // to hold an *object*. A scalar `planStatus: draft` was therefore claimed by
+  // nobody: the tracker header declined it and this one stepped aside for a
+  // header that was never coming, so the document fell through to the raw text
+  // editor with nothing logged (nimbalyst#1357).
+  //
+  // Asking the detector directly keeps the two in step by construction, which
+  // is the rule `EXTENSION_OWNED_KEYS` already states for the same reason
+  // (nimbalyst#67).
+  if (detectTrackerFromFrontmatter(content) !== null) {
     return false;
   }
 
