@@ -52,7 +52,7 @@
     "marketplace:status": "node packages/marketplace/scripts/marketplace-status.mjs",
     "electron:resign": "bash scripts/resign-dev-electron.sh",
     "dev:url-handler": "bash scripts/install-dev-url-handler.sh",
-    "postinstall": "npx patch-package",
+    "postinstall": "patch-package",
     "check:renderer-sync-sockets": "node scripts/check-renderer-sync-sockets.mjs",
     "check:shared-document-nodes": "node scripts/check-shared-document-nodes.mjs"
   },

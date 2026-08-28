@@ -29,11 +29,7 @@ export default defineConfig({
       '@nimbalyst/runtime': fileURLToPath(new URL('../runtime/src', import.meta.url)),
       '@nimbalyst/extension-sdk/file-tree': fileURLToPath(new URL('../extension-sdk/src/fileDirectoryTree.ts', import.meta.url)),
       '@nimbalyst/extension-sdk': fileURLToPath(new URL('../extension-sdk/src', import.meta.url)),
-      'path': resolve(__dirname, 'scripts/path-shim.js'),
     },
-  },
-  define: {
-    'process.platform': JSON.stringify('browser'),
   },
   base: './',
   build: {
