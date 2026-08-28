@@ -135,6 +135,8 @@ import { installScopedProviderListener } from './providerListenerRegistry';
 import { shouldSettleUnterminatedTurn } from './sessionSettlePolicy';
 import { captureTutorialMilestone } from '../tutorial/tutorialAnalytics';
 import { trackSendBlocked } from '../analytics/sendWallAnalytics';
+import { addNimAssetRoot } from '../../protocols/nimAssetProtocol';
+import { registerSessionWorktreeAssetRoot } from '../../protocols/nimAssetWorktreeRoots';
 import type Store from 'electron-store';
 import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
@@ -428,6 +430,14 @@ export class MessageStreamingHandler {
     // CRITICAL: If session has a worktree, use its path instead of workspace path
     // This ensures Claude Code runs in the worktree directory
     let effectiveWorkspacePath = session.worktreePath || workspacePath;
+
+    // #1343: a worktree is a sibling of the workspace root, so it never matches
+    // the root registered at window creation and `nim-asset://` 403s every image
+    // written inside it. Register the directory this session already runs in.
+    registerSessionWorktreeAssetRoot(session, {
+      addRoot: addNimAssetRoot,
+      logWarn: (message) => logger.ai.warn(message),
+    });
 
     // For worktree sessions, use the parent project path for permission lookups
     // This is passed through documentContext to avoid changing sendMessage signature
