@@ -23,6 +23,7 @@ import { ensureWorkspaceLocalNumbersInBackground } from '../services/tracker/ens
 import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
 import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 import { windowReferencesWorkspace } from './windowState';
+import { formatScannedCount, isMarkdownFile, summarizeWorkspaceScan } from './workspaceScanCounts';
 import { TutorialProjectService } from '../services/tutorial/TutorialProjectService';
 import {
   normalizeTutorialEntryPoint,
@@ -290,16 +291,14 @@ export function setupWorkspaceManagerHandlers() {
         try {
           if (existsSync(workspace.path)) {
             const stats = statSync(workspace.path);
-            const { files, limited } = await getWorkspaceFiles(workspace.path, '', 1000, 5);
+            const scan = await getWorkspaceFiles(workspace.path, '', 1000, 5);
 
             return {
               ...workspace,
               lastOpened: workspace.timestamp, // Use the timestamp from the recent items
               lastModified: stats.mtime.getTime(),
-              fileCount: limited ? `${files.length}+` : files.length,
-              markdownCount: files.filter(f => f.endsWith('.md') || f.endsWith('.markdown')).length,
-              exists: true,
-              limited
+              ...summarizeWorkspaceScan(scan),
+              exists: true
             };
           }
         } catch (error) {
@@ -342,7 +341,7 @@ export function setupWorkspaceManagerHandlers() {
           const stats = statSync(filePath);
           totalSize += stats.size;
 
-          if (file.endsWith('.md') || file.endsWith('.markdown')) {
+          if (isMarkdownFile(file)) {
             markdownFiles.push(file);
           }
         } catch (error) {
@@ -354,8 +353,8 @@ export function setupWorkspaceManagerHandlers() {
       const recentFiles = store.get(`workspaceRecentFiles.${workspacePath}`, []) as string[];
 
       return {
-        fileCount: limited ? `${files.length}+` : files.length,
-        markdownCount: markdownFiles.length,
+        fileCount: formatScannedCount(files.length, limited),
+        markdownCount: formatScannedCount(markdownFiles.length, limited),
         totalSize,
         recentFiles: recentFiles.slice(0, 5),
         limited

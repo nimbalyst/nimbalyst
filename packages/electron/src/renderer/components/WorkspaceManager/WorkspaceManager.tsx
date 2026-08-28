@@ -48,19 +48,24 @@ if (typeof window !== 'undefined' && window.electronAPI?.onThemeChange) {
   });
 }
 
+// `fileCount` and `markdownCount` arrive as `"N+"` when the workspace scan hit
+// its budget and stopped early, and as a plain number when it completed. The
+// main process has always sent the suffixed form for `fileCount`; the type said
+// `number` anyway, which is how `markdownCount` came to present a partial scan
+// as an exact total (#1376).
 interface WorkspaceInfo {
   path: string;
   name: string;
   lastOpened: number | string;
   lastModified?: number | string;
-  fileCount?: number;
-  markdownCount?: number;
+  fileCount?: number | string;
+  markdownCount?: number | string;
   exists: boolean;
 }
 
 interface WorkspaceStats {
-  fileCount: number;
-  markdownCount: number;
+  fileCount: number | string;
+  markdownCount: number | string;
   totalSize: number;
   recentFiles: string[];
 }
