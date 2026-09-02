@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Typing in a markdown file no longer stutters each time it autosaves in a workspace with a large tracker.
 - A session that had previously reached the complete phase stayed out of the menu bar's Running list for the whole of its next turn.
 - Opening a session on iOS could show another session's transcript under the correct title.
+- Applying a heading with Ctrl+Alt+1 through 3 in the editor no longer also jumps to the matching tab on Linux and Windows (#353).
 
 ### Removed
 <!-- Removed features go here -->

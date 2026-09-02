@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState, memo } from 'react';
 import { useSetAtom, useAtomValue } from 'jotai';
 import { Tab } from './TabManager';
+import { isTabJumpShortcut } from './tabShortcuts';
 import {
   useTabDirty,
   useTabHasCollabUnsyncedChanges,
@@ -655,7 +656,7 @@ export const TabBar: React.FC<TabBarProps> = ({
       }
 
       // Cmd/Ctrl + 1-9 to jump to tab
-      if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '9') {
+      if (isTabJumpShortcut(e)) {
         e.preventDefault();
         const index = parseInt(e.key) - 1;
         if (index < tabs.length) {
