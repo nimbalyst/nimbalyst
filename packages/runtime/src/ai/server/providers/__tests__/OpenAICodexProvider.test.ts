@@ -45,6 +45,10 @@ describe('OpenAICodexProvider', () => {
     OpenAICodexProvider.setPreEditHookScriptPathResolver(null);
     OpenAICodexProvider.setPreEditSidecarDirResolver(null);
     OpenAICodexProvider.setCodexTransportResolver(null);
+    // Default: treat the Codex provider as public OpenAI (not Bedrock) so
+    // model-id assertions are deterministic regardless of the developer's real
+    // ~/.codex/config.toml. Bedrock-specific tests opt in explicitly.
+    OpenAICodexProvider.bedrockDetectionOverride = () => false;
 
     // Provide default injected dependencies required by the provider.
     OpenAICodexProvider.setTrustChecker(() => ({ trusted: true, mode: 'allow-all' as any }));
@@ -1832,6 +1836,47 @@ describe('OpenAICodexProvider', () => {
     expect(startThread).toHaveBeenCalledTimes(1);
     const startArgs = (startThread.mock.calls as unknown as [Record<string, unknown>][])[0][0];
     expect(startArgs.model).toBe('gpt-5.6-sol');
+  });
+
+  it('namespaces bare OpenAI model ids for the Bedrock provider', async () => {
+    // Simulate model_provider = "amazon-bedrock" in ~/.codex/config.toml.
+    OpenAICodexProvider.bedrockDetectionOverride = () => true;
+
+    const startThread = vi.fn((config: { model: string }) => ({
+      id: 'thread-bedrock',
+      runStreamed: async () => ({
+        events: createAsyncEventStream([
+          {
+            type: 'item.completed',
+            item: { type: 'agent_message', text: 'bedrock model mapped' },
+          },
+        ]),
+      }),
+    }));
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      {
+        loadSdkModule: async () =>
+          ({
+            Codex: class {
+              startThread = startThread;
+              resumeThread = vi.fn();
+            },
+          }) as any,
+      }
+    );
+
+    await provider.initialize({ apiKey: 'test-key', model: 'openai-codex:gpt-5.6-luna' });
+
+    for await (const _chunk of provider.sendMessage('bedrock', undefined, 'session-bedrock', [], process.cwd())) {
+      // drain
+    }
+
+    expect(startThread).toHaveBeenCalledTimes(1);
+    const bedrockArgs = (startThread.mock.calls as unknown as [Record<string, unknown>][])[0][0];
+    // Bedrock's OpenAI-compatible endpoint requires the `openai.` namespace.
+    expect(bedrockArgs.model).toBe('openai.gpt-5.6-luna');
   });
 
   it('supports direct handleToolCall execution through the shared tool handler', async () => {
