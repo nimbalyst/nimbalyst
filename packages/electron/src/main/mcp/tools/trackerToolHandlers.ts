@@ -1662,6 +1662,19 @@ export async function handleTrackerGet(
         tags: item.tags || [],
         owner: item.owner || undefined,
         dueDate: item.dueDate || undefined,
+        // Archive and sync state, matching tracker_list's payload. Omitting
+        // them made the same item read archived through `list` and active
+        // through `get` forever: `nim`'s LiveGateway defaults the absent key
+        // (`item.archived ?? false`), so a missing key became a confident
+        // `false` rather than "unknown".
+        archived: item.archived ?? false,
+        archivedAt: item.archivedAt || undefined,
+        syncStatus: item.syncStatus || 'local',
+        // Comments are stored at `data.comments` and land in the customFields
+        // bag (no row mapper claims `comments` as a first-class field). Read
+        // them before the internal-key filtering below, which strips them --
+        // otherwise a posted comment is readable through no MCP surface at all.
+        comments: (item.customFields?.comments as any[] | undefined) ?? [],
         // Surface schema-defined custom fields (e.g. github-pr's prNumber) that
         // are otherwise dropped by the known-field whitelist above. Uses the
         // same internal-key filtering as the summary so the bag is clean.
