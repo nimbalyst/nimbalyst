@@ -1,5 +1,46 @@
 import type { DocumentContext } from '@nimbalyst/runtime/ai/server/types';
 
+/**
+ * The per-session "a queued-prompt chain is running" guard, as an ownership lease.
+ *
+ * #1018: this used to be a bare `Set<string>`, and every dispatch released it in
+ * its `finally` with an unconditional `delete(sessionId)`. When an interrupt
+ * displaced an in-flight dispatch with a priority prompt, the displaced dispatch
+ * eventually settled and deleted a guard the priority prompt now held — so an
+ * ordinary FIFO prompt could be claimed and sent while the priority prompt was
+ * still executing. Releasing now requires still being the owner.
+ *
+ * Extends `Set<string>` so every existing `.has(sessionId)` reader keeps working
+ * unchanged, including the seven reads in MessageStreamingHandler.
+ */
+export class SessionProcessingGuard extends Set<string> {
+  private owners = new Map<string, symbol>();
+
+  /** Take the guard for `sessionId`; the returned token is required to release it. */
+  acquire(sessionId: string): symbol {
+    const token = Symbol(sessionId);
+    this.owners.set(sessionId, token);
+    this.add(sessionId);
+    return token;
+  }
+
+  /** Release only if `token` is still the owner. Returns whether it released. */
+  releaseIfOwner(sessionId: string, token: symbol): boolean {
+    if (this.owners.get(sessionId) !== token) return false;
+    return this.delete(sessionId);
+  }
+
+  /**
+   * Unconditional release, used by the authoritative cancel/interrupt paths.
+   * Clearing the owner is what makes the displaced dispatch's later
+   * `releaseIfOwner` a no-op rather than a release of whoever came next.
+   */
+  override delete(sessionId: string): boolean {
+    this.owners.delete(sessionId);
+    return super.delete(sessionId);
+  }
+}
+
 export interface ClaimedQueuedPrompt {
   id: string;
   prompt: string;
@@ -26,7 +67,7 @@ interface DispatchClaimedQueuedPromptOptions {
   onAfterSettled?: () => Promise<void>;
   onChainSettled?: (payload: { sessionId: string; workspacePath: string; source: string }) => Promise<void>;
   onPromptClaimed: (payload: { sessionId: string; promptId: string }) => void;
-  processingSet: Set<string>;
+  processingSet: SessionProcessingGuard;
   queueStore: QueuedPromptStoreLike;
   sendMessageHandler: (
     event: Electron.IpcMainInvokeEvent,
@@ -62,12 +103,15 @@ export async function dispatchClaimedQueuedPrompt(
     workspacePath,
   } = options;
 
-  processingSet.add(sessionId);
+  // #1018: hold the guard as a lease. An interrupt can drop it and hand the
+  // session to a priority prompt while this dispatch is still in flight, so the
+  // release below must check it is still the owner.
+  const guardToken = processingSet.acquire(sessionId);
 
   try {
     await startSession({ sessionId, workspacePath });
   } catch (error) {
-    processingSet.delete(sessionId);
+    processingSet.releaseIfOwner(sessionId, guardToken);
     throw error;
   }
 
@@ -95,7 +139,11 @@ export async function dispatchClaimedQueuedPrompt(
         queueError instanceof Error ? queueError.message : 'Unknown error',
       );
     } finally {
-      processingSet.delete(sessionId);
+      // Only release if this dispatch still owns the guard: if an interrupt
+      // displaced it, the priority prompt that replaced it is still running and
+      // releasing here would let the FIFO continuation start a second turn
+      // underneath it (#1018).
+      processingSet.releaseIfOwner(sessionId, guardToken);
       try {
         await continueQueuedPromptChain(
           sessionId,
@@ -135,7 +183,7 @@ interface TryClaimAndDispatchNextQueuedPromptOptions {
   onAfterSettled?: DispatchClaimedQueuedPromptOptions['onAfterSettled'];
   onChainSettled?: DispatchClaimedQueuedPromptOptions['onChainSettled'];
   onPromptClaimed: DispatchClaimedQueuedPromptOptions['onPromptClaimed'];
-  processingSet: Set<string>;
+  processingSet: SessionProcessingGuard;
   queueStore: QueuedPromptStoreLike;
   sendMessageHandler: DispatchClaimedQueuedPromptOptions['sendMessageHandler'] | null;
   sessionId: string;

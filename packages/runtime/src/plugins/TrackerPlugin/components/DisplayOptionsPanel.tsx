@@ -25,11 +25,17 @@ import {
 import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import type { TrackerGroupBy } from '../models/trackerGrouping';
 import type { TrackerOrdering } from '../models/trackerOrdering';
+import { CustomSelect, type SelectOption } from './CustomSelect';
 import { DisplayOptionsColumnList } from './DisplayOptionsColumnList';
 import { DisplayViewSettings, type DisplayOptionsViewMode } from './DisplayViewSettings';
-import type { TrackerColumnDef, TypeColumnConfig } from './trackerColumns';
+import { resolveTypeColumnDisplay, type TrackerColumnDef, type TypeColumnConfig, type TypeColumnDisplay } from './trackerColumns';
 
 export type { DisplayOptionsViewMode } from './DisplayViewSettings';
+
+const TYPE_DISPLAY_OPTIONS: SelectOption[] = [
+  { value: 'icon', label: 'Icon' },
+  { value: 'label', label: 'Name' },
+];
 
 interface DisplayOptionsPanelProps {
   /** All available columns for this type */
@@ -120,6 +126,9 @@ const DisplayOptionsPanelContent: React.FC<DisplayOptionsPanelProps> = ({
   const dismiss = useDismiss(context, { outsidePressEvent: 'mousedown' });
   const { getFloatingProps } = useInteractions([dismiss]);
 
+  // Only worth offering while the Type column is actually on screen.
+  const showTypeDisplay = showColumnProperties && config.visibleColumns.includes('type');
+
   useEffect(() => {
     if (anchorElement) refs.setReference(anchorElement);
   }, [anchorElement, refs]);
@@ -150,6 +159,20 @@ const DisplayOptionsPanelContent: React.FC<DisplayOptionsPanelProps> = ({
           ordering={ordering}
           onOrderingChange={onOrderingChange}
         />
+
+        {showTypeDisplay && (
+          <div className="display-options-setting flex items-center gap-2 border-b border-[var(--nim-border)] px-3 py-2">
+            <span className="w-16 shrink-0 text-[11px] text-[var(--nim-text-muted)]">Type as</span>
+            <div className="min-w-0 flex-1" data-testid="tracker-display-type-column">
+              <CustomSelect
+                value={resolveTypeColumnDisplay(config)}
+                options={TYPE_DISPLAY_OPTIONS}
+                onChange={value => onConfigChange({ ...config, typeColumnDisplay: value as TypeColumnDisplay })}
+                required
+              />
+            </div>
+          </div>
+        )}
 
         {showColumnProperties && (
           <DisplayOptionsColumnList

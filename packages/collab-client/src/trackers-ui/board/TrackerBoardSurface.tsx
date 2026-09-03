@@ -19,6 +19,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
+import type { TrackerIdentity } from '@nimbalyst/runtime/core/DocumentService';
 import type {
   TrackerGroupBy,
   TrackerOrdering,
@@ -50,6 +51,7 @@ export interface TrackerBoardSurfaceProps {
   onOpenItem: (itemId: string) => void;
   /** Omit for a read-only permission state. */
   onItemUpdate?: (item: TrackerRecord, updates: Record<string, unknown>) => Promise<unknown> | unknown;
+  currentIdentity?: TrackerIdentity | null;
 }
 
 const NO_SELECTION: ReadonlySet<string> = new Set<string>();
@@ -66,6 +68,7 @@ export function TrackerBoardSurface({
   onToggleSelected,
   onOpenItem,
   onItemUpdate,
+  currentIdentity,
 }: TrackerBoardSurfaceProps) {
   const [dragItemId, setDragItemId] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
@@ -210,6 +213,7 @@ export function TrackerBoardSurface({
                       onSelect={() => onOpenItem(card.id)}
                       onToggleSelected={(itemId) => onToggleSelected?.(itemId)}
                       onOpenDocument={onOpenItem}
+                      currentIdentity={currentIdentity}
                     />
                     {cardIndex === cards.length - 1
                       && dragOverColumn === column.key

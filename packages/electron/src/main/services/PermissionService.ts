@@ -17,9 +17,45 @@ import {
 import { logger } from '../utils/logger';
 import { getDatabase } from '../database/initialize';
 import { createWorktreeStore } from './WorktreeStore';
-import { resolveProjectPath, isWorktreePath, findNearestAncestor, findProjectRoot } from '../utils/workspaceDetection';
+import {
+  resolveProjectPath,
+  resolveProjectPathCandidates,
+  isWorktreePath,
+  findNearestAncestor,
+  findProjectRoot,
+} from '../utils/workspaceDetection';
 
 type PermissionMode = 'ask' | 'allow-all' | 'bypass-all';
+
+/**
+ * The nearest ancestor of `startPath`'s project that has an explicit permission
+ * mode, tried across every spelling of that project path.
+ *
+ * A checkout reached through a symlink stores its permissions under the path the
+ * user opened, while every worktree of it resolves its parent through realpath,
+ * so the two keys never met and worktrees inherited nothing (GitHub #1419).
+ * `resolveProjectPathCandidates` puts `resolveProjectPath`'s key first, so an
+ * already-stored key always wins and no write path is re-keyed; the alternate
+ * spelling is only consulted when the canonical one has nothing.
+ *
+ * The walk is bounded per candidate at the enclosing git repo root, so a distinct
+ * project nested under a trusted parent directory still does not inherit its
+ * trust.
+ */
+function findTrustedProjectPath(startPath: string): string | null {
+  for (const candidate of resolveProjectPathCandidates(startPath)) {
+    const boundary = findProjectRoot(candidate) ?? candidate;
+    const trustedAncestor = findNearestAncestor(
+      candidate,
+      (dir) => getAgentPermissions(dir)?.permissionMode != null,
+      boundary,
+    );
+    if (trustedAncestor) {
+      return trustedAncestor;
+    }
+  }
+  return null;
+}
 
 /**
  * Resolve a workspace path for permission lookups.
@@ -48,21 +84,17 @@ export async function resolveWorkspacePathForPermissions(workspacePath: string):
       const workspaceName = path.basename(workspacePath) || workspacePath;
       logger.main.info(`[PermissionService:${workspaceName}] Resolved worktree to parent project: ${worktree.projectPath}`);
       resolved = worktree.projectPath;
-    } else {
-      // Path looks like a worktree but not in database - pattern-based fallback.
-      resolved = resolveProjectPath(workspacePath);
     }
+    // Otherwise the path looks like a worktree but is not in the database; leave
+    // `resolved` as the worktree itself so step 2 maps it to its parent (in both
+    // symlink spellings) via resolveProjectPathCandidates.
   }
 
   // Step 2: subfolder cascade - inherit settings from the nearest ancestor that
   // has an explicit permission mode (the project the user trusted), matching the
   // sync read-path resolution. Bounded to the enclosing git project so a distinct
   // repo nested under a trusted parent directory does not inherit its trust.
-  const boundary = findProjectRoot(resolved) ?? resolved;
-  return (
-    findNearestAncestor(resolved, (dir) => getAgentPermissions(dir)?.permissionMode != null, boundary) ??
-    resolved
-  );
+  return findTrustedProjectPath(resolved) ?? resolveProjectPath(resolved);
 }
 
 /**
@@ -83,17 +115,10 @@ export async function resolveWorkspacePathForPermissions(workspacePath: string):
  * mode set on a subfolder never silently overwrites an ancestor's mode.
  */
 function resolvePermissionReadPath(workspacePath: string): string {
-  const projectPath = resolveProjectPath(workspacePath);
-  // Upper-bound the trust walk at the enclosing git repo root. When the path is
-  // not inside any git repo, fall back to the project path itself (no cascade)
-  // rather than climbing into an unrelated trusted ancestor.
-  const boundary = findProjectRoot(projectPath) ?? projectPath;
-  const trustedAncestor = findNearestAncestor(
-    projectPath,
-    (dir) => getAgentPermissions(dir)?.permissionMode != null,
-    boundary,
-  );
-  return trustedAncestor ?? projectPath;
+  // findTrustedProjectPath upper-bounds each candidate's trust walk at the
+  // enclosing git repo root. When nothing is trusted, fall back to the project
+  // path itself (no cascade) rather than climbing into an unrelated ancestor.
+  return findTrustedProjectPath(workspacePath) ?? resolveProjectPath(workspacePath);
 }
 
 /**

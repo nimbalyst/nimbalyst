@@ -638,6 +638,7 @@ jobs:
             packages/electron/release/*.zip
             packages/electron/release/*.exe
             packages/electron/release/*.AppImage
+            packages/electron/release/*.deb
             packages/electron/release/*.yml
             packages/electron/release/*.yaml
             packages/electron/release/win-arm64-unpacked/**
@@ -810,7 +811,7 @@ jobs:
         run: |
           mkdir -p release-files
           # Copy binaries but NOT yml files (we'll regenerate those)
-          find release-artifacts -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" -o -name "*.AppImage" \) -exec cp {} release-files/ \;
+          find release-artifacts -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" \) -exec cp {} release-files/ \;
           ls -la release-files/
 
       - name: Generate update metadata with all architectures
@@ -821,9 +822,25 @@ jobs:
           cp ../../release-files/*.dmg ../../release-files/*.zip release/ 2>/dev/null || true
           cp ../../release-files/*.exe release/ 2>/dev/null || true
           cp ../../release-files/*.AppImage release/ 2>/dev/null || true
+          cp ../../release-files/*.deb release/ 2>/dev/null || true
           ls -la release/
           # Generate yml files with all architectures present
           node build/generate-update-yml.js
+          # Every Linux binary staged above must appear in latest-linux.yml.
+          # electron-updater routes each install method to its own entry by file
+          # extension, so a package type that is built but missing from the
+          # channel file silently stops updating (#1430). The copies above are
+          # `|| true`, so without this the omission would never surface.
+          for binary in release/*.AppImage release/*.deb; do
+            [ -e "$binary" ] || continue
+            name=$(basename "$binary")
+            if ! grep -q "url: ${name}$" release/latest-linux.yml; then
+              echo "::error::${name} was built but is missing from latest-linux.yml"
+              cat release/latest-linux.yml
+              exit 1
+            fi
+            echo "latest-linux.yml lists ${name}"
+          done
           # Copy generated yml files back to release-files
           cp release/*.yml ../../release-files/ 2>/dev/null || true
           cp release/*.yaml ../../release-files/ 2>/dev/null || true
@@ -904,7 +921,10 @@ jobs:
             echo ""
             echo "- **macOS**: Download the .dmg file"
             echo "- **Windows**: Download the .exe file"
-            echo "- **Linux**: Download the .AppImage file"
+            echo "- **Linux (Debian, Ubuntu)**: Download the .deb file"
+            echo "- **Linux (other distributions)**: Download the .AppImage file"
+            echo ""
+            echo "On Ubuntu 24.04 and later the AppImage needs an AppArmor profile before it will start: see [Linux installation](https://github.com/nimbalyst/nimbalyst/blob/main/docs/LINUX_INSTALL.md)."
           } > release-files/GITHUB_RELEASE_BODY.md
 
           echo "Release notes generated"

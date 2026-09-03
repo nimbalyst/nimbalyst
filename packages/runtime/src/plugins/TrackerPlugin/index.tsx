@@ -1038,12 +1038,16 @@ export {
   getPriorityColor,
   getTypeColor,
   getTypeIcon,
+  getTypeLabel,
+  applyTypeColumnDisplay,
+  resolveTypeColumnDisplay,
   formatRelativeDate,
   formatRelativeCalendarDay,
   formatTrackerDateCell,
   getEffectiveUpdatedDate,
 } from './components/trackerColumns';
-export type { TrackerColumnDef, TypeColumnConfig, ColumnRenderType } from './components/trackerColumns';
+export type { TrackerColumnDef, TypeColumnConfig, ColumnRenderType, TypeColumnDisplay } from './components/trackerColumns';
+export { TrackerTypeCell } from './components/TrackerTypeCell';
 export {
   resolveCellEditor,
   coerceCellValue,

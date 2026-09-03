@@ -10,6 +10,7 @@
  * v1.0.x npm global), so the CLI ran years out of date.
  *
  * Resolution order:
+ *   0. The user's explicitly configured "Custom Claude executable path" (#1296).
  *   1. `~/.claude/local/...` — the official auto-updating install (current).
  *   2. First `claude` on the login-shell PATH — mirrors typing `claude`.
  *   3. Legacy hardcoded install locations (homebrew, npm-global, ~/.local/bin).
@@ -21,6 +22,16 @@
 import path from 'path';
 
 export interface ResolveClaudeExecutableDeps {
+  /**
+   * The user's "Custom Claude executable path" setting, already merged
+   * project-over-global. When set it wins over every discovery candidate below
+   * (#1296) — the same precedence the Agent SDK path applies in
+   * `sdkOptionsBuilder` (`customPath || resolvedBinaryPath`). Like that path we
+   * do NOT stat it: the user pointing us at a path is the answer, and a typo
+   * should surface as a spawn error, not as a silent fallback to some other
+   * `claude`. Empty / whitespace / omitted → normal discovery.
+   */
+  customPath?: string;
   /** User home directory (os.homedir()). */
   homedir: string;
   /** Existence predicate (fs.existsSync). */
@@ -34,7 +45,13 @@ export interface ResolveClaudeExecutableDeps {
 }
 
 export function resolveClaudeExecutablePath(deps: ResolveClaudeExecutableDeps): string {
-  const { homedir, pathExists, enhancedPath, pathDelimiter = path.delimiter, platform = process.platform } = deps;
+  const { customPath, homedir, pathExists, enhancedPath, pathDelimiter = path.delimiter, platform = process.platform } = deps;
+
+  // 0. An explicitly configured executable wins outright (#1296). Anything else
+  // here would silently run a different `claude` than the one the user asked for.
+  const configured = customPath?.trim();
+  if (configured) return configured;
+
 
   // On Windows the launchable `claude` is `claude.exe` / `claude.cmd`, not the
   // extensionless Unix sh-shim that npm drops alongside them. node-pty cannot
@@ -94,6 +111,9 @@ export function resolveClaudeExecutablePath(deps: ResolveClaudeExecutableDeps): 
  * (NIM-852). Reuses the resolver so it matches exactly what node-pty would run:
  * the resolver scans the SAME enhanced PATH node-pty spawns with, so a bare
  * `'claude'` fallback means nothing was found on disk OR PATH → not installed.
+ * A configured `customPath` therefore counts as installed (#1296): the user told
+ * us where their `claude` is, so neither the renderer's install notice nor
+ * `ensureClaudeCliSession`'s short-circuit should fire.
  * Pure (deps injected) for unit testing without touching the filesystem.
  */
 export function isClaudeExecutableInstalled(deps: ResolveClaudeExecutableDeps): boolean {

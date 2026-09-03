@@ -91,7 +91,37 @@ export function TrayStatusIndicator({
   return null;
 }
 
-/** `actionSlot` is the seam: the tray panel puts "Mark all as read" here. */
+/**
+ * The Unread header's action, shared by the tray panel and the menu bar island.
+ *
+ * Both surfaces send it to the same main-process action
+ * (`TrayManager.clearAllUnreadSessions`) on their own channel, so only the class
+ * hook and the test id differ. The focus ring is spelled out here rather than
+ * left to Chromium: its default `outline: auto` paints as a stray double stroke
+ * outside the button.
+ */
+export function TrayMarkAllReadButton({
+  onClick,
+  className,
+  testId,
+}: {
+  onClick: () => void;
+  className: string;
+  testId: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={`${className} rounded px-1.5 py-0.5 text-[10.5px] font-medium normal-case tracking-normal text-nim-muted transition-colors hover:bg-nim-tertiary hover:text-nim focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--nim-border-focus)] focus-visible:outline-offset-[-2px]`}
+      onClick={onClick}
+      data-testid={testId}
+    >
+      Mark all as read
+    </button>
+  );
+}
+
+/** `actionSlot` is the seam: both panels put "Mark all as read" here. */
 export function TraySessionSectionHeader({
   state,
   count,

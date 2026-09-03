@@ -148,6 +148,7 @@ import { ClaudeCliLauncherConfig } from './services/ai/claudeCliLauncherSingleto
 import { registerDatabaseBrowserHandlers } from './ipc/DatabaseBrowserHandlers';
 import { registerDatabaseBrowserSqliteHandlers } from './ipc/DatabaseBrowserSqliteHandlers';
 import { registerMigrationHandlers } from './ipc/MigrationHandlers';
+import { registerRecoveryHandlers } from './ipc/RecoveryHandlers';
 import { registerTerminalHandlers, shutdownTerminalHandlers } from './ipc/TerminalHandlers';
 import { AIService } from './services/ai/AIService';
 import { detectFileWorkspace, suggestWorkspaceForFile, getAdditionalDirectoriesForWorkspace } from './utils/workspaceDetection';
@@ -255,7 +256,16 @@ import { initializeDatabase } from './database/initialize';
 import { database, HandledError } from './database/PGLiteDatabaseWorker';
 import { buildDatabaseInitializationErrorProperties } from './database/DatabaseErrorTelemetry';
 import { findRestorableBackups } from './database/sqlite/recoveryArtifacts';
-import { buildDatabaseFailureDialog } from './database/databaseFailureDialog';
+import {
+    applyDatabaseFailureChoice,
+    buildDatabaseFailureDialog,
+} from './database/databaseFailureDialog';
+import {
+    mayTryAnotherCandidate,
+    reconcileRecoveryOnStartup,
+    restoreFromNamedBackup,
+} from './database/recovery';
+import { resolveDatabaseUserDataPath } from './database/userDataPath';
 import { resolveTrackerDeepLinkId } from './services/tracker/resolveTrackerDeepLinkId';
 import { AnalyticsService } from "./services/analytics/AnalyticsService.ts";
 import { registerAnalyticsHandlers } from "./ipc/AnalyticsHandlers.ts";
@@ -1873,6 +1883,27 @@ app.whenReady().then(async () => {
     // Initialize PGLite database
     markStart('database-init');
     try {
+        // Before anything can open -- and therefore CREATE -- a database at the
+        // live path, put back one that an interrupted recovery left displaced.
+        // A recovery killed between its two renames leaves no database where
+        // the app looks for it and a perfectly good copy one name over; this
+        // reads the journal that recovery wrote before it moved anything and
+        // acts on the paths recorded there. `blockDatabaseOpen` is the case
+        // where it cannot: throwing here surfaces the failure dialog, which is
+        // where the user can restore, rather than silently starting empty.
+        // `resolveDatabaseUserDataPath`, not `app.getPath('userData')`: the
+        // recovery journal is written next to the database, and
+        // `NIMBALYST_USER_DATA_PATH` can put the database somewhere else. Read
+        // from the wrong root this returns "no interrupted recovery" for an
+        // install that has one.
+        const interruptedRecovery = reconcileRecoveryOnStartup({
+            userDataPath: resolveDatabaseUserDataPath(),
+            log: (level, msg, meta) => logger.main[level](msg, meta),
+        });
+        if (interruptedRecovery.plan.blockDatabaseOpen) {
+            throw new Error(interruptedRecovery.plan.message);
+        }
+
         runtimeSessionStore = await initializeDatabase();
         markEnd('database-init');
         logger.main.info('Database initialization completed');
@@ -1896,6 +1927,20 @@ app.whenReady().then(async () => {
                                    errorMessage.includes('Aborted') ||
                                    errorMessage.includes('DATABASE_INIT_FAILED');
 
+        // Which dialog the user gets must not depend on how the database failed.
+        // The recovery dialog used to be reachable only through the WASM-crash
+        // branch above, so the journaled-cutover hard stop -- the most serious
+        // state there is, where the install's only real store sits at a
+        // preserved path -- fell through to a bare showErrorBox and quit. Its
+        // message says "Settings -> Database can restore it", which the user
+        // cannot reach once the app has quit. If there is anything recoverable
+        // on disk, say so and offer to reveal it, whatever the error was.
+        // Same root the database and its backups actually live under, which is
+        // not `app.getPath('userData')` when `NIMBALYST_USER_DATA_PATH` is set.
+        const userDataPath = resolveDatabaseUserDataPath();
+        const backups = findRestorableBackups(userDataPath);
+        const canOfferRecovery = isWasmRuntimeCrash || backups.length > 0;
+
         // Send analytics about the failure. The detailed engine text stays in
         // the local log above -- init failures name the database path, which
         // carries the user's account name. PostHog gets fixed codes instead.
@@ -1917,15 +1962,13 @@ app.whenReady().then(async () => {
         }
 
         // Show appropriate error dialog
-        if (isWasmRuntimeCrash) {
+        if (canOfferRecovery) {
             // This dialog used to end with "delete the database folder: <path>".
             // Users followed it, and because the project list lives in
             // electron-store rather than the database, the app came back up
             // looking healthy with every session and all document history gone
             // (#1347). Never instruct a delete: say what is recoverable, and
             // give the user a way to reach it.
-            const userDataPath = app.getPath('userData');
-            const backups = findRestorableBackups(userDataPath);
             const content = buildDatabaseFailureDialog(backups);
 
             const choice = dialog.showMessageBoxSync({
@@ -1939,13 +1982,57 @@ app.whenReady().then(async () => {
                 noLink: true,
             });
 
-            const revealed = content.revealPath !== null && choice === 0;
-            if (revealed) {
-                try {
-                    shell.showItemInFolder(content.revealPath!);
-                } catch (revealErr) {
-                    logger.main.warn('[Database] Could not reveal backup folder', revealErr);
-                }
+            // Resolve the click by the LABEL the user read, not by index. This
+            // branch used to be `content.revealPath !== null && choice === 0`,
+            // which was written when index 0 was "Show Backups"; once Restore
+            // took that slot, the primary action of the dialog opened a Finder
+            // window and quit (#1347).
+            const dialogOutcome = await applyDatabaseFailureChoice(content, choice, {
+                restore: async (candidate) => {
+                    logger.main.info('[Database] Restoring from the failure dialog', {
+                        name: candidate.name,
+                        bytes: candidate.bytes,
+                    });
+                    // The full recovery transaction: the copy is staged and
+                    // verified before the live database moves anywhere, the swap
+                    // is a rename, and the displaced database is kept.
+                    const outcome = await restoreFromNamedBackup({
+                        backupPath: candidate.path,
+                        backupName: candidate.name,
+                    });
+                    if (!outcome.ok) {
+                        logger.main.error('[Database] Restore failed', outcome);
+                        return {
+                            ok: false,
+                            message: outcome.message,
+                            // Whether the dialog may fall through to the next
+                            // copy. False once this attempt has moved something.
+                            canTryAnother: mayTryAnotherCandidate(outcome),
+                        };
+                    }
+                    logger.main.info('[Database] Restore succeeded', {
+                        indicators: outcome.indicators,
+                        displacedLivePath: outcome.artifacts.displacedLivePath,
+                    });
+                    return { ok: true };
+                },
+                reveal: (revealPath) => {
+                    try {
+                        shell.showItemInFolder(revealPath);
+                    } catch (revealErr) {
+                        logger.main.warn('[Database] Could not reveal backup folder', revealErr);
+                    }
+                },
+                onRestoreFailed: (message) => {
+                    dialog.showErrorBox('Nimbalyst - Restore Failed', message);
+                },
+            });
+
+            if (dialogOutcome.restored) {
+                // Initialization already failed in this process, so the rest of
+                // startup never ran. Come back up cleanly on the restored
+                // database rather than trying to resume from here.
+                app.relaunch();
             }
 
             // NIM-3624: this dialog was previously invisible in telemetry, so
@@ -1955,7 +2042,7 @@ app.whenReady().then(async () => {
                 AnalyticsService.getInstance().sendEvent('database_init_failure_dialog', {
                     backup_count: backups.length,
                     largest_backup_bytes: backups.reduce((max, b) => Math.max(max, b.bytes), 0),
-                    action: revealed ? 'show_backups' : 'quit',
+                    action: dialogOutcome.reportedAction,
                 });
             } catch {
                 // Analytics failure shouldn't block error handling
@@ -2022,6 +2109,9 @@ app.whenReady().then(async () => {
         onNewSession: () => TrayManager.getInstance().handleNewSession(),
         onOpenApp: () => TrayManager.getInstance().handleOpenApp(),
         onSettingChange: (change) => TrayManager.getInstance().applyIslandSetting(change),
+        onClearAllUnread: () => {
+            void TrayManager.getInstance().clearAllUnreadSessions();
+        },
     });
     setupSessionFileHandlers();
     setupCanvasRevisionProvenanceHandlers();
@@ -2071,6 +2161,7 @@ app.whenReady().then(async () => {
         registerDatabaseBrowserHandlers();
     }
     registerMigrationHandlers();
+    registerRecoveryHandlers();
     registerTerminalHandlers();
     registerExportHandlers();
     registerShareHandlers();

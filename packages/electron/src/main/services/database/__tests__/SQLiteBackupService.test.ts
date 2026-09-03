@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -208,6 +209,51 @@ describe('SQLiteBackupService', () => {
     expect(result.success).toBe(true);
     expect(verify).toHaveBeenCalledTimes(1);
     expect(inlineVerify).not.toHaveBeenCalled();
+  });
+
+  it('coalesces a second createBackup while one is in flight', async () => {
+    // #1369: the periodic timer and the resume-from-sleep check both fire a
+    // full copy on wake. The second caller must ride on the first copy, get
+    // its result, and not start a second online backup.
+    let releaseVerify!: () => void;
+    const verifyGate = new Promise<void>((resolve) => { releaseVerify = resolve; });
+    const verify = vi.fn(async () => {
+      await verifyGate;
+      return { valid: true, hasData: true };
+    });
+    const injected = new SQLiteBackupService({ sqliteDir, backupDir, sqlite, verify });
+    await injected.initialize();
+    const backupSpy = vi.spyOn(sqlite.getRawHandle()!, 'backup');
+
+    const first = injected.createBackup();
+    const second = injected.createBackup();
+    releaseVerify();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(backupSpy).toHaveBeenCalledTimes(1);
+    expect(a).toEqual({ success: true });
+    expect(b).toEqual({ success: true });
+
+    // The guard must clear once the backup settles so the next window runs.
+    await injected.createBackup();
+    expect(backupSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the in-flight guard when the backup throws', async () => {
+    const verify = vi.fn()
+      .mockRejectedValueOnce(new Error('synthetic verify failure'))
+      .mockResolvedValue({ valid: true, hasData: true });
+    const injected = new SQLiteBackupService({ sqliteDir, backupDir, sqlite, verify });
+    await injected.initialize();
+
+    const [a, b] = await Promise.all([injected.createBackup(), injected.createBackup()]);
+    expect(a.success).toBe(false);
+    expect(b.success).toBe(false);
+    expect(verify).toHaveBeenCalledTimes(1);
+
+    // A later call must start a fresh backup rather than replay the failure.
+    expect(await injected.createBackup()).toEqual({ success: true });
+    expect(verify).toHaveBeenCalledTimes(2);
   });
 
   it('does not promote a backup the verifier rejects', async () => {

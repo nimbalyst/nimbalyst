@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { AnimationEditor } from "../components/AnimationEditor";
 
@@ -136,6 +136,7 @@ function hostHarness(
 }
 
 afterEach(() => {
+  Reflect.deleteProperty(globalThis, "electronAPI");
   document
     .querySelectorAll("[data-animation-test-input]")
     .forEach((element) => element.remove());
@@ -216,6 +217,36 @@ describe("AnimationEditor host contract", () => {
 });
 
 describe("export menu item", () => {
+  it.each([
+    ["HTML", "Export as HTML…", "/workspace/example.html"],
+    ["MP4", "Export as MP4…", "/workspace/example.mp4"],
+    ["GIF", "Export as GIF…", "/workspace/example.gif"],
+  ])(
+    "reveals a successful %s export in the file manager",
+    async (_, label, outputPath) => {
+      const invoke = vi.fn(async (channel: string) =>
+        channel.startsWith("export:animation")
+          ? { success: true, result: { outputPath } }
+          : { success: true }
+      );
+      Object.defineProperty(globalThis, "electronAPI", {
+        configurable: true,
+        value: { invoke },
+      });
+      const harness = hostHarness({ existingExport: null });
+      render(<AnimationEditor host={harness.host} />);
+
+      await waitFor(() => expect(harness.menuItems.length).toBeGreaterThan(0));
+      await act(async () => {
+        clickMenuItem(harness.menuItems, label);
+      });
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("show-in-finder", outputPath)
+      );
+    }
+  );
+
   it("overwrites an existing export instead of colliding with it", async () => {
     // The host write is compare-and-swap: passing null for a file that already
     // exists is rejected. Reading first is the only thing that makes a second

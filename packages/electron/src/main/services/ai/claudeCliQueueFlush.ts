@@ -50,7 +50,8 @@ export interface FlushClaudeCliQueueDeps {
 /**
  * Claim + submit the oldest pending queued prompt for the session. Returns true
  * iff a prompt was claimed and written to the PTY. Marks the prompt completed on
- * success, failed on error (so it doesn't get stuck in `executing`).
+ * success, failed on error or on a submission that delivered nothing (so it
+ * doesn't get stuck in `executing`, and doesn't disappear as if it had run).
  */
 export async function flushNextClaudeCliQueuedPrompt(
   args: { sessionId: string; workspacePath: string },
@@ -72,8 +73,15 @@ export async function flushNextClaudeCliQueuedPrompt(
       attachments: (claimed.attachments as ChatAttachment[] | undefined) ?? undefined,
       documentContext: claimed.documentContext ?? undefined,
     });
+    // #1387: `submitted: false` means the prompt never reached the PTY (nothing
+    // to compose). Completing it anyway dropped it from the queue silently, with
+    // no record and nothing shown to the user.
+    if (!submitted) {
+      await deps.fail(claimed.id, 'Prompt was not delivered to the Claude CLI (nothing to send).');
+      return false;
+    }
     await deps.complete(claimed.id);
-    return submitted;
+    return true;
   } catch (error) {
     await deps.fail(claimed.id, error instanceof Error ? error.message : 'Unknown error');
     return false;

@@ -13,12 +13,17 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { useAtom } from 'jotai';
 import type {
   PermissionRequestContent,
   PermissionResponseContent,
   AskUserQuestionRequestContent,
   AskUserQuestionResponseContent,
 } from '../../../ai/server/types';
+import {
+  clearInteractivePromptDraft,
+  interactivePromptDraftAtom,
+} from '../../../store/atoms/interactivePromptDraft';
 import { unwrapShellCommand } from '../utils/unwrapShellCommand';
 
 // Inject interactive prompt styles once (for animations and color-mix patterns)
@@ -221,46 +226,75 @@ interface AskUserQuestionWidgetProps {
   isSubmitting?: boolean;
 }
 
+/**
+ * A question with no questionId gets a per-mount key so its draft never
+ * collides with another anonymous prompt's. Such a draft still dies on unmount
+ * (there is nothing stable to key it to), which is exactly today's behavior.
+ */
+let anonymousDraftKeySeq = 0;
+
 const AskUserQuestionWidgetInteractive: React.FC<AskUserQuestionWidgetProps> = ({
   content,
   onSubmit,
   onCancel,
   isSubmitting,
 }) => {
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [otherSelected, setOtherSelected] = useState<Record<string, boolean>>({});
-  const [otherText, setOtherText] = useState<Record<string, string>>({});
+  const anonymousKeyRef = useRef<string | null>(null);
+  if (!content.questionId && !anonymousKeyRef.current) {
+    anonymousKeyRef.current = `anonymous-question-${++anonymousDraftKeySeq}`;
+  }
+  const draftKey = content.questionId || anonymousKeyRef.current!;
+
+  // Draft lives in a module-level jotai atomFamily so it survives the virtual
+  // scroller unmounting this row when it leaves the viewport (#1418). Selections
+  // and the "Other" toggle are held here too, not just the typed text.
+  const [draft, setDraft] = useAtom(interactivePromptDraftAtom(draftKey));
+  const { answers, otherSelected, otherText } = draft;
   const otherInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   const handleOptionSelect = useCallback((questionText: string, optionLabel: string, multiSelect: boolean) => {
-    if (!multiSelect) {
-      setOtherSelected(prev => ({ ...prev, [questionText]: false }));
-    }
-    setAnswers(prev => {
+    setDraft(prev => {
+      let nextAnswer: string;
       if (multiSelect) {
-        const current = prev[questionText] || '';
+        const current = prev.answers[questionText] || '';
         const selected = current.split(', ').filter(o => o.trim());
         const newSelected = selected.includes(optionLabel)
           ? selected.filter(o => o !== optionLabel)
           : [...selected, optionLabel];
-        return { ...prev, [questionText]: newSelected.join(', ') };
+        nextAnswer = newSelected.join(', ');
+      } else {
+        nextAnswer = optionLabel;
       }
-      return { ...prev, [questionText]: optionLabel };
+      return {
+        ...prev,
+        answers: { ...prev.answers, [questionText]: nextAnswer },
+        otherSelected: multiSelect
+          ? prev.otherSelected
+          : { ...prev.otherSelected, [questionText]: false },
+      };
     });
-  }, []);
+  }, [setDraft]);
 
   const handleOtherToggle = useCallback((questionText: string, multiSelect: boolean) => {
     const isCurrentlyOther = otherSelected[questionText];
-    if (!multiSelect) {
-      setAnswers(prev => ({ ...prev, [questionText]: '' }));
-    }
-    setOtherSelected(prev => ({ ...prev, [questionText]: !isCurrentlyOther }));
+    setDraft(prev => ({
+      ...prev,
+      answers: multiSelect ? prev.answers : { ...prev.answers, [questionText]: '' },
+      otherSelected: { ...prev.otherSelected, [questionText]: !isCurrentlyOther },
+    }));
     if (!isCurrentlyOther) {
       setTimeout(() => {
         otherInputRefs.current[questionText]?.focus();
       }, 0);
     }
-  }, [otherSelected]);
+  }, [otherSelected, setDraft]);
+
+  const handleOtherTextChange = useCallback((questionText: string, value: string) => {
+    setDraft(prev => ({
+      ...prev,
+      otherText: { ...prev.otherText, [questionText]: value },
+    }));
+  }, [setDraft]);
 
   const handleSubmit = useCallback(() => {
     // Build final answers incorporating "Other" text
@@ -379,7 +413,7 @@ const AskUserQuestionWidgetInteractive: React.FC<AskUserQuestionWidgetProps> = (
                   <textarea
                     ref={(el) => { otherInputRefs.current[question.question] = el; }}
                     value={otherText[question.question] || ''}
-                    onChange={(e) => setOtherText(prev => ({ ...prev, [question.question]: e.target.value }))}
+                    onChange={(e) => handleOtherTextChange(question.question, e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey && allAnswered) {
                         e.preventDefault();
@@ -464,6 +498,8 @@ export const InteractivePromptWidget: React.FC<InteractivePromptWidgetProps> = (
       respondedAt: Date.now(),
       respondedBy: isMobile ? 'mobile' : 'desktop',
     };
+    // Resolved: drop the draft atom so answered questions don't leak atoms.
+    if (questionContent.questionId) clearInteractivePromptDraft(questionContent.questionId);
     onSubmitResponse(response);
   }, [content, isMobile, onSubmitResponse]);
 
@@ -477,6 +513,7 @@ export const InteractivePromptWidget: React.FC<InteractivePromptWidgetProps> = (
       respondedAt: Date.now(),
       respondedBy: isMobile ? 'mobile' : 'desktop',
     };
+    if (questionContent.questionId) clearInteractivePromptDraft(questionContent.questionId);
     if (onCancelQuestion) {
       onCancelQuestion(response);
     } else {

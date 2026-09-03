@@ -12,7 +12,11 @@ import {
   menuBarIslandStateAtom,
 } from '../../store/listeners/menuBarIslandListeners';
 import { SessionAttentionRow } from '../AgenticCoding/SessionAttentionRow';
-import { TraySessionSectionHeader, TrayStatusIndicator } from '../TrayPanel/traySessionSections';
+import {
+  TrayMarkAllReadButton,
+  TraySessionSectionHeader,
+  TrayStatusIndicator,
+} from '../TrayPanel/traySessionSections';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { MenuBarIslandSettingsPanel } from './MenuBarIslandSettings';
 
@@ -75,10 +79,12 @@ function IslandStrip({
   strip,
   expanded,
   glyph,
+  onOpenSession,
 }: {
   strip: MenuBarIslandState['strip'];
   expanded: boolean;
   glyph: string | null;
+  onOpenSession: (sessionId: string, workspacePath: string) => void;
 }) {
   return (
     <div
@@ -105,7 +111,24 @@ function IslandStrip({
             className="h-[7px] w-[7px] shrink-0 rounded-full"
             style={{ background: STRIP_COLORS[strip.state] }}
           />
-          <span className="max-w-[190px] truncate text-[12.5px] font-medium">{strip.title}</span>
+          {/*
+            The name is the click target, and only the name: the rest of the
+            pill stays the pin toggle and the drag handle. Stopping the pointer
+            events is what keeps the two apart -- the surrounding handle decides
+            pin-vs-drag by watching a whole press, so a press that bubbled out of
+            here would open the session *and* toggle the pin on one click.
+          */}
+          <button
+            type="button"
+            className="menu-bar-island-strip-title max-w-[190px] truncate rounded-[3px] px-0.5 text-[12.5px] font-medium text-white/95 transition-colors hover:bg-white/20 focus:outline-none focus-visible:outline-2 focus-visible:outline-white/70 focus-visible:outline-offset-[-2px]"
+            title={`Open ${strip.title}`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={(event) => event.stopPropagation()}
+            onClick={() => onOpenSession(strip.sessionId, strip.workspacePath)}
+            data-testid="menu-bar-island-strip-title"
+          >
+            {strip.title}
+          </button>
         </>
       ) : (
         <>
@@ -282,7 +305,7 @@ export function MenuBarIslandApp() {
   /** Whether a press is in flight, so stray pointermove is not read as a drag. */
   const pressedRef = useRef(false);
 
-  const endPress = (event: React.PointerEvent<HTMLButtonElement>) => {
+  const endPress = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!pressedRef.current) return;
     pressedRef.current = false;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -357,8 +380,13 @@ export function MenuBarIslandApp() {
           * and main -- which can sample the real cursor across displays of
           * differing scale factors -- decides which gesture happened.
           */}
-        <button
-          type="button"
+        {/*
+          * A div rather than a button: it now contains the title button, and a
+          * button inside a button is invalid. It never was a semantic control
+          * anyway -- it is a gesture surface, and the gestures are pointer
+          * events, not activation.
+          */}
+        <div
           className="cursor-default text-left outline-none"
           onPointerDown={(event) => {
             // Capture, or the press stops reporting the moment the cursor
@@ -379,8 +407,15 @@ export function MenuBarIslandApp() {
           onPointerCancel={endPress}
           data-testid="menu-bar-island-strip"
         >
-          <IslandStrip strip={strip} expanded={expanded} glyph={glyph} />
-        </button>
+          <IslandStrip
+            strip={strip}
+            expanded={expanded}
+            glyph={glyph}
+            onOpenSession={(sessionId, workspacePath) => {
+              window.electronAPI.send(MENU_BAR_ISLAND_CHANNELS.selectSession, { sessionId, workspacePath });
+            }}
+          />
+        </div>
 
         {expanded && (
           // Themed surface below the strip so the rows look like the popover's
@@ -399,7 +434,17 @@ export function MenuBarIslandApp() {
                   {sections.length === 0 && <IdlePanel idle={idle} onSelect={handleSelect} />}
                   {sections.map(({ state: sectionState, sessions }) => (
                     <section key={sectionState} className={`menu-bar-island-group menu-bar-island-group--${sectionState}`}>
-                      <TraySessionSectionHeader state={sectionState} count={sessions.length} />
+                      <TraySessionSectionHeader
+                        state={sectionState}
+                        count={sessions.length}
+                        actionSlot={sectionState === 'unread' ? (
+                          <TrayMarkAllReadButton
+                            className="menu-bar-island-mark-all-read"
+                            onClick={() => window.electronAPI.send(MENU_BAR_ISLAND_CHANNELS.clearAllUnread)}
+                            testId="menu-bar-island-mark-all-read"
+                          />
+                        ) : undefined}
+                      />
                       {sessions.map((session) => (
                         <SessionAttentionRow
                           key={session.sessionId}

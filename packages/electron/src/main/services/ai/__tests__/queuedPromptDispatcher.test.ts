@@ -1,5 +1,8 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  SessionProcessingGuard,
+  dispatchClaimedQueuedPrompt,
   tryClaimAndDispatchNextQueuedPrompt,
   type ClaimedQueuedPrompt,
   type QueuedPromptStoreLike,
@@ -32,7 +35,7 @@ describe('queuedPromptDispatcher', () => {
       }),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new SessionProcessingGuard();
     const targetWindow = {
       isDestroyed: () => false,
       webContents: {
@@ -94,7 +97,7 @@ describe('queuedPromptDispatcher', () => {
       fail: vi.fn(async () => {}),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new SessionProcessingGuard();
     const targetWindow = {
       isDestroyed: () => false,
       webContents: { send: vi.fn(), mainFrame: {} },
@@ -152,7 +155,7 @@ describe('queuedPromptDispatcher', () => {
       fail: vi.fn(async () => {}),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new SessionProcessingGuard();
 
     // The original window is destroyed (renderer died/reloaded mid-stream).
     const destroyedWindow = {
@@ -222,7 +225,7 @@ describe('queuedPromptDispatcher', () => {
       fail: vi.fn(async () => {}),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new SessionProcessingGuard();
 
     const destroyedWindow = {
       isDestroyed: () => true,
@@ -270,7 +273,7 @@ describe('queuedPromptDispatcher', () => {
       fail: vi.fn(async () => {}),
     };
 
-    const processingSet = new Set<string>();
+    const processingSet = new SessionProcessingGuard();
     const targetWindow = {
       isDestroyed: () => false,
       webContents: { send: vi.fn(), mainFrame: {} },
@@ -301,5 +304,137 @@ describe('queuedPromptDispatcher', () => {
     await vi.runAllTimersAsync();
 
     expect(onChainSettled).not.toHaveBeenCalled();
+  });
+
+  it('keeps the guard held for a priority prompt when the dispatch it displaced settles (#1018)', async () => {
+    vi.useFakeTimers();
+
+    // #1018: an interrupt drops the processing guard and replaces the in-flight
+    // queued prompt with a priority one. The displaced dispatch still has a
+    // pending `finally`; when it runs it must not release a guard the priority
+    // prompt now owns, or the FIFO continuation claims the next prompt and sends
+    // it while the priority turn is still executing.
+    const displaced: ClaimedQueuedPrompt = {
+      id: 'prompt-displaced',
+      prompt: 'displaced',
+      attachments: null,
+      documentContext: null,
+    };
+    const priority: ClaimedQueuedPrompt = {
+      id: 'prompt-priority',
+      prompt: 'priority',
+      attachments: null,
+      documentContext: null,
+    };
+    const fifo: ClaimedQueuedPrompt = {
+      id: 'prompt-fifo',
+      prompt: 'fifo',
+      attachments: null,
+      documentContext: null,
+    };
+
+    let pending: ClaimedQueuedPrompt[] = [displaced];
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => pending),
+      claim: vi.fn(async (promptId: string) => {
+        const found = pending.find((row) => row.id === promptId) ?? null;
+        pending = pending.filter((row) => row.id !== promptId);
+        return found;
+      }),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+
+    const processingSet = new SessionProcessingGuard();
+    const targetWindow = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+
+    // Each turn hangs until the test settles it by its prompt text.
+    const settleTurn = new Map<string, () => void>();
+    const sendMessageHandler = vi.fn(
+      async (_event: Electron.IpcMainInvokeEvent, message: string) => {
+        await new Promise<void>((resolve) => settleTurn.set(message, resolve));
+        return { content: 'ok' };
+      },
+    );
+
+    const continueQueuedPromptChain = vi.fn(
+      async (
+        sessionId: string,
+        _workspacePath: string,
+        _window: Electron.BrowserWindow,
+        source: string,
+      ) => {
+        await tryClaimAndDispatchNextQueuedPrompt({
+          ...dispatchOptions(),
+          logInfo: vi.fn(),
+          sessionId,
+          source,
+        });
+      },
+    );
+
+    const dispatchOptions = () => ({
+      continueQueuedPromptChain,
+      logError: vi.fn(),
+      onPromptClaimed: () => {},
+      processingSet,
+      queueStore,
+      sendMessageHandler,
+      startSession: vi.fn(async () => {}),
+      targetWindow,
+      workspacePath: '/workspace/project',
+    });
+
+    const flush = async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+    };
+
+    // The ordinary FIFO dispatch takes the guard and starts its turn.
+    await tryClaimAndDispatchNextQueuedPrompt({
+      ...dispatchOptions(),
+      logInfo: vi.fn(),
+      sessionId: 'session-1',
+      source: 'initial',
+    });
+    await flush();
+    expect(sendMessageHandler).toHaveBeenCalledTimes(1);
+
+    // The interrupt drops the guard, then the priority prompt takes it.
+    processingSet.delete('session-1');
+    await dispatchClaimedQueuedPrompt({
+      ...dispatchOptions(),
+      claimed: priority,
+      sessionId: 'session-1',
+      source: 'priority',
+    });
+    await flush();
+    expect(sendMessageHandler).toHaveBeenCalledTimes(2);
+    expect(processingSet.has('session-1')).toBe(true);
+
+    // A FIFO prompt lands behind the priority turn; the displaced dispatch now
+    // settles and runs its `finally`.
+    pending = [fifo];
+    settleTurn.get('displaced')!();
+    await flush();
+
+    // The priority turn still owns the guard, so the FIFO prompt stays queued.
+    expect(processingSet.has('session-1')).toBe(true);
+    expect(queueStore.claim).not.toHaveBeenCalledWith('prompt-fifo');
+    expect(sendMessageHandler).toHaveBeenCalledTimes(2);
+
+    // Once the priority turn settles it releases its own guard, and the FIFO
+    // prompt is claimed by the normal continuation.
+    settleTurn.get('priority')!();
+    await flush();
+    expect(queueStore.claim).toHaveBeenCalledWith('prompt-fifo');
+    expect(sendMessageHandler).toHaveBeenCalledTimes(3);
+
+    settleTurn.get('fifo')!();
+    await vi.runAllTimersAsync();
+    expect(processingSet.has('session-1')).toBe(false);
   });
 });

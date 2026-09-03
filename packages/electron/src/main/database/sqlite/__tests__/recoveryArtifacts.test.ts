@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  classifyBackupEntry,
   findRecoveryArtifacts,
   findRestorableBackups,
   formatBytes,
@@ -24,6 +25,13 @@ describe('recoveryArtifacts', () => {
 
   afterEach(() => {
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('uses the containing directory to separate rolling backups from corruption artifacts', () => {
+    expect(classifyBackupEntry(path.join(tmp, 'db-backups'), 'pglite-db.backup-current'))
+      .toBe('rolling-backup');
+    expect(classifyBackupEntry(tmp, 'pglite-db.backup-2026-08-21T12-00-00-000Z'))
+      .toBe('corruption-artifact');
   });
 
   it('separates renamed-aside databases from preserved migration dirs', () => {
@@ -59,10 +67,10 @@ describe('recoveryArtifacts', () => {
   // The database-failure dialog reads this to decide whether it can promise
   // the user their data is recoverable. Getting it wrong in either direction
   // is what made #1347 destructive.
-  it('lists rolling backups ahead of renamed-aside databases', () => {
-    seedDir(path.join('db-backups', 'pglite-db.backup-current'), 900);
+  it('breaks size ties by discovery order: rolling backups before renamed-aside ones', () => {
+    seedDir(path.join('db-backups', 'pglite-db.backup-current'), 800);
     seedDir(path.join('db-backups', 'pglite-db.backup-previous'), 800);
-    seedDir('pglite-db.backup-2026-08-20T11-00-00-000Z', 700);
+    seedDir('pglite-db.backup-2026-08-20T11-00-00-000Z', 800);
 
     const names = findRestorableBackups(tmp).map((b) => b.name);
     expect(names).toEqual([
@@ -70,6 +78,44 @@ describe('recoveryArtifacts', () => {
       'pglite-db.backup-previous',
       'pglite-db.backup-2026-08-20T11-00-00-000Z',
     ]);
+  });
+
+  /**
+   * The failure dialog restores the first entry and quits. In slot order that
+   * meant an install whose `current` slot held a small valid copy of nothing
+   * -- a database that lost its contents and was then backed up on schedule,
+   * which is #1347's exact shape -- restored the useless copy on every launch
+   * forever while months of history sat in `previous`.
+   */
+  it('puts the copy holding the most first, whatever slot it is in', () => {
+    seedDir(path.join('db-backups', 'pglite-db.backup-current'), 900);
+    seedDir(path.join('db-backups', 'pglite-db.backup-previous'), 400_000);
+    seedDir('pglite-db.backup-2026-08-20T11-00-00-000Z', 50_000);
+
+    const names = findRestorableBackups(tmp).map((b) => b.name);
+    expect(names).toEqual([
+      'pglite-db.backup-previous',
+      'pglite-db.backup-2026-08-20T11-00-00-000Z',
+      'pglite-db.backup-current',
+    ]);
+  });
+
+  /**
+   * A SQLite install that will not start keeps its copies under
+   * `sqlite-db.backups/`. The scanner only knew the PGLite names, so the
+   * dialog said "nothing recoverable" and quit on an install with three
+   * healthy backups.
+   */
+  it('finds SQLite rolling backups, not just PGLite ones', () => {
+    fs.mkdirSync(path.join(tmp, 'sqlite-db.backups'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, 'sqlite-db.backups', 'nimbalyst.backup-current.sqlite'),
+      Buffer.alloc(4096, 1),
+    );
+
+    const found = findRestorableBackups(tmp);
+    expect(found.map((b) => b.name)).toEqual(['nimbalyst.backup-current.sqlite']);
+    expect(found[0].bytes).toBe(4096);
   });
 
   it('omits empty backups rather than offering a 0-byte recovery', () => {

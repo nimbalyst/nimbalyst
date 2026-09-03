@@ -38,7 +38,8 @@ export async function listTrackerTeamMembers(orgId: string): Promise<TeamMemberO
   return membersResult?.success && Array.isArray(membersResult.members)
     ? membersResult.members
         .filter((member: { email?: unknown }) => typeof member.email === 'string')
-        .map((member: { email: string; name?: unknown }) => ({
+        .map((member: { memberId?: unknown; email: string; name?: unknown }) => ({
+          memberId: typeof member.memberId === 'string' ? member.memberId : undefined,
           email: member.email,
           name: typeof member.name === 'string' ? member.name : undefined,
         }))

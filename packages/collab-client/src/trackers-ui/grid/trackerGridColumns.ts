@@ -57,6 +57,36 @@ function badgeNode(createElement: HyperFunc<VNode>, text: string, color: string)
   );
 }
 
+/**
+ * The display values of a multi-chip column, one entry per stored value.
+ *
+ * The renderer reads this rather than re-splitting `formatValue`'s joined
+ * string: a title that itself contains ', ' -- "Tampa, FL client meeting" --
+ * came back as two chips, so a field holding one link looked like it held two
+ * (nimbalyst#1424). Returns null for columns that are not chip-rendered.
+ */
+function formatValueParts(
+  col: TrackerColumnDef,
+  value: unknown,
+  resolveLabel?: TrackerRelationshipLabelResolver,
+): string[] | null {
+  if (value === undefined || value === null || value === '') return null;
+
+  switch (col.render) {
+    case 'tags':
+      return (Array.isArray(value) ? value : [value]).map(String).filter(Boolean);
+    case 'relationship':
+      // The live record's title, not the snapshot on the link: a collection
+      // linked from the other side carries no title at all, so the chip would
+      // otherwise read as a raw item id.
+      return normalizeRelationshipValue(value)
+        .map(link => resolveRelationshipLabel(link, resolveLabel))
+        .filter(Boolean);
+    default:
+      return null;
+  }
+}
+
 /** Human-readable text for a stored value, by column render type. */
 function formatValue(
   col: TrackerColumnDef,
@@ -73,7 +103,7 @@ function formatValue(
       // time (nimbalyst#1135, #1156).
       return formatTrackerDateCell(value).display;
     case 'tags':
-      return Array.isArray(value) ? value.join(', ') : String(value);
+      return (formatValueParts(col, value, resolveLabel) ?? []).join(', ');
     case 'url': {
       if (typeof value === 'object' && value !== null && 'url' in (value as any)) {
         const url = value as { url: string; label?: string };
@@ -81,15 +111,8 @@ function formatValue(
       }
       return String(value);
     }
-    case 'relationship': {
-      // The live record's title, not the snapshot on the link: a collection
-      // linked from the other side carries no title at all, so the chip would
-      // otherwise read as a raw item id.
-      return normalizeRelationshipValue(value)
-        .map(link => resolveRelationshipLabel(link, resolveLabel))
-        .filter(Boolean)
-        .join(', ');
-    }
+    case 'relationship':
+      return (formatValueParts(col, value, resolveLabel) ?? []).join(', ');
     case 'avatar': {
       if (typeof value === 'object' && value !== null) {
         const identity = value as {
@@ -371,7 +394,7 @@ function buildCellTemplate(
     }
 
     if (col.render === 'tags' || col.render === 'relationship') {
-      const parts = text.split(', ').filter(Boolean);
+      const parts = formatValueParts(col, value, resolveLabel) ?? [];
       return createElement(
         'span',
         { class: 'tracker-grid-cell-tags' },

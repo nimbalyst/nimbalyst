@@ -11,6 +11,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { getWindowsPublisherNames } = require('./validate-windows-updater-config');
+const { collectLinuxArtifacts, buildLinuxChannelYaml } = require('./linuxUpdateArtifacts');
 
 // Read package.json to get version
 const packageJson = require('../package.json');
@@ -255,44 +256,24 @@ function generateWindowsYml() {
 }
 
 // Function to generate latest-linux.yml (for Linux)
+//
+// Lists every Linux package type we shipped, not just the AppImage:
+// electron-updater routes each install method to its own entry by file
+// extension. See build/linuxUpdateArtifacts.js.
 function generateLinuxYml() {
-  // Use the artifactName from package.json: "${productName}-Linux.${ext}"
-  const appImageFile = `${productName}-Linux.AppImage`;
-  const appImagePath = path.join(releaseDir, appImageFile);
+  const artifacts = collectLinuxArtifacts(releaseDir, productName);
 
-  if (!fs.existsSync(appImagePath)) {
-    console.log(`Linux AppImage not found: ${appImagePath}, skipping latest-linux.yml`);
+  if (artifacts.length === 0) {
+    console.log(`No Linux artifacts found in ${releaseDir}, skipping latest-linux.yml`);
     return false;
   }
 
-  const yamlContent = {
-    version: version,
-    files: [{
-      url: appImageFile,
-      sha512: calculateSHA512(appImagePath),
-      size: getFileSize(appImagePath)
-    }],
-    path: appImageFile,
-    sha512: calculateSHA512(appImagePath),
-    releaseDate: new Date().toISOString()
-  };
-
-  // Convert to YAML format
-  let yamlString = `version: ${yamlContent.version}\n`;
-  yamlString += `files:\n`;
-  yamlContent.files.forEach(file => {
-    yamlString += `  - url: ${file.url}\n`;
-    yamlString += `    sha512: ${file.sha512}\n`;
-    yamlString += `    size: ${file.size}\n`;
-  });
-  yamlString += `path: ${yamlContent.path}\n`;
-  yamlString += `sha512: ${yamlContent.sha512}\n`;
-  yamlString += `releaseDate: '${yamlContent.releaseDate}'\n`;
-
-  // Write the file
   const outputPath = path.join(releaseDir, 'latest-linux.yml');
-  fs.writeFileSync(outputPath, yamlString);
-  console.log(`Generated ${outputPath}`);
+  fs.writeFileSync(
+    outputPath,
+    buildLinuxChannelYaml(version, artifacts, new Date().toISOString()),
+  );
+  console.log(`Generated ${outputPath} with: ${artifacts.map((a) => a.url).join(', ')}`);
   return true;
 }
 
@@ -316,7 +297,7 @@ console.log('');
 console.log('Generation results:');
 console.log(`  latest-mac.yml: ${macSuccess ? 'OK' : 'SKIPPED (no macOS files found)'}`);
 console.log(`  latest.yml (Windows): ${windowsSuccess ? 'OK' : 'SKIPPED (no Windows exe found)'}`);
-console.log(`  latest-linux.yml: ${linuxSuccess ? 'OK' : 'SKIPPED (no Linux AppImage found)'}`);
+console.log(`  latest-linux.yml: ${linuxSuccess ? 'OK' : 'SKIPPED (no Linux artifacts found)'}`);
 console.log(`  alpha-mac.yml: ${alphaMacSuccess ? 'OK' : 'SKIPPED (no latest-mac.yml found)'}`);
 console.log(`  alpha.yml (Windows): ${alphaWindowsSuccess ? 'OK' : 'SKIPPED (no latest.yml found)'}`);
 console.log(`  alpha-linux.yml: ${alphaLinuxSuccess ? 'OK' : 'SKIPPED (no latest-linux.yml found)'}`);

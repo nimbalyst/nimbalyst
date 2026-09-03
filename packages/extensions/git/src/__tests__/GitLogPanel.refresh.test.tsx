@@ -115,4 +115,36 @@ describe('GitLogPanel refresh', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('git:branches', ATTACHED));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('git:log', ATTACHED, 100, expect.anything()));
   });
+
+  it('keeps the active tab when switching repositories', async () => {
+    const ATTACHED = '/other/tab-state';
+    invoke.mockImplementation((channel: string) => {
+      switch (channel) {
+        case 'git:list-workspace-repos':
+          return Promise.resolve({ success: true, repos: [WORKSPACE, ATTACHED] });
+        case 'git:working-changes':
+          return Promise.resolve({ staged: [], unstaged: [], untracked: [], conflicted: [] });
+        case 'git:status':
+          return Promise.resolve({ branch: 'main', ahead: 0, behind: 0, hasUncommitted: false });
+        case 'git:branches':
+          return Promise.resolve({ branches: ['main'], current: 'main' });
+        case 'git:log':
+          return Promise.resolve([]);
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    render(<GitLogPanel host={makeHost()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /changes/i }));
+    expect(screen.getByRole('button', { name: /changes/i }).classList.contains('git-tab-btn--active')).toBe(true);
+
+    fireEvent.click(await screen.findByRole('button', { name: `Repository: repo` }));
+    fireEvent.click(await screen.findByTitle(ATTACHED));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /changes/i }).classList.contains('git-tab-btn--active')).toBe(true);
+    });
+  });
 });

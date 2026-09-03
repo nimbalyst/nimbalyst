@@ -177,6 +177,7 @@ export const HOST_TOOLS: readonly string[] = [
 export const TRACKER_TOOLS: readonly string[] = [
   'tracker_list',
   'tracker_ready',
+  'work_radar',
   'tracker_get',
   'tracker_get_by_urn',
   'tracker_create',

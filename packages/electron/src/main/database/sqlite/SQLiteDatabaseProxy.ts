@@ -40,6 +40,8 @@ import type {
   WorkerRequestType,
   SerializedError,
   MigrationPreflightResult,
+  StartMigrationPayload,
+  AdoptDryRunPayload,
   DryRunStatusResult,
   PgliteReadRequestPayload,
   WorkerControlRequestPayload,
@@ -47,6 +49,8 @@ import type {
 import type { MigrationSummary } from './PGLiteToSQLiteMigrator';
 import type { DryRunResult } from './MigrationDryRunner';
 import type { AdoptResult } from './MigrationAdopter';
+import { emitMigrationOutcome } from './migrationEventMapper';
+import { MIGRATION_OUTCOME_EVENT, type MigrationOutcome } from './migrationOutcome';
 
 /**
  * Read surface satisfied by the live PGLite worker. The proxy hands every
@@ -411,10 +415,7 @@ export class SQLiteDatabaseProxy {
     return (await this.send('migrationPreflight', args, 60_000)) as MigrationPreflightResult;
   }
 
-  async startMigration(args: {
-    userDataPath: string;
-    schemaDir: string;
-  }): Promise<{ summary: MigrationSummary }> {
+  async startMigration(args: StartMigrationPayload): Promise<{ summary: MigrationSummary }> {
     this.ensureWorkerSpawned();
     // Migration can take a very long time on large DBs; bound generously.
     // Worker side guards against concurrent starts.
@@ -441,19 +442,11 @@ export class SQLiteDatabaseProxy {
     return (await this.send('migrationDryRunStatus', args, 30_000)) as DryRunStatusResult;
   }
 
-  async adoptDryRun(args: {
-    userDataPath: string;
-    schemaDir: string;
-  }): Promise<{ result: AdoptResult }> {
+  async adoptDryRun(args: AdoptDryRunPayload): Promise<{ result: AdoptResult }> {
     this.ensureWorkerSpawned();
     return (await this.send('migrationAdoptDryRun', args, 60 * 60 * 1000)) as {
       result: AdoptResult;
     };
-  }
-
-  async rollback(args: { userDataPath: string }): Promise<{ restoredFrom: string }> {
-    this.ensureWorkerSpawned();
-    return (await this.send('migrationRollback', args, 60_000)) as { restoredFrom: string };
   }
 
   // --------------------------------------------------------------------------
@@ -488,6 +481,10 @@ export class SQLiteDatabaseProxy {
           if (msg.error.name) err.name = msg.error.name;
           if (msg.error.stack) err.stack = msg.error.stack;
           if (msg.error.code) (err as { code?: string }).code = msg.error.code;
+          // Carries `MigrationRefusedError`'s structured verdict across the
+          // thread hop; without it a refusal arrives as an ordinary Error and
+          // the boot path counts it as a failed attempt.
+          if (msg.error.data !== undefined) (err as { data?: unknown }).data = msg.error.data;
           pending.reject(err);
         }
       },
@@ -595,6 +592,13 @@ export class SQLiteDatabaseProxy {
       }
       return;
     }
+    if (msg.event === MIGRATION_OUTCOME_EVENT) {
+      // The single point at which a migration becomes analytics. The worker
+      // returns a typed result and never names an event; the mapper decides
+      // what is emitted and guarantees one terminal event per operation.
+      emitMigrationOutcome(msg.payload as MigrationOutcome);
+      return;
+    }
     if (msg.event === 'db:migration:cutoverSuccess') {
       const info = msg.payload as { sqliteDir: string; pgliteMigratedDir: string };
       const hook = this.migrationControl?.onCutoverSuccess;
@@ -675,9 +679,8 @@ export class SQLiteDatabaseProxy {
   }
 
   /**
-   * Read-only façade over the worker-hosted backup service. Anything that
-   * needs to mutate backup state (rotate, restore, cleanup) must add a
-   * worker request — those code paths are intentionally narrow.
+   * Façade over the worker-hosted backup service. Every mutating operation is
+   * an explicit worker request — those code paths are intentionally narrow.
    */
   private makeBackupFacade(): AppDatabaseBackupService {
     const self = this;
@@ -689,11 +692,23 @@ export class SQLiteDatabaseProxy {
         return self.createBackup();
       },
       async restoreFromBackup() {
-        // Restore needs a multi-step dance: close worker → swap files →
-        // re-open. Not currently driven from main; we wire it when the
-        // restore UI is brought back. Keeping the surface async so callers
-        // continue to compile.
-        return { success: false, error: 'Restore-from-backup not yet wired through worker.' };
+        // The whole restore -- close, stage, verify, swap, reopen -- happens
+        // inside the worker, because the live `SQLiteDatabase` the recovery
+        // transaction has to close and reopen only exists there. This used to
+        // return "not yet wired", which meant `SQLiteBackupService.restoreFromBackup()`
+        // was implemented, tested, and unreachable from a shipped build: a
+        // SQLite install with three healthy rolling backups had no path to any
+        // of them.
+        //
+        // The same ceiling `createBackup` uses, for the same reason: a restore
+        // stages a full copy and runs `integrity_check` over it, so the
+        // default 60s request timeout would drop the pending entry and report
+        // a restore that in fact completed as a failure.
+        return self.send('restoreBackup', undefined, BACKUP_REQUEST_TIMEOUT_MS) as Promise<{
+          success: boolean;
+          error?: string;
+          source?: string;
+        }>;
       },
       hasBackups() {
         // Best-effort. Backup metadata lives in the worker, but the file

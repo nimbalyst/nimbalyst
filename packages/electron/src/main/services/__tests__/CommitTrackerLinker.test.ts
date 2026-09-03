@@ -1,9 +1,29 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { storeGet, getEffectiveTrackerAutomation } = vi.hoisted(() => ({
+const { storeGet, getEffectiveTrackerAutomation, execFile, getCurrentIdentity } = vi.hoisted(() => ({
   storeGet: vi.fn(),
   getEffectiveTrackerAutomation: vi.fn(),
+  execFile: vi.fn(),
+  getCurrentIdentity: vi.fn(),
 }));
+
+vi.mock('child_process', () => ({ execFile }));
+
+vi.mock('../TrackerIdentityService', () => ({ getCurrentIdentity }));
+
+const LOCAL_IDENTITY = {
+  email: 'alice@work.test',
+  displayName: 'Alice Local',
+  gitName: 'Alice',
+  gitEmail: 'alice@example.com',
+};
+
+/** Queue what `git show` reports as the next commit's author. */
+function nextCommitAuthor(name: string, email: string) {
+  execFile.mockImplementationOnce((_file, _args, _opts, callback) => {
+    callback(null, `${name}\n${email}\n`, '');
+  });
+}
 
 vi.mock('electron-store', () => ({
   default: class MockStore {
@@ -29,6 +49,7 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 import { CommitTrackerLinker, getIssueKeyPrefix, parseIssueKeys } from '../CommitTrackerLinker';
+import { mergeActivity } from '../tracker/trackerActivity';
 import { loadBuiltinTrackers } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/ModelLoader';
 
 // The closing status is resolved from the item's own schema, so the builtins
@@ -69,6 +90,12 @@ describe('CommitTrackerLinker', () => {
     getEffectiveTrackerAutomation.mockReset();
     storeGet.mockReturnValue({ enabled: true, autoCloseOnCommit: true });
     getEffectiveTrackerAutomation.mockImplementation((settings: unknown) => settings);
+    getCurrentIdentity.mockReturnValue(LOCAL_IDENTITY);
+    // Default: git cannot read the commit, so attribution falls back to the local identity.
+    execFile.mockReset();
+    execFile.mockImplementation((_file, _args, _opts, callback) => {
+      callback(new Error('not a git repository'), '', '');
+    });
   });
 
   it('extracts normalized tracker prefixes from issue keys', () => {
@@ -171,6 +198,64 @@ describe('CommitTrackerLinker', () => {
         oldValue: 'in-review',
         newValue: 'completed',
       });
+    });
+
+    it('writes close entries that survive a sync merge as distinct, attributed events', async () => {
+      // mergeActivity keys the union on `id` and sorts numerically on
+      // `timestamp`. A raw push with neither collapses every "closed via
+      // commit" entry on an item into one and sorts it as NaN.
+      const close = async (data: Record<string, unknown>, sha: string) => {
+        const query = vi.fn();
+        const linker = linkerWithSession(query);
+        query
+          .mockResolvedValueOnce({ rows: [{ id: 'tracker-1', issue_key: 'nim-42' }] })
+          .mockResolvedValueOnce({ rows: [{ type: 'bug', data }] })
+          .mockResolvedValueOnce({ rows: [] });
+        await linker.linkBySession(sha, `fix: thing\n\nFixes NIM-42`, 'session-1', '/workspace');
+        return JSON.parse(query.mock.calls[5]?.[1]?.[0] as string);
+      };
+
+      // First commit is by this machine's git user, second by a teammate.
+      nextCommitAuthor('Alice', 'ALICE@example.com');
+      const first = await close({ status: 'in-review' }, 'abcdef0');
+      nextCommitAuthor('Bob', 'bob@example.com');
+      const second = await close({ ...first, status: 'in-review' }, '1234567');
+
+      const merged = mergeActivity(first.activity, second.activity) ?? [];
+      expect(merged).toHaveLength(2);
+      for (const entry of merged) {
+        expect(typeof entry.id).toBe('string');
+        expect(typeof entry.timestamp).toBe('number');
+        expect(entry.action).toBe('status_changed');
+      }
+      expect(merged.map((entry) => entry.note)).toEqual([
+        'Closed via commit abcdef0',
+        'Closed via commit 1234567',
+      ]);
+      // A commit by the local git user gets the signed-in identity, like every
+      // other writer; a teammate's commit is attributed to its git author.
+      expect(merged[0].authorIdentity).toEqual(LOCAL_IDENTITY);
+      expect(merged[1].authorIdentity).toEqual({
+        email: 'bob@example.com',
+        displayName: 'Bob',
+        gitName: 'Bob',
+        gitEmail: 'bob@example.com',
+      });
+      expect(execFile.mock.calls[0]?.[1]).toEqual(['show', '-s', '--format=%an%n%ae', 'abcdef0']);
+    });
+
+    it('still attributes the close when the commit author cannot be read', async () => {
+      const query = vi.fn();
+      const linker = linkerWithSession(query);
+      query
+        .mockResolvedValueOnce({ rows: [{ id: 'tracker-1', issue_key: 'nim-42' }] })
+        .mockResolvedValueOnce({ rows: [{ type: 'bug', data: { status: 'in-review' } }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await linker.linkBySession('abcdef0', 'fix: thing\n\nFixes NIM-42', 'session-1', '/workspace');
+
+      const closePayload = JSON.parse(query.mock.calls[5]?.[1]?.[0] as string);
+      expect(closePayload.activity.at(-1).authorIdentity).toEqual(LOCAL_IDENTITY);
     });
 
     it('does not reopen an item that was already abandoned', async () => {

@@ -554,9 +554,11 @@ function FormatToolbar({ disabled }: { disabled: boolean }) {
 }
 
 function InlineLexicalEditor({ initialText, format, placeholder, onChange, disabled }: InlineLexicalEditorProps) {
-  // Capture the initial text so we don't reseed the editor when the parent
+  // Capture the seed text so we don't reseed the editor when the parent
   // re-renders. The editor owns its content state thereafter; the draft atom
-  // mirrors it via OnChangePlugin.
+  // mirrors it via OnChangePlugin. Callers must pass the draft's current text,
+  // not the agent's original -- this ref is re-read on every mount, and the
+  // transcript's virtual scroller remounts the widget freely (#1418).
   const initialTextRef = useRef(initialText);
 
   const initialConfig = useMemo(
@@ -658,7 +660,10 @@ function EditTextRenderer({
   return (
     <div data-testid={`request-user-input-edittext-${field.id}`}>
       <InlineLexicalEditor
-        initialText={initial}
+        // Seed from the draft, which survives unmount, not from field.initialText.
+        // Seeding from the agent's original threw away everything the user had
+        // typed the moment the transcript scrolled the widget out of view (#1418).
+        initialText={draft.state.text}
         format={format}
         placeholder={field.placeholder}
         onChange={onChange}

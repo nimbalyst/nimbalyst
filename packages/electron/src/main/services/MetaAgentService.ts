@@ -1488,7 +1488,13 @@ export class MetaAgentService {
     let editedFiles: string[] = [];
     try {
       const fileLinks = await SessionFilesRepository.getFilesBySession(sessionId, 'edited');
-      editedFiles = fileLinks.map((file: any) => this.stripWorkspacePath(file.filePath, workspaceId));
+      // #1244: these rows are the per-edit-EVENT history (deduped upstream on
+      // toolUseId, not on path), so a file edited twenty times appears twenty
+      // times. Consumers here want the set of files touched -- collapse to
+      // unique paths, keeping first-edit order.
+      editedFiles = [
+        ...new Set(fileLinks.map((file: any) => this.stripWorkspacePath(file.filePath, workspaceId))),
+      ];
     } catch {
       editedFiles = [];
     }

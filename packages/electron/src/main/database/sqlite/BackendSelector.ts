@@ -27,6 +27,21 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+// `cutoverJournal` imports only types from this module, so this is not a
+// runtime cycle -- the type import is erased.
+import { writeJsonAtomic } from './cutoverJournal';
+import {
+  MIGRATION_ASSESSMENT_VERSION,
+  type MigrationRefusal,
+  type MigrationRefusalFacts,
+  type MigrationRefusalReason,
+} from './migrationOutcome';
+// Type-only: `rolloutAuthorization` imports nothing from here, so this is not
+// a runtime cycle.
+import type { RolloutSnapshot } from './rolloutAuthorization';
+
+export { MIGRATION_ASSESSMENT_VERSION };
+
 export type DatabaseBackend = 'pglite' | 'sqlite';
 
 /**
@@ -41,6 +56,45 @@ export interface MigrationAttempts {
 }
 
 export const MAX_AUTO_MIGRATION_ATTEMPTS = 3;
+
+/**
+ * A durable verdict that automatic migration must not run on this install.
+ *
+ * Distinct from `migrationAttempts` on purpose. An attempt is a transient
+ * failure of the machinery and three of them retire the install; a block is a
+ * conclusion about the *data* and does not expire on its own. Counting a
+ * refusal as an attempt would have quietly retired the install after three
+ * launches and left nothing to show the user.
+ *
+ * Precedence, highest first. A future reader changing any branch of
+ * `maybeAutoMigrate` should keep this ordering intact:
+ *
+ *   1. `setBy: 'rollback'` — the user already chose PGLite. Nothing here
+ *      applies; the install is not migration-due at all, so no block is ever
+ *      recorded for it and an existing one is inert.
+ *   2. A completed migration (`backend === 'sqlite'`) — there is nothing left
+ *      to block. `commitMigrationToSqlite` drops any block it finds.
+ *   3. This block — checked *before* `migrationAttempts`, and never increments
+ *      it. Refusal is a verdict, not a failure.
+ *   4. `migrationAttempts` back-off.
+ *
+ * Clearing happens on exactly three events: the user asks (Settings retry),
+ * the measured facts change (a different `factsFingerprint`), or this build
+ * assesses differently from the one that recorded it (`assessmentVersion` is
+ * behind `MIGRATION_ASSESSMENT_VERSION`).
+ *
+ * Blocks gate *automatic* migration only. A user who opens Settings and asks
+ * for a migration is answering the question the block was raised about, so the
+ * manual path reports the refusal and leaves the durable state alone.
+ */
+export interface MigrationBlockedState {
+  reasonCode: MigrationRefusalReason;
+  /** Bounded buckets, not measurements. See `migrationOutcome.ts`. */
+  facts: MigrationRefusalFacts;
+  factsFingerprint: string;
+  blockedAt: string;
+  assessmentVersion: number;
+}
 
 export interface BackendState {
   backend: DatabaseBackend;
@@ -60,11 +114,38 @@ export interface BackendState {
   /** Auto-migration back-off bookkeeping. Absent until the first failure. */
   migrationAttempts?: MigrationAttempts;
   /**
-   * Last known value of the `force-sqlite-migration` kill switch. Cached here
-   * because the boot path cannot wait on the network to ask PostHog; see
-   * `migrationFlag.ts`.
+   * Durable refusal. Absent unless automatic migration has been blocked; see
+   * `MigrationBlockedState` for how it ranks against the fields above.
+   */
+  migrationBlocked?: MigrationBlockedState;
+  /**
+   * Last value of the old `force-sqlite-migration` boolean.
+   *
+   * @deprecated Never read. It was cached indefinitely, so an install that had
+   * once seen `true` kept migrating no matter what the remote value became --
+   * a memory, not a kill switch. Replaced by `rolloutSnapshot`, which is not an
+   * input to any decision either. Declared only so a future reader sees that
+   * the field on existing installs is inert rather than missing.
    */
   forceMigrationFlag?: boolean;
+  /**
+   * The last rollout snapshot that passed validation.
+   *
+   * **Diagnostic only.** Authorization is resolved live on the launch that
+   * would migrate (`rolloutAuthorization.ts`); nothing reads this to decide.
+   * It exists so Settings and support can see what this install was last told.
+   */
+  rolloutSnapshot?: RolloutSnapshot;
+  /**
+   * Which configuration version this install has already reported an exposure
+   * decision for. The ramp gates require exactly one decision per install per
+   * `configVersion`; more than one is an observability failure that stops the
+   * ramp, so the marker is what keeps a relaunch from double-counting.
+   *
+   * Written only after the event was accepted for delivery, so a launch that
+   * failed to enqueue retries on the next one rather than going silent.
+   */
+  rolloutDecisionEmitted?: { configVersion: string; emittedAt: string };
 }
 
 const FLAG_FILE_NAME = 'database-backend.json';
@@ -94,11 +175,9 @@ export function readBackendState(userDataPath: string): BackendState | null {
  * atomic within a directory on every platform we ship.
  */
 export function writeBackendState(userDataPath: string, state: BackendState): void {
-  fs.mkdirSync(userDataPath, { recursive: true });
-  const flagPath = getFlagPath(userDataPath);
-  const tmpPath = `${flagPath}.tmp-${process.pid}`;
-  fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
-  fs.renameSync(tmpPath, flagPath);
+  // Shared with the cutover journal so the two files that between them decide
+  // which database the app opens hold to the same durability standard.
+  writeJsonAtomic(getFlagPath(userDataPath), state);
 }
 
 /**
@@ -338,7 +417,12 @@ export function resolveBackend(input: ResolveBackendInput): ResolvedBackend {
   };
 }
 
-/** Called by the migration flow at the cutover step. */
+/**
+ * Called by the migration flow at the cutover step. Drops any durable block:
+ * the migration this install was blocked from doing has now happened, so
+ * leaving the record would show the user a warning about a decision that is
+ * already behind them.
+ */
 export function commitMigrationToSqlite(
   userDataPath: string,
   pgliteMigratedDir: string,
@@ -362,6 +446,121 @@ export function recordAutoMigrationFailure(userDataPath: string, errorCode: stri
     migrationAttempts: { count, lastAttemptAt: new Date().toISOString(), lastErrorCode: errorCode },
   });
   return count;
+}
+
+// ---------------------------------------------------------------------------
+// Durable refusal. See `MigrationBlockedState` for the precedence rules.
+// ---------------------------------------------------------------------------
+
+/**
+ * Persist a refusal. Deliberately does not touch `migrationAttempts` — the two
+ * are independent, and conflating them is the bug this separation exists to
+ * prevent.
+ */
+export function recordMigrationBlocked(
+  userDataPath: string,
+  blocked: MigrationBlockedState,
+): void {
+  updateBackendState(userDataPath, {
+    backend: 'pglite',
+    setBy: 'auto-migration-deferred',
+    migrationBlocked: blocked,
+  });
+}
+
+/** Build the durable record for a refusal produced this launch. */
+export function blockedStateFromRefusal(refusal: MigrationRefusal): MigrationBlockedState {
+  return {
+    reasonCode: refusal.reasonCode,
+    facts: refusal.facts,
+    factsFingerprint: refusal.factsFingerprint,
+    blockedAt: new Date().toISOString(),
+    assessmentVersion: MIGRATION_ASSESSMENT_VERSION,
+  };
+}
+
+/**
+ * The block this install is currently under, or null.
+ *
+ * The typed read surface for Settings: a block that cannot be seen is a boot
+ * that silently does nothing, which is the failure mode of the old behaviour.
+ * Returns null once the install is on SQLite or has rolled back, because a
+ * block means "automatic migration will not run" and neither of those states
+ * has an automatic migration pending in the first place.
+ */
+export function getMigrationBlockedState(userDataPath: string): MigrationBlockedState | null {
+  const state = readBackendState(userDataPath);
+  if (!state?.migrationBlocked) return null;
+  if (state.backend === 'sqlite' || state.setBy === 'rollback') return null;
+  return state.migrationBlocked;
+}
+
+/**
+ * Clear the block. Called by the user's explicit retry from Settings, and by
+ * the boot path when the facts it just measured differ from the ones that
+ * produced the block.
+ */
+export function clearMigrationBlocked(userDataPath: string): void {
+  const state = readBackendState(userDataPath);
+  if (!state?.migrationBlocked) return;
+  const next: BackendState = { ...state };
+  delete next.migrationBlocked;
+  writeBackendState(userDataPath, next);
+}
+
+/**
+ * Does a recorded block still stand against what we measured this launch?
+ *
+ * `currentFingerprint` is the fingerprint of the refusal produced on this
+ * launch, or null when this launch found nothing to refuse. Pure so the
+ * precedence above is testable without a filesystem or a real install.
+ */
+export function isMigrationStillBlocked(
+  blocked: MigrationBlockedState | null | undefined,
+  currentFingerprint: string | null,
+): boolean {
+  if (!blocked) return false;
+  // An older build's verdict is not this build's verdict.
+  if (blocked.assessmentVersion !== MIGRATION_ASSESSMENT_VERSION) return false;
+  // Nothing refused this launch: the situation moved, so re-assess.
+  if (currentFingerprint === null) return false;
+  return currentFingerprint === blocked.factsFingerprint;
+}
+
+/**
+ * Has this install already reported its exposure decision for `configVersion`?
+ *
+ * Scoped to the version rather than to the install: a new ceiling or channel
+ * policy ships a new version, and that is a new exposure the ramp needs to
+ * count. Anything else would make a second cohort invisible.
+ */
+export function hasEmittedRolloutDecision(
+  state: BackendState | null,
+  configVersion: string,
+): boolean {
+  return state?.rolloutDecisionEmitted?.configVersion === configVersion;
+}
+
+/**
+ * Mark the exposure decision as delivered. Called only after the event was
+ * accepted for delivery -- an unqueued event must be retried on a later
+ * launch, not silently dropped by a marker written too early.
+ */
+export function recordRolloutDecisionEmitted(userDataPath: string, configVersion: string): void {
+  const patch: Partial<BackendState> = {
+    rolloutDecisionEmitted: { configVersion, emittedAt: new Date().toISOString() },
+  };
+  // An install that has never written a flag file still needs the marker, or it
+  // re-reports its exposure on every launch and inflates the denominator. Only
+  // such an install gets a backend named here: passing `backend` unconditionally
+  // would overwrite a completed cutover with `pglite`, which is the exact write
+  // that poisoned installs in #1347. `migrationDue` is the only state that
+  // reaches this function without a flag file, and `pglite` is what it is.
+  if (!readBackendState(userDataPath)) {
+    patch.backend = 'pglite';
+    patch.setBy = 'auto-migration-deferred';
+  }
+  updateBackendState(userDataPath, patch);
 }
 
 /** Has this install exhausted its automatic attempts? */

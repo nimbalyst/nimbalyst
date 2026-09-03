@@ -305,8 +305,11 @@ export function useKeyboardShortcuts({
           store.set(toggleCliTerminalDrawerAtom, activeSessionId);
         }
       }
-      // Cmd+Shift+K for Kanban view (switch to agent mode + kanban, or toggle if already there)
-      if (workspaceMode && isAppModifier && e.shiftKey && e.key === 'k') {
+      // Cmd+Shift+K for Kanban view (switch to agent mode + kanban, or toggle if already there).
+      // With Shift held the browser reports the uppercase letter, so a lowercase
+      // `key` match never fires (#1415).
+      if (workspaceMode && isAppModifier && e.shiftKey
+          && (e.code === 'KeyK' || e.key.toLowerCase() === 'k')) {
         e.preventDefault();
         e.stopPropagation();
 
@@ -338,8 +341,11 @@ export function useKeyboardShortcuts({
         }
       }
 
-      // Cmd+Alt+W (Mac) or Ctrl+Alt+W (Windows) to create new worktree session
-      if (workspaceMode && isAppModifier && e.altKey && e.key === 'w') {
+      // Cmd+Alt+W (Mac) or Ctrl+Alt+W (Windows) to create new worktree session.
+      // `code` as well as `key`: with Option held, macOS rewrites the character
+      // (Option+W is "∑"), so the letter alone is not enough to match on.
+      if (workspaceMode && isAppModifier && e.altKey
+          && (e.key.toLowerCase() === 'w' || e.code === 'KeyW')) {
         e.preventDefault();
         e.stopPropagation();
 

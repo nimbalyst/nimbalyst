@@ -26,6 +26,7 @@ vi.mock('../../utils/store', () => ({
 }));
 
 import { PermissionService } from '../PermissionService';
+import { clearWorktreeIdentityCache } from '../../utils/workspaceDetection';
 
 describe('PermissionService trust boundary (nested projects vs subfolders)', () => {
   let tmpRoot: string;
@@ -68,5 +69,79 @@ describe('PermissionService trust boundary (nested projects vs subfolders)', () 
 
     expect(service.isWorkspaceTrusted(tmpRoot)).toBe(true);
     expect(service.getPermissionMode(tmpRoot)).toBe('bypass-all');
+  });
+});
+
+/**
+ * #1419: a checkout reached through a symlink stores its permissions under the
+ * path the user opened, but every worktree of it resolves its parent through
+ * realpath. The two spellings never matched, so worktrees inherited nothing and
+ * the user was prompted for every tool call.
+ */
+describe('PermissionService inheritance through a symlinked checkout (#1419)', () => {
+  let tmpRoot: string;
+  /** The project as the user opened it: through the symlink. */
+  let openedProject: string;
+  /** A worktree of that project, also reached through the symlink. */
+  let openedWorktree: string;
+  /** The same project directory, fully symlink-resolved. */
+  let realProject: string;
+  let symlinksSupported = true;
+  const service = PermissionService.getInstance();
+
+  beforeEach(() => {
+    store.clear();
+    delete process.env.NIMBALYST_PERMISSION_MODE;
+    clearWorktreeIdentityCache();
+    symlinksSupported = true;
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-symlink-trust-'));
+
+    // <tmp>/real/{project, project_worktrees/wt}, reached via <tmp>/link.
+    const realRoot = path.join(tmpRoot, 'real');
+    realProject = path.join(realRoot, 'project');
+    const realWorktree = path.join(realRoot, 'project_worktrees', 'wt');
+    const registrationDir = path.join(realProject, '.git', 'worktrees', 'wt');
+    fs.mkdirSync(registrationDir, { recursive: true });
+    fs.mkdirSync(realWorktree, { recursive: true });
+    fs.writeFileSync(path.join(realWorktree, '.git'), `gitdir: ${registrationDir}\n`);
+    fs.writeFileSync(path.join(registrationDir, 'gitdir'), `${path.join(realWorktree, '.git')}\n`);
+
+    const linkRoot = path.join(tmpRoot, 'link');
+    try {
+      fs.symlinkSync(realRoot, linkRoot, 'junction');
+    } catch {
+      // Symlink creation needs elevated privileges in some CI sandboxes.
+      symlinksSupported = false;
+    }
+    openedProject = path.join(linkRoot, 'project');
+    openedWorktree = path.join(linkRoot, 'project_worktrees', 'wt');
+  });
+
+  afterEach(() => {
+    clearWorktreeIdentityCache();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('a worktree inherits the mode stored under the un-resolved (symlinked) project path', () => {
+    if (!symlinksSupported) return;
+    store.set(openedProject, { permissionMode: 'allow-all' });
+
+    expect(service.getPermissionMode(openedWorktree)).toBe('allow-all');
+    expect(service.isWorkspaceTrusted(openedWorktree)).toBe(true);
+  });
+
+  it('a project opened through the symlink inherits a mode stored under its real path', () => {
+    // The reverse spelling: trust granted from inside a worktree is written
+    // under the realpath'd parent, and must be visible from the opened project.
+    if (!symlinksSupported) return;
+    store.set(fs.realpathSync.native(realProject), { permissionMode: 'bypass-all' });
+
+    expect(service.getPermissionMode(openedProject)).toBe('bypass-all');
+  });
+
+  it('does not invent trust when neither spelling of the project is trusted', () => {
+    if (!symlinksSupported) return;
+    expect(service.getPermissionMode(openedWorktree)).toBe(null);
+    expect(service.isWorkspaceTrusted(openedProject)).toBe(false);
   });
 });

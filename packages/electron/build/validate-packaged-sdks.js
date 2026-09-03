@@ -418,6 +418,27 @@ const WORKER_BUNDLES = [
     ],
   },
   {
+    // Spawned to run the full integrity/schema/content check that authorizes
+    // replacing a live database during recovery. If this bundle or its binding
+    // is missing the check falls back to running inline, which is exactly the
+    // multi-GB main-thread stall the worker exists to avoid -- and it degrades
+    // silently, so it has to be validated in the packaged output.
+    name: 'sqlite-recovery-verify-worker',
+    bundle: 'sqlite-recovery-verify-worker.bundle.js',
+    externals: ['better-sqlite3'],
+    nativeBinaries: [
+      {
+        candidateRelPaths: [
+          `node_modules/better-sqlite3/prebuilds/${targetPlatform}-${targetArch}.node`,
+          ...(targetPlatform === 'linux'
+            ? [`node_modules/better-sqlite3/prebuilds/linuxmusl-${targetArch}.node`]
+            : []),
+          'node_modules/better-sqlite3/build/Release/better_sqlite3.node',
+        ],
+      },
+    ],
+  },
+  {
     name: 'pglite-worker',
     bundle: 'worker.bundle.js',
     externals: [],

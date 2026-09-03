@@ -129,6 +129,32 @@ async function buildWorker() {
       },
     });
 
+    // ------------------------------------------------------------------------
+    // Recovery verification worker. Distinct from the backup verifier above:
+    // that one runs `quick_check` to confirm a backup copied cleanly, which is
+    // not enough to authorize replacing a live database. This one runs the full
+    // `integrity_check` plus the required-schema and content-indicator checks
+    // that gate a destructive restore, and it has to stay off both the main
+    // thread and the query-serving thread for the same reason.
+    // ------------------------------------------------------------------------
+    await esbuild.build({
+      entryPoints: [
+        path.join(__dirname, '../src/main/database/recovery/recoveryVerifyWorker.ts'),
+      ],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      outfile: path.join(outDir, 'sqlite-recovery-verify-worker.bundle.js'),
+      external: ['worker_threads', 'path', 'fs', 'better-sqlite3'],
+      minify: false,
+      sourcemap: process.env.NODE_ENV !== 'production',
+      format: 'cjs',
+      loader: { '.node': 'file' },
+      define: {
+        'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'production'),
+      },
+    });
+
     await esbuild.build({
       entryPoints: [
         path.join(__dirname, '../src/main/workers/historyDiffWorker.ts'),
@@ -181,6 +207,7 @@ async function buildWorker() {
     console.log('Worker bundle created successfully at out/worker.bundle.js');
     console.log('SQLite worker bundle created successfully at out/sqlite-worker.bundle.js');
     console.log('SQLite verify worker bundle created successfully at out/sqlite-verify-worker.bundle.js');
+    console.log('Recovery verify worker bundle created successfully at out/sqlite-recovery-verify-worker.bundle.js');
     console.log('History diff worker bundle created successfully at out/history-diff-worker.bundle.js');
     console.log('GIF encode worker bundle created successfully at out/gif-encode-worker.bundle.js');
     console.log('Project manifest worker bundle created successfully at out/project-manifest-worker.bundle.js');

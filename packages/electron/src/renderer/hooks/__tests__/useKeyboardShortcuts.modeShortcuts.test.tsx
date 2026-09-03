@@ -8,7 +8,10 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
+import { store } from '@nimbalyst/runtime/store';
 import { useKeyboardShortcuts } from '../useKeyboardShortcuts';
+import { viewModeAtom } from '../../store/atoms/agentMode';
+import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import type { ContentMode } from '../../types/WindowModeTypes';
 
 vi.mock('posthog-js', () => ({ default: { capture: vi.fn() } }));
@@ -153,5 +156,35 @@ describe('Cmd+Alt+M', () => {
     pressAppModifier('m', { altKey: true, code: 'KeyM' });
 
     expect(setActiveMode).not.toHaveBeenCalled();
+  });
+});
+
+describe('Cmd+Alt+W', () => {
+  // Same Option-rewrite trap as Cmd+Alt+M: macOS reports Option+W as "∑", so
+  // requiring `key === 'w'` alongside `altKey` made the chord unreachable (#1415).
+  it('routes to agent mode for a new worktree session', () => {
+    render(<Harness activeMode="files" />);
+    pressAppModifier('∑', { altKey: true, code: 'KeyW' });
+
+    expect(setActiveMode).toHaveBeenCalledWith('agent');
+  });
+});
+
+describe('Cmd+Shift+K', () => {
+  // With Shift held the browser reports the uppercase letter, so requiring
+  // `key === 'k'` alongside `shiftKey` made the chord unreachable (#1415).
+  it('switches to agent mode with the kanban view', () => {
+    // The layout atom is a proxy over the active workspace and drops writes
+    // when there is none, so give it a path before pressing the chord.
+    store.set(activeWorkspacePathAtom, '/tmp/kanban-shortcut-workspace');
+    try {
+      render(<Harness activeMode="files" />);
+      pressAppModifier('K', { shiftKey: true, code: 'KeyK' });
+
+      expect(setActiveMode).toHaveBeenCalledWith('agent');
+      expect(store.get(viewModeAtom)).toBe('kanban');
+    } finally {
+      store.set(activeWorkspacePathAtom, null);
+    }
   });
 });

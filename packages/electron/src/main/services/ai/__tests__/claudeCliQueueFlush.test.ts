@@ -63,6 +63,20 @@ describe('flushNextClaudeCliQueuedPrompt', () => {
     expect(h.submit).not.toHaveBeenCalled();
   });
 
+  it('marks the prompt failed (not completed) when submit reports it was never sent (#1387)', async () => {
+    // A claimed prompt that never reached the PTY was previously marked
+    // completed, so it vanished from the queue with nothing shown to the user.
+    const h = harness([{ id: 'q1', prompt: 'first' }]);
+    h.deps.submit = vi.fn(async () => ({ submitted: false }));
+    const result = await flushNextClaudeCliQueuedPrompt({ sessionId: 's1', workspacePath: '/w' }, h.deps);
+    expect(result).toBe(false);
+    expect(h.complete).not.toHaveBeenCalled();
+    expect(h.fail).toHaveBeenCalledWith(
+      'q1',
+      'Prompt was not delivered to the Claude CLI (nothing to send).',
+    );
+  });
+
   it('marks the prompt failed (not stuck executing) when submit throws', async () => {
     const h = harness([{ id: 'q1', prompt: 'first' }]);
     h.deps.submit = vi.fn(async () => { throw new Error('pty gone'); });

@@ -31,11 +31,15 @@ import { PGlite } from '@electric-sql/pglite';
 import { SQLiteDatabase } from '../SQLiteDatabase';
 import { SQLiteBackupService } from '../../../services/database/SQLiteBackupService';
 import { verifyBackupOffThread } from '../backupVerification';
-import { MigrationOrchestrator, type LivePgliteReader as OrchestratorLivePgliteReader } from '../MigrationOrchestrator';
-import { MigrationDryRunner } from '../MigrationDryRunner';
-import { MigrationAdopter } from '../MigrationAdopter';
+import { createRecoveryVerifier } from '../../recovery/recoveryVerification';
+import type { LivePgliteReader as OrchestratorLivePgliteReader } from '../MigrationOrchestrator';
 import { MigrationProgressReporter } from '../MigrationProgressReporter';
 import { countConfiguredProjects } from '../recoveryArtifacts';
+import {
+  handleMigrationRequest,
+  type MigrationRequestDeps,
+  type MigrationRequestPayload,
+} from './migrationRequests';
 import {
   type RequestEnvelope,
   type ResponseEnvelope,
@@ -50,9 +54,6 @@ import {
   type GetPerformancePayload,
   type VerifyBackupPayload,
   type PragmaReadPayload,
-  type StartMigrationPayload,
-  type StartDryRunPayload,
-  type AdoptDryRunPayload,
   type PgliteReadRequestPayload,
   type PgliteReadResponsePayload,
   type WorkerControlRequestPayload,
@@ -82,11 +83,6 @@ if (!parentPort) {
 let sqlite: SQLiteDatabase | null = null;
 let backupService: SQLiteBackupService | null = null;
 let initOpts: InitPayload | null = null;
-
-// Migration flags so we can reject concurrent attempts inside the worker.
-let migrationRunning = false;
-let dryRunRunning = false;
-let adoptRunning = false;
 
 // Pending bridge requests (worker -> main). Resolved when main posts back
 // a BridgeResponseEnvelope keyed by `bridgeId`. The timer is cleared on
@@ -236,6 +232,11 @@ function serializeError(err: unknown): SerializedError {
       name: err.name,
       stack: err.stack,
       code: (err as { code?: string }).code,
+      // Structured payload for errors that carry a decision rather than just a
+      // description — `MigrationRefusedError` is the reason this exists. Main
+      // needs the reason code and bucketed facts, and reconstructing them by
+      // parsing `message` would be a new way to get the verdict wrong.
+      data: (err as { data?: unknown }).data,
     };
   }
   return { message: String(err) };
@@ -292,6 +293,19 @@ async function bridgeClosePglite(): Promise<void> {
   );
 }
 
+/** Worker-host services the migration handlers run against. */
+function migrationDeps(): MigrationRequestDeps {
+  return {
+    buildPgliteReader,
+    closeRunningPglite: bridgeClosePglite,
+    reopenPgliteAfterClose: reopenClosedPglite,
+    makeReporter,
+    emit,
+    log: workerLogger,
+    countConfiguredProjects,
+  };
+}
+
 async function reopenClosedPglite(dataDir: string): Promise<PGLiteHandle> {
   const db = new PGlite({ dataDir });
   await (db as unknown as { waitReady: Promise<void> }).waitReady;
@@ -345,6 +359,15 @@ async function handle(req: RequestEnvelope): Promise<unknown> {
         // beside it (out/ in dev, Resources/ when packaged).
         verify: (backupPath) =>
           verifyBackupOffThread(backupPath, path.dirname(__filename), log),
+        // The full `integrity_check` + schema + content check a restore runs
+        // before it replaces the live database. Left at its inline default,
+        // this ran a full page scan on the worker's message loop, so a restore
+        // of a multi-GB copy stopped the app dequeuing queries for as long as
+        // the scan took.
+        verifyForRestore: createRecoveryVerifier({
+          workerDir: path.dirname(__filename),
+          log: (level, msg, meta) => log(level, msg, meta),
+        }),
       });
       await backupService.initialize();
       sqlite.setBackupService(backupService);
@@ -406,6 +429,26 @@ async function handle(req: RequestEnvelope): Promise<unknown> {
       return backupService
         ? backupService.createBackup()
         : { success: false, error: 'Backup service not initialized' };
+
+    /**
+     * The one mutating backup request. It has to run in here because the
+     * recovery transaction closes and reopens the live `SQLiteDatabase`, and
+     * that object only exists on this thread -- which is why the proxy's
+     * facade returned "not yet wired" and every SQLite install's rolling
+     * backups were unreachable from the moment SQLite became a backend.
+     *
+     * The transaction takes the same lock discipline as everything else here:
+     * this handler is serialized with `query` on the worker's message loop, so
+     * nothing can read the database between the displace and the promote.
+     */
+    case 'restoreBackup': {
+      if (!backupService) return { success: false, error: 'Backup service not initialized' };
+      // The transaction closes and reopens this same `SQLiteDatabase` object
+      // in place, so the module-level reference stays valid either way. What
+      // does NOT stay valid is a raw handle anything cached across the call --
+      // nothing here does.
+      return backupService.restoreFromBackup();
+    }
 
     case 'verifyBackup': {
       const { backupPath } = req.payload as VerifyBackupPayload;
@@ -496,153 +539,27 @@ async function handle(req: RequestEnvelope): Promise<unknown> {
     }
 
     // ----- Migration --------------------------------------------------------
+    // Handlers live in `migrationRequests.ts`: they assemble the pipeline's
+    // constructor arguments, which is wiring worth testing without a live
+    // worker_threads host. See that file's header.
 
-    case 'migrationPreflight': {
-      const { userDataPath, schemaDir } = req.payload as StartMigrationPayload;
-      const orch = new MigrationOrchestrator({
-        userDataPath,
-        schemaDir,
-        pglite: buildPgliteReader(),
-        closeRunningPglite: async () => undefined,
-        configuredProjectCount: countConfiguredProjects(userDataPath),
-        log: workerLogger,
-      });
-      return orch.preflight();
-    }
+    case 'migrationPreflight':
+    case 'migrationStart':
+    case 'migrationStartDryRun':
+    case 'migrationDryRunStatus':
+    case 'migrationAdoptDryRun':
+      return handleMigrationRequest(
+        req.type,
+        req.payload as MigrationRequestPayload,
+        migrationDeps(),
+      );
 
-    case 'migrationStart': {
-      if (migrationRunning) throw new Error('Migration already running.');
-      if (dryRunRunning) throw new Error('A dry run is in progress; migration is unavailable.');
-      migrationRunning = true;
-      try {
-        const { userDataPath, schemaDir } = req.payload as StartMigrationPayload;
-        const reporter = makeReporter();
-        const orch = new MigrationOrchestrator({
-          userDataPath,
-          schemaDir,
-          pglite: buildPgliteReader(),
-          closeRunningPglite: bridgeClosePglite,
-          reopenPgliteAfterClose: reopenClosedPglite,
-          configuredProjectCount: countConfiguredProjects(userDataPath),
-          onCutoverSuccess: async (info) => {
-            emit('db:migration:cutoverSuccess', {
-              sqliteDir: info.sqliteDir,
-              pgliteMigratedDir: info.pgliteMigratedDir,
-            });
-          },
-          reporter,
-          log: workerLogger,
-        });
-        const summary = await orch.run();
-        return { summary };
-      } finally {
-        migrationRunning = false;
-      }
-    }
 
-    case 'migrationStartDryRun': {
-      if (dryRunRunning) throw new Error('Dry run already in progress.');
-      if (migrationRunning) throw new Error('A migration is in progress; dry run is unavailable.');
-      dryRunRunning = true;
-      try {
-        const { userDataPath, schemaDir } = req.payload as StartDryRunPayload;
-        const reporter = makeReporter();
-        const dryRunner = new MigrationDryRunner({
-          userDataPath,
-          schemaDir,
-          pglite: buildPgliteReader(),
-          reporter,
-          // Match the IPC default: keep the dry-run dir + manifest on success so
-          // the user can adopt it later. Tests can override via a different
-          // request type or a payload flag if/when needed.
-          keepArtifacts: true,
-          log: workerLogger,
-        });
-        const result = await dryRunner.run();
-        return { result };
-      } finally {
-        dryRunRunning = false;
-      }
-    }
-
-    case 'migrationDryRunStatus': {
-      const { userDataPath, schemaDir } = req.payload as AdoptDryRunPayload;
-      const adopter = new MigrationAdopter({
-        userDataPath,
-        schemaDir,
-        pglite: buildPgliteReader(),
-        closeRunningPglite: async () => undefined,
-        configuredProjectCount: countConfiguredProjects(userDataPath),
-        log: workerLogger,
-      });
-      const found = adopter.findDryRunDir();
-      if (!found) return { available: false };
-      return {
-        available: true,
-        completedAt: found.manifest.completedAt,
-        totalRows: found.manifest.perTable.reduce((s, t) => s + t.rows, 0),
-      };
-    }
-
-    case 'migrationAdoptDryRun': {
-      if (adoptRunning) throw new Error('Adopt already running.');
-      if (migrationRunning || dryRunRunning) {
-        throw new Error('Another migration operation is in progress.');
-      }
-      adoptRunning = true;
-      try {
-        const { userDataPath, schemaDir } = req.payload as AdoptDryRunPayload;
-        const reporter = makeReporter();
-        const adopter = new MigrationAdopter({
-          userDataPath,
-          schemaDir,
-          pglite: buildPgliteReader(),
-          closeRunningPglite: bridgeClosePglite,
-          reopenPgliteAfterClose: reopenClosedPglite,
-          onCutoverSuccess: async (info) => {
-            emit('db:migration:cutoverSuccess', {
-              sqliteDir: info.sqliteDir,
-              pgliteMigratedDir: info.pgliteMigratedDir,
-            });
-          },
-          reporter,
-          log: workerLogger,
-        });
-        const result = await adopter.run();
-        return { result };
-      } finally {
-        adoptRunning = false;
-      }
-    }
-
-    case 'migrationRollback': {
-      // Pure filesystem op (no SQLite or PGLite handles). Worker thread has
-      // fs access, so we run it here for symmetry with the other migration
-      // ops — main's MigrationHandlers stays thin.
-      const { userDataPath } = req.payload as { userDataPath: string };
-      const migrated = fs
-        .readdirSync(userDataPath)
-        .filter((d) => d.startsWith('pglite-db.migrated-'))
-        .sort()
-        .pop();
-      if (!migrated) {
-        throw new Error('No preserved PGLite directory to roll back to.');
-      }
-      const pgliteDir = path.join(userDataPath, 'pglite-db');
-      const sqliteDir = path.join(userDataPath, 'sqlite-db');
-      if (fs.existsSync(pgliteDir)) {
-        throw new Error('pglite-db/ already exists; refusing to overwrite.');
-      }
-      if (fs.existsSync(sqliteDir)) {
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        fs.renameSync(sqliteDir, path.join(userDataPath, `sqlite-db.rolledback-${stamp}`));
-      }
-      fs.renameSync(path.join(userDataPath, migrated), pgliteDir);
-      // BackendSelector lives in main code but only does a JSON write; the
-      // worker shouldn't import it (keeps the bundle lean) — main does this
-      // post-response.
-      return { restoredFrom: migrated };
-    }
+    // `migrationRollback` used to live here. It ran two renames with no
+    // journal between them and returned before the backend flag was written,
+    // so the window in which the app had no database at either live path
+    // spanned a postMessage hop. It is now `rollbackTransaction.ts`, on main,
+    // journaled through the same cutover machine as the forward direction.
 
     default:
       throw new Error(`Unknown worker request type: ${req.type}`);

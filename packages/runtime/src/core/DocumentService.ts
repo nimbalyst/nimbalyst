@@ -134,6 +134,8 @@ export interface TrackerActivity {
   newValue?: string;
   /** Epoch ms */
   timestamp: number;
+  /** Free-text context for the change, e.g. which commit closed the item */
+  note?: string;
 }
 
 /**

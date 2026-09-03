@@ -16,6 +16,7 @@ vi.mock('../store', async (importOriginal) => ({
 
 import {
   resolveProjectPath,
+  resolveProjectPathCandidates,
   isWorktreePath,
   clearWorktreeIdentityCache,
   findNearestAncestor,
@@ -154,6 +155,85 @@ describe('resolveProjectPath', () => {
     expect(resolveProjectPath('')).toBe('');
     expect(resolveProjectPath(null as unknown as string)).toBe(null);
     expect(resolveProjectPath(undefined as unknown as string)).toBe(undefined);
+  });
+});
+
+describe('resolveProjectPathCandidates', () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-project-candidates-'));
+    clearWorktreeIdentityCache();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    clearWorktreeIdentityCache();
+  });
+
+  it('always leads with resolveProjectPath, so no persisted key is ever re-keyed', () => {
+    // The write key is the contract: a lookup may fall back to another spelling,
+    // but it must try the historically-written key first (#1419).
+    const project = path.join(tmpRoot, 'project');
+    fs.mkdirSync(path.join(project, '.git'), { recursive: true });
+    const worktree = path.join(tmpRoot, 'project_worktrees', 'swift-falcon');
+    createLinkedWorktree(project, worktree, 'swift-falcon');
+
+    for (const input of [project, worktree, path.join(project, 'packages')]) {
+      expect(resolveProjectPathCandidates(input)[0]).toBe(resolveProjectPath(input));
+    }
+  });
+
+  it('offers the symlink-resolved spelling for a project opened through a symlink', () => {
+    const realProject = path.join(tmpRoot, 'real', 'project');
+    fs.mkdirSync(path.join(realProject, '.git'), { recursive: true });
+    const link = path.join(tmpRoot, 'link');
+    try {
+      fs.symlinkSync(path.join(tmpRoot, 'real'), link, 'junction');
+    } catch {
+      return; // Symlink creation needs elevated privileges in some CI sandboxes.
+    }
+    const opened = path.join(link, 'project');
+
+    expect(resolveProjectPathCandidates(opened)).toEqual([
+      opened,
+      fs.realpathSync.native(realProject),
+    ]);
+  });
+
+  it("offers the parent's symlinked spelling for a worktree of a symlinked checkout", () => {
+    // The #1419 case: permissions were stored under the un-resolved parent, but
+    // the worktree only ever resolved to the realpath'd parent.
+    const realRoot = path.join(tmpRoot, 'real');
+    const realProject = path.join(realRoot, 'project');
+    createLinkedWorktree(realProject, path.join(realRoot, 'project_worktrees', 'wt'), 'wt');
+    const link = path.join(tmpRoot, 'link');
+    try {
+      fs.symlinkSync(realRoot, link, 'junction');
+    } catch {
+      return;
+    }
+
+    expect(resolveProjectPathCandidates(path.join(link, 'project_worktrees', 'wt'))).toEqual([
+      fs.realpathSync.native(realProject),
+      path.join(link, 'project'),
+    ]);
+  });
+
+  it('yields a single candidate when no symlink is involved', () => {
+    const project = path.join(tmpRoot, 'project');
+    fs.mkdirSync(path.join(project, '.git'), { recursive: true });
+    // tmpRoot itself may sit behind a symlinked temp dir (macOS /var), so compare
+    // against the resolved form rather than asserting a bare one-element list.
+    const candidates = resolveProjectPathCandidates(project);
+    expect(candidates[0]).toBe(project);
+    expect(new Set(candidates.map((c) => fs.realpathSync.native(c))).size).toBe(1);
+  });
+
+  it('fails closed for missing and empty inputs', () => {
+    const missing = path.join(tmpRoot, 'does-not-exist');
+    expect(resolveProjectPathCandidates(missing)).toEqual([missing]);
+    expect(resolveProjectPathCandidates('')).toEqual([]);
   });
 });
 

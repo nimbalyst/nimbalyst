@@ -7,7 +7,7 @@ import {
 } from '../../../shared/traySessions';
 import { initTrayPanelListener, trayPanelFeedAtom } from '../../store/listeners/trayPanelListeners';
 import { SessionAttentionRow } from '../AgenticCoding/SessionAttentionRow';
-import { TraySessionSectionHeader, TrayStatusIndicator } from './traySessionSections';
+import { TrayMarkAllReadButton, TraySessionSectionHeader, TrayStatusIndicator } from './traySessionSections';
 
 /**
  * The menu-bar sessions panel.
@@ -153,14 +153,11 @@ export function TrayPanelApp() {
                 state={state}
                 count={sessions.length}
                 actionSlot={state === 'unread' ? (
-                  <button
-                    type="button"
-                    className={`tray-panel-mark-all-read rounded px-1.5 py-0.5 text-[10.5px] font-medium normal-case tracking-normal text-nim-muted transition-colors hover:bg-nim-tertiary hover:text-nim ${FOCUS_RING}`}
+                  <TrayMarkAllReadButton
+                    className="tray-panel-mark-all-read"
                     onClick={() => window.electronAPI.send(TRAY_PANEL_CHANNELS.clearAllUnread)}
-                    data-testid="tray-panel-mark-all-read"
-                  >
-                    Mark all as read
-                  </button>
+                    testId="tray-panel-mark-all-read"
+                  />
                 ) : undefined}
               />
               {visible.map((session) => (

@@ -30,6 +30,7 @@ export const INTERNAL_MCP_TOOLS: readonly string[] = [
   // Trackers (`nimbalyst-trackers`).
   'mcp__nimbalyst-trackers__tracker_list',
   'mcp__nimbalyst-trackers__tracker_ready',
+  'mcp__nimbalyst-trackers__work_radar',
   'mcp__nimbalyst-trackers__tracker_get',
   'mcp__nimbalyst-trackers__tracker_list_types',
   'mcp__nimbalyst-trackers__tracker_create',

@@ -98,6 +98,18 @@ let processCleanupRegistered = false;
 const DEFAULT_STARTUP_TIMEOUT_MS = 30000;
 
 /**
+ * Per-request budget for one health probe. Far below the startup deadline so a
+ * request that hangs on an open connection is abandoned and retried (#1428).
+ */
+const HEALTH_PROBE_TIMEOUT_MS = 2000;
+
+/** True when a fetch rejected because its AbortSignal fired (timeout), not a network error. */
+function isAbortError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === 'AbortError' || error.name === 'TimeoutError';
+}
+
+/**
  * Singleton manager for the OpenCode server subprocess.
  * Reference-counted: starts on first session, stops when last session ends.
  */
@@ -284,6 +296,9 @@ export class OpenCodeServerManager {
   private async waitForReady(timeoutMs = this.getStartupTimeoutMs()): Promise<void> {
     const startTime = Date.now();
     const pollIntervalMs = 200;
+    // Log each failure kind once per state change, not per 200ms tick, so a
+    // hung probe and a refused connection are distinguishable in the log.
+    let lastFailure: 'timeout' | 'unreachable' | null = null;
 
     while (Date.now() - startTime < timeoutMs) {
       // A spawn error (e.g. ENOENT) means the process will never become healthy;
@@ -292,18 +307,43 @@ export class OpenCodeServerManager {
         throw this.lastSpawnError;
       }
       try {
-        const response = await fetch(`${this.baseUrl}/global/health`);
+        const response = await this.fetchHealth();
         if (response.ok) {
           console.log(`[OPENCODE-PROTOCOL] Server ready on port ${this.port}`);
           return;
         }
-      } catch {
-        // Server not ready yet
+      } catch (error) {
+        const failure = isAbortError(error) ? 'timeout' : 'unreachable';
+        if (failure !== lastFailure) {
+          lastFailure = failure;
+          if (failure === 'timeout') {
+            console.warn(`[OPENCODE-PROTOCOL] Health probe on port ${this.port} hung for ${HEALTH_PROBE_TIMEOUT_MS}ms; abandoning it and retrying on a fresh connection`);
+          } else {
+            console.log(`[OPENCODE-PROTOCOL] Health endpoint on port ${this.port} not reachable yet (${error instanceof Error ? error.message : String(error)}); waiting for server`);
+          }
+        }
       }
       await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     }
 
     throw new Error(`OpenCode server failed to start within ${timeoutMs}ms`);
+  }
+
+  /**
+   * Health probe with a per-request budget. A connection that is accepted but
+   * never answered (#1428) must be abandoned so the next poll tick opens a
+   * fresh one, rather than pinning the loop in a single await until the
+   * startup deadline. Uses an explicit timer, not AbortSignal.timeout, so the
+   * budget is driven by the same clock as the poll loop.
+   */
+  private async fetchHealth(): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS);
+    try {
+      return await fetch(`${this.baseUrl}/global/health`, { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private stopServer(): void {
@@ -351,7 +391,7 @@ export class OpenCodeServerManager {
   /** Single health probe; true only when the server answers with an ok response. */
   private async probeHealthOnce(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/global/health`);
+      const response = await this.fetchHealth();
       return !!response.ok;
     } catch {
       return false;

@@ -8,12 +8,15 @@ const LOCAL_WRAPPER = path.join(HOME, '.claude', 'local', 'claude');
 const HOMEBREW = '/opt/homebrew/bin/claude';
 const REPO_LOCAL = '/Users/tester/sources/node_modules/.bin/claude';
 
-const make = (existing: string[], enhancedPath?: string) =>
+const CUSTOM = '/opt/custom/bin/claude-nightly';
+
+const make = (existing: string[], enhancedPath?: string, customPath?: string) =>
   resolveClaudeExecutablePath({
     homedir: HOME,
     pathExists: (p: string) => existing.includes(p),
     enhancedPath,
     pathDelimiter: ':',
+    customPath,
   });
 
 describe('resolveClaudeExecutablePath', () => {
@@ -45,14 +48,32 @@ describe('resolveClaudeExecutablePath', () => {
   it('returns the bare command when nothing is found on disk', () => {
     expect(make([], '/nowhere:/also-nowhere')).toBe('claude');
   });
+
+  // #1296: the "Custom Claude executable path" setting was honored on the Agent
+  // SDK path (sdkOptionsBuilder) and silently ignored on the CLI path, so the CLI
+  // ran whatever discovery found. An explicit setting wins over every candidate.
+  it('returns an explicitly configured custom path ahead of every discovery candidate', () => {
+    const enhancedPath = `${HOME}/.claude/local/node_modules/.bin:/opt/homebrew/bin`;
+    expect(make([LOCAL_BIN, HOMEBREW], enhancedPath, CUSTOM)).toBe(CUSTOM);
+  });
+
+  it('does not require the custom path to exist on disk (matches the SDK path)', () => {
+    expect(make([], undefined, CUSTOM)).toBe(CUSTOM);
+  });
+
+  it('falls back to discovery when the custom path is unset or blank', () => {
+    expect(make([HOMEBREW], undefined, '')).toBe(HOMEBREW);
+    expect(make([HOMEBREW], undefined, '   ')).toBe(HOMEBREW);
+  });
 });
 
-const installed = (existing: string[], enhancedPath?: string) =>
+const installed = (existing: string[], enhancedPath?: string, customPath?: string) =>
   isClaudeExecutableInstalled({
     homedir: HOME,
     pathExists: (p: string) => existing.includes(p),
     enhancedPath,
     pathDelimiter: ':',
+    customPath,
   });
 
 describe('isClaudeExecutableInstalled', () => {
@@ -71,6 +92,13 @@ describe('isClaudeExecutableInstalled', () => {
 
   it('is true when only a legacy hardcoded location exists', () => {
     expect(installed([HOMEBREW])).toBe(true);
+  });
+
+  // #1296: a configured custom path is the user telling us where claude is, so
+  // the install notice must not fire and `ensureClaudeCliSession` must not
+  // short-circuit just because discovery found nothing.
+  it('is true when a custom path is configured and discovery finds nothing', () => {
+    expect(installed([], '/nowhere', CUSTOM)).toBe(true);
   });
 });
 

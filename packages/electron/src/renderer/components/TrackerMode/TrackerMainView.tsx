@@ -4,6 +4,7 @@ import { activeFileRepoPathAtom } from '../../store/atoms/workspaceRepos';
 import { copyToClipboard, MaterialSymbol } from '@nimbalyst/runtime';
 import { TrackerUnreadDot } from '@nimbalyst/runtime/readReceipts/TrackerUnreadDot';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
+import { trackerRadarActorKey, type RadarLaneEnrichment, type RadarPresence } from '@nimbalyst/tracker-core';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { Readiness } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerReadiness';
 import type { BlockerVisibilityScope } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerBlockerVisibility';
@@ -45,12 +46,14 @@ import {
   TrackerDependencyCycleBanner,
   TrackerFilterOmnibox,
   TrackerViewHeaderControls,
+  TrackerRadarView,
   TrackerTimelineView,
   TrackerViewTitle,
   useTrackerViewRows,
   type TrackerFilterField,
   type TrackerViewLayoutUpdate,
 } from '@nimbalyst/collab-client/trackers-ui';
+import type { TrackerViewMode } from './trackerViewModes';
 import { ImportFromSourceDialog } from './ImportFromSourceDialog';
 import { TrackerDocumentView } from './TrackerDocumentView';
 import {
@@ -74,7 +77,7 @@ import {
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { resolveTrackerWriteAccess } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerLifecycle';
 import { useTrackerBodyPrewarm } from '../../hooks/useTrackerBodyPrewarm';
-import { setSelectedWorkstreamAtom, sessionRegistryAtom, refreshSessionListAtom, initSessionList } from '../../store/atoms/sessions';
+import { agentSessionAttentionAtom, setSelectedWorkstreamAtom, sessionRegistryAtom, refreshSessionListAtom, initSessionList } from '../../store/atoms/sessions';
 import {
   trackerItemsMapAtom,
   trackerRelationshipLabelAtom,
@@ -108,8 +111,11 @@ import {
 } from './trackerSessionLaunch';
 import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 import { TrackerQuickAddOverlay } from './TrackerQuickAddOverlay';
+import { orgPresenceAtomFamily } from '../../store/atoms/teamInbox';
+import { gitStatusAtom } from '../../store/atoms/gitOperations';
+import type { TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
 
-export type ViewMode = 'list' | 'table' | 'kanban' | 'timeline' | 'tag-board' | 'inbox';
+export type ViewMode = TrackerViewMode;
 
 /** Human label for a source key without probing the importer (avoids backend start). */
 function sourceKeyLabel(key: string): string {
@@ -133,8 +139,11 @@ interface TrackerMainViewProps {
   onViewModeChange: (mode: ViewMode) => void;
   onSwitchToFilesMode?: () => void;
   workspacePath?: string;
+  /** Organization backing team presence for this workspace. */
+  teamPresenceOrgId?: string;
   /** Team that owns this workspace's shared trackers, when there is one. */
   teamName?: string | null;
+  teamMembers?: TeamMemberOption[];
   trackerTypes: TrackerDataModel[];
   onClearSidebarFilters: () => void;
   tagFilter: string[];
@@ -164,7 +173,9 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   onViewModeChange,
   onSwitchToFilesMode,
   workspacePath,
+  teamPresenceOrgId,
   teamName,
+  teamMembers = [],
   trackerTypes,
   onClearSidebarFilters,
   tagFilter,
@@ -201,6 +212,49 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   const activeFileRepoPath = useAtomValue(activeFileRepoPathAtom);
   const worktreeSourceRepoPath = activeFileRepoPath ?? workspacePath ?? '';
   const isGitRepo = useGitRepoProbe(workspacePath);
+  const presenceByMemberId = useAtomValue(orgPresenceAtomFamily(teamPresenceOrgId ?? ''));
+  const agentAttention = useAtomValue(agentSessionAttentionAtom);
+  const gitStatus = useAtomValue(gitStatusAtom);
+
+  const radarPresenceByActorKey = useMemo<Readonly<Record<string, RadarPresence>> | undefined>(() => {
+    if (!presenceByMemberId) return undefined;
+    const mapped: Record<string, RadarPresence> = {};
+    for (const member of teamMembers) {
+      if (!member.memberId) continue;
+      const presence = presenceByMemberId[member.memberId];
+      if (!presence) continue;
+      const actorKey = trackerRadarActorKey({
+        email: member.email,
+        displayName: member.name ?? member.email,
+        gitName: null,
+        gitEmail: null,
+      });
+      mapped[actorKey] = {
+        status: presence.status,
+        lastHeartbeatAt: presence.lastHeartbeatAt,
+      };
+    }
+    return Object.keys(mapped).length > 0 ? mapped : undefined;
+  }, [presenceByMemberId, teamMembers]);
+
+  const currentRadarActorKey = currentIdentity ? trackerRadarActorKey(currentIdentity) : null;
+  const radarLastSeenAt = currentRadarActorKey
+    ? radarPresenceByActorKey?.[currentRadarActorKey]?.lastHeartbeatAt
+    : undefined;
+  const radarEnrichmentByActorKey = useMemo<Readonly<Record<string, RadarLaneEnrichment>> | undefined>(() => {
+    if (!currentRadarActorKey) return undefined;
+    const liveSessions = agentAttention.running.length;
+    const unpushedCommits = gitStatus?.ahead ?? 0;
+    const behind = gitStatus?.behind ?? 0;
+    if (liveSessions === 0 && unpushedCommits === 0 && behind === 0) return undefined;
+    return {
+      [currentRadarActorKey]: {
+        liveSessions: liveSessions || undefined,
+        unpushedCommits: unpushedCommits || undefined,
+        divergence: behind > 0 ? `${behind} behind` : undefined,
+      },
+    };
+  }, [agentAttention.running.length, currentRadarActorKey, gitStatus?.ahead, gitStatus?.behind]);
 
   useEffect(() => {
     if (!workspacePath) return;
@@ -1433,6 +1487,17 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onScopeChange={(scope) => setModeLayout({ inboxScope: scope })}
               currentIdentity={currentIdentity}
             />
+          ) : viewMode === 'radar' ? (
+            <TrackerRadarView
+              items={viewFilteredItems}
+              currentIdentity={currentIdentity}
+              lastSeenAt={radarLastSeenAt}
+              presenceByActorKey={radarPresenceByActorKey}
+              enrichmentByActorKey={radarEnrichmentByActorKey}
+              selectedItemId={selectedItemId}
+              onItemSelect={handleItemSelect}
+              onOpenDocument={handleOpenItemAsDocument}
+            />
           ) : viewMode === 'timeline' ? (
             <TrackerTimelineView
               items={viewFilteredItems}
@@ -1478,6 +1543,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               onLaunchWorktree={isWorktreesFeatureAvailable && isGitRepo !== false ? handleLaunchWorktree : undefined}
               favoriteItemIds={favoriteItemIds}
               onToggleFavorite={handleToggleFavorite}
+              currentIdentity={currentIdentity}
             />
           )}
 

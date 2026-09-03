@@ -93,10 +93,14 @@ export {
   preloadTrackerTimelineView,
 } from './LazyTrackerTimelineView';
 export type { TrackerTimelineViewProps } from './TrackerTimelineView';
+export { TrackerRadarView } from './TrackerRadarView';
+export type { TrackerRadarViewProps } from './TrackerRadarView';
 export { LazyTagBoard as TagBoard, preloadTagBoard } from './LazyTagBoard';
 export type { TagBoardProps } from './TagBoard';
 
 export { TrackerActiveFilterPills } from './TrackerActiveFilterPills';
+export { TrackerRecentActivityChip } from './TrackerRecentActivityChip';
+export type { TrackerRecentActivityChipProps } from './TrackerRecentActivityChip';
 export { TrackerViewTitle } from './TrackerViewTitle';
 export { TrackerSavedViewsSection } from './TrackerSavedViewsSection';
 export { TrackerDependencyCycleBanner } from './TrackerDependencyCycleBanner';

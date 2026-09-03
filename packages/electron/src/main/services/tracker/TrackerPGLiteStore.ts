@@ -38,6 +38,7 @@ import type { TrackerItem } from '@nimbalyst/runtime';
 import { trackerRecordToItem, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { logger } from '../../utils/logger';
 import { fromDbBoolean, toDbBoolean } from './trackerDbValue';
+import { mergeActivity } from './trackerActivity';
 import {
   COLUMN_ONLY_IDENTITY_KEYS,
   extractItemCustomFields,
@@ -123,18 +124,6 @@ function mergeComments(
   }
   return [...merged.values()].sort((left, right) =>
     (left.serverOrdinal ?? left.createdAt) - (right.serverOrdinal ?? right.createdAt));
-}
-
-function mergeActivity(
-  prior: TrackerItemPayload['activity'],
-  incoming: TrackerItemPayload['activity'],
-): TrackerItemPayload['activity'] {
-  if (!prior && !incoming) return undefined;
-  const merged = new Map<string, NonNullable<TrackerItemPayload['activity']>[number]>();
-  for (const entry of [...(prior ?? []), ...(incoming ?? [])]) merged.set(entry.id, entry);
-  return [...merged.values()]
-    .sort((left, right) => left.timestamp - right.timestamp)
-    .slice(-100);
 }
 
 /**

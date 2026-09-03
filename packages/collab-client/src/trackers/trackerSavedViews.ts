@@ -199,6 +199,10 @@ function normalizeColumnConfig(raw: unknown): TypeColumnConfig | null {
   return {
     visibleColumns: value.visibleColumns.filter((c): c is string => typeof c === 'string'),
     columnWidths: value.columnWidths && typeof value.columnWidths === 'object' ? value.columnWidths : {},
+    // Absent (or unrecognized) stays absent so the Type column resolves to its icon default.
+    ...(value.typeColumnDisplay === 'label' || value.typeColumnDisplay === 'icon'
+      ? { typeColumnDisplay: value.typeColumnDisplay }
+      : {}),
   };
 }
 

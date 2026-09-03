@@ -459,6 +459,7 @@ export default defineConfig({
         const icon = resolve(__dirname, 'icon.png');
         const logo = resolve(__dirname, 'nimbalyst-logo.png');
         const about = resolve(__dirname, 'about.html');
+        const animationVideo = resolve(__dirname, 'animation-video.html');
         const onboardingDir = resolve(__dirname, 'resources/onboarding');
 
         if (fs.existsSync(icon)) {
@@ -469,6 +470,9 @@ export default defineConfig({
         }
         if (fs.existsSync(about)) {
           targets.push({ src: toPosix(about), dest: '', overwrite: true });
+        }
+        if (fs.existsSync(animationVideo)) {
+          targets.push({ src: toPosix(animationVideo), dest: '', overwrite: true });
         }
         // Copy onboarding images for feature walkthrough
         if (fs.existsSync(onboardingDir)) {

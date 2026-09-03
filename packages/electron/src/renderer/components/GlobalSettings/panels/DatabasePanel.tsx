@@ -1,16 +1,23 @@
 /**
  * DatabasePanel
  *
- * Settings → Database. Shows the current storage backend, lets alpha users
- * dry-run the PGLite → SQLite migration (zero-risk: never touches the live
- * database), and stages the eventual "Migrate" CTA.
+ * Settings → Database. Shows the current storage backend, lets users dry-run
+ * and run the PGLite → SQLite migration by hand, and surfaces everything the
+ * database layer is holding on their behalf: databases set aside by an earlier
+ * failure, PGLite copies a migration preserved, and any durable refusal to
+ * migrate automatically.
  *
- * IPC contract (see packages/electron/src/main/ipc/MigrationHandlers.ts):
- *   - db:migration:get-status   -> { activeBackend, pgliteDirExists, sqliteDirExists, migratedDirs, runningDryRun }
+ * Automatic migration is off in this build. Nothing on this panel moves data
+ * unless the user starts it here.
+ *
+ * IPC contract (see main/ipc/MigrationHandlers.ts and main/ipc/RecoveryHandlers.ts):
+ *   - db:migration:get-status   -> { activeBackend, pgliteDirExists, sqliteDirExists, migratedDirs, migrationBlocked, runningDryRun }
  *   - db:migration:dry-run      -> { success, result: DryRunResult } | { success: false, error }
- *   - db:migration:start        -> kicks off real migration; gated behind translator work
+ *   - db:migration:start        -> runs the migration
  *   - db:migration:rollback     -> restores pglite-db/ from a preserved sibling
+ *   - db:migration:clear-block  -> clears a durable refusal
  *   - db:migration:progress/phase/complete/failed (events) -> live updates
+ *   - db:recovery:*             -> set-aside databases and preserved copies
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -27,6 +34,13 @@ import {
   type MigrationProgressEvent as ProgressEvent,
   type MigrationSummary,
 } from '../../../store/atoms/dbMigration';
+import { refreshDbRecoveryState } from '../../../store/listeners/dbMigrationListeners';
+import { formatBytes, formatDuration } from './database/dbFormat';
+import { RecoverySection } from './database/RecoverySection';
+import {
+  MigratedCopiesSection,
+  MigrationBlockedSection,
+} from './database/MigrationStateSections';
 
 type Backend = 'pglite' | 'sqlite';
 
@@ -59,21 +73,6 @@ interface PreflightResult {
   pgliteDirBytes: number;
   freeBytes: number;
   requiredBytes: number;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
-  const mins = Math.floor(ms / 60_000);
-  const secs = ((ms % 60_000) / 1000).toFixed(0);
-  return `${mins} min ${secs} s`;
 }
 
 export function DatabasePanel(): React.ReactElement {
@@ -140,6 +139,10 @@ export function DatabasePanel(): React.ReactElement {
     } catch {
       setDryRunAvailable(null);
     }
+
+    // Set-aside databases, preserved copies, and any durable refusal. Lives in
+    // atoms so the sections below stay in step with the startup pull.
+    await refreshDbRecoveryState();
   }, []);
 
   useEffect(() => {
@@ -307,7 +310,9 @@ export function DatabasePanel(): React.ReactElement {
         </h3>
         <p className="provider-panel-description text-sm leading-relaxed text-[var(--nim-text-muted)]">
           Local storage engine for sessions, trackers, and document history.
-          PGLite is the current default; a faster SQLite backend is in alpha.
+          New installs start on SQLite. Installs that already have a PGLite database
+          stay on it: automatic migration is turned off while the migration is being
+          reworked, so nothing moves unless you start it from this panel.
         </p>
       </div>
 
@@ -339,6 +344,10 @@ export function DatabasePanel(): React.ReactElement {
           </div>
         )}
       </div>
+
+      {/* Recovery and preserved copies ----------------------------------- */}
+      <RecoverySection onRefresh={() => { void loadStatus(); }} />
+      <MigrationBlockedSection onCleared={() => { void loadStatus(); }} />
 
       {/* Dry run section ------------------------------------------------- */}
       {status?.activeBackend === 'pglite' && (
@@ -437,8 +446,9 @@ export function DatabasePanel(): React.ReactElement {
             Restore previous PGLite database
           </h4>
           <p className="provider-panel-hint text-sm text-[var(--nim-text-muted)] mb-3">
-            Preserved snapshots on disk: {status.migratedDirs.length}. The most
-            recent will be used.
+            Puts the most recent preserved PGLite copy back in front of the app. Data
+            created since the migration will not be in it. The copies themselves are
+            listed below.
           </p>
           <button
             type="button"
@@ -450,6 +460,8 @@ export function DatabasePanel(): React.ReactElement {
           </button>
         </div>
       )}
+
+      <MigratedCopiesSection onChanged={() => { void loadStatus(); }} />
 
       {showMigrationModal && (
         <MigrationModal

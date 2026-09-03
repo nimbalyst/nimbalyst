@@ -45,6 +45,11 @@ import {
 import { StageFrame } from "./StageFrame";
 import { StepStrip } from "./StepStrip";
 import { usePlayback } from "./usePlayback";
+import {
+  getElectronInvoke,
+  revealExport,
+  type ElectronInvoke,
+} from "../core/revealExport";
 
 /**
  * Structural shape of the scene. The stage rewrites its document only when this
@@ -83,12 +88,6 @@ interface AnimationMenuItem {
   icon?: string;
   onClick: () => void;
 }
-
-/** The preload's generic IPC passthrough, used for the main-process recorder. */
-type InvokeFn = (
-  channel: string,
-  payload: unknown
-) => Promise<{ success: boolean; error?: string } | undefined>;
 
 /**
  * The slice of the host filesystem this editor uses: compare-and-swap writes
@@ -342,6 +341,7 @@ export function AnimationEditor({ host }: AnimationEditorProps) {
           },
         ],
       });
+      await revealExport(outputPath);
       setExportNotice({ ok: true, text: `Exported ${name}` });
     } catch (error) {
       setExportNotice({
@@ -358,9 +358,7 @@ export function AnimationEditor({ host }: AnimationEditorProps) {
   const exportRecording = useCallback(
     async (format: "gif" | "mp4") => {
       const label = format.toUpperCase();
-      const invoke = (
-        globalThis as { electronAPI?: { invoke?: InvokeFn } }
-      ).electronAPI?.invoke;
+      const invoke: ElectronInvoke | null = getElectronInvoke();
       if (!invoke) {
         setExportNotice({
           ok: false,
@@ -398,14 +396,15 @@ export function AnimationEditor({ host }: AnimationEditorProps) {
             durationMs: totalDuration(doc),
           }
         );
-        setExportNotice(
-          response?.success
-            ? { ok: true, text: `Exported ${name}` }
-            : {
-                ok: false,
-                text: response?.error ?? `${label} export failed.`,
-              }
-        );
+        if (!response?.success) {
+          setExportNotice({
+            ok: false,
+            text: response?.error ?? `${label} export failed.`,
+          });
+          return;
+        }
+        await revealExport(outputPath);
+        setExportNotice({ ok: true, text: `Exported ${name}` });
       } catch (error) {
         setExportNotice({
           ok: false,

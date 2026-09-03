@@ -76,7 +76,10 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
       // prompt whose user message already landed in ai_agent_messages is
       // marked completed instead of rolled back, so the queue trigger
       // that follows the abort doesn't immediately re-claim and re-send
-      // the same input (NIM-615).
+      // the same input (NIM-615). The delete also clears the guard's
+      // ownership lease, so when the dispatch this cancel displaced finally
+      // settles it releases nothing rather than releasing whatever prompt
+      // took the session next (#1018).
       ctx.sessionsProcessingQueue.delete(sessionId);
       try {
         const { getQueuedPromptsStore } = await import('../../RepositoryManager');

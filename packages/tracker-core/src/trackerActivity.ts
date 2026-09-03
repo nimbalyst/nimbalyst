@@ -67,7 +67,7 @@ export function appendActivity(
   data: Record<string, any>,
   authorIdentity: any,
   action: string,
-  details?: { field?: string; oldValue?: string; newValue?: string }
+  details?: { field?: string; oldValue?: string; newValue?: string; note?: string }
 ): void {
   const activity = data.activity || data.customFields?.activity || [];
   if (data.customFields?.activity) {
@@ -102,6 +102,9 @@ export function appendActivity(
     oldValue: details?.oldValue,
     newValue: details?.newValue,
     timestamp: now,
+    // Only present when supplied, so a host that never passes one still
+    // writes the same bytes as before.
+    ...(details?.note !== undefined ? { note: details.note } : {}),
   });
   data.activity =
     activity.length > MAX_ACTIVITY_ENTRIES

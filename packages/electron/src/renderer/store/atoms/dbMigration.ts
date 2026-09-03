@@ -54,3 +54,99 @@ export const dbMigrationProgressAtom = atom<MigrationProgressEvent | null>(null)
 export const dbMigrationSummaryAtom = atom<MigrationSummary | null>(null);
 export const dbMigrationFailureAtom = atom<MigrationFailure | null>(null);
 export const dbMigrationRunningAtom = atom<boolean>(false);
+
+// ---------------------------------------------------------------------------
+// Durable refusal
+// ---------------------------------------------------------------------------
+
+/**
+ * Why automatic migration will not run on this install. Mirrors
+ * `MigrationRefusalReason` in main/database/sqlite/migrationOutcome.ts; the
+ * renderer cannot import from main, so the union is kept in step by hand.
+ */
+export type MigrationRefusalReason =
+  | 'backup_dwarfs_live'
+  | 'projects_without_sessions'
+  | 'source_unreadable'
+  | 'source_missing'
+  | 'insufficient_disk';
+
+/** Mirrors `MigrationBlockedState` in main/database/sqlite/BackendSelector.ts. */
+export interface MigrationBlockedState {
+  reasonCode: MigrationRefusalReason;
+  facts: Record<string, string | undefined>;
+  factsFingerprint: string;
+  blockedAt: string;
+  assessmentVersion: number;
+}
+
+export const dbMigrationBlockedAtom = atom<MigrationBlockedState | null>(null);
+
+// ---------------------------------------------------------------------------
+// Recovery candidates
+// ---------------------------------------------------------------------------
+
+export type RecoverySizeBucket =
+  | 'empty'
+  | 'under-32mb'
+  | 'under-256mb'
+  | 'under-1gb'
+  | 'under-3gb'
+  | 'over-3gb';
+
+export type RecoveryVerdict =
+  | 'not_actionable'
+  | 'needs_review'
+  | 'recovery_recommended'
+  | 'assessment_blocked';
+
+/**
+ * Flat view of a discovered artifact, produced by
+ * main/ipc/RecoveryHandlers.ts. `factsFingerprint` is the digest of the facts
+ * this row was computed from: it travels back with a restore request so the
+ * transaction can refuse if anything moved between the user reading the row
+ * and acting on it.
+ */
+export interface RecoveryCandidateView {
+  id: string;
+  name: string;
+  path: string;
+  sizeBytes: number;
+  sizeBucket: RecoverySizeBucket;
+  createdAt: string | null;
+  verdict: RecoveryVerdict;
+  reasonCode: string;
+  mayOfferProactively: boolean;
+  factsFingerprint: string;
+  restoreAvailable: boolean;
+  restoreUnavailableReason: 'pglite_artifact_on_sqlite_install' | null;
+}
+
+/** The database a restore would displace. */
+export interface LiveDatabaseView {
+  backend: 'pglite' | 'sqlite';
+  path: string;
+  sizeBytes: number;
+  sizeBucket: RecoverySizeBucket;
+}
+
+/** A `pglite-db.migrated-*` copy left behind by a migration. */
+export interface MigratedCopyView {
+  name: string;
+  path: string;
+  sizeBytes: number;
+  createdAt: string | null;
+  isRollbackSource: boolean;
+}
+
+export const dbRecoveryCandidatesAtom = atom<RecoveryCandidateView[]>([]);
+export const dbRecoveryLiveAtom = atom<LiveDatabaseView | null>(null);
+
+/**
+ * The one candidate, if any, that assessment says is worth raising unprompted.
+ * Only ever populated from `recovery_recommended`; every other verdict is
+ * visible in Settings without the product claiming anything was lost.
+ */
+export const dbRecoveryOfferAtom = atom<RecoveryCandidateView | null>(null);
+
+export const dbMigratedCopiesAtom = atom<MigratedCopyView[]>([]);

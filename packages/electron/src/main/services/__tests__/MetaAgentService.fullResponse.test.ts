@@ -68,6 +68,7 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
 }));
 
 import { AgentMessagesRepository } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
+import { SessionFilesRepository } from '@nimbalyst/runtime/storage/repositories/SessionFilesRepository';
 import { MetaAgentService } from '../MetaAgentService';
 
 const PREFETCHED = {
@@ -135,5 +136,41 @@ describe('MetaAgentService buildSessionResultData full child response (FIX A)', 
     // which is exactly why fullResponse is needed for synthesis.
     expect(data.lastResponse).toContain('PART_TWO_final');
     expect(data.lastResponse).not.toContain('PART_ONE_narration');
+  });
+});
+
+// #1244: SessionFilesRepository stores one row per edit EVENT on purpose (its
+// dedupe is keyed on toolUseId, not on path), so a child that edits one file
+// twenty times yields twenty rows. Every consumer of editedFiles wants the set
+// of files touched, so the unique-path pass belongs here at the seam.
+describe('MetaAgentService buildSessionResultData editedFiles dedupe (#1244)', () => {
+  it('reports each edited path once, in first-edit order, however many edit events it has', async () => {
+    vi.mocked(AgentMessagesRepository.list).mockResolvedValue([] as never);
+    vi.mocked(SessionFilesRepository.getFilesBySession).mockResolvedValue([
+      { filePath: '/ws/src/a.ts' },
+      { filePath: '/ws/src/b.ts' },
+      { filePath: '/ws/src/a.ts' },
+      { filePath: '/ws/src/a.ts' },
+      { filePath: '/ws/src/b.ts' },
+    ] as never);
+
+    const service = MetaAgentService.getInstance();
+    const data = await (service as any).buildSessionResultData('child-4', '/ws', PREFETCHED);
+
+    expect(data.editedFiles).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('collapses distinct absolute paths that resolve to the same workspace-relative path', async () => {
+    vi.mocked(AgentMessagesRepository.list).mockResolvedValue([] as never);
+    vi.mocked(SessionFilesRepository.getFilesBySession).mockResolvedValue([
+      { filePath: '/ws/src/a.ts' },
+      { filePath: '/ws/./src/a.ts' },
+      { filePath: '/ws/src/../src/a.ts' },
+    ] as never);
+
+    const service = MetaAgentService.getInstance();
+    const data = await (service as any).buildSessionResultData('child-5', '/ws', PREFETCHED);
+
+    expect(data.editedFiles).toEqual(['src/a.ts']);
   });
 });

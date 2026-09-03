@@ -33,77 +33,88 @@ export function buildEncoderScript(config: VideoEncodeConfig): string {
     bridge.fail(String(message));
   };
 
-  const encoder = new VideoEncoder({
-    output: (chunk, meta) => {
-      const data = new Uint8Array(chunk.byteLength);
-      chunk.copyTo(data);
-      bridge.chunk({
-        data,
-        type: chunk.type,
-        timestampUs: chunk.timestamp,
-        durationUs: chunk.duration ?? 0,
-        // Only the first chunk carries the decoder description, and the muxer
-        // needs it to write a playable file.
-        description: meta && meta.decoderConfig && meta.decoderConfig.description
-          ? new Uint8Array(meta.decoderConfig.description)
-          : null,
-      });
-    },
-    error: fail,
-  });
-
-  encoder.configure({
-    codec: config.codec,
-    width: config.width,
-    height: config.height,
-    bitrate: config.bitrate,
-    framerate: config.framerate,
-    // The stage is mostly static, so latency is irrelevant and quality is not.
-    latencyMode: 'quality',
-    avc: { format: 'avc' },
-  });
-
-  const finish = async () => {
-    try {
-      await encoder.flush();
-      encoder.close();
-      bridge.done();
-    } catch (error) {
-      fail(error);
+  try {
+    if (typeof VideoEncoder !== 'function') {
+      throw new Error('VideoEncoder is unavailable in the export window.');
     }
-  };
+    if (typeof VideoFrame !== 'function') {
+      throw new Error('VideoFrame is unavailable in the export window.');
+    }
 
-  bridge.start(
-    (frame) => {
-      if (failed) return;
+    const encoder = new VideoEncoder({
+      output: (chunk, meta) => {
+        const data = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        bridge.chunk({
+          data,
+          type: chunk.type,
+          timestampUs: chunk.timestamp,
+          durationUs: chunk.duration ?? 0,
+          // Only the first chunk carries the decoder description, and the muxer
+          // needs it to write a playable file.
+          description: meta && meta.decoderConfig && meta.decoderConfig.description
+            ? new Uint8Array(meta.decoderConfig.description)
+            : null,
+        });
+      },
+      error: fail,
+    });
+
+    encoder.configure({
+      codec: config.codec,
+      width: config.width,
+      height: config.height,
+      bitrate: config.bitrate,
+      framerate: config.framerate,
+      // The stage is mostly static, so latency is irrelevant and quality is not.
+      latencyMode: 'quality',
+      avc: { format: 'avc' },
+    });
+
+    const finish = async () => {
       try {
-        const videoFrame = new VideoFrame(frame.data, {
-          format: 'BGRA',
-          codedWidth: frame.codedWidth,
-          codedHeight: frame.codedHeight,
-          // H.264 in 4:2:0 needs even dimensions; cropping a row or column is
-          // invisible and keeps the encoder from rejecting the configuration.
-          visibleRect: {
-            x: 0,
-            y: 0,
-            width: frame.visibleWidth,
-            height: frame.visibleHeight,
-          },
-          timestamp: frame.timestampUs,
-          duration: frame.durationUs,
-        });
-        // A keyframe every two seconds keeps seeking usable without costing
-        // much on a stage that barely changes.
-        encoder.encode(videoFrame, {
-          keyFrame: frame.timestampUs % 2000000 < 1000,
-        });
-        videoFrame.close();
+        await encoder.flush();
+        encoder.close();
+        bridge.done();
       } catch (error) {
         fail(error);
       }
-    },
-    // flush() is what waits for the queue, so there is nothing to count here.
-    () => void finish()
-  );
+    };
+
+    bridge.start(
+      (frame) => {
+        if (failed) return;
+        try {
+          const videoFrame = new VideoFrame(frame.data, {
+            format: 'BGRA',
+            codedWidth: frame.codedWidth,
+            codedHeight: frame.codedHeight,
+            // H.264 in 4:2:0 needs even dimensions; cropping a row or column is
+            // invisible and keeps the encoder from rejecting the configuration.
+            visibleRect: {
+              x: 0,
+              y: 0,
+              width: frame.visibleWidth,
+              height: frame.visibleHeight,
+            },
+            timestamp: frame.timestampUs,
+            duration: frame.durationUs,
+          });
+          // A keyframe every two seconds keeps seeking usable without costing
+          // much on a stage that barely changes.
+          encoder.encode(videoFrame, {
+            keyFrame: frame.timestampUs % 2000000 < 1000,
+          });
+          videoFrame.close();
+        } catch (error) {
+          fail(error);
+        }
+      },
+      // flush() is what waits for the queue, so there is nothing to count here.
+      () => void finish()
+    );
+  } catch (error) {
+    fail(error);
+  }
 })();`;
 }

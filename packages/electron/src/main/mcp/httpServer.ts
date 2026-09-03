@@ -70,6 +70,7 @@ import {
 import {
   handleTrackerList,
   handleTrackerReady,
+  handleWorkRadar,
   handleTrackerGet,
   handleTrackerListTypes,
   handleTrackerDefineType,
@@ -605,6 +606,9 @@ function createSharedMcpServer(
 
         case "tracker_ready":
           return handleTrackerReady(args, workspacePath);
+
+        case "work_radar":
+          return handleWorkRadar(args, workspacePath);
 
         case "tracker_get":
           return handleTrackerGet(args, workspacePath);

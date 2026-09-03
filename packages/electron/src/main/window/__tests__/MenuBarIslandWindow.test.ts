@@ -39,12 +39,13 @@ const {
   ];
   /** Mutable so a test can walk the cursor across the display boundary. */
   const cursorRef = { current: { x: 5, y: 800 } };
-  const listeners = new Map<string, Function>();
+  const listeners = new Map<string, CallableFunction>();
+  const webContentsListeners = new Map<string, CallableFunction>();
   const instance = {
     listeners,
     visible: false,
-    on: vi.fn((event: string, handler: Function) => { listeners.set(event, handler); }),
-    once: vi.fn((event: string, handler: Function) => { listeners.set(event, handler); }),
+    on: vi.fn((event: string, handler: CallableFunction) => { listeners.set(event, handler); }),
+    once: vi.fn((event: string, handler: CallableFunction) => { listeners.set(event, handler); }),
     isDestroyed: vi.fn(() => false),
     isVisible: vi.fn(() => instance.visible),
     showInactive: vi.fn(() => { instance.visible = true; }),
@@ -59,7 +60,12 @@ const {
     setFocusable: vi.fn(),
     loadURL: vi.fn(() => Promise.resolve()),
     loadFile: vi.fn(() => Promise.resolve()),
-    webContents: { send: vi.fn(), once: vi.fn() },
+    webContents: {
+      listeners: webContentsListeners,
+      send: vi.fn(),
+      once: vi.fn((event: string, handler: CallableFunction) => { webContentsListeners.set(event, handler); }),
+      insertCSS: vi.fn(() => Promise.resolve('css-key')),
+    },
   };
   return {
     browserWindowCtor: Object.assign(
@@ -93,10 +99,10 @@ vi.mock('electron', () => ({
   BrowserWindow: browserWindowCtor,
   screen: screenMock,
 }));
-const { ipcHandlers } = vi.hoisted(() => ({ ipcHandlers: new Map<string, Function>() }));
+const { ipcHandlers } = vi.hoisted(() => ({ ipcHandlers: new Map<string, CallableFunction>() }));
 vi.mock('../../utils/ipcRegistry', () => ({
   safeHandle: vi.fn(),
-  safeOn: vi.fn((channel: string, handler: Function) => { ipcHandlers.set(channel, handler); }),
+  safeOn: vi.fn((channel: string, handler: CallableFunction) => { ipcHandlers.set(channel, handler); }),
 }));
 vi.mock('../../utils/appPaths', () => ({ getPreloadPath: () => '/preload.js' }));
 vi.mock('../../utils/store', () => ({
@@ -150,14 +156,15 @@ function handlers(overrides: Record<string, unknown> = {}) {
     onNewSession: vi.fn(),
     onOpenApp: vi.fn(),
     onSettingChange: vi.fn(),
+    onClearAllUnread: vi.fn(),
     ...overrides,
   } as Parameters<typeof setupMenuBarIslandHandlers>[0];
 }
 
 /** The window is created hidden and shown by the `did-finish-load` handler. */
 function finishLoad() {
-  const handler = win.listeners.get('did-finish-load');
-  if (handler) handler();
+  const handler = win.webContents.listeners.get('did-finish-load');
+  if (handler) return handler();
   else win.showInactive();
 }
 
@@ -172,10 +179,12 @@ describe('MenuBarIslandWindow', () => {
     cursorRef.current = { x: 5, y: 800 };
     win.visible = false;
     win.listeners.clear();
+    win.webContents.listeners.clear();
   });
 
   afterEach(() => {
     closeMenuBarIsland();
+    vi.unstubAllEnvs();
     vi.useRealTimers();
   });
 
@@ -185,9 +194,10 @@ describe('MenuBarIslandWindow', () => {
    * when the fleet goes quiet -- which it used to do -- leaves an idle Mac with
    * no menu bar presence at all and no way out of the style.
    */
-  it('stays on screen when the fleet goes quiet', () => {
+  it('stays on screen when the fleet goes quiet', async () => {
     showMenuBarIsland(frame(1));
     finishLoad();
+    await Promise.resolve();
     expect(win.isVisible()).toBe(true);
 
     showMenuBarIsland(frame(0));
@@ -196,6 +206,25 @@ describe('MenuBarIslandWindow', () => {
     expect(win.hide).not.toHaveBeenCalled();
     expect(win.isVisible()).toBe(true);
     expect(browserWindowCtor).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides Vite's error overlay before showing the development island", async () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    let finishInsert: (key: string) => void = () => {};
+    win.webContents.insertCSS.mockReturnValueOnce(new Promise((resolve) => {
+      finishInsert = resolve;
+    }));
+
+    showMenuBarIsland(frame(1));
+    const load = finishLoad();
+    showMenuBarIsland(frame(2));
+
+    expect(win.webContents.insertCSS).toHaveBeenCalledWith(expect.stringContaining('vite-error-overlay'));
+    expect(win.showInactive).not.toHaveBeenCalled();
+
+    finishInsert('css-key');
+    await load;
+    expect(win.showInactive).toHaveBeenCalledTimes(1);
   });
 
   /*
@@ -230,10 +259,33 @@ describe('MenuBarIslandWindow', () => {
     ipcHandlers.get(MENU_BAR_ISLAND_CHANNELS.setSetting)!(impostor, { key: 'osNotifications', value: false });
     ipcHandlers.get(MENU_BAR_ISLAND_CHANNELS.newSession)!(impostor);
     ipcHandlers.get(MENU_BAR_ISLAND_CHANNELS.openApp)!(impostor);
+    ipcHandlers.get(MENU_BAR_ISLAND_CHANNELS.clearAllUnread)!(impostor);
 
     expect(deps.onSettingChange).not.toHaveBeenCalled();
     expect(deps.onNewSession).not.toHaveBeenCalled();
     expect(deps.onOpenApp).not.toHaveBeenCalled();
+    expect(deps.onClearAllUnread).not.toHaveBeenCalled();
+  });
+
+  /*
+   * The footer's actions send the user somewhere else and so release the pin.
+   * Marking the fleet read does not: the user stays on the panel to watch the
+   * unread section go, and collapsing it out from under them loses that.
+   */
+  it('marks the fleet read without releasing the pin', () => {
+    const deps = handlers();
+    setupMenuBarIslandHandlers(deps);
+    const event = { sender: win.webContents };
+
+    showMenuBarIsland(frame(1));
+    finishLoad();
+    ipcHandlers.get(MENU_BAR_ISLAND_CHANNELS.setPinned)!(event, { pinned: true });
+    expect(win.setFocusable).toHaveBeenLastCalledWith(true);
+
+    ipcHandlers.get(MENU_BAR_ISLAND_CHANNELS.clearAllUnread)!(event);
+
+    expect(deps.onClearAllUnread).toHaveBeenCalledTimes(1);
+    expect(win.setFocusable).toHaveBeenLastCalledWith(true);
   });
 
   // The gesture that this whole drag path exists for: the island has to end up

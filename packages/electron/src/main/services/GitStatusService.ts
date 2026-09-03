@@ -974,16 +974,18 @@ export class GitStatusService {
   }
 
   /**
-   * Parse the workspace's origin remote into an `owner/repo` tuple plus host.
+   * Resolve the workspace's preferred GitHub remote into an `owner/repo` tuple plus host.
    *
    * Used by the PR review panel to decide whether to show the
    * "Pull Requests" gutter button and to drive `gh api` requests. Supports
    * both SSH (`git@host:owner/repo.git`) and HTTPS (`https://host/owner/repo.git`)
-   * origins, and arbitrary hosts (GitHub Enterprise — `gh` handles the
+   * remotes, and arbitrary hosts (GitHub Enterprise — `gh` handles the
    * underlying authentication; we only need to pass `owner/repo`).
    *
-   * Returns null when no origin exists, when git is unavailable, or when the
-   * URL cannot be parsed.
+   * Honors the base remote selected through `gh repo set-default`, then the
+   * current branch's tracking remote, before falling back to origin.
+   * Returns null when no candidate exists, when git is unavailable, or when
+   * none of the candidate URLs can be parsed.
    */
   async parseGitHubRemote(workspacePath: string): Promise<{ remote: string; host: string } | null> {
     if (!workspacePath) {
@@ -996,19 +998,13 @@ export class GitStatusService {
       return null;
     }
 
-    let remoteUrl: string;
-    try {
-      remoteUrl = execSync('git remote get-url origin', {
-        cwd: workspacePath,
-        encoding: 'utf8',
-        timeout: 5000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-    } catch {
-      return null;
+    for (const remoteName of await getPreferredRemoteNames(workspacePath)) {
+      const remoteUrl = await runGitText(workspacePath, ['remote', 'get-url', '--', remoteName]);
+      const parsed = remoteUrl ? parseGitRemoteUrl(remoteUrl) : null;
+      if (parsed) return parsed;
     }
 
-    return parseGitRemoteUrl(remoteUrl);
+    return null;
   }
 
   /**
@@ -1042,6 +1038,48 @@ export class GitStatusService {
     }
   }
 
+}
+
+function runGitText(workspacePath: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      args,
+      {
+        cwd: workspacePath,
+        encoding: 'utf8',
+        timeout: 5000,
+      },
+      (error, stdout) => resolve(error ? null : stdout.trim()),
+    );
+  });
+}
+
+async function getPreferredRemoteNames(workspacePath: string): Promise<string[]> {
+  const candidates: string[] = [];
+  const resolvedConfig = await runGitText(workspacePath, [
+    'config',
+    '--get-regexp',
+    '^remote\\..*\\.gh-resolved$',
+  ]);
+
+  for (const line of resolvedConfig?.split(/\r?\n/) ?? []) {
+    const match = line.match(/^remote\.(.+)\.gh-resolved\s+(.+)$/);
+    if (match?.[2].trim() === 'base') candidates.push(match[1]);
+  }
+
+  const branch = await runGitText(workspacePath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  if (branch) {
+    const trackingRemote = await runGitText(workspacePath, [
+      'config',
+      '--get',
+      `branch.${branch}.remote`,
+    ]);
+    if (trackingRemote) candidates.push(trackingRemote);
+  }
+
+  candidates.push('origin');
+  return [...new Set(candidates)];
 }
 
 /**

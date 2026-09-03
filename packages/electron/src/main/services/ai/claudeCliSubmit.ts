@@ -46,12 +46,19 @@ const BRACKETED_PASTE_END = '\x1b[201~';
  * The gap was a flat 25ms, which is fine for ordinary prompts but loses large
  * ones: Enter arriving while the payload is still draining submits a partial
  * line. Scale with payload size, keeping 25ms as the floor so short prompts are
- * unaffected. (20k chars needs >25ms; 75ms was sufficient in testing.)
+ * unaffected. (20k bytes needs >25ms; 75ms was sufficient in testing.)
+ *
+ * #1387: the argument is a BYTE count, not a character count. The PTY drains
+ * bytes (and Windows ConPTY synthesises a console key event per character), so
+ * sizing this off a JS string's `.length` — UTF-16 code units — gives a CJK
+ * payload roughly a third of the drain time an ASCII payload of the same
+ * character count gets. Enter then arrives before the closing bracketed-paste
+ * terminator is consumed and lands as a literal newline inside the paste.
  */
-export function submitWriteGapMs(payloadLength: number): number {
+export function submitWriteGapMs(payloadByteLength: number): number {
   return Math.min(
     SUBMIT_WRITE_GAP_MAX_MS,
-    Math.max(SUBMIT_WRITE_GAP_MS, Math.ceil(payloadLength / 100)),
+    Math.max(SUBMIT_WRITE_GAP_MS, Math.ceil(payloadByteLength / 100)),
   );
 }
 
@@ -145,7 +152,7 @@ export async function submitClaudeCliPrompt(
       input.sessionId,
       BRACKETED_PASTE_START + ptyText + BRACKETED_PASTE_END,
     );
-    await deps.delay(submitWriteGapMs(ptyText.length));
+    await deps.delay(submitWriteGapMs(Buffer.byteLength(ptyText, 'utf8')));
     deps.writeToTerminal(input.sessionId, SUBMIT_TERMINATOR);
   }
 

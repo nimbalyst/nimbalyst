@@ -7,19 +7,22 @@
  *   2. Snapshot the PGLite store (current backup ring)
  *   3. Open a fresh SQLite under sqlite-db/
  *   4. Run PGLiteToSQLiteMigrator against the live worker for the bulk copy
- *   5. Quiesce the live PGLite worker (close)
- *   6. Re-open PGLite from disk and run one final catch-up pass
- *   7. Close both
- *   8. Cutover: rename pglite-db/ → pglite-db.migrated-{ts}/, write the
- *      backend flag pointing at SQLite. The PGLite directory is never deleted.
+ *   5. Hand the last five steps to `cutoverMachine.runCutover`, which is the
+ *      single journaled cutover shared with `MigrationAdopter`: verify the
+ *      target, quiesce PGLite, catch up and close, rename pglite-db/ →
+ *      pglite-db.migrated-{ts}/, commit the backend flag. The PGLite directory
+ *      is never deleted.
  *
- * Failure rules (per the plan's Failure Paths table):
- *   - Any error before cutover -> delete the partial sqlite-db/ directory and
- *     leave PGLite untouched. The flag file is not written. App reopens on
- *     PGLite next launch.
- *   - Rename failure on cutover -> flag is already written (SQLite is the
- *     truth); the leftover pglite-db/ is logged but harmless. App boots into
- *     SQLite next launch.
+ * Failure rules:
+ *   - Any error before the source is preserved -> delete the partial sqlite-db/
+ *     directory and leave PGLite untouched. The flag file is not written. The
+ *     app reopens on PGLite next launch.
+ *   - Once the source has been preserved the partial target is NOT removed --
+ *     it is the store the journal points at, and startup reconciliation
+ *     finishes or rolls the cutover back from there.
+ *   - Nothing is suppressed. This file used to log a warning and commit the
+ *     backend flag anyway when the pglite-db rename failed, which is how a live
+ *     PGLite store could end up orphaned behind a flag naming SQLite.
  *
  * This module owns FILESYSTEM and SETTINGS side effects. The data-plane copy
  * lives in `PGLiteToSQLiteMigrator`; the IPC channel lives in
@@ -36,15 +39,28 @@ import {
   type PGLiteHandle,
 } from './PGLiteToSQLiteMigrator';
 import { MigrationProgressReporter } from './MigrationProgressReporter';
-import { commitMigrationToSqlite } from './BackendSelector';
+import { asCutoverAbort, runCutover } from './cutoverMachine';
+import type { CutoverFs } from './cutoverJournal';
 import { classifyDatabaseError } from '../DatabaseErrorTelemetry';
 import { dirSizeBytes } from './dirSize';
 import { findRestorableBackups } from './recoveryArtifacts';
 import {
   assessMigrationSource,
+  buildMigrationRefusal,
   gatherMigrationSourceFacts,
+  humanBytes,
   type MigrationSourceFacts,
 } from './migrationSourcePlausibility';
+import {
+  buildMigrationOutcome,
+  countBucket,
+  sizeBucket,
+  MigrationRefusedError,
+  type MigrationOperationContext,
+  type MigrationOutcome,
+  type MigrationOutcomeBody,
+  type MigrationRefusal,
+} from './migrationOutcome';
 
 /**
  * Read surface satisfied by the live PGLiteDatabaseWorker. Mirrors the adapter
@@ -82,12 +98,17 @@ export interface OrchestratorOptions {
    */
   closeRunningPglite: () => Promise<void>;
   /**
-   * Hook for fleet-aggregate telemetry. Production wiring calls
-   * `AnalyticsService.getInstance().sendEvent(...)`. Tests use a spy.
-   * The orchestrator respects the existing analytics opt-out — when the
-   * caller's sendEvent is a no-op, nothing fires.
+   * Report the terminal domain result for this operation. The orchestrator
+   * runs inside the SQLite worker, which has no business naming analytics
+   * events — it returns a typed result and `migrationEventMapper.ts` on main
+   * decides what, if anything, is emitted. See `migrationOutcome.ts`.
    */
-  sendEvent?: (eventName: string, properties: Record<string, unknown>) => void;
+  onOutcome?: (outcome: MigrationOutcome) => void;
+  /**
+   * Identity and provenance of this run, echoed into the domain result so the
+   * mapper can dedupe and attribute it. Defaults to a one-off manual run.
+   */
+  operation?: MigrationOperationContext;
   /**
    * Called after a successful cutover. Production wiring opens the new
    * SQLiteDatabase under the repository manager. Tests can supply a no-op.
@@ -118,12 +139,29 @@ export interface OrchestratorOptions {
    * Defaults to 0, which is the permissive value.
    */
   configuredProjectCount?: number;
+  /**
+   * Fault-injection seam for the cutover's filesystem operations. Production
+   * leaves it unset. Tests use it to make one specific rename fail with the
+   * `EPERM`/`EBUSY` Windows produces when a directory handle is still open --
+   * the case we cannot reproduce on the machines we develop on, and the one
+   * the old suppressed-rename branch was written for.
+   */
+  cutoverFs?: CutoverFs;
+  /** Identifies the cutover in the journal. Defaults to the operation id. */
+  operationId?: string;
 }
 
 export interface PreflightResult {
   ok: boolean;
   /** Reason text for the UI when ok=false. */
   reason?: string;
+  /**
+   * Present whenever the failure is a *verdict about the install* rather than
+   * a transient environment hiccup. Carries the reason code, the bucketed
+   * facts, and the fingerprint that decides whether an existing durable block
+   * still stands.
+   */
+  refusal?: MigrationRefusal;
   pgliteDirBytes: number;
   freeBytes: number;
   requiredBytes: number;
@@ -141,9 +179,20 @@ export class MigrationOrchestrator {
   async preflight(): Promise<PreflightResult> {
     const pgliteDir = path.join(this.opts.userDataPath, 'pglite-db');
     if (!fs.existsSync(pgliteDir) && !this.opts.allowEmptyPglite) {
+      const reason = 'No PGLite directory found — nothing to migrate.';
       return {
         ok: false,
-        reason: 'No PGLite directory found — nothing to migrate.',
+        reason,
+        refusal: buildMigrationRefusal(
+          'source_missing',
+          {
+            liveBytes: 'none',
+            largestBackupBytes: 'none',
+            configuredProjects: countBucket(this.opts.configuredProjectCount ?? 0),
+            sourceSessions: 'unknown',
+          },
+          reason,
+        ),
         pgliteDirBytes: 0,
         freeBytes: 0,
         requiredBytes: 0,
@@ -153,9 +202,24 @@ export class MigrationOrchestrator {
     const requiredBytes = pgliteDirBytes * SAFETY_MULTIPLIER;
     const freeBytes = await freeBytesOnPath(this.opts.userDataPath);
     if (freeBytes < requiredBytes) {
+      const reason =
+        `Not enough free disk space. Need ~${humanBytes(requiredBytes)}; have ${humanBytes(freeBytes)}.`;
       return {
         ok: false,
-        reason: `Not enough free disk space. Need ~${humanBytes(requiredBytes)}; have ${humanBytes(freeBytes)}.`,
+        reason,
+        // Bucketed, so freeing a few bytes does not churn the fingerprint and
+        // re-ask on every launch; crossing a bucket does.
+        refusal: buildMigrationRefusal(
+          'insufficient_disk',
+          {
+            liveBytes: sizeBucket(pgliteDirBytes),
+            largestBackupBytes: 'none',
+            configuredProjects: countBucket(this.opts.configuredProjectCount ?? 0),
+            sourceSessions: 'unknown',
+            freeDiskBytes: sizeBucket(freeBytes),
+          },
+          reason,
+        ),
         pgliteDirBytes,
         freeBytes,
         requiredBytes,
@@ -163,9 +227,19 @@ export class MigrationOrchestrator {
     }
     const plausibility = assessMigrationSource(await this.gatherSourceFacts(pgliteDirBytes));
     if (!plausibility.ok) {
-      return { ok: false, reason: plausibility.reason, pgliteDirBytes, freeBytes, requiredBytes };
+      const { ok: _ok, ...refusal } = plausibility;
+      return { ok: false, reason: refusal.reason, refusal, pgliteDirBytes, freeBytes, requiredBytes };
     }
     return { ok: true, pgliteDirBytes, freeBytes, requiredBytes };
+  }
+
+  /**
+   * Stamp the operation identity onto a domain result and hand it up. Every
+   * terminal outcome from this class goes through here, so there is exactly
+   * one place that decides what a result looks like.
+   */
+  private report(body: MigrationOutcomeBody): void {
+    this.opts.onOutcome?.(buildMigrationOutcome('migrate', this.opts.operation, body));
   }
 
   /**
@@ -206,15 +280,16 @@ export class MigrationOrchestrator {
     // this too, but the UI is not the only caller and this is the last moment
     // the PGLite store is still authoritative (NIM-3632). The event goes out
     // before we act, so a refusal is visible even if this process dies next.
-    const plausibility = assessMigrationSource(
-      await this.gatherSourceFacts(fs.existsSync(pgliteDir) ? dirSizeBytes(pgliteDir) : 0),
-    );
+    const liveDirBytes = fs.existsSync(pgliteDir) ? dirSizeBytes(pgliteDir) : 0;
+    const plausibility = assessMigrationSource(await this.gatherSourceFacts(liveDirBytes));
     if (!plausibility.ok) {
-      this.opts.sendEvent?.('migration_refused_implausible_source', { reason: plausibility.reason });
+      const { ok: _ok, ...refusal } = plausibility;
+      this.report({ kind: 'refused', refusal });
       log('error', '[orchestrator] refusing to migrate an implausible source', {
-        reason: plausibility.reason,
+        reasonCode: refusal.reasonCode,
+        reason: refusal.reason,
       });
-      throw new Error(plausibility.reason);
+      throw new MigrationRefusedError(refusal);
     }
 
     // Sanity: don't overwrite an existing sqlite-db. If one exists from a
@@ -229,6 +304,10 @@ export class MigrationOrchestrator {
     let sqlite: SQLiteDatabase | null = null;
     let summary: MigrationSummary | null = null;
     let phase = 'opening-sqlite';
+    // Set once the source has been renamed aside. From that moment the SQLite
+    // target is the store the journal points at, so the failure path must not
+    // remove it -- that would leave the install with neither.
+    let targetCleanupSafe = true;
     try {
       // 1. Open fresh SQLite (initialize runs the schema bootstrap).
       sqlite = new SQLiteDatabase({
@@ -258,12 +337,9 @@ export class MigrationOrchestrator {
         log,
       });
 
-      // 3. Quiesce the live PGLite worker so no more source writes can land.
-      phase = 'closing-pglite';
-      await this.opts.closeRunningPglite();
-
-      // 4. Re-open the now-quiesced PGLite dir and catch SQLite up to the
-      // exact final source state before we flip the backend flag.
+      // 3. Everything from here is the shared journaled cutover. Validate the
+      // inputs it needs before it opens a journal, so a missing dependency
+      // fails while PGLite is still live and authoritative.
       const reopen = this.opts.reopenPgliteAfterClose;
       if (!reopen) {
         throw new Error('MigrationOrchestrator requires reopenPgliteAfterClose() for final catch-up.');
@@ -272,44 +348,65 @@ export class MigrationOrchestrator {
       if (!manifest) {
         throw new Error('MigrationOrchestrator missing migration manifest for final catch-up.');
       }
-      phase = 'catching-up-after-close';
-      const closedSource = await reopen(pgliteDir);
-      const finalCatchUp = await (async () => {
-        try {
-          return await migrator.catchUp({
-            pglite: closedSource,
-            sqlite,
-            manifest,
-            onProgress,
-            log,
-          });
-        } finally {
-          await closedSource.close();
-        }
-      })();
-      summary.totalRowsCopied += finalCatchUp.rowsAdded;
-      summary.tablesCopied = mergeCopiedTables(summary.tablesCopied, finalCatchUp.perTable);
 
-      // 5. Close SQLite cleanly before the rename.
-      phase = 'closing-sqlite';
-      await sqlite.close();
-      sqlite = null;
-
-      // 6. Cutover. Rename PGLite directory aside, write the backend flag.
-      // Per the plan: if the rename fails (e.g. Windows file-in-use), we still
-      // proceed — the flag points at SQLite, and a leftover pglite-db/ is
-      // harmless. We log and surface it but don't fail the migration.
+      const copied = summary;
+      const sqliteHandle = sqlite;
       phase = 'cutover';
-      try {
-        fs.renameSync(pgliteDir, pgliteMigratedDir);
-      } catch (err) {
-        log('warn', '[orchestrator] pglite-db rename failed; flag points at SQLite anyway', {
-          err: (err as Error).message,
-        });
-      }
-      commitMigrationToSqlite(userData, pgliteMigratedDir);
+      await runCutover({
+        userDataPath: userData,
+        operationId: this.opts.operationId ?? this.opts.operation?.operationId ?? `migrate-${Date.now()}`,
+        operation: 'migrate',
+        sourceLiveDir: pgliteDir,
+        sourcePreservedDir: pgliteMigratedDir,
+        targetLiveDir: sqliteDir,
+        cutoverFs: this.opts.cutoverFs,
+        log,
+        // The target is a complete store at this point; the catch-up below only
+        // applies a delta. Checking it here means the source is never touched
+        // for a copy that already failed its own integrity check.
+        verifyTarget: async () => {
+          if (copied.integrityCheck !== 'ok') {
+            throw new Error(`SQLite integrity check failed: ${copied.integrityCheck}`);
+          }
+          if (copied.foreignKeyViolations > 0) {
+            throw new Error(`SQLite copy has ${copied.foreignKeyViolations} foreign key violation(s)`);
+          }
+        },
+        quiesceSource: () => this.opts.closeRunningPglite(),
+        // Runs with the source frozen and before the rename: re-open the now
+        // quiesced PGLite dir, apply the exact final delta, close both.
+        finalizeTarget: async () => {
+          phase = 'catching-up-after-close';
+          const closedSource = await reopen(pgliteDir);
+          const finalCatchUp = await (async () => {
+            try {
+              return await migrator.catchUp({
+                pglite: closedSource,
+                sqlite: sqliteHandle,
+                manifest,
+                onProgress,
+                log,
+              });
+            } finally {
+              await closedSource.close();
+            }
+          })();
+          copied.totalRowsCopied += finalCatchUp.rowsAdded;
+          copied.tablesCopied = mergeCopiedTables(copied.tablesCopied, finalCatchUp.perTable);
+          phase = 'closing-sqlite';
+          await sqliteHandle.close();
+          sqlite = null;
+        },
+      }).catch((err) => {
+        const abort = asCutoverAbort(err);
+        if (abort) {
+          phase = `cutover:${abort.phase}`;
+          targetCleanupSafe = abort.targetCleanupSafe;
+        }
+        throw err;
+      });
 
-      // 7. Done. Hand control back to the caller, which re-opens SQLite under
+      // 4. Done. Hand control back to the caller, which re-opens SQLite under
       // the production code path.
       if (this.opts.onCutoverSuccess) {
         await this.opts.onCutoverSuccess({ sqliteDir, pgliteMigratedDir, summary });
@@ -317,20 +414,16 @@ export class MigrationOrchestrator {
       reporter?.emitComplete(summary);
       log('info', '[orchestrator] migration succeeded', summary);
 
-      // Fleet-aggregate telemetry. Fields per the plan + POSTHOG_EVENTS.md:
-      //   pglite_dir_size_bytes — gauge of pre-migration store size
-      //   target_row_count      — total rows migrated
-      //   duration_ms           — wall-clock duration
-      //   foreign_key_violations / integrity_check — sanity flags
-      this.opts.sendEvent?.('migration_completed', {
+      this.report({
+        kind: 'completed',
         // pglite-db/ has just been renamed; measure from the new location.
-        pglite_dir_size_bytes: fs.existsSync(pgliteMigratedDir) ? dirSizeBytes(pgliteMigratedDir) : 0,
-        target_row_count: summary.totalRowsCopied,
-        duration_ms: Math.round(summary.durationMs),
-        tables_migrated: summary.tablesCopied.length,
-        spot_check_count: summary.spotCheckCount,
-        foreign_key_violations: summary.foreignKeyViolations,
-        integrity_check: summary.integrityCheck,
+        sourceBytes: fs.existsSync(pgliteMigratedDir) ? dirSizeBytes(pgliteMigratedDir) : liveDirBytes,
+        rowCount: summary.totalRowsCopied,
+        durationMs: summary.durationMs,
+        tableCount: summary.tablesCopied.length,
+        spotCheckCount: summary.spotCheckCount,
+        foreignKeyViolations: summary.foreignKeyViolations,
+        integrityCheck: summary.integrityCheck,
       });
 
       return summary;
@@ -339,17 +432,27 @@ export class MigrationOrchestrator {
       const stack = (err as Error).stack;
       log('error', `[orchestrator] migration failed in ${phase}`, { message, stack });
       reporter?.emitFailed({ phase, message, stack });
-      this.opts.sendEvent?.('migration_failed', {
-        phase,
-        ...classifyDatabaseError(err),
-      });
+      // A refusal already reported itself above; re-reporting it here would
+      // relabel a verdict as a failure.
+      if (!(err instanceof MigrationRefusedError)) {
+        this.report({ kind: 'failed', phase, ...classifyDatabaseError(err) });
+      }
 
       // Best-effort cleanup. We're conservative about not touching pglite-db;
       // the live worker is still serving the app, don't take it down on
-      // failure. Just clean up the partial sqlite-db dir.
+      // failure. Just clean up the partial sqlite-db dir — and only while it is
+      // still a partial copy. Once the cutover has preserved the source, this
+      // directory is the store the journal points at and removing it would
+      // leave the install with no database at all.
       try {
         if (sqlite) await sqlite.close();
       } catch { /* ignore */ }
+      if (!targetCleanupSafe) {
+        log('warn', '[orchestrator] leaving sqlite-db in place; the cutover journal points at it', {
+          sqliteDir,
+        });
+        throw err;
+      }
       try {
         if (fs.existsSync(sqliteDir)) {
           fs.rmSync(sqliteDir, { recursive: true, force: true });
@@ -396,17 +499,6 @@ async function freeBytesOnPath(p: string): Promise<number> {
   } catch {
     return Number.MAX_SAFE_INTEGER;
   }
-}
-
-function humanBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let v = n / 1024;
-  for (const u of units) {
-    if (v < 1024) return `${v.toFixed(1)} ${u}`;
-    v /= 1024;
-  }
-  return `${v.toFixed(1)} PB`;
 }
 
 function mergeCopiedTables(

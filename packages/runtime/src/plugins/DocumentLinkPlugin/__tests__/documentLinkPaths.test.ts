@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildImportedDocumentReference,
   exportDocumentLinkHref,
-  resolveDocumentLinkLookupPath,
+  resolveDocumentLinkLookupPaths,
 } from '../documentLinkPaths';
 
 describe('documentLinkPaths', () => {
@@ -23,21 +23,47 @@ describe('documentLinkPaths', () => {
 
   it('resolves same-directory relative links against the current document path', () => {
     expect(
-      resolveDocumentLinkLookupPath(
+      resolveDocumentLinkLookupPaths(
         './other-doc.md',
         '/workspace/docs/readme.md',
         '/workspace',
       ),
-    ).toBe('docs/other-doc.md');
+    ).toEqual(['docs/other-doc.md']);
   });
 
   it('resolves parent-directory links on Windows-style paths', () => {
     expect(
-      resolveDocumentLinkLookupPath(
+      resolveDocumentLinkLookupPaths(
         '../other-doc.md',
         'C:\\workspace\\docs\\guides\\readme.md',
         'C:\\workspace',
       ),
-    ).toBe('docs/other-doc.md');
+    ).toEqual(['docs/other-doc.md']);
+  });
+
+  it('tries a bare sibling href next to the document before the workspace root', () => {
+    // Markdown authors write `[x](sibling.md)`, not `./sibling.md`; resolving
+    // that only against the workspace root made every such link a silent no-op.
+    expect(
+      resolveDocumentLinkLookupPaths(
+        'animation-diff.anim.json',
+        'marketing/calendar.md',
+        '/workspace',
+      ),
+    ).toEqual([
+      'marketing/animation-diff.anim.json',
+      'animation-diff.anim.json',
+    ]);
+  });
+
+  it('keeps the workspace-root candidate for bare hrefs stored by reference chips', () => {
+    // `@` mention chips export workspace-relative paths with no `./` prefix.
+    expect(
+      resolveDocumentLinkLookupPaths(
+        'docs/other-doc.md',
+        'docs/readme.md',
+        '/workspace',
+      ),
+    ).toContain('docs/other-doc.md');
   });
 });

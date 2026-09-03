@@ -5,6 +5,7 @@
   "license": "MIT",
   "author": "Nimbalyst Team",
   "description": "Electron app for Nimbalyst",
+  "homepage": "https://nimbalyst.com",
   "main": "out/main/index.js",
   "bin": {
     "nimbalyst": "./bin/nimbalyst"
@@ -280,6 +281,10 @@
         "to": "sqlite-verify-worker.bundle.js"
       },
       {
+        "from": "out/sqlite-recovery-verify-worker.bundle.js",
+        "to": "sqlite-recovery-verify-worker.bundle.js"
+      },
+      {
         "from": "out/history-diff-worker.bundle.js",
         "to": "history-diff-worker.bundle.js"
       },
@@ -486,9 +491,14 @@
       "runAfterFinish": true
     },
     "linux": {
-      "target": "AppImage",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "artifactName": "${productName}-Linux.${ext}",
-      "executableName": "nimbalyst"
+      "executableName": "nimbalyst",
+      "category": "Development",
+      "maintainer": "Nimbalyst Team <support@nimbalyst.com>"
     },
     "buildVersion": "0.36.5"
   }

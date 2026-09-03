@@ -5,9 +5,9 @@
  * main-process tray module. This is the one place that maps between them --
  * pure, so the mapping is testable without a window.
  *
- * `workspacePath` is deliberately dropped: the island's rows carry their own
- * workspace from `TrayPanelFeed`, and clicking the strip pins the panel rather
- * than navigating, so the named session's path has no consumer on that side.
+ * `workspacePath` is carried on the named view because the strip's title is a
+ * click target that opens that session, and opening one needs its workspace as
+ * well as its id. The counts view has no session to open and so carries none.
  */
 
 import type { MenuBarIslandState } from '../../shared/menuBarIsland';
@@ -27,6 +27,7 @@ export function toIslandStrip(view: StripView): MenuBarIslandState['strip'] {
     return {
       mode: 'named',
       sessionId: view.sessionId,
+      workspacePath: view.workspacePath,
       title: view.title,
       state: view.state,
       age: view.age,

@@ -808,6 +808,47 @@ describe('OpenCodeSDKProtocol', () => {
       expect(OpenCodeServerManager.getInstance().isRunning).toBe(true);
     });
 
+    it('abandons a hung health probe and adopts the server on a later tick instead of at the deadline (#1428)', async () => {
+      vi.useFakeTimers();
+      try {
+        // Deadline far away: if the hung probe is not abandoned, adoption only
+        // happens via the late-ready fallback at this deadline.
+        OpenCodeServerManager.startupTimeoutOverrideMs = 60_000;
+
+        // First probe: an ESTABLISHED connection that never answers. It only
+        // settles when the caller aborts it via the request signal.
+        let hungProbeAborted = false;
+        mockFetch.mockImplementationOnce(((_url: string, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              hungProbeAborted = true;
+              reject(init.signal?.reason ?? new DOMException('aborted', 'AbortError'));
+            });
+          })) as any);
+
+        const { loadSdkModule } = createMockSdkModule([]);
+        const protocol = new OpenCodeSDKProtocol(loadSdkModule);
+
+        let settled = false;
+        const sessionPromise = protocol.createSession({ workspacePath: '/tmp/test' }).finally(() => {
+          settled = true;
+        });
+
+        // A few seconds covers the per-probe budget plus several poll ticks,
+        // and is nowhere near the 60s startup deadline.
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(hungProbeAborted).toBe(true);
+        expect(settled).toBe(true);
+        const session = await sessionPromise;
+        expect(session.id).toBe('oc-session-1');
+        expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(OpenCodeServerManager.getInstance().isRunning).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('surfaces a missing-CLI spawn error instead of a generic timeout', async () => {
       const childProcess = await import('child_process');
       (childProcess.spawn as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {

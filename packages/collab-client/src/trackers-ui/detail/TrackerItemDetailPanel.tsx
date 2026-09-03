@@ -47,6 +47,7 @@ import {
   resolveRoleFieldName,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { TrackerSwatchBadge } from '../primitives/TrackerSwatchBadge';
+import { TrackerRecentActivityChip } from '../TrackerRecentActivityChip';
 import {
   TrackerCommentsSection,
   type TrackerCommentMutation,
@@ -124,6 +125,7 @@ export function TrackerItemDetailPanel({
               {item.issueKey}
             </span>
           ) : null}
+          <TrackerRecentActivityChip item={item} identity={identity} />
           {/* Everything after this is right-aligned: identity on the left,
               connectivity and actions on the right, one row. */}
           <span className="ml-auto" />

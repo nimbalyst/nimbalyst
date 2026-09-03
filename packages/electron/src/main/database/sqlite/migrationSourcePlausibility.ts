@@ -21,6 +21,15 @@
  * -- the decision must be testable without a real WASM abort behind it.
  */
 
+import {
+  countBucket,
+  migrationFactsFingerprint,
+  sizeBucket,
+  type MigrationRefusal,
+  type MigrationRefusalFacts,
+  type MigrationRefusalReason,
+} from './migrationOutcome';
+
 export interface MigrationSourceFacts {
   /** Size of the live `pglite-db/` directory. */
   liveDirBytes: number;
@@ -38,7 +47,7 @@ export interface MigrationSourceFacts {
 
 export type MigrationSourceVerdict =
   | { ok: true }
-  | { ok: false; reason: string };
+  | ({ ok: false } & MigrationRefusal);
 
 /**
  * A backup this much bigger than the live database is a different database,
@@ -57,32 +66,88 @@ const RATIO_FLOOR_BYTES = 32 * 1024 * 1024;
 export function assessMigrationSource(facts: MigrationSourceFacts): MigrationSourceVerdict {
   const { liveDirBytes, largestBackupBytes, configuredProjectCount, sourceSessionCount } = facts;
 
-  if (
-    largestBackupBytes >= RATIO_FLOOR_BYTES &&
-    largestBackupBytes > liveDirBytes * SUSPICIOUS_BACKUP_RATIO
-  ) {
+  const refuse = (
+    reasonCode: MigrationRefusalReason,
+    reason: string,
+    extra?: Partial<MigrationRefusalFacts>,
+  ): MigrationSourceVerdict => {
+    const bounded: MigrationRefusalFacts = {
+      liveBytes: sizeBucket(liveDirBytes),
+      largestBackupBytes: sizeBucket(largestBackupBytes),
+      configuredProjects: countBucket(configuredProjectCount),
+      sourceSessions: countBucket(sourceSessionCount),
+      ...extra,
+    };
     return {
       ok: false,
-      reason:
-        `A database backup on disk (${humanBytes(largestBackupBytes)}) is far larger than the ` +
+      reasonCode,
+      facts: bounded,
+      factsFingerprint: migrationFactsFingerprint(reasonCode, bounded),
+      reason,
+    };
+  };
+
+  const backupClearsFloor = largestBackupBytes >= RATIO_FLOOR_BYTES;
+
+  if (backupClearsFloor && largestBackupBytes > liveDirBytes * SUSPICIOUS_BACKUP_RATIO) {
+    return refuse(
+      'backup_dwarfs_live',
+      `A database backup on disk (${humanBytes(largestBackupBytes)}) is far larger than the ` +
         `database about to be migrated (${humanBytes(liveDirBytes)}). The smaller one is ` +
         `probably not your data. Restore from the backup before migrating.`,
-    };
+    );
   }
 
-  // An unreadable count is not evidence of emptiness, so it never blocks here.
-  // The size comparison above is the signal that does not depend on the source.
-  if (configuredProjectCount > 0 && sourceSessionCount === 0) {
-    return {
-      ok: false,
-      reason:
-        `This install has ${configuredProjectCount} project(s) but the database has no sessions ` +
-        `in it. That combination means the database is not the one you have been using. ` +
-        `Restore from a backup before migrating.`,
-    };
+  // An unreadable source is the case where we know the least and are about to
+  // do the most, so it fails closed. This used to pass through on the grounds
+  // that "unreadable is not empty" -- correct, but it is not "readable and
+  // fine" either, and the cutover it authorises is permanent. Safety invariant
+  // 8 of the migration-retry plan.
+  if (sourceSessionCount === null) {
+    return refuse(
+      'source_unreadable',
+      'The database could not be read well enough to confirm it is the one you have been ' +
+        'using, so it has not been migrated. Restart, and restore from a backup if this persists.',
+    );
+  }
+
+  // Projects with no sessions is a suspicious combination, not a conclusive
+  // one: a user can open folders for months and never start an AI session, and
+  // refusing that install would strand it permanently for doing nothing wrong.
+  // So it only fires with corroboration from outside the database -- a copy on
+  // disk that is *larger* than the live store, meaning the store in front of us
+  // shrank rather than never having grown. The two weak signals together clear
+  // the same bar `backup_dwarfs_live` clears alone at 3x.
+  if (
+    configuredProjectCount > 0 &&
+    sourceSessionCount === 0 &&
+    backupClearsFloor &&
+    largestBackupBytes > liveDirBytes
+  ) {
+    return refuse(
+      'projects_without_sessions',
+      `This install has ${configuredProjectCount} project(s) but the database has no sessions ` +
+        `in it, and a larger copy (${humanBytes(largestBackupBytes)}) is on disk. That ` +
+        `combination means the database is not the one you have been using. Restore from a ` +
+        `backup before migrating.`,
+    );
   }
 
   return { ok: true };
+}
+
+/** Refusal record for a condition measured outside `assessMigrationSource`. */
+export function buildMigrationRefusal(
+  reasonCode: MigrationRefusalReason,
+  facts: MigrationRefusalFacts,
+  reason: string,
+): MigrationRefusal {
+  return {
+    reasonCode,
+    facts,
+    factsFingerprint: migrationFactsFingerprint(reasonCode, facts),
+    reason,
+  };
 }
 
 /** Minimal read surface needed to count sessions; satisfied by the live worker. */
@@ -95,8 +160,9 @@ export interface SourceSessionReader {
  * next to the decision so both cutover paths -- migrate and adopt-a-dry-run --
  * ask the same question the same way.
  *
- * Nothing in here may throw: a scan or query that fails yields the permissive
- * value, because a broken check must not become a new way to block a launch.
+ * Nothing in here may throw. A scan that fails yields no evidence; a session
+ * count that cannot be read yields `null`, which the assessment now treats as
+ * blocking rather than permissive.
  */
 export async function gatherMigrationSourceFacts(args: {
   userDataPath: string;
@@ -122,7 +188,7 @@ export async function gatherMigrationSourceFacts(args: {
     const raw = result.rows[0]?.c;
     if (raw !== undefined) sourceSessionCount = Number(raw);
   } catch {
-    // Unreadable is not the same as empty, and null says exactly that.
+    // Unreadable, which is now a blocking verdict rather than a shrug.
   }
 
   return {
@@ -133,7 +199,7 @@ export async function gatherMigrationSourceFacts(args: {
   };
 }
 
-function humanBytes(bytes: number): string {
+export function humanBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
   let value = bytes / 1024;

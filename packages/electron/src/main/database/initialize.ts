@@ -10,10 +10,12 @@ import path from 'path';
 import { database, legacyPgliteDatabase } from './PGLiteDatabaseWorker';
 import { CORRUPTED_METADATA_WIPE_SQL } from './corruptedMetadataWipe';
 import { commitFreshInstallSqlite, resolveBackend } from './sqlite/BackendSelector';
-import { refreshMigrationFlagInBackground } from './sqlite/migrationFlag';
+import { reconcileCutoverOnStartup } from './sqlite/cutoverReconciler';
 import { dirSizeBytes } from './sqlite/dirSize';
 import { findRecoveryArtifacts, largestDirBytes } from './sqlite/recoveryArtifacts';
+import { createMigrationControl } from './sqlite/migrationControl';
 import { runForcedMigration } from './bootMigration';
+import { resolveDatabaseUserDataPath } from './userDataPath';
 import { SQLiteDatabaseProxy } from './sqlite/SQLiteDatabaseProxy';
 import { logger } from '../utils/logger';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
@@ -93,11 +95,7 @@ export async function getMigrationProxy(): Promise<SQLiteDatabaseProxy> {
     throw new Error('SQLite is already the active backend — nothing to migrate.');
   }
   if (!migrationProxy) {
-    const userDataPath = process.env.NIMBALYST_USER_DATA_PATH
-      || (process.env.PLAYWRIGHT === '1'
-        ? path.join(app.getPath('temp'), 'nimbalyst-test-db')
-        : null)
-      || app.getPath('userData');
+    const userDataPath = resolveDatabaseUserDataPath();
     const sqliteDir = path.join(userDataPath, 'sqlite-db');
     const schemaDir = resolveSchemaDir();
     migrationProxy = new SQLiteDatabaseProxy({ dbDir: sqliteDir, schemaDir });
@@ -105,14 +103,11 @@ export async function getMigrationProxy(): Promise<SQLiteDatabaseProxy> {
       queryReadOnly: <T>(sql: string, params?: unknown[], timeoutMs?: number) =>
         database.queryReadOnly<T>(sql, params as any[] | undefined, timeoutMs),
     });
-    migrationProxy.setMigrationControl({
-      closePglite: async () => {
-        try {
-          await database.close();
-        } catch (err) {
-          logger.main.warn('[Migration] PGLite close failed; proceeding anyway', err);
-        }
-      },
+    migrationProxy.setMigrationControl(createMigrationControl({
+      // A close that rejects aborts the cutover before anything is renamed.
+      // See `migrationControl.ts` for why this is not inline any more.
+      closePglite: () => database.close(),
+      log: (level, msg, meta) => logger.main[level](msg, meta),
       onCutoverSuccess: async () => {
         // The renderer's existing "Continue" button asks the user to relaunch
         // so the new SQLite backend is picked up by repositoryManager. We
@@ -122,7 +117,7 @@ export async function getMigrationProxy(): Promise<SQLiteDatabaseProxy> {
           '[Migration] Cutover complete; relaunch required for SQLite to take effect',
         );
       },
-    });
+    }));
     migrationProxy.ensureWorkerSpawned();
   }
   return migrationProxy;
@@ -139,13 +134,23 @@ export async function initializeDatabase(): Promise<SessionStore> {
   logger.main.info('[Database] Initializing database system...');
 
   try {
-    // Get database path
-    // NIMBALYST_USER_DATA_PATH: custom path (for manual testing of packaged builds)
-    // PLAYWRIGHT=1: use temp directory (for automated tests)
-    const userDataPath = process.env.NIMBALYST_USER_DATA_PATH
-      || (process.env.PLAYWRIGHT === '1' ? path.join(app.getPath('temp'), 'nimbalyst-test-db') : null)
-      || app.getPath('userData');
+    // Get database path. One resolver, shared with startup recovery
+    // reconciliation, the failure dialog and both backup services -- see
+    // `userDataPath.ts` for why computing it independently was a data-safety
+    // bug rather than a duplication nit.
+    const userDataPath = resolveDatabaseUserDataPath();
     const dbPath = path.join(userDataPath, 'pglite-db');
+
+    // Finish or roll back a cutover that a previous launch did not complete.
+    // This runs BEFORE `resolveBackend` on purpose: the selector reads the flag
+    // file and the directory layout, and both of those are exactly what an
+    // interrupted cutover leaves in an inconsistent state. Reconciliation
+    // decides from the journal, then leaves the disk in a shape the selector
+    // can read straightforwardly. See `cutoverReconciler.ts`.
+    const cutover = reconcileCutoverOnStartup({
+      userDataPath,
+      log: (level, msg, meta) => logger.main[level](msg, meta),
+    });
 
     // Resolve which storage backend should be active. The selector reads
     // <userData>/database-backend.json if present, otherwise infers from disk:
@@ -181,14 +186,21 @@ export async function initializeDatabase(): Promise<SessionStore> {
         reason: backendChoice.reason,
         pglite_dir_size_bytes: dirSizeBytes(path.join(userDataPath, 'pglite-db')),
         migration_attempts: backendChoice.state?.migrationAttempts?.count ?? 0,
+        // A durable refusal only emits `migration_refused` on the launch that
+        // reaches the verdict -- re-emitting an unchanged verdict every launch
+        // would be noise. Without this the blocked population is invisible
+        // from the second launch onward, which is the same blind spot that let
+        // #1347 run for nine months.
+        migration_blocked_reason: backendChoice.state?.migrationBlocked?.reasonCode ?? 'none',
+        // A cutover that startup could neither finish nor roll back is the
+        // shape #1347 stayed invisible in for nine months. It rides the
+        // existing per-launch heartbeat rather than a new event: the value is
+        // a bounded reason code, never a path or a byte count.
+        cutover_reconcile: cutover.outcome === 'none' ? 'none' : cutover.reasonCode,
       });
     } catch (heartbeatErr) {
       logger.main.warn('[Database] backend heartbeat failed', heartbeatErr);
     }
-
-    // Keep the kill switch warm for the next launch. Never awaited — the boot
-    // path reads only the disk cache.
-    refreshMigrationFlagInBackground(userDataPath);
 
     // Heartbeats for leftover PGLite directories, from one scan of userData.
     //
@@ -233,6 +245,18 @@ export async function initializeDatabase(): Promise<SessionStore> {
       // main holds a reference to it; the proxy's getBackupService() is a
       // facade that forwards createBackup() through the worker.
       const sqliteDir = path.join(userDataPath, 'sqlite-db');
+      // Same hard stop as the PGLite branch below, for the direction that
+      // strands a SQLite store: an interrupted rollback moves `sqlite-db/`
+      // aside before it puts PGLite back, and opening SQLite in that window
+      // creates an empty database on top of a perfectly good one.
+      if (cutover.sqliteCreationBlocked) {
+        throw new Error(
+          '[Database] Refusing to open SQLite: an interrupted database operation left this '
+          + `install's database preserved elsewhere and startup could not restore it (${cutover.reasonCode}`
+          + `${cutover.error ? `: ${cutover.error}` : ''}). No data has been lost; every copy is `
+          + 'still on disk. Settings -> Database can restore it.',
+        );
+      }
       const schemaDir = resolveSchemaDir();
       sqliteDatabase = new SQLiteDatabaseProxy({
         dbDir: sqliteDir,
@@ -248,13 +272,30 @@ export async function initializeDatabase(): Promise<SessionStore> {
       // here, which leaves only two ways to reach this line without a store:
       // a rollback install whose PGLite was moved by hand, or a bug in the
       // guard. Neither may be silent again.
+      // Hard stop, not a warning. The reconciler says the install's only real
+      // PGLite store is sitting at the journaled preserved path and it could
+      // not move it back. Opening PGLite here would create an empty directory
+      // on top of that -- the precise sequence that made #1347 irreversible for
+      // the three installs that then migrated the empty database.
+      if (cutover.pgliteCreationBlocked) {
+        throw new Error(
+          '[Database] Refusing to open PGLite: an interrupted cutover left this install\'s '
+          + `database preserved elsewhere and startup could not restore it (${cutover.reasonCode}`
+          + `${cutover.error ? `: ${cutover.error}` : ''}). No data has been lost; every copy is `
+          + 'still on disk. Settings -> Database can restore it.',
+        );
+      }
       if (!fs.existsSync(dbPath)) {
         logger.main.error(
           `[Database] Resolved to PGLite (reason: ${backendChoice.reason}) but ${dbPath} does not exist; ` +
             'a new empty database is about to be created. If this install had sessions, they are not in PGLite.',
         );
       }
-      backupService = new DatabaseBackupService(dbPath, legacyPgliteDatabase);
+      backupService = new DatabaseBackupService(dbPath, legacyPgliteDatabase, {
+        // Read at rotation time so a settings change applies on the next
+        // backup, the same way the SQLite worker gets the value pushed to it.
+        getCopiesKept: () => getDatabaseMaintenanceSettings().backupCopiesKept,
+      });
       await timeStartupPhase('BackupService.initialize', () => backupService!.initialize());
       legacyPgliteDatabase.setBackupService(backupService);
       database.useDatabase(legacyPgliteDatabase, 'pglite');
@@ -524,9 +565,7 @@ export function getLiveSqliteDatabaseProxy(): SQLiteDatabaseProxy | null {
  */
 async function runStalenessBackup(trigger: 'startup' | 'resume'): Promise<void> {
   try {
-    const userDataPath = process.env.NIMBALYST_USER_DATA_PATH
-      || (process.env.PLAYWRIGHT === '1' ? path.join(app.getPath('temp'), 'nimbalyst-test-db') : null)
-      || app.getPath('userData');
+    const userDataPath = resolveDatabaseUserDataPath();
     const metadataPaths = [
       path.join(userDataPath, 'sqlite-db.backups', 'backup-metadata.json'),
       path.join(userDataPath, 'db-backups', 'backup-metadata.json'),

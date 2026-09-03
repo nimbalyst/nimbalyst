@@ -37,19 +37,41 @@ describe('assessMigrationSource', () => {
       sourceSessionCount: 5,
     });
 
-    expect(verdict).toMatchObject({ ok: false, reason: expect.stringMatching(/backup/i) });
+    expect(verdict).toMatchObject({
+      ok: false,
+      reasonCode: 'backup_dwarfs_live',
+      reason: expect.stringMatching(/backup/i),
+    });
   });
 
-  it('refuses when the install has projects but the source has no sessions', () => {
-    // Someone with configured projects has used the app. Zero sessions means
-    // the store in front of us is not the one they built.
+  it('refuses projects-without-sessions when a larger copy corroborates the loss', () => {
+    // Someone with configured projects has used the app, and a bigger copy
+    // sitting on disk says the store in front of us shrank. Either signal
+    // alone is weak; together they are the #1347 fingerprint below the 3x bar.
     const verdict = assessMigrationSource({
       ...healthy,
-      largestBackupBytes: 0,
+      liveDirBytes: 200 * MB,
+      largestBackupBytes: 260 * MB,
       sourceSessionCount: 0,
     });
 
-    expect(verdict).toMatchObject({ ok: false, reason: expect.stringMatching(/session/i) });
+    expect(verdict).toMatchObject({
+      ok: false,
+      reasonCode: 'projects_without_sessions',
+      reason: expect.stringMatching(/session/i),
+    });
+  });
+
+  it('allows projects-without-sessions when nothing on disk corroborates a loss', () => {
+    // A real user can open folders and never start an AI session. With no
+    // larger copy anywhere, "no sessions" is a usage pattern, not evidence
+    // that this store is the wrong one -- and refusing it would strand a
+    // legitimate install permanently.
+    expect(assessMigrationSource({
+      ...healthy,
+      largestBackupBytes: 0,
+      sourceSessionCount: 0,
+    }).ok).toBe(true);
   });
 
   it('allows a genuinely new install with no projects and no sessions', () => {
@@ -62,12 +84,18 @@ describe('assessMigrationSource', () => {
     }).ok).toBe(true);
   });
 
-  it('does not treat an unreadable session count as emptiness', () => {
+  it('blocks when the source session count could not be read', () => {
+    // Inverted deliberately. This used to pass the migration through on the
+    // grounds that "unreadable is not empty" -- true, but it is also not
+    // "readable and fine", and the cutover it authorises is permanent. An
+    // unreadable source is the one case where we know the least and are about
+    // to do the most, so it fails closed. Safety invariant 8 in
+    // nimbalyst-local/plans/pglite-to-sqlite-migration-retry.md.
     expect(assessMigrationSource({
       ...healthy,
       largestBackupBytes: 0,
       sourceSessionCount: null,
-    }).ok).toBe(true);
+    })).toMatchObject({ ok: false, reasonCode: 'source_unreadable' });
   });
 
   it('ignores a backup that is merely a bit larger', () => {

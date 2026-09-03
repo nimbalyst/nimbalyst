@@ -6,6 +6,7 @@ import { useScrollableMenuFloating } from '@nimbalyst/runtime/ui/floating/useScr
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import { ProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
+import type { TrackerIdentity } from '@nimbalyst/runtime/core/DocumentService';
 import { type TrackerItemType, type TrackerLinkedSessionOption } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import { MANUAL_TRACKER_ORDERING, type TrackerGroupBy, type TrackerOrdering } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import {
@@ -73,6 +74,7 @@ interface KanbanBoardProps {
   onLaunchWorktree?: (itemId: string) => void;
   favoriteItemIds?: ReadonlySet<string>;
   onToggleFavorite?: (itemId: string) => void;
+  currentIdentity?: TrackerIdentity | null;
 }
 
 /**
@@ -110,6 +112,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   onLaunchWorktree,
   favoriteItemIds = new Set<string>(),
   onToggleFavorite,
+  currentIdentity,
 }) => {
   // Items always come from the caller (TrackerMainView passes atom-sourced items).
   // KanbanBoard no longer loads its own data -- single source of truth via Jotai atoms.
@@ -511,6 +514,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                           onToggle={onToggleFavorite}
                         />
                       )}
+                      currentIdentity={currentIdentity}
                     />
                     {cardIndex === colItems.length - 1 && (
                       <>

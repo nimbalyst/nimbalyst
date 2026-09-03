@@ -2,11 +2,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  applyTypeColumnDisplay,
   getCellValue,
   getDefaultColumnConfig,
   getEffectiveUpdatedDate,
+  getTypeIcon,
+  getTypeLabel,
   resolveColumnFieldName,
   resolveColumnsForType,
+  resolveTypeColumnDisplay,
 } from '../trackerColumns';
 import { resolveTrackerOrderingValue } from '../../models/trackerOrdering';
 import { globalRegistry } from '../../models';
@@ -226,5 +230,78 @@ describe('cross-tracker column resolution', () => {
 
     expect(dueDate?.role).toBe('dueDate');
     expect(resolveColumnFieldName('crossInvoice', dueDate!)).toBe('targetDate');
+  });
+});
+
+/**
+ * The Type column used to read a hardcoded map of the seven built-in types, so a
+ * workspace running custom types got an empty glyph on most of its rows
+ * (nimbalyst#1422). Identity now comes from the type's own schema, and the
+ * column can print the name instead when a glyph cannot carry ~30 types.
+ */
+describe('type column identity and display', () => {
+  const declaresIcon: TrackerDataModel = {
+    type: 'incidentReview',
+    displayName: 'Incident Review',
+    displayNamePlural: 'Incident Reviews',
+    icon: 'siren',
+    color: '#dc2626',
+    modes: { inline: true, fullDocument: false },
+    idPrefix: 'INC',
+    idFormat: 'ulid',
+    fields: [{ name: 'title', type: 'string', required: true }],
+    roles: { title: 'title' },
+  };
+
+  const declaresNoIcon: TrackerDataModel = {
+    ...declaresIcon,
+    type: 'vendor-contract',
+    displayName: '',
+    displayNamePlural: '',
+    icon: '',
+    idPrefix: 'VEN',
+  };
+
+  beforeEach(() => {
+    globalRegistry.register(declaresIcon);
+    globalRegistry.register(declaresNoIcon);
+  });
+
+  it('resolves a custom type icon from its own schema', () => {
+    expect(getTypeIcon('incidentReview')).toBe('siren');
+  });
+
+  it('never renders an empty glyph for a type that declares no icon', () => {
+    expect(getTypeIcon('vendor-contract')).toBeTruthy();
+    expect(getTypeIcon('neverRegisteredAnywhere')).toBeTruthy();
+  });
+
+  it('names a type from its schema, falling back to a readable form of its id', () => {
+    expect(getTypeLabel('incidentReview')).toBe('Incident Review');
+    expect(getTypeLabel('vendor-contract')).toBe('Vendor contract');
+    expect(getTypeLabel('postMortem')).toBe('Post Mortem');
+  });
+
+  it('defaults to the icon, including for configs saved before the option existed', () => {
+    expect(getDefaultColumnConfig('incidentReview').typeColumnDisplay).toBe('icon');
+    expect(resolveTypeColumnDisplay({ typeColumnDisplay: undefined })).toBe('icon');
+    expect(resolveTypeColumnDisplay({ typeColumnDisplay: 'label' })).toBe('label');
+  });
+
+  it('widens the type column and marks it for names only in label mode', () => {
+    const columns = resolveColumnsForType('incidentReview');
+    const iconMode = applyTypeColumnDisplay(columns, 'icon').find(c => c.id === 'type')!;
+    const labelMode = applyTypeColumnDisplay(columns, 'label').find(c => c.id === 'type')!;
+
+    expect(iconMode.typeDisplay).toBeUndefined();
+    expect(labelMode.typeDisplay).toBe('label');
+    expect(labelMode.width).toBeGreaterThan(iconMode.width as number);
+  });
+
+  it('leaves every other column alone in label mode', () => {
+    const columns = resolveColumnsForType('incidentReview');
+    const switched = applyTypeColumnDisplay(columns, 'label');
+
+    expect(switched.filter(c => c.id !== 'type')).toEqual(columns.filter(c => c.id !== 'type'));
   });
 });

@@ -14,6 +14,7 @@
  * sign-off as exists. Only `autoCloseOnCommit` gates it.
  */
 
+import { execFile } from 'child_process';
 import Store from 'electron-store';
 import { logger } from '../utils/logger';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
@@ -21,7 +22,10 @@ import { isLocalIssueKey } from '../../shared/localIssueKey';
 import type { CommitDetectedEvent } from '../file/GitRefWatcher';
 import type { TrackerAutomationSettings } from '../utils/store';
 import { getEffectiveTrackerAutomation } from '../utils/store';
+import { getCurrentIdentity } from './TrackerIdentityService';
+import { appendActivity } from './tracker/trackerActivity';
 import type { LinkedCommit } from '@nimbalyst/runtime';
+import type { TrackerIdentity } from '@nimbalyst/runtime/core/DocumentService';
 import {
   getDoneStatusValue,
   getWorkflowStatusFieldName,
@@ -92,6 +96,67 @@ export function getIssueKeyPrefix(issueKey: string | null | undefined): string |
   if (separatorIndex <= 0) return undefined;
 
   return trimmed.slice(0, separatorIndex).toUpperCase();
+}
+
+// ---------------------------------------------------------------------------
+// Commit author
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a commit's author name and email. The callback form of `execFile` is
+ * used rather than `promisify` so a mocked `execFile` still sees the call.
+ */
+function readCommitAuthor(
+  workspacePath: string,
+  commitHash: string,
+): Promise<{ name: string; email: string } | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      ['show', '-s', '--format=%an%n%ae', commitHash],
+      { cwd: workspacePath },
+      (error, stdout) => {
+        if (error) {
+          resolve(null);
+          return;
+        }
+        const [name = '', email = ''] = String(stdout).split('\n').map((line) => line.trim());
+        resolve(name || email ? { name, email } : null);
+      },
+    );
+  });
+}
+
+function sameEmail(left: string | null | undefined, right: string | null | undefined): boolean {
+  return Boolean(left && right && left.trim().toLowerCase() === right.trim().toLowerCase());
+}
+
+/**
+ * Who to attribute a commit-driven activity entry to.
+ *
+ * The local identity wins whenever the commit's author is this machine's git
+ * user: it carries the signed-in email and display name, which is what every
+ * other activity writer stamps, so the entry coalesces and filters with them.
+ * A commit by anyone else is attributed to its author from git, and a commit
+ * whose author cannot be read at all falls back to the local identity rather
+ * than going unattributed.
+ */
+async function resolveCommitAuthorIdentity(
+  workspacePath: string,
+  commitHash: string,
+): Promise<TrackerIdentity> {
+  const local = getCurrentIdentity(workspacePath);
+  const author = await readCommitAuthor(workspacePath, commitHash);
+  if (!author) return local;
+  if (sameEmail(author.email, local.gitEmail) || sameEmail(author.email, local.email)) {
+    return local;
+  }
+  return {
+    email: author.email || null,
+    displayName: author.name || author.email,
+    gitName: author.name || null,
+    gitEmail: author.email || null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -407,21 +472,15 @@ export class CommitTrackerLinker {
 
     data[statusField] = closingStatus;
 
-    // Add activity log entry
-    const activity: any[] = data.activity || [];
-    activity.push({
-      action: 'status_changed',
+    // Through the shared writer, never a raw push: sync merges the trail on
+    // entry `id` and sorts on a numeric `timestamp`, so a hand-built entry
+    // collapses with its siblings the first time the item syncs.
+    appendActivity(data, await resolveCommitAuthorIdentity(workspacePath, commitHash), 'status_changed', {
       field: statusField,
       oldValue: oldStatus,
       newValue: closingStatus,
-      timestamp: new Date().toISOString(),
       note: `Closed via commit ${commitHash.slice(0, 7)}`,
     });
-    // Cap activity at 100
-    if (activity.length > 100) {
-      activity.splice(0, activity.length - 100);
-    }
-    data.activity = activity;
 
     await db.query(
       `UPDATE tracker_items SET data = $1, updated = NOW() WHERE id = $2`,

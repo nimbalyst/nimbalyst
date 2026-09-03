@@ -18,6 +18,7 @@
  */
 import React from 'react';
 import type { TrackerRecord } from '../../../../runtime/src/core/TrackerRecord';
+import type { TrackerIdentity } from '../../../../runtime/src/core/DocumentService';
 import type { TrackerGroupBy, TrackerOrdering, TrackerRelationshipLabelResolver } from '../../../../runtime/src/plugins/TrackerPlugin/models/index';
 import { type TrackerStatusScope } from '../../trackers/index';
 export interface TrackerBoardSurfaceProps {
@@ -33,5 +34,6 @@ export interface TrackerBoardSurfaceProps {
     onOpenItem: (itemId: string) => void;
     /** Omit for a read-only permission state. */
     onItemUpdate?: (item: TrackerRecord, updates: Record<string, unknown>) => Promise<unknown> | unknown;
+    currentIdentity?: TrackerIdentity | null;
 }
-export declare function TrackerBoardSurface({ rows, trackerType, groupBy, ordering, statusScope, resolveRelationshipLabel, selectedItemIds, highlightedItemId, onToggleSelected, onOpenItem, onItemUpdate, }: TrackerBoardSurfaceProps): React.JSX.Element;
+export declare function TrackerBoardSurface({ rows, trackerType, groupBy, ordering, statusScope, resolveRelationshipLabel, selectedItemIds, highlightedItemId, onToggleSelected, onOpenItem, onItemUpdate, currentIdentity, }: TrackerBoardSurfaceProps): React.JSX.Element;

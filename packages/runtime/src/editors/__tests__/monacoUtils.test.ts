@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { getMonacoTheme, toMonacoExtensionThemeName } from '../monacoUtils';
+import { getMonacoLanguage, getMonacoTheme, toMonacoExtensionThemeName } from '../monacoUtils';
 import { registerThemeContribution } from '../../editor/themes/registry';
 
 describe('getMonacoTheme', () => {
@@ -87,5 +87,13 @@ describe('getMonacoTheme', () => {
     expect(toMonacoExtensionThemeName('com.rosepinetheme.nimbalyst:rose-pine-moon')).toBe('rose-pine-moon');
     // No namespace -> returned verbatim.
     expect(toMonacoExtensionThemeName('monokai')).toBe('monokai');
+  });
+});
+
+describe('getMonacoLanguage', () => {
+  // #1406: a private copy of the extension map in this module drifted from the
+  // shared one and silently dropped Dart to plaintext.
+  it('highlights Dart files', () => {
+    expect(getMonacoLanguage('lib/main.dart')).toBe('dart');
   });
 });

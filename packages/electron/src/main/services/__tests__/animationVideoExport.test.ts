@@ -9,7 +9,7 @@
  * size, which is all the caller sees.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ANIMATION_EXPORT_DEFAULTS,
   ANIMATION_EXPORT_LIMITS,
@@ -81,6 +81,15 @@ describe('frameDurationsUs', () => {
     );
     expect(total).toBe(800_000);
   });
+
+  it('rebases a delayed first capture to zero without shortening the video', () => {
+    // capturePage takes time, so the first frame normally arrives tens of
+    // milliseconds after the animation clock starts. MP4 tracks require that
+    // first frame at zero and should still span the requested duration.
+    const durations = frameDurationsUs([67, 100, 600, 700], 800);
+    expect(durations.reduce((a, b) => a + b, 0)).toBe(800_000);
+    expect(durations.at(-1)).toBe(167_000);
+  });
 });
 
 describe('chooseBitrate', () => {
@@ -127,5 +136,34 @@ describe('buildEncoderScript', () => {
     // Muxing needs the AVC decoder description, which only arrives in avcc
     // format; the annexb default produces a file no player will open.
     expect(script).toContain("format: 'avc'");
+  });
+
+  it('reports unavailable WebCodecs instead of throwing before the bridge starts', () => {
+    const script = buildEncoderScript({
+      width: 1440,
+      height: 768,
+      bitrate: 4_000_000,
+      framerate: 30,
+      codec: 'avc1.640028',
+    });
+    const fail = vi.fn();
+
+    expect(() =>
+      new Function('window', 'VideoEncoder', 'VideoFrame', script)(
+        {
+          animationVideoBridge: {
+            chunk: vi.fn(),
+            done: vi.fn(),
+            fail,
+            start: vi.fn(),
+          },
+        },
+        undefined,
+        undefined
+      )
+    ).not.toThrow();
+    expect(fail).toHaveBeenCalledWith(
+      expect.stringContaining('VideoEncoder is unavailable')
+    );
   });
 });

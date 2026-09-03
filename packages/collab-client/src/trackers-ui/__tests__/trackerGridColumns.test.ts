@@ -187,6 +187,40 @@ describe('buildGridColumns', () => {
     expect(cellText([{ itemId: 'rel_2', title: 'Release 1.4' }])).toEqual(['Release 1.4']);
   });
 
+  /**
+   * A value is one pill because it is one value, not because it happens to
+   * contain no comma: joining the resolved titles and re-splitting them on
+   * ', ' tore "Tampa, FL client meeting" into two chips (nimbalyst#1424).
+   */
+  it('renders one pill per value even when a value contains a comma', () => {
+    registerType();
+    const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({
+      tag,
+      props,
+      children,
+    });
+    const pills = (
+      columnId: string,
+      value: unknown,
+      resolveRelationshipLabel?: (id: string) => string | undefined,
+    ): string[] => {
+      const [column] = buildGridColumns(columnsFor([columnId]), {
+        trackerType: gridType,
+        isRowEditable: () => true,
+        resolveRelationshipLabel,
+      });
+      const cell = (column.cellTemplate as any)(h, { model: { [columnId]: value } });
+      return (cell.children as any[]).map(chip => chip.children);
+    };
+
+    expect(pills('collection', ['mst_1'], id => (
+      id === 'mst_1' ? 'Tampa, FL client meeting' : undefined
+    ))).toEqual(['Tampa, FL client meeting']);
+    expect(pills('collection', [{ itemId: 'rel_2', title: 'Release 1.4, hotfix' }]))
+      .toEqual(['Release 1.4, hotfix']);
+    expect(pills('tags', ['Tampa, FL', 'urgent'])).toEqual(['Tampa, FL', 'urgent']);
+  });
+
   it('opens the existing row context menu from the dedicated action column', () => {
     const actionColumn = buildGridActionsColumn();
     const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({

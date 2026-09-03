@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
@@ -43,6 +44,20 @@ describe('DatabaseBackupService temp-dir cleanup', () => {
 
   afterEach(() => {
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('preserves aged root-level corruption artifacts and their contents', async () => {
+    const artifact = path.join(tmp, 'pglite-db.backup-2026-08-21T12-00-00-000Z');
+    const payload = path.join(artifact, 'base', '1');
+    fs.mkdirSync(path.dirname(payload), { recursive: true });
+    fs.writeFileSync(payload, 'recoverable-user-data');
+    const olderThanThirtyDays = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(artifact, olderThanThirtyDays, olderThanThirtyDays);
+
+    await svc.cleanupOldCorruptedBackups();
+
+    expect(fs.existsSync(artifact)).toBe(true);
+    expect(fs.readFileSync(payload, 'utf8')).toBe('recoverable-user-data');
   });
 
   it('cleanupOldCorruptedBackups removes stranded temp-backup-* dirs in backupDir', async () => {
@@ -96,5 +111,119 @@ describe('DatabaseBackupService temp-dir cleanup', () => {
     // Sanity: the synthetic tempPath was never created (real code uses a
     // timestamped name), but no temp-backup-* should remain anywhere.
     expect(fs.existsSync(tempPath)).toBe(false);
+  });
+});
+
+describe('DatabaseBackupService createBackup', () => {
+  let backupDir: string;
+  let dbPath: string;
+
+  const verifyingWorker = () =>
+    ({ verifyBackup: async () => ({ valid: true, hasData: true }) }) as never;
+
+  const makeService = (getCopiesKept?: () => number) => {
+    const svc = new DatabaseBackupService(dbPath, verifyingWorker(), { getCopiesKept });
+    (svc as unknown as { hasEnoughDiskSpace: () => Promise<boolean> }).hasEnoughDiskSpace =
+      async () => true;
+    return svc;
+  };
+
+  const slotPath = (slot: 'current' | 'previous' | 'oldest') =>
+    path.join(backupDir, `pglite-db.backup-${slot}`);
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-pgbkp-'));
+    backupDir = path.join(tmp, 'db-backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    dbPath = path.join(tmp, 'pglite-db');
+    fs.mkdirSync(dbPath);
+    fs.writeFileSync(path.join(dbPath, 'page.0'), 'x'.repeat(1024));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('coalesces a second createBackup while one is in flight', async () => {
+    // #1369: the periodic timer and the resume-from-sleep check both fire a
+    // full copy on wake. Two concurrent multi-GB copies of the same store
+    // starve each other and both fail verification. The second caller must
+    // ride on the first copy instead of starting its own.
+    const svc = makeService();
+    await svc.initialize();
+    let releaseCopy!: () => void;
+    const copyGate = new Promise<void>((resolve) => { releaseCopy = resolve; });
+    const copyDirectory = vi.fn(async (_src: string, dest: string) => {
+      await copyGate;
+      await fsp.mkdir(dest, { recursive: true });
+      await fsp.writeFile(path.join(dest, 'page.0'), 'x'.repeat(1024));
+    });
+    (svc as unknown as { copyDirectory: typeof copyDirectory }).copyDirectory = copyDirectory;
+
+    const first = svc.createBackup();
+    const second = svc.createBackup();
+    releaseCopy();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(copyDirectory).toHaveBeenCalledTimes(1);
+    expect(a).toEqual({ success: true });
+    expect(b).toEqual({ success: true });
+
+    // The guard must clear once the backup settles so the next window runs.
+    await svc.createBackup();
+    expect(copyDirectory).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the in-flight guard when the backup throws', async () => {
+    const svc = makeService();
+    await svc.initialize();
+    const svcAny = svc as unknown as { copyDirectory: (src: string, dest: string) => Promise<void> };
+    svcAny.copyDirectory = async () => { throw new Error('synthetic copy failure'); };
+
+    const [a, b] = await Promise.all([svc.createBackup(), svc.createBackup()]);
+    expect(a.success).toBe(false);
+    expect(b.success).toBe(false);
+
+    // A later call must start a fresh backup rather than replay the failure.
+    const copyDirectory = vi.fn(async (_src: string, dest: string) => {
+      await fsp.mkdir(dest, { recursive: true });
+      await fsp.writeFile(path.join(dest, 'page.0'), 'x'.repeat(1024));
+    });
+    svcAny.copyDirectory = copyDirectory;
+    expect(await svc.createBackup()).toEqual({ success: true });
+    expect(copyDirectory).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps backupCopiesKept generations instead of a hardcoded three', async () => {
+    // The SQLite service already honors the setting; the PGLite rotation
+    // still rolled three full copies of the store regardless (#1369).
+    const svc = makeService(() => 2);
+    await svc.initialize();
+
+    await svc.createBackup();
+    await svc.createBackup();
+    await svc.createBackup();
+
+    expect(fs.existsSync(slotPath('current'))).toBe(true);
+    expect(fs.existsSync(slotPath('previous'))).toBe(true);
+    expect(fs.existsSync(slotPath('oldest'))).toBe(false);
+    expect(svc.getBackupStatus().oldestBackup).toBeNull();
+  });
+
+  it('reclaims surplus generations when the setting is lowered', async () => {
+    let copiesKept = 3;
+    const svc = makeService(() => copiesKept);
+    await svc.initialize();
+    await svc.createBackup();
+    await svc.createBackup();
+    await svc.createBackup();
+    expect(fs.existsSync(slotPath('oldest'))).toBe(true);
+
+    copiesKept = 1;
+    await svc.createBackup();
+
+    expect(fs.existsSync(slotPath('current'))).toBe(true);
+    expect(fs.existsSync(slotPath('previous'))).toBe(false);
+    expect(fs.existsSync(slotPath('oldest'))).toBe(false);
   });
 });

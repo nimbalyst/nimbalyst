@@ -6,7 +6,7 @@
  * deliberately has no mapping step.
  */
 /** Every mode a saved view (or the persisted layout) may carry. */
-export type TrackerViewMode = 'list' | 'table' | 'kanban' | 'timeline' | 'tag-board' | 'inbox';
+export type TrackerViewMode = 'list' | 'table' | 'kanban' | 'timeline' | 'radar' | 'tag-board' | 'inbox';
 export interface TrackerViewModeOption {
     value: TrackerViewMode;
     label: string;

@@ -42,7 +42,8 @@ import {
   type ProjectedBlockerRef,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerBlockerVisibility';
 import { trackerItemToRecord } from '@nimbalyst/runtime/core/TrackerRecord';
-import { getRecordStatus, resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import { getRecordStatus, getRecordTitle, resolveRoleFieldName } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import { buildTrackerRadar, getRecentTeammateActivity } from '@nimbalyst/tracker-core';
 import { getVisibleTrackerLinkedSessions, shouldPersistTrackerLinkedSessions } from '../../../shared/trackerSessionLinks';
 import { buildFullDocumentTrackerId } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
 import { normalizeLegacyLabelValues } from '@nimbalyst/runtime/sync';
@@ -94,6 +95,21 @@ function trackMcpTrackerMutation(
     trackerType,
     view: 'agent_tool',
   });
+}
+
+function trackerRadarAdvisory(item: TrackerItem | null | undefined, workspacePath?: string): string {
+  if (!item) return '';
+  try {
+    const activity = getRecentTeammateActivity(
+      trackerItemToRecord(item),
+      getCurrentIdentity(workspacePath),
+    );
+    return activity ? `\n- **Radar**: ${activity.summary}` : '';
+  } catch {
+    // Advisory-only: malformed legacy metadata must never turn a successful
+    // tracker mutation into a failed tool call.
+    return '';
+  }
 }
 
 function buildTrackerSchemaValidationError(
@@ -598,6 +614,24 @@ export const trackerToolSchemas = [
         limit: {
           type: 'number',
           description: 'Maximum number of items to return (default: 50, capped at 250).',
+        },
+      },
+    },
+  },
+  {
+    name: 'work_radar',
+    description:
+      'Show compact recent team activity from synced tracker history. Call with an issueKey before starting work on an item to see whether a teammate has already touched it; call without one to see active work across the current tracker corpus.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        windowHours: {
+          type: 'number',
+          description: 'Rolling window in hours, clamped to 2..72 (default 24).',
+        },
+        issueKey: {
+          type: 'string',
+          description: 'Optional issue key, local key, or stable item id to inspect.',
         },
       },
     },
@@ -1497,6 +1531,86 @@ export function handleTrackerReady(
   );
 }
 
+export async function handleWorkRadar(
+  args: { windowHours?: number; issueKey?: string },
+  workspacePath?: string,
+): Promise<McpToolResult> {
+  let tempDocService: { destroy?: () => void } | undefined;
+  try {
+    if (workspacePath) ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+    const { documentServices } = await import('../../window/WindowManager');
+    let docService = workspacePath ? documentServices.get(workspacePath) : undefined;
+    if (!docService && workspacePath) {
+      const { ElectronDocumentService } = await import('../../services/ElectronDocumentService');
+      docService = new ElectronDocumentService(workspacePath);
+      tempDocService = docService;
+    }
+    const reference = args.issueKey?.trim().toLowerCase();
+    const rawItems = docService ? await docService.listTrackerItems() : [];
+    const selected = reference
+      ? rawItems.filter((item) => [item.issueKey, item.localKey, item.id]
+          .some((value) => value?.toLowerCase() === reference))
+      : rawItems;
+    const radar = buildTrackerRadar(selected.map(trackerItemToRecord), {
+      windowHours: args.windowHours,
+      currentIdentity: getCurrentIdentity(workspacePath),
+      getTitle: getRecordTitle,
+      getStatus: getRecordStatus,
+    });
+    const allThreads = radar.lanes.flatMap((lane) => lane.marks.map((mark) => ({
+      actor: lane.actor.displayName,
+      title: mark.label,
+      issueKey: mark.kind === 'thread' ? mark.items[0]?.issueKey : undefined,
+      itemIds: mark.itemIds,
+      state: mark.state,
+      lastActivityAt: mark.lastActivityAt,
+      agentDriven: mark.agentDriven,
+    }))).sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+    const allSameItem = radar.ties.map((tie) => ({
+      issueKey: tie.issueKey,
+      itemId: tie.itemId,
+      actors: [
+        radar.lanes.find((lane) => lane.actorKey === tie.fromActorKey)?.actor.displayName,
+        radar.lanes.find((lane) => lane.actorKey === tie.toActorKey)?.actor.displayName,
+      ].filter((value): value is string => Boolean(value)),
+      kind: tie.type,
+    }));
+    // A bare session-start read can span thousands of items. Preserve every
+    // issue-scoped result, but bound the team-wide payload so the coordination
+    // check does not consume the context it is meant to protect.
+    const threads = reference ? allThreads : allThreads.slice(0, 50);
+    const sameItem = reference ? allSameItem : allSameItem.slice(0, 20);
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          structured: {
+            windowHours: radar.windowHours,
+            totalThreads: allThreads.length,
+            threads,
+            sameItem,
+            waitingOnYou: radar.waitingOnYou.slice(0, 20),
+            youHandedOff: radar.youHandedOff.slice(0, 20),
+            truncated: threads.length < allThreads.length || sameItem.length < allSameItem.length,
+          },
+          summary: reference && selected.length === 0
+            ? `No tracker item matched ${args.issueKey}.`
+            : `${allThreads.length} recent work thread${allThreads.length === 1 ? '' : 's'} across ${radar.lanes.length} actor lane${radar.lanes.length === 1 ? '' : 's'}; ${allSameItem.length} shared-item signal${allSameItem.length === 1 ? '' : 's'}.`,
+        }),
+      }],
+      isError: false,
+    };
+  } catch (error) {
+    console.error('[MCP Server] work_radar failed:', error);
+    return {
+      content: [{ type: 'text', text: `Error reading work radar: ${error instanceof Error ? error.message : String(error)}` }],
+      isError: true,
+    };
+  } finally {
+    tempDocService?.destroy?.();
+  }
+}
+
 export async function handleTrackerGet(
   args: any,
   workspacePath?: string,
@@ -1662,6 +1776,13 @@ export async function handleTrackerGet(
         tags: item.tags || [],
         owner: item.owner || undefined,
         dueDate: item.dueDate || undefined,
+        // #1224: without these the tool contradicts its own mutations -- an
+        // agent that archived an item read it back as active, and comments
+        // arrive in customFields, which the filter below strips.
+        // `fromDbBoolean`: the flag is INTEGER on SQLite, boolean on PGLite.
+        archived: fromDbBoolean(item.archived),
+        archivedAt: item.archivedAt || undefined,
+        comments: item.customFields?.comments || undefined,
         // Surface schema-defined custom fields (e.g. github-pr's prNumber) that
         // are otherwise dropped by the known-field whitelist above. Uses the
         // same internal-key filtering as the summary so the bag is clean.
@@ -1679,7 +1800,7 @@ export async function handleTrackerGet(
           type: "text",
           text: JSON.stringify({
             structured,
-            summary: lines.join("\n"),
+            summary: lines.join("\n") + trackerRadarAdvisory(item, workspacePath),
           }),
         },
       ],
@@ -2100,7 +2221,7 @@ export async function handleTrackerCreate(
           type: "text",
           text: JSON.stringify({
             structured,
-            summary: `Created tracker item:\n- **Type**: ${args.type}\n- **Title**: ${data[titleField]}\n- **Status**: ${data[statusField]}\n- **Ref**: ${getTrackerDisplayRef(createdRef)}\n- **ID**: ${id}${issueKeyAvailabilityNote(createdRef, createdKeyContext)}${bodyWriteResult ? `\n- **Body write**: Failed — ${bodyWriteResult.message}` : ''}`,
+            summary: `Created tracker item:\n- **Type**: ${args.type}\n- **Title**: ${data[titleField]}\n- **Status**: ${data[statusField]}\n- **Ref**: ${getTrackerDisplayRef(createdRef)}\n- **ID**: ${id}${issueKeyAvailabilityNote(createdRef, createdKeyContext)}${bodyWriteResult ? `\n- **Body write**: Failed — ${bodyWriteResult.message}` : ''}${trackerRadarAdvisory(createdItem, workspacePath)}`,
           }),
         },
       ],
@@ -2443,7 +2564,7 @@ export async function handleTrackerUpdate(
                   ...updateSummaryParts,
                 ].join('\n') + issueKeyAvailabilityNote(refreshedItem, {
                   canIssueKeys: isTrackerSyncConfigured(workspacePath),
-                }),
+                }) + trackerRadarAdvisory(refreshedItem, workspacePath),
               }),
             },
           ],
@@ -2857,7 +2978,10 @@ export async function handleTrackerUpdate(
             type: "text",
             text: JSON.stringify({
               structured,
-              summary: summaryLines.join("\n"),
+              summary: summaryLines.join("\n") + trackerRadarAdvisory(
+                rowToTrackerItem({ ...row, data }),
+                effectiveWorkspacePath,
+              ),
             }),
           },
         ],
@@ -3347,7 +3471,7 @@ export async function handleTrackerAddComment(
               commentId,
               author: authorIdentity.displayName,
             },
-            summary: `Added comment to ${getTrackerDisplayRef(commentedRef)} by ${authorIdentity.displayName}${issueKeyAvailabilityNote(commentedRef, { canIssueKeys: isTrackerSyncConfigured(workspacePath) })}`,
+            summary: `Added comment to ${getTrackerDisplayRef(commentedRef)} by ${authorIdentity.displayName}${issueKeyAvailabilityNote(commentedRef, { canIssueKeys: isTrackerSyncConfigured(workspacePath) })}${trackerRadarAdvisory(rowToTrackerItem({ ...row, data }), workspacePath)}`,
           }),
         },
       ],

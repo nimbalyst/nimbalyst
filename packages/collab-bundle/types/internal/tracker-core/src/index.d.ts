@@ -4,6 +4,7 @@ export * from "./localIssueKey.js";
 export * from "./planStatusIntegrity.js";
 export * from "./trackerActivity.js";
 export * from "./trackerReadiness.js";
+export * from "./trackerRadar.js";
 export * from "./trackerRecord.js";
 export * from "./trackerRelationships.js";
 export * from "./trackerReleases.js";

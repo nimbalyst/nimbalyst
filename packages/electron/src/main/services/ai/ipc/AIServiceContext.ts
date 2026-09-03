@@ -33,6 +33,13 @@ export interface AIServiceContext {
    * `streamingHandler.handle` before building this context.
    */
   sendMessageHandler: SendMessageHandler;
+  /**
+   * Sessions with a queued-prompt chain in flight. Typed as the plain `Set` the
+   * readers need; the concrete value is a `SessionProcessingGuard`, whose
+   * `delete()` also clears the ownership lease. Handlers here only ever release
+   * unconditionally — cancel and interrupt are authoritative — and that release
+   * is what makes the displaced dispatch's own release a no-op (#1018).
+   */
   sessionsProcessingQueue: Set<string>;
   documentContextService: DocumentContextService;
   streamingHandler: MessageStreamingHandler;

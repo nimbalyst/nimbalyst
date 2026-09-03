@@ -9,16 +9,16 @@
  *   1. Find the latest sqlite-db.dry-run-{stamp}/ directory + its manifest.
  *   2. Open the dry-run SQLite.
  *   3. Run PGLiteToSQLiteMigrator.catchUp() against the live worker.
- *   4. Quiesce PGLite (closeRunningPglite).
- *   5. Re-open PGLite from disk and run one final catch-up pass.
- *   6. Close both.
- *   7. Rename pglite-db/ → pglite-db.migrated-{ts}/.
- *   8. Rename sqlite-db.dry-run-{stamp}/ → sqlite-db/.
- *   9. Write the backend flag pointing at SQLite.
+ *   4. Hand the rest to `cutoverMachine.runCutover` — the same journaled
+ *      cutover `MigrationOrchestrator` uses. It quiesces PGLite, runs the final
+ *      catch-up, renames pglite-db/ → pglite-db.migrated-{ts}/, promotes
+ *      sqlite-db.dry-run-{stamp}/ → sqlite-db/, and commits the backend flag.
  *
- * Failure rules mirror MigrationOrchestrator: any error before the renames
- * leaves PGLite untouched and the dry-run dir in place; the app reopens on
- * PGLite next launch and the user can retry.
+ * Failure rules mirror MigrationOrchestrator because they are now literally the
+ * same code: any error before the source is preserved leaves PGLite untouched
+ * and the dry-run dir in place, and nothing is suppressed. This file used to
+ * log a warning when the pglite-db rename failed and then promote the dry run
+ * and commit the flag regardless, which is the worse half of the same defect.
  */
 
 import * as fs from 'fs';
@@ -32,12 +32,20 @@ import {
   type PGLiteHandle,
 } from './PGLiteToSQLiteMigrator';
 import { MigrationProgressReporter } from './MigrationProgressReporter';
-import { commitMigrationToSqlite } from './BackendSelector';
+import { asCutoverAbort, runCutover } from './cutoverMachine';
+import type { CutoverFs } from './cutoverJournal';
 import { DRY_RUN_MANIFEST_FILENAME } from './MigrationDryRunner';
 import { classifyDatabaseError } from '../DatabaseErrorTelemetry';
 import { dirSizeBytes } from './dirSize';
 import { findRestorableBackups } from './recoveryArtifacts';
 import { assessMigrationSource, gatherMigrationSourceFacts } from './migrationSourcePlausibility';
+import {
+  buildMigrationOutcome,
+  MigrationRefusedError,
+  type MigrationOperationContext,
+  type MigrationOutcome,
+  type MigrationOutcomeBody,
+} from './migrationOutcome';
 
 /**
  * Same single-statement read surface MigrationDryRunner uses — lets us pull
@@ -76,12 +84,27 @@ export interface AdopterOptions {
   reporter?: MigrationProgressReporter;
   migrator?: PGLiteToSQLiteMigrator;
   log?: (level: 'info' | 'warn' | 'error', msg: string, meta?: unknown) => void;
-  sendEvent?: (eventName: string, properties: Record<string, unknown>) => void;
+  /**
+   * Report the terminal domain result. Same contract as the orchestrator's:
+   * the worker returns a typed result and `migrationEventMapper.ts` on main is
+   * the only thing that names an analytics event.
+   */
+  onOutcome?: (outcome: MigrationOutcome) => void;
+  operation?: MigrationOperationContext;
   /**
    * Projects configured in app settings — evidence from outside the database
    * that this install has been used. See `migrationSourcePlausibility.ts`.
+   *
+   * Not optional in spirit: the worker case that adopts in production omitted
+   * it for a while, so every real adoption assessed itself as having zero
+   * projects — the permissive value — and the plausibility check could not
+   * fire on the one path that commits a cutover.
    */
   configuredProjectCount?: number;
+  /** Fault-injection seam for the cutover's renames. See `OrchestratorOptions`. */
+  cutoverFs?: CutoverFs;
+  /** Identifies the cutover in the journal. Defaults to the operation id. */
+  operationId?: string;
 }
 
 export interface AdoptResult {
@@ -92,8 +115,20 @@ export interface AdoptResult {
   durationMs: number;
 }
 
+/**
+ * Floor for "the dry run actually wrote a store". A schema-only Nimbalyst
+ * SQLite carries dozens of tables, so this only rejects an empty or
+ * half-created file -- it is a sanity check, not a judgement about how much
+ * data the install has.
+ */
+const ADOPT_MIN_TABLES = 5;
+
 export class MigrationAdopter {
   constructor(private opts: AdopterOptions) {}
+
+  private report(body: MigrationOutcomeBody): void {
+    this.opts.onOutcome?.(buildMigrationOutcome('adopt', this.opts.operation, body));
+  }
 
   /**
    * Find the most recent dry-run dir + its manifest. Returns null if no
@@ -154,24 +189,24 @@ export class MigrationAdopter {
     // does: a dry-run taken against an emptied PGLite store is exactly as
     // permanent once it becomes the active backend (NIM-3632). Event first, so
     // a refusal is recorded even if this process dies immediately after.
+    const liveDirBytes = fs.existsSync(pgliteDir) ? dirSizeBytes(pgliteDir) : 0;
     const plausibility = assessMigrationSource(
       await gatherMigrationSourceFacts({
         userDataPath: userData,
-        liveDirBytes: fs.existsSync(pgliteDir) ? dirSizeBytes(pgliteDir) : 0,
+        liveDirBytes,
         pglite: this.opts.pglite,
         configuredProjectCount: this.opts.configuredProjectCount,
         findBackups: findRestorableBackups,
       }),
     );
     if (!plausibility.ok) {
-      this.opts.sendEvent?.('migration_refused_implausible_source', {
-        reason: plausibility.reason,
-        path: 'adopt',
-      });
+      const { ok: _ok, ...refusal } = plausibility;
+      this.report({ kind: 'refused', refusal });
       log('error', '[adopter] refusing to adopt an implausible source', {
-        reason: plausibility.reason,
+        reasonCode: refusal.reasonCode,
+        reason: refusal.reason,
       });
-      throw new Error(plausibility.reason);
+      throw new MigrationRefusedError(refusal);
     }
 
     // Refuse to clobber an existing sqlite-db/. If a prior adopt failed mid-way
@@ -214,48 +249,71 @@ export class MigrationAdopter {
         log,
       });
 
-      // 3. Close the live PGLite worker so no more source writes can land.
-      phase = 'closing-pglite';
-      await this.opts.closeRunningPglite();
-
-      // 4. Re-open the now-quiesced PGLite dir and reconcile the short window
-      // between the live catch-up pass above and the close we just waited for.
+      // 3. Everything from here is the shared journaled cutover. Validate what
+      // it needs before it opens a journal, while PGLite is still authoritative.
       const reopen = this.opts.reopenPgliteAfterClose;
       if (!reopen) {
         throw new Error('MigrationAdopter requires reopenPgliteAfterClose() for final catch-up.');
       }
-      phase = 'catching-up-after-close';
-      const closedSource = await reopen(pgliteDir);
-      const finalCatchUp = await (async () => {
-        try {
-          return await migrator.catchUp({
-            pglite: closedSource,
-            sqlite,
-            manifest: catchResult.manifest,
-            onProgress,
-            log,
-          });
-        } finally {
-          await closedSource.close();
-        }
-      })();
 
-      // 5. Close SQLite cleanly before the fs rename.
-      phase = 'closing-sqlite';
-      await sqlite.close();
-      sqlite = null;
-
-      // 6. Cutover: move PGLite aside, rename dry-run dir to active.
+      const sqliteHandle = sqlite;
+      let finalCatchUp = { rowsAdded: 0, perTable: [] as Array<{ name: string; added: number }> };
       phase = 'cutover';
-      try {
-        fs.renameSync(pgliteDir, pgliteMigratedDir);
-      } catch (err) {
-        log('warn', '[adopter] pglite-db rename failed; proceeding (flag will still flip)', {
-          err: (err as Error).message,
-        });
-      }
-      fs.renameSync(dryRunDir, sqliteDir);
-      commitMigrationToSqlite(userData, pgliteMigratedDir);
+      await runCutover({
+        userDataPath: userData,
+        operationId: this.opts.operationId ?? this.opts.operation?.operationId ?? `adopt-${Date.now()}`,
+        operation: 'adopt',
+        sourceLiveDir: pgliteDir,
+        sourcePreservedDir: pgliteMigratedDir,
+        targetLiveDir: sqliteDir,
+        targetStagingDir: dryRunDir,
+        cutoverFs: this.opts.cutoverFs,
+        log,
+        // The dry run was built and verified by MigrationDryRunner and has just
+        // been caught up. What is worth re-checking here is that the store the
+        // flag is about to name really is a schema-bearing database, because
+        // the next step moves the source out from under the app.
+        //
+        // Asked through the open handle rather than by measuring the file: in
+        // WAL mode the tables live in `nimbalyst.sqlite-wal` until close, so a
+        // size check here reads 4 KB on a perfectly good store.
+        verifyTarget: async () => {
+          const { rows } = await sqliteHandle.queryReadOnly<{ n: number }>(
+            "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table'",
+          );
+          const tables = Number(rows[0]?.n ?? 0);
+          if (tables < ADOPT_MIN_TABLES) {
+            throw new Error(
+              `dry-run SQLite at ${dryRunDir} has ${tables} table(s); refusing to adopt it as the active store`,
+            );
+          }
+        },
+        quiesceSource: () => this.opts.closeRunningPglite(),
+        finalizeTarget: async () => {
+          phase = 'catching-up-after-close';
+          const closedSource = await reopen(pgliteDir);
+          finalCatchUp = await (async () => {
+            try {
+              return await migrator.catchUp({
+                pglite: closedSource,
+                sqlite: sqliteHandle,
+                manifest: catchResult.manifest,
+                onProgress,
+                log,
+              });
+            } finally {
+              await closedSource.close();
+            }
+          })();
+          phase = 'closing-sqlite';
+          await sqliteHandle.close();
+          sqlite = null;
+        },
+      }).catch((err) => {
+        const abort = asCutoverAbort(err);
+        if (abort) phase = `cutover:${abort.phase}`;
+        throw err;
+      });
 
       const durationMs = performance.now() - t0;
       const rowsAdded = catchResult.rowsAdded + finalCatchUp.rowsAdded;
@@ -285,23 +343,31 @@ export class MigrationAdopter {
       };
       reporter?.emitComplete(summary);
 
-      this.opts.sendEvent?.('migration_adopted_dry_run', {
-        rows_added: rowsAdded,
-        duration_ms: Math.round(durationMs),
-        manifest_age_ms: Date.now() - new Date(manifest.completedAt).getTime(),
+      this.report({
+        kind: 'completed',
+        sourceBytes: liveDirBytes,
+        rowCount: rowsAdded,
+        tableCount: perTable.length,
+        durationMs,
+        spotCheckCount: 0,
+        foreignKeyViolations: 0,
+        integrityCheck: 'ok',
       });
 
-      log('info', '[adopter] adoption complete', result);
+      log('info', '[adopter] adoption complete', {
+        ...result,
+        manifestAgeMs: Date.now() - new Date(manifest.completedAt).getTime(),
+      });
       return result;
     } catch (err) {
       const message = (err as Error).message;
       const stack = (err as Error).stack;
       log('error', `[adopter] failed in ${phase}`, { message, stack });
       reporter?.emitFailed({ phase, message, stack });
-      this.opts.sendEvent?.('migration_adopt_failed', {
-        phase,
-        ...classifyDatabaseError(err),
-      });
+      // A refusal already reported itself above.
+      if (!(err instanceof MigrationRefusedError)) {
+        this.report({ kind: 'failed', phase, ...classifyDatabaseError(err) });
+      }
 
       // Best-effort cleanup. Leave the dry-run dir in place so the user can
       // try again; don't touch the running PGLite worker (it's still serving

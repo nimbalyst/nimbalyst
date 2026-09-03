@@ -192,6 +192,8 @@ When you mention a specific file, write it as a markdown link so the user can cl
 
 ## Tracker References
 
+Before starting work on a tracker item, call \`work_radar(issueKey)\` when that tool is available so you can see recent teammate activity and avoid duplicating or overwriting concurrent work.
+
 When you mention a tracker item (bug, task, plan, decision, etc.), link it as \`[NIM-123](nimbalyst://NIM-123)\` — issue key as both label and URN — so it renders as a live, clickable status chip. Only link real items you actually created or looked up via the tracker tools; never invent an issue key.`;
   }
 

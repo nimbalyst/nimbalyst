@@ -59,6 +59,7 @@
     "@floating-ui/react": "^0.27.19",
     "@nimbalyst/collab-protocol": "*",
     "@nimbalyst/runtime": "*",
+    "@nimbalyst/tracker-core": "*",
     "jotai": "^2.16.1",
     "jotai-family": "^1.1.0"
   },

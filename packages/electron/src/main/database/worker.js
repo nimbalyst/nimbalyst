@@ -23,6 +23,22 @@ const { performance } = require('node:perf_hooks');
 const { serializeWorkerError } = require('./workerErrorSerialization');
 const { planInitFailureResponse } = require('./pgliteInitRecovery');
 
+/**
+ * The install's database root, or null when the spawner did not supply one.
+ *
+ * Null is legitimate for a throwaway worker that only answers `verifyBackup`
+ * at an explicit path -- it never opens the live store, so it needs no root.
+ * It is NOT legitimate for `initialize`, which refuses below with a message
+ * naming the cause.
+ *
+ * This used to be `workerData.userDataPath` read straight into the constructor,
+ * so a spawn without `workerData` threw a bare `TypeError: Cannot read
+ * properties of undefined` before the message handler was installed. The parent
+ * saw a thread that died for no stated reason. Read it once, defensively, and
+ * make the one operation that actually needs it say so.
+ */
+const workerUserDataPath = (workerData && workerData.userDataPath) || null;
+
 // ---------------------------------------------------------------------------
 // CPU profile auto-capture for the PGLite worker.
 // Same pattern as the SQLite worker: poll event-loop utilization, capture a
@@ -60,7 +76,8 @@ async function capturePgliteWorkerCpuProfile(triggerElu) {
     const { profile } = await post('Profiler.stop');
 
     const fs = require('fs').promises;
-    const logsDir = path.join(workerData.userDataPath, 'logs');
+    if (!workerUserDataPath) return;
+    const logsDir = path.join(workerUserDataPath, 'logs');
     await fs.mkdir(logsDir, { recursive: true });
     const filename = `cpu-pglite-worker-${new Date().toISOString().replace(/[:.]/g, '-')}.cpuprofile`;
     const fullPath = path.join(logsDir, filename);
@@ -107,9 +124,11 @@ const WAL_CHECK_INTERVAL_MS = 60 * 1000;
 class PGLiteWorker {
   constructor() {
     this.db = null;
-    this.dataDir = path.join(workerData.userDataPath, 'pglite-db');
+    this.dataDir = workerUserDataPath ? path.join(workerUserDataPath, 'pglite-db') : null;
     // Our own lock file with actual PID - separate from PGLite's postmaster.pid
-    this.lockFilePath = path.join(workerData.userDataPath, 'nimbalyst-db.pid');
+    this.lockFilePath = workerUserDataPath
+      ? path.join(workerUserDataPath, 'nimbalyst-db.pid')
+      : null;
     // Counter of in-flight query/exec calls; the WAL maintenance check skips
     // when this is non-zero so a CHECKPOINT can never run during a user query
     // (--single mode serializes them anyway, but skipping avoids visibly long blocks).
@@ -413,6 +432,15 @@ class PGLiteWorker {
   async initialize(message) {
     const initStartTime = performance.now();
     console.log('[PGLite Worker] initialize() called, existing db:', !!this.db, 'dataDir:', this.dataDir);
+
+    // The one operation that genuinely needs the root. Saying so beats the
+    // `TypeError` the constructor used to throw before anything was listening.
+    if (!this.dataDir) {
+      throw new Error(
+        'PGLite worker was spawned without workerData.userDataPath, so it has no data directory '
+        + 'to open. Spawn it with `new Worker(bundle, { workerData: { userDataPath } })`.',
+      );
+    }
 
     if (this.db) {
       console.log('[PGLite Worker] Database already initialized - returning early');
@@ -3513,9 +3541,18 @@ class PGLiteWorker {
       // Execute a simple query to verify it works
       await testDb.query('SELECT 1');
 
-      // Check data counts in key tables for integrity verification
-      let sessionCount = 0;
-      let historyCount = 0;
+      // Content indicators. These are left UNDEFINED rather than zeroed when
+      // the query fails: recovery treats an absent count as "we could not
+      // look", and a store whose tables are missing is one we must not restore
+      // onto. Reporting 0 there said "this database is empty", which is a
+      // different and much more dangerous claim (#1347).
+      //
+      // `projects` is counted too. An install whose data is shared projects
+      // rather than AI sessions was being classified as an empty candidate and
+      // refused recovery.
+      let sessionCount;
+      let historyCount;
+      let projectCount;
       try {
         const countResult = await testDb.query(`
           SELECT
@@ -3530,13 +3567,24 @@ class PGLiteWorker {
         // Tables might not exist yet - that's okay for a fresh database
         console.log('[PGLite Worker] Could not count records (tables may not exist):', countError.message);
       }
+      try {
+        // Separate from the pair above so an install predating the projects
+        // table still reports its sessions and history.
+        const projectResult = await testDb.query('SELECT COUNT(*) AS projects FROM projects');
+        if (projectResult.rows && projectResult.rows[0]) {
+          projectCount = parseInt(projectResult.rows[0].projects) || 0;
+        }
+      } catch (projectError) {
+        console.log('[PGLite Worker] Could not count projects:', projectError.message);
+      }
 
       // Close cleanly
       await testDb.close();
 
       console.log('[PGLite Worker] Backup verification successful', {
         sessionCount,
-        historyCount
+        historyCount,
+        projectCount
       });
 
       return {
@@ -3546,7 +3594,8 @@ class PGLiteWorker {
           valid: true,
           sessionCount,
           historyCount,
-          hasData: sessionCount > 0 || historyCount > 0
+          projectCount,
+          hasData: sessionCount > 0 || historyCount > 0 || projectCount > 0
         }
       };
     } catch (error) {

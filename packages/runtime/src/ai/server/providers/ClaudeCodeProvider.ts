@@ -112,6 +112,8 @@ import {
   shouldExitDrain,
   classifyDrainOutcome,
   shouldSettleTaskFromToolResult,
+  shouldRecordTerminalNotification,
+  shouldFinalizeForSettledBackgroundTasks,
   extractToolResultText,
   mapTaskUpdatedPatchStatus,
   shouldApplyTaskUpdatedStatus,
@@ -271,10 +273,19 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     isBackgrounded?: boolean;
   }>();
 
-  // Terminal task_notification chunks received while draining background tasks
-  // after the lead turn ended. Consumed by finalizeBackgroundDrain to wake the
-  // session with a visible continuation turn carrying the results. NIM-1470.
+  // Terminal task_notification chunks for background tasks — recorded while
+  // draining after the lead turn ended (NIM-1470), and also when a backgrounded
+  // task settles DURING the turn (#1410). Consumed by finalizeBackgroundDrain to
+  // wake the session with a visible continuation turn carrying the results.
   private drainTerminalNotifications: TaskTerminalNotification[] = [];
+
+  // A backgrounded task reported terminally during this turn, so the turn ended
+  // without ever draining. The CLI has a continuation turn queued for that
+  // notification which would run against the control channel we are about to
+  // tear down — every permission-requiring tool call in it denied before
+  // canUseTool is reached. Makes the finally close the subprocess and deliver
+  // the results as a visible turn instead. See #1410.
+  private settledBackgroundTasksThisTurn = false;
 
   // The drain grace timer expired while background tasks were still running, so
   // we closed the prompt stream and the CLI killed them along with its process.
@@ -734,6 +745,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       this.drainExitCause = 'resolved';
       this.drainTerminalNotifications = [];
       this.drainGraceExpired = false;
+      this.settledBackgroundTasksThisTurn = false;
       const queryIterator = leadQuery as AsyncIterable<any>;
       const queryCallDuration = Date.now() - queryCallStart;
       if (queryCallDuration > 5000) {
@@ -772,6 +784,16 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // grace window; 30s is the trade-off for the task-list-heavy case.
       // If diagnostic logs still show STREAM_CLOSED_DIAGNOSTIC after
       // RESULT_MESSAGE_RECEIVED on a session with this fix, bump further.
+      //
+      // CAVEAT (#1410) — on the ordinary path this window is worth ~0.3s, not
+      // 30s. The same loop iteration that arms the timer yields `complete` and
+      // breaks, and the finally clears the timer and ends the prompt controller
+      // immediately after. Only the drain path (`willDrainSubagents`, which
+      // `continue`s instead of breaking) keeps the window alive for its full
+      // length. Do not reason about post-result timing from this constant
+      // without checking which path the turn took. Whether #320's original
+      // task-list-hook case is still covered is an open question and deserves
+      // its own investigation; it is NOT what #1410 fixed.
       const PROMPT_GRACE_MS = 30_000;
       // While a background sub-agent is still running after the lead's turn ended,
       // stdin must stay open far longer than the 30s task-list grace window. The
@@ -1199,13 +1221,23 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                       // until completion). A backgrounded task's tool_result is a
                       // launch acknowledgement while it is still running; settling
                       // on it killed the task at turn-end teardown. NIM-1470.
-                      if (task.toolUseId === item.toolUseId && shouldSettleTaskFromToolResult(task, item.content)) {
-                        task.status = toolCall.isError ? 'failed' : 'completed';
-                        const summaryText = extractToolResultText(item.content);
-                        if (summaryText) task.summary = summaryText.substring(0, 200);
-                        this.emitTaskUpdate(sessionId).catch(() => {});
+                      if (task.toolUseId !== item.toolUseId) continue;
+                      if (!shouldSettleTaskFromToolResult(task, item.content)) {
+                        // Declining to settle IS the observation that this
+                        // tool_result was a launch acknowledgement, and the CLI
+                        // does not always send the task_updated patch that sets
+                        // is_backgrounded — so record it here, or the terminal-
+                        // notification gate cannot trust the flag. Running tasks
+                        // only: a terminal one declines for that reason alone and
+                        // says nothing about how it was launched. #1410.
+                        if (task.status === 'running') task.isBackgrounded = true;
                         break;
                       }
+                      task.status = toolCall.isError ? 'failed' : 'completed';
+                      const summaryText = extractToolResultText(item.content);
+                      if (summaryText) task.summary = summaryText.substring(0, 200);
+                      this.emitTaskUpdate(sessionId).catch(() => {});
+                      break;
                     }
                   }
                 }
@@ -1406,6 +1438,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             if (willDrainSubagents) {
               this.drainingBackgroundTasks = true;
             }
+            // Same ordering constraint for the "settled during the turn" trigger:
+            // willResumeAfterCompletion() reads it while the consumer handles the
+            // `complete` yielded just below, and prepareStreamClosedContinuation
+            // bails on it so the two paths can't both emit a continuation. #1410.
+            this.settledBackgroundTasksThisTurn = shouldFinalizeForSettledBackgroundTasks({
+              willDrainSubagents,
+              terminalNotificationCount: this.drainTerminalNotifications.length,
+            });
             this.prepareStreamClosedContinuation(sessionId, hideMessages);
 
             yield {
@@ -1647,6 +1687,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       this.drainExitCause = 'resolved';
       this.drainTerminalNotifications = [];
       this.drainGraceExpired = false;
+      this.settledBackgroundTasksThisTurn = false;
 
       // Note: markMessagesAsHidden is reset at the START of sendMessage to prevent race conditions
 
@@ -2031,6 +2072,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       || this.teammateManager.hasPendingTeammateMessages()
       || this.teammateManager.hasActiveTeammates()
       || this.drainingBackgroundTasks
+      || this.settledBackgroundTasksThisTurn
       || this.hasRunningTasks()
     ) {
       return;
@@ -2145,6 +2187,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // turn ended. endSession must be deferred so finalizeBackgroundDrain()'s later
       // continuation / settle isn't dropped for an inactive session. NIM-1344 / #732.
       || this.drainingBackgroundTasks
+      // A backgrounded task settled during the turn: finalizeBackgroundDrain will
+      // deliver its result as a continuation from the finally block, which runs
+      // after this is read. #1410.
+      || this.settledBackgroundTasksThisTurn
       || this.hasRunningTasks();
   }
 
@@ -2261,9 +2307,11 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     sessionId: string | undefined,
     query?: { close?: () => void } | null,
   ): void {
-    // Only meaningful when we actually deferred teardown to drain sub-agents.
-    // Normal turns never enter this branch (zero behavior change).
-    if (!this.drainingBackgroundTasks) return;
+    // Two triggers: we deferred teardown to drain sub-agents, or a backgrounded
+    // task reported terminally during the turn (#1410) — that one never drains,
+    // but it leaves the CLI holding a queued continuation turn just the same.
+    // Turns with neither never enter this branch (zero behavior change).
+    if (!this.drainingBackgroundTasks && !this.settledBackgroundTasksThisTurn) return;
 
     // Close the drained subprocess outright. Ending stdin is not enough: the
     // CLI queues its own task-notification continuation turn, which would run
@@ -2283,7 +2331,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     }
 
     const outcome = classifyDrainOutcome({
-      wasDraining: true,
+      wasDraining: this.drainingBackgroundTasks,
       hasRunningTasks: this.hasRunningTasks(),
       cause: this.drainExitCause,
     });
@@ -2377,11 +2425,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           existing.durationMs = chunk.usage.duration_ms ?? existing.durationMs;
         }
         console.log(`[CLAUDE-CODE] SUBAGENT_TASK notification: id=${chunk.task_id} status=${existing.status} draining=${this.drainingBackgroundTasks}`);
-        // While draining after the lead turn ended, capture terminal
-        // notifications so finalizeBackgroundDrain can wake the session with
-        // the results (the CLI's own continuation turn cannot be surfaced —
-        // the consumer already received complete). NIM-1470.
-        if (this.drainingBackgroundTasks) {
+        // Capture terminal notifications for background tasks so
+        // finalizeBackgroundDrain can wake the session with the results (the
+        // CLI's own continuation turn cannot be surfaced — the consumer already
+        // received complete). While draining, that is every task still running
+        // at the lead's result (NIM-1470); off the drain path it is backgrounded
+        // tasks only, so a foreground Task does not produce a spurious extra
+        // continuation turn (#1410).
+        if (shouldRecordTerminalNotification(existing, this.drainingBackgroundTasks)) {
           const status = existing.status === 'running' ? 'completed' : existing.status;
           this.drainTerminalNotifications.push({
             taskId: chunk.task_id,

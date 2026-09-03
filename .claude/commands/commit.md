@@ -6,14 +6,21 @@ Prepare a git commit following these steps:
 
 1. Run `git status` and `git diff` to see changes
 2. Review recent commits (`git log --oneline -5`) to match the style
-3. Draft a concise commit message:
+3. Update `CHANGELOG.md` — this is the **only** point at which it should be edited
+  - Add the entry now, as part of preparing this commit; never during implementation
+  - One user-facing sentence in the right `[Unreleased]` subsection, matching the surrounding voice
+  - Internal-only changes (refactors, tests, docs, agent/config tweaks, dep bumps with no behavior change) get NO entry
+  - No entry for a bug introduced and fixed within the same unreleased cycle
+  - Editing an existing bullet beats adding a second one for the same feature
+  - If `CHANGELOG.md` already carries bullets from other sessions, do NOT sweep them in — commit only the code plus your own line, and say so
+4. Draft a concise commit message:
   - Start with type prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
   - **Focus on IMPACT and WHY, not implementation details**
   - The title should describe the user-visible outcome or bug fixed
   - Use bullet points (dash prefix) only if there are multiple distinct changes
   - Keep each line under 72 characters
   - No emojis
-4. Run the `developer_git_commit_proposal` tool to propose the commit to the user
+5. Run the `developer_git_commit_proposal` tool to propose the commit to the user
   - Do NOT run `git add` - the widget handles staging when the user confirms
 
 **Commit Message Guidelines:**

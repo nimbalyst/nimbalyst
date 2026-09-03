@@ -7,7 +7,7 @@
  */
 
 /** Every mode a saved view (or the persisted layout) may carry. */
-export type TrackerViewMode = 'list' | 'table' | 'kanban' | 'timeline' | 'tag-board' | 'inbox';
+export type TrackerViewMode = 'list' | 'table' | 'kanban' | 'timeline' | 'radar' | 'tag-board' | 'inbox';
 
 export interface TrackerViewModeOption {
   value: TrackerViewMode;
@@ -22,6 +22,7 @@ export const VIEW_MODE_PRESENTATION: Record<TrackerViewMode, Omit<TrackerViewMod
   table: { label: 'Table', icon: 'table_chart' },
   kanban: { label: 'Board', icon: 'view_kanban' },
   timeline: { label: 'Timeline', icon: 'align_horizontal_left' },
+  radar: { label: 'Radar', icon: 'radar' },
   'tag-board': { label: 'Tags', icon: 'sell' },
   inbox: { label: 'Inbox', icon: 'inbox' },
 };

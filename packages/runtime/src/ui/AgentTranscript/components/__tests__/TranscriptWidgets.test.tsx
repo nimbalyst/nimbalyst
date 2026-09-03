@@ -1828,6 +1828,64 @@ describe('InteractivePromptWidget', () => {
     expect(screen.getByText('Cool')).toBeDefined();
   });
 
+  // Regression test for GitHub issue #1418. The transcript is virtualized, so
+  // scrolling a pending question out of view unmounts this widget. Its answers,
+  // "Other" toggle and "Other" text used to live in component state and were
+  // discarded with it, unrecoverably. They now live in a draft atom keyed by
+  // questionId, so all three survive the remount.
+  it('keeps selections, the Other toggle and the Other text across unmount/remount', () => {
+    const questionContent = {
+      type: 'ask_user_question_request' as const,
+      questionId: 'q-draft-1418',
+      questions: [
+        {
+          question: 'Which areas?',
+          header: 'Areas',
+          options: [
+            { label: 'Editor', description: 'Editing surface' },
+            { label: 'Sync', description: 'Collaboration' },
+          ],
+          multiSelect: true,
+        },
+      ],
+      status: 'pending' as const,
+    };
+    const typed = 'Ten minutes of carefully written user input.';
+
+    const first = render(
+      <InteractivePromptWidget
+        promptType="ask_user_question_request"
+        content={questionContent}
+        onSubmitResponse={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Editor'));
+    fireEvent.click(screen.getByText('Other'));
+    fireEvent.change(first.container.querySelector('textarea')!, {
+      target: { value: typed },
+    });
+    expect(first.container.querySelector('textarea')!.value).toBe(typed);
+
+    // Scrolled out of view, then back.
+    first.unmount();
+    const second = render(
+      <InteractivePromptWidget
+        promptType="ask_user_question_request"
+        content={questionContent}
+        onSubmitResponse={() => {}}
+      />
+    );
+
+    expect(second.container.querySelector('textarea')!.value).toBe(typed);
+    expect(
+      screen.getByText('Editor').closest('.interactive-prompt__option')!.className
+    ).toContain('interactive-prompt__option--selected');
+    expect(
+      screen.getByText('Other').closest('.interactive-prompt__option')!.className
+    ).toContain('interactive-prompt__option--selected');
+  });
+
   it('calls onSubmitResponse with correct permission response', () => {
     const onSubmit = vi.fn();
     render(

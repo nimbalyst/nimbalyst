@@ -8,6 +8,8 @@ import type { FieldDefinition } from '../models/TrackerDataModel';
 import { type RelationshipCandidate } from './RelationshipFieldEditor';
 /** Team member info for user picker dropdown */
 export interface TeamMemberOption {
+    /** Stable organization member id, when the roster provider exposes it. */
+    memberId?: string;
     email: string;
     name?: string;
 }

@@ -74,7 +74,7 @@ import { registerSettingsHandlers } from './ipc/registerSettingsHandlers';
 import { registerModelHandlers } from './ipc/registerModelHandlers';
 import { registerProjectSettingsHandlers } from './ipc/registerProjectSettingsHandlers';
 import { registerExtensionChatHandlers } from './ipc/registerExtensionChatHandlers';
-import { tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import { SessionProcessingGuard, tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
 import {
   QueueDriveService,
   type DriveOutcome,
@@ -159,7 +159,9 @@ export class AIService {
   // Track sessions currently processing a queued prompt to prevent concurrent execution.
   // Without this, the completion handler and triggerQueueProcessing IPC can race,
   // each claiming a different prompt and sending both to the AI concurrently.
-  private sessionsProcessingQueue = new Set<string>();
+  // It is a Set of session ids plus an ownership lease, so a dispatch an interrupt
+  // displaced cannot release the guard the priority prompt now holds (#1018).
+  private sessionsProcessingQueue = new SessionProcessingGuard();
 
   // Service for preparing document context (transition detection, diff computation, etc.)
   private documentContextService = new DocumentContextService();

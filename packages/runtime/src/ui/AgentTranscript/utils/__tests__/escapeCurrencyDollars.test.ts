@@ -47,9 +47,39 @@ describe('escapeCurrencyDollars', () => {
     expect(out).toBe('the cost was \\$5 to \\$10 and $x = 5$ is true');
   });
 
-  it('does not collapse currency across lines', () => {
-    const input = 'line one ends with $5\nline two starts with $10';
-    expect(escapeCurrencyDollars(input)).toBe(input);
+  // #1385: remark-math pairs two `$` anywhere in the same paragraph, so a soft
+  // line break between two amounts is still one math span to the renderer.
+  describe('soft line breaks (#1385)', () => {
+    it('escapes a pair split across a soft line break', () => {
+      const input = 'the plan is $990/mo.\nand comes with a $1,500 freebie';
+      expect(escapeCurrencyDollars(input)).toBe(
+        'the plan is \\$990/mo.\nand comes with a \\$1,500 freebie',
+      );
+    });
+
+    it('leaves a pair separated by a blank line alone', () => {
+      const input = 'the plan is $990/mo.\n\nand comes with a $1,500 freebie';
+      expect(escapeCurrencyDollars(input)).toBe(input);
+    });
+
+    it('leaves a pair separated by a whitespace-only line alone', () => {
+      const input = 'the plan is $990/mo.\n  \nand comes with a $1,500 freebie';
+      expect(escapeCurrencyDollars(input)).toBe(input);
+    });
+
+    it('does not span two line breaks', () => {
+      const input = 'costs $5\nper seat\nplus $10 setup';
+      expect(escapeCurrencyDollars(input)).toBe(input);
+    });
+
+    it('leaves inline math unchanged', () => {
+      expect(escapeCurrencyDollars('we have $x = 5$ as a fact')).toBe('we have $x = 5$ as a fact');
+    });
+
+    it('leaves a soft-line-break pair inside a fenced code block alone', () => {
+      const input = "```sh\necho $1\necho $2\n```";
+      expect(escapeCurrencyDollars(input)).toBe(input);
+    });
   });
 
   it('returns empty string unchanged', () => {

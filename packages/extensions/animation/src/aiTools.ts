@@ -13,6 +13,12 @@ import type { AnimDocument } from "./core/types";
 import { buildStandaloneDocument } from "./render/standalone";
 import { loadHtmlAssets, type HtmlAssets } from "./core/htmlParts";
 import { FALLBACK_TOKENS } from "./render/stageCss";
+import {
+  getElectronInvoke,
+  revealExport,
+  resolveExportPath,
+  type ElectronInvoke,
+} from "./core/revealExport";
 
 interface ExportParams {
   filePath: string;
@@ -26,20 +32,6 @@ interface GifExportParams extends ExportParams {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** The generic IPC passthrough the preload exposes, when running in Electron. */
-function getInvoke():
-  | ((channel: string, payload: unknown) => Promise<{
-      success: boolean;
-      error?: string;
-      result?: unknown;
-    }>)
-  | null {
-  const api = (globalThis as { electronAPI?: { invoke?: unknown } }).electronAPI;
-  return typeof api?.invoke === "function"
-    ? (api.invoke as ReturnType<typeof getInvoke>)
-    : null;
 }
 
 /**
@@ -125,6 +117,7 @@ async function loadExportable(
  * package's resolution path.
  */
 interface ExportToolContext {
+  workspacePath?: string;
   extensionContext: {
     services: {
       filesystem: {
@@ -182,8 +175,10 @@ Example usage:
       if ("error" in loaded) return loaded;
       const { doc, filePath, warnings, assets } = loaded;
 
-      const outputPath =
-        params.outputPath?.trim() || siblingPath(filePath, ".html");
+      const outputPath = resolveExportPath(
+        params.outputPath?.trim() || siblingPath(filePath, ".html"),
+        context.workspacePath
+      );
       const html = buildStandaloneDocument(doc, FALLBACK_TOKENS, {
         assets,
         title: titleFor(filePath),
@@ -200,6 +195,8 @@ Example usage:
           error: `Could not write ${outputPath}: ${describe(error)}`,
         };
       }
+
+      await revealExport(outputPath);
 
       return {
         success: true,
@@ -253,7 +250,7 @@ Example usage:
       if ("error" in loaded) return loaded;
       const { doc, filePath, warnings, assets } = loaded;
 
-      const invoke = getInvoke();
+      const invoke: ElectronInvoke | null = getElectronInvoke();
       if (!invoke) {
         return {
           success: false,
@@ -262,8 +259,10 @@ Example usage:
         };
       }
 
-      const outputPath =
-        params.outputPath?.trim() || siblingPath(filePath, ".gif");
+      const outputPath = resolveExportPath(
+        params.outputPath?.trim() || siblingPath(filePath, ".gif"),
+        context.workspacePath
+      );
 
       // Capture hooks let the recorder start the clock at t=0 rather than
       // trusting page-load timing; without them the GIF starts mid-animation.
@@ -289,6 +288,8 @@ Example usage:
           error: response?.error ?? "GIF export failed.",
         };
       }
+
+      await revealExport(outputPath);
 
       return { success: true, warnings, ...(response.result as object) };
     },
@@ -336,7 +337,7 @@ Example usage:
       if ("error" in loaded) return loaded;
       const { doc, filePath, warnings, assets } = loaded;
 
-      const invoke = getInvoke();
+      const invoke: ElectronInvoke | null = getElectronInvoke();
       if (!invoke) {
         return {
           success: false,
@@ -345,8 +346,10 @@ Example usage:
         };
       }
 
-      const outputPath =
-        params.outputPath?.trim() || siblingPath(filePath, ".mp4");
+      const outputPath = resolveExportPath(
+        params.outputPath?.trim() || siblingPath(filePath, ".mp4"),
+        context.workspacePath
+      );
 
       const html = buildStandaloneDocument(doc, FALLBACK_TOKENS, {
         assets,
@@ -370,6 +373,8 @@ Example usage:
           error: response?.error ?? "MP4 export failed.",
         };
       }
+
+      await revealExport(outputPath);
 
       return { success: true, warnings, ...(response.result as object) };
     },

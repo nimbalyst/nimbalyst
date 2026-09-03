@@ -14,6 +14,8 @@ import { RelationshipFieldEditor, type RelationshipCandidate } from './Relations
 
 /** Team member info for user picker dropdown */
 export interface TeamMemberOption {
+  /** Stable organization member id, when the roster provider exposes it. */
+  memberId?: string;
   email: string;
   name?: string;
 }

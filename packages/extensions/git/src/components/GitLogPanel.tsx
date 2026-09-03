@@ -221,8 +221,10 @@ export function GitLogPanel({ host }: PanelHostProps) {
   const [detailWidth, setDetailWidth] = useState(() => host.storage.getGlobal<number>('detailWidth') ?? 340);
   const detailResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
-  // Tab + selection state (persisted across panel close/open per workspace)
-  const { activeTab, selectedHash, setActiveTab, setSelectedHash } = usePanelState(repoPath);
+  // The visible tab belongs to the project panel, while a selected commit only
+  // makes sense within the repository whose log supplied it.
+  const { activeTab, setActiveTab } = usePanelState(workspacePath);
+  const { selectedHash, setSelectedHash } = usePanelState(repoPath);
   const commits = useMemo(
     () => filterCommits(unfilteredCommits, searchFilter),
     [unfilteredCommits, searchFilter],

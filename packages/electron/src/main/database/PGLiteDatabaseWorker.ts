@@ -14,6 +14,7 @@ import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import type { SQLiteDatabase } from './sqlite/SQLiteDatabase';
 import { DatabaseBackupService } from '../services/database/DatabaseBackupService';
 import { deserializeWorkerError } from './workerErrorSerialization';
+import { resolveDatabaseUserDataPath } from './userDataPath';
 import {
   buildDatabaseOperationErrorProperties,
   classifyDatabaseOperation,
@@ -345,12 +346,9 @@ export class PGLiteDatabaseWorker {
       workerPath = path.join(getPackageRoot(), 'out', 'worker.bundle.js');
     }
 
-    // Use test-specific userData path to avoid touching production database
-    // NIMBALYST_USER_DATA_PATH: custom path (for manual testing of packaged builds)
-    // PLAYWRIGHT=1: use temp directory (for automated tests)
-    const userDataPath = process.env.NIMBALYST_USER_DATA_PATH
-      || (process.env.PLAYWRIGHT === '1' ? path.join(app.getPath('temp'), 'nimbalyst-test-db') : null)
-      || app.getPath('userData');
+    // Use test-specific userData path to avoid touching production database.
+    // Shared resolver: see `database/userDataPath.ts`.
+    const userDataPath = resolveDatabaseUserDataPath();
 
     logger.main.info('[PGLite] createWorker() called', {
       existingWorker: !!this.worker,

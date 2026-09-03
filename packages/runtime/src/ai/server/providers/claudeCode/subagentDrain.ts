@@ -77,6 +77,51 @@ export function shouldSettleTaskFromToolResult(
 }
 
 /**
+ * Decide whether a terminal task_notification is worth recording for a
+ * continuation turn.
+ *
+ * While draining, backgroundedness is implied — every task still running at the
+ * lead's `result` was necessarily a background one, so record unconditionally
+ * (unchanged behavior).
+ *
+ * Off the drain path this is the #1410 gate. A task that settles DURING the turn
+ * never engages the drain machinery (hasRunningTasks() is already false at the
+ * `result` chunk), yet the CLI still queues its own `<task-notification>`
+ * continuation turn for a BACKGROUNDED one — and that turn runs against a
+ * control channel we tear down ~0.3s later, so every tool call needing a
+ * permission decision is denied before canUseTool is ever reached. Recording the
+ * notification is what lets Nimbalyst close the subprocess and deliver the
+ * equivalent turn visibly instead.
+ *
+ * A FOREGROUND Task must not qualify: it settled via its own tool_result, the
+ * model already saw that result inline, and the CLI queues nothing. Treating it
+ * as a trigger would bill an extra continuation turn per delegation.
+ */
+export function shouldRecordTerminalNotification(
+  task: { taskType?: string; isBackgrounded?: boolean },
+  draining: boolean,
+): boolean {
+  if (draining) return true;
+  return task.taskType === 'local_bash' || task.isBackgrounded === true;
+}
+
+/**
+ * Decide whether the turn must run drain finalization even though it never
+ * entered the drain (nothing was still running at the `result` chunk).
+ *
+ * True when a backgrounded task reported terminally during the turn: that fact
+ * predicts the CLI has a continuation turn queued on a subprocess whose control
+ * channel is about to die. Finalization closes it and delivers the results
+ * visibly instead. See #1410.
+ */
+export function shouldFinalizeForSettledBackgroundTasks(params: {
+  willDrainSubagents: boolean;
+  terminalNotificationCount: number;
+}): boolean {
+  return !params.willDrainSubagents && params.terminalNotificationCount > 0;
+}
+
+/**
  * Map a task_updated patch status (SDK TaskState vocabulary) onto the
  * provider's coarser task status vocabulary. Returns undefined when the patch
  * carries no status change we track (pending/paused stay "running" — the task

@@ -147,6 +147,7 @@ import { initDbMigrationListeners } from './store/listeners/dbMigrationListeners
 import { initOpenAICodexAuthListeners } from './store/listeners/openAICodexAuthListeners';
 import { initThemeListener } from './store/listeners/themeListeners';
 import { initWindowMenuListener } from './store/listeners/windowMenuListeners';
+import { initWorkspaceActivationListeners } from './store/listeners/workspaceActivationListeners';
 import { initWindowFullScreenListener } from './store/listeners/windowFullScreenListeners';
 import { initThemeFallbackListener } from './store/listeners/themeFallbackListeners';
 import { initTrackerSyncListeners } from './store/listeners/trackerSyncListeners';
@@ -438,7 +439,9 @@ export default function App() {
     const cleanupCollabConversion = initCollabConversionListeners();
     const cleanupWindowMenu = initWindowMenuListener();
     const cleanupWindowFullScreen = initWindowFullScreenListener();
+    const cleanupWorkspaceActivation = initWorkspaceActivationListeners();
     return () => {
+      cleanupWorkspaceActivation?.();
       cleanupWindowMenu?.();
       cleanupWindowFullScreen?.();
       cleanupActionPrompts?.();

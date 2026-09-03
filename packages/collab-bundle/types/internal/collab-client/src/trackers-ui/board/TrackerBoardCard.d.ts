@@ -15,6 +15,7 @@
  */
 import React from 'react';
 import type { TrackerRecord } from '../../../../runtime/src/core/TrackerRecord';
+import type { TrackerIdentity } from '../../../../runtime/src/core/DocumentService';
 import './TrackerBoardCard.css';
 export interface TrackerBoardCardProps {
     item: TrackerRecord;
@@ -47,5 +48,7 @@ export interface TrackerBoardCardProps {
     unreadSlot?: React.ReactNode;
     /** Personal lane, desktop only. Omitted by a host with team auth only. */
     favoriteSlot?: React.ReactNode;
+    /** Current viewer, used only to distinguish teammate activity. */
+    currentIdentity?: TrackerIdentity | null;
 }
 export declare const TrackerBoardCard: React.FC<TrackerBoardCardProps>;

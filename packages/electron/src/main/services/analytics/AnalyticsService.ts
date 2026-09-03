@@ -139,6 +139,45 @@ export class AnalyticsService {
     }
   }
 
+  /**
+   * Can this install receive remote configuration through PostHog at all?
+   *
+   * Deliberately stricter than `allowedToSendAnalytics`, which fails *open*
+   * when the settings store cannot be read. The one caller is the migration
+   * rollout kill switch, where "we could not read the setting" must never
+   * resolve to "go ahead and rewrite the user's database". See
+   * `database/sqlite/migrationFlag.ts` for why an install that answers `false`
+   * here is kept out of automatic migration entirely.
+   */
+  public canEvaluateRemoteConfig(): boolean {
+    if (!this.postHogClient) return false;
+    try {
+      return isAnalyticsEnabled();
+    } catch (error) {
+      this.log.warn('[Analytics] Could not read analytics consent; treating remote config as unavailable', { error });
+      return false;
+    }
+  }
+
+  /**
+   * The JSON payload attached to a feature flag, or `null` when it cannot be
+   * obtained — client not up, analytics opted out, flag off, or the network
+   * call failed. Never throws. Callers must treat `null` as "no answer", not
+   * as a value.
+   */
+  public async getFeatureFlagPayload(key: string): Promise<unknown | null> {
+    if (!this.postHogClient || !this.canEvaluateRemoteConfig()) {
+      return null;
+    }
+    try {
+      const payload = await this.postHogClient.getFeatureFlagPayload(key, this.getDistinctId());
+      return payload ?? null;
+    } catch (err) {
+      this.log.warn(`[Analytics] Feature flag payload '${key}' lookup failed`, err);
+      return null;
+    }
+  }
+
   public async optIn(): Promise<void> {
     this.log.info('Processing analytics opt-in');
 

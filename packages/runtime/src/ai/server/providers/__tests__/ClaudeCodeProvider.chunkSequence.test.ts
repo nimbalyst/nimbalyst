@@ -58,6 +58,20 @@ function scriptQuery(script: Array<Record<string, unknown> | (() => never)>): As
   } as AsyncIterable<unknown>;
 }
 
+/**
+ * Scripted query plus the `close` spy. Closing the subprocess is how the
+ * provider stops the CLI from running its own queued `<task-notification>`
+ * continuation against a control channel we already tore down. See #1410.
+ */
+function scriptQueryWithClose(
+  script: Array<Record<string, unknown> | (() => never)>,
+): { query: AsyncIterable<unknown>; close: ReturnType<typeof vi.fn> } {
+  const close = vi.fn();
+  const query = scriptQuery(script) as AsyncIterable<unknown> & { close: () => void };
+  query.close = close;
+  return { query, close };
+}
+
 type Stubs = {
   logError: ReturnType<typeof vi.fn>;
   logAgentMessage: ReturnType<typeof vi.fn>;
@@ -405,6 +419,116 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
       { type: 'complete', isComplete: true, contextCompacted: true },
     ]);
     expect(stubs.logError).not.toHaveBeenCalled();
+  });
+
+  // #1410: a backgrounded task that settles DURING the turn engages none of the
+  // drain machinery (hasRunningTasks() is already false at the result chunk), so
+  // the CLI's queued continuation turn used to run invisibly against a channel
+  // we closed ~0.3s earlier and every tool needing permission was denied.
+  it('closes the subprocess and wakes the session when a backgrounded task settles mid-turn', async () => {
+    const { provider } = await makeProvider();
+    const { query, close } = scriptQueryWithClose([
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        description: 'npm run build',
+        tool_use_id: 'toolu_bg',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: { id: 'msg_1', content: [{ type: 'text', text: 'started the build' }] },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'build succeeded',
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 2 },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: Array<{ sessionId: string; message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    const chunks = await runTurn(provider, 'run the build in the background');
+
+    expect(normalize(chunks)).toEqual([
+      { type: 'text', content: 'started the build' },
+      { type: 'complete', isComplete: true },
+    ]);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(idleMessages).toHaveLength(1);
+    expect(idleMessages[0].sessionId).toBe('nimbalyst-session-1');
+    expect(idleMessages[0].message).toContain('npm run build');
+    expect(idleMessages[0].message).toContain('build succeeded');
+  });
+
+  // The negative half of #1410's gate: a FOREGROUND Task settles via its own
+  // tool_result, the model already saw the result inline, and the CLI queues no
+  // continuation. Treating its notification as a trigger would bill an extra
+  // turn per delegation.
+  it('neither closes nor wakes when a foreground Task settles via its own tool_result', async () => {
+    const { provider } = await makeProvider();
+    const { query, close } = scriptQueryWithClose([
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'agent',
+        description: 'review the diff',
+        tool_use_id: 'toolu_1',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: {
+          id: 'msg_1',
+          content: [{ type: 'tool_use', id: 'toolu_1', name: 'Task', input: { prompt: 'review' } }],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_1',
+              content: 'Agent finished: findings attached.',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'reviewed',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: { id: 'msg_2', content: [{ type: 'text', text: 'the review is in' }] },
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 3 },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: unknown[] = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'review the diff');
+
+    expect(close).not.toHaveBeenCalled();
+    expect(idleMessages).toEqual([]);
   });
 
   it('passes the resolved turn inputs through to buildSdkOptions', async () => {

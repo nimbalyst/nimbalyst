@@ -61,6 +61,9 @@ When executing this command:
   - When all tasks complete, set `status` to `in-review`
   - Set `progress` to 100
   - Update `updated` timestamp
+  - Do NOT edit `CHANGELOG.md` — that happens only when the user asks for a commit, via [/commit](./commit.md)
+  - Do NOT commit unless explicitly asked
+  - If you are one slice of a parallel batch, stay inside the files you were given and do not run the full gate; see [parallel-sessions.md](../rules/parallel-sessions.md)
 
 ## Task List Format
 

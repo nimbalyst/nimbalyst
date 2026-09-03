@@ -240,6 +240,24 @@ describe('submitClaudeCliPrompt', () => {
       expect(submitWriteGapMs(50_000_000)).toBe(SUBMIT_WRITE_GAP_MAX_MS);
     });
 
+    it('scales the gap by UTF-8 BYTE length, not JS string length (#1387)', async () => {
+      const ascii = harness();
+      await submitClaudeCliPrompt(
+        { sessionId: 's1', workspacePath: '/w', prompt: 'a'.repeat(4_000) },
+        ascii.deps,
+      );
+      const hangul = harness();
+      await submitClaudeCliPrompt(
+        { sessionId: 's1', workspacePath: '/w', prompt: '가'.repeat(4_000) },
+        hangul.deps,
+      );
+      // The PTY drains BYTES; Hangul is 3 bytes per char, so the same character
+      // count needs ~3x the drain time. Sizing off `.length` (UTF-16 units) sent
+      // Enter before the closing paste terminator was consumed, and it landed as
+      // a literal newline inside the paste instead of submitting the turn.
+      expect(hangul.delays[0]).toBe(ascii.delays[0] * 3);
+    });
+
     it('waits longer before Enter for a large prompt than a small one', async () => {
       const small = harness();
       await submitClaudeCliPrompt(

@@ -5,7 +5,6 @@
 ![Version](https://img.shields.io/github/v/release/nimbalyst/nimbalyst)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 
-
 <p>
 <a href="https://nimbalyst.com">Website</a> ·
 <a href="#download">Download</a> ·
@@ -94,7 +93,8 @@ Download the latest version for your platform:
 | macOS Apple Silicon | [Download .dmg](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-macOS-arm64.dmg) | macOS Apple Silicon 12+ |
 | macOS Intel | [Download .dmg](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-macOS-x64.dmg) | macOS Intel 12+ |
 | Windows | [Download .exe](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Windows.exe) | Windows 10+ |
-| Linux | [Download AppImage](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Linux.AppImage) | Linux |
+| Linux (Debian, Ubuntu) | [Download .deb](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Linux.deb) | Debian, Ubuntu, or a derivative |
+| Linux (other) | [Download AppImage](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Linux.AppImage) | Linux — on Ubuntu 24.04+ see [Linux installation](docs/LINUX_INSTALL.md) |
 
 ## Getting Started
 

@@ -401,13 +401,17 @@ function normalizeTypeColumnConfigs(raw: unknown): Record<string, TypeColumnConf
   const normalized: Record<string, TypeColumnConfig> = {};
   for (const [type, value] of Object.entries(raw)) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
-    const config = value as { visibleColumns?: unknown; columnWidths?: unknown };
+    const config = value as { visibleColumns?: unknown; columnWidths?: unknown; typeColumnDisplay?: unknown };
     if (!Array.isArray(config.visibleColumns)) continue;
     normalized[type] = {
       visibleColumns: config.visibleColumns.filter((column): column is string => typeof column === 'string'),
       columnWidths: config.columnWidths && typeof config.columnWidths === 'object' && !Array.isArray(config.columnWidths)
         ? config.columnWidths as Record<string, number>
         : {},
+      // Absent (or unrecognized) stays absent so the Type column resolves to its icon default.
+      ...(config.typeColumnDisplay === 'label' || config.typeColumnDisplay === 'icon'
+        ? { typeColumnDisplay: config.typeColumnDisplay }
+        : {}),
     };
   }
   return normalized;

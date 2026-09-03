@@ -26,7 +26,7 @@ import { $createEmbeddedFileNode } from '../../editor/plugins/EmbedPlugin/Embedd
 import { isEmbeddableUrl } from '../../editor/plugins/EmbedPlugin/embeddableExtensions';
 import { useDocumentPath } from '../../DocumentPathContext';
 import {
-  resolveDocumentLinkLookupPath,
+  resolveDocumentLinkLookupPaths,
   isCollabReferenceHref,
   parseCollabReferenceDocumentId,
 } from './documentLinkPaths';
@@ -489,25 +489,25 @@ export function DocumentLinkPlugin({
       }
 
       const workspacePath = (window as unknown as { __workspacePath?: string }).__workspacePath ?? null;
-      const resolvedPath = documentPath
-        ? resolveDocumentLinkLookupPath(documentPath, currentDocumentPath, workspacePath)
-        : undefined;
+      const candidatePaths = documentPath
+        ? resolveDocumentLinkLookupPaths(documentPath, currentDocumentPath, workspacePath)
+        : [];
+      const fallbackPath = candidatePaths[candidatePaths.length - 1];
 
       void (async () => {
-        const resolvedDoc = resolvedPath
-          ? await documentService.getDocumentByPath(resolvedPath)
-          : null;
-
-        if (resolvedDoc) {
-          await documentService.openDocument(resolvedDoc.id, {
-            path: resolvedDoc.path,
-          });
-          return;
+        for (const candidate of candidatePaths) {
+          const resolvedDoc = await documentService.getDocumentByPath(candidate);
+          if (resolvedDoc) {
+            await documentService.openDocument(resolvedDoc.id, {
+              path: resolvedDoc.path,
+            });
+            return;
+          }
         }
 
-        await documentService.openDocument(resolvedPath ? '' : (documentId ?? ''), {
-          path: resolvedPath ?? documentPath,
-          name: resolvedPath ? undefined : documentName,
+        await documentService.openDocument(fallbackPath ? '' : (documentId ?? ''), {
+          path: fallbackPath ?? documentPath,
+          name: fallbackPath ? undefined : documentName,
         });
       })().catch(error => {
           console.error('Failed to open document reference', error);
