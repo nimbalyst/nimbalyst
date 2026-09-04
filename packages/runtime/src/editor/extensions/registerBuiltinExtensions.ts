@@ -13,6 +13,7 @@ import './builtin/AutoLinkExtension';
 import './builtin/AssetGcExtension';
 import './builtin/CollabAssetLinkExtension';
 import './builtin/CollapsibleExtension';
+import './builtin/DecisionExtension';
 import './builtin/DiffExtension';
 import './builtin/DragDropPasteExtension';
 import './builtin/EmojiExtension';

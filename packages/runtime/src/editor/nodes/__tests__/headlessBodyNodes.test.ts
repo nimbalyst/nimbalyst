@@ -30,6 +30,12 @@ See [the docs](https://example.com/docs) and \`inlineCode\`.
 const x = 1;
 \`\`\`
 
+\`\`\`decision
+id: dcn-7f3a2c
+ask: Do we ship the fix in this release?
+type: confirm
+\`\`\`
+
 ---
 
 Done.`;
@@ -57,12 +63,18 @@ describe('HeadlessBodyNodes', () => {
     // And the body actually parsed into multiple block nodes (not empty).
     let childCount = 0;
     let hasList = false;
+    let hasDecision = false;
     editor.getEditorState().read(() => {
       const children = $getRoot().getChildren();
       childCount = children.length;
       hasList = children.some((c) => c.getType() === 'list');
+      hasDecision = children.some((c) => c.getType() === 'decision');
     });
     expect(childCount).toBeGreaterThan(3);
     expect(hasList).toBe(true);
+    // A decision can live in a tracker item body, which the main process seeds
+    // through this headless path -- so an unregistered DecisionNode here would
+    // blank the body rather than degrade it.
+    expect(hasDecision).toBe(true);
   });
 });

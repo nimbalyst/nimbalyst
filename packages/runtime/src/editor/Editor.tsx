@@ -43,6 +43,7 @@ import TableHoverActionsPlugin from './plugins/TableHoverActionsPlugin';
 import ToolbarPlugin from './plugins/ToolbarPlugin';
 import TreeViewPlugin from './plugins/TreeViewPlugin';
 import CommentsPlugin from './plugins/CommentPlugin';
+import { DecisionsProvider } from './decisions';
 import { getCommentToolbarActions } from './plugins/CommentPlugin/toolbarAction';
 import { canAuthorComments } from './commenting/capabilities';
 import type { CommentsConfig } from './commenting/types';
@@ -237,7 +238,10 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
   const floatingTextToolbarActions = useCommentToolbarActions(config.comments, editor);
 
   return (
-    <>
+    <FrontmatterProvider value={frontmatterUtils}>
+      {/* Always mounted, config or not: a decision block in a plain local file
+          still renders and is still answerable, it simply records nothing. */}
+      <DecisionsProvider config={config.decisions}>
       {isRichText && editable && showToolbar && (
         <ToolbarPlugin
           editor={editor}
@@ -323,13 +327,11 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
               components that genuinely need a React tree -- typeahead
               menus, dialog hosts, host-context-aware effect plugins.
             */}
-            <FrontmatterProvider value={frontmatterUtils}>
-              <AnchorProvider value={floatingAnchorElem}>
-                {extensionEditorComponents.map(({ name, Component }) => (
-                  <Component key={name} />
-                ))}
-              </AnchorProvider>
-            </FrontmatterProvider>
+            <AnchorProvider value={floatingAnchorElem}>
+              {extensionEditorComponents.map(({ name, Component }) => (
+                <Component key={name} />
+              ))}
+            </AnchorProvider>
 
             {floatingAnchorElem && (
               <>
@@ -367,6 +369,7 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
         )}
       </div>
       {(runtimeSettings.settings.showTreeView || config.showTreeView) && <TreeViewPlugin />}
-    </>
+      </DecisionsProvider>
+    </FrontmatterProvider>
   );
 }

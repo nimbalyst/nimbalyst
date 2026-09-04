@@ -36,6 +36,7 @@ import EditorNodes from './EditorNodes';
 import { ImageNode } from '../plugins/ImagesPlugin';
 import { PageBreakNode } from '../plugins/PageBreakPlugin';
 import { MermaidNode } from '../plugins/MermaidPlugin';
+import { DecisionNode } from '../plugins/DecisionPlugin/DecisionNode';
 import { EmbeddedFileNode } from '../plugins/EmbedPlugin/EmbeddedFileNode';
 import { DocumentReferenceNode } from '../../plugins/DocumentLinkPlugin/DocumentLinkNode';
 import { TrackerReferenceNode } from '../../plugins/TrackerLinkPlugin/TrackerReferenceNode';
@@ -50,6 +51,7 @@ const HeadlessBodyNodes: Array<Klass<LexicalNode>> = [
   PageBreakNode,
   ImageNode,
   MermaidNode,
+  DecisionNode,
   EmbeddedFileNode,
   DocumentReferenceNode,
   TrackerReferenceNode,

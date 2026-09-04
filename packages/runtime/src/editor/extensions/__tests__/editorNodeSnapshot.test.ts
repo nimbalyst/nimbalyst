@@ -34,6 +34,7 @@ const EXPECTED_NODE_TYPES = [
   'collapsible-container',
   'collapsible-content',
   'collapsible-title',
+  'decision',
   'embedded-file',
   'emoji',
   'hashtag',

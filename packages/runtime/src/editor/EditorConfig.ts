@@ -4,6 +4,7 @@ import type { NodeKey } from 'lexical';
 import type { Provider } from '@lexical/yjs';
 import type { Doc } from 'yjs';
 import type { CommentsConfig } from './commenting/types';
+import type { DecisionsConfig } from './decisions/types';
 
 /**
  * Configuration interface for the Nimbalyst component.
@@ -182,6 +183,14 @@ export interface EditorConfig {
    * `commenting/types.ts`.
    */
   comments?: CommentsConfig;
+
+  /**
+   * When set, in-document decision blocks can be answered and sealed against
+   * the document's Y.Doc. Absent means the solo case: blocks still render and a
+   * lone reader can still pick and seal to markdown, but no votes are recorded.
+   * See `decisions/types.ts`.
+   */
+  decisions?: DecisionsConfig;
 }
 
 export const DEFAULT_EDITOR_CONFIG: EditorConfig = {

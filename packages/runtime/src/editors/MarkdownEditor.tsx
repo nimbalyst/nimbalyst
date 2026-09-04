@@ -21,6 +21,7 @@ import {
   type ConfigTheme,
   type UploadedEditorAsset,
   type CommentsConfig,
+  type DecisionsConfig,
   $convertFromEnhancedMarkdownString,
   getEditorTransformers,
 } from '../editor';
@@ -144,6 +145,13 @@ export interface MarkdownEditorProps {
   commentsConfig?: CommentsConfig;
 
   /**
+   * When set, in-document decision blocks are answerable against the document's
+   * Y.Doc. Passed straight through to `EditorConfig.decisions`. Absent for a
+   * plain local file, which is the solo case rather than an error.
+   */
+  decisionsConfig?: DecisionsConfig;
+
+  /**
    * When set, the editor operates in collaborative mode:
    * - Content comes from Y.Doc instead of host.loadContent()
    * - CollaborationPlugin replaces HistoryPlugin
@@ -185,6 +193,7 @@ export function MarkdownEditor({
   applyExternalFileChanges = true,
   collaborationConfig,
   commentsConfig,
+  decisionsConfig,
 }: MarkdownEditorProps): React.ReactElement {
   const isCollabMode = !!collaborationConfig;
   // Personal sync: collab is active but disk operations continue
@@ -396,6 +405,9 @@ export function MarkdownEditor({
 
       // Document comments (collaborative documents only).
       comments: commentsConfig,
+
+      // In-document decisions. Optional: absent is the solo case.
+      decisions: decisionsConfig,
     }),
     [
       config.theme,
@@ -423,6 +435,7 @@ export function MarkdownEditor({
       handleViewHistory,
       collaborationConfig,
       commentsConfig,
+      decisionsConfig,
     ]
   );
 

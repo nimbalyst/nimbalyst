@@ -20,6 +20,8 @@ export interface EmbedFrameProps {
   attrs: EmbedAttrs;
   /** Lexical node key for the originating `EmbeddedFileNode`. */
   nodeKey: NodeKey;
+  /** Nested in another node, so selection and resize persistence do not apply. */
+  detached?: boolean;
 }
 
 export interface EmbedPluginCallbacks {

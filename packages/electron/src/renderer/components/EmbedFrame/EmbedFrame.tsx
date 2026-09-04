@@ -298,7 +298,7 @@ function useEmbedResize(
 // ----------------------------------------------------------------------------
 
 export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
-  const { src, label, attrs, nodeKey } = props;
+  const { src, label, attrs, nodeKey, detached = false } = props;
   const { documentDir, documentPath } = useDocumentPath();
   const { theme } = useTheme();
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
@@ -438,7 +438,8 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
   // editor takes over directly. Clicking elsewhere creates a
   // RangeSelection, `isSelected` flips back to false, and the shield
   // reinstates itself.
-  const [isSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
+  const [nodeSelected, setSelected, clearSelection] = useLexicalNodeSelection(nodeKey);
+  const isSelected = detached || nodeSelected;
 
   const handleShieldClick = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
@@ -782,16 +783,19 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
           className="embed-frame__resizer embed-frame__resizer--e"
           data-testid="embed-frame-resize-e"
           onPointerDown={(event) => onResizeStart(event, DIRECTION.east)}
+          hidden={detached}
         />
         <div
           className="embed-frame__resizer embed-frame__resizer--s"
           data-testid="embed-frame-resize-s"
           onPointerDown={(event) => onResizeStart(event, DIRECTION.south)}
+          hidden={detached}
         />
         <div
           className="embed-frame__resizer embed-frame__resizer--se"
           data-testid="embed-frame-resize-se"
           onPointerDown={(event) => onResizeStart(event, DIRECTION.south | DIRECTION.east)}
+          hidden={detached}
         />
       </div>
     );
@@ -942,16 +946,19 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
         className="embed-frame__resizer embed-frame__resizer--e"
         data-testid="embed-frame-resize-e"
         onPointerDown={(e) => onResizeStart(e, DIRECTION.east)}
+        hidden={detached}
       />
       <div
         className="embed-frame__resizer embed-frame__resizer--s"
         data-testid="embed-frame-resize-s"
         onPointerDown={(e) => onResizeStart(e, DIRECTION.south)}
+        hidden={detached}
       />
       <div
         className="embed-frame__resizer embed-frame__resizer--se"
         data-testid="embed-frame-resize-se"
         onPointerDown={(e) => onResizeStart(e, DIRECTION.south | DIRECTION.east)}
+        hidden={detached}
       />
     </div>
   );

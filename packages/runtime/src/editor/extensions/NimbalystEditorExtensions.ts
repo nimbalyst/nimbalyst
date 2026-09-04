@@ -37,6 +37,7 @@ import { CommentsExtension } from './builtin/CommentsExtension';
 import { DiffExtension } from './builtin/DiffExtension';
 import { DragDropPasteExtension } from './builtin/DragDropPasteExtension';
 import { EmbedExtension } from './builtin/EmbedExtension';
+import { DecisionExtension } from './builtin/DecisionExtension';
 import { EmojiMarkdownExtension } from './builtin/EmojiExtension';
 import { HeadingAnchorExtension } from './builtin/HeadingAnchorExtension';
 import { ImagesExtension } from './builtin/ImagesExtension';
@@ -158,6 +159,7 @@ export function buildNimbalystRootExtension(
     LayoutExtension,
     KanbanBoardExtension,
     MermaidExtension,
+    DecisionExtension,
     EmbedExtension,
     DiffExtension,
     TableMarkdownExtension,

@@ -33,7 +33,7 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MarkdownEditor, MonacoEditor, DocumentPathProvider } from '@nimbalyst/runtime';
-import { $convertFromEnhancedMarkdownString, getEditorTransformers, type CommentsConfig } from '@nimbalyst/runtime/editor';
+import { $convertFromEnhancedMarkdownString, getEditorTransformers, type CommentsConfig, type DecisionsConfig } from '@nimbalyst/runtime/editor';
 import {
   getTeamSyncProvider,
   getSharedDocumentsForScopeKey,
@@ -43,6 +43,7 @@ import {
 import { buildCollabUri } from '@nimbalyst/collab-protocol';
 import { FixedTabHeaderContainer, FixedTabHeaderRegistry } from '@nimbalyst/runtime/plugins/shared/fixedTabHeader';
 import { LexicalDiffHeaderAdapter } from '../UnifiedDiffHeader';
+import { EmbedFrame } from '../EmbedFrame';
 import { DocumentSyncProvider, CollabHistoryClient, LocalDocumentReplica } from '@nimbalyst/runtime/sync';
 import { CollabLexicalProvider } from '@nimbalyst/runtime/collab-lexical';
 import { createRevisionAdapterFromCollabContent } from '@nimbalyst/runtime/sync';
@@ -915,6 +916,38 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   // the same shared Y.Doc (top-level `comments` array); `onMention` / `onReply`
   // route notifications to the org-scoped TeamInboxRoom over the team
   // connection (see documentCommentNotifier).
+  // In-document decisions. Votes ride the same shared Y.Doc as the content and
+  // comments. Including hydration in the memo dependencies is intentional: the
+  // decision provider must re-evaluate its mutation gate when a cold open
+  // finishes hydrating rather than waiting for an unrelated render.
+  const decisionsMemoConfig = useMemo<DecisionsConfig>(() => ({
+    getYDoc: () => collabProviderRef.current?.getYDoc() ?? null,
+    isHydrated: () => hasHydrated,
+    currentUser: {
+      id: activeConfig.teamMemberId,
+      name: activeConfig.userName || activeConfig.userEmail || activeConfig.teamMemberId,
+    },
+    getMembers: () => {
+      const teamProvider = getTeamSyncProvider(activeConfig.scope);
+      const members = teamProvider?.getTeamState()?.members ?? [];
+      return members.map((m) => ({
+        id: m.userId,
+        name: teamMemberDisplayName(m),
+        ...(m.email ? { email: m.email } : {}),
+      }));
+    },
+    renderArtifact: (entryId: string, artifact: string) => (
+      <EmbedFrame
+        src={artifact}
+        label={entryId}
+        attrs={{ height: '200' }}
+        nodeKey={`decision-artifact-${entryId}`}
+        detached
+      />
+    ),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [activeConfig.teamMemberId, activeConfig.userName, activeConfig.userEmail, activeConfig.scope, hasHydrated]);
+
   const commentsMemoConfig = useMemo<CommentsConfig>(() => ({
     getYDoc: () => collabProviderRef.current?.getYDoc() ?? null,
     // Reaching this mounted editor means the document sync lifecycle already
@@ -1520,6 +1553,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
                 onEditorReady={handleLexicalEditorReady}
                 collaborationConfig={collaborationMemoConfig}
                 commentsConfig={commentsMemoConfig}
+                decisionsConfig={decisionsMemoConfig}
               />
             </div>
           </DocumentPathProvider>

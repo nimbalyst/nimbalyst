@@ -17,6 +17,7 @@ import '../../../../extensions/registerBuiltinExtensions';
 import { ImageNode } from '../../../ImagesPlugin/ImageNode';
 import { PageBreakNode } from '../../../PageBreakPlugin/PageBreakNode';
 import { MermaidNode } from '../../../MermaidPlugin/MermaidNode';
+import { DecisionNode } from '../../../DecisionPlugin/DecisionNode';
 import {
   CollapsibleContainerNode,
   CollapsibleContentNode,
@@ -41,6 +42,7 @@ export const TEST_NODES: Array<Klass<LexicalNode>> = [
   ImageNode,
   PageBreakNode,
   MermaidNode,
+  DecisionNode,
   CollapsibleContainerNode,
   CollapsibleContentNode,
   CollapsibleTitleNode,

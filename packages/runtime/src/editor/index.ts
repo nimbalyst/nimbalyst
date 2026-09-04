@@ -34,6 +34,19 @@ export type {
   CommentMentionPayload,
   CommentReplyPayload,
 } from './commenting/types';
+
+// In-document decisions
+export type { DecisionsConfig, DecisionMember } from './decisions/types';
+export {
+  DecisionsProvider,
+  useDecisionVotes,
+  YDocDecisionRepository,
+  DECISION_VOTES_KEY,
+  DECISION_RECOMMENDATIONS_KEY,
+  type DecisionVotingState,
+  type DecisionRepositorySnapshot,
+} from './decisions';
+
 export type {
   AgentCommentActor,
   Comment,
