@@ -1,4 +1,4 @@
-import path from 'path';
+import { resolve } from 'pathe';
 
 export type AttachmentStagingMode = 'temp' | 'workspace' | 'custom';
 
@@ -9,8 +9,10 @@ export interface StagedAttachmentRecord {
 }
 
 function normalizePath(filePath: string): string {
-  const resolved = path.resolve(filePath);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  const resolved = resolve(filePath);
+  // Check if we are running in a Node environment with process.platform
+  const isWin32 = typeof process !== 'undefined' && process.platform === 'win32';
+  return isWin32 ? resolved.toLowerCase() : resolved;
 }
 
 class StagedAttachmentRegistry {
@@ -19,7 +21,7 @@ class StagedAttachmentRegistry {
   register(sessionId: string | undefined, record: StagedAttachmentRecord): void {
     if (!sessionId) return;
     const paths = this.pathsBySession.get(sessionId) ?? new Map<string, StagedAttachmentRecord>();
-    paths.set(normalizePath(record.path), { ...record, path: path.resolve(record.path) });
+    paths.set(normalizePath(record.path), { ...record, path: resolve(record.path) });
     this.pathsBySession.set(sessionId, paths);
   }
 
