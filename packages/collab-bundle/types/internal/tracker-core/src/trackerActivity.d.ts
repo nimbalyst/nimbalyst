@@ -24,4 +24,5 @@ export declare function appendActivity(data: Record<string, any>, authorIdentity
     field?: string;
     oldValue?: string;
     newValue?: string;
+    note?: string;
 }): void;

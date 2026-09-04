@@ -10,6 +10,13 @@ import type { TrackerRecord } from '../../../core/TrackerRecord';
 import { type FieldDefinition, type TrackerSchemaRole } from '../models/TrackerDataModel';
 import { type CellEditorKind } from './trackerCellEditors';
 export type ColumnRenderType = 'badge' | 'text' | 'date' | 'avatar' | 'progress' | 'tags' | 'type-icon' | 'module' | 'url' | 'relationship';
+/**
+ * How the structural `type` column presents an item's type: as the type's glyph,
+ * or as its name. A workspace running dozens of custom types cannot tell them
+ * apart by glyph alone, so the name has to be available (nimbalyst#1422).
+ */
+export type TypeColumnDisplay = 'icon' | 'label';
+export declare const DEFAULT_TYPE_COLUMN_DISPLAY: TypeColumnDisplay;
 export interface TrackerColumnDef {
     /** Unique column ID -- matches the field name in the schema */
     id: string;
@@ -35,6 +42,12 @@ export interface TrackerColumnDef {
     editable: boolean;
     /** Which cell editor to open on edit. `readonly` when `editable` is false. */
     edit: CellEditorKind;
+    /**
+     * Only on the structural `type` column: whether the cell draws the glyph or
+     * the type name. Set by {@link applyTypeColumnDisplay} from the view's config
+     * so the cell renderer needs no extra argument.
+     */
+    typeDisplay?: TypeColumnDisplay;
 }
 /** Per-type column configuration (persisted) */
 export interface TypeColumnConfig {
@@ -42,7 +55,21 @@ export interface TypeColumnConfig {
     visibleColumns: string[];
     /** Custom column widths (overrides defaults) */
     columnWidths: Record<string, number>;
+    /**
+     * How the Type column presents itself. Absent on every view saved before the
+     * option existed, so it resolves to `icon` and nobody's table changes shape
+     * without asking.
+     */
+    typeColumnDisplay?: TypeColumnDisplay;
 }
+/** The Type column's display mode for a config that may predate the option. */
+export declare function resolveTypeColumnDisplay(config: Pick<TypeColumnConfig, 'typeColumnDisplay'> | null | undefined): TypeColumnDisplay;
+/**
+ * Stamp the Type column with the view's chosen display mode, widening it when it
+ * has to hold a name: 64px fits a glyph and truncates every type name to nothing.
+ * Other columns pass through untouched.
+ */
+export declare function applyTypeColumnDisplay(columns: TrackerColumnDef[], display: TypeColumnDisplay): TrackerColumnDef[];
 /**
  * Resolve the full list of TrackerColumnDef for a given type.
  * Builds columns from the schema's field definitions and roles.
@@ -71,6 +98,12 @@ export declare function getStatusColor(status: string, trackerType?: string): st
 export declare function getPriorityColor(priority: string | undefined): string;
 export declare function getTypeColor(type: string): string;
 export declare function getTypeIcon(type: string): string;
+/**
+ * Human-readable name for a tracker type. A registered type names itself; an
+ * unregistered one gets its identifier tidied up rather than shown raw, since
+ * this is what the Type column prints in label mode.
+ */
+export declare function getTypeLabel(type: string): string;
 /**
  * Elapsed-time label for an instant, e.g. `3h ago` / `in 3d`.
  *

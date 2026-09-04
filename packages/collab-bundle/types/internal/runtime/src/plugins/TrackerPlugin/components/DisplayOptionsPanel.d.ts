@@ -10,7 +10,7 @@ import React from 'react';
 import type { TrackerGroupBy } from '../models/trackerGrouping';
 import type { TrackerOrdering } from '../models/trackerOrdering';
 import { type DisplayOptionsViewMode } from './DisplayViewSettings';
-import type { TrackerColumnDef, TypeColumnConfig } from './trackerColumns';
+import { type TrackerColumnDef, type TypeColumnConfig } from './trackerColumns';
 export type { DisplayOptionsViewMode } from './DisplayViewSettings';
 interface DisplayOptionsPanelProps {
     /** All available columns for this type */
