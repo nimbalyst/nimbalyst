@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { join } from 'path';
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 import { appendFileSync, existsSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import {
     createWindow,
@@ -193,6 +194,7 @@ import { getSessionWakeupsStore, repositoryManager } from './services/Repository
 import { ExtensionDevService } from './services/ExtensionDevService';
 import { MetaAgentService } from './services/MetaAgentService';
 import { notificationService } from './services/NotificationService';
+import { runWatcherObligationStartupRecovery } from './services/WatcherObligationStartupRecovery';
 // SuperLoopProgressService import removed - server disabled (leaking into non-super-loop sessions)
 import { registerMockupHandlers } from './ipc/MockupHandlers';
 import { registerOffscreenEditorHandlers } from './ipc/OffscreenEditorHandlers';
@@ -3155,6 +3157,14 @@ app.whenReady().then(async () => {
         );
     } catch (error) {
         logger.mcp.error('Failed to start meta-agent MCP server:', error);
+    }
+
+    // Restore externally-owned attention deadlines only after the local control
+    // surface is ready, and before scheduled session wakeups resume work.
+    try {
+        await runWatcherObligationStartupRecovery({ hostBootId: randomUUID() });
+    } catch (error) {
+        logger.main.warn('[Main] Watcher-obligation startup recovery failed:', error);
     }
 
     // Start session wakeup scheduler (persistent scheduled re-invocations)
