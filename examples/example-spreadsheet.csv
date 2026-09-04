@@ -1,0 +1,11 @@
+# nimbalyst: {"hasHeaders":true,"headerRowCount":1,"frozenColumnCount":0,"columnFormats":{"2":{"type":"currency","decimals":2,"showThousandsSeparator":true,"currency":"USD"}}}
+Column A,Column B,
+foo,alpha,
+bar,beta,
+baz,gamma,
+,,
+,,
+,,
+,one,a
+,two,
+,three,

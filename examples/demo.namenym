@@ -1,0 +1,968 @@
+{
+  "version": 1,
+  "name": "Homekit Dashboards",
+  "brief": "A companion project for Homekit that supports a desktop app with an MCP server for agents to interact with Homekit and a Mobile app to render custom homekit dashboards, built by the agents.\n",
+  "selectedStyles": [
+    "alternate",
+    "compound",
+    "evocative"
+  ],
+  "concepts": [
+    {
+      "id": "c-1773519079463-1",
+      "label": "Hearth",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519079463-2",
+      "label": "Havn",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519079463-3",
+      "label": "Lattice",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519079463-4",
+      "label": "Canvas",
+      "votes": 1,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519079463-5",
+      "label": "Bridge",
+      "votes": 1,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519079463-6",
+      "label": "Relay",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519079463-7",
+      "label": "Synk",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519079463-8",
+      "label": "Pulse",
+      "votes": 1,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519079463-9",
+      "label": "Orbit",
+      "votes": 1,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519079463-10",
+      "label": "Scene",
+      "votes": 1,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519689932-9",
+      "label": "Nexus",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519689932-10",
+      "label": "Beacon",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519689932-11",
+      "label": "Nest",
+      "votes": 1,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519689932-12",
+      "label": "Thread",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519689932-13",
+      "label": "Harbor",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519689932-14",
+      "label": "Flow",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519689932-15",
+      "label": "Signal",
+      "votes": 0,
+      "source": "ai"
+    },
+    {
+      "id": "c-1773519689932-16",
+      "label": "Facet",
+      "votes": 0,
+      "source": "ai"
+    }
+  ],
+  "synonyms": [
+    {
+      "id": "s-1773519171356-11",
+      "conceptId": "c-1773519079463-5",
+      "label": "Spanforge",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519171356-12",
+      "conceptId": "c-1773519079463-5",
+      "label": "Archlane",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519171356-13",
+      "conceptId": "c-1773519079463-5",
+      "label": "Shore Span",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519171356-14",
+      "conceptId": "c-1773519079463-5",
+      "label": "Beam Path",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519171356-15",
+      "conceptId": "c-1773519079463-5",
+      "label": "Keystone Link",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519171356-16",
+      "conceptId": "c-1773519079463-5",
+      "label": "Overlink",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519171356-17",
+      "conceptId": "c-1773519079463-5",
+      "label": "Linkhaven",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519171356-18",
+      "conceptId": "c-1773519079463-5",
+      "label": "Pierlink",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519171356-19",
+      "conceptId": "c-1773519079463-5",
+      "label": "Arcspan",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519171356-20",
+      "conceptId": "c-1773519079463-5",
+      "label": "Spanly",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519677967-1",
+      "conceptId": "c-1773519079463-9",
+      "label": "Arc",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519677967-2",
+      "conceptId": "c-1773519079463-9",
+      "label": "Halo",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519677967-3",
+      "conceptId": "c-1773519079463-9",
+      "label": "Ringpath",
+      "votes": 1,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519677967-4",
+      "conceptId": "c-1773519079463-9",
+      "label": "Loop",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519677967-5",
+      "conceptId": "c-1773519079463-9",
+      "label": "Sphere",
+      "votes": 1,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519677967-6",
+      "conceptId": "c-1773519079463-9",
+      "label": "Drift",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519677967-7",
+      "conceptId": "c-1773519079463-9",
+      "label": "Circuit",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773519677967-8",
+      "conceptId": "c-1773519079463-9",
+      "label": "Roundel",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773598132540-1",
+      "conceptId": "c-1773519689932-11",
+      "label": "Haven",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773598132540-2",
+      "conceptId": "c-1773519689932-11",
+      "label": "Nook",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773598132540-3",
+      "conceptId": "c-1773519689932-11",
+      "label": "Roost",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773598132540-4",
+      "conceptId": "c-1773519689932-11",
+      "label": "Harbor",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773598132540-5",
+      "conceptId": "c-1773519689932-11",
+      "label": "Homefold",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773598132540-6",
+      "conceptId": "c-1773519689932-11",
+      "label": "Cozyl",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773598132540-7",
+      "conceptId": "c-1773519689932-11",
+      "label": "Safehold",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773598132540-8",
+      "conceptId": "c-1773519689932-11",
+      "label": "Warmkeep",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-1",
+      "conceptId": "c-1773519079463-10",
+      "label": "Vista",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-2",
+      "conceptId": "c-1773519079463-10",
+      "label": "Backdrop",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-3",
+      "conceptId": "c-1773519079463-10",
+      "label": "Stage",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-4",
+      "conceptId": "c-1773519079463-10",
+      "label": "Setting",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-5",
+      "conceptId": "c-1773519079463-10",
+      "label": "Panorama",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-6",
+      "conceptId": "c-1773519079463-10",
+      "label": "Viewline",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-7",
+      "conceptId": "c-1773519079463-10",
+      "label": "Scape",
+      "votes": 2,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-8",
+      "conceptId": "c-1773519079463-10",
+      "label": "Frame",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-9",
+      "conceptId": "c-1773519079463-10",
+      "label": "Spotlight",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773786969907-10",
+      "conceptId": "c-1773519079463-10",
+      "label": "Sightline",
+      "votes": 1,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773787322316-1",
+      "conceptId": "c-1773519079463-8",
+      "label": "Beat",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773787322316-2",
+      "conceptId": "c-1773519079463-8",
+      "label": "Thrum",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773787322316-3",
+      "conceptId": "c-1773519079463-8",
+      "label": "Lifewave",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773787322316-4",
+      "conceptId": "c-1773519079463-8",
+      "label": "Sync",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773787322316-5",
+      "conceptId": "c-1773519079463-8",
+      "label": "Vibe",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773787322316-6",
+      "conceptId": "c-1773519079463-8",
+      "label": "Current",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773787322316-7",
+      "conceptId": "c-1773519079463-8",
+      "label": "Rhythm",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773787322316-8",
+      "conceptId": "c-1773519079463-8",
+      "label": "Heartline",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773839702146-1",
+      "conceptId": "c-1773519079463-4",
+      "label": "Backdrop",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773839702146-2",
+      "conceptId": "c-1773519079463-4",
+      "label": "Artboard",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773839702146-3",
+      "conceptId": "c-1773519079463-4",
+      "label": "Blankframe",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773839702146-4",
+      "conceptId": "c-1773519079463-4",
+      "label": "Openweave",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773839702146-5",
+      "conceptId": "c-1773519079463-4",
+      "label": "Scenecloth",
+      "votes": 1,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773839702146-6",
+      "conceptId": "c-1773519079463-4",
+      "label": "Stretchframe",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773839702146-7",
+      "conceptId": "c-1773519079463-4",
+      "label": "Inkfield",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    },
+    {
+      "id": "s-1773839702146-8",
+      "conceptId": "c-1773519079463-4",
+      "label": "Createfold",
+      "votes": 0,
+      "dismissed": false,
+      "source": "ai"
+    }
+  ],
+  "mashups": [
+    {
+      "id": "m-1773519727657-17",
+      "label": "HearthLattice",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773519727657-18",
+      "label": "BeaconLoop",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773519727657-19",
+      "label": "NestOrbit",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": {
+        "scores": {
+          "conceptFit": 4,
+          "memorability": 4,
+          "pronounceability": 5,
+          "uniqueness": 3,
+          "trademarkRisk": 1,
+          "domainAvailability": 1,
+          "searchDiscoverability": 3,
+          "emotionalResonance": 4,
+          "extendability": 4,
+          "visualAdaptability": 4
+        },
+        "totalScore": 3.44,
+        "strengths": [
+          "Strong home-oriented cue through \"Nest,\" which fits a HomeKit companion in the smart-home space.",
+          "\"Orbit\" adds a sense of connected devices, control hub, and activity revolving around the home.",
+          "Easy to pronounce, spell, and remember after a single exposure.",
+          "Works well visually as a two-part compound name with strong logo and icon potential."
+        ],
+        "risks": [
+          "Potential blocker: trademark risk is high because \"Nest\" is strongly associated with Google smart-home products.",
+          "Potential blocker: likely weak domain availability due to the popularity and existing use of both \"Nest\" and \"Orbit\" terms.",
+          "Could create confusion with existing smart-home brands or imply direct affiliation with Nest hardware/ecosystem.",
+          "Search results may be diluted by unrelated uses of both words in consumer tech and home categories."
+        ],
+        "notes": "A strong conceptual fit for a smart-home companion, but the use of \"Nest\" creates a significant legal and brand-confusion concern. Good naming energy, but likely not advisable without legal clearance and a domain workaround."
+      }
+    },
+    {
+      "id": "m-1773519727657-20",
+      "label": "BridgeHalo",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773519727657-21",
+      "label": "SignalHarbor",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773519727657-22",
+      "label": "CanvasNexus",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773519727657-23",
+      "label": "RelaySphere",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773519727657-24",
+      "label": "ThreadArc",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773519727657-25",
+      "label": "SynHarbor",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773519727657-26",
+      "label": "FluxBeacon",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": {
+        "scores": {
+          "conceptFit": 3,
+          "memorability": 4,
+          "pronounceability": 4,
+          "uniqueness": 4,
+          "trademarkRisk": 3,
+          "domainAvailability": 3,
+          "searchDiscoverability": 3,
+          "emotionalResonance": 3,
+          "extendability": 4,
+          "visualAdaptability": 4
+        },
+        "totalScore": 3.54,
+        "strengths": [
+          "Feels modern, technical, and agent-friendly, which suits an MCP-enabled desktop/mobile companion.",
+          "\"Beacon\" suggests signaling, guidance, orchestration, and device communication.",
+          "Distinctive compound with solid memorability and broad extendability into related tools or modules.",
+          "Visually balanced and brandable, with good potential for iconography around light, signal, or navigation."
+        ],
+        "risks": [
+          "Concept fit is only moderate: it does not strongly communicate home, HomeKit, dashboards, or domestic automation.",
+          "\"Flux\" can imply instability or constant change, which may conflict with expectations of reliability in home control.",
+          "Search discoverability may be mixed because both words are common in software, networking, and science contexts.",
+          "Could skew more infrastructure/tooling than consumer-friendly smart-home product without supporting messaging."
+        ],
+        "notes": "A credible and flexible tech brand name with good distinctiveness, but it needs brand storytelling to connect clearly to home automation. Stronger for a developer platform layer than for a clearly home-centric companion product."
+      }
+    },
+    {
+      "id": "m-1773519727657-27",
+      "label": "Linkhaven",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773519727657-28",
+      "label": "FacetPulse",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773598142325-9",
+      "label": "Nestforge",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773598142325-10",
+      "label": "OrbitThread",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": {
+        "scores": {
+          "conceptFit": 3,
+          "memorability": 3,
+          "pronounceability": 4,
+          "uniqueness": 4,
+          "trademarkRisk": 3,
+          "domainAvailability": 3,
+          "searchDiscoverability": 2,
+          "emotionalResonance": 2,
+          "extendability": 4,
+          "visualAdaptability": 3
+        },
+        "totalScore": 3.2,
+        "strengths": [
+          "Suggests interconnected systems and coordination, which aligns with agents, dashboards, and multi-device orchestration.",
+          "Relatively distinctive pairing that feels technical and structurally extensible.",
+          "Pronounceable and understandable without much explanation.",
+          "Could support a platform narrative around connected flows, routines, and communication threads."
+        ],
+        "risks": [
+          "Potential blocker: emotional resonance is weak; the name feels abstract and somewhat cold for a home-oriented product.",
+          "Search discoverability is poor because both terms are generic and widely used in tech, design, and consumer contexts.",
+          "Concept fit is only moderate and does not naturally evoke homes, control surfaces, or dashboards.",
+          "Less immediately memorable than the other options due to lower semantic cohesion between the two words."
+        ],
+        "notes": "OrbitThread has some architectural logic, especially for an agent coordination layer, but it lacks warmth and immediate smart-home relevance. It feels more like infrastructure middleware than a consumer-facing HomeKit companion brand."
+      }
+    },
+    {
+      "id": "m-1773598142325-11",
+      "label": "Arcspan",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773598142325-12",
+      "label": "HarborPulse",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773598142325-13",
+      "label": "SynCanvas",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773598142325-14",
+      "label": "LatticeRoost",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773598142325-15",
+      "label": "RelayNook",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773598142325-16",
+      "label": "Flowhaven",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773598142325-17",
+      "label": "FacetForge",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": {
+        "scores": {
+          "conceptFit": 3,
+          "memorability": 4,
+          "pronounceability": 4,
+          "uniqueness": 4,
+          "trademarkRisk": 4,
+          "domainAvailability": 4,
+          "searchDiscoverability": 3,
+          "emotionalResonance": 3,
+          "extendability": 5,
+          "visualAdaptability": 4
+        },
+        "totalScore": 3.78,
+        "strengths": [
+          "Distinctive and brandable, with a crafted, modular feel that maps well to customizable dashboards.",
+          "\"Facet\" suggests multiple views, panels, or dimensions, which is relevant to dashboard rendering and personalized interfaces.",
+          "\"Forge\" conveys creation and building, fitting the agent-built dashboard concept well.",
+          "Has strong extendability for future products, builders, editors, and platform components."
+        ],
+        "risks": [
+          "Concept fit is only moderate because it emphasizes creation more than home automation or HomeKit specifically.",
+          "May sound more like a design system, analytics tool, or developer framework than a home companion product.",
+          "Emotional warmth is limited; the name feels capable and crafted but not especially domestic or intuitive.",
+          "Requires positioning work to clarify that it serves smart-home experiences rather than general productivity or dev tooling."
+        ],
+        "notes": "FacetForge is the most strategically flexible and ownable option in the set, especially if the product emphasis is on agent-built custom dashboards. It is less explicitly home-centric, but overall it balances distinctiveness, lower legal risk, and future product stretch well."
+      }
+    },
+    {
+      "id": "m-1773598142325-18",
+      "label": "NeoBridge",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773598142325-19",
+      "label": "SignalVerse",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-9",
+      "label": "NestSignal",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-10",
+      "label": "CanvasOrbit",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-11",
+      "label": "ThreadHarbor",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-12",
+      "label": "BeaconFlow",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-13",
+      "label": "SceneNexus",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-14",
+      "label": "PulseLattice",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-15",
+      "label": "HearthLoop",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-16",
+      "label": "RelayVista",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-17",
+      "label": "FluxNest",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-18",
+      "label": "SignalForge",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    },
+    {
+      "id": "m-1773840407143-19",
+      "label": "FacetVerse",
+      "votes": 0,
+      "sources": [],
+      "domainStatus": "unknown",
+      "availableDomains": [],
+      "evaluation": null
+    }
+  ],
+  "shortlisted": [
+    "m-1773519727657-19",
+    "m-1773519727657-26",
+    "m-1773598142325-10",
+    "m-1773598142325-17"
+  ],
+  "selectedTlds": [
+    ".com",
+    ".ai"
+  ],
+  "settings": {
+    "showOnlyFavorited": false,
+    "hideUnavailable": false
+  }
+}
