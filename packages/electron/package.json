@@ -6,6 +6,7 @@
   "author": "Nimbalyst Team",
   "description": "Electron app for Nimbalyst",
   "homepage": "https://nimbalyst.com",
+  "desktopName": "nimbalyst.desktop",
   "main": "out/main/index.js",
   "bin": {
     "nimbalyst": "./bin/nimbalyst"
