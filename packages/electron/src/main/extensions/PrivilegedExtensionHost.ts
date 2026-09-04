@@ -195,6 +195,25 @@ function createReadyGate(): ReadyGate {
 /** Max time to wait for a spawned module to send init-ack before giving up. */
 const MODULE_READY_TIMEOUT_MS = 15_000;
 
+/**
+ * Max time a single `request` may wait for its `rpc-result`/`rpc-error`.
+ *
+ * Without this, a pending call was parked in `managed.pending` with no timer at
+ * all: the only thing that could ever settle it was a reply, a module crash, or
+ * a stop (`rejectAllPending`). A module that stayed *alive* but never answered —
+ * wedged in a sync loop, deadlocked on its own SQLite handle, awaiting a promise
+ * that never resolves — left the caller hanging forever with no error and no log
+ * line. When the caller was an MCP tool handler, no JSON-RPC response was ever
+ * written and the agent sat on the call until its own client timeout, which on
+ * `/mcp/core` is a week. Agents surface that as "the service is slow"; there is
+ * nothing in any log to contradict them.
+ *
+ * Generous on purpose. Backend tools do real work — notebook cells, circuit
+ * simulation, a full memory re-index — and this is a stuck-detector, not a
+ * latency budget. Callers that legitimately run longer pass `timeoutMs`.
+ */
+const RPC_REQUEST_TIMEOUT_MS = 600_000;
+
 interface ManagedModule {
   args: StartModuleArgs;
   state: ModuleState;
@@ -625,6 +644,10 @@ export class PrivilegedExtensionHost extends EventEmitter {
    * caller (renderer IPC handler, AI tool adapter) is responsible for
    * declaring which permission a given method consumes. Methods that need
    * no permission at all can pass `null`.
+   *
+   * Rejects after `timeoutMs` (default `RPC_REQUEST_TIMEOUT_MS`) if the module
+   * never answers, so a wedged-but-alive module fails loudly instead of parking
+   * the caller forever.
    */
   async request<T = unknown>(args: {
     extensionId: string;
@@ -633,6 +656,7 @@ export class PrivilegedExtensionHost extends EventEmitter {
     method: string;
     params?: unknown;
     requiredPermission: ExtensionPermissionId | null;
+    timeoutMs?: number;
   }): Promise<T> {
     const key = moduleKey(args.extensionId, args.moduleId, args.workspacePath);
     const managed = this.modules.get(key);
@@ -669,10 +693,43 @@ export class PrivilegedExtensionHost extends EventEmitter {
     }
 
     const id = String(managed.nextRpcId++);
+    const timeoutMs = args.timeoutMs ?? RPC_REQUEST_TIMEOUT_MS;
     return new Promise<T>((resolve, reject) => {
+      // Cleared by whichever of the three settle paths wins: a reply routed
+      // through `pending` (handleMessage), a send() throw below, or the timer.
+      let timer: NodeJS.Timeout | undefined;
+      const settle = <R>(fn: (value: R) => void) => (value: R) => {
+        if (timer) clearTimeout(timer);
+        timer = undefined;
+        fn(value);
+      };
+      const settledResolve = settle<unknown>((v) => resolve(v as T));
+      const settledReject = settle<Error>(reject);
+
+      if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
+        timer = setTimeout(() => {
+          timer = undefined;
+          // Drop the callback first: a late reply must not resolve a promise we
+          // have already rejected, and must not leak in `pending` forever.
+          if (!managed.pending.delete(id)) return;
+          logger.main.warn(
+            `[PrivilegedExtensionHost] rpc timeout after ${timeoutMs}ms: ` +
+              `${args.extensionId}/${args.moduleId} ${args.method}`
+          );
+          reject(
+            new Error(
+              `[PrivilegedExtensionHost] ${args.extensionId}/${args.moduleId} ` +
+                `did not answer ${args.method} within ${timeoutMs}ms`
+            )
+          );
+        }, timeoutMs);
+        // A pending backend call must not by itself keep the process alive.
+        timer.unref?.();
+      }
+
       managed.pending.set(id, {
-        resolve: (v) => resolve(v as T),
-        reject,
+        resolve: settledResolve,
+        reject: settledReject,
         streaming: false,
       });
       try {
@@ -684,7 +741,7 @@ export class PrivilegedExtensionHost extends EventEmitter {
         });
       } catch (err) {
         managed.pending.delete(id);
-        reject(err instanceof Error ? err : new Error(String(err)));
+        settledReject(err instanceof Error ? err : new Error(String(err)));
       }
     });
   }
