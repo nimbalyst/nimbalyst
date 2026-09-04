@@ -32,6 +32,9 @@ export {
   parseEffortLevel,
   parseThinkingMode,
   resolveThinkingMode,
+  clampEffortLevel,
+  getAvailableEffortLevels,
+  resolveEffortCeiling,
 } from '@nimbalyst/runtime/ai/server/effortLevels';
 
 interface ModelInfo {

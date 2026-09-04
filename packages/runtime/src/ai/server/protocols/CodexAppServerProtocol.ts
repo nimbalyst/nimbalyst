@@ -46,6 +46,7 @@ import {
 } from './codexAppServer/codexAppServerBinary';
 import { terminateOwnedProcessTree } from './processTreeTermination';
 import { resolveCodexPermissionProfile } from './codexPermissionProfile';
+import { clampEffortLevel, parseEffortLevel } from '../effortLevels';
 import type {
   AnyItem,
   ApprovalResponse,
@@ -688,7 +689,12 @@ export class CodexAppServerProtocol implements AgentProtocol {
     );
 
     const effortLevel = options.raw?.effortLevel as string | undefined;
-    const reasoningEffortRaw = effortLevel === 'max' ? 'xhigh' : (effortLevel ?? 'high');
+    // Clamp to what this model's catalog entry accepts: gpt-5.4/5.5 stop at
+    // xhigh, gpt-5.6-luna at max, and only Astra/Sol/Terra reach ultra.
+    const reasoningEffortRaw = clampEffortLevel(
+      parseEffortLevel(effortLevel ?? 'high'),
+      options.model ?? undefined,
+    );
 
     const systemPrompt = (options.raw?.systemPrompt as string | undefined) ?? options.systemPrompt;
     const additionalDirectories = Array.isArray(options.raw?.additionalDirectories)

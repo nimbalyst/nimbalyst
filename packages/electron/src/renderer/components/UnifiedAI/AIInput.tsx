@@ -1427,6 +1427,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
                 onLevelChange={onEffortLevelChange}
                 disabled={reasoningControlsDisabled}
                 disabledTitle={reasoningControlsDisabledTitle}
+                modelId={currentModel}
               />
             )}
             {showThinkingToggle && onThinkingModeChange && thinkingMode && (

@@ -29,6 +29,7 @@
 import { buildDocumentAttachmentPromptText } from '../providers/codex/documentAttachmentPrompt';
 import { describeCodexConfigError } from './codexConfigError';
 import { resolveCodexPermissionProfile } from './codexPermissionProfile';
+import { clampEffortLevel, parseEffortLevel } from '../effortLevels';
 import {
   AgentProtocol,
   ProtocolSession,
@@ -393,12 +394,14 @@ export class CodexSDKProtocol implements AgentProtocol {
       options.raw?.agentVerified === true,
     );
 
-    // Map effort level to Codex SDK ModelReasoningEffort.
-    // Codex SDK supports: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-    // Our EffortLevel uses: 'low' | 'medium' | 'high' | 'max'
-    // Map 'max' → 'xhigh', rest map directly.
+    // Our EffortLevel names match the SDK's ModelReasoningEffort, so the only
+    // work is clamping to what this model's catalog entry accepts: gpt-5.4/5.5
+    // stop at xhigh, gpt-5.6-luna at max, and only Astra/Sol/Terra reach ultra.
     const effortLevel = options.raw?.effortLevel as string | undefined;
-    const reasoningEffort = effortLevel === 'max' ? 'xhigh' : (effortLevel || 'high');
+    const reasoningEffort = clampEffortLevel(
+      parseEffortLevel(effortLevel || 'high'),
+      options.model || undefined,
+    );
 
     const baseOptions = {
       model: options.model || 'gpt-5',
