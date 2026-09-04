@@ -29,6 +29,7 @@ import type { TodoItem } from '@nimbalyst/runtime/ui/AgentTranscript/types';
 import { isToolLikeMessage } from '@nimbalyst/runtime/ui/AgentTranscript/utils/messageTypeHelpers';
 import { AIInput, AIInputRef } from './AIInput';
 import { PromptQueueList } from './PromptQueueList';
+import { mergeRestoredDraftAttachments } from './queuedPromptDraftRestore';
 import { TranscriptEmbeddedFileCard } from './TranscriptEmbeddedFileCard';
 import { getDiffPeekSizeForInteractiveWidgetHost } from './interactiveWidgetHostProxy';
 import { createFeedbackComposeHost } from '../FeedbackRequest/createFeedbackComposeHost';
@@ -1575,7 +1576,11 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     }
   }, []);
 
-  const handleEditQueuedPrompt = useCallback(async (id: string, prompt: string) => {
+  const handleEditQueuedPrompt = useCallback(async (
+    id: string,
+    prompt: string,
+    attachments?: ChatAttachment[],
+  ) => {
     try {
       await window.electronAPI.invoke('ai:deleteQueuedPrompt', id);
       setQueuedPrompts(prev => prev.filter(p => p.id !== id));
@@ -1583,11 +1588,15 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       // clobber prior text; matches how handleQueue bundles consecutive
       // queued prompts with a blank-line separator.
       setDraftInput(prev => prev.trim().length > 0 ? `${prev}\n\n${prompt}` : prompt);
+      // The attachments have to come back too. The prompt text only carries the
+      // `@filename` reference the user sees; the absolute `filepath` that the
+      // send path turns into a real file reference lives on the attachment.
+      setDraftAttachments(prev => mergeRestoredDraftAttachments(prev, attachments));
       inputRef.current?.focus();
     } catch (error) {
       console.error('[SessionTranscript] Failed to edit queued prompt:', error);
     }
-  }, [setDraftInput]);
+  }, [setDraftInput, setDraftAttachments]);
 
   const handleSendNowQueuedPrompt = useCallback(async (_id: string, _prompt: string) => {
     try {
@@ -2791,12 +2800,21 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         />
       )}
 
-      {/* Queue display */}
+      {/* Queue display.
+
+          send-now excluded claude-code-cli when the provider shipped, because
+          ai:triggerQueueProcessing still sent every session through the SDK
+          dispatcher, whose CLI sendMessage stub failed the prompt. The CLI route
+          (dispatchQueuedPromptToClaudeCliSession) landed days later and the
+          exclusion outlived its reason, leaving a CLI session whose turn state is
+          stuck with no way to release its queue but poking the terminal by hand.
+          Both halves handle CLI now: the interrupt writes Ctrl-C to the PTY, and
+          the queue kick routes to the CLI dispatcher. */}
       <PromptQueueList
         queue={queuedPrompts}
         onCancel={handleCancelQueuedPrompt}
         onEdit={handleEditQueuedPrompt}
-        onSendNow={isLoading && !isClaudeCliTerminalSession(provider) ? handleSendNowQueuedPrompt : undefined}
+        onSendNow={isLoading ? handleSendNowQueuedPrompt : undefined}
       />
 
       {/* Note: All interactive prompts (ToolPermission, ExitPlanMode, AskUserQuestion) use inline widgets in transcript */}

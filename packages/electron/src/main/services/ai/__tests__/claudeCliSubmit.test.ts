@@ -30,6 +30,48 @@ const img = (filepath: string): ChatAttachment => ({
   id: filepath, filename: 'x.png', filepath, mimeType: 'image/png', size: 1, type: 'image', addedAt: 0,
 });
 
+describe('submitClaudeCliPrompt Enter confirmation', () => {
+  /**
+   * Measured on claude 2.1.220 (nimbalyst-local/cli-paste-probes/05 and 06): a
+   * payload carrying an image path strands at 25ms and 200ms and only submits
+   * from ~400ms. The CLI reads and decodes the file after the bytes land, and an
+   * Enter arriving during that window is swallowed.
+   *
+   * `submitWriteGapMs` is computed from the PAYLOAD LENGTH, so a short sentence
+   * plus one path is ~300 chars -> 25ms, no matter how many megabytes the
+   * referenced image is. No constant fixes that; confirm the turn started and
+   * press Enter again if it did not.
+   */
+  it('re-sends Enter when the first one did not start a turn', async () => {
+    const h = harness();
+    let started = false;
+    await submitClaudeCliPrompt(
+      { sessionId: 's1', workspacePath: '/w', prompt: 'look', attachments: [img('/tmp/a.png')] },
+      // Turn only starts after a SECOND Enter, as a swallowed first Enter behaves.
+      {
+        ...h.deps,
+        hasTurnStarted: () => started,
+        writeToTerminal: (sessionId: string, data: string) => {
+          h.writes.push([sessionId, data]);
+          if (data === '\r' && h.writes.filter(([, d]) => d === '\r').length >= 2) started = true;
+        },
+      },
+    );
+
+    const enters = h.writes.filter(([, d]) => d === '\r');
+    expect(enters.length).toBe(2);
+  });
+
+  it('does not re-send Enter when the first one worked', async () => {
+    const h = harness();
+    await submitClaudeCliPrompt(
+      { sessionId: 's1', workspacePath: '/w', prompt: 'look', attachments: [img('/tmp/a.png')] },
+      { ...h.deps, hasTurnStarted: () => true },
+    );
+    expect(h.writes.filter(([, d]) => d === '\r').length).toBe(1);
+  });
+});
+
 describe('submitClaudeCliPrompt', () => {
   it('writes the composed PTY line, then a separate Enter', async () => {
     const h = harness();
