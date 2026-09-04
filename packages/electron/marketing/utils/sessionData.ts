@@ -425,3 +425,68 @@ export async function insertExitPlanMode(
   await insertMessage(page, sessionId, 'output', content);
   return toolId;
 }
+
+/**
+ * Insert an Edit tool call (+ its result) so the transcript renders the real
+ * File Change / Edit diff card (`EditToolResultCard` + `DiffViewer`). This is
+ * the pixel-accurate source for the marketing animation's diff card.
+ */
+export async function insertEditToolCall(
+  page: Page,
+  sessionId: string,
+  filePath: string,
+  oldString: string,
+  newString: string
+): Promise<string> {
+  const toolId = `toolu_edit_${generateId().slice(0, 8)}`;
+  await insertMessage(page, sessionId, 'output', toolUse('Edit', toolId, {
+    file_path: filePath,
+    old_string: oldString,
+    new_string: newString,
+  }));
+  await insertMessage(page, sessionId, 'input', toolResult(toolId, `Applied 1 edit to ${filePath}`));
+  return toolId;
+}
+
+/**
+ * Insert a pending Commit Proposal (renders the "Commit Proposal" widget).
+ * Message shape mirrors e2e/utils/interactivePromptTestHelpers.ts
+ * (`createGitCommitProposalMessage`). Returns the tool id so a matching result
+ * can flip it to the committed state.
+ */
+export async function insertGitCommitProposal(
+  page: Page,
+  sessionId: string,
+  files: Array<string | { path: string; status: 'added' | 'modified' | 'deleted' }>,
+  commitMessage: string,
+  reasoning?: string
+): Promise<string> {
+  const toolId = `toolu_commit_${generateId().slice(0, 8)}`;
+  const content = toolUse('mcp__nimbalyst-mcp__developer_git_commit_proposal', toolId, {
+    filesToStage: files,
+    commitMessage,
+    reasoning: reasoning || 'Commit proposal',
+  });
+  await insertMessage(page, sessionId, 'output', content);
+  return toolId;
+}
+
+/**
+ * Insert the matching tool_result so a pending proposal flips to the
+ * "Changes Committed" success state (green border, short hash, file list).
+ */
+export async function insertGitCommitProposalResult(
+  page: Page,
+  sessionId: string,
+  toolId: string,
+  action: 'committed' | 'cancelled',
+  commitHash?: string,
+  commitDate?: string
+): Promise<void> {
+  await insertMessage(
+    page,
+    sessionId,
+    'input',
+    toolResult(toolId, JSON.stringify({ action, commitHash, commitDate }))
+  );
+}

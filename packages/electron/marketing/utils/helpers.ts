@@ -48,6 +48,18 @@ export async function launchMarketingApp(options?: {
     // Ignore
   }
 
+  // Isolate userData onto a throwaway dir, exactly as the e2e harness does with
+  // TEST_USER_DATA_DIR. Without this the launched app reads and writes the
+  // developer's real settings/database. Setting NIMBALYST_USER_DATA_DIR also
+  // flips `allowMultipleInstances` on, so the capture run coexists with the
+  // running dev app instead of handing off to it.
+  const userDataDir = path.join(os.tmpdir(), 'nimbalyst-marketing-user-data');
+  try {
+    await fs.rm(userDataDir, { recursive: true, force: true });
+  } catch {
+    // Ignore
+  }
+
   // Check dev server
   const devServerUrl = await findDevServer();
 
@@ -72,6 +84,12 @@ export async function launchMarketingApp(options?: {
       ELECTRON_RENDERER_URL: devServerUrl,
       PLAYWRIGHT: '1',
       NIMBALYST_PERMISSION_MODE: 'allow-all',
+      NIMBALYST_USER_DATA_DIR: userDataDir,
+      // Distinct remote-debugging port. bootstrap.ts binds
+      // `NIMBALYST_CDP_PORT || 9222` in non-production, so without this the
+      // capture run collides with the developer's running dev app (9222) and
+      // the e2e suite (9333), the bind fails, and the launch times out.
+      NIMBALYST_CDP_PORT: '9445',
     },
   });
 
