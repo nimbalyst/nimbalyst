@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meta-agent-sessions</title>
+<style>
+:root {
+  --anim-bg: #1a1a1a;
+  --anim-surface: #2d2d2d;
+  --anim-surface-raised: #3a3a3a;
+  --anim-border: #4a4a4a;
+  --anim-border-strong: #4a4a4a;
+  --anim-text: #ffffff;
+  --anim-text-muted: #b3b3b3;
+  --anim-text-faint: #808080;
+
+  --anim-tone-neutral: #808080;
+  --anim-tone-accent: #60a5fa;
+  --anim-tone-data: #a78bfa;
+  --anim-tone-success: #4ade80;
+  --anim-tone-warning: #fbbf24;
+  --anim-tone-error: #ef4444;
+  --anim-tone-muted: #808080;
+
+  --anim-mono: ui-monospace, 'SF Mono', Monaco, 'Courier New', monospace;
+  --anim-duration: 320ms;
+  --anim-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  background: var(--anim-bg);
+  overflow: hidden;
+}
+
+.anim-stage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--anim-bg);
+  user-select: none;
+}
+
+/* ---- tone resolution ---------------------------------------------------- */
+.anim-part { --anim-tone: var(--anim-tone-neutral); }
+.anim-part[data-tone="accent"]  { --anim-tone: var(--anim-tone-accent); }
+.anim-part[data-tone="data"]    { --anim-tone: var(--anim-tone-data); }
+.anim-part[data-tone="success"] { --anim-tone: var(--anim-tone-success); }
+.anim-part[data-tone="warning"] { --anim-tone: var(--anim-tone-warning); }
+.anim-part[data-tone="error"]   { --anim-tone: var(--anim-tone-error); }
+.anim-part[data-tone="muted"]   { --anim-tone: var(--anim-tone-muted); }
+
+.anim-part {
+  --anim-tone-fill: color-mix(in srgb, var(--anim-tone) 14%, transparent);
+}
+
+/* ---- nodes -------------------------------------------------------------- */
+.anim-node-body {
+  fill: var(--anim-surface);
+  stroke: var(--anim-border);
+  stroke-width: 1.3px;
+  transition: fill var(--anim-duration) var(--anim-ease),
+              stroke var(--anim-duration) var(--anim-ease),
+              stroke-width var(--anim-duration) var(--anim-ease);
+}
+.anim-node-header { fill: var(--anim-surface-raised); }
+.anim-node-rule { stroke: var(--anim-border); stroke-width: 1.2px; }
+.anim-node-title {
+  fill: var(--anim-text);
+  font-family: var(--anim-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  transition: fill var(--anim-duration) var(--anim-ease);
+}
+.anim-node-subtitle,
+.anim-row-key,
+.anim-row-value {
+  font-family: var(--anim-mono);
+  font-size: 11px;
+  transition: fill var(--anim-duration) var(--anim-ease);
+}
+.anim-node-subtitle { fill: var(--anim-text-faint); }
+.anim-row-key { fill: var(--anim-text-muted); }
+.anim-row-value { fill: var(--anim-text-faint); }
+.anim-row-box {
+  fill: var(--anim-surface-raised);
+  stroke: var(--anim-border);
+  stroke-width: 1.1px;
+  transition: fill var(--anim-duration) var(--anim-ease),
+              stroke var(--anim-duration) var(--anim-ease);
+}
+.anim-node-dot {
+  fill: var(--anim-tone);
+  opacity: 0;
+  transition: opacity var(--anim-duration) var(--anim-ease),
+              fill var(--anim-duration) var(--anim-ease);
+}
+
+/* Node states */
+.anim-node[data-state="active"] .anim-node-body {
+  fill: color-mix(in srgb, var(--anim-tone) 10%, var(--anim-surface));
+  stroke: var(--anim-tone);
+  stroke-width: 1.8px;
+}
+.anim-node[data-state="active"] .anim-node-dot { opacity: 1; }
+.anim-node[data-state="active"] .anim-row-box:first-of-type {
+  fill: var(--anim-tone-fill);
+  stroke: var(--anim-tone);
+}
+.anim-node[data-state="offline"] .anim-node-body {
+  fill: color-mix(in srgb, var(--anim-tone-error) 9%, var(--anim-surface));
+  stroke: var(--anim-tone-error);
+  stroke-dasharray: 4 3;
+}
+.anim-node[data-state="offline"] .anim-node-title { fill: var(--anim-text-faint); }
+.anim-node[data-state="waiting"] .anim-node-body {
+  stroke: var(--anim-tone-warning);
+  stroke-dasharray: 5 4;
+}
+.anim-node[data-state="hidden"] { opacity: 0; }
+.anim-node { transition: opacity var(--anim-duration) var(--anim-ease); }
+
+/* ---- edges -------------------------------------------------------------- */
+.anim-edge-line {
+  fill: none;
+  stroke: var(--anim-border);
+  stroke-width: 1.4px;
+  stroke-dasharray: 5 4;
+}
+.anim-edge-flow {
+  fill: none;
+  stroke: var(--anim-tone);
+  stroke-width: 1.7px;
+  /* Drawn on top of the dashed baseline and revealed by dash offset, so a
+     "flowing" edge reads as the line filling in rather than blinking on. The
+     path carries pathLength="1", so these are fractions of the edge, not px. */
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+  transition: opacity var(--anim-duration) var(--anim-ease),
+              stroke var(--anim-duration) var(--anim-ease);
+}
+
+/* ---- edge packets ------------------------------------------------------- */
+.anim-edge-packet {
+  fill: var(--anim-tone);
+  stroke: var(--anim-bg);
+  stroke-width: 1px;
+  opacity: 0;
+  offset-rotate: 0deg;
+  offset-distance: 0%;
+  transition: fill var(--anim-duration) var(--anim-ease);
+}
+
+.anim-edge[data-state="flowing"] .anim-edge-packet,
+.anim-edge[data-state="active"] .anim-edge-packet {
+  animation: anim-packet-travel 1.6s linear infinite;
+}
+
+/*
+ * A reply travels the same wire the other way. Reversing the packets rather
+ * than drawing a second edge keeps the two nodes joined by one line -- two
+ * overlapping edges between the same pair read as a rendering fault.
+ */
+.anim-edge[data-state="returning"] .anim-edge-packet {
+  animation: anim-packet-travel 1.6s linear infinite reverse;
+}
+
+/*
+ * Fading in and out at the ends stops a packet from appearing to burst out of
+ * the source node and vanish into the target one; it enters and leaves the
+ * wire instead.
+ */
+@keyframes anim-packet-travel {
+  0%   { offset-distance: 0%;   opacity: 0; }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { offset-distance: 100%; opacity: 0; }
+}
+.anim-edge-arrow path {
+  fill: none;
+  stroke: var(--anim-border);
+  stroke-width: 1.6px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke var(--anim-duration) var(--anim-ease);
+}
+.anim-edge-label rect {
+  fill: var(--anim-bg);
+  stroke: none;
+}
+.anim-edge-label text {
+  fill: var(--anim-text-faint);
+  font-family: var(--anim-mono);
+  font-size: 12.5px;
+  transition: fill var(--anim-duration) var(--anim-ease);
+}
+
+.anim-edge[data-state="flowing"] .anim-edge-flow,
+.anim-edge[data-state="returning"] .anim-edge-flow,
+.anim-edge[data-state="active"] .anim-edge-flow {
+  opacity: 1;
+  stroke-dashoffset: 0;
+  transition: opacity var(--anim-duration) var(--anim-ease),
+              stroke-dashoffset var(--anim-duration) var(--anim-ease);
+}
+.anim-edge[data-state="flowing"] .anim-edge-arrow path,
+.anim-edge[data-state="returning"] .anim-edge-arrow path,
+.anim-edge[data-state="active"] .anim-edge-arrow path { stroke: var(--anim-tone); }
+.anim-edge[data-state="flowing"] .anim-edge-label text,
+.anim-edge[data-state="returning"] .anim-edge-label text,
+.anim-edge[data-state="active"] .anim-edge-label text { fill: var(--anim-tone); }
+.anim-edge[data-state="hidden"] { opacity: 0; }
+.anim-edge { transition: opacity var(--anim-duration) var(--anim-ease); }
+
+/* ---- labels and shapes -------------------------------------------------- */
+.anim-label {
+  fill: var(--anim-text-muted);
+  font-family: var(--anim-mono);
+  font-size: 12px;
+  transition: fill var(--anim-duration) var(--anim-ease),
+              opacity var(--anim-duration) var(--anim-ease);
+}
+.anim-label-caps {
+  fill: var(--anim-text-faint);
+  letter-spacing: 1.4px;
+}
+.anim-label[data-state="active"] { fill: var(--anim-tone); }
+.anim-label[data-state="hidden"] { opacity: 0; }
+
+.anim-shape-body {
+  fill: var(--anim-tone-fill);
+  stroke: var(--anim-tone);
+  stroke-width: 1.3px;
+  transition: fill var(--anim-duration) var(--anim-ease),
+              stroke var(--anim-duration) var(--anim-ease),
+              opacity var(--anim-duration) var(--anim-ease);
+}
+.anim-shape-text {
+  fill: var(--anim-text);
+  font-family: var(--anim-mono);
+  font-size: 11px;
+}
+.anim-shape[data-state="active"] .anim-shape-body {
+  fill: color-mix(in srgb, var(--anim-tone) 65%, transparent);
+}
+.anim-shape[data-state="hidden"] { opacity: 0; }
+.anim-shape { transition: opacity var(--anim-duration) var(--anim-ease); }
+
+/* ---- selection ---------------------------------------------------------- */
+.anim-part.anim-selected .anim-node-body,
+.anim-part.anim-selected .anim-shape-body {
+  stroke: var(--anim-tone-accent);
+  stroke-width: 1.8px;
+}
+.anim-selection-ring {
+  fill: none;
+  stroke: var(--anim-tone-accent);
+  stroke-width: 1.4px;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+
+.anim-hit { fill: transparent; cursor: pointer; }
+
+/*
+ * Scrubbing must land on the destination immediately, not tween toward it --
+ * dragging the playhead through five steps should not queue five animations.
+ * The scheduler adds this class for the duration of a seek.
+ */
+.anim-no-transition, .anim-no-transition * {
+  transition: none !important;
+}
+
+.anim-no-animation .anim-edge-packet {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-part, .anim-part * {
+    transition-duration: 1ms !important;
+  }
+  /*
+   * Packets are the one continuously-moving thing here, so reduced motion has
+   * to stop them outright rather than just shorten a transition. The edge still
+   * reads as active via its stroke; it just stops carrying traffic.
+   */
+  .anim-edge-packet {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+}
+
+html[data-anim-paused="true"] .anim-edge-packet { animation-play-state: paused; }
+body { cursor: pointer; }
+</style>
+</head>
+<body>
+<div data-anim-stage style="width:100%;height:100%"><svg class="anim-stage" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Animated diagram with 39 parts and 10 steps. Steps: The meta-agent holds the branch and the plan. A read-only design session reads the code and returns a task list. Twelve tasks land in the queue, unclaimed. Two implement sessions claim work into separate worktrees. The UI diff goes straight to a test session in the same worktree. The API diff goes to a review session that can only read. Review sends two findings back; that session reopens instead of merging. The findings are applied and the diff goes back up. Tests come back green and review approves. Both lanes clear the gate and land on one branch."><g class="anim-part anim-edge" data-part="eApprove" data-state="idle" data-tone="neutral"><path class="anim-edge-line" d="M1030.0 322.0 L1030.0 366.0"/><path class="anim-edge-flow" pathLength="1" d="M1030.0 322.0 L1030.0 366.0"/><g class="anim-edge-packets"><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M1030.0 322.0 L1030.0 366.0'); animation-delay: 0.000s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M1030.0 322.0 L1030.0 366.0'); animation-delay: -0.800s"/></g><g class="anim-edge-arrow" transform="translate(1030.0 366.0) rotate(90.0)"><path d="M-10 -6 L0 0 L-10 6"/></g></g><g class="anim-part anim-edge" data-part="eBrief" data-state="idle" data-tone="neutral"><path class="anim-edge-line" d="M306.0 234.0 L376.0 234.0"/><path class="anim-edge-flow" pathLength="1" d="M306.0 234.0 L376.0 234.0"/><g class="anim-edge-packets"><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M306.0 234.0 L376.0 234.0'); animation-delay: 0.000s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M306.0 234.0 L376.0 234.0'); animation-delay: -0.800s"/></g><g class="anim-edge-arrow" transform="translate(376.0 234.0) rotate(0.0)"><path d="M-10 -6 L0 0 L-10 6"/></g><g class="anim-edge-label" transform="translate(341.0 234.0)"><rect x="-27.0" y="-11" width="54.0" height="20" rx="3"/><text x="0" y="4" text-anchor="middle">brief</text></g></g><g class="anim-part anim-edge" data-part="eClaim" data-state="idle" data-tone="neutral"><path class="anim-edge-line" d="M306.0 454.0 L376.0 454.0"/><path class="anim-edge-flow" pathLength="1" d="M306.0 454.0 L376.0 454.0"/><g class="anim-edge-packets"><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M306.0 454.0 L376.0 454.0'); animation-delay: 0.000s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M306.0 454.0 L376.0 454.0'); animation-delay: -0.533s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M306.0 454.0 L376.0 454.0'); animation-delay: -1.067s"/></g><g class="anim-edge-arrow" transform="translate(376.0 454.0) rotate(0.0)"><path d="M-10 -6 L0 0 L-10 6"/></g><g class="anim-edge-label" transform="translate(341.0 454.0)"><rect x="-27.0" y="-11" width="54.0" height="20" rx="3"/><text x="0" y="4" text-anchor="middle">claim</text></g></g><g class="anim-part anim-edge" data-part="eDiffA" data-state="idle" data-tone="neutral"><path class="anim-edge-line" d="M874.0 234.0 L916.0 234.0"/><path class="anim-edge-flow" pathLength="1" d="M874.0 234.0 L916.0 234.0"/><g class="anim-edge-packets"><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M874.0 234.0 L916.0 234.0'); animation-delay: 0.000s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M874.0 234.0 L916.0 234.0'); animation-delay: -0.533s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M874.0 234.0 L916.0 234.0'); animation-delay: -1.067s"/></g><g class="anim-edge-arrow" transform="translate(916.0 234.0) rotate(0.0)"><path d="M-10 -6 L0 0 L-10 6"/></g></g><g class="anim-part anim-edge" data-part="eDiffB" data-state="idle" data-tone="neutral"><path class="anim-edge-line" d="M604.0 454.0 L646.0 454.0"/><path class="anim-edge-flow" pathLength="1" d="M604.0 454.0 L646.0 454.0"/><g class="anim-edge-packets"><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M604.0 454.0 L646.0 454.0'); animation-delay: 0.000s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M604.0 454.0 L646.0 454.0'); animation-delay: -0.533s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M604.0 454.0 L646.0 454.0'); animation-delay: -1.067s"/></g><g class="anim-edge-arrow" transform="translate(646.0 454.0) rotate(0.0)"><path d="M-10 -6 L0 0 L-10 6"/></g></g><g class="anim-part anim-edge" data-part="eDispatch" data-state="idle" data-tone="neutral"><path class="anim-edge-line" d="M181.0 322.0 L181.0 366.0"/><path class="anim-edge-flow" pathLength="1" d="M181.0 322.0 L181.0 366.0"/><g class="anim-edge-packets"><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M181.0 322.0 L181.0 366.0'); animation-delay: 0.000s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M181.0 322.0 L181.0 366.0'); animation-delay: -0.533s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M181.0 322.0 L181.0 366.0'); animation-delay: -1.067s"/></g><g class="anim-edge-arrow" transform="translate(181.0 366.0) rotate(90.0)"><path d="M-10 -6 L0 0 L-10 6"/></g></g><g class="anim-part anim-edge" data-part="eGreen" data-state="idle" data-tone="neutral"><path class="anim-edge-line" d="M874.0 454.0 L916.0 454.0"/><path class="anim-edge-flow" pathLength="1" d="M874.0 454.0 L916.0 454.0"/><g class="anim-edge-packets"><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M874.0 454.0 L916.0 454.0'); animation-delay: 0.000s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M874.0 454.0 L916.0 454.0'); animation-delay: -0.800s"/></g><g class="anim-edge-arrow" transform="translate(916.0 454.0) rotate(0.0)"><path d="M-10 -6 L0 0 L-10 6"/></g></g><g class="anim-part anim-edge" data-part="eTasks" data-state="idle" data-tone="neutral"><path class="anim-edge-line" d="M604.0 234.0 L646.0 234.0"/><path class="anim-edge-flow" pathLength="1" d="M604.0 234.0 L646.0 234.0"/><g class="anim-edge-packets"><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M604.0 234.0 L646.0 234.0'); animation-delay: 0.000s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M604.0 234.0 L646.0 234.0'); animation-delay: -0.533s"/><rect class="anim-edge-packet" x="-5" y="-5" width="10" height="10" rx="2" style="offset-path: path('M604.0 234.0 L646.0 234.0'); animation-delay: -1.067s"/></g><g class="anim-edge-arrow" transform="translate(646.0 234.0) rotate(0.0)"><path d="M-10 -6 L0 0 L-10 6"/></g></g><text class="anim-part anim-label anim-label-caps" data-part="gridHeading" data-state="idle" data-tone="neutral" x="1144" y="122" text-anchor="end">6 SESSIONS  /  2 WORKTREES</text><text class="anim-part anim-label anim-label-caps" data-part="leftHeading" data-state="idle" data-tone="neutral" x="56" y="122" text-anchor="start">ORCHESTRATION</text><g class="anim-part anim-node" data-part="plan" data-state="idle" data-tone="neutral" transform="translate(56 146)"><rect class="anim-node-body" width="250" height="176" rx="4"/><rect class="anim-node-header" width="250" height="34" rx="4"/><path class="anim-node-rule" d="M0 34 H250"/><text class="anim-node-title" x="16" y="23">META-AGENT</text><circle class="anim-node-dot" cx="234" cy="17" r="3.6"/><text class="anim-node-subtitle" x="16" y="56">PLAN / DISPATCH / GATE</text><g class="anim-row"><rect class="anim-row-box" x="16" y="72" width="218" height="26" rx="3"/><text class="anim-row-key" x="28" y="89">branch</text><text class="anim-row-value" x="222" y="89" text-anchor="end">feat/search</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="104" width="218" height="26" rx="3"/><text class="anim-row-key" x="28" y="121">sessions</text><text class="anim-row-value" x="222" y="121" text-anchor="end">6</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="136" width="218" height="26" rx="3"/><text class="anim-row-key" x="28" y="153">policy</text><text class="anim-row-value" x="222" y="153" text-anchor="end">review all</text></g></g><g class="anim-part anim-node" data-part="queue" data-state="idle" data-tone="neutral" transform="translate(56 366)"><rect class="anim-node-body" width="250" height="176" rx="4"/><rect class="anim-node-header" width="250" height="34" rx="4"/><path class="anim-node-rule" d="M0 34 H250"/><text class="anim-node-title" x="16" y="23">TASK QUEUE</text><circle class="anim-node-dot" cx="234" cy="17" r="3.6"/><text class="anim-node-subtitle" x="16" y="56">UNCLAIMED WORK</text></g><text class="anim-part anim-label anim-label-caps" data-part="queueFoot" data-state="idle" data-tone="neutral" x="89" y="528" text-anchor="start">CLAIMED IN ORDER</text><g class="anim-part anim-shape" data-part="queueTask01" data-state="active" data-tone="muted" transform="translate(89 438)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask02" data-state="active" data-tone="muted" transform="translate(137 438)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask03" data-state="active" data-tone="muted" transform="translate(185 438)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask04" data-state="active" data-tone="muted" transform="translate(233 438)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask05" data-state="active" data-tone="muted" transform="translate(89 462)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask06" data-state="active" data-tone="muted" transform="translate(137 462)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask07" data-state="active" data-tone="muted" transform="translate(185 462)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask08" data-state="active" data-tone="muted" transform="translate(233 462)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask09" data-state="active" data-tone="muted" transform="translate(89 486)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask10" data-state="active" data-tone="muted" transform="translate(137 486)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask11" data-state="active" data-tone="muted" transform="translate(185 486)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><g class="anim-part anim-shape" data-part="queueTask12" data-state="active" data-tone="muted" transform="translate(233 486)"><rect class="anim-shape-body" width="40" height="18" rx="3"/></g><text class="anim-part anim-label anim-label-caps" data-part="railHeading" data-state="idle" data-tone="neutral" x="56" y="596" text-anchor="start">PIPELINE</text><g class="anim-part anim-node" data-part="sDesign" data-state="idle" data-tone="neutral" transform="translate(376 146)"><rect class="anim-node-body" width="228" height="176" rx="4"/><rect class="anim-node-header" width="228" height="34" rx="4"/><path class="anim-node-rule" d="M0 34 H228"/><text class="anim-node-title" x="16" y="23">DESIGN</text><circle class="anim-node-dot" cx="212" cy="17" r="3.6"/><text class="anim-node-subtitle" x="16" y="56">OPUS 5 / READ ONLY</text><g class="anim-row"><rect class="anim-row-box" x="16" y="72" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="89">reads</text><text class="anim-row-value" x="200" y="89" text-anchor="end">12 files</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="104" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="121">writes</text><text class="anim-row-value" x="200" y="121" text-anchor="end">plan.md</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="136" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="153">emits</text><text class="anim-row-value" x="200" y="153" text-anchor="end">12 tasks</text></g></g><g class="anim-part anim-node" data-part="sImplApi" data-state="idle" data-tone="neutral" transform="translate(646 146)"><rect class="anim-node-body" width="228" height="176" rx="4"/><rect class="anim-node-header" width="228" height="34" rx="4"/><path class="anim-node-rule" d="M0 34 H228"/><text class="anim-node-title" x="16" y="23">IMPLEMENT</text><circle class="anim-node-dot" cx="212" cy="17" r="3.6"/><text class="anim-node-subtitle" x="16" y="56">SONNET 5 / WORKTREE A</text><g class="anim-row"><rect class="anim-row-box" x="16" y="72" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="89">scope</text><text class="anim-row-value" x="200" y="89" text-anchor="end">search index</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="104" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="121">edits</text><text class="anim-row-value" x="200" y="121" text-anchor="end">4 files</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="136" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="153">tests</text><text class="anim-row-value" x="200" y="153" text-anchor="end">unit</text></g></g><g class="anim-part anim-node" data-part="sImplUi" data-state="idle" data-tone="neutral" transform="translate(376 366)"><rect class="anim-node-body" width="228" height="176" rx="4"/><rect class="anim-node-header" width="228" height="34" rx="4"/><path class="anim-node-rule" d="M0 34 H228"/><text class="anim-node-title" x="16" y="23">IMPLEMENT</text><circle class="anim-node-dot" cx="212" cy="17" r="3.6"/><text class="anim-node-subtitle" x="16" y="56">SONNET 5 / WORKTREE B</text><g class="anim-row"><rect class="anim-row-box" x="16" y="72" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="89">scope</text><text class="anim-row-value" x="200" y="89" text-anchor="end">results pane</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="104" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="121">edits</text><text class="anim-row-value" x="200" y="121" text-anchor="end">6 files</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="136" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="153">tests</text><text class="anim-row-value" x="200" y="153" text-anchor="end">unit</text></g></g><g class="anim-part anim-node" data-part="sMerge" data-state="idle" data-tone="neutral" transform="translate(916 366)"><rect class="anim-node-body" width="228" height="176" rx="4"/><rect class="anim-node-header" width="228" height="34" rx="4"/><path class="anim-node-rule" d="M0 34 H228"/><text class="anim-node-title" x="16" y="23">MERGE GATE</text><circle class="anim-node-dot" cx="212" cy="17" r="3.6"/><text class="anim-node-subtitle" x="16" y="56">META-AGENT / GATE</text><g class="anim-row"><rect class="anim-row-box" x="16" y="72" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="89">typecheck</text><text class="anim-row-value" x="200" y="89" text-anchor="end">required</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="104" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="121">test:prepush</text><text class="anim-row-value" x="200" y="121" text-anchor="end">required</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="136" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="153">branch</text><text class="anim-row-value" x="200" y="153" text-anchor="end">feat/search</text></g></g><g class="anim-part anim-node" data-part="sReview" data-state="idle" data-tone="neutral" transform="translate(916 146)"><rect class="anim-node-body" width="228" height="176" rx="4"/><rect class="anim-node-header" width="228" height="34" rx="4"/><path class="anim-node-rule" d="M0 34 H228"/><text class="anim-node-title" x="16" y="23">REVIEW</text><circle class="anim-node-dot" cx="212" cy="17" r="3.6"/><text class="anim-node-subtitle" x="16" y="56">OPUS 5 / READ ONLY</text><g class="anim-row"><rect class="anim-row-box" x="16" y="72" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="89">diff</text><text class="anim-row-value" x="200" y="89" text-anchor="end">+412 / -87</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="104" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="121">lens</text><text class="anim-row-value" x="200" y="121" text-anchor="end">correctness</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="136" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="153">findings</text><text class="anim-row-value" x="200" y="153" text-anchor="end">2</text></g></g><g class="anim-part anim-node" data-part="sTest" data-state="idle" data-tone="neutral" transform="translate(646 366)"><rect class="anim-node-body" width="228" height="176" rx="4"/><rect class="anim-node-header" width="228" height="34" rx="4"/><path class="anim-node-rule" d="M0 34 H228"/><text class="anim-node-title" x="16" y="23">TEST</text><circle class="anim-node-dot" cx="212" cy="17" r="3.6"/><text class="anim-node-subtitle" x="16" y="56">HAIKU 4.5 / WORKTREE B</text><g class="anim-row"><rect class="anim-row-box" x="16" y="72" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="89">suite</text><text class="anim-row-value" x="200" y="89" text-anchor="end">test:prepush</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="104" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="121">cases</text><text class="anim-row-value" x="200" y="121" text-anchor="end">318</text></g><g class="anim-row"><rect class="anim-row-box" x="16" y="136" width="196" height="26" rx="3"/><text class="anim-row-key" x="28" y="153">runtime</text><text class="anim-row-value" x="200" y="153" text-anchor="end">94 s</text></g></g><text class="anim-part anim-label anim-label-caps" data-part="statImpl" data-state="idle" data-tone="neutral" x="556" y="596" text-anchor="start">IMPLEMENT</text><text class="anim-part anim-label anim-label-caps" data-part="statMerge" data-state="idle" data-tone="neutral" x="1144" y="596" text-anchor="end">MERGE</text><text class="anim-part anim-label anim-label-caps" data-part="statPlan" data-state="idle" data-tone="neutral" x="376" y="596" text-anchor="start">PLAN</text><text class="anim-part anim-label anim-label-caps" data-part="statReview" data-state="idle" data-tone="neutral" x="940" y="596" text-anchor="start">REVIEW</text><text class="anim-part anim-label anim-label-caps" data-part="statTest" data-state="idle" data-tone="neutral" x="760" y="596" text-anchor="start">TEST</text><text class="anim-part anim-label anim-label-caps" data-part="titleMain" data-state="idle" data-tone="neutral" x="56" y="48" text-anchor="start">NIMBALYST META-AGENT</text><text class="anim-part anim-label anim-label-caps" data-part="titleSub" data-state="idle" data-tone="neutral" x="56" y="74" text-anchor="start">ONE PLAN  /  MANY SESSIONS  /  ONE REVIEWED BRANCH</text></svg></div>
+<script>
+var TIMELINE = [{"t":0,"s":{"eApprove":["idle","neutral"],"eBrief":["idle","neutral"],"eClaim":["idle","neutral"],"eDiffA":["idle","neutral"],"eDiffB":["idle","neutral"],"eDispatch":["idle","neutral"],"eGreen":["idle","neutral"],"eTasks":["idle","neutral"],"gridHeading":["idle","neutral"],"leftHeading":["idle","neutral"],"plan":["active","accent"],"queue":["idle","neutral"],"queueFoot":["idle","neutral"],"queueTask01":["active","muted"],"queueTask02":["active","muted"],"queueTask03":["active","muted"],"queueTask04":["active","muted"],"queueTask05":["active","muted"],"queueTask06":["active","muted"],"queueTask07":["active","muted"],"queueTask08":["active","muted"],"queueTask09":["active","muted"],"queueTask10":["active","muted"],"queueTask11":["active","muted"],"queueTask12":["active","muted"],"railHeading":["idle","neutral"],"sDesign":["idle","neutral"],"sImplApi":["idle","neutral"],"sImplUi":["idle","neutral"],"sMerge":["idle","neutral"],"sReview":["idle","neutral"],"sTest":["idle","neutral"],"statImpl":["idle","neutral"],"statMerge":["idle","neutral"],"statPlan":["active","accent"],"statReview":["idle","neutral"],"statTest":["idle","neutral"],"titleMain":["active","accent"],"titleSub":["idle","neutral"]}},{"t":900,"s":{"eBrief":["flowing","accent"],"sDesign":["active","accent"]}},{"t":1900,"s":{"eBrief":["idle","accent"],"eDispatch":["flowing","accent"],"queue":["active","accent"],"queueTask01":["active","accent"],"queueTask02":["active","accent"],"queueTask03":["active","accent"],"queueTask04":["active","accent"],"queueTask05":["active","accent"],"queueTask06":["active","accent"],"queueTask07":["active","accent"],"queueTask08":["active","accent"],"queueTask09":["active","accent"],"queueTask10":["active","accent"],"queueTask11":["active","accent"],"queueTask12":["active","accent"],"sDesign":["active","success"]}},{"t":2800,"s":{"eClaim":["flowing","accent"],"eDispatch":["idle","accent"],"eTasks":["flowing","accent"],"queueTask09":["hidden","accent"],"queueTask10":["hidden","accent"],"queueTask11":["hidden","accent"],"queueTask12":["hidden","accent"],"sImplApi":["active","accent"],"sImplUi":["active","accent"],"statImpl":["active","accent"]}},{"t":3800,"s":{"eDiffB":["flowing","data"],"queueTask05":["hidden","accent"],"queueTask06":["hidden","accent"],"queueTask07":["hidden","accent"],"queueTask08":["hidden","accent"],"sTest":["active","data"],"statTest":["active","data"]}},{"t":4900,"s":{"eDiffA":["flowing","warning"],"sReview":["active","warning"],"statReview":["active","warning"]}},{"t":6000,"s":{"eDiffA":["returning","error"],"sImplApi":["waiting","warning"],"sReview":["active","error"]}},{"t":7000,"s":{"eDiffA":["flowing","accent"],"queue":["active","muted"],"queueTask01":["hidden","accent"],"queueTask02":["hidden","accent"],"queueTask03":["hidden","accent"],"queueTask04":["hidden","accent"],"sImplApi":["active","accent"],"sReview":["active","warning"]}},{"t":7900,"s":{"eApprove":["flowing","success"],"eDiffA":["idle","accent"],"eGreen":["flowing","success"],"sMerge":["active","accent"],"sReview":["active","success"],"sTest":["active","success"]}},{"t":8800,"s":{"eApprove":["idle","success"],"eClaim":["idle","accent"],"eDiffB":["idle","data"],"eGreen":["idle","success"],"eTasks":["idle","accent"],"plan":["active","success"],"sImplApi":["active","success"],"sImplUi":["active","success"],"sMerge":["active","success"],"statMerge":["active","success"],"titleMain":["active","success"]}}];
+var TOTAL = 10000;
+var CAPTURE_HOOKS = false;
+
+(function () {
+  var stage = document.querySelector('[data-anim-stage]');
+  if (!stage || !TIMELINE.length) return;
+
+  function apply(entry) {
+    for (var id in entry.s) {
+      var el = stage.querySelector('[data-part="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+      if (!el) continue;
+      el.setAttribute('data-state', entry.s[id][0]);
+      el.setAttribute('data-tone', entry.s[id][1]);
+    }
+  }
+
+  function applyThrough(from, to) {
+    for (var i = from; i <= to; i += 1) apply(TIMELINE[i]);
+  }
+
+  function indexAt(t) {
+    var i = 0;
+    while (i + 1 < TIMELINE.length && TIMELINE[i + 1].t <= t) i += 1;
+    return i;
+  }
+
+  var last = -1;
+  var origin = null;
+  var paused = false;
+  var pausedAt = 0;
+
+  function frame(now) {
+    if (!paused) {
+      if (origin === null) origin = now;
+      var t = TOTAL > 0 ? (now - origin) % TOTAL : 0;
+      var index = indexAt(t);
+      if (index !== last) {
+        // Going backwards means the loop wrapped; entry 0 is complete, so
+        // replaying from there restores every part rather than only the ones
+        // this step happens to mention.
+        applyThrough(index < last ? 0 : last + 1, index);
+        last = index;
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // Click to pause, so a reader can stop on the beat they care about.
+  document.addEventListener('click', function () {
+    paused = !paused;
+    if (paused) {
+      pausedAt = performance.now();
+    } else if (origin !== null) {
+      origin += performance.now() - pausedAt;
+    }
+    document.documentElement.setAttribute('data-anim-paused', paused ? 'true' : 'false');
+  });
+
+  // Capture hooks, present only when the file is built for GIF export. The
+  // recorder needs to start the clock at t=0 on its own signal: it cannot rely
+  // on load timing, and a GIF that starts three steps in is not the animation.
+  if (CAPTURE_HOOKS) {
+    window.__anim = {
+      total: TOTAL,
+      restart: function () {
+        origin = null;
+        last = 0;
+        paused = false;
+        applyThrough(0, 0);
+      }
+    };
+  }
+
+  applyThrough(0, 0);
+  last = 0;
+  requestAnimationFrame(frame);
+})();
+
+</script>
+</body>
+</html>
