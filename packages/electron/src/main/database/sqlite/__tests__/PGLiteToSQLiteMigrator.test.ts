@@ -22,6 +22,7 @@ import {
   PGLiteToSQLiteMigrator,
   __TEST_HOOKS,
   type MigrationProgress,
+  type PGLiteHandle,
 } from '../PGLiteToSQLiteMigrator';
 
 // Resolve to the shipping schema file.
@@ -578,6 +579,64 @@ describe('PGLiteToSQLiteMigrator', () => {
       .get('src/binary.bin') as { content: Buffer };
     expect(Buffer.isBuffer(row.content)).toBe(true);
     expect(row.content.equals(payload)).toBe(true);
+  });
+
+  it('caps document_history batches for initial copy and catch-up before wide rows reach the worker bridge', async () => {
+    await seedPgliteSchema();
+    await pglite.query(
+      `INSERT INTO document_history(workspace_id, file_path, content, timestamp)
+       VALUES ($1, $2, $3, $4)`,
+      ['ws-A', 'src/first.bin', Buffer.from('first snapshot'), 1],
+    );
+
+    const documentHistoryBatchSizes: number[] = [];
+    const guardedSource: PGLiteHandle = {
+      async query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> {
+        if (/SELECT \* FROM "document_history"/i.test(sql)) {
+          const batchSize = Number(params?.at(-1));
+          documentHistoryBatchSizes.push(batchSize);
+          if (batchSize > 500) {
+            throw new Error(`document_history batch ${batchSize} exceeds the worker-safe limit`);
+          }
+        }
+        const result = await pglite.query<T>(sql, params as unknown[]);
+        return { rows: result.rows };
+      },
+      async exec(sql: string): Promise<unknown> {
+        return pglite.exec(sql);
+      },
+      async close(): Promise<void> {
+        // The test owns the live source.
+      },
+    };
+
+    const migrator = new PGLiteToSQLiteMigrator();
+    const summary = await migrator.migrate({
+      pglite: guardedSource,
+      sqlite,
+      spotCheckPerTable: 1,
+    });
+    expect(summary.manifest).toBeDefined();
+
+    await pglite.query(
+      `INSERT INTO document_history(workspace_id, file_path, content, timestamp)
+       VALUES ($1, $2, $3, $4)`,
+      ['ws-A', 'src/second.bin', Buffer.from('second snapshot'), 2],
+    );
+    await migrator.catchUp({
+      pglite: guardedSource,
+      sqlite,
+      manifest: summary.manifest!,
+    });
+
+    expect(documentHistoryBatchSizes).toEqual([500, 500]);
+    const migrated = sqlite.getRawHandle()!
+      .prepare('SELECT file_path FROM document_history ORDER BY id')
+      .all() as Array<{ file_path: string }>;
+    expect(migrated.map((row) => row.file_path)).toEqual([
+      'src/first.bin',
+      'src/second.bin',
+    ]);
   });
 
   it('translates JSONB -> JSON text roundtrips intact', async () => {
