@@ -36,6 +36,30 @@ interface IndexStatus {
   root?: string;
 }
 
+interface LocalEmbeddingModel {
+  id: string;
+  repo: string;
+  dims: number;
+  languages: string;
+  note: string;
+  downloadBytes: number;
+  downloadSize: string;
+  recommended: boolean;
+}
+
+interface LocalEmbeddingsStatus {
+  supported: boolean;
+  enabled: boolean;
+  downloaded: boolean;
+  activeMode: 'local' | 'openai' | 'sparse';
+  activeReason: string;
+  awaitingModelDownload: boolean;
+  selectedModelId: string;
+  models: LocalEmbeddingModel[];
+}
+
+type EmbeddingSource = 'openai' | 'local';
+
 interface FactRow {
   sourcePath: string;
   text: string;
@@ -137,6 +161,15 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
   const [indexSessions, setIndexSessions] = useState(false);
   const [togglingSessions, setTogglingSessions] = useState(false);
 
+  // Embedding source. The backend owns download consent, persistence, and the
+  // re-index; this state is only the user's pending choice in the form.
+  const [embeddingSettings, setEmbeddingSettings] = useState<LocalEmbeddingsStatus | null>(null);
+  const [embeddingSource, setEmbeddingSource] = useState<EmbeddingSource>('openai');
+  const [selectedLocalModel, setSelectedLocalModel] = useState('');
+  const [loadingEmbeddingSettings, setLoadingEmbeddingSettings] = useState(false);
+  const [savingEmbeddingSettings, setSavingEmbeddingSettings] = useState(false);
+  const [embeddingSettingsError, setEmbeddingSettingsError] = useState<string | null>(null);
+
   useEffect(() => {
     const api = (window as { electronAPI?: { invoke?: (c: string, ...a: unknown[]) => Promise<unknown> } })
       .electronAPI;
@@ -176,6 +209,24 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
     }
   }, [callBackendTool]);
 
+  const refreshEmbeddingSettings = useCallback(async () => {
+    if (!callBackendTool) return;
+    setLoadingEmbeddingSettings(true);
+    setEmbeddingSettingsError(null);
+    try {
+      const next = (await callBackendTool(
+        'memory.local_embeddings_status'
+      )) as LocalEmbeddingsStatus;
+      setEmbeddingSettings(next);
+      setEmbeddingSource(next.enabled ? 'local' : 'openai');
+      setSelectedLocalModel(next.selectedModelId);
+    } catch (err) {
+      setEmbeddingSettingsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingEmbeddingSettings(false);
+    }
+  }, [callBackendTool]);
+
   const refreshFacts = useCallback(async () => {
     if (!callBackendTool) return;
     setFactsError(null);
@@ -193,7 +244,35 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
   useEffect(() => {
     void refreshStatus();
     void refreshFacts();
-  }, [refreshStatus, refreshFacts]);
+    void refreshEmbeddingSettings();
+  }, [refreshStatus, refreshFacts, refreshEmbeddingSettings]);
+
+  const applyEmbeddingSettings = useCallback(async () => {
+    if (!callBackendTool || !embeddingSettings) return;
+    setSavingEmbeddingSettings(true);
+    setEmbeddingSettingsError(null);
+    try {
+      const result = (await callBackendTool('memory.set_local_embeddings', {
+        enabled: embeddingSource === 'local',
+        ...(embeddingSource === 'local' ? { modelId: selectedLocalModel } : {}),
+      })) as { ok?: boolean; error?: string };
+      if (result?.ok === false) {
+        throw new Error(result.error || 'Could not change the embedding source.');
+      }
+      await Promise.all([refreshEmbeddingSettings(), refreshStatus()]);
+    } catch (err) {
+      setEmbeddingSettingsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingEmbeddingSettings(false);
+    }
+  }, [
+    callBackendTool,
+    embeddingSettings,
+    embeddingSource,
+    selectedLocalModel,
+    refreshEmbeddingSettings,
+    refreshStatus,
+  ]);
 
   // Poll while an index pass is in flight so chunk counts tick up live.
   useEffect(() => {
@@ -352,6 +431,28 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
   const keywordOnly = isKeywordOnly(status);
   // The provider's error text stays out of the UI; only the fact of it surfaces.
   const semanticProviderFailing = isSemanticProviderFailing(status);
+  const selectedModel = embeddingSettings?.models.find((model) => model.id === selectedLocalModel);
+  const embeddingSettingsChanged = embeddingSettings
+    ? embeddingSource === 'local'
+      ? !embeddingSettings.enabled || selectedLocalModel !== embeddingSettings.selectedModelId
+      : embeddingSettings.enabled
+    : false;
+  const selectedModelDownloaded =
+    embeddingSettings?.downloaded === true &&
+    selectedLocalModel === embeddingSettings.selectedModelId;
+  const activeEmbeddingLabel = (() => {
+    if (!embeddingSettings) return 'Checking…';
+    if (embeddingSettings.activeMode === 'local') {
+      const active = embeddingSettings.models.find(
+        (model) => model.id === embeddingSettings.selectedModelId
+      );
+      return active ? `On this device · ${active.repo}` : 'On this device';
+    }
+    if (embeddingSettings.activeMode === 'openai') {
+      return `OpenAI · ${status?.embedder?.model ?? 'configured model'}`;
+    }
+    return 'Keyword search only';
+  })();
   const breakdown = useMemo(
     () =>
       Object.entries(bySourceClass)
@@ -430,6 +531,117 @@ export function NimbalystMemorySettings({ theme, callBackendTool }: SettingsPane
             </span>
           </span>
         </label>
+      </section>
+
+      {/* ---------------- EMBEDDING SOURCE ---------------- */}
+      <section style={SECTION}>
+        <div style={HEAD}>
+          <div>
+            <h4 style={H4}>Semantic matching</h4>
+            <p style={{ margin: '4px 0 0', color: muted, fontSize: 12 }}>
+              Finds related ideas even when they use different words. Keyword
+              search remains available whichever option you choose.
+            </p>
+          </div>
+          <span style={chipTone(embeddingSettings?.activeMode === 'sparse' ? 'idle' : 'ok')}>
+            {activeEmbeddingLabel}
+          </span>
+        </div>
+
+        {embeddingSettingsError && <p style={ERR}>{embeddingSettingsError}</p>}
+
+        <fieldset
+          disabled={!callBackendTool || loadingEmbeddingSettings || savingEmbeddingSettings}
+          style={{ border: 0, padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}
+        >
+          <legend style={{ ...GROUP_LABEL, marginBottom: 8 }}>Create embeddings with</legend>
+          <label style={choiceStyle(embeddingSource === 'openai')}>
+            <input
+              type="radio"
+              name="memory-embedding-source"
+              value="openai"
+              checked={embeddingSource === 'openai'}
+              onChange={() => setEmbeddingSource('openai')}
+            />
+            <span>
+              <strong style={{ color: 'var(--nim-text)', fontWeight: 600 }}>OpenAI</strong>
+              <span style={CHOICE_DESCRIPTION}>
+                Uses the OpenAI key from AI Settings. If it is unavailable,
+                Memory continues with keyword search.
+              </span>
+            </span>
+          </label>
+
+          <label
+            style={{
+              ...choiceStyle(embeddingSource === 'local'),
+              opacity: embeddingSettings?.supported === false ? 0.55 : 1,
+            }}
+          >
+            <input
+              type="radio"
+              name="memory-embedding-source"
+              value="local"
+              checked={embeddingSource === 'local'}
+              disabled={embeddingSettings?.supported === false}
+              onChange={() => setEmbeddingSource('local')}
+            />
+            <span>
+              <strong style={{ color: 'var(--nim-text)', fontWeight: 600 }}>On this device</strong>
+              <span style={CHOICE_DESCRIPTION}>
+                Runs locally after a one-time model download. Text stays on this machine.
+              </span>
+            </span>
+          </label>
+        </fieldset>
+
+        {embeddingSource === 'local' && embeddingSettings && (
+          <div style={{ ...CARD, gap: 8 }}>
+            <label htmlFor="nimbalyst-memory-local-model" style={{ fontSize: 12, color: muted }}>
+              On-device model
+            </label>
+            <select
+              id="nimbalyst-memory-local-model"
+              value={selectedLocalModel}
+              onChange={(event) => setSelectedLocalModel(event.target.value)}
+              disabled={savingEmbeddingSettings}
+              style={{ ...INPUT, resize: undefined }}
+            >
+              {embeddingSettings.models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.id} · {model.downloadSize}
+                  {model.recommended ? ' · Recommended' : ''}
+                </option>
+              ))}
+            </select>
+            {selectedModel && (
+              <p style={{ margin: 0, color: muted, fontSize: 12, lineHeight: 1.5 }}>
+                {selectedModel.note} Download: {selectedModel.downloadSize}.
+              </p>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            type="button"
+            onClick={() => void applyEmbeddingSettings()}
+            disabled={!callBackendTool || !embeddingSettingsChanged || savingEmbeddingSettings}
+            className="nimbalyst-memory-embedding-apply"
+            style={btnPrimary}
+          >
+            {savingEmbeddingSettings
+              ? embeddingSource === 'local'
+                ? 'Downloading and switching…'
+                : 'Switching…'
+              : embeddingSource === 'local' && !selectedModelDownloaded
+                ? 'Download and use'
+                : 'Use this option'}
+          </button>
+          <span style={{ color: muted, fontSize: 11.5 }}>
+            Changing the source rebuilds the Memory index in the background.
+          </span>
+        </div>
       </section>
 
       {/* ---------------- 1. COVERAGE ---------------- */}
@@ -964,6 +1176,27 @@ const INPUT = {
   fontFamily: 'inherit',
   resize: 'vertical' as const,
 };
+const CHOICE_DESCRIPTION = {
+  display: 'block',
+  color: 'var(--nim-text-muted)',
+  fontSize: 12,
+  lineHeight: 1.45,
+  marginTop: 2,
+};
+
+function choiceStyle(active: boolean) {
+  return {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: '10px 12px',
+    border: `1px solid ${active ? 'rgba(96,165,250,0.55)' : 'var(--nim-border)'}`,
+    borderRadius: 8,
+    background: active ? 'var(--nim-bg-selected)' : 'var(--nim-bg-secondary)',
+    cursor: 'pointer',
+  };
+}
+
 const SCORE = {
   fontVariantNumeric: 'tabular-nums' as const,
   fontWeight: 650,
